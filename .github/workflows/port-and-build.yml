@@ -1,0 +1,264 @@
+name: iOS15 移植并打包 IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: "最低系统版本 (iOS 15 用 15.5)"
+        required: true
+        default: "15.5"
+      force_rebuild:
+        description: "忽略脚本指纹, 强制重跑"
+        required: false
+        default: "yes"
+        type: choice
+        options: ["yes", "no"]
+  push:
+    paths:
+      - "scripts/ios15_port.py"
+      - "scripts/ios15_port_v2.py"
+      - "scripts/fix_fileprovider_deployment.py"
+      - "scripts/autofix.py"
+      - ".github/workflows/port-and-build.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  port-and-build:
+    runs-on: macos-latest
+    env:
+      # push 触发时 inputs 为空，统一用这个环境变量兜底
+      DEPLOY_TARGET: ${{ inputs.deploy_target || '15.5' }}
+      # 在线脚本的源：就是把本仓库 scripts/ 目录当成"在线脚本库"。
+      # 你在 GitHub 上直接改 scripts/*.py 并提交，下次 Run workflow 就生效。
+      SCRIPT_REPO: ${{ github.repository }}
+      SCRIPT_REF: ${{ github.ref_name }}
+      SCRIPT_DIR: scripts
+
+    steps:
+      - name: "检出仓库 (含子模块)"
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: "打印本次脚本指纹 (确认用的是最新版)"
+        run: |
+          echo "在线脚本来源: $SCRIPT_REPO @ $SCRIPT_REF / $SCRIPT_DIR"
+          for f in ios15_port.py ios15_port_v2.py fix_fileprovider_deployment.py autofix.py; do
+            if [ -f "$SCRIPT_DIR/$f" ]; then
+              printf '  %-34s %s\n' "$f" "$(shasum -a 256 "$SCRIPT_DIR/$f" | cut -c1-16)"
+            else
+              echo "  $f 缺失!"; exit 1
+            fi
+          done
+          echo "--- 版本号 ---"
+          grep -m1 'SCRIPT_VERSION =' "$SCRIPT_DIR/ios15_port_v2.py" || true
+
+      - name: "安装依赖工具"
+        run: |
+          set -e
+          brew install ninja llvm lld libarchive pkg-config meson go || true
+
+          # meson 必须真的能用。踩过的坑（本次 push 构建就死在这）：
+          #   pip install --user meson
+          # 会把脚本装到 ~/Library/Python/3.x/bin，而这个目录**不在 PATH 里**，
+          # 于是 build_ish.sh 报 "Meson is required" 直接退出。
+          # 所以这里把候选目录全部显式塞进 GITHUB_PATH，最后再断言一次。
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix)/opt/meson/bin" >> "$GITHUB_PATH"
+
+          if ! command -v meson >/dev/null 2>&1; then
+            # 优先用 pipx / brew 这种会自己塞进 PATH 的方式
+            brew install meson || true
+          fi
+          if ! command -v meson >/dev/null 2>&1; then
+            python3 -m pip install --user meson || \
+              python3 -m pip install --break-system-packages meson || true
+            # --user 安装位置随 Python 版本变（3.12/3.13/3.14…），动态探出来
+            USERBASE=$(python3 -m site --user-base 2>/dev/null || echo "$HOME/.local")
+            PYVER=$(python3 -c 'import sys;print("python%d.%d"%sys.version_info[:2])' 2>/dev/null || echo "")
+            for d in "$USERBASE/bin" "$HOME/Library/Python/$PYVER/bin" "$HOME/Library/Python/3.14/bin"; do
+              [ -d "$d" ] && echo "$d" >> "$GITHUB_PATH"
+            done
+          fi
+          echo "候选 meson 位置:"
+          find "$HOME/Library/Python" "$HOME/.local" "$(brew --prefix)/bin" \
+            -maxdepth 3 -name meson -type f 2>/dev/null | head
+
+      - name: "验证工具链 (缺一即失败)"
+        run: |
+          set -e
+          fail=0
+          for t in meson ninja go clang; do
+            if command -v "$t" >/dev/null 2>&1; then
+              printf '✅ %-8s %s\n' "$t" "$(command -v $t)"
+            else
+              printf '❌ %-8s 找不到\n' "$t"; fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || { echo "工具链不完整，提前终止（免得白等一小时编译）"; exit 1; }
+          meson --version
+          ninja --version
+          go version
+          clang --version | head -1
+
+      - name: "修复 lld 链接器可见性 (iSH 需要)"
+        run: |
+          sudo mkdir -p /usr/local/bin
+          for base in "$(brew --prefix lld)/bin" "$(brew --prefix llvm)/bin"; do
+            for t in ld.lld ld64.lld wasm-ld; do
+              if [ -x "$base/$t" ]; then sudo ln -sf "$base/$t" "/usr/local/bin/$t"; fi
+            done
+          done
+          which ld.lld
+          ld.lld --version
+
+      - name: "选 Xcode"
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: "拉取上游 OpenMinis 干净源码, 覆盖 src/ios"
+        run: |
+          set -e
+          # 浅克隆的 git 历史里 src/ios 已被改过, 不能作为还原基线。
+          # 直接从上游 OpenMinis 拉 tarball 覆盖, 保证每次从原文开始。
+          TMP=$(mktemp -d)
+          OK=0
+          for URL in \
+            "https://codeload.github.com/OpenMinis/OpenMinis/tar.gz/refs/heads/main" \
+            "https://github.com/OpenMinis/OpenMinis/archive/refs/heads/main.tar.gz" ; do
+            echo "尝试: $URL"
+            if curl -fsSL --retry 3 --retry-delay 3 --max-time 300 "$URL" -o "$TMP/up.tgz"; then
+              OK=1; break
+            fi
+          done
+          if [ "$OK" != "1" ]; then
+            echo "❌ 上游 tarball 下载失败"; exit 1
+          fi
+          tar xzf "$TMP/up.tgz" -C "$TMP"
+          SRC=$(find "$TMP" -maxdepth 1 -type d -name 'OpenMinis-*' | head -1)
+          echo "上游解包目录: $SRC"
+          if [ ! -d "$SRC/src/ios" ]; then echo "❌ 上游包结构异常"; exit 1; fi
+          # 只覆盖 iOS 源码树, 保留仓库里的 deps/ 等
+          rm -rf src/ios
+          cp -R "$SRC/src/ios" src/ios
+          echo "=== src/ios 文件数 ==="
+          find src/ios -name '*.swift' | wc -l
+
+      - name: "源码移植到 iOS 15 (第一阶段: 导航/弹窗)"
+        run: python3 "$SCRIPT_DIR/ios15_port.py" src/ios
+
+      - name: "源码移植到 iOS 15 (第二阶段: 本地化/Intents/兼容层)"
+        run: python3 "$SCRIPT_DIR/ios15_port_v2.py"
+
+      - name: "提交移植结果 (幂等)"
+        run: |
+          git config user.email "ios15-port@codebuddy.local"
+          git config user.name "iOS15 Port Bot"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "无改动, 跳过提交"
+          else
+            git commit -m "Auto-port OpenMinis to iOS 15 (scripts @ $(git rev-parse --short HEAD))" || true
+            git push || echo "WARN: push 失败(可能是分支保护), 不影响后续编译"
+          fi
+
+      - name: "设置部署目标 (主 App=${{ env.DEPLOY_TARGET }}, 扩展单独抬高)"
+        run: |
+          set -e
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = ${{ env.DEPLOY_TARGET }};/g' src/ios/Minis.xcodeproj/project.pbxproj
+          python3 "$SCRIPT_DIR/fix_fileprovider_deployment.py"
+          cp src/ios/Configs/ProviderCustomization.xcconfig.example src/ios/Configs/ProviderCustomization.xcconfig 2>/dev/null || true
+          echo "=== 部署目标分布 ==="
+          grep -n "IPHONEOS_DEPLOYMENT_TARGET" src/ios/Minis.xcodeproj/project.pbxproj | head
+
+      - name: "编译原生依赖 (LAME/FFmpeg/iSH/Alpine/RClone)"
+        run: |
+          set -e
+          ./deps/build_lame.sh
+          ./deps/build_ffmpeg.sh
+          ./deps/build_ish.sh
+          ./deps/prepare_alpine_rootfs.sh
+          sed -i '' 's/-miphoneos-version-min=[0-9.]*/-miphoneos-version-min=${{ env.DEPLOY_TARGET }}/; s/-mios-simulator-version-min=[0-9.]*/-mios-simulator-version-min=${{ env.DEPLOY_TARGET }}/' deps/build_rclone_ios.sh
+          ./deps/build_rclone_ios.sh
+
+      - name: "编译 App (不签名) + 自动降级收敛"
+        run: |
+          set +e
+          MAXROUND=6
+          ROUND=0
+          RC=1
+          while [ "$ROUND" -lt "$MAXROUND" ]; do
+            ROUND=$((ROUND+1))
+            echo "============ 第 $ROUND 轮编译 ============"
+            xcodebuild -project src/ios/Minis.xcodeproj \
+              -scheme Minis \
+              -configuration Release \
+              -destination 'generic/platform=iOS' \
+              CODE_SIGNING_ALLOWED=NO \
+              -derivedDataPath DerivedData build > build.log 2>&1
+            RC=$?
+            echo "=== 编译错误行 (error:, 最多 80 条) ==="
+            grep -n "error:" build.log | grep -v "0 errors" | head -80 || true
+            if [ "$RC" -eq 0 ]; then
+              echo "✅ 编译成功 (第 $ROUND 轮)"
+              break
+            fi
+            echo "⚠️  第 $ROUND 轮编译失败 (退出码 $RC), 触发自动降级修复..."
+            python3 "$SCRIPT_DIR/autofix.py" build.log src/ios
+            FIXRC=$?
+            if [ "$FIXRC" -eq 1 ]; then
+              echo "autofix 本轮无可用改动, 终止循环避免空转"
+              break
+            fi
+          done
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            echo "编译失败 (经过 $ROUND 轮自动降级仍未解决), 完整日志见产物 build-logs"
+            exit "$RC"
+          fi
+          echo "编译成功"
+
+      - name: "打包 IPA (供 TrollStore 安装)"
+        if: success()
+        run: |
+          set -e
+          echo "=== 所有 Minis.app 候选及大小 ==="
+          find DerivedData -name "Minis.app" -type d -exec du -sh {} + || true
+          APP="DerivedData/Build/Products/Release-iphoneos/Minis.app"
+          if [ ! -d "$APP" ]; then
+            APP=$(find DerivedData -name "Minis.app" -type d -exec du -sk {} + | sort -rn | head -1 | cut -f2)
+          fi
+          echo "=== 选用: $APP ==="
+          du -sh "$APP"
+          if [ ! -f "$APP/Info.plist" ]; then echo "Info.plist 不存在, 打包中止"; exit 1; fi
+          rm -rf Payload "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa"
+          mkdir -p Payload
+          ditto "$APP" "Payload/Minis.app"
+          zip -qry "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa" Payload
+          if ! unzip -l "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa" | grep -q "Payload/Minis.app/Info.plist"; then
+            echo "IPA 结构错误 (缺少 Payload/Minis.app/Info.plist)"; exit 1
+          fi
+          SIZE=$(stat -f%z "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa")
+          echo "IPA 大小: $SIZE 字节"
+          if [ "$SIZE" -lt 10000000 ]; then echo "IPA 小于 10MB, 疑似空包, 中止上传"; exit 1; fi
+          ls -lh "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa"
+
+      - name: "上传 IPA"
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-iOS${{ env.DEPLOY_TARGET }}-ipa
+          path: Minis-iOS${{ env.DEPLOY_TARGET }}.ipa
+
+      - name: "上传编译日志 (失败时排错用)"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: build.log
+          if-no-files-found: ignore
