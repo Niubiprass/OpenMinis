@@ -61,7 +61,7 @@ struct SessionStatusQuery: EntityQuery {
 /// the latest message text, last tool summary, etc. Use after SendPrompt to poll.
 @available(iOS 16.0, *) // ios15-port
 struct GetSessionStatusIntent: AppIntent {
-    static var title: String = "Get Session Status"
+    static var title: LocalizedStringResource = "Get Session Status"
     static var description = IntentDescription("Gets the current status of a Minis session, including whether the agent is still running, the latest message, and last tool call.")
     static var openAppWhenRun = false
 

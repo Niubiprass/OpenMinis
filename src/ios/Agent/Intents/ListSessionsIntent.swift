@@ -4,7 +4,7 @@ import Foundation
 /// Lists all chat sessions — useful for automation scripts that need a session ID.
 @available(iOS 16.0, *) // ios15-port
 struct ListSessionsIntent: AppIntent {
-    static var title: String = "List Sessions"
+    static var title: LocalizedStringResource = "List Sessions"
     static var description = IntentDescription("Lists all Minis chat sessions with their titles and IDs.")
     static var openAppWhenRun = false
 
