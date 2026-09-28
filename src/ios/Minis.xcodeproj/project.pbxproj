@@ -1425,6 +1425,7 @@
 		E51000030 = {
 			isa = PBXGroup;
 			children = (
+				IOS15COMPAT0000000000000A /* iOS15Compat.swift */,
 				E51000031 /* Minis */,
 				E5E000031 /* Shared */,
 				E5E000030 /* ShareExtension */,

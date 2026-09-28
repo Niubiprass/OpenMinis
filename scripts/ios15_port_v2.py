@@ -25,7 +25,6 @@ import sys
 
 ROOT = "src/ios"
 COMPAT_NAME = "iOS15Compat.swift"
-COMPAT_REL = os.path.join(ROOT, "Compat", COMPAT_NAME)
 
 # ---------------------------------------------------------------- 基础工具
 
@@ -559,10 +558,91 @@ public struct ProposedViewSize: Equatable {
 '''
 
 
-def write_compat() -> None:
-    os.makedirs(os.path.dirname(COMPAT_REL), exist_ok=True)
-    write(COMPAT_REL, COMPAT_SWIFT)
-    log("✅ 已写入兼容层 %s" % COMPAT_REL)
+def _field(blk: str, name: str):
+    """从 pbxproj 对象块里取一个标量字段的值。"""
+    m = re.search(r'\b' + name + r'\s*=\s*"?([^";]+)"?\s*;', blk)
+    return m.group(1).strip() if m else None
+
+
+def _children(blk: str):
+    """取一个 group 块 children = ( ... ) 里的 uuid 列表。"""
+    m = re.search(r"children\s*=\s*\((.*?)\);", blk, re.S)
+    if not m:
+        return []
+    return re.findall(r"^\s*(\w+)\s*/\*", m.group(1), re.M)
+
+
+def _all_groups(text: str):
+    """[(uuid, path, children)]，只收 PBXGroup / PBXVariantGroup。"""
+    b, e = _section(text, "PBXGroup")
+    out = []
+    if b < 0 or e <= b:
+        return out
+    for m in re.finditer(r"^\t\t(\w+)\s*(?:/\*[^*]*?\*/)?\s*=\s*\{", text[b:e], re.M):
+        uuid = m.group(1)
+        gs, ge = _block(text, uuid)
+        if gs is None:
+            continue
+        blk = text[gs:ge]
+        if "isa = PBXGroup" not in blk and "isa = PBXVariantGroup" not in blk:
+            continue
+        out.append((uuid, _field(blk, "path"), _children(blk)))
+    return out
+
+
+def resolve_compat_dir(text: str, ref: str) -> str:
+    """算出 Xcode 会把 ref 解析到哪个目录（相对工程目录，"" 即工程目录）。
+
+    兼容层以 path = "iOS15Compat.swift" + sourceTree = <group> 挂在某个 group 下，
+    Xcode 按「该 group 的目录 + path」找文件；若不在任何 group 里则退回工程目录。
+    磁盘上的文件必须放在同一处，否则会报 "Build input file cannot be found"。
+    """
+    groups = _all_groups(text)
+    parent = {}
+    for uuid, _p, kids in groups:
+        for k in kids:
+            parent.setdefault(k, uuid)
+    comps = []
+    cur = parent.get(ref)
+    seen = set()
+    while cur and cur not in seen:
+        seen.add(cur)
+        nxt = None
+        for uuid, p, _kids in groups:
+            if uuid == cur:
+                if p:
+                    comps.insert(0, p)
+                nxt = parent.get(cur)
+                break
+        if nxt is None:
+            break
+        cur = nxt
+    return "/".join(comps)
+
+
+def write_compat(subdir: str = "") -> None:
+    d = os.path.normpath(os.path.join(ROOT, subdir)) if subdir else ROOT
+    target = os.path.join(d, COMPAT_NAME)
+
+    # 旧版本曾写到 src/ios/Compat/ 子目录，但 pbxproj 里挂的是 mainGroup，
+    # Xcode 会去 src/ios/ 找 -> 报 Build input file cannot be found。清理掉。
+    stale_dir = os.path.join(ROOT, "Compat")
+    stale = os.path.join(stale_dir, COMPAT_NAME)
+    if os.path.isfile(stale) and os.path.abspath(stale) != os.path.abspath(target):
+        try:
+            os.remove(stale)
+            log("🧹 已删除旧位置的兼容层 %s" % stale)
+        except OSError:
+            pass
+        try:
+            os.rmdir(stale_dir)
+            log("🧹 已删除空目录 %s" % stale_dir)
+        except OSError:
+            pass
+
+    os.makedirs(d, exist_ok=True)
+    write(target, COMPAT_SWIFT)
+    log("✅ 已写入兼容层 %s" % target)
 
 
 # --------------------------------------------------- pbxproj 注入兼容层
@@ -577,7 +657,8 @@ def _section(text: str, name: str):
 
 
 def _block(text: str, uuid: str):
-    m = re.search(re.escape(uuid) + r"\s*/\*.*?\*/\s*=\s*\{", text)
+    # 注释可选：PBXGroup 里没有 name 的组写成 `UUID = {`，带 name 的才写 `UUID /* name */ = {`
+    m = re.search(re.escape(uuid) + r"\s*(?:/\*.*?\*/)?\s*=\s*\{", text)
     if not m:
         return None, None
     start = m.end() - 1
@@ -595,51 +676,104 @@ def _block(text: str, uuid: str):
     return m.start(), len(text)
 
 
-def inject_compat() -> None:
-    """把 iOS15Compat.swift 加入主 App target 的编译源。"""
+def _unique(base: str, text: str) -> str:
+    """生成一个 text 中尚不存在的 uuid。"""
+    cand = base
+    n = 0
+    while cand in text:
+        n += 1
+        cand = base[:-2] + "%02d" % n
+    return cand
+
+
+def _insert_into_section(text: str, section: str, line: str):
+    b, _ = _section(text, section)
+    if b < 0:
+        return text, False
+    marker = "/* Begin %s section */" % section
+    pos = b + len(marker)
+    return text[:pos] + "\n" + line + text[pos:], True
+
+
+def inject_compat() -> str:
+    """把 iOS15Compat.swift 加入主 App target 的编译源。
+
+    幂等 + 自愈：每一步都先检查是否已存在，只在缺失时补齐，
+    所以重复执行不会叠加，也能修好上一次跑歪留下的半成品引用。
+
+    返回 Xcode 实际会去查找该文件的目录（相对工程目录，"" 表示工程目录本身）。
+    """
     if not os.path.isfile(PBX):
         log("⚠️  未找到 %s，跳过注入（兼容层不会参与编译）" % PBX)
-        return
+        return ""
 
     text = read(PBX)
-    if "/* %s */" % COMPAT_NAME in text:
-        log("ℹ️  兼容层已在工程中，跳过注入")
-        return
+    name = re.escape(COMPAT_NAME)
 
-    ref = "IOS15COMPAT0000000000000A"
-    build = "IOS15COMPAT0000000000000B"
-    while ref in text or build in text:
-        ref += "A"
-        build += "B"
+    def _sec(s):
+        i, j = _section(text, s)
+        return text[i:j] if (i >= 0 and j > i) else ""
 
-    # 1) PBXFileReference
-    b, e = _section(text, "PBXFileReference")
-    if b < 0:
-        log("⚠️  找不到 PBXFileReference section，跳过注入")
-        return
-    ins = '\t\t%s /* %s */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "%s"; sourceTree = "<group>"; };\n' % (
-        ref, COMPAT_NAME, COMPAT_NAME)
-    text = text[:b + len("/* Begin PBXFileReference section */")] + "\n" + ins + text[b + len("/* Begin PBXFileReference section */"):]
+    # ---- 1) PBXFileReference
+    ref = None
+    m = re.search(r"(\w+)\s*/\*\s*" + name + r"\s*\*/\s*=\s*\{isa = PBXFileReference;",
+                  _sec("PBXFileReference"))
+    if m:
+        ref = m.group(1)
+    if ref is None:
+        ref = _unique("IOS15COMPAT0000000000000A", text)
+        ins = '\t\t%s /* %s */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "%s"; sourceTree = "<group>"; };\n' % (
+            ref, COMPAT_NAME, COMPAT_NAME)
+        text, ok = _insert_into_section(text, "PBXFileReference", ins)
+        if not ok:
+            log("⚠️  找不到 PBXFileReference section，跳过注入")
+            return ""
+        log("✅ PBXFileReference 已创建 (%s)" % ref)
+    else:
+        # 自愈：path 必须是 mainGroup 子级的相对路径，否则 Xcode 找不到文件
+        gs, ge = _block(text, ref)
+        if gs is not None:
+            blk = text[gs:ge]
+            p = _field(blk, "path")
+            if p and p != COMPAT_NAME:
+                nb = blk.replace('path = "%s"' % p, 'path = "%s"' % COMPAT_NAME)
+                nb = nb.replace("path = %s;" % p, 'path = "%s";' % COMPAT_NAME)
+                if nb != blk:
+                    text = text[:gs] + nb + text[ge:]
+                    log("🔧 已修正文件引用路径 %s -> %s" % (p, COMPAT_NAME))
 
-    # 2) PBXBuildFile
-    b2, _ = _section(text, "PBXBuildFile")
-    if b2 >= 0:
+    # ---- 2) PBXBuildFile
+    build = None
+    m = re.search(r"(\w+)\s*/\*\s*" + name + r"\s+in Sources\s*\*/\s*=\s*\{isa = PBXBuildFile;",
+                  _sec("PBXBuildFile"))
+    if m:
+        build = m.group(1)
+    if build is None:
+        build = _unique("IOS15COMPAT0000000000000B", text)
         ins2 = '\t\t%s /* %s in Sources */ = {isa = PBXBuildFile; fileRef = %s /* %s */; };\n' % (
             build, COMPAT_NAME, ref, COMPAT_NAME)
-        marker = "/* Begin PBXBuildFile section */"
-        text = text[:b2 + len(marker)] + "\n" + ins2 + text[b2 + len(marker):]
+        text, ok = _insert_into_section(text, "PBXBuildFile", ins2)
+        if ok:
+            log("✅ PBXBuildFile 已创建 (%s)" % build)
+        else:
+            log("⚠️  找不到 PBXBuildFile section")
 
     # 3) 挂到 mainGroup 的 children
-    mg = re.search(r"mainGroup = (\w+)", text)
+    mg = re.search(r"mainGroup\s*=\s*(\w+)", text)
     if mg:
         gs, ge = _block(text, mg.group(1))
         if gs is not None:
             blk = text[gs:ge]
-            if "children" in blk:
+            if re.search(r"^\s*%s\s*/\*" % re.escape(ref), blk, re.M):
+                log("ℹ️  兼容层已在 mainGroup 中")
+            elif "children" in blk:
                 newblk = re.sub(r"(children\s*=\s*\()",
                                 r"\1\n\t\t\t\t%s /* %s */," % (ref, COMPAT_NAME),
                                 blk, count=1)
                 text = text[:gs] + newblk + text[ge:]
+                log("✅ 兼容层已挂到 mainGroup")
+            else:
+                log("⚠️  mainGroup 没有 children 列表")
 
     # 4) 加入主 App target 的 Sources phase
     tm = re.search(r"(\w+)\s*/\*\s*Minis\s*\*/\s*=\s*\{\s*isa = PBXNativeTarget;", text)
@@ -663,7 +797,9 @@ def inject_compat() -> None:
             ps, pe = _block(text, chosen)
             if ps is not None:
                 pblk = text[ps:pe]
-                if "files" in pblk:
+                if re.search(r"^\s*%s\s*/\*" % re.escape(build), pblk, re.M):
+                    log("ℹ️  兼容层已在 Sources phase 中")
+                elif "files" in pblk:
                     newp = re.sub(r"(files\s*=\s*\()",
                                   r"\1\n\t\t\t\t%s /* %s in Sources */," % (build, COMPAT_NAME),
                                   pblk, count=1)
@@ -678,7 +814,12 @@ def inject_compat() -> None:
     else:
         log("⚠️  未找到名为 Minis 的 PBXNativeTarget，跳过 Sources 注入")
 
+    # 5) 算出 Xcode 到底会去哪个目录找这个文件（决定 write_compat 写到哪）
+    sub = resolve_compat_dir(text, ref)
+    log("📍 兼容层应放在 %s" % (os.path.join(ROOT, sub) if sub else ROOT))
+
     write(PBX, text)
+    return sub
 
 
 # ------------------------------------------------------------------ main
@@ -696,8 +837,9 @@ def main() -> None:
     annotate_appintent_files()
     delete_modifiers()
     misc_fixes()
-    write_compat()
-    inject_compat()
+    # 先注入（决定文件该放在哪），再按 pbxproj 解析出的目录写文件
+    subdir = inject_compat()
+    write_compat(subdir)
     log("=== 完成 ===")
 
 
