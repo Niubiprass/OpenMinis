@@ -18,6 +18,10 @@ import sys
 TARGET_DIR = sys.argv[1] if len(sys.argv) > 1 else "src/ios"
 MARK = "// >>>IOS15PORTED>>>"
 
+# 不做移植的目录：AgentWidget 是 iOS 17 的 Live Activity / 灵动岛扩展，
+# iOS 15 设备根本用不上，改写它零收益，历史上还被误删过多层尾随闭包。
+SKIP_DIRS = {"AgentWidget", "AgentWidgetExtension"}
+
 
 def port_file(path: str) -> bool:
     with open(path, encoding="utf-8") as f:
@@ -60,7 +64,8 @@ def main() -> None:
 
     count = 0
     scanned = 0
-    for dp, _dirs, files in os.walk(TARGET_DIR):
+    for dp, dirs, files in os.walk(TARGET_DIR):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for fn in files:
             if fn.endswith(".swift"):
                 scanned += 1

@@ -21,24 +21,58 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 
 ROOT = "src/ios"
+
+# 脚本版本号。每轮修复都会改它，日志第一行就会打印，
+# 用来确认 runner 上跑的是不是最新脚本（避免又下到 CDN 缓存的旧版）。
+SCRIPT_VERSION = "v10-20260929b"
 COMPAT_NAME = "iOS15Compat.swift"
 PRISTINE_COMMIT = None  # 初始提交 hash，供结构自检回滚使用
 
 # ---------------------------------------------------------------- 基础工具
 
+# 不需要、也不该做 iOS15 移植的目录。
+#
+# AgentWidget 是 iOS 17 的 Live Activity / 灵动岛扩展（日志里它的编译目标就是
+# -target arm64-apple-ios17.0）。iOS 15.5 设备根本没有 Live Activity 和灵动岛，
+# 移植它零收益；而它那套多层尾随闭包
+#   ActivityConfiguration(...) { } dynamicIsland: { DynamicIsland { }
+#   compactLeading: { } compactTrailing: { } minimal: { } }
+# 已经被我的删除逻辑误伤三次（v6/v7/v9），每次都留下半截结构。
+# 整个目录保持原样、部署目标维持 17.0，是最省事也最正确的做法。
+SKIP_DIRS = {"AgentWidget", "AgentWidgetExtension"}
+
+# 含这些标记的源文件，一律不做「删除类」改写。多行尾随闭包的重灾区，
+# 按行删或按表达式删都可能留下半截闭包。
+DELETE_GUARD_TOKENS = (
+    "ActivityConfiguration(",
+    "dynamicIsland:",
+    "DynamicIsland",
+)
+
+# 本脚本自己生成、每轮需要清掉重来的产物文件
+OUR_ARTIFACTS = {"iOS15Compat.swift"}
+
+
 def swift_files(base: str):
-    """递归收集 base 下所有 .swift 文件（跳过隐藏目录）。"""
+    """递归收集 base 下所有 .swift 文件（跳过隐藏目录与豁免目录）。"""
     out = []
     for dirpath, dirnames, filenames in os.walk(base):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        dirnames[:] = [d for d in dirnames
+                       if not d.startswith(".") and d not in SKIP_DIRS]
         for fn in filenames:
             if fn.endswith(".swift"):
                 out.append(os.path.join(dirpath, fn))
     return sorted(out)
+
+
+def guarded(text: str) -> bool:
+    """文件是否含受保护的多尾随闭包构造（只允许标注类改写，不允许删除类）。"""
+    return any(tok in text for tok in DELETE_GUARD_TOKENS)
 
 
 def read(p: str) -> str:
@@ -285,6 +319,51 @@ def annotate_intents() -> None:
 
 # ------------------------------------------------------------ 0. 源码还原
 
+def _skip_string(text: str, i: int) -> int:
+    """i 指向起始引号（单引号式 " 或三引号式三个双引号），返回字面量结束之后的位置。
+
+    支持 Swift 字符串插值 \\( ... ) —— 插值内部可以再嵌套字符串与括号，
+    因此用「先遇到未闭合引号就递归跳过」的方式处理，避免
+    "\\(foo(\")\"))" 这类写法让外层字面量提前闭合（v9 的误报根因之一）。
+    """
+    n = len(text)
+    multiline = text.startswith('"""', i)
+    i += 3 if multiline else 1
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            if i + 1 < n and text[i + 1] == "(":
+                i = _skip_interp(text, i + 2)
+                continue
+            i += 2
+            continue
+        if multiline and text.startswith('"""', i):
+            return i + 3
+        if not multiline and c == '"':
+            return i + 1
+        i += 1
+    return n
+
+
+def _skip_interp(text: str, i: int) -> int:
+    """i 指向 \\( 之后，返回与它配对的 ) 之后的位置。"""
+    n = len(text)
+    depth = 1
+    while i < n:
+        c = text[i]
+        if c == '"':
+            i = _skip_string(text, i)
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
 def _paren_balance_ok(text: str) -> bool:
     """检查 ( ) { } [ ] 是否配平（跳过注释与字符串字面量、多行字符串）。"""
     pairs = {"(": ")", "{": "}", "[": "]"}
@@ -301,29 +380,7 @@ def _paren_balance_ok(text: str) -> bool:
             i = n if j < 0 else j + 2
             continue
         if c == '"':
-            multiline = text.startswith('"""', i)
-            quote = '"""' if multiline else '"'
-            i += len(quote)
-            depth = 0
-            while i < n:
-                if multiline and text[i] == "\\" and i + 1 < n and text[i + 1] == "(":
-                    depth += 1
-                    i += 2
-                    continue
-                if multiline and depth and text[i] == ")":
-                    depth -= 1
-                    i += 1
-                    continue
-                if text[i] == "\\":
-                    i += 2
-                    continue
-                if multiline and text.startswith('"""', i):
-                    i += 3
-                    break
-                if not multiline and text[i] == '"':
-                    i += 1
-                    break
-                i += 1
+            i = _skip_string(text, i)
             continue
         if c in pairs:
             stack.append(pairs[c])
@@ -335,28 +392,83 @@ def _paren_balance_ok(text: str) -> bool:
     return not stack
 
 
-def check_and_rollback_broken() -> None:
-    """转换后自检：任何 .swift 文件括号不配平，就把它回滚到初始提交。
+# 已知会毁掉语法的残骸特征（不依赖解析器，命中即判坏）。
+# v6/v7 的两次事故都是这两种：多行尾随闭包删头留身、setBadgeCount 残句。
+BROKEN_RES = [
+    re.compile(r"^[ \t]*\}[ \t]*isTargeted:[ \t]*\{", re.M),
+    re.compile(r"=[ \t]*\d+[ \t]*\{[ \t]*_[ \t]*in[ \t]*\}", re.M),
+]
 
-    宁可让这个文件保留 iOS16 API（后面报普通的 API 错误，容易定位和替换），
-    也绝不让语法崩坏的文件混进编译 —— 那会产生成百上千条级联错误，
-    把真正的错误全淹掉，这是前几轮最大的教训。
+
+def _pristine_text(path: str):
+    """取初始提交里该文件的原文；取不到返回 None。"""
+    if not PRISTINE_COMMIT:
+        return None
+    try:
+        r = subprocess.run(["git", "show", "%s:%s" % (PRISTINE_COMMIT, path)],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            return None
+        return r.stdout
+    except Exception:
+        return None
+
+
+def check_and_rollback_broken() -> None:
+    """转换后自检：只回滚「确实被我们改坏」的文件。
+
+    v9 的教训：直接拿括号配平当判据会大面积误报 —— 我的迷你解析器
+    认不全 Swift 语法（raw string、正则字面量、插值嵌套 …），
+    原文件本身就判不配平的文件会被无辜回滚，等于整轮移植作废。
+
+    v10 判据（三条全都必须成立才算坏）：
+      1. 文件确实被本轮改动过（与初始提交不同）；
+      2. 命中已知残骸特征，或「初始提交配平、转换后不配平」；
+      3. 第 2 条的括号判据里，若初始提交本身也判不配平 —— 那是解析器
+         的锅，不是转换的锅，一律放过。
     """
-    bad = []
+    bad = []          # [(path, 原因)]
+    parser_noise = 0  # 解析器自己判不平（转换前就这样）的文件数
+    total = 0
+
     for path in swift_files(ROOT):
+        total += 1
         try:
-            t = read(path)
+            cur = read(path)
         except OSError:
             continue
-        if not _paren_balance_ok(t):
-            bad.append(path)
+        orig = _pristine_text(path)
+        if orig is None:      # 新增文件（如兼容层），无基线可比
+            continue
+        if orig == cur:       # 没改动
+            continue
+
+        reason = None
+        for rx in BROKEN_RES:
+            m = rx.search(cur)
+            if m and not rx.search(orig):
+                reason = "命中损坏特征 %r" % m.group(0).strip()[:60]
+                break
+
+        if reason is None and not _paren_balance_ok(cur):
+            if _paren_balance_ok(orig):
+                reason = "转换前配平、转换后不配平"
+            else:
+                parser_noise += 1  # 解析器对原文件就误判，放过
+
+        if reason:
+            bad.append((path, reason))
+
+    if parser_noise:
+        log("ℹ️  %d 个文件被解析器判为不配平，但初始提交同样如此 → "
+            "判定为解析器语法覆盖不足，未回滚" % parser_noise)
 
     if not bad:
-        log("✅ 结构自检通过：%d 个 Swift 文件括号全部配平"
-            % len(swift_files(ROOT)))
+        log("✅ 结构自检通过：%d 个 Swift 文件，无损坏特征、无括号退化"
+            % total)
         return
 
-    for path in bad:
+    for path, reason in bad:
         # 先把现场写进日志，方便下次定位（我看不到源码，只能靠这个）
         try:
             d = subprocess.run(["git", "diff", "--", path],
@@ -364,16 +476,41 @@ def check_and_rollback_broken() -> None:
             diff = d.stdout
             if len(diff) > 4000:
                 diff = diff[:2000] + "\n...[截断]...\n" + diff[-2000:]
-            log("❌ %s 转换后括号不配平，改动如下：\n%s" % (path, diff))
+            log("❌ %s %s，改动如下：\n%s" % (path, reason, diff))
         except Exception:
             pass
+        # 让 swiftc 亲口说出语法错误行号，比我的迷你解析器准得多
+        swiftc_diagnose(path)
         if PRISTINE_COMMIT:
             r = subprocess.run(["git", "checkout", PRISTINE_COMMIT, "--", path],
                                capture_output=True, text=True, timeout=60)
             if r.returncode == 0:
                 log("🔄 %s 已回滚到初始提交（该文件本次不作移植）" % path)
                 continue
-        log("⚠️  %s 括号不配平且无法回滚，请检查" % path)
+        log("⚠️  %s 判定损坏且无法回滚，请检查" % path)
+
+
+def swiftc_diagnose(path: str, limit: int = 12) -> None:
+    """用 macOS 自带的 swiftc 做纯语法解析（-parse，不做类型检查）。
+
+    只打印诊断，不参与回滚决策 —— 它的输出是我下一轮定位问题最可靠的线索。
+    """
+    if not shutil.which("swiftc"):
+        return
+    try:
+        sdk = subprocess.run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"],
+                             capture_output=True, text=True, timeout=60)
+        args = ["swiftc", "-parse"]
+        if sdk.returncode == 0 and sdk.stdout.strip():
+            args += ["-sdk", sdk.stdout.strip()]
+        args += ["-target", "arm64-apple-ios15.5", path]
+        r = subprocess.run(args, capture_output=True, text=True, timeout=120)
+    except Exception:
+        return
+    out = (r.stdout or "") + (r.stderr or "")
+    lines = [l for l in out.split("\n") if "error:" in l][:limit]
+    if lines:
+        log("   swiftc -parse 诊断：\n     " + "\n     ".join(l.strip() for l in lines))
 
 
 def restore_pristine_sources() -> None:
@@ -405,21 +542,28 @@ def restore_pristine_sources() -> None:
         if co.returncode != 0:
             log("⚠️  还原 %s 失败: %s" % (ROOT, co.stderr.strip()[:200]))
             return
-        # 清掉 fork 相对初始提交多出来的文件（上一轮生成的兼容层等）
-        df = subprocess.run(
-            ["git", "diff", "--name-only", "--diff-filter=A", rc, "HEAD", "--", ROOT],
-            capture_output=True, text=True, timeout=120)
-        extra = [f.strip() for f in df.stdout.split("\n") if f.strip()]
-        for f in extra:
-            if os.path.isfile(f):
-                os.remove(f)
-        try:
-            os.rmdir(os.path.join(ROOT, "Compat"))
-        except OSError:
-            pass
+        # 清掉上一轮脚本自己生成的产物。
+        # 注意：只删我方产物白名单，绝不删「相对初始提交多出来的所有文件」——
+        # 那是真实源码的可能性远大于产物，误删会让 target 缺文件，
+        # 报错比语法错误更难查。
+        removed = 0
+        for dirpath, dirnames, filenames in os.walk(ROOT):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            for fn in filenames:
+                if fn in OUR_ARTIFACTS:
+                    try:
+                        os.remove(os.path.join(dirpath, fn))
+                        removed += 1
+                    except OSError:
+                        pass
+        for d in ("Compat",):
+            try:
+                os.rmdir(os.path.join(ROOT, d))
+            except OSError:
+                pass
         PRISTINE_COMMIT = rc
         log("✅ 已把 %s 还原到初始提交 %s（清掉上轮产物 %d 个）"
-            % (ROOT, rc[:8], len(extra)))
+            % (ROOT, rc[:8], removed))
     except Exception as e:  # 绝不让还原逻辑拖垮整个移植
         log("⚠️  源码还原异常（已跳过）: %s" % e)
 
@@ -514,6 +658,9 @@ def delete_call_exprs() -> None:
     touched = 0
     for path in swift_files(ROOT):
         text = read(path)
+        if guarded(text):
+            # 含 Live Activity 多层尾随闭包的文件，删除类改写一律不碰
+            continue
         changed = False
         for pat in pats:
             guard = 0
@@ -526,6 +673,11 @@ def delete_call_exprs() -> None:
                 e = _expr_end(text, lp)
                 if e is None:
                     log("⚠️  %s: 无法配平 %s 调用，跳过" % (path, pat.pattern))
+                    break
+                # 安全网：单次删除超过 2000 字符几乎一定是配平算错，宁可不删
+                if e - m.start() > 2000:
+                    log("⚠️  %s: %s 调用跨 %d 字符，疑似配平算错，跳过"
+                        % (path, pat.pattern, e - m.start()))
                     break
                 i = m.start()
                 ls = text.rfind("\n", 0, i) + 1
@@ -1184,7 +1336,7 @@ def main() -> None:
         log("⚠️  未找到 %s，请在仓库根目录执行本脚本" % ROOT)
         sys.exit(0)
 
-    log("=== OpenMinis -> iOS 15 移植（第二阶段）===")
+    log("=== OpenMinis -> iOS 15 移植（第二阶段）%s ===" % SCRIPT_VERSION)
     restore_pristine_sources()
     fix_applocalized()
     strip_localizedstringresource()
