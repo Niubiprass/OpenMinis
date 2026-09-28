@@ -99,11 +99,25 @@ jobs:
 
       - name: 打包 IPA (供 TrollStore 安装)
         run: |
-          APP=$(find DerivedData -name "Minis.app" -type d | head -1)
-          if [ -z "$APP" ]; then echo "未找到 Minis.app，构建可能失败"; exit 1; fi
+          echo "=== 所有 Minis.app 候选及大小 ==="
+          find DerivedData -name "Minis.app" -type d -exec du -sh {} + || true
+          APP="DerivedData/Build/Products/Release-iphoneos/Minis.app"
+          if [ ! -d "$APP" ]; then
+            APP=$(find DerivedData -name "Minis.app" -type d -exec du -sk {} + | sort -rn | head -1 | cut -f2)
+          fi
+          echo "=== 选用: $APP ==="
+          du -sh "$APP"
+          if [ ! -f "$APP/Info.plist" ]; then echo "❌ Info.plist 不存在，打包中止"; exit 1; fi
+          rm -rf Payload "Minis-iOS${{ inputs.deploy_target }}.ipa"
           mkdir -p Payload
-          cp -r "$APP" Payload/
-          zip -r "Minis-iOS${{ inputs.deploy_target }}.ipa" Payload
+          ditto "$APP" "Payload/Minis.app"
+          zip -qry "Minis-iOS${{ inputs.deploy_target }}.ipa" Payload
+          if ! unzip -l "Minis-iOS${{ inputs.deploy_target }}.ipa" | grep -q "Payload/Minis.app/Info.plist"; then
+            echo "❌ IPA 结构错误（缺少 Payload/Minis.app/Info.plist）"; exit 1
+          fi
+          SIZE=$(stat -f%z "Minis-iOS${{ inputs.deploy_target }}.ipa")
+          echo "IPA 大小: $SIZE 字节"
+          if [ "$SIZE" -lt 10000000 ]; then echo "❌ IPA 小于 10MB，疑似空包，中止上传"; exit 1; fi
           ls -lh "Minis-iOS${{ inputs.deploy_target }}.ipa"
 
       - name: 上传 IPA
