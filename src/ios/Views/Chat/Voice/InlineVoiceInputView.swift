@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 import UIKit
 
@@ -565,7 +566,7 @@ struct InlineVoiceInputView: View {
             viewModel.refreshInputProvider()
         }
         .sheet(isPresented: $showModelSelector) {
-            NavigationStack {
+            NavigationView {
                 UnifiedModelPicker(config: .voiceInput())
             }
         }

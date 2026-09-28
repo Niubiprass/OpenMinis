@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 //
 //  ISHTerminalView.swift
 //  MinisApp
@@ -148,12 +149,12 @@ struct ISHTerminalView: View {
             }
         }
         .sheet(isPresented: $showFileBrowser) {
-            NavigationStack {
+            NavigationView {
                 FileBrowserView()
             }
         }
         .sheet(isPresented: $showRootfsManagement) {
-            NavigationStack {
+            NavigationView {
                 RootfsManagementView()
             }
         }
@@ -500,7 +501,7 @@ struct QuickCommandButton: View {
 }
 
 #Preview {
-    NavigationStack {
+    NavigationView {
         ISHTerminalView()
     }
 }

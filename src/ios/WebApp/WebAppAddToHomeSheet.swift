@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 import UIKit
 
@@ -33,7 +34,7 @@ struct WebAppAddToHomeSheet: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 if unsupportedScope {
                     unsupportedSection

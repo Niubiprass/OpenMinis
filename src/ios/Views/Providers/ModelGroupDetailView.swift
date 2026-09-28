@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 
 /// Detail view for editing a ModelGroup: name, strategy, ordered member list.
@@ -352,7 +353,7 @@ struct ModelGroupDetailView: View {
         .scrollDismissesKeyboard(.interactively)
         .environment(\.editMode, $editMode)
         .sheet(isPresented: $showAddModels) {
-            NavigationStack {
+            NavigationView {
                 UnifiedModelPicker(config: addModelsConfig())
             }
         }

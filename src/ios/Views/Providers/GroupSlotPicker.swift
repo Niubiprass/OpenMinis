@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 
 // MARK: - GroupSlotPicker
@@ -54,7 +55,7 @@ struct GroupSlotPicker: View {
             }
         }
         .sheet(isPresented: $showCreate) {
-            NavigationStack {
+            NavigationView {
                 UnifiedModelPicker(config: createGroupConfig())
             }
         }

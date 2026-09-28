@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import ActivityKit
 import AVFoundation
 import Combine
@@ -1739,7 +1740,7 @@ struct BackgroundInterruptionBanner: View {
                 .gesture(swipeToDismiss)
                 .animation(.spring(response: 0.35), value: tracker.showBanner)
                 .sheet(isPresented: $showSettings) {
-                    NavigationStack { EnhancedBackgroundSettingsView() }
+                    NavigationView { EnhancedBackgroundSettingsView() }
                 }
                 // [T-ios-scene-create-watchdog-corelocation] Subscribe only once
                 // the banner is actually on screen — the subscription exists to

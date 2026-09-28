@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 //
 //  MCPFormSheet.swift
 //  MinisApp
@@ -84,7 +85,7 @@ struct MCPFormSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 Section {
                     TextField(AppLocalized("Server name"), text: $name)

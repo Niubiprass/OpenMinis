@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 //
 //  SessionMCPsView.swift
 //  MinisApp
@@ -84,7 +85,7 @@ struct SessionMCPsView: View {
         // Reference the version counter so SwiftUI refreshes on override changes.
         let _ = store.sessionOverrideVersion
 
-        NavigationStack {
+        NavigationView {
             List {
                 if store.servers.isEmpty {
                     Section {

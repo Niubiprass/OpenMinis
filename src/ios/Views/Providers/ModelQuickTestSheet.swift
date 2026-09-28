@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 import AVFoundation
 
@@ -44,7 +45,7 @@ struct ModelQuickTestSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     header

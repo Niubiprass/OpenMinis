@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import Foundation
 import SwiftUI
 import os.log
@@ -122,7 +123,7 @@ struct BrowserHistoryView: View {
     @State private var showClearConfirm = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Group {
                 if historyStore.entries.isEmpty {
                     emptyState

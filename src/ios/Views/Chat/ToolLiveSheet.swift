@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 //
 //  ToolLiveSheet.swift
 //  MinisApp
@@ -654,7 +655,7 @@ struct ToolLiveSheet: View {
         .padding(.vertical, 10)
         .background(Color(UIColor.systemBackground))
         .fullScreenCover(isPresented: $showTerminal) {
-            NavigationStack {
+            NavigationView {
                 // Pre-fill the shell command the tool is currently running,
                 // WITHOUT a trailing newline — the user can review/edit and
                 // press Enter themselves (intentional, not auto-run).

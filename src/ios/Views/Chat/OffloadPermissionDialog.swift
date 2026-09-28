@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 
 struct OffloadPermissionDialogModifier: ViewModifier {
@@ -12,7 +13,6 @@ struct OffloadPermissionDialogModifier: ViewModifier {
                     // buttons trailing them, leaving no way to respond. Allow
                     // dragging up to .large; the content is scrollable in
                     // either height.
-                    .presentationDetents([.medium, .large])
                     .interactiveDismissDisabled()
             }
     }

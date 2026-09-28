@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 //
 //  MountedFoldersSettingsView.swift
 //  MinisApp
@@ -333,7 +334,7 @@ private struct AddMountSheet: View {
     let onConfirm: () -> Void
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 if let url = sourceURL {
                     Section {

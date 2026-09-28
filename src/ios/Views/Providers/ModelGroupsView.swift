@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 
 /// Lists all model groups with default badges, and allows creating new groups.
@@ -138,12 +139,12 @@ struct ModelGroupsView: View {
         .navigationTitle("Model Groups")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showAddAgentModels) {
-            NavigationStack {
+            NavigationView {
                 UnifiedModelPicker(config: .agentLoopAddModels())
             }
         }
         .sheet(isPresented: $showAddAgentGroups) {
-            NavigationStack {
+            NavigationView {
                 AddAgentLoopGroupsSheet()
             }
         }

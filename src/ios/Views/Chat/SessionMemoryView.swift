@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 //
 //  SessionMemoryView.swift
 //  MinisApp
@@ -12,7 +13,7 @@ struct SessionMemoryView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             List {
                 // Section 1: Auto-injected memories
                 Section {

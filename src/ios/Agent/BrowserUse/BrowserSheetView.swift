@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 
 /// Sheet view for observing the browser's live WKWebView(s) via a tab pool.
@@ -14,7 +15,7 @@ struct BrowserSheetView: View {
     private var manager: BrowserUseManager? { pool.activeManager }
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             VStack(spacing: 0) {
                 if !isFullscreen {
                     // Tab bar
@@ -504,7 +505,7 @@ struct BrowserDownloadPanelSheet: View {
     let onLocate: (String) -> Void
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Group {
                 let items = center.downloads(for: sessionId)
                     .sorted { $0.startedAt > $1.startedAt }
@@ -553,7 +554,6 @@ struct BrowserDownloadPanelSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
         // Viewing the panel clears the badge; records themselves persist
         // until the user clears them (rows / Clear Completed) — the floating
         // button hides only when the list is actually empty.

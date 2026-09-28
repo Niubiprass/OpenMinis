@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 //
 //  MCPJSONImportSheet.swift
 //  MinisApp
@@ -18,7 +19,7 @@ struct MCPJSONImportSheet: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 Section(AppLocalized("Paste MCP JSON")) {
                     TextEditor(text: $text)

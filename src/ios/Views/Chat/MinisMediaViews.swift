@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 import AVKit
 import Photos
@@ -1126,7 +1127,6 @@ struct MinisHTMLPreviewView: View {
                                       sourceSessionId: AIChatViewModel.activeSessionId)
                 }
         }
-        .presentationDetents([.large])
         // [T-ios-html-preview-wide-sheet] Widen to a page-style sheet on
         // iPad/Mac, matching MinisMarkdownPreviewView. iPhone unaffected.
         .modifier(WideSheetSizingModifier())

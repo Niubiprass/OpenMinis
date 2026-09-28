@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 
 private let logger = AppLogger(category: "Backup")
@@ -584,7 +585,7 @@ struct RcloneFolderBrowser: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 Section {
                     if !currentDir.isEmpty {
@@ -763,7 +764,7 @@ struct RcloneConnectionEditor: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 if let b = backend {
                     Section {

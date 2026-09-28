@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 
 /// Detail view for a single ProviderInstance.
@@ -83,7 +84,7 @@ struct ProviderInstanceDetailView: View {
             }
         }
         .sheet(isPresented: $showManualTokenInput) {
-            NavigationStack {
+            NavigationView {
                 Form {
                     Section {
                         SecureField("Bearer token", text: $manualTokenInputText)
@@ -115,7 +116,6 @@ struct ProviderInstanceDetailView: View {
                     }
                 }
             }
-            .presentationDetents([.medium])
         }
         .alert("Delete Provider", isPresented: $showDeleteConfirm) {
             Button("Delete", role: .destructive) {
@@ -378,11 +378,9 @@ struct ProviderInstanceDetailView: View {
                 let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(label).json")
                 let _ = try? json.write(to: tempURL, atomically: true, encoding: .utf8)
                 ProviderShareSheet(url: tempURL)
-                    .presentationDetents([.medium])
             } else {
                 Text("Failed to export provider configuration.")
                     .foregroundStyle(.secondary)
-                    .presentationDetents([.medium])
             }
         }
     }
@@ -1105,7 +1103,7 @@ struct AddCustomModelSheet: View {
     private var instance: ProviderInstance? { store.instance(for: instanceId) }
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             List {
                 Section {
                     TextField("Model ID (e.g. claude-3-opus-latest)", text: $modelId)
@@ -1292,7 +1290,7 @@ struct ModelEntryDetailSheet: View {
     @State private var showResetAlert: Bool = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             List {
                 Section("Identity") {
                     HStack {
@@ -1485,7 +1483,6 @@ struct ModelEntryDetailSheet: View {
                 // pin a stale TestSession.
                 ModelQuickTestSheet(entry: entry)
                     .id(entry.id)
-                    .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
             .alert(

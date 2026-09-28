@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -150,7 +151,7 @@ struct ProviderInstancesView: View {
             }
         }
         .sheet(isPresented: $showAddProvider) {
-            NavigationStack {
+            NavigationView {
                 AddProviderView()
             }
         }

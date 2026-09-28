@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 import PhotosUI
 
@@ -417,7 +418,7 @@ private struct SoulEmojiPickerSheet: View {
     ]
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             VStack(spacing: 20) {
                 // Live preview at the size the chat header actually uses, so
                 // the user judges the glyph at its real scale rather than at
@@ -488,7 +489,6 @@ private struct SoulEmojiPickerSheet: View {
                 }
             }
         }
-        .presentationDetents([.height(380)])
     }
 
     /// Keep at most one emoji, preferring whatever the user just added.

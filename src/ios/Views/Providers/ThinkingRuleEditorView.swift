@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 
 /// Phase 2 §3 — add/edit sheet for one user-authored thinking rule (design §7.5/§7.6).
@@ -85,7 +86,7 @@ struct ThinkingRuleEditorView: View {
     @State private var customHighValue: String = ""
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 Section("Name") {
                     TextField("Rule name", text: $label)

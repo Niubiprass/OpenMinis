@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 //
 //  AudioPlayback.swift
 //  MinisApp
@@ -276,7 +277,6 @@ struct AudioPiPCapsule: View {
                     .sheet(isPresented: $player.showFullPreview) {
                         if let url = player.activeFileURL {
                             MinisAudioPreviewView(fileURL: url)
-                                .presentationDetents([.large])
                                 .presentationDragIndicator(.hidden)
                         }
                     }
@@ -442,7 +442,6 @@ struct MinisAudioPlayerView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .sheet(isPresented: $showPreview) {
             MinisAudioPreviewView(fileURL: fileURL)
-                .presentationDetents([.large])
                 .presentationDragIndicator(.hidden)
         }
     }

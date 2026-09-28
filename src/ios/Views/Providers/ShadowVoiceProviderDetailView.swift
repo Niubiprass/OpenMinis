@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 
 // MARK: - Shadow Voice Provider detail [T-mimo-shadow-voice]
@@ -87,7 +88,6 @@ struct ShadowVoiceProviderDetailView: View {
             // sheet identity and its stale TestSession.
             ModelQuickTestSheet(entry: entry)
                 .id(entry.id)
-                .presentationDetents([.medium, .large])
         }
     }
 

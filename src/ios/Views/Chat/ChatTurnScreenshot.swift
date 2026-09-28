@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 import UIKit
 
@@ -19,7 +20,7 @@ struct ChatScreenshotPreviewSheet: View {
     private let logger = AppLogger(category: "ScreenshotPreview")
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ScrollView(.vertical, showsIndicators: true) {
                 Image(uiImage: image)
                     .resizable()

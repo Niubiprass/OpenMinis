@@ -1,3 +1,4 @@
+// >>>IOS15PORTED>>>
 import SwiftUI
 
 private let logger = AppLogger(category: "Rclone")
@@ -68,7 +69,7 @@ struct RcloneAddServerView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 if connectedRemote == nil {
                     typeSection
