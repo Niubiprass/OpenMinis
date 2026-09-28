@@ -39,6 +39,15 @@ jobs:
           ninja --version
           clang --version | head -1
 
+      - name: 修复 lld 链接器可见性 (iSH 需要)
+        run: |
+          LLVM_BIN="$(brew --prefix llvm)/bin"
+          sudo mkdir -p /usr/local/bin
+          for t in ld.lld ld64.lld wasm-ld; do
+            if [ -x "$LLVM_BIN/$t" ]; then sudo ln -sf "$LLVM_BIN/$t" "/usr/local/bin/$t"; fi
+          done
+          ld.lld --version
+
       - name: 选 Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
