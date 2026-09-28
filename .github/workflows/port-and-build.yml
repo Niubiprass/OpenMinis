@@ -7,10 +7,9 @@ on:
         description: "最低系统版本 (iOS 15 用 15.5)"
         required: true
         default: "15.5"
-      skip_port:
-        description: "跳过源码移植 (已移植过、只想重新打包时用)"
-        type: boolean
-        default: false
+
+# 说明: 曾经有 skip_port 开关, 但实测用户误勾会导致移植被跳过、白跑 15 分钟,
+# 所以已移除。移植脚本是幂等的, 每次都跑, 总共只多花几秒。
 
 # 需要写权限，才能把移植后的代码提交回你的 fork
 permissions:
@@ -55,6 +54,9 @@ jobs:
 
       - name: "选 Xcode"
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: "工作流版本指纹"
+        run: echo "PORT-WORKFLOW VERSION v3 (2026-09-28 22:55) - 含第二期移植(在线拉取)。若你看不到本行, 说明跑的是旧工作流"
 
       - name: "获取移植脚本 (在线最新优先，失败自动回退内嵌版)"
         run: |
@@ -887,15 +889,12 @@ jobs:
           echo 'OK: 移植脚本已就绪并通过语法检查'
 
       - name: "源码移植到 iOS 15 (第一阶段: 导航/弹窗)"
-        if: ${{ !inputs.skip_port }}
         run: python3 scripts/ios15_port.py src/ios
 
       - name: "源码移植到 iOS 15 (第二阶段: 本地化/Intents/兼容层)"
-        if: ${{ !inputs.skip_port }}
         run: python3 scripts/ios15_port_v2.py
 
       - name: "提交移植结果 (幂等)"
-        if: ${{ !inputs.skip_port }}
         run: |
           git config user.email "ios15-port@codebuddy.local"
           git config user.name "iOS15 Port Bot"
