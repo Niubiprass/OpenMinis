@@ -78,7 +78,7 @@ struct MessageContextMenuPreview: View {
 /// Matches `UserBubbleSurface` so lifting a bubble doesn't jump from Liquid
 /// Glass to a flat colour card — the shape (`RoundedRectangle(cornerRadius: 18)`,
 /// non-`.continuous`) is deliberately the same one the bubble and the row's
-/// `.contentShape(…)` already use.
+/// `.contentShape(.contextMenuPreview, …)` already use.
 ///
 /// **The opaque base stays.** [T-ios-longpress-menu-preview-background] exists
 /// because the platter was showing through to the messages underneath: cells are
@@ -129,7 +129,7 @@ private struct ContextMenuPreviewSurface: ViewModifier {
 private struct UserBubbleSurface: ViewModifier {
     let isQueued: Bool
 
-    /// Matches `.contentShape(RoundedRectangle(cornerRadius: 18))`
+    /// Matches `.contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18))`
     /// on the row exactly — including the default (non-`.continuous`) corner
     /// style. A `.continuous` bubble against a circular-arc preview clip would
     /// show the corners subtly change shape as the long-press lift begins.
