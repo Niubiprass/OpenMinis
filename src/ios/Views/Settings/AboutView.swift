@@ -66,9 +66,31 @@ struct AboutView: View {
             Section("Links") {
                 Link(destination: URL(string: "https://github.com/OpenMinis")!) {
                     Label {
+                        HStack {
+                            Text("GitHub Repository")
+                                .foregroundStyle(Color(UIColor.label))
+                            Spacer()
+                            Image(systemName: "arrow.up.right.square")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "link.circle.fill")
+                    }
                 }
                 Link(destination: URL(string: "https://github.com/OpenMinis/OpenMinis/issues")!) {
                     Label {
+                        HStack {
+                            Text("Report an Issue")
+                                .foregroundStyle(Color(UIColor.label))
+                            Spacer()
+                            Image(systemName: "arrow.up.right.square")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "exclamationmark.circle.fill")
+                    }
                 }
             }
         }

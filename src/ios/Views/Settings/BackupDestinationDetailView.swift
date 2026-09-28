@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 
 private let logger = AppLogger(category: "Backup")
@@ -72,6 +71,14 @@ struct BackupDestinationDetailView: View {
         // reproducible on FIRST entry, because that is when the load is still
         // in flight; afterwards the state had already settled.
         .alert("Rename Destination", isPresented: $showRename) {
+            TextField("Name", text: $draftName)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("Cancel", role: .cancel) {}
+            Button("Save") { if let r = activeRemote { rename(r) } }
+        } message: {
+            Text("Letters, numbers, - and _ only.")
+        }
         .sheet(isPresented: $showConnectionEditor) {
             if let r = activeRemote {
                 RcloneConnectionEditor(remote: r) { updated in
@@ -90,6 +97,18 @@ struct BackupDestinationDetailView: View {
             }
         }
         .confirmationDialog("Remove this destination?",
+                            isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Remove", role: .destructive) {
+                if let r = activeRemote {
+                    RcloneRemoteStore.remove(name: r.name)
+                    onChanged()
+                    dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Backups already on the server are not deleted.")
+        }
         // [T-backup-remote-delete] Deleting the FILE, not the destination.
         // `item:` rather than a bool so the message can name the package —
         // a list of `backup-<date>-<hex>.minisbak` all look alike, and the
@@ -206,6 +225,74 @@ struct BackupDestinationDetailView: View {
     private func remoteSections(_ r: RcloneRemoteStore.Remote) -> some View {
         let current = edited ?? r
         Section {
+            LabeledContent("Type",
+                           value: RcloneBackendCatalog.backend(for: current.backend)?.title
+                           ?? current.backend.uppercased())
+            // Name and folder are the two things a user actually revises
+            // later — a destination gets renamed, or pointed at a different
+            // directory on the same server. Both are editable in place;
+            // the connection details below are not, because changing a host
+            // or credential without re-running Connect would save a server
+            // that was never proven to work.
+            Button {
+                draftName = current.name
+                showRename = true
+            } label: {
+                LabeledContent("Name") {
+                    HStack(spacing: 6) {
+                        Text(current.name).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                showFolderBrowser = true
+            } label: {
+                LabeledContent("Backup folder") {
+                    HStack(spacing: 6) {
+                        Text(current.path.isEmpty ? "/" : "/\(current.path)")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            // Everything the user typed in, except the secret — and except
+            // keys no longer part of the backend's form. A pre-existing SMB
+            // remote still carries the `share` it was created with, but that
+            // value is now stripped before rclone sees it, so displaying it
+            // would state a setting that no longer has any effect.
+            ForEach(current.params.sorted(by: { $0.key < $1.key })
+                        .filter { isShownField($0.key, backend: current.backend) },
+                    id: \.key) { k, v in
+                LabeledContent(fieldLabel(k, backend: current.backend), value: v)
+            }
+            LabeledContent("Added", value: current.createdAt.formatted(date: .abbreviated,
+                                                                       time: .shortened))
+
+            // Address and credentials change in the real world — a NAS
+            // moves, a password is rotated. Retyping the whole server for one
+            // field is worse than editing it, so long as the result is
+            // re-tested; the editor does that before saving.
+            Button {
+                showConnectionEditor = true
+            } label: {
+                Label {
+                    Text("Edit Connection…")
+                } icon: {
+                    BackupActionIcon(systemName: "pencil", tint: .blue)
+                }
+            }
+        } header: {
+            Text("Configuration")
+        } footer: {
             Text("Tap the name or folder to change them, or edit the connection to change the address and password.")
         }
 
@@ -216,8 +303,101 @@ struct BackupDestinationDetailView: View {
         }
 
         Section {
+            // The outcome is the TRAILING accessory of the button that produced
+            // it, not a row of its own.
+            //
+            // As a separate row it carried its own status icon, so the section
+            // showed two circular glyphs stacked in the leading column and the
+            // result read as an independent item rather than as this button's
+            // answer. On the trailing edge it lands where a settings row
+            // states its current value, right beside the control, and the
+            // section keeps one row per action.
+            Button {
+                Task { await test(r) }
+            } label: {
+                HStack {
+                    Label {
+                        Text("Test Connection")
+                    } icon: {
+                        BackupActionIcon(systemName: "bolt.fill", tint: .green)
+                    }
+                    Spacer(minLength: 8)
+                    if isTesting {
+                        ProgressView()
+                    } else if testOK, let testResult {
+                        // Text only — the leading badge already says which
+                        // action this is, and the colour carries the outcome.
+                        Text(testResult)
+                            .font(.footnote)
+                            .foregroundStyle(.green)
+                    }
+                }
+            }
+            .disabled(isTesting)
+
+            // Failures stay on their own line. Success is one short word, but
+            // a failure is the underlying rclone error — a full sentence that,
+            // squeezed into the trailing edge, would wrap to several lines and
+            // crush the button's own label. The thing that went wrong is also
+            // what the user needs to read, so it gets the width.
+            if !testOK, let testResult {
+                Label(testResult, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
+
+            // Sits here rather than at the bottom of the screen: the list of
+            // stored backups below grows without limit, and a destructive
+            // action that scrolls out of reach behind it is one the user
+            // cannot find when they need it.
+            Button(role: .destructive) {
+                showDeleteConfirm = true
+            } label: {
+                Label {
+                    Text("Remove Destination")
+                } icon: {
+                    BackupActionIcon(systemName: "trash.fill", tint: .red)
+                }
+            }
+        } footer: {
+            // Say what is NOT destroyed — otherwise "remove" next to a list of
+            // stored backups reads as though it deletes them.
+            Text("Removing forgets this server and its password on this iPhone. Backups already stored on the server are left untouched.")
+        }
 
         Section {
+            if isLoadingPackages {
+                HStack { ProgressView(); Text("Loading…").foregroundStyle(.secondary) }
+            } else if packages.isEmpty {
+                Text("No backups found here yet.").foregroundStyle(.secondary)
+            } else {
+                ForEach(packages) { p in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(p.displayName)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(detail(for: p))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    // [T-backup-remote-delete] Swipe to delete the file ON THE
+                    // SERVER. Confirmed rather than immediate: unlike deleting
+                    // a history record (which only forgets), this unlinks the
+                    // object, and SMB / WebDAV / SFTP have no trash to undo it
+                    // from. `allowsFullSwipe: false` so the gesture cannot
+                    // complete without a deliberate tap on the button.
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            pendingDelete = p
+                        } label: {
+                            Label(AppLocalized("Delete"), systemImage: "trash")
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Backups Stored Here")
+        } footer: {
             // The gesture is invisible until tried, and what it does here is
             // irreversible — so it is stated rather than left to be
             // discovered by someone swiping to see what happens.
@@ -255,12 +435,51 @@ struct BackupDestinationDetailView: View {
     @ViewBuilder
     private func folderSections(_ f: MountedFolderEntry) -> some View {
         Section {
+            LabeledContent("Source", value: f.sourceDisplayName)
+            LabeledContent("Can save backups",
+                           value: f.effectiveWritable ? AppLocalized("Yes")
+                                                      : AppLocalized("No"))
+            LabeledContent("Added", value: f.createdAt.formatted(date: .abbreviated,
+                                                                 time: .shortened))
+        } header: {
+            Text("Configuration")
+        } footer: {
             // Says where the folder really lives, since the same row could be
             // a local directory or a server mounted in Files.
             Text("Folders come from the Files app — on this iPhone, iCloud Drive, or a connected server.")
         }
 
         Section {
+            if folderPackages.isEmpty {
+                Text("No backups found here yet.").foregroundStyle(.secondary)
+            } else {
+                ForEach(folderPackages) { p in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(p.url.lastPathComponent)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text("\(ByteCountFormatter.string(fromByteCount: p.size, countStyle: .file)) · \(p.modified.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    // [T-backup-folder-delete] Swipe to delete the file in the
+                    // folder, matching the server list above — a user who has
+                    // learned the gesture on one destination should not find
+                    // it missing on the other. Same safeguards: confirmed by
+                    // name, and `allowsFullSwipe: false` so the gesture cannot
+                    // complete without a deliberate tap on the button.
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            pendingFolderDelete = p
+                        } label: {
+                            Label(AppLocalized("Delete"), systemImage: "trash")
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Backups Stored Here")
+        } footer: {
             // The gesture is invisible until tried, and what it does here is
             // irreversible — so it is stated rather than left to be
             // discovered by someone swiping to see what happens.
@@ -365,9 +584,66 @@ struct RcloneFolderBrowser: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 Section {
+                    if !currentDir.isEmpty {
+                        Button {
+                            let parent = (currentDir as NSString).deletingLastPathComponent
+                            Task { await list(parent == "." ? "" : parent) }
+                        } label: {
+                            Label("Up one level", systemImage: "arrow.up.left")
+                        }
+                    }
+                    if isListing {
+                        HStack { ProgressView(); Text("Loading…").foregroundStyle(.secondary) }
+                    } else if visibleEntries.isEmpty {
+                        Text(showsFiles ? "This folder is empty."
+                                        : "No folders here.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(visibleEntries) { e in
+                            if e.isDir {
+                                Button {
+                                    Task { await list(e.path) }
+                                } label: {
+                                    HStack {
+                                        Label(e.name, systemImage: "folder.fill")
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption2).foregroundStyle(.tertiary)
+                                    }
+                                }
+                            } else {
+                                Label(e.name, systemImage: "doc")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    HStack(spacing: 8) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            Text(currentDir.isEmpty ? "/" : "/\(currentDir)")
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color(.secondarySystemFill), in: Capsule())
+                        }
+                        Button {
+                            newFolderName = ""
+                            showNewFolder = true
+                        } label: {
+                            Label("New Folder", systemImage: "folder.badge.plus")
+                                .labelStyle(.iconOnly)
+                                .font(.body)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(isListing)
+                    }
+                    .textCase(nil)
+                }
 
             }
             .backupHUD($errorText)
@@ -383,6 +659,14 @@ struct RcloneFolderBrowser: View {
                 }
             }
             .alert("New Folder", isPresented: $showNewFolder) {
+                TextField("Folder name", text: $newFolderName)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Cancel", role: .cancel) { newFolderName = "" }
+                Button("Create") { Task { await createFolder() } }
+            } message: {
+                Text("Created inside \(currentDir.isEmpty ? "/" : "/" + currentDir).")
+            }
             // Start where the destination currently points, so "change the
             // folder" begins from the folder in use rather than the root.
             .task { await list(remote.path) }
@@ -479,13 +763,48 @@ struct RcloneConnectionEditor: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 if let b = backend {
                     Section {
+                        ForEach(b.fields.filter { !$0.isSecret }) { f in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Text(f.label)
+                                        .font(.footnote.weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                    if f.isOptional {
+                                        Text("Optional")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                                TextField(f.placeholder.isEmpty ? f.label : f.placeholder,
+                                          text: binding(for: f.key))
+                                    .autocorrectionDisabled()
+                                    .textInputAutocapitalization(.never)
+                                    .keyboardType(keyboardType(f.keyboard))
+                                if !f.hint.isEmpty {
+                                    Text(f.hint)
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    } header: {
+                        Text("Connection")
+                    }
 
                     if b.fields.contains(where: \.isSecret) {
                         Section {
+                            SecureField("New password", text: $secret)
+                                .textContentType(.password)
+                                .disabled(clearSecret)
+                            Toggle("No password (anonymous)", isOn: $clearSecret.animation())
+                        } header: {
+                            Text("Password")
+                        } footer: {
                             Text(clearSecret
                                  ? "The stored password will be removed."
                                  : "Leave blank to keep the current password.")

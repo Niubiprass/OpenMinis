@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 
 struct OffloadPermissionDialogModifier: ViewModifier {
@@ -13,6 +12,7 @@ struct OffloadPermissionDialogModifier: ViewModifier {
                     // buttons trailing them, leaving no way to respond. Allow
                     // dragging up to .large; the content is scrollable in
                     // either height.
+                    .presentationDetents([.medium, .large])
                     .interactiveDismissDisabled()
             }
     }
@@ -91,10 +91,24 @@ private struct OffloadPermissionDialogContent: View {
             // ScrollView, so they stay tappable even with very long arg lists.
             VStack(spacing: 10) {
                 Button {
+                    OffloadPermissionManager.shared.respond(to: request.id, allowed: true)
+                } label: {
+                    Text("Allow in Session")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
                 .buttonStyle(.borderedProminent)
                 .tint(.blue)
 
                 Button {
+                    OffloadPermissionManager.shared.respond(to: request.id, allowed: false)
+                } label: {
+                    Text("Deny in Session")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
             }

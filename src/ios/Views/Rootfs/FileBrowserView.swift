@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 //
 //  FileBrowserView.swift
 //  MinisApp
@@ -114,6 +113,21 @@ struct FileBrowserView: View {
                     List {
                         ForEach(viewModel.items) { item in
                             FileBrowserRow(item: item, viewModel: viewModel, itemToDelete: $itemToDelete) {
+                                if item.isDirectory {
+                                    viewModel.navigateTo(item)
+                                } else {
+                                    previewingFile = item
+                                }
+                            } onExport: {
+                                exportingFile = item
+                                showExportSheet = true
+                            } onMove: {
+                                moveOrCopyItem = item
+                                moveOrCopyMode = .move
+                            } onCopy: {
+                                moveOrCopyItem = item
+                                moveOrCopyMode = .copy
+                            } onCopiedPath: {
                                 showCopiedToast()
                             }
                             .id(item.id)
@@ -173,6 +187,10 @@ struct FileBrowserView: View {
             }
         }
         .alert("Error", isPresented: $viewModel.showError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(viewModel.errorMessage)
+        }
         .alert(
             "Delete \"\(itemToDelete?.name ?? "")\"?",
             isPresented: Binding(
@@ -180,6 +198,16 @@ struct FileBrowserView: View {
                 set: { if !$0 { itemToDelete = nil } }
             )
         ) {
+            Button("Delete", role: .destructive) {
+                if let item = itemToDelete {
+                    viewModel.deleteItem(item)
+                    itemToDelete = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { itemToDelete = nil }
+        } message: {
+            Text("\(itemToDelete?.formattedSize ?? "") · This action cannot be undone.")
+        }
         .sheet(item: $previewingFile) { file in
             FilePreviewSheet(item: file)
         }
@@ -191,7 +219,7 @@ struct FileBrowserView: View {
         .sheet(item: $moveOrCopyItem) { item in
             let minisPath = viewModel.rootPath.appendingPathComponent("var/minis")
             let initial = FileManager.default.fileExists(atPath: minisPath.path) ? minisPath : nil
-            NavigationView {
+            NavigationStack {
                 DirectoryPickerView(
                     rootPath: viewModel.rootPath,
                     rootLabel: viewModel.rootLabel,
@@ -217,6 +245,10 @@ struct FileBrowserView: View {
             }
         }
         .alert("Done", isPresented: $showSuccess) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(successMessage)
+        }
         .modifier(SortSyncModifier(
             sortKeyRaw: sortKeyRaw,
             sortAscending: sortAscending,
@@ -275,6 +307,47 @@ struct FileBrowserView: View {
     /// files). T-hidden-files a3e7f1d0.
     private var moreMenu: some View {
         Menu {
+            if viewModel.canGoBack {
+                Button {
+                    viewModel.goBack()
+                } label: {
+                    Label("Go to Parent Folder", systemImage: "arrow.up.doc")
+                }
+                Divider()
+            }
+            Button {
+                showImportPicker = true
+            } label: {
+                Label("Import File", systemImage: "plus")
+            }
+            Divider()
+            Picker(selection: $sortKeyRaw) {
+                ForEach(FileSortKey.allCases) { key in
+                    Text(key.label).tag(key.rawValue)
+                }
+            } label: {
+                Text("Sort By")
+            }
+            Button {
+                sortAscending.toggle()
+            } label: {
+                Label(
+                    sortAscending ? "Ascending" : "Descending",
+                    systemImage: sortAscending ? "arrow.up" : "arrow.down"
+                )
+            }
+            Toggle(isOn: $foldersFirst) {
+                Label("Folders First", systemImage: "folder")
+            }
+            Toggle(isOn: $showHidden) {
+                Label(
+                    showHidden ? "Hide Hidden Files" : "Show Hidden Files",
+                    systemImage: showHidden ? "eye.slash" : "eye"
+                )
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
     }
 }
 
@@ -343,7 +416,7 @@ private struct FilePreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             content
                 .navigationTitle(item.name)
                 .navigationBarTitleDisplayMode(.inline)
@@ -434,6 +507,12 @@ private struct MarkdownFilePreview: View {
                     // will switch TO, which is the convention for a toggle
                     // that has no separate label.
                     Button {
+                        renderMode = (renderMode == .rendered) ? .source : .rendered
+                    } label: {
+                        Image(systemName: renderMode == .rendered
+                              ? "chevron.left.forwardslash.chevron.right"
+                              : "doc.richtext")
+                    }
                     .accessibilityLabel(renderMode == .rendered
                                         ? Text("Show Source")
                                         : Text("Show Rendered"))
@@ -674,6 +753,17 @@ private struct FileBrowserRow: View {
         FileItemRow(item: item, onTap: onTap, onExport: onExport)
             .contextMenu {
                 Button {
+                    // [T-ios-file-context-copy-abs-path] Copy the file's guest
+                    // absolute path (e.g. /var/minis/workspace/.../L3_0001.png)
+                    // to the system clipboard. displayPath() is the same
+                    // host-URL → guest-path mapping the breadcrumb uses, so we
+                    // reuse it instead of reconstructing the path by hand.
+                    UIPasteboard.general.string = viewModel.displayPath(for: item.url)
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onCopiedPath()
+                } label: {
+                    Label(AppLocalized("Copy Absolute Path"), systemImage: "document.on.clipboard")
+                }
                 Button { onCopy() } label: {
                     Label("Copy to…", systemImage: "doc.on.doc")
                 }
@@ -690,12 +780,24 @@ private struct FileBrowserRow: View {
                         // shared and mounted folders, so this single hook
                         // covers two of the three required entry points.
                         Button {
+                            showAddWebApp = true
+                        } label: {
+                            Label("Add to Home Screen", systemImage: "rectangle.stack.badge.plus")
+                        }
                     }
                 }
                 Button(role: .destructive) {
+                    itemToDelete = item
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) {
+                    itemToDelete = item
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             }
             .sheet(isPresented: $showAddWebApp) {
                 // The browser exposes already-resolved host URLs via
@@ -1641,7 +1743,7 @@ private struct DirectoryPickerView: View {
 }
 
 #Preview {
-    NavigationView {
+    NavigationStack {
         FileBrowserView()
     }
 }

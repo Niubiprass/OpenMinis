@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 import PhotosUI
 
@@ -65,11 +64,19 @@ struct SoulSettingsView: View {
             }
 
             Section {
+                personalityEditor
+            } header: {
+                Text(AppLocalized("Personality Prompt"))
+            } footer: {
                 bodyLengthFooter
             }
 
             Section {
                 Button(role: .destructive) {
+                    showRestoreConfirm = true
+                } label: {
+                    Label(AppLocalized("Restore Default"), systemImage: "arrow.uturn.backward")
+                }
 
                 // Force iCloud Sync — re-marks SOUL.md dirty and asks
                 // SyncCore to send immediately. Same gating predicate
@@ -78,6 +85,18 @@ struct SoulSettingsView: View {
                 // the action would no-op on a disabled engine.
                 if #available(iOS 17.0, *), iCloudSyncEnabled {
                     Button {
+                        Task { await forceSyncSoul() }
+                    } label: {
+                        HStack {
+                            Label(AppLocalized("Force iCloud Sync"), systemImage: "icloud.and.arrow.up")
+                            Spacer()
+                            if showForceSyncDone {
+                                Text(AppLocalized("Queued"))
+                                    .foregroundStyle(.green)
+                                    .font(.caption)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -106,6 +125,11 @@ struct SoulSettingsView: View {
             AppLocalized("Restore Default"),
             isPresented: $showRestoreConfirm
         ) {
+            Button(AppLocalized("Restore Default"), role: .destructive, action: restoreDefault)
+            Button(AppLocalized("Cancel"), role: .cancel) {}
+        } message: {
+            Text(AppLocalized("Restore default SOUL.md? Your current personality will be replaced."))
+        }
         .modifier(SoulIconEditing(
             icon: $icon,
             showEmojiPrompt: $showEmojiPrompt,
@@ -142,6 +166,39 @@ struct SoulSettingsView: View {
             // use. It doubles as a backdrop for transparent PNG icons, whose
             // whole point is having no background of their own.
             Button {
+                showIconOptions = true
+            } label: {
+                // Inset inside the 52pt button so the grey disc stays visible
+                // as a ring even when the icon is an image, which otherwise
+                // fills the whole frame and hides the affordance entirely.
+                SoulIconView(icon: icon, size: SoulIconImage.renderPoints)
+                    .frame(width: 44, height: 44)
+                    .frame(width: 52, height: 52)
+                    .background(Circle().fill(Color.secondary.opacity(0.12)))
+                    .overlay(
+                        Circle().strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.5)
+                    )
+                    // The badge sits INSIDE the circle's bounds rather than
+                    // straddling its edge. Overhanging it (even with padding)
+                    // gets clipped to a sliver by the enclosing Button label,
+                    // which is what made the pencil hard to see.
+                    //
+                    // Drawn as an explicit filled Circle + pencil glyph rather
+                    // than `pencil.circle.fill` with .palette: that symbol's
+                    // "circle" layer is the BACKGROUND, so on the white card it
+                    // rendered as an invisible disc with a bare diagonal stroke
+                    // floating over it. Compositing it ourselves also lets the
+                    // badge keep a contrasting ring against a dark icon image.
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Color.white)
+                            .frame(width: 18, height: 18)
+                            .background(Circle().fill(Color.accentColor))
+                            .overlay(Circle().strokeBorder(Color(.systemBackground), lineWidth: 1.5))
+                            .offset(x: 1, y: 1)
+                    }
+            }
             .buttonStyle(.plain)
             .accessibilityLabel(AppLocalized("Change icon"))
             // [T-soul-custom-icon] Attached to the BUTTON, not to the whole
@@ -152,6 +209,18 @@ struct SoulSettingsView: View {
             // dialog needs the anchor; the alerts and the photo picker are
             // centered/full-screen and stay at page level.
             .confirmationDialog(AppLocalized("Change icon"), isPresented: $showIconOptions) {
+                Button(AppLocalized("Choose Emoji…")) {
+                    emojiDraft = (icon.isEmpty || SoulIconImage.isDataURI(icon)) ? "" : icon
+                    showEmojiPrompt = true
+                }
+                Button(AppLocalized("Choose Image…")) { showPhotoPicker = true }
+                if !icon.isEmpty {
+                    Button(AppLocalized("Use Default"), role: .destructive) { icon = "" }
+                }
+                Button(AppLocalized("Cancel"), role: .cancel) {}
+            } message: {
+                Text(AppLocalized("Images must have a transparent background (PNG). Photos without transparency can't be used."))
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(name.isEmpty ? "Minis" : name)
                     .font(.title3.weight(.semibold))
@@ -347,7 +416,7 @@ private struct SoulEmojiPickerSheet: View {
     ]
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 20) {
                 // Live preview at the size the chat header actually uses, so
                 // the user judges the glyph at its real scale rather than at
@@ -363,6 +432,19 @@ private struct SoulEmojiPickerSheet: View {
                     HStack(spacing: 10) {
                         ForEach(row, id: \.self) { emoji in
                             Button {
+                                // Tap fills the field AND becomes the value —
+                                // "点击和自动填入".
+                                draft = emoji
+                            } label: {
+                                Text(emoji)
+                                    .font(.system(size: 28))
+                                    .frame(width: 38, height: 38)
+                                    .background(
+                                        Circle().fill(draft == emoji
+                                                      ? Color.accentColor.opacity(0.22)
+                                                      : Color.secondary.opacity(0.10))
+                                    )
+                            }
                             .buttonStyle(.plain)
                         }
                     }
@@ -405,6 +487,7 @@ private struct SoulEmojiPickerSheet: View {
                 }
             }
         }
+        .presentationDetents([.height(380)])
     }
 
     /// Keep at most one emoji, preferring whatever the user just added.
@@ -454,6 +537,12 @@ private struct SoulIconEditing: ViewModifier {
                 Task { await applyPickedImage(newItem) }
             }
             .alert(AppLocalized("Can't use that image"),
+                   isPresented: Binding(get: { iconError != nil },
+                                        set: { if !$0 { iconError = nil } })) {
+                Button(AppLocalized("OK"), role: .cancel) { iconError = nil }
+            } message: {
+                Text(iconError ?? "")
+            }
     }
 
     /// Accept exactly one emoji.

@@ -234,13 +234,56 @@ struct MinisVideoFullscreenPlayer: View {
                 VStack {
                     HStack {
                         Button {
+                            player?.pause()
+                            dismiss()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(ChatColors.primaryText)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
 
                         Spacer()
 
                         Button {
+                            saveVideoToPhotos()
+                        } label: {
+                            Group {
+                                switch saveStatus {
+                                case .idle:
+                                    Image(systemName: "square.and.arrow.down")
+                                        .offset(y: -1)
+                                case .saving:
+                                    ProgressView()
+                                        .tint(ChatColors.primaryText)
+                                case .saved:
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.green)
+                                case .failed:
+                                    Image(systemName: "exclamationmark.triangle")
+                                }
+                            }
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(ChatColors.primaryText)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                            .background(.ultraThinMaterial, in: Circle())
+                        }
                         .disabled(saveStatus == .saving || saveStatus == .saved)
 
                         Button {
+                            showShareSheet = true
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .offset(y: -1)
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(ChatColors.primaryText)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
                     }
                     .padding(.horizontal)
                     .padding(.top, 7)
@@ -255,6 +298,25 @@ struct MinisVideoFullscreenPlayer: View {
                     HStack(spacing: 16) {
                         // Play / Pause
                         Button {
+                            if isPlaying {
+                                player?.pause()
+                                isPlaying = false
+                            } else {
+                                // If at end, seek to start
+                                if currentTime >= duration - 0.5 && duration > 0 {
+                                    player?.seek(to: .zero)
+                                    currentTime = 0
+                                }
+                                player?.play()
+                                isPlaying = true
+                            }
+                            scheduleHide()
+                        } label: {
+                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                .font(.title2)
+                                .foregroundStyle(.white)
+                                .frame(width: 44, height: 44)
+                        }
 
                         // Current time
                         Text(formatTime(currentTime))
@@ -394,6 +456,17 @@ struct MinisVideoFullscreenPlayer: View {
                 return
             }
             PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: fileURL)
+            } completionHandler: { success, _ in
+                DispatchQueue.main.async {
+                    saveStatus = success ? .saved : .failed
+                    if success {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            saveStatus = .idle
+                        }
+                    }
+                }
+            }
         }
     }
 }

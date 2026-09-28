@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 //
 //  MCPIntegrationsView.swift
 //  MinisApp
@@ -33,14 +32,26 @@ struct MCPIntegrationsView: View {
             } else {
                 ForEach(store.servers) { server in
                     Button {
+                        editingServer = server
+                    } label: {
+                        row(for: server)
+                    }
                     .buttonStyle(.plain)
                     // [T-mcp-tools-refresh] Per-server tools entry: opens the
                     // sheet, which force-reconnects + re-pulls tools/list.
                     .contextMenu {
                         Button {
+                            toolsServer = server
+                        } label: {
+                            Label(AppLocalized("Refresh Tools"), systemImage: "arrow.clockwise")
+                        }
                     }
                     .swipeActions(edge: .leading, allowsFullSwipe: false) {
                         Button {
+                            toolsServer = server
+                        } label: {
+                            Label(AppLocalized("Tools"), systemImage: "arrow.clockwise")
+                        }
                         .tint(.blue)
                     }
                 }
@@ -74,6 +85,19 @@ struct MCPIntegrationsView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button {
+                        showAddForm = true
+                    } label: {
+                        Label(AppLocalized("Add Server"), systemImage: "plus")
+                    }
+                    Button {
+                        showJSONImport = true
+                    } label: {
+                        Label(AppLocalized("Import JSON"), systemImage: "doc.text")
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                }
             }
         }
         .sheet(isPresented: $showAddForm) {
@@ -150,7 +174,7 @@ struct MCPToolsSheet: View {
     @State private var errorText: String?
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 if isLoading {
                     HStack(spacing: 10) {
@@ -161,6 +185,11 @@ struct MCPToolsSheet: View {
                 } else if let errorText {
                     Section {
                         Label {
+                            Text(errorText)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                        }
                         .font(.subheadline)
                     }
                 } else if tools.isEmpty {
@@ -188,6 +217,10 @@ struct MCPToolsSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
+                        Task { await refresh() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
                     .disabled(isLoading)
                     .accessibilityLabel(Text("Refresh tools"))
                 }

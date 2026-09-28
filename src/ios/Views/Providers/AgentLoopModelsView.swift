@@ -18,6 +18,55 @@ struct AgentLoopModelsSection: View {
 
     var body: some View {
         Section {
+            if currentGroups.isEmpty && currentEntries.isEmpty {
+                Text("No models or groups added")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !currentGroups.isEmpty {
+                ForEach(currentGroups) { group in
+                    groupRow(group)
+                }
+                .onMove(perform: moveGroups)
+                .onDelete(perform: deleteGroups)
+            }
+
+            if !currentEntries.isEmpty {
+                ForEach(currentEntries) { entry in
+                    entryRow(entry)
+                }
+                .onMove(perform: moveEntries)
+                .onDelete(perform: deleteEntries)
+            }
+
+            Menu {
+                Button {
+                    showAddModels = true
+                } label: {
+                    Label("Add Models", systemImage: "cpu")
+                }
+                if !availableGroups.isEmpty {
+                    Button {
+                        showAddGroups = true
+                    } label: {
+                        Label("Add Group", systemImage: "square.stack.3d.up")
+                    }
+                }
+            } label: {
+                Label("Add Models or Groups", systemImage: "plus.circle")
+                    .font(.subheadline)
+            }
+        } header: {
+            HStack {
+                Text("Models Minis Can Call at Runtime")
+                Spacer()
+                if !currentEntries.isEmpty || !currentGroups.isEmpty {
+                    EditButton()
+                        .font(.caption)
+                }
+            }
+        } footer: {
             Text("During a Minis task, the agent calls these models for sub-tasks such as generating an image or summarizing text — work its own model can't do. Also callable from the terminal via minis-model-use. Only these are visible to the agent.")
         }
     }
@@ -182,6 +231,33 @@ struct AddAgentLoopGroupsSheet: View {
 
             ForEach(availableGroups) { group in
                 Button {
+                    toggleSelection(group.id)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: selectedGroupIds.contains(group.id) ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 20))
+                            .foregroundStyle(selectedGroupIds.contains(group.id) ? Color.accentColor : Color(UIColor.tertiaryLabel))
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(group.name)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(Color(UIColor.label))
+                            let entries = group.memberEntryIds.compactMap { store.entry(for: $0) }
+                            let names = entries.prefix(3).map(\.model.displayName)
+                            let suffix = entries.count > 3 ? " +\(entries.count - 3)" : ""
+                            Text(names.joined(separator: ", ") + suffix)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        Text("\(group.memberEntryIds.count) models")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .navigationTitle("Add Groups")

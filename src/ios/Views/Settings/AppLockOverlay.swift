@@ -23,6 +23,15 @@ struct AppLockOverlay: View {
                         .foregroundStyle(.secondary)
 
                     Button {
+                        authenticate()
+                    } label: {
+                        Label("Unlock", systemImage: BiometricAuth.biometryIconName)
+                            .font(.headline)
+                            .padding(.horizontal, 28)
+                            .padding(.vertical, 12)
+                            .background(.blue, in: RoundedRectangle(cornerRadius: 12))
+                            .foregroundStyle(.white)
+                    }
                     .disabled(isAuthenticating)
                 }
             }

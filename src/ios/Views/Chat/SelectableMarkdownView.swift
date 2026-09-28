@@ -102,6 +102,10 @@ enum MinisToast {
 
         UIView.animate(withDuration: 0.25) { capsule.alpha = 1 }
         UIView.animate(withDuration: 0.3, delay: duration, options: [.curveEaseIn]) {
+            capsule.alpha = 0
+        } completion: { _ in
+            capsule.removeFromSuperview()
+        }
     }
 
     private static func keyWindow() -> UIWindow? {
@@ -5527,6 +5531,12 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
 
         UIView.animate(withDuration: 0.15) { toast.alpha = 1 }
         UIView.animate(withDuration: 0.3, delay: 0.8, options: []) {
+            flash.alpha = 0
+            toast.alpha = 0
+        } completion: { _ in
+            flash.removeFromSuperview()
+            toast.removeFromSuperview()
+        }
     }
 
     // Allow code block UITextViews to handle horizontal pans.

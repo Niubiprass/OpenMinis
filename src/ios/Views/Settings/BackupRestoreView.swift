@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -113,6 +112,11 @@ struct BackupRestoreView: View {
             .onDisappear { remotes = RcloneRemoteStore.remotes }
         }
         .confirmationDialog("Restore this backup?", isPresented: $showConfirm, titleVisibility: .visible) {
+            Button("Restore") { Task { await runImport() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Items from the backup are merged into your existing data. Nothing is deleted, and anything you've changed more recently is kept.")
+        }
         .onAppear {
             remotes = RcloneRemoteStore.remotes
             if let initialPackageURL, packageURL == nil { load(initialPackageURL) }
@@ -141,6 +145,33 @@ struct BackupRestoreView: View {
         let folders = BackupDestinations.selectedFolders
         if !folders.isEmpty || !remotes.isEmpty {
             Section {
+                ForEach(folders) { folder in
+                    NavigationLink {
+                        FolderPackageListView(folder: folder, onPicked: load)
+                    } label: {
+                        destinationRow(
+                            name: folder.name,
+                            subtitle: AppLocalized("Shared Folder"),
+                            systemName: "externaldrive.connected.to.line.below.fill",
+                            tint: .teal)
+                    }
+                    .disabled(isWorking)
+                }
+                ForEach(remotes) { r in
+                    NavigationLink {
+                        ServerPackageListView(remote: r, onPicked: load)
+                    } label: {
+                        destinationRow(
+                            name: r.name,
+                            subtitle: "\(r.backend.uppercased()) · /\(r.path)",
+                            systemName: "network",
+                            tint: .indigo)
+                    }
+                    .disabled(isWorking)
+                }
+            } header: {
+                Text("Backup Destinations")
+            } footer: {
                 Text("Tap a destination to browse its folders and pick a backup.")
             }
         }
@@ -172,6 +203,30 @@ struct BackupRestoreView: View {
     /// becomes a destination and moves up into the list above.
     private var otherSourcesSection: some View {
         Section {
+            Button {
+                showPicker = true
+            } label: {
+                Label {
+                    Text("Choose from Files…")
+                } icon: {
+                    BackupActionIcon(systemName: "folder.fill", tint: .blue)
+                }
+            }
+            .disabled(isWorking)
+
+            Button {
+                showServerPicker = true
+            } label: {
+                Label {
+                    Text("Browse Other Servers…")
+                } icon: {
+                    BackupActionIcon(systemName: "globe", tint: .purple)
+                }
+            }
+            .disabled(isWorking)
+        } header: {
+            Text("Other Sources")
+        } footer: {
             Text("Pick a .minisbak file from Files, iCloud Drive, or any connected storage — or add a server your backups were saved to.")
         }
     }
@@ -212,6 +267,10 @@ struct BackupRestoreView: View {
                 }
                 Spacer(minLength: 8)
                 Button {
+                    cancelInspect()
+                } label: {
+                    Text("Cancel")
+                }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .layoutPriority(1)
@@ -228,6 +287,65 @@ struct BackupRestoreView: View {
     /// folder differ only by date.
     private func selectedPackageSection(_ m: BackupManifest) -> some View {
         Section {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 12) {
+                    BackupActionIcon(systemName: "doc.zipper", tint: .green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(packageURL?.lastPathComponent ?? AppLocalized("Backup"))
+                            .font(.callout.weight(.medium))
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                        Text(packageHeadline(m))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            LabeledContent("Created",
+                           value: m.createdAt.formatted(date: .abbreviated, time: .shortened))
+            // The data cut-off, when the package records one. Distinct from
+            // "Created": anything changed after this instant is deliberately
+            // not in the package, and the user should see that before
+            // deciding this is the backup they want.
+            if let snapshotAt = m.snapshotAt, snapshotAt != m.createdAt {
+                LabeledContent("Data as of",
+                               value: snapshotAt.formatted(date: .abbreviated, time: .shortened))
+            }
+            LabeledContent("From", value: "\(m.deviceName) · \(m.app.platform) \(m.app.version)")
+            if m.encryption != nil {
+                LabeledContent("Encrypted", value: AppLocalized("Yes"))
+            }
+            if let limits = m.limits.maxFileBytes, limits == 0 {
+                // The package was made with file contents switched off, so it
+                // can restore conversations but none of their attachments.
+                // Saying "size limit" here would be misleading — nothing was
+                // too big, the user chose to leave files out.
+                LabeledContent("File contents",
+                               value: "Not included (\(m.limits.skippedFiles) file(s) listed)")
+            } else if let limits = m.limits.maxFileBytes, limits > 0 {
+                // §3.4 — the package is known-incomplete, and the user should
+                // learn that here rather than after restoring.
+                LabeledContent("Excluded (size limit)",
+                               value: "\(m.limits.skippedFiles) file(s)")
+            }
+
+            // Escape hatch, kept with the thing it replaces rather than in the
+            // pickers below: having chosen the wrong package, "choose another"
+            // is the next action, and it should be where the user is looking.
+            Button {
+                clearSelection()
+            } label: {
+                Label {
+                    Text("Choose a Different Backup")
+                } icon: {
+                    BackupActionIcon(systemName: "arrow.triangle.2.circlepath", tint: .gray)
+                }
+            }
+            .disabled(isWorking)
+        } header: {
+            Text("Selected Backup")
+        }
     }
 
     /// One line of totals for the package: size, then what is in it.
@@ -316,12 +434,38 @@ struct BackupRestoreView: View {
 
     private func categorySection(_ m: BackupManifest) -> some View {
         Section {
+            ForEach(availableCategories(m), id: \.self) { category in
+                Toggle(isOn: binding(for: category)) {
+                    // Same badge as the Backup tab, so a category is
+                    // recognisable across both screens rather than only by
+                    // its wording.
+                    HStack(spacing: 12) {
+                        BackupCategoryIcon(category: category)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(displayName(category))
+                            if let stat = m.categories[category.rawValue] {
+                                Text(detailText(category, stat))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Restore")
+        } footer: {
             Text("Merge: items are matched by id. Existing items are only replaced when the backup's copy is newer. Nothing is deleted.")
         }
     }
 
     private var passphraseSection: some View {
         Section {
+            SecureField("Passphrase", text: $passphrase)
+                .textContentType(.password)
+        } header: {
+            Text("Encryption")
+        } footer: {
             Text("This backup is encrypted. Without its passphrase it cannot be opened.")
         }
     }
@@ -329,12 +473,84 @@ struct BackupRestoreView: View {
     private var actionSection: some View {
         Section {
             Button {
+                showConfirm = true
+            } label: {
+                // [T-restore-primary-action] Centred icon + label, matching
+                // Start Backup on the other tab. This is the screen's primary
+                // action and was a left-aligned "Restore" that read like one
+                // more row in the list rather than the thing to press.
+                HStack(spacing: 10) {
+                    Spacer(minLength: 0)
+                    if isWorking {
+                        ProgressView()
+                            .frame(width: 28, height: 28)
+                        Text(statusText.isEmpty ? AppLocalized("Working…") : statusText)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        BackupActionIcon(systemName: "arrow.down.doc.fill", tint: .indigo)
+                        Text("Start Restore")
+                            .fontWeight(.semibold)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
             .disabled(isWorking || selected.isEmpty || !passphraseReady)
         }
     }
 
     private func reportSection(_ r: BackupImporter.Report) -> some View {
         Section {
+            LabeledContent("Restored", value: "\(r.totalImported)")
+            if r.totalUpdated > 0 { LabeledContent("Updated", value: "\(r.totalUpdated)") }
+            // "Skipped" is the expected outcome for anything already present,
+            // so it is labelled as such rather than looking like a failure.
+            LabeledContent("Already up to date", value: "\(r.totalSkipped)")
+            if r.totalUnreadable > 0 {
+                LabeledContent("Unreadable", value: "\(r.totalUnreadable)")
+            }
+            let credsRestored = r.categories.reduce(0) { $0 + $1.credentialsRestored }
+            if credsRestored > 0 {
+                LabeledContent("API keys restored", value: "\(credsRestored)")
+            }
+            ForEach(r.categories, id: \.category) { c in
+                if let failed = c.failed {
+                    Text("\(displayNameRaw(c.category)): \(failed)")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                } else {
+                    if c.sizeSkippedInPackage > 0 {
+                        Text("\(displayNameRaw(c.category)): \(c.sizeSkippedInPackage) file(s) weren't in the backup (size limit)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    // [review S9] Different remedy from the size cap, so it gets
+                    // its own line rather than being folded into "skipped":
+                    // these files exist, they just weren't on the device that
+                    // made the backup.
+                    if c.notDownloadedInPackage > 0 {
+                        Text("\(displayNameRaw(c.category)): \(c.notDownloadedInPackage) file(s) weren't in the backup (not downloaded from iCloud on the source device)")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    // [review S7] The package's own index referenced content it
+                    // did not contain — the backup is incomplete. Shown in red:
+                    // this is the case that used to be silently swallowed and
+                    // reported as a clean success.
+                    if c.missingBlobs > 0 {
+                        Text("\(displayNameRaw(c.category)): \(c.missingBlobs) file(s) were listed in the backup but missing from it — the backup is incomplete")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            if !r.rolledBack.isEmpty {
+                Text("Rolled back: \(r.rolledBack.joined(separator: ", "))")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        } header: {
+            Text("Restore Complete")
+        } footer: {
             if let prov = r.categories.first(where: { $0.category == BackupCategory.providers.rawValue }) {
                 if prov.credentialsRestored > 0 {
                     // Credentials now always travel with Providers, so this is
@@ -643,6 +859,27 @@ struct FolderPackageListView: View {
 
             ForEach(packages) { pkg in
                 Button {
+                    // Pop back to the restore screen: the summary it is about
+                    // to show is up there, and leaving the user on a list they
+                    // have finished with would hide the result of their tap.
+                    dismiss()
+                    onPicked(pkg.url)
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(pkg.url.lastPathComponent)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.primary)
+                        Text("\(ByteCountFormatter.string(fromByteCount: pkg.size, countStyle: .file)) · \(pkg.modified.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            } footer: {
+                if !packages.isEmpty {
+                    Text("Showing .minisbak files in this folder.")
+                }
             }
         }
         .refreshable { await reload() }
@@ -684,13 +921,36 @@ struct ServerRestorePickerSheet: View {
     @State private var showAddServer = false
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 if !remotes.isEmpty {
                     Section {
+                        ForEach(remotes) { r in
+                            NavigationLink {
+                                ServerPackageListView(remote: r, onPicked: onPicked)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(r.name)
+                                    Text("\(r.backend.uppercased()) · /\(r.path)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Servers")
+                    }
                 }
 
                 Section {
+                    Button {
+                        showAddServer = true
+                    } label: {
+                        Label("Add Server…", systemImage: "plus")
+                    }
+                } footer: {
+                    Text("Add the server your backups were saved to. Servers added here are also available as backup destinations.")
+                }
             }
             .navigationTitle("Restore from Server")
             .navigationBarTitleDisplayMode(.inline)
@@ -794,6 +1054,19 @@ struct ServerPackageListView: View {
             breadcrumbBar
             List {
                 Section {
+                    if loading {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Contacting server…").foregroundStyle(.secondary)
+                        }
+                    } else if entries.isEmpty, errorText == nil {
+                        Text("Nothing here.").foregroundStyle(.secondary)
+                    }
+
+                    entryRows
+                } footer: {
+                    Text("Open folders to browse. Only .minisbak files are shown.")
+                }
             }
             .refreshable { await reload() }
         }
@@ -844,6 +1117,13 @@ struct ServerPackageListView: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Button {
+                    goUp()
+                } label: {
+                    Image(systemName: "chevron.backward")
+                        .font(.body.weight(.semibold))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
                 .buttonStyle(.plain)
                 .disabled(path.isEmpty || loading)
                 .foregroundStyle(path.isEmpty || loading ? AnyShapeStyle(.tertiary)
@@ -899,6 +1179,14 @@ struct ServerPackageListView: View {
                 .padding(.vertical, 3)
         } else {
             Button {
+                jump(to: target)
+            } label: {
+                Text(title)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+            }
             .buttonStyle(.plain)
             .foregroundStyle(.tint)
             .disabled(loading)
@@ -933,9 +1221,45 @@ struct ServerPackageListView: View {
             ForEach(entries) { e in
                 if e.isDirectory {
                     Button {
+                        descend(into: e)
+                    } label: {
+                        HStack {
+                            Label {
+                                Text(e.name).lineLimit(1).truncationMode(.middle)
+                                    .foregroundStyle(.primary)
+                            } icon: {
+                                Image(systemName: "folder.fill")
+                                    .foregroundStyle(.tint)
+                            }
+                            Spacer(minLength: 8)
+                            // Kept so a folder still reads as "opens
+                            // something" now that it is a Button rather than
+                            // a NavigationLink drawing this for us.
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
                     .disabled(downloadingKey != nil || loading)
                 } else {
                     Button {
+                        // [T-restore-download-confirm] Confirm before pulling
+                        // the file. A backup can be several GB, and the tap
+                        // that starts it looks exactly like the tap that opens
+                        // a folder — on cellular or a metered connection that
+                        // is an expensive thing to trigger by accident.
+                        pendingDownload = e.asPackage
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(e.name)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(.primary)
+                            Text(subtitle(e.asPackage))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     .disabled(downloadingKey != nil)
                 }
             }
@@ -976,10 +1300,19 @@ struct ServerPackageListView: View {
             }
 
             Button(role: .cancel) {
+                // Takes effect at the next poll tick rather than instantly;
+                // the partial file is removed by the transfer layer.
+                cancelFlag.value = true
+                progressText = AppLocalized("Cancelling…")
+                speedText = ""
+            } label: {
+                Text("Cancel").frame(maxWidth: .infinity)
+            }
             .buttonStyle(.bordered)
             .disabled(cancelFlag.value)
         }
         .padding(24)
+        .presentationDetents([.height(240)])
         // No swipe-to-dismiss: leaving the sheet would hide a transfer that is
         // still running, which is how the concurrency problem started.
         .interactiveDismissDisabled(true)

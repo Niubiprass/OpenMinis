@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 //
 //  ISHTerminalView.swift
 //  MinisApp
@@ -106,6 +105,10 @@ struct ISHTerminalView: View {
             }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
+                    viewModel.clearScreen()
+                } label: {
+                    Image(systemName: "paintbrush")
+                }
             }
         }
         .onAppear {
@@ -145,12 +148,12 @@ struct ISHTerminalView: View {
             }
         }
         .sheet(isPresented: $showFileBrowser) {
-            NavigationView {
+            NavigationStack {
                 FileBrowserView()
             }
         }
         .sheet(isPresented: $showRootfsManagement) {
-            NavigationView {
+            NavigationStack {
                 RootfsManagementView()
             }
         }
@@ -497,7 +500,7 @@ struct QuickCommandButton: View {
 }
 
 #Preview {
-    NavigationView {
+    NavigationStack {
         ISHTerminalView()
     }
 }

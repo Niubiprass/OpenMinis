@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 //
 //  WebPreviewSheet.swift
 //  MinisApp
@@ -279,6 +278,75 @@ struct WebPreviewMoreMenu: View {
 
     var body: some View {
         Menu {
+            if holder.isLoading {
+                Button {
+                    holder.stopLoading()
+                } label: {
+                    Label(AppLocalized("Stop"), systemImage: "xmark.circle")
+                }
+            } else {
+                Button {
+                    holder.reload()
+                } label: {
+                    Label(AppLocalized("Reload"), systemImage: "arrow.clockwise")
+                }
+            }
+            if let onExpand {
+                Button {
+                    onExpand()
+                } label: {
+                    Label(AppLocalized("Fullscreen"), systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+            }
+            if let onCollapse {
+                Button {
+                    onCollapse()
+                } label: {
+                    Label(AppLocalized("Exit Fullscreen"), systemImage: "arrow.down.right.and.arrow.up.left")
+                }
+            }
+            if let onAddToHomeScreen {
+                Button {
+                    onAddToHomeScreen()
+                } label: {
+                    Label(AppLocalized("Add to Home Screen"), systemImage: "rectangle.stack.badge.plus")
+                }
+            }
+            Button {
+                desktopMode.toggle()
+                holder.setDesktopMode(desktopMode)
+            } label: {
+                if desktopMode {
+                    Label(AppLocalized("Request Mobile Site"), systemImage: "iphone")
+                } else {
+                    Label(AppLocalized("Request Desktop Site"), systemImage: "desktopcomputer")
+                }
+            }
+            if allowOpenInSafari {
+                Button {
+                    UIApplication.shared.open(url)
+                } label: {
+                    Label(AppLocalized("Open in Safari"), systemImage: "safari")
+                }
+            }
+            Button {
+                holder.printPage()
+            } label: {
+                Label(AppLocalized("Print"), systemImage: "printer")
+            }
+            Button {
+                showShareSheet = true
+            } label: {
+                Label(AppLocalized("Share"), systemImage: "square.and.arrow.up")
+            }
+            Button {
+                UIPasteboard.general.string = url.absoluteString
+            } label: {
+                Label(AppLocalized("Copy Link"), systemImage: "doc.on.doc")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
     }
 }
 
@@ -558,6 +626,52 @@ struct MinisSafariView: View {
     @ViewBuilder
     private var menuButton: some View {
         Menu {
+            // Exit fullscreen — only meaningful when there's a sheet
+            // to return to. In standalone presentations this would
+            // duplicate Close, so we omit it.
+            if onCollapse != nil {
+                Button {
+                    exitFullscreen(returnToSheet: true)
+                } label: {
+                    Label(AppLocalized("Exit Fullscreen"), systemImage: "arrow.down.right.and.arrow.up.left")
+                }
+            }
+            Button {
+                reload()
+            } label: {
+                Label(AppLocalized("Reload"), systemImage: "arrow.clockwise")
+            }
+            Button {
+                holder.printPage()
+            } label: {
+                Label(AppLocalized("Print"), systemImage: "printer")
+            }
+            Button {
+                showShareSheet = true
+            } label: {
+                Label(AppLocalized("Share"), systemImage: "square.and.arrow.up")
+            }
+            Divider()
+            Button(role: .destructive) {
+                exitFullscreen(returnToSheet: false)
+            } label: {
+                Label(AppLocalized("Close"), systemImage: "xmark")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                )
+                .overlay(
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                )
+                .shadow(color: .black.opacity(0.28), radius: 12, y: 4)
+        }
         .accessibilityLabel("More")
     }
 
@@ -612,7 +726,7 @@ struct MinisLinkPreviewView: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ReusableWebView(webView: holder.webView)
                 // [T-webview-preview-swipe-dismiss] Arbitrate the sheet's
                 // interactive-dismiss pan against page content at the gesture
@@ -659,6 +773,7 @@ struct MinisLinkPreviewView: View {
                     }
                 }
         }
+        .presentationDetents([.large])
         // [T-ios-html-preview-wide-sheet] Widen to a page-style sheet on
         // iPad/Mac, reusing the shared modifier from AIChatView.swift. iPhone
         // unaffected (presentationSizing is iOS18+ and .page only affects

@@ -290,6 +290,16 @@ struct ChatMessageRow: View {
                     .font(.system(size: 12, weight: .medium))
                 if !message.isCompactLoading && message.compactSummary != nil {
                     Button {
+                        let summary = message.compactSummary ?? ""
+                        if let onShowCompactSummary {
+                            onShowCompactSummary(summary)
+                        } else {
+                            showCompactSummary = true
+                        }
+                    } label: {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 12))
+                    }
                     .buttonStyle(.plain)
                 }
             }
@@ -379,6 +389,12 @@ struct ChatMessageRow: View {
                         if message.isQueued {
                             if let onWithdraw {
                                 Button {
+                                    onWithdraw()
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 22))
+                                        .foregroundStyle(.red)
+                                }
                             }
                         }
                     }
@@ -394,6 +410,54 @@ struct ChatMessageRow: View {
             // preview clip shape independently from the interaction shape.
             .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18))
             .contextMenu {
+                Button {
+                    UIPasteboard.general.string = message.content
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                if let onCopyScreenshot {
+                    Button {
+                        onCopyScreenshot()
+                    } label: {
+                        Label(AppLocalized("Copy Screenshot"), systemImage: "camera.viewfinder")
+                    }
+                }
+                if let onEdit {
+                    Button {
+                        onEdit()
+                    } label: {
+                        Label("Edit", systemImage: "square.and.pencil")
+                    }
+                }
+                if let onRetry {
+                    Button {
+                        onRetry()
+                    } label: {
+                        Label("Retry", systemImage: "arrow.counterclockwise")
+                    }
+                }
+                if onDeleteFrom != nil || onCompact != nil {
+                    Divider()
+                }
+                if onDeleteFrom != nil {
+                    Button(role: .destructive) {
+                        showDeleteFromConfirm = true
+                    } label: {
+                        Label("Delete From Here", systemImage: "trash")
+                    }
+                }
+                if let onCompact {
+                    Button(role: .destructive) {
+                        onCompact()
+                    } label: {
+                        Label("Compact Above", systemImage: "arrow.down.right.and.arrow.up.left")
+                    }
+                }
+            } preview: {
+                // [T-ios-longpress-menu-preview-background] Opaque card so the
+                // long-press preview isn't transparent (see MessageContextMenuPreview).
+                MessageContextMenuPreview(text: message.content)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
@@ -401,6 +465,13 @@ struct ChatMessageRow: View {
         // the following replies with it, so it gets an explicit confirmation
         // rather than firing straight off the menu.
         .alert(AppLocalized("Delete Message?"), isPresented: $showDeleteFromConfirm) {
+            Button(AppLocalized("Cancel"), role: .cancel) {}
+            Button(AppLocalized("Delete"), role: .destructive) {
+                onDeleteFrom?()
+            }
+        } message: {
+            Text("This message and all messages after it will be deleted. This cannot be undone.")
+        }
     }
 
     // MARK: Assistant Row
@@ -499,12 +570,73 @@ struct ChatMessageRow: View {
         // measures the same row bounds the background GeometryReader did,
         // and its initial fire covers the old onAppear seed.
         .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .global)
+        } action: { rowFrameInWindow = $0 }
         .background {
             // Context menu on the background layer so it only fires on
             // blank areas — UITextView link taps in the foreground take priority.
             Color.clear
                 .contentShape(Rectangle())
                 .contextMenu {
+                    // [T-ios-msg-contextmenu-recursion-crash] Gate the eager menu
+                    // tree behind an Equatable key so the cell body churn during
+                    // `gh`/shell streaming output doesn't rebuild + re-diff the
+                    // whole menu subtree every frame — the deep ContextMenuModifier
+                    // / UnwrapConditional recursion that blew the update stack into
+                    // unmapped heap (incident 98E8805F). Copy actions read
+                    // `fullReplyText` lazily at TAP time, so the menu structure
+                    // only needs rebuilding when the key changes: which optional
+                    // actions exist + the streaming-disabled state.
+                    EquatableMenuGate(key: AssistantMenuKey(
+                        messageId: message.id,
+                        hasReadAloud: onReadAloud != nil,
+                        hasCopyScreenshot: onCopyScreenshot != nil,
+                        hasCompact: onCompact != nil,
+                        isActive: isActiveMessage
+                    )) {
+                        Button {
+                            UIPasteboard.general.string = fullReplyText
+                        } label: {
+                            Label("Copy All", systemImage: "doc.on.doc")
+                        }
+                        Button {
+                            UIPasteboard.general.string = fullReplyText
+                        } label: {
+                            Label("Copy Markdown", systemImage: "text.quote")
+                        }
+                        if let onReadAloud {
+                            Button {
+                                onReadAloud()
+                            } label: {
+                                Label(AppLocalized("Read from Start"), systemImage: "play.circle")
+                            }
+                            // Greyed out while streaming so it can't clash with the
+                            // live streaming TTS of the same reply.
+                            .disabled(isActiveMessage)
+                        }
+                        if let onCopyScreenshot {
+                            Button {
+                                onCopyScreenshot()
+                            } label: {
+                                Label(AppLocalized("Copy Screenshot"), systemImage: "camera.viewfinder")
+                            }
+                        }
+                        if let onCompact {
+                            Divider()
+                            Button(role: .destructive) {
+                                onCompact()
+                            } label: {
+                                Label("Compact Above", systemImage: "arrow.down.right.and.arrow.up.left")
+                            }
+                        }
+                    }
+                    .equatable()
+                } preview: {
+                    // [T-ios-longpress-menu-preview-background] Opaque card for
+                    // this Color.clear-attached contextMenu (see
+                    // MessageContextMenuPreview).
+                    MessageContextMenuPreview(text: fullReplyText)
+                }
         }
         .sheet(item: $detailBlock) { block in
             ToolLiveSheet(toolBlocks: message.blocks.filter { $0.toolStatus != nil },
@@ -585,6 +717,10 @@ struct ChatMessageRow: View {
             .contentShape(Rectangle())
             .contextMenu {
                 Button {
+                    UIPasteboard.general.string = error
+                } label: {
+                    Label(AppLocalized("Copy Error"), systemImage: "doc.on.doc")
+                }
             }
 
             Spacer()

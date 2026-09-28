@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 import AVKit
 import Photos
@@ -365,6 +364,23 @@ private struct MinisFileChipView: View {
         let ext = url.pathExtension.lowercased()
 
         Button {
+            showShareSheet = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: minisFileIcon(for: ext))
+                    .font(.system(size: 13))
+                    .foregroundColor(ChatColors.accent)
+                Text(filename)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(ChatColors.primaryText)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(ChatColors.toolBg)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(ChatColors.toolBorder, lineWidth: 1))
+        }
         .sheet(isPresented: $showShareSheet) {
             if let fileURL = resolveMinisFileURL(url: url) {
                 MinisShareSheet(url: fileURL)
@@ -384,6 +400,23 @@ struct AsyncImageTile: View {
 
     var body: some View {
         Button {
+            onTap()
+        } label: {
+            if let img = thumbnail {
+                Image(uiImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: tileSize, height: tileSize)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5)
+                    )
+                    .shadow(color: .black.opacity(0.08), radius: 2, x: 0, y: 1)
+            } else {
+                attachmentPlaceholderTile(icon: "photo", size: tileSize)
+            }
+        }
         .buttonStyle(.plain)
         // Fingerprint id (path + size + mtime) so an in-place rewrite of
         // the underlying minis:// file invalidates the displayed
@@ -424,6 +457,33 @@ struct AsyncVideoTile: View {
 
     var body: some View {
         Button {
+            if let url = URL(string: meta.minisURL) { openURL(url) }
+        } label: {
+            ZStack(alignment: .bottomLeading) {
+                if let img = thumbnail {
+                    Image(uiImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: tileSize, height: tileSize)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5)
+                        )
+                        .shadow(color: .black.opacity(0.08), radius: 2, x: 0, y: 1)
+                } else {
+                    attachmentPlaceholderTile(icon: "film", size: tileSize)
+                }
+
+                Image(systemName: "play.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white)
+                    .padding(4)
+                    .background(.black.opacity(0.5))
+                    .clipShape(Circle())
+                    .padding(4)
+            }
+        }
         .buttonStyle(.plain)
         // Fingerprint id (path + size + mtime) so an in-place rewrite of
         // the underlying minis:// file invalidates the displayed
@@ -831,6 +891,18 @@ struct MinisTextPreviewView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
+                        Button {
+                            PrintHelper.printText(text, jobName: fileURL.lastPathComponent)
+                        } label: {
+                            Label(AppLocalized("Print"), systemImage: "printer")
+                        }
+                        .disabled(text.isEmpty)
+                        Button { showShareSheet = true } label: {
+                            Label(AppLocalized("Share"), systemImage: "square.and.arrow.up")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
                 }
             }
             .sheet(isPresented: $showShareSheet) {
@@ -942,6 +1014,25 @@ struct MinisMarkdownPreviewView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
+                        Button {
+                            PrintHelper.printText(markdownContent, jobName: fileURL.lastPathComponent)
+                        } label: {
+                            Label(AppLocalized("Print"), systemImage: "printer")
+                        }
+                        .disabled(markdownContent.isEmpty)
+                        Button { showShareSheet = true } label: {
+                            Label(AppLocalized("Share"), systemImage: "square.and.arrow.up")
+                        }
+                        Button {
+                            VoiceOutputPlayer.shared.stopAll()
+                            VoiceOutputPlayer.shared.enqueueSegmented(markdownContent, sessionId: VoiceOutputPlayer.manualOwnerId)
+                        } label: {
+                            Label(AppLocalized("Read Aloud"), systemImage: "speaker.wave.2")
+                        }
+                        .disabled(markdownContent.isEmpty)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
                 }
             }
             .sheet(isPresented: $showShareSheet) {
@@ -1035,6 +1126,7 @@ struct MinisHTMLPreviewView: View {
                                       sourceSessionId: AIChatViewModel.activeSessionId)
                 }
         }
+        .presentationDetents([.large])
         // [T-ios-html-preview-wide-sheet] Widen to a page-style sheet on
         // iPad/Mac, matching MinisMarkdownPreviewView. iPhone unaffected.
         .modifier(WideSheetSizingModifier())

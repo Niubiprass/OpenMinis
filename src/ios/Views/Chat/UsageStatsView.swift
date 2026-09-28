@@ -247,6 +247,26 @@ struct UsageStatsView: View {
                         // one of them silently.
                         ForEach(provider.models, id: \.rowKey) { model in
                             DisclosureGroup {
+                                modelDetailRows(model)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(model.displayName)
+                                        // Say why whenever the number is not a
+                                        // straight measurement. Silence is what
+                                        // let re-attributed totals pass as fact.
+                                        if let caveat = model.attributionCaveat {
+                                            Text(caveat)
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    let totalInputLabel = model.inputTokens + model.cacheReadTokens + model.cacheCreationTokens
+                                    Text("\(formatCount(totalInputLabel)) / \(formatCount(model.outputTokens))")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                         }
                     }
                 }

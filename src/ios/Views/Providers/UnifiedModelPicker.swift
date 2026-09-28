@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 import AVFoundation
 
@@ -446,6 +445,27 @@ struct UnifiedModelPicker: View {
 
             if config.showGroups && !visibleGroups.isEmpty {
                 Section {
+                    ForEach(visibleGroups) { group in
+                        groupRow(group)
+                        if expandedGroupIds.contains(group.id) {
+                            groupMemberRows(group)
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Model Groups")
+                        Spacer()
+                        Button {
+                            showGroupsManager = true
+                        } label: {
+                            Text("Edit")
+                                .font(.caption)
+                                .textCase(nil)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tint)
+                    }
+                } footer: {
                     if searchText.isEmpty {
                         switch config.groupScope {
                         case .all:
@@ -470,6 +490,11 @@ struct UnifiedModelPicker: View {
             if config.showCreateGroup {
                 Section {
                     Button {
+                        showCreateGroupSheet = true
+                    } label: {
+                        Label("Create group from models…", systemImage: "plus.rectangle.on.folder")
+                            .font(.subheadline)
+                    }
                 }
             }
         }
@@ -482,12 +507,12 @@ struct UnifiedModelPicker: View {
         }
         .toolbar { toolbarContent }
         .sheet(isPresented: $showCreateGroupSheet) {
-            NavigationView {
+            NavigationStack {
                 UnifiedModelPicker(config: createGroupConfig())
             }
         }
         .sheet(isPresented: $showGroupsManager) {
-            NavigationView {
+            NavigationStack {
                 ModelGroupsView()
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
@@ -505,6 +530,7 @@ struct UnifiedModelPicker: View {
             // model while TestSession still ran the OLD one.
             ModelQuickTestSheet(entry: entry)
                 .id(entry.id)
+                .presentationDetents([.medium, .large])
         }
     }
 
@@ -514,6 +540,14 @@ struct UnifiedModelPicker: View {
     /// across cloud rows, group members, and System voices.
     private func quickTestButton(_ entry: ModelEntry) -> some View {
         Button {
+            quickTestEntry = entry
+        } label: {
+            Image(systemName: "bolt.badge.checkmark")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.tint)
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
         .buttonStyle(.borderless)
         .accessibilityLabel(Text("Quick Test \(entry.model.displayName)"))
     }
@@ -640,6 +674,21 @@ struct UnifiedModelPicker: View {
             }
 
             Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if expandedGroupIds.contains(group.id) {
+                        _ = expandedGroupIds.remove(group.id)
+                    } else {
+                        expandedGroupIds.insert(group.id)
+                    }
+                }
+            } label: {
+                Image(systemName: expandedGroupIds.contains(group.id) ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(Color(UIColor.tertiarySystemFill))
+                    .clipShape(Circle())
+            }
             .buttonStyle(.plain)
         }
         .contentShape(Rectangle())
@@ -649,6 +698,11 @@ struct UnifiedModelPicker: View {
         }
         .contextMenu {
             Button {
+                UIPasteboard.general.string = "group:\(group.id)"
+                MinisToast.show(AppLocalized("Copied: \(group.name)"))
+            } label: {
+                Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
+            }
         }
     }
 
@@ -881,6 +935,11 @@ struct UnifiedModelPicker: View {
         }
         .contextMenu {
             Button {
+                UIPasteboard.general.string = "entry:\(entry.compositeKey)"
+                MinisToast.show(AppLocalized("Copied: \(entry.model.displayName)"))
+            } label: {
+                Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
+            }
         }
     }
 
@@ -952,6 +1011,51 @@ struct UnifiedModelPicker: View {
         }()
         let visibleEntries = isCollapsed ? collapsedEntry : item.entries
         Section {
+            ForEach(visibleEntries) { entry in
+                entryRow(entry)
+            }
+            if isCollapsed && item.entries.count > 1 {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        _ = collapsedInstanceIds.remove(item.instance.id)
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 11, weight: .medium))
+                        Text(AppLocalized("Show \(item.entries.count) models"))
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.tint)
+                }
+            }
+        } header: {
+            HStack {
+                Text(item.instance.label)
+                Spacer()
+                if searchText.isEmpty && item.entries.count > 1 {
+                    let collapsed = collapsedInstanceIds.contains(item.instance.id)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            if collapsed {
+                                _ = collapsedInstanceIds.remove(item.instance.id)
+                            } else {
+                                collapsedInstanceIds.insert(item.instance.id)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: collapsed ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 28, height: 28)
+                            .background(Color(UIColor.tertiarySystemFill))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .textCase(nil)
+                }
+            }
+        }
     }
 
     // MARK: - Entry Row
@@ -1046,6 +1150,11 @@ struct UnifiedModelPicker: View {
         }
         .contextMenu {
             Button {
+                UIPasteboard.general.string = "entry:\(entry.compositeKey)"
+                MinisToast.show(AppLocalized("Copied: \(entry.model.displayName)"))
+            } label: {
+                Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
+            }
         }
     }
 

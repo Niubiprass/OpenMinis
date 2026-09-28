@@ -30,6 +30,16 @@ struct SharedFoldersSettingsView: View {
             Section(AppLocalized("Folders")) {
                 ForEach(model.entries) { entry in
                     NavigationLink {
+                        MountDetailView(
+                            context: detailContext(for: entry),
+                            onDismiss: { model.refresh() }
+                        )
+                    } label: {
+                        SharedFolderRow(
+                            entry: entry,
+                            isVisible: model.isVisible(entry.name)
+                        )
+                    }
                 }
             }
         }

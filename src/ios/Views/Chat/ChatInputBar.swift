@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import AVKit
 import Combine
 import ImageIO
@@ -275,7 +274,7 @@ private struct AttachmentChip: View {
         .onAppear { loadThumbnailIfNeeded() }
         .onTapGesture { showPreview = true }
         .sheet(isPresented: $showPreview) {
-            NavigationView {
+            NavigationStack {
                 AttachmentPreviewView(url: attachment.cacheURL)
                     .navigationTitle(attachment.fileName)
                     .navigationBarTitleDisplayMode(.inline)
@@ -317,6 +316,13 @@ private struct AttachmentChip: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.5), lineWidth: 0.5))
 
             Button {
+                onRemove()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.5), radius: 2)
+            }
             .offset(x: 4, y: -4)
         }
         .fixedSize()
@@ -348,6 +354,13 @@ private struct AttachmentChip: View {
                 }
 
                 Button {
+                    onRemove()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.5), radius: 2)
+                }
                 .offset(x: 4, y: -4)
             }
             .fixedSize()
@@ -438,6 +451,13 @@ private struct AttachmentChip: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
 
             Button {
+                onRemove()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.4), radius: 2)
+            }
             .offset(x: 4, y: -4)
         }
         .fixedSize()
@@ -487,6 +507,14 @@ struct VideoFileTransferable: Transferable {
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(contentType: .movie) { video in
+            SentTransferredFile(video.url)
+        } importing: { received in
+            // Copy to a temp location so the file outlives the picker callback
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString.prefix(8) + "_" + received.file.lastPathComponent)
+            try FileManager.default.copyItem(at: received.file, to: tmp)
+            return Self(url: tmp)
+        }
     }
 }
 
@@ -540,6 +568,17 @@ private struct CodeBlockCopyButton: View {
 
     var body: some View {
         Button {
+            UIPasteboard.general.string = content
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                copied = false
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(copied ? .green : .white.opacity(0.5))
+                .animation(.easeInOut(duration: 0.2), value: copied)
+        }
         .buttonStyle(.plain)
     }
 }
@@ -646,6 +685,28 @@ struct UserAttachmentList: View {
 
     private func fileTile(_ meta: AttachmentMeta) -> some View {
         Button {
+            if let url = URL(string: meta.minisURL) { openURL(url) }
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: fileIconName(for: meta.fileName))
+                    .font(.system(size: 20))
+                    .foregroundStyle(ChatColors.secondaryText)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+
+                Text(meta.fileName)
+                    .font(.system(size: 9))
+                    .foregroundStyle(ChatColors.primaryText)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .truncationMode(.middle)
+                    .frame(maxHeight: .infinity, alignment: .top)
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 6)
+            .frame(width: tileSize, height: tileSize)
+            .background(ChatColors.secondaryBg)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
         .buttonStyle(.plain)
         // WebApp entry point — only for .html / .htm. Long-press → context
         // menu → "Add to Home Screen". The sheet resolves the minis://
@@ -685,6 +746,15 @@ private struct WebAppAddToHomeMenuModifier: ViewModifier {
             content
                 .contextMenu {
                     Button {
+                        guard let url = URL(string: meta.minisURL),
+                              let host = resolveMinisFileURLCached(url: url) else {
+                            return
+                        }
+                        resolvedHostURL = host
+                        showAddSheet = true
+                    } label: {
+                        Label("Add to Home Screen", systemImage: "rectangle.stack.badge.plus")
+                    }
                 }
                 .sheet(isPresented: $showAddSheet) {
                     if let host = resolvedHostURL {

@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 //
 //  SessionSkillsView.swift
 //  MinisApp
@@ -90,7 +89,7 @@ struct SessionSkillsView: View {
         // Reference the version counter so SwiftUI refreshes on override changes.
         let _ = store.sessionOverrideVersion
 
-        NavigationView {
+        NavigationStack {
             List {
                 if store.skills.isEmpty {
                     Section {
@@ -108,6 +107,26 @@ struct SessionSkillsView: View {
                     Section(footer: Text("Toggles override the skill's default for this session only.")) {
                         ForEach(filteredSkills) { skill in
                             NavigationLink {
+                                SessionSkillDetailView(skill: skill)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(skill.name).font(.body)
+                                        if !skill.description.isEmpty {
+                                            Text(skill.description)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(2)
+                                        }
+                                    }
+                                    Spacer()
+                                    Toggle("", isOn: Binding(
+                                        get: { isEnabled(skill) },
+                                        set: { setOverride(skill, $0) }
+                                    ))
+                                    .labelsHidden()
+                                }
+                            }
                         }
                     }
                 }
@@ -158,6 +177,16 @@ private struct SessionSkillDetailView: View {
                 Section("Other Files") {
                     ForEach(additionalFiles, id: \.self) { relativePath in
                         NavigationLink {
+                            SkillFilePreviewView(skillId: skill.id, relativePath: relativePath)
+                        } label: {
+                            Label {
+                                Text(relativePath)
+                                    .font(.system(.subheadline, design: .monospaced))
+                            } icon: {
+                                Image(systemName: iconName(for: relativePath))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
             }

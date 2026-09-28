@@ -85,6 +85,10 @@ struct LogManagementView: View {
     private var logsBody: some View {
         List {
             Section {
+                Toggle("Enable Logging", isOn: $loggingManager.isEnabled)
+            } footer: {
+                Text("When enabled, all console output is captured to daily log files.")
+            }
 
             Section("Log Files") {
                 if vm.runningFiles.isEmpty {
@@ -93,6 +97,16 @@ struct LogManagementView: View {
                 } else {
                     ForEach(vm.runningFiles) { file in
                         NavigationLink {
+                            LogDetailView(url: file.url, name: file.name)
+                        } label: {
+                            HStack {
+                                Text(file.name)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(vm.format(file.size))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                     .onDelete { indexSet in
                         let files = vm.runningFiles
@@ -108,6 +122,16 @@ struct LogManagementView: View {
                 Section("Crash Reports") {
                     ForEach(vm.crashFiles) { file in
                         NavigationLink {
+                            LogDetailView(url: file.url, name: file.name)
+                        } label: {
+                            HStack {
+                                Text("⚠️ \(file.name)")
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(vm.format(file.size))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                     .onDelete { indexSet in
                         let files = vm.crashFiles
@@ -122,17 +146,43 @@ struct LogManagementView: View {
             if #available(iOS 17.0, *) {
                 Section {
                     NavigationLink {
+                        SyncLogView()
+                    } label: {
+                        HStack {
+                            Label("iCloud Sync Logs", systemImage: "icloud.fill")
+                            Spacer()
+                            Text("\(SyncLogStore.shared.entries.count)")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
 
             if !vm.logFiles.isEmpty {
                 Section {
+                    Button(role: .destructive) {
+                        showDeleteAllConfirm = true
+                    } label: {
+                        HStack {
+                            Label("Delete All Logs", systemImage: "trash")
+                            Spacer()
+                            Text(vm.format(vm.totalSize))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } footer: {
+                    Text("Total log storage: \(vm.format(vm.totalSize))")
+                }
             }
         }
         .toolbar {
             if !vm.logFiles.isEmpty && tab == "logs" {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
+                        showShareSheet = true
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
                 }
             }
         }
@@ -140,6 +190,14 @@ struct LogManagementView: View {
             LogShareSheet(urls: vm.logFiles.map(\.url))
         }
         .alert("Delete All Logs?", isPresented: $showDeleteAllConfirm) {
+            Button("Delete All", role: .destructive) {
+                LoggingManager.shared.deleteAllLogs()
+                vm.load()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will delete \(vm.format(vm.totalSize)) of log files. This action cannot be undone.")
+        }
     }
 }
 

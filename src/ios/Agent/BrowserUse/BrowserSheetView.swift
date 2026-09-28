@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 
 /// Sheet view for observing the browser's live WKWebView(s) via a tab pool.
@@ -15,7 +14,7 @@ struct BrowserSheetView: View {
     private var manager: BrowserUseManager? { pool.activeManager }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 0) {
                 if !isFullscreen {
                     // Tab bar
@@ -81,6 +80,14 @@ struct BrowserSheetView: View {
                             HStack {
                                 Spacer()
                                 Button {
+                                    withAnimation(.easeInOut(duration: 0.25)) { isFullscreen = false }
+                                } label: {
+                                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(.white)
+                                        .padding(8)
+                                        .background(Circle().fill(Color.black.opacity(0.5)))
+                                }
                                 .padding(.trailing, 12)
                                 .padding(.top, 8)
                             }
@@ -131,6 +138,11 @@ struct BrowserSheetView: View {
                         }
 
                         Button {
+                            withAnimation(.easeInOut(duration: 0.25)) { isFullscreen = true }
+                        } label: {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .frame(maxWidth: .infinity)
+                        }
                         .disabled(isAgentBusy)
                     }
                     .font(.system(size: 18))
@@ -156,9 +168,17 @@ struct BrowserSheetView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     HStack(spacing: 12) {
                         Button {
+                            _ = pool.newTab()
+                        } label: {
+                            Image(systemName: "plus")
+                        }
                         .disabled(isAgentBusy || pool.tabs.count >= BrowserTabPool.maxTabs)
 
                         Button {
+                            showHistory = true
+                        } label: {
+                            Image(systemName: "clock.arrow.circlepath")
+                        }
                         .disabled(isAgentBusy)
                     }
                 }
@@ -240,6 +260,33 @@ struct BrowserSheetView: View {
     private func tabButton(for tab: BrowserTabPool.Tab) -> some View {
         let isSelected = tab.id == pool.selectedTabId
         return Button {
+            pool.selectedTabId = tab.id
+        } label: {
+            HStack(spacing: 4) {
+                Text(tabLabel(for: tab))
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .lineLimit(1)
+                    .frame(maxWidth: 120)
+
+                if !isAgentBusy {
+                    Button {
+                        _ = pool.closeTab(id: tab.id)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(isSelected ? Color.accentColor.opacity(0.15) : Color(UIColor.systemGray5))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule().stroke(isSelected ? Color.accentColor.opacity(0.4) : Color.clear, lineWidth: 1)
+            )
+        }
         .buttonStyle(.plain)
     }
 
@@ -456,7 +503,7 @@ struct BrowserDownloadPanelSheet: View {
     let onLocate: (String) -> Void
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Group {
                 let items = center.downloads(for: sessionId)
                     .sorted { $0.startedAt > $1.startedAt }
@@ -494,6 +541,10 @@ struct BrowserDownloadPanelSheet: View {
                     }
                     if hasFinished {
                         Button {
+                            center.clearFinished(for: sessionId)
+                        } label: {
+                            Text("Clear", comment: "Downloads panel action")
+                        }
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -501,6 +552,7 @@ struct BrowserDownloadPanelSheet: View {
                 }
             }
         }
+        .presentationDetents([.medium, .large])
         // Viewing the panel clears the badge; records themselves persist
         // until the user clears them (rows / Clear Completed) — the floating
         // button hides only when the list is actually empty.

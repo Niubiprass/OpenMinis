@@ -29,9 +29,17 @@ ROOT = "src/ios"
 
 # 脚本版本号。每轮修复都会改它，日志第一行就会打印，
 # 用来确认 runner 上跑的是不是最新脚本（避免又下到 CDN 缓存的旧版）。
-SCRIPT_VERSION = "v10-20260929b"
+SCRIPT_VERSION = "v10-20260929c"
 COMPAT_NAME = "iOS15Compat.swift"
-PRISTINE_COMMIT = None  # 初始提交 hash，供结构自检回滚使用
+PRISTINE_COMMIT = None  # 已废弃：浅克隆下取不到真正的初始提交，改用内存基线
+# 转换前的文件内容快照（路径 -> 内容），由 snapshot_baseline() 填充，
+# 供结构自检做「转换前 vs 转换后」对比。不依赖 git 历史。
+BASELINE = {}
+
+# 上游原版仓库。每次构建都从这里拉干净源码覆盖 src/ios，
+# 和用户 fork 的提交历史彻底解耦。
+UPSTREAM_TGZ = ("https://codeload.github.com/OpenMinis/OpenMinis"
+                "/tar.gz/refs/heads/main")
 
 # ---------------------------------------------------------------- 基础工具
 
@@ -401,17 +409,8 @@ BROKEN_RES = [
 
 
 def _pristine_text(path: str):
-    """取初始提交里该文件的原文；取不到返回 None。"""
-    if not PRISTINE_COMMIT:
-        return None
-    try:
-        r = subprocess.run(["git", "show", "%s:%s" % (PRISTINE_COMMIT, path)],
-                           capture_output=True, text=True, timeout=60)
-        if r.returncode != 0:
-            return None
-        return r.stdout
-    except Exception:
-        return None
+    """取该文件转换前的原文（快照）；不在快照里返回 None。"""
+    return BASELINE.get(path)
 
 
 def check_and_rollback_broken() -> None:
@@ -421,10 +420,10 @@ def check_and_rollback_broken() -> None:
     认不全 Swift 语法（raw string、正则字面量、插值嵌套 …），
     原文件本身就判不配平的文件会被无辜回滚，等于整轮移植作废。
 
-    v10 判据（三条全都必须成立才算坏）：
-      1. 文件确实被本轮改动过（与初始提交不同）；
-      2. 命中已知残骸特征，或「初始提交配平、转换后不配平」；
-      3. 第 2 条的括号判据里，若初始提交本身也判不配平 —— 那是解析器
+    v10c 判据（三条全都必须成立才算坏）：
+      1. 文件确实被本轮改动过（与转换前快照不同）；
+      2. 命中已知残骸特征，或「转换前配平、转换后不配平」；
+      3. 第 2 条的括号判据里，若转换前本身就判不配平 —— 那是解析器
          的锅，不是转换的锅，一律放过。
     """
     bad = []          # [(path, 原因)]
@@ -480,13 +479,17 @@ def check_and_rollback_broken() -> None:
         except Exception:
             pass
         # 让 swiftc 亲口说出语法错误行号，比我的迷你解析器准得多
+        # 让 swiftc 亲口说出语法错误行号，比我的迷你解析器准得多
         swiftc_diagnose(path)
-        if PRISTINE_COMMIT:
-            r = subprocess.run(["git", "checkout", PRISTINE_COMMIT, "--", path],
-                               capture_output=True, text=True, timeout=60)
-            if r.returncode == 0:
-                log("🔄 %s 已回滚到初始提交（该文件本次不作移植）" % path)
+        # 回滚 = 恢复成转换前的快照（浅克隆下没有可信的 git 基线）
+        orig = BASELINE.get(path)
+        if orig is not None:
+            try:
+                write(path, orig)
+                log("🔄 %s 已回滚到转换前状态（该文件本次不作移植）" % path)
                 continue
+            except OSError:
+                pass
         log("⚠️  %s 判定损坏且无法回滚，请检查" % path)
 
 
@@ -513,40 +516,70 @@ def swiftc_diagnose(path: str, limit: int = 12) -> None:
         log("   swiftc -parse 诊断：\n     " + "\n     ".join(l.strip() for l in lines))
 
 
-def restore_pristine_sources() -> None:
-    """把 src/ios 还原到仓库初始提交（fork 时的上游原始代码）。
+def restore_from_upstream() -> None:
+    """从上游 OpenMinis 主分支拉取干净源码，整体覆盖 src/ios。
 
-    迭代过程中早期版本的脚本可能把源码改坏（删行留下半截闭包等），
-    而这些结果又被工作流的「提交移植结果」步骤写回了仓库。
-    与其不断给残骸打补丁，不如每次都从已知的干净基线重跑全部转换。
+    为什么不再用 git 历史还原：
+      GitHub Actions 的 checkout@v4 默认浅克隆（fetch-depth=1），本地历史
+      只有一个 graft 根提交 = checkout 时所在的那个提交 = 上一轮运行提交
+      的「移植结果」。于是 `git rev-list --max-parents=0` 找到的所谓初始
+      提交，本身就是被上一轮改过的代码 —— 把损坏当基线，还原了个寂寞
+      （v10b 的第 11 轮：转换 0 改动、仓库里坏文件原样保留，就是这个原因）。
 
-    尽力而为：任何一步失败都只打印警告，流程照常继续。
+    上游 tarball 和 fork 的提交历史完全无关，每次都是干净的原版；
+    就算 fork 里已经提交了改坏的文件，也会被整体覆盖掉。
+
+    尽力而为：下载失败就保留仓库当前版本继续跑，绝不中断构建。
     """
-    global PRISTINE_COMMIT
     if not os.path.isdir(ROOT):
         return
+    import tarfile
+    import tempfile
+    import urllib.request
+
+    tmpdir = tempfile.mkdtemp(prefix="upstream_om_")
     try:
-        chk = subprocess.run(["git", "rev-parse", "--git-dir"],
-                             capture_output=True, text=True, timeout=60)
-        if chk.returncode != 0:
-            log("ℹ️  不在 git 工作副本中，跳过源码还原")
+        req = urllib.request.Request(
+            UPSTREAM_TGZ, headers={"User-Agent": "ios15-port-script"})
+        tgz = os.path.join(tmpdir, "upstream.tgz")
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            with open(tgz, "wb") as f:
+                f.write(resp.read())
+        with tarfile.open(tgz, "r:gz") as tf:
+            tf.extractall(tmpdir)
+        os.remove(tgz)
+        src = None
+        for name in os.listdir(tmpdir):
+            cand = os.path.join(tmpdir, name, "src", "ios")
+            if os.path.isdir(cand):
+                src = cand
+                break
+        if src is None:
+            log("⚠️  上游压缩包里没有 src/ios，保留仓库当前版本继续")
             return
-        ls = subprocess.run(["git", "rev-list", "--max-parents=0", "HEAD"],
-                            capture_output=True, text=True, timeout=60)
-        rc = ls.stdout.strip().split("\n")[-1].strip()
-        if not rc:
-            log("⚠️  取不到初始提交，跳过源码还原")
-            return
-        co = subprocess.run(["git", "checkout", rc, "--", ROOT],
-                            capture_output=True, text=True, timeout=300)
-        if co.returncode != 0:
-            log("⚠️  还原 %s 失败: %s" % (ROOT, co.stderr.strip()[:200]))
-            return
-        # 清掉上一轮脚本自己生成的产物。
-        # 注意：只删我方产物白名单，绝不删「相对初始提交多出来的所有文件」——
-        # 那是真实源码的可能性远大于产物，误删会让 target 缺文件，
-        # 报错比语法错误更难查。
-        removed = 0
+        # 上游 tarball 不含子模块内容；如果 src/ios 里有子模块会被清掉，
+        # 所以覆盖后统一补一次 submodule 恢复（没有子模块时是空操作）
+        shutil.rmtree(ROOT)
+        shutil.copytree(src, ROOT)
+        subprocess.run(["git", "submodule", "update", "--init", "--recursive",
+                        ROOT], capture_output=True, timeout=600)
+        n = sum(1 for dp, _, fs in os.walk(ROOT) for f in fs
+                if f.endswith(".swift"))
+        log("✅ 已从上游 OpenMinis/main 还原干净源码（%d 个 Swift 文件）" % n)
+    except Exception as e:
+        log("⚠️  上游还原失败（%s），退回仓库当前版本继续" % str(e)[:160])
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def cleanup_artifacts() -> None:
+    """清掉上一轮脚本自己生成的产物（幂等，每轮重新生成）。
+
+    只删我方产物白名单，绝不「还原所有改动」—— 仓库里工作区之外的东西
+    一概不碰，避免误删真实源码。
+    """
+    removed = 0
+    if os.path.isdir(ROOT):
         for dirpath, dirnames, filenames in os.walk(ROOT):
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
             for fn in filenames:
@@ -561,13 +594,23 @@ def restore_pristine_sources() -> None:
                 os.rmdir(os.path.join(ROOT, d))
             except OSError:
                 pass
-        PRISTINE_COMMIT = rc
-        log("✅ 已把 %s 还原到初始提交 %s（清掉上轮产物 %d 个）"
-            % (ROOT, rc[:8], removed))
-    except Exception as e:  # 绝不让还原逻辑拖垮整个移植
-        log("⚠️  源码还原异常（已跳过）: %s" % e)
+    if removed:
+        log("✅ 已清掉上一轮产物 %d 个" % removed)
 
 
+def snapshot_baseline() -> None:
+    """转换前给全部 Swift 文件拍快照，作为结构自检的对照基线。
+
+    同样是因为浅克隆：git show HEAD:path 拿到的是上一轮的移植结果，
+    不是干净原文。干脆不依赖 git，直接在内存里留一份「转换前」的内容。
+    """
+    BASELINE.clear()
+    for path in swift_files(ROOT):
+        try:
+            BASELINE[path] = read(path)
+        except OSError:
+            continue
+    log("✅ 已记录转换前基线：%d 个文件" % len(BASELINE))
 # ------------------------------------------- 4. 删除 iOS16 装饰性修饰符
 
 # 纯单行参数式修饰符，按行删是安全的
@@ -1323,7 +1366,8 @@ def inject_compat() -> str:
 
     # 5) 算出 Xcode 到底会去哪个目录找这个文件（决定 write_compat 写到哪）
     sub = resolve_compat_dir(text, ref)
-    log("📍 兼容层应放在 %s" % (os.path.join(ROOT, sub) if sub else ROOT))
+    log("📍 [仅提示, 非错误] 兼容层文件将写入: %s"
+        % os.path.join(ROOT, sub or ""))
 
     write(PBX, text)
     return sub
@@ -1337,7 +1381,12 @@ def main() -> None:
         sys.exit(0)
 
     log("=== OpenMinis -> iOS 15 移植（第二阶段）%s ===" % SCRIPT_VERSION)
-    restore_pristine_sources()
+    # 1. 从上游拉干净原版覆盖 src/ios（浅克隆下 git 历史不可信，必须这么干）
+    restore_from_upstream()
+    cleanup_artifacts()
+    # 2. 给干净基线拍快照（结构自检的对照物，不依赖 git）
+    snapshot_baseline()
+    # 3. 全部转换
     fix_applocalized()
     strip_localizedstringresource()
     restore_intent_props()

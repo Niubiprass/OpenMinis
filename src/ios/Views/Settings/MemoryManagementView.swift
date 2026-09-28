@@ -21,9 +21,37 @@ struct MemoryManagementView: View {
     var body: some View {
         List {
             Section {
+                Toggle(AppLocalized("settings_memory_global_enabled"), isOn: $memoryGlobalEnabled)
+            } footer: {
+                Text(AppLocalized("settings_memory_global_enabled_footer"))
+            }
 
             ForEach(memoryFiles) { file in
                 NavigationLink {
+                    MemoryFileEditView(fileName: file.name, isGlobal: file.isGlobal)
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(file.name)
+                                .font(.body)
+                            if !file.fileSize.isEmpty {
+                                Text(file.fileSize)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                            Text(file.modifiedDate)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        if !file.preview.isEmpty {
+                            Text(file.preview)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
             }
             .onDelete { offsets in
                 deleteFiles(at: offsets)
@@ -35,6 +63,15 @@ struct MemoryManagementView: View {
             if #available(iOS 17.0, *), iCloudSyncEnabled {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        Button {
+                            Task { await forceSyncMemory() }
+                        } label: {
+                            Label(AppLocalized("Force iCloud Sync"),
+                                  systemImage: "arrow.triangle.2.circlepath.icloud")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
                 }
             }
         }

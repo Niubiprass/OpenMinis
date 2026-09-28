@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 import UIKit
 
@@ -33,6 +32,10 @@ struct EnvironmentVariablesView: View {
     var body: some View {
         List {
             Section {
+                Toggle("Privacy Mode", isOn: $privacy.enabled)
+            } footer: {
+                Text("When enabled, any environment variable value that appears in shell-execute output is replaced with a masked form (e.g. `sk-1********ajhks`) before reaching the model. Values shorter than 8 characters become all `*`. The user-visible output in chat is unchanged.")
+            }
 
             if store.entries.isEmpty {
                 Section {
@@ -64,6 +67,10 @@ struct EnvironmentVariablesView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
+                    showingAddSheet = true
+                } label: {
+                    Image(systemName: "plus")
+                }
             }
         }
         .sheet(isPresented: $showingAddSheet) {
@@ -107,6 +114,13 @@ struct EnvironmentVariablesView: View {
             ),
             presenting: overwriteConfirm
         ) { request in
+            Button(AppLocalized("Replace"), role: .destructive) {
+                store.update(id: request.entryId, key: request.key, value: request.newValue)
+            }
+            Button(AppLocalized("Cancel"), role: .cancel) {}
+        } message: { request in
+            Text(AppLocalized("\"\(request.key)\" already has a value. Replace it with \"\(request.newValue)\"?"))
+        }
         .sheet(item: $editingEntry) { entry in
             EnvVarFormSheet(
                 mode: .edit,
@@ -148,9 +162,29 @@ struct EnvironmentVariablesView: View {
 
             HStack(spacing: 10) {
                 Button {
+                    if isRevealed {
+                        revealedKeys.remove(entry.id)
+                    } else {
+                        revealedKeys.insert(entry.id)
+                    }
+                } label: {
+                    Image(systemName: isRevealed ? "eye.slash" : "eye")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                }
                 .buttonStyle(.plain)
 
                 Button {
+                    UIPasteboard.general.string = "\(entry.key)=\(currentValue)"
+                    withAnimation { copiedId = entry.id }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        withAnimation { if copiedId == entry.id { copiedId = nil } }
+                    }
+                } label: {
+                    Image(systemName: copiedId == entry.id ? "checkmark" : "doc.on.clipboard")
+                        .font(.system(size: 13))
+                        .foregroundStyle(copiedId == entry.id ? .green : .secondary)
+                }
                 .buttonStyle(.plain)
             }
         }
@@ -194,9 +228,22 @@ private struct EnvVarFormSheet: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 Section {
+                    TextField("NAME", text: Binding(
+                        get: { key },
+                        set: { key = $0.uppercased() }
+                    ))
+                    .font(.system(.body, design: .monospaced))
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .focused($focusedField, equals: .key)
+                    .submitLabel(.next)
+                    .onSubmit { focusedField = .value }
+                } header: {
+                    Text("Name")
+                } footer: {
                     if !key.isEmpty && !isValid {
                         Text("Must start with a letter and contain only letters, digits, and underscores.")
                             .foregroundStyle(.red)
@@ -230,6 +277,18 @@ private struct EnvVarFormSheet: View {
                 if mode == .edit, onDelete != nil {
                     Section {
                         Button(role: .destructive) {
+                            showingDeleteConfirm = true
+                        } label: {
+                            Label {
+                                Text("Delete Variable")
+                            } icon: {
+                                Image(systemName: "trash.fill")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 21, height: 21)
+                                    .background(.red, in: Circle())
+                            }
+                        }
                     }
                 }
             }
@@ -248,6 +307,7 @@ private struct EnvVarFormSheet: View {
                 }
             }
         }
+        .presentationDetents([.medium, .large])
         .alert(
             AppLocalized("Delete this variable?"),
             isPresented: $showingDeleteConfirm

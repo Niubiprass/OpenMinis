@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 //
 //  AudioPlayback.swift
 //  MinisApp
@@ -277,6 +276,7 @@ struct AudioPiPCapsule: View {
                     .sheet(isPresented: $player.showFullPreview) {
                         if let url = player.activeFileURL {
                             MinisAudioPreviewView(fileURL: url)
+                                .presentationDetents([.large])
                         }
                     }
                     .onAppear {
@@ -291,16 +291,37 @@ struct AudioPiPCapsule: View {
     private var capsuleContent: some View {
         HStack {
             Button {
+                player.showFullPreview = true
+            } label: {
+                Image(systemName: "waveform")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, height: 40)
+            }
             .buttonStyle(.plain)
 
             Spacer()
 
             Button {
+                player.togglePlayPause()
+            } label: {
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 36, height: 40)
+            }
             .buttonStyle(.plain)
 
             Spacer()
 
             Button {
+                player.stop()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, height: 40)
+            }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
@@ -363,12 +384,28 @@ struct MinisAudioPlayerView: View {
                     .font(.caption)
                 Spacer()
                 Button {
+                    showPreview = true
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption2)
+                        .foregroundColor(ChatColors.secondaryText)
+                }
                 .buttonStyle(.plain)
             }
             .foregroundColor(ChatColors.secondaryText)
 
             HStack(spacing: 10) {
                 Button {
+                    if isActive {
+                        player.togglePlayPause()
+                    } else {
+                        player.play(url: fileURL)
+                    }
+                } label: {
+                    Image(systemName: isActive && player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(.accentColor)
+                }
                 .buttonStyle(.plain)
 
                 if isActive && player.isLoaded {
@@ -404,6 +441,7 @@ struct MinisAudioPlayerView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .sheet(isPresented: $showPreview) {
             MinisAudioPreviewView(fileURL: fileURL)
+                .presentationDetents([.large])
         }
     }
 

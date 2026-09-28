@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 
 /// Phase 2 §3 — add/edit sheet for one user-authored thinking rule (design §7.5/§7.6).
@@ -86,7 +85,7 @@ struct ThinkingRuleEditorView: View {
     @State private var customHighValue: String = ""
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 Section("Name") {
                     TextField("Rule name", text: $label)
@@ -94,6 +93,15 @@ struct ThinkingRuleEditorView: View {
                 }
 
                 Section {
+                    Toggle("All models", isOn: $scopeIsAllModels)
+                    if !scopeIsAllModels {
+                        TextField("Model pattern (e.g. deepseek-v4*)", text: $pattern)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+                } header: {
+                    Text("Applies to")
+                } footer: {
                     if !scopeIsAllModels {
                         // The most likely user error is a pattern that matches nothing,
                         // and its failure is silent (the rule just never fires), so say
@@ -103,8 +111,26 @@ struct ThinkingRuleEditorView: View {
                 }
 
                 Section {
+                    Picker("Format", selection: $choice) {
+                        ForEach(FormatChoice.allCases) { c in
+                            Text(c.title).tag(c)
+                        }
+                    }
+                    Text(choice.explanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    formatFields
+                } header: {
+                    Text("What to send")
+                }
 
                 Section {
+                    Text(previewText)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                } header: {
+                    Text("Request preview")
+                } footer: {
                     Text("The thinking fields this rule adds to a request at the High level.")
                 }
             }

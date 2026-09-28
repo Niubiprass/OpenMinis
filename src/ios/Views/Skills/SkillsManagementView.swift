@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 //
 //  SkillsManagementView.swift
 //  MinisApp
@@ -73,6 +72,29 @@ struct SkillsManagementView: View {
 
             ForEach(filteredSkills) { skill in
                 NavigationLink {
+                    SkillDetailView(skillId: skill.id)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 4) {
+                                Text(skill.name).font(.body)
+                                importSourceBadge(skill.importSource)
+                            }
+                            if !skill.description.isEmpty {
+                                Text(skill.description)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                        Spacer()
+                        Toggle("", isOn: Binding(
+                            get: { skill.isEnabled },
+                            set: { store.setEnabled(skill.id, enabled: $0) }
+                        ))
+                        .labelsHidden()
+                    }
+                }
             }
             .onDelete { offsets in
                 let ids = offsets.map { filteredSkills[$0].id }
@@ -88,9 +110,51 @@ struct SkillsManagementView: View {
                 // Sort menu — same structure as the file browser's (sort-key
                 // picker + direction toggle), persisted via AppStorage.
                 Menu {
+                    Picker(selection: $sortKeyRaw) {
+                        ForEach(SkillSortKey.allCases) { key in
+                            Text(key.label).tag(key.rawValue)
+                        }
+                    } label: {
+                        Text("Sort By")
+                    }
+                    Button {
+                        sortAscending.toggle()
+                    } label: {
+                        Label(
+                            sortAscending ? "Ascending" : "Descending",
+                            systemImage: sortAscending ? "arrow.up" : "arrow.down"
+                        )
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button {
+                        showImportSheet = true
+                    } label: {
+                        Label(AppLocalized("Import Skill"), systemImage: "square.and.arrow.down")
+                    }
+                    Button {
+                        showSkillsBrowser = true
+                    } label: {
+                        Label(AppLocalized("Minis Skills"), systemImage: "globe")
+                    }
+                    // Skill iCloud sync is wired through SyncV2; hide the
+                    // force-sync entry entirely when the user has the
+                    // feature off in Settings (no-op otherwise).
+                    if #available(iOS 17.0, *), iCloudSyncEnabled {
+                        Divider()
+                        Button {
+                            forceSyncAllSkills()
+                        } label: {
+                            Label(AppLocalized("Force iCloud Sync All"), systemImage: "icloud.and.arrow.up")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                }
             }
         }
         .sheet(isPresented: $showImportSheet) {
@@ -165,7 +229,7 @@ private struct ImportSkillSheet: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 Picker("Import Method", selection: $importMode) {
                     ForEach(ImportMode.allCases, id: \.self) { mode in
@@ -433,6 +497,13 @@ private struct SkillDetailView: View {
                             Text(skill.name)
                                 .foregroundStyle(skill.name == SkillStore.defaultSkillName ? .red : .secondary)
                             Button {
+                                editingName = skill.name == SkillStore.defaultSkillName ? "" : skill.name
+                                isEditingName = true
+                            } label: {
+                                Image(systemName: "pencil")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                             .buttonStyle(.plain)
                         }
                     }
@@ -486,9 +557,29 @@ private struct SkillDetailView: View {
 
                     Button { showFilePicker = true } label: {
                         Label {
+                            Text("Update from File…")
+                        } icon: {
+                            SettingsActionIcon(systemImage: "doc.badge.arrow.up", color: .blue)
+                        }
                     }
 
                     Button {
+                        store.rescanFromDisk(skillId)
+                        showRescanDone = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showRescanDone = false }
+                    } label: {
+                        HStack {
+                            Label {
+                                Text("Rescan from Disk")
+                            } icon: {
+                                SettingsActionIcon(systemImage: "arrow.clockwise", color: .orange)
+                            }
+                            Spacer()
+                            if showRescanDone {
+                                Text(AppLocalized("Done")).foregroundStyle(.green).font(.caption)
+                            }
+                        }
+                    }
 
                     // Same iCloud-toggle gate the parent SkillsManagementView
                     // plus-menu uses (47fd61ef). Hide the button outright
@@ -496,6 +587,23 @@ private struct SkillDetailView: View {
                     // (markDirty + scheduleSend on a disabled engine).
                     if #available(iOS 17.0, *), iCloudSyncEnabled {
                         Button {
+                            store.forceMarkDirty(skillId)
+                            SyncCore.shared.scheduleSend(delay: 0.5)
+                            showForceSyncDone = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showForceSyncDone = false }
+                        } label: {
+                            HStack {
+                                Label {
+                                    Text(AppLocalized("Force iCloud Sync"))
+                                } icon: {
+                                    SettingsActionIcon(systemImage: "icloud.and.arrow.up", color: .indigo)
+                                }
+                                Spacer()
+                                if showForceSyncDone {
+                                    Text(AppLocalized("Queued")).foregroundStyle(.green).font(.caption)
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -513,6 +621,16 @@ private struct SkillDetailView: View {
                 Section("Files") {
                     ForEach(skillFiles, id: \.self) { relativePath in
                         NavigationLink {
+                            SkillFileDetailView(skillId: skillId, relativePath: relativePath)
+                        } label: {
+                            Label {
+                                Text(relativePath)
+                                    .font(.system(.subheadline, design: .monospaced))
+                            } icon: {
+                                Image(systemName: fileIcon(for: relativePath))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
 
@@ -525,6 +643,14 @@ private struct SkillDetailView: View {
                 // ── Delete ───────────────────────────────────────────
                 Section {
                     Button(role: .destructive) {
+                        showDeleteConfirm = true
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Label(AppLocalized("Delete Skill"), systemImage: "trash")
+                            Spacer()
+                        }
+                    }
                 }
             } else {
                 Text(AppLocalized("Skill not found.")).foregroundStyle(.secondary)
@@ -565,6 +691,14 @@ private struct SkillDetailView: View {
             }
         }
         .alert(AppLocalized("Delete Skill"), isPresented: $showDeleteConfirm) {
+            Button(AppLocalized("Delete"), role: .destructive) {
+                store.deleteSkill(skillId)
+                dismiss()
+            }
+            Button(AppLocalized("Cancel"), role: .cancel) {}
+        } message: {
+            Text(AppLocalized("Are you sure you want to delete this skill? This action cannot be undone."))
+        }
     }
 
     private func usageFrequencyLabel(_ freq: SkillStore.UsageFrequency) -> String {
@@ -778,7 +912,7 @@ struct MinisSkillsBrowserView: View {
     @StateObject private var coordinator = SkillBrowserCoordinator()
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ZStack {
                 SkillBrowserWebView(coordinator: coordinator)
                     .ignoresSafeArea(edges: .bottom)
@@ -808,6 +942,13 @@ struct MinisSkillsBrowserView: View {
                 }
             }
             .alert(AppLocalized("Skill Already Exists"), isPresented: $coordinator.showOverwriteConfirm) {
+                Button(AppLocalized("Update"), role: .destructive) {
+                    coordinator.confirmOverwrite()
+                }
+                Button(AppLocalized("Cancel"), role: .cancel) {}
+            } message: {
+                Text(AppLocalized("\"\(coordinator.pendingOverwriteName)\" is already installed. Update to the latest version?"))
+            }
         }
     }
 

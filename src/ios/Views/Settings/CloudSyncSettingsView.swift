@@ -34,9 +34,35 @@ struct CloudSyncSettingsView: View {
             refresh()
         }
         .alert("Delete iCloud Data?", isPresented: $showDeleteCloudStep1) {
+            Button("Cancel", role: .cancel) {}
+            Button("Continue") {
+                // Small delay so the first alert fully dismisses before the second
+                // appears — otherwise SwiftUI sometimes swallows the second alert.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    showDeleteCloudStep2 = true
+                }
+            }
+        } message: {
+            Text("This will permanently delete everything Minis has uploaded to your iCloud account, across ALL of your devices:\n\n• Chat sessions & messages\n• Session files & attachments\n• Skills\n• Provider configurations\n• Environment variables\n\nThis device's local data will NOT be deleted — only the cloud copy. After the wipe, this device will re-upload its local content to a fresh iCloud zone.")
+        }
         .alert("Are you absolutely sure?", isPresented: $showDeleteCloudStep2) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete iCloud Data", role: .destructive) {
+                performDeleteCloudData()
+            }
+        } message: {
+            Text("This action cannot be undone. All Minis data stored in iCloud will be erased immediately. Other devices signed into the same iCloud account will lose their synced copies on the next sync.\n\nLocal data on this device is safe.")
+        }
         .alert("iCloud Data Deleted", isPresented: $showDeleteCloudDone) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("All Minis data has been removed from iCloud. This device is now re-uploading its local content to a fresh iCloud zone.")
+        }
         .alert("Delete Failed", isPresented: $showDeleteCloudError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deleteCloudError ?? "An unknown error occurred while deleting iCloud data.")
+        }
     }
 
     // MARK: - Sections
@@ -102,6 +128,79 @@ struct CloudSyncSettingsView: View {
 
     private var uploadSection: some View {
         Section {
+            HStack {
+                Text("Name")
+                Spacer()
+                Text(DeviceIdentity.deviceName)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Text("Local Sessions")
+                Spacer()
+                Text("\(localSessionCount)")
+                    .foregroundStyle(.secondary)
+            }
+
+            Toggle(isOn: $engine.syncSessions) {
+                HStack {
+                    settingsIcon("bubble.left.and.bubble.right", color: .blue)
+                    Text("Chat Sessions")
+                    Spacer()
+                    Text(formatSize(sessionsSize))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Picker(selection: Binding(
+                get: { engine.maxSyncFileSize },
+                set: { engine.maxSyncFileSize = $0 }
+            )) {
+                Text("Not Sync").tag(0)
+                Text("512 KB").tag(512 * 1024)
+                Text("1 MB").tag(1_048_576)
+                Text("5 MB").tag(5 * 1_048_576)
+                Text("10 MB").tag(10 * 1_048_576)
+                Text("50 MB").tag(50 * 1_048_576)
+                Text("Unlimited").tag(Int.max)
+            } label: {
+                HStack {
+                    settingsIcon("arrow.up.arrow.down.circle", color: .gray)
+                    Text("Max Per-File Size")
+                }
+            }
+            Toggle(isOn: $engine.syncSkills) {
+                HStack {
+                    settingsIcon("puzzlepiece.extension", color: .orange)
+                    Text("Skills")
+                    Spacer()
+                    Text(formatSize(skillsSize))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Toggle(isOn: $engine.syncProviders) {
+                HStack {
+                    settingsIcon("server.rack", color: .teal)
+                    Text("Providers")
+                    Spacer()
+                    Text(formatSize(providersSize))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Toggle(isOn: $engine.syncEnvironments) {
+                HStack {
+                    settingsIcon("terminal", color: .mint)
+                    Text("Environments")
+                    Spacer()
+                    Text(formatSize(envVarsSize))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Upload (This Device)")
+        } footer: {
             Text("Choose which data this device pushes to iCloud. API keys and secrets are synced securely via iCloud Keychain.")
         }
     }
@@ -112,6 +211,12 @@ struct CloudSyncSettingsView: View {
     private var syncedDevicesSection: some View {
         if devices.isEmpty {
             Section {
+                Text("No other devices found yet. Devices appear here after they enable iCloud Sync.")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            } header: {
+                Text("Synced Devices (Download)")
+            }
         } else {
             ForEach(devices) { device in
                 DeviceSyncSection(device: device, engine: engine)
@@ -124,8 +229,27 @@ struct CloudSyncSettingsView: View {
     private var advancedSection: some View {
         Section("Advanced") {
             Button {
+                showSyncConfirm = true
+            } label: {
+                HStack {
+                    settingsIcon("arrow.triangle.2.circlepath.icloud", color: .blue)
+                    Text("Force Full Sync")
+                        .foregroundStyle(Color.primary)
+                    if case .syncing = engine.syncStatus {
+                        Spacer()
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+            }
             .disabled(!engine.isEnabled || engine.syncStatus == .syncing)
             .confirmationDialog("Force Full Sync?", isPresented: $showSyncConfirm) {
+                Button("Sync Now") {
+                    Task { await engine.forceFullSync() }
+                }
+            } message: {
+                Text("This will re-download all sync data from iCloud, which may take 10–30 seconds and consume significant network traffic. Wi-Fi is recommended.\n\nYour local sessions, skills, and files are not affected.")
+            }
         }
     }
 
@@ -133,6 +257,24 @@ struct CloudSyncSettingsView: View {
 
     private var dangerZoneSection: some View {
         Section {
+            Button {
+                showDeleteCloudStep1 = true
+            } label: {
+                HStack {
+                    settingsIcon("trash", color: .red)
+                    Text("Delete iCloud Data")
+                        .foregroundStyle(Color.primary)
+                    if isDeletingCloud {
+                        Spacer()
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+            }
+            .disabled(isDeletingCloud)
+        } header: {
+            Text("Danger Zone")
+        } footer: {
             Text("Permanently erase all Minis data from iCloud. Local data on this device is not affected.")
         }
     }
@@ -257,6 +399,44 @@ private struct DeviceSyncSection: View {
 
     var body: some View {
         Section {
+            // Enable toggle with device info
+            Toggle(isOn: Binding(
+                get: { engine.isDeviceSyncEnabled(device.id) },
+                set: { engine.setDeviceSyncEnabled(device.id, enabled: $0) }
+            )) {
+                HStack {
+                    Image(systemName: deviceIcon)
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(device.deviceName)
+                        HStack(spacing: 8) {
+                            Text(device.osVersion)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            Text("Last seen: \(Self.relativeTime(device.lastSeen))")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+            }
+
+            // Content type toggles — same style as Upload section
+            if isEnabled {
+                ForEach(Array(availableTypes.enumerated()), id: \.offset) { _, item in
+                    Toggle(isOn: Binding(
+                        get: { engine.isDeviceContentEnabled(device.id, type: item.type) },
+                        set: { engine.setDeviceContentEnabled(device.id, type: item.type, enabled: $0) }
+                    )) {
+                        HStack {
+                            settingsIcon(item.icon, color: item.color)
+                            Text(item.label)
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Download (\(device.deviceName))")
+        }
     }
 }
 
@@ -305,12 +485,21 @@ struct RemoteDeviceSessionsView: View {
                                 .controlSize(.small)
                         } else {
                             Button {
+                                forkSession(session)
+                            } label: {
+                                Label("Fork", systemImage: "arrow.branch")
+                                    .font(.caption)
+                            }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                         }
                     }
                     .contextMenu {
                         Button {
+                            forkSession(session)
+                        } label: {
+                            Label("Fork Session", systemImage: "arrow.branch")
+                        }
                     }
                 }
             }
@@ -321,6 +510,12 @@ struct RemoteDeviceSessionsView: View {
             Task { sessions = await ChatStore.shared.listRemoteSessions(deviceId: deviceId) }
         }
         .alert("Session Forked", isPresented: $showForkedAlert) {
+            Button("OK") {}
+        } message: {
+            if let s = forkedSession {
+                Text("\"\(s.title ?? AppLocalized("Untitled"))\" has been copied to your sessions. You can find it in the main session list.")
+            }
+        }
     }
 
     private func forkSession(_ session: ChatSession) {
@@ -375,6 +570,14 @@ struct RemoteSkillsListView: View {
                                 .foregroundStyle(.green)
                         } else {
                             Button {
+                                Task {
+                                    let ok = await SessionForkManager.shared.copyRemoteSkill(skillId: skill.id, deviceId: deviceId)
+                                    if ok { copiedIds.insert(skill.id) }
+                                }
+                            } label: {
+                                Text("Copy to My Device")
+                                    .font(.caption)
+                            }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                         }
@@ -426,6 +629,14 @@ struct RemoteMemoriesListView: View {
                                 .foregroundStyle(.green)
                         } else {
                             Button {
+                                Task {
+                                    let ok = await SessionForkManager.shared.copyRemoteMemory(memoryId: memory.id, deviceId: deviceId)
+                                    if ok { copiedIds.insert(memory.id) }
+                                }
+                            } label: {
+                                Text("Copy to My Device")
+                                    .font(.caption)
+                            }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                         }
@@ -511,6 +722,14 @@ struct SyncLogView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
+                    let report = store.exportSanitizedReport()
+                    let tempURL = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("minis-sync-diagnostic.txt")
+                    try? report.write(to: tempURL, atomically: true, encoding: .utf8)
+                    shareItem = ShareFileItem(url: tempURL)
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
                 .disabled(store.entries.isEmpty)
 
                 Button("Clear") {

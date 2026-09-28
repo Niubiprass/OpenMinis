@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 //
 //  MCPFormSheet.swift
 //  MinisApp
@@ -85,7 +84,7 @@ struct MCPFormSheet: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 Section {
                     TextField(AppLocalized("Server name"), text: $name)
@@ -118,6 +117,23 @@ struct MCPFormSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        Button {
+                            // Defer the side effect to the next runloop tick: on
+                            // iPad the toolbar Menu's own dismissal otherwise races
+                            // the pasteboard write / sheet present and swallows it,
+                            // so the tap appeared to do nothing.
+                            DispatchQueue.main.async { copyJSON() }
+                        } label: {
+                            Label(AppLocalized("Copy JSON"), systemImage: "doc.on.doc")
+                        }
+                        Button {
+                            DispatchQueue.main.async { shareJSON() }
+                        } label: {
+                            Label(AppLocalized("Share JSON"), systemImage: "square.and.arrow.up")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
                     .disabled(!canSave)   // need a name + a transport to export anything
                 }
             }
@@ -185,6 +201,86 @@ struct MCPFormSheet: View {
     @ViewBuilder
     private var oauthSection: some View {
         Section {
+            Picker(AppLocalized("Authorization"), selection: $authMode) {
+                ForEach(AuthMode.allCases) { m in
+                    Text(m.rawValue).tag(m)
+                }
+            }
+            if authMode == .oauthStatic {
+                TextField(AppLocalized("Client ID"), text: $oauthClientId)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                SecureField(AppLocalized("Client Secret (optional)"), text: $oauthClientSecret)
+                    // [T-provider-label-keyboard] Same AutoFill opt-out as the
+                    // provider form. This is the textbook trigger shape: a
+                    // "Client ID" TextField directly above a SecureField reads
+                    // to iOS as a username/password pair, so AutoFill hangs the
+                    // password bar on the Client ID field. Unreported so far,
+                    // but structurally identical to the provider-Label report.
+                    .textContentType(.oneTimeCode)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                TextField(AppLocalized("Authorization Endpoint (https://…/authorize)"), text: $oauthAuthEndpoint)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                TextField(AppLocalized("Token Endpoint (https://…/token)"), text: $oauthTokenEndpoint)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                TextField(AppLocalized("Scopes (space-separated)"), text: $oauthScopes)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                // [T-mcp-oauth-loopback] Default is the standardized loopback
+                // address — shown as the placeholder; leave empty to use it.
+                // Editable for providers that need a different port/path or a
+                // custom-scheme redirect (auto-falls back to
+                // ASWebAuthenticationSession for non-localhost schemes).
+                TextField(MCPOAuthController.defaultRedirectURI, text: $oauthRedirectURI)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+
+                HStack {
+                    if isAuthorized {
+                        Label(AppLocalized("Authorized"), systemImage: "checkmark.seal.fill")
+                            .foregroundStyle(.green)
+                            .font(.subheadline)
+                    } else {
+                        Label(AppLocalized("Not authorized"), systemImage: "xmark.seal")
+                            .foregroundStyle(.secondary)
+                            .font(.subheadline)
+                    }
+                    Spacer()
+                    if isAuthorized {
+                        Button(AppLocalized("Sign Out"), role: .destructive) {
+                            MCPOAuthController.signOut(server: name.trimmingCharacters(in: .whitespaces))
+                            isAuthorized = false
+                        }
+                        .font(.subheadline)
+                    }
+                    Button {
+                        Task { await runAuthorize() }
+                    } label: {
+                        if isAuthorizing {
+                            ProgressView()
+                        } else {
+                            Text(isAuthorized ? AppLocalized("Re-authorize") : AppLocalized("Authorize…"))
+                        }
+                    }
+                    .disabled(isAuthorizing || !canSave || oauthClientId.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                if let oauthError {
+                    Text(oauthError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+        } header: {
+            Text("Authentication")
+        } footer: {
             if authMode == .oauthStatic {
                 Text("Standard OAuth Authorization Code + PKCE with your own app credentials. Register \(MCPOAuthController.defaultRedirectURI) as the Redirect URI in your OAuth client (Google: create a \"Web application\" or \"Desktop\" client — localhost redirects are accepted). Client Secret and tokens are stored in the device Keychain only — they never sync to iCloud, so other devices authorize separately.")
             }
@@ -220,9 +316,20 @@ struct MCPFormSheet: View {
                     .textInputAutocapitalization(.never)
             }
             Section {
+                keyValueEditor($env, keyPlaceholder: AppLocalized("Name"),
+                               valuePlaceholder: AppLocalized("Value"),
+                               showEnvPicker: true)
+            } header: {
+                Text("Environment Variables")
+            } footer: {
                 Text("Use the braces button to insert a reference to an App environment variable as $$NAME. Its value is filled in at runtime.")
             }
             Section {
+                TextField(AppLocalized("Default 60"), text: $startupTimeoutText)
+                    .keyboardType(.numberPad)
+            } header: {
+                Text("Startup timeout (seconds)")
+            } footer: {
                 Text("How long to wait for this server's first initialize. Raise it for slow-starting servers (e.g. uvx). Leave blank for the default (60s). Minis setting, not part of the MCP protocol.")
             }
         }
@@ -251,6 +358,11 @@ struct MCPFormSheet: View {
                     // Explicit per-row delete: empty rows go immediately; rows
                     // with content ask first (swipe-to-delete still works too).
                     Button {
+                        requestDelete(pair, in: pairs)
+                    } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .foregroundStyle(.red)
+                    }
                     .buttonStyle(.plain)   // keep it tap-isolated inside the row
                     .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
                     .accessibilityLabel(Text("Delete row"))
@@ -260,6 +372,10 @@ struct MCPFormSheet: View {
                 pairs.wrappedValue.remove(atOffsets: offsets)
             }
             Button {
+                pairs.wrappedValue.append(KeyValue())
+            } label: {
+                Label(AppLocalized("Add"), systemImage: "plus.circle")
+            }
         }
         .confirmationDialog(
             Text("Delete this environment variable?"),
@@ -316,6 +432,19 @@ struct MCPFormSheet: View {
     /// (a base + token segment is contiguous).
     private func envReferenceMenu(into value: Binding<String>, separator: String = " ") -> some View {
         Menu {
+            if appEnvKeys.isEmpty {
+                Text("No App environment variables — add them in Settings → Environment Variables")
+            } else {
+                ForEach(appEnvKeys, id: \.self) { key in
+                    Button("$$\(key)") {
+                        insertEnvReference(key, into: value, separator: separator)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "curlybraces")
+                .foregroundStyle(.secondary)
+        }
         .accessibilityLabel(Text("Insert App environment variable reference"))
     }
 

@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 import AVFoundation
 
@@ -45,7 +44,7 @@ struct ModelQuickTestSheet: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     header
@@ -64,6 +63,10 @@ struct ModelQuickTestSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
+                        model.runAll()
+                    } label: {
+                        Label("Run again", systemImage: "arrow.clockwise")
+                    }
                     .disabled(model.isRunning)
                 }
             }
@@ -425,6 +428,10 @@ private struct TestCard: View {
 
         case .audio(let data):
             Button {
+                onPlay(data)
+            } label: {
+                Label("Play", systemImage: "play.circle.fill").font(.title3)
+            }
             .buttonStyle(.borderless)
 
         case .transcript(let spoken, let heard):

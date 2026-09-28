@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 import Combine
 
@@ -104,6 +103,10 @@ struct AssistantBlockView: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.14), lineWidth: 0.5))
             .contextMenu {
                 Button {
+                    UIPasteboard.general.string = block.content
+                } label: {
+                    Label(AppLocalized("Copy Error"), systemImage: "doc.on.doc")
+                }
             }
         }
     }
@@ -375,6 +378,19 @@ struct ToolCapsuleView: View {
                 // Stop button for running commands
                 if case .running = block.toolStatus {
                     Button {
+                        onStop?()
+                    } label: {
+                        // Visual: 10×10 red square unchanged. Hit area enlarged to
+                        // 24×24 via an expanded contentShape, while the negative
+                        // padding pins the *layout* footprint back to 18×18 so the
+                        // capsule width/height is identical to before.
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(.red)
+                            .frame(width: 10, height: 10)
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                            .padding(-3)
+                    }
                     .buttonStyle(.plain)
                 }
             }
@@ -417,6 +433,10 @@ struct ToolCapsuleView: View {
                 )) {
                     // [T-ios-tool-bubble-longpress-menu]
                     Button {
+                        UIPasteboard.general.string = toolDetailsClipboard
+                    } label: {
+                        Label(AppLocalized("Copy Tool Details"), systemImage: "doc.on.doc")
+                    }
                     // [T-ios-retry-hide-when-processing] Only expose the
                     // destructive Re-run action when the agent loop is idle.
                     // Re-running mid-stream would tear down an in-flight turn
@@ -426,6 +446,20 @@ struct ToolCapsuleView: View {
                     if !vm.isProcessing {
                         Divider()
                         Button(role: .destructive) {
+                            // Re-run the whole assistant turn that owns this
+                            // tool_use. Routed via notification so we don't have
+                            // to thread a vm closure through the 4-layer cell
+                            // hosting chain — AIChatView's RerunFromToolBlockListener
+                            // maps blockId → owning assistant msg → preceding user
+                            // msg → vm.retryFromMessage.
+                            NotificationCenter.default.post(
+                                name: .rerunFromToolBlock,
+                                object: nil,
+                                userInfo: ["blockId": block.id]
+                            )
+                        } label: {
+                            Label(AppLocalized("Re-run From Here"), systemImage: "arrow.clockwise")
+                        }
                     }
                     // [T-ios-memory-write-revoke] Undo the daily-log entry this
                     // memory_write produced, without a detour through
@@ -434,6 +468,10 @@ struct ToolCapsuleView: View {
                     if isRevocableMemoryWrite {
                         Divider()
                         Button(role: .destructive) {
+                            showRevokeMemoryAlert = true
+                        } label: {
+                            Label(AppLocalized("Undo This Memory Write"), systemImage: "trash.slash")
+                        }
                     }
                 }
                 .equatable()
@@ -444,6 +482,12 @@ struct ToolCapsuleView: View {
             // background (deep-links to Settings → Permissions → Background).
             if showBgSuspendedHint {
                 Button {
+                    showBgHintAlert = true
+                } label: {
+                    Image(systemName: "info.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.yellow)
+                }
                 .buttonStyle(.plain)
                 .padding(.leading, 6)
                 .accessibilityLabel(Text(AppLocalized("Background suspension info")))
@@ -454,6 +498,20 @@ struct ToolCapsuleView: View {
             AppLocalized("Task may have been paused"),
             isPresented: $showBgHintAlert
         ) {
+            Button(AppLocalized("Go Enable")) {
+                // Deep-link to Settings → Permissions → Background, nudging the
+                // recommended rows ON — they highlight only while still OFF
+                // (= minis://settings/background?focus=…:true,…:true). Location
+                // Tracking is included so the background heartbeat that keeps the
+                // task Live Activity refreshing in real time gets enabled too.
+                DeepLinkCoordinator.shared.setFocus(
+                    rawQueryValue: "enhancedBackgroundExecution:true,backgroundSpeakEnabled:true,locationTrackingEnabled:true")
+                DeepLinkCoordinator.shared.pendingSettingsTarget = .background
+            }
+            Button(AppLocalized("Maybe Later"), role: .cancel) {}
+        } message: {
+            Text(AppLocalized("This tool may have been paused by the system while running in the background. Enable enhanced background execution to improve background task reliability."))
+        }
         // [T-ios-memory-write-revoke] Mirrors the Revoke Memory confirmation in
         // SessionMemoryView: confirm, then report the outcome in place — the
         // user stays in the transcript, no navigation. The bubble itself is
@@ -462,6 +520,21 @@ struct ToolCapsuleView: View {
             AppLocalized("Revoke Memory"),
             isPresented: $showRevokeMemoryAlert
         ) {
+            Button(AppLocalized("Cancel"), role: .cancel) {}
+            Button(AppLocalized("Revoke"), role: .destructive) {
+                // The menu item is gated on the cheap enum+args check, so the
+                // `content` parse can still come back empty here (malformed or
+                // still-streaming args). Report that rather than failing silently.
+                if let written = memoryWriteContent {
+                    revokeMemoryResult = MemoryWriteRevoker.revoke(writtenContent: written)
+                } else {
+                    revokeMemoryResult = AppLocalized("No written content to revoke.")
+                }
+                showRevokeMemoryResultAlert = true
+            }
+        } message: {
+            Text(AppLocalized("Remove this memory entry from the daily log? This cannot be undone."))
+        }
         .alert(revokeMemoryResult ?? "", isPresented: $showRevokeMemoryResultAlert) {
             Button(AppLocalized("OK")) {}
         }
@@ -980,7 +1053,7 @@ struct ThinkingLevelSheetView: View {
     let onSelect: (ThinkingLevel) -> Void
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 thinkingRow(level: .off, isSelected: !currentLevel.isEnabled)
                 Section {
@@ -996,6 +1069,23 @@ struct ThinkingLevelSheetView: View {
 
     private func thinkingRow(level: ThinkingLevel, isSelected: Bool) -> some View {
         Button {
+            onSelect(level)
+        } label: {
+            HStack {
+                Image("ThinkingIcon")
+                    .resizable()
+                    .frame(width: 16, height: 16)
+                    .opacity(level == .off ? 0.4 : 1.0)
+                Text(level.displayName)
+                    .foregroundStyle(.primary)
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.blue)
+                        .fontWeight(.semibold)
+                }
+            }
+        }
     }
 }
 
@@ -1008,6 +1098,17 @@ private struct ToolCopyButton: View {
 
     var body: some View {
         Button {
+            UIPasteboard.general.string = content()
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                copied = false
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 11))
+                .frame(width: 16, height: 16)
+                .foregroundStyle(copied ? accentColor : accentColor.opacity(0.4))
+        }
         .animation(.easeInOut(duration: 0.15), value: copied)
     }
 }

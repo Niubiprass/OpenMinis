@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 
 /// iCloud Sync status sheet. Long-lived destination — used during the
@@ -149,10 +148,23 @@ struct SyncMigrationDetailView: View {
                             Spacer().frame(width: 12)
                             if vm.pausedUntil != nil {
                                 Button {
+                                    if #available(iOS 17.0, *) { SyncCore.shared.resume() }
+                                    Task { await refresh() }
+                                } label: {
+                                    Image(systemName: "play.fill")
+                                        .font(.caption2.weight(.semibold))
+                                        .frame(width: 16, height: 16)
+                                }
                                 .buttonStyle(.borderedProminent)
                                 .clipShape(Circle())
                             } else {
                                 Button {
+                                    showPauseDialog = true
+                                } label: {
+                                    Image(systemName: "pause.fill")
+                                        .font(.caption2.weight(.semibold))
+                                        .frame(width: 16, height: 16)
+                                }
                                 .buttonStyle(.bordered)
                                 .clipShape(Circle())
                             }
@@ -173,6 +185,34 @@ struct SyncMigrationDetailView: View {
 
             if vm.v2Enabled {
                 Section {
+                    if vm.pendingPush > 0 {
+                        LabeledContent(AppLocalized("Pending push"), value: "\(vm.pendingPush)")
+                        if vm.pendingPushNew > 0 {
+                            LabeledContent {
+                                Text("\(vm.pendingPushNew)").foregroundStyle(.secondary)
+                            } label: {
+                                Text("· New writes").foregroundStyle(.secondary).font(.callout)
+                            }
+                        }
+                        if vm.pendingPushMigration > 0 {
+                            LabeledContent {
+                                Text("\(vm.pendingPushMigration)").foregroundStyle(.secondary)
+                            } label: {
+                                Text("· Migration backlog").foregroundStyle(.secondary).font(.callout)
+                            }
+                        }
+                    } else {
+                        LabeledContent(AppLocalized("Pending push")) {
+                            Text("Up to date").foregroundStyle(.secondary)
+                        }
+                    }
+                    LabeledContent(AppLocalized("Sent this session"), value: "\(vm.totalSent)")
+                    LabeledContent(AppLocalized("Received this session"), value: "\(vm.totalReceived)")
+                    LabeledContent(AppLocalized("Last send"), value: relative(vm.lastSendAt))
+                    LabeledContent(AppLocalized("Last fetch"), value: relative(vm.lastFetchAt))
+                } header: {
+                    Text("Sync Activity")
+                }
             }
 
             // Opt-in section: V2 is enabled but the user has never
@@ -190,6 +230,21 @@ struct SyncMigrationDetailView: View {
                vm.lastFailureMessage == nil, !vm.isCanceledByUser,
                vm.unmigratedHistoryCount > 0 {
                 Section {
+                    LabeledContent {
+                        Text("\(vm.unmigratedHistoryCount)")
+                            .foregroundStyle(.secondary)
+                    } label: {
+                        Text("Eligible records")
+                    }
+                    Button {
+                        showRequestMigrationConfirm = true
+                    } label: {
+                        Text("Migrate History to iCloud")
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                } header: {
+                    Text("Historical Data")
+                } footer: {
                     Text("Local chats and files created before this build are not pushed to iCloud automatically. Tap above to backfill them — this only needs to run once per device. Already-pushed records are skipped, so it's safe to re-run.")
                         .font(.caption)
                 }
@@ -202,15 +257,126 @@ struct SyncMigrationDetailView: View {
             if vm.migration == nil, vm.v2Enabled,
                vm.lastFailureMessage != nil || vm.isCanceledByUser {
                 Section {
+                    if let err = vm.lastFailureMessage {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Last attempt failed")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.red)
+                            Text(err)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if vm.isCanceledByUser {
+                        Text("Migration canceled. Tap to resume backfilling local history.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button {
+                        showRequestMigrationConfirm = true
+                    } label: {
+                        Text(vm.lastFailureMessage != nil ? "Retry Migration" : "Resume Migration")
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                } header: {
+                    Text("Migration")
+                }
             }
 
             if let m = vm.migration {
                 Section {
+                    LabeledContent("Phase", value: m.phase)
+                    LabeledContent("Status", value: m.status)
+                    progressRow(
+                        title: AppLocalized("Records pushed"),
+                        done: m.pushDone, total: m.pushTotal
+                    )
+                    // [T-icloud-migration-suspended-ui] A deferred phase leaves
+                    // `status` at "in_progress" even though nothing is running,
+                    // so the sheet used to show an active status over a frozen
+                    // counter plus an ETA computed from a rate of zero. Say
+                    // plainly that it is paused and name the one action that
+                    // resumes it, and drop the meaningless estimate.
+                    if m.isSuspended {
+                        HStack(spacing: 8) {
+                            Image(systemName: "pause.circle.fill")
+                                .foregroundStyle(.orange)
+                            Text("Paused — reopen Minis to continue")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        LabeledContent(AppLocalized("Estimated time"), value: estimateETA(remaining: max(0, m.pushTotal - m.pushDone), rps: vm.ratePerSecond))
+                    }
+                    Button(role: .destructive) {
+                        showCancelMigrationConfirm = true
+                    } label: {
+                        Text("Cancel Migration")
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                    // [T-icloud-migration-reset] Escape hatch for a migration
+                    // that no retry can un-stick (OpenMinis#154). Distinct from
+                    // "Force Delete V1 Zone" below: this only discards LOCAL
+                    // progress, nothing on the server.
+                    Button {
+                        showResetMigrationConfirm = true
+                    } label: {
+                        Text("Reset Migration Progress")
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                } header: {
+                    Text("Migration")
+                } footer: {
                     Text("Backfilling pre-v2 history into v2's shared zone. Already-uploaded records stay on iCloud if you cancel.\n\nIf migration is stuck and retrying doesn't help, Reset Migration Progress clears the local progress so it can start over. Your iCloud data is not deleted.")
                         .font(.caption)
                 }
 
                 Section {
+                    LabeledContent(AppLocalized("Reclaimed (v1 records deleted)"), value: "\(m.v1Deleted)")
+                    LabeledContent(AppLocalized("Pending delete"), value: "\(m.v1DeletePending)")
+                    if v1ZoneForceDeletedAtTs > 0 {
+                        // Permanent confirmation row — once the user has
+                        // force-deleted, the destructive action is no
+                        // longer relevant on this device, so we hide
+                        // the button and show a green confirmation
+                        // instead. Survives relaunches via @AppStorage.
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("V1 zone deleted")
+                                    .foregroundStyle(.primary)
+                                Text(AppLocalized("Deleted \(deletedAtRelativeString())"))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } else {
+                        Button(role: .destructive) {
+                            showForceDeleteV1Confirm = true
+                        } label: {
+                            Group {
+                                if forceDeleteV1InProgress {
+                                    HStack(spacing: 8) {
+                                        ProgressView().controlSize(.small)
+                                        Text("Deleting v1 zone…")
+                                    }
+                                } else {
+                                    Text("Force Delete V1 Zone of This Device")
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                        .disabled(forceDeleteV1InProgress)
+                        if let status = forceDeleteV1Status {
+                            Text(status)
+                                .font(.caption)
+                                .foregroundStyle(status.hasPrefix("⚠️") ? .red : .secondary)
+                        }
+                    }
+                } header: {
+                    Text("Reclaim v1 space")
+                } footer: {
                     Text("v1 records are deleted in batches of 100 as their v2 counterparts are confirmed saved, so iCloud usage doesn't double-up during migration.\n\n⚠️ Force-deleting the v1 zone permanently removes ALL legacy records from iCloud and CANNOT be undone. The cloud copy is gone for good. Only proceed if you've confirmed v2 push is at 100% AND every other device of yours has also finished migrating — peers that haven't yet may lose access to legacy data they hadn't received locally.")
                         .font(.caption)
                 }
@@ -229,15 +395,84 @@ struct SyncMigrationDetailView: View {
             iCloudZonesSection
         }
         .confirmationDialog("Request Migration", isPresented: $showRequestMigrationConfirm, titleVisibility: .visible) {
+            Button("Start Migration") {
+                if #available(iOS 17.0, *) {
+                    MigrationEngine.shared.requestMigration()
+                    Task {
+                        await MigrationEngine.shared.runIfNeeded()
+                        await refresh()
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            let count = vm?.unmigratedHistoryCount ?? 0
+            let etaH = max(1, count / (50 * 60))   // 50 records/min ballpark, hours
+            Text(AppLocalized("About \(count) local records will upload to iCloud. Estimated time ~\(etaH) hr depending on iCloud throttling. You can pause or cancel any time."))
+        }
         .confirmationDialog("Cancel Migration?", isPresented: $showCancelMigrationConfirm, titleVisibility: .visible) {
+            Button("Cancel Migration", role: .destructive) {
+                if #available(iOS 17.0, *) {
+                    Task {
+                        await MigrationEngine.shared.cancelMigration()
+                        await refresh()
+                    }
+                }
+            }
+            Button("Keep Migrating", role: .cancel) {}
+        } message: {
+            Text("Already-uploaded records stay on iCloud. Pending history backfill stops; you can request again later.")
+        }
         .confirmationDialog("Reset Migration Progress?", isPresented: $showResetMigrationConfirm, titleVisibility: .visible) {
+            Button("Reset Progress", role: .destructive) {
+                if #available(iOS 17.0, *) {
+                    Task {
+                        await MigrationEngine.shared.resetMigrationProgress()
+                        await refresh()
+                    }
+                }
+            }
+            Button("Keep Current Progress", role: .cancel) {}
+        } message: {
+            Text("Clears this device's migration progress so it can start over — the phase, the pushed-record ledger and the backfill position.\n\nYour iCloud data is NOT deleted and the v1 zone is untouched. Records already uploaded may be re-sent, which iCloud absorbs harmlessly. Use this when migration is stuck and retrying doesn't help.")
+        }
         .confirmationDialog(
             "Force Delete V1 Zone?",
             isPresented: $showForceDeleteV1Confirm,
             titleVisibility: .visible
         ) {
+            Button("Delete V1 Zone", role: .destructive) {
+                if #available(iOS 17.0, *) {
+                    forceDeleteV1InProgress = true
+                    forceDeleteV1Status = nil
+                    Task {
+                        do {
+                            let myDeviceId = DeviceIdentity.deviceId
+                            try await V1FetcherShim.deleteOwnZone(zoneName: "device-\(myDeviceId)")
+                            forceDeleteV1Status = nil
+                            v1ZoneForceDeletedAtTs = Date().timeIntervalSince1970
+                        } catch {
+                            forceDeleteV1Status = "⚠️ Failed: \(error.localizedDescription)"
+                        }
+                        forceDeleteV1InProgress = false
+                        await refresh()
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently deletes ALL legacy v1 records from iCloud. The cloud copy is gone for good — there is no undo. Other devices that haven't finished migrating yet will lose access to any legacy data they hadn't already pulled locally.\n\nOnly proceed if v2 push is at 100% AND every device of yours has finished migrating.")
+        }
         .sheet(isPresented: $showPauseDialog) {
             PauseSyncSheet { hours in
+                if #available(iOS 17.0, *) {
+                    SyncCore.shared.pause(for: TimeInterval(hours * 3600))
+                }
+                showPauseDialog = false
+                Task { await refresh() }
+            } onCancel: {
+                showPauseDialog = false
+            } pauseLabel: { pauseLabel(hours: $0) }
         }
         .safeAreaInset(edge: .bottom) {
             // Bottom breathing room so the trailing section footer doesn't
@@ -285,6 +520,22 @@ struct SyncMigrationDetailView: View {
             titleVisibility: .visible,
             presenting: pendingZoneDelete
         ) { row in
+            // First confirmation — explains what's about to happen. Tap
+            // "Continue" to advance to the second, stronger dialog.
+            Button("Continue", role: .destructive) {
+                let captured = row
+                pendingZoneDelete = nil
+                // Defer to next runloop so the first sheet is fully
+                // dismissed before the second one appears (SwiftUI
+                // refuses to present overlapping confirmationDialogs).
+                DispatchQueue.main.async {
+                    zoneSecondConfirm = captured
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingZoneDelete = nil }
+        } message: { row in
+            Text(zoneDeleteMessage(for: row))
+        }
         .confirmationDialog(
             zoneSecondConfirmTitle,
             isPresented: Binding(
@@ -294,6 +545,15 @@ struct SyncMigrationDetailView: View {
             titleVisibility: .visible,
             presenting: zoneSecondConfirm
         ) { row in
+            // Final hard-confirm. Spell out what cannot be undone.
+            Button("Permanently Delete", role: .destructive) {
+                zoneSecondConfirm = nil
+                deletePendingZone(row)
+            }
+            Button("Cancel", role: .cancel) { zoneSecondConfirm = nil }
+        } message: { row in
+            Text(zoneSecondConfirmMessage(for: row))
+        }
     }
 
     // MARK: - iCloud Zones inventory
@@ -312,6 +572,37 @@ struct SyncMigrationDetailView: View {
     @ViewBuilder
     private var iCloudZonesSection: some View {
         Section {
+            if zonesLoading && zonesList.isEmpty {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Loading zones…").foregroundStyle(.secondary)
+                }
+            } else if let err = zonesLoadError {
+                Text(err).font(.caption).foregroundStyle(.red)
+            } else if zonesList.isEmpty {
+                Text("No zones found.").foregroundStyle(.secondary)
+            } else {
+                ForEach(zonesList) { row in
+                    zoneRowView(row)
+                }
+            }
+            Button {
+                Task { await refreshZones(force: true) }
+            } label: {
+                HStack(spacing: 6) {
+                    if zonesLoading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    Text("Refresh")
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .disabled(zonesLoading)
+        } header: {
+            Text("iCloud Zones")
+        } footer: {
             Text("Every zone Minis has created in your iCloud private database. **V2** holds the current sync engine's data; **V1** holds legacy per-device backups from older builds. Deleting a zone is permanent and removes everything inside (records + assets). Use this to reclaim space after migration completes.")
                 .font(.caption)
         }
@@ -351,6 +642,10 @@ struct SyncMigrationDetailView: View {
                 ProgressView().controlSize(.small)
             } else {
                 Button(role: .destructive) {
+                    pendingZoneDelete = row
+                } label: {
+                    Image(systemName: "trash")
+                }
                 .buttonStyle(.borderless)
                 // The default _defaultZone is system-managed and can't
                 // safely be deleted; gray it out.
@@ -535,6 +830,13 @@ struct SyncMigrationDetailView: View {
             }
             Spacer(minLength: 0)
             Button {
+                tipsDismissed = true
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+            }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
@@ -738,9 +1040,26 @@ private struct PauseSyncSheet: View {
     private let hoursOptions = [1, 3, 6, 12, 24]
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 Section {
+                    ForEach(hoursOptions, id: \.self) { hours in
+                        Button {
+                            onPick(hours)
+                        } label: {
+                            HStack {
+                                Text(pauseLabel(hours))
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("Pending changes are preserved locally and pushed once the pause ends.")
+                }
             }
             .navigationTitle("Pause iCloud Sync")
 #if !os(macOS)
@@ -752,5 +1071,6 @@ private struct PauseSyncSheet: View {
                 }
             }
         }
+        .presentationDetents([.medium])
     }
 }

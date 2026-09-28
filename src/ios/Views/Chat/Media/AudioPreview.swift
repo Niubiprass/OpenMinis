@@ -90,14 +90,43 @@ struct MinisAudioPreviewView: View {
     private var topBar: some View {
         HStack {
             Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(ChatColors.primaryText)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+                    .background(.ultraThinMaterial, in: Circle())
+            }
             .buttonStyle(.plain)
 
             Spacer()
 
             Button {
+                showSavePicker = true
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+                    .offset(y: -1)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(ChatColors.primaryText)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+                    .background(.ultraThinMaterial, in: Circle())
+            }
             .buttonStyle(.plain)
 
             Button {
+                showShareSheet = true
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .offset(y: -1)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(ChatColors.primaryText)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+                    .background(.ultraThinMaterial, in: Circle())
+            }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 12)
@@ -231,10 +260,56 @@ struct MinisAudioPreviewView: View {
         HStack {
             // Playback speed menu
             Menu {
+                ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0] as [Float], id: \.self) { r in
+                    Button {
+                        player.setRate(r)
+                    } label: {
+                        if player.rate == r { Label(rateDisplayLabel(r), systemImage: "checkmark") }
+                        else { Text(rateDisplayLabel(r)) }
+                    }
+                }
+            } label: {
+                ZStack(alignment: .topTrailing) {
+                    Circle()
+                        .fill(artworkImage != nil
+                            ? Color.white.opacity(0.2)
+                            : Color(UIColor.secondarySystemBackground))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "speedometer")
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundColor(artworkImage != nil ? .white : Color(UIColor.label))
+                        .frame(width: 44, height: 44)
+                }
+                .overlay(alignment: .topTrailing) {
+                    Text(rateLabel(player.rate))
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.accentColor))
+                        .offset(x: 4, y: -2)
+                }
+                .frame(width: 56, height: 56)
+                .contentShape(Circle())
+            }
 
             Spacer()
 
             Button {
+                player.activatePiP()
+                dismiss()
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(artworkImage != nil
+                            ? Color.white.opacity(0.2)
+                            : Color(UIColor.secondarySystemBackground))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "pip")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundColor(artworkImage != nil ? .white : Color(UIColor.label))
+                }
+            }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 36)

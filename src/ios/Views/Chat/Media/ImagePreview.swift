@@ -418,22 +418,84 @@ struct ImagePreviewView: View {
                 HStack {
                     // Close button (left)
                     Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(ChatColors.primaryText)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
 
                     Spacer()
 
                     // Copy button
                     Button {
+                        UIPasteboard.general.image = image
+                        copyDone = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copyDone = false }
+                    } label: {
+                        Image(systemName: copyDone ? "checkmark" : "doc.on.doc")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(copyDone ? .green : ChatColors.primaryText)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
                     .disabled(copyDone)
 
                     // Save button
                     Button {
+                        saveImageToPhotos()
+                    } label: {
+                        Group {
+                            switch saveStatus {
+                            case .idle:
+                                Image(systemName: "square.and.arrow.down")
+                                    .offset(y: -1)
+                            case .saving:
+                                ProgressView()
+                                    .tint(ChatColors.primaryText)
+                            case .saved:
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.green)
+                            case .failed:
+                                Image(systemName: "exclamationmark.triangle")
+                            }
+                        }
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(ChatColors.primaryText)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                        .background(.ultraThinMaterial, in: Circle())
+                    }
                     .disabled(saveStatus == .saving || saveStatus == .saved)
 
                     // Print button
                     Button {
+                        PrintHelper.printImage(image, jobName: AppLocalized("Image"))
+                    } label: {
+                        Image(systemName: "printer")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(ChatColors.primaryText)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
 
                     // Share button
                     Button {
+                        showShareSheet = true
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .offset(y: -1)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(ChatColors.primaryText)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
                 }
                 .padding(.horizontal)
                 .padding(.top, 7)
@@ -457,6 +519,17 @@ struct ImagePreviewView: View {
                 return
             }
             PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAsset(from: image)
+            } completionHandler: { success, _ in
+                DispatchQueue.main.async {
+                    saveStatus = success ? .saved : .failed
+                    if success {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            saveStatus = .idle
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -485,6 +558,15 @@ struct AsyncImagePreviewView: View {
             }
             .overlay(alignment: .topLeading) {
                 Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(ChatColors.primaryText)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                        .background(.ultraThinMaterial, in: Circle())
+                }
                 .padding(.horizontal)
                 .padding(.top, 2)
             }

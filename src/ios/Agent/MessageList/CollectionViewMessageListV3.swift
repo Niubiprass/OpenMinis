@@ -340,6 +340,65 @@ private struct BridgedAssistantBlockV3: View {
         .overlay {
             Color.clear.frame(width: 0, height: 0)
                 .contextMenu {
+                    Button {
+                        let text = message.blocks
+                            .filter { if case .text = $0.kind { return true }; return false }
+                            .map(\.content).joined(separator: "\n\n")
+                        UIPasteboard.general.string = text
+                    } label: {
+                        Label(AppLocalized("Copy All"), systemImage: "doc.on.doc")
+                    }
+                    Button {
+                        let text = message.blocks
+                            .filter { if case .text = $0.kind { return true }; return false }
+                            .map(\.content).joined(separator: "\n\n")
+                        UIPasteboard.general.string = text
+                    } label: {
+                        Label(AppLocalized("Copy Markdown"), systemImage: "text.quote")
+                    }
+                    if let onReadAloud = bridge.onReadAloud {
+                        Button {
+                            onReadAloud()
+                        } label: {
+                            Label(AppLocalized("Read from Start"), systemImage: "play.circle")
+                        }
+                        // Greyed out while streaming so it can't clash with the
+                        // live streaming TTS of the same reply.
+                        .disabled(bridge.isStreaming)
+                    }
+                    if let onCopyScreenshot = bridge.onCopyScreenshot {
+                        Button {
+                            onCopyScreenshot()
+                        } label: {
+                            Label(AppLocalized("Copy Screenshot"), systemImage: "camera.viewfinder")
+                        }
+                    }
+                    if let onForceSync = bridge.onForceSync {
+                        Divider()
+                        Button {
+                            onForceSync()
+                        } label: {
+                            Label(AppLocalized("Force Sync"), systemImage: "arrow.triangle.2.circlepath.icloud")
+                        }
+                    }
+                    if let onCompact = bridge.onCompact {
+                        Divider()
+                        Button(role: .destructive) {
+                            onCompact()
+                        } label: {
+                            Label(AppLocalized("Compact Above"), systemImage: "arrow.down.right.and.arrow.up.left")
+                        }
+                    }
+                } preview: {
+                    // [T-ios-longpress-menu-preview-background] This .contextMenu
+                    // is on a zero-size Color.clear overlay (kept zero-size to
+                    // avoid inflating self-sizing), so without an explicit preview
+                    // SwiftUI snapshots that transparent overlay → see-through
+                    // preview. Supply an opaque card of the message text.
+                    MessageContextMenuPreview(text: message.blocks
+                        .filter { if case .text = $0.kind { return true }; return false }
+                        .map(\.content).joined(separator: "\n\n"))
+                }
         }
     }
 
@@ -439,6 +498,62 @@ private struct BridgedAssistantFooterV3: View {
         .overlay {
             Color.clear.frame(width: 0, height: 0)
                 .contextMenu {
+                    Button {
+                        let text = message.blocks
+                            .filter { if case .text = $0.kind { return true }; return false }
+                            .map(\.content).joined(separator: "\n\n")
+                        UIPasteboard.general.string = text
+                    } label: {
+                        Label(AppLocalized("Copy All"), systemImage: "doc.on.doc")
+                    }
+                    Button {
+                        let text = message.blocks
+                            .filter { if case .text = $0.kind { return true }; return false }
+                            .map(\.content).joined(separator: "\n\n")
+                        UIPasteboard.general.string = text
+                    } label: {
+                        Label(AppLocalized("Copy Markdown"), systemImage: "text.quote")
+                    }
+                    if let onReadAloud = bridge.onReadAloud {
+                        Button {
+                            onReadAloud()
+                        } label: {
+                            Label(AppLocalized("Read from Start"), systemImage: "play.circle")
+                        }
+                        // Greyed out while streaming so it can't clash with the
+                        // live streaming TTS of the same reply.
+                        .disabled(bridge.isStreaming)
+                    }
+                    if let onCopyScreenshot = bridge.onCopyScreenshot {
+                        Button {
+                            onCopyScreenshot()
+                        } label: {
+                            Label(AppLocalized("Copy Screenshot"), systemImage: "camera.viewfinder")
+                        }
+                    }
+                    if let onForceSync = bridge.onForceSync {
+                        Divider()
+                        Button {
+                            onForceSync()
+                        } label: {
+                            Label(AppLocalized("Force Sync"), systemImage: "arrow.triangle.2.circlepath.icloud")
+                        }
+                    }
+                    if let onCompact = bridge.onCompact {
+                        Divider()
+                        Button(role: .destructive) {
+                            onCompact()
+                        } label: {
+                            Label(AppLocalized("Compact Above"), systemImage: "arrow.down.right.and.arrow.up.left")
+                        }
+                    }
+                } preview: {
+                    // [T-ios-longpress-menu-preview-background] Opaque preview
+                    // for the footer's zero-size Color.clear contextMenu overlay.
+                    MessageContextMenuPreview(text: message.blocks
+                        .filter { if case .text = $0.kind { return true }; return false }
+                        .map(\.content).joined(separator: "\n\n"))
+                }
         }
     }
 
@@ -455,6 +570,10 @@ private struct BridgedAssistantFooterV3: View {
             .contentShape(Rectangle())
             .contextMenu {
                 Button {
+                    UIPasteboard.general.string = error
+                } label: {
+                    Label(AppLocalized("Copy Error"), systemImage: "doc.on.doc")
+                }
             }
             Spacer()
             if bridge.autoRetryAttempt > 0 {

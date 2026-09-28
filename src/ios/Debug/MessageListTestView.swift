@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 #if DEBUG
 import SwiftUI
 import Combine
@@ -668,6 +667,40 @@ struct MessageListTestView: View {
             HStack(spacing: 10) {
                 // Load data
                 Menu {
+                    Menu {
+                        ForEach([
+                            SessionDataSimulator.Scenario.mixed,
+                            .manyMessages,
+                            .longContent,
+                            .toolHeavy,
+                            .streaming,
+                            .travelPlanning,
+                        ], id: \.rawValue) { scenario in
+                            Button(scenario.rawValue) {
+                                simulator.loadBuiltinSample(scenario: scenario)
+                            }
+                        }
+                    } label: {
+                        Label("Built-in Sample", systemImage: "doc.text")
+                    }
+                    Button {
+                        showPasteSheet = true
+                    } label: {
+                        Label("Paste Session JSON", systemImage: "doc.on.clipboard")
+                    }
+                    Button {
+                        if let str = UIPasteboard.general.string {
+                            simulator.loadSessionData(str)
+                        }
+                    } label: {
+                        Label("From Clipboard", systemImage: "arrow.down.doc")
+                    }
+                } label: {
+                    Label("Load", systemImage: "tray.and.arrow.down")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Color.blue.opacity(0.15)).clipShape(Capsule())
+                }
 
                 // Playback controls
                 if simulator.state == .playing {
@@ -708,6 +741,13 @@ struct MessageListTestView: View {
 
                 // Force scroll
                 Button {
+                    simulator.vm.forceScrollToBottom.send()
+                } label: {
+                    Image(systemName: "arrow.down.to.line")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(Color.orange.opacity(0.15)).clipShape(Capsule())
+                }
                 .accessibilityIdentifier("scrollToBottomButton")
             }
         }
@@ -725,7 +765,7 @@ struct MessageListTestView: View {
     // MARK: - Paste Sheet
 
     private var pasteSheet: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 12) {
                 Text("Paste session JSON from \"Copy Session Data\"")
                     .font(.caption)

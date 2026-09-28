@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 import UIKit
 
@@ -20,7 +19,7 @@ struct ChatScreenshotPreviewSheet: View {
     private let logger = AppLogger(category: "ScreenshotPreview")
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView(.vertical, showsIndicators: true) {
                 Image(uiImage: image)
                     .resizable()
@@ -42,8 +41,21 @@ struct ChatScreenshotPreviewSheet: View {
                 ToolbarItem(placement: .primaryAction) {
                     HStack(spacing: 16) {
                         Button {
+                            copyImage(image)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 14))
+                        }
                         Button {
+                            shareImage(image)
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                        }
                         Button {
+                            saveImageToPhotos(image)
+                        } label: {
+                            Image(systemName: "square.and.arrow.down")
+                        }
                     }
                 }
             }

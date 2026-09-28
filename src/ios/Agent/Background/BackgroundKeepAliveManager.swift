@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import ActivityKit
 import AVFoundation
 import Combine
@@ -820,10 +819,10 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     private func refreshActiveTaskBadge(sessions: Set<String>, enabled: Bool) {
         let center = UNUserNotificationCenter.current()
         guard enabled else {
-            UIApplication.shared.applicationIconBadgeNumber = 0 
+            UIApplication.shared.applicationIconBadgeNumber = 0
             return
         }
-        UIApplication.shared.applicationIconBadgeNumber = sessions.count 
+        UIApplication.shared.applicationIconBadgeNumber = sessions.count
     }
 
     // MARK: - Background Task Notifications
@@ -1736,7 +1735,7 @@ struct BackgroundInterruptionBanner: View {
                 .gesture(swipeToDismiss)
                 .animation(.spring(response: 0.35), value: tracker.showBanner)
                 .sheet(isPresented: $showSettings) {
-                    NavigationView { EnhancedBackgroundSettingsView() }
+                    NavigationStack { EnhancedBackgroundSettingsView() }
                 }
                 // [T-ios-scene-create-watchdog-corelocation] Subscribe only once
                 // the banner is actually on screen — the subscription exists to
@@ -1767,8 +1766,27 @@ struct BackgroundInterruptionBanner: View {
 
             VStack(spacing: 6) {
                 Button {
+                    DeepLinkCoordinator.shared.setFocus(
+                        rawQueryValue: "enhancedBackgroundExecution:true,backgroundSpeakEnabled:true,locationTrackingEnabled:true")
+                    showSettings = true
+                    withAnimation { tracker.dismiss() }
+                } label: {
+                    Text("Enable")
+                        .font(.caption.bold())
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Color.white)
+                        .foregroundColor(.orange)
+                        .cornerRadius(14)
+                }
 
                 Button {
+                    withAnimation { tracker.remindLaterAndDismiss() }
+                } label: {
+                    Text("Remind me later")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.8))
+                }
             }
         }
         .padding(.horizontal, 16)

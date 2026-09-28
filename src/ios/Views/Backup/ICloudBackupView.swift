@@ -39,6 +39,29 @@ struct ICloudBackupView: View {
                 Section("Backup") {
                     ForEach(ICloudBackupManager.BackupCategory.allCases) { category in
                         Button {
+                            performBackup(category: category)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: category.systemImage)
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundColor(.white)
+                                    .frame(width: 30, height: 30)
+                                    .background(category.iconColor)
+                                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(category.displayName)
+                                        .foregroundColor(.primary)
+                                    Text(category.description)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                if manager.isBackingUp {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                }
+                            }
+                        }
                         .disabled(manager.isBackingUp || manager.isRestoring)
                     }
 
@@ -86,6 +109,10 @@ struct ICloudBackupView: View {
             }
 
             Section {
+                // empty section for footer
+            } footer: {
+                Text("Backups are stored in iCloud Drive and sync across your devices. Restoring will replace your current local data.")
+            }
         }
         .navigationTitle("iCloud Backup")
         .navigationBarTitleDisplayMode(.inline)
@@ -99,10 +126,27 @@ struct ICloudBackupView: View {
             get: { showRestoreConfirm != nil },
             set: { if !$0 { showRestoreConfirm = nil } }
         )) {
+            Button("Cancel", role: .cancel) { showRestoreConfirm = nil }
+            Button("Restore", role: .destructive) {
+                if let entry = showRestoreConfirm {
+                    performRestore(entry: entry)
+                }
+            }
+        } message: {
+            if let entry = showRestoreConfirm {
+                Text("This will replace your current \(entry.category.displayName.lowercased()) data with the backup from \(entry.date.formatted(date: .abbreviated, time: .shortened)). This cannot be undone.")
+            }
+        }
         .alert("Error", isPresented: .init(
             get: { showError != nil },
             set: { if !$0 { showError = nil } }
         )) {
+            Button("OK") { showError = nil }
+        } message: {
+            if let error = showError {
+                Text(error)
+            }
+        }
     }
 
     // MARK: - Backup Row
@@ -129,16 +173,32 @@ struct ICloudBackupView: View {
         }
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) {
+                deleteBackup(entry)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
         }
         .swipeActions(edge: .leading) {
             Button {
+                showRestoreConfirm = entry
+            } label: {
+                Label("Restore", systemImage: "arrow.counterclockwise")
+            }
             .tint(.blue)
         }
         .contextMenu {
             Button {
+                showRestoreConfirm = entry
+            } label: {
+                Label("Restore", systemImage: "arrow.counterclockwise")
+            }
             .disabled(manager.isRestoring || manager.isBackingUp)
 
             Button(role: .destructive) {
+                deleteBackup(entry)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
         }
     }
 

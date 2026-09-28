@@ -45,9 +45,38 @@ struct BackupSkippedFilesView: View {
     var body: some View {
         List {
             Section {
+                LabeledContent("Files", value: "\(record.skippedFiles)")
+                LabeledContent("Total size", value: ByteCountFormatter.string(
+                    fromByteCount: record.skippedEntries.reduce(0) { $0 + $1.size },
+                    countStyle: .file))
+            } footer: {
+                // Say so when the list is partial rather than letting the
+                // numbers quietly disagree with the rows below.
+                if shownCount < record.skippedFiles {
+                    Text("Showing the \(shownCount) largest of \(record.skippedFiles) excluded files. Their contents are not in the backup — the backup records that they existed.")
+                } else {
+                    Text("These files' contents are not in the backup — it records that they existed, at these sizes.")
+                }
+            }
 
             ForEach(groups) { group in
                 Section {
+                    ForEach(group.entries) { e in
+                        HStack {
+                            Text(e.fileName)
+                                .font(.callout)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 12)
+                            Text(ByteCountFormatter.string(fromByteCount: e.size,
+                                                           countStyle: .file))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text(group.title)
+                }
             }
         }
         .navigationTitle("Excluded Files")

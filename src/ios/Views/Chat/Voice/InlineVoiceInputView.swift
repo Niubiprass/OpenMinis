@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 import SwiftUI
 import UIKit
 
@@ -239,9 +238,46 @@ struct InlineVoiceInputView: View {
                 .contextMenu {
                     if UIPasteboard.general.hasImages, onPasteImage != nil {
                         Button {
+                            guard let images = UIPasteboard.general.images else { return }
+                            for image in images { onPasteImage?(image) }
+                            VoiceLog.log("voice panel paste: \(images.count) image(s)")
+                        } label: {
+                            Label("Paste Image", systemImage: "photo.on.rectangle")
+                        }
                     }
                     if UIPasteboard.general.hasStrings {
                         Button {
+                            guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
+                            let asciiLetters = text.unicodeScalars.filter { ($0.value >= 0x41 && $0.value <= 0x5A) || ($0.value >= 0x61 && $0.value <= 0x7A) }.count
+                            let isEnglishDominant = asciiLetters > text.count / 2
+                            let isLong: Bool
+                            if isEnglishDominant {
+                                let wordCount = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
+                                isLong = wordCount > 1000
+                            } else {
+                                isLong = text.count > 1200
+                            }
+                            if isLong, let onPasteFile {
+                                let tmp = FileManager.default.temporaryDirectory
+                                    .appendingPathComponent("pasted_\(UUID().uuidString.prefix(8)).txt")
+                                if let data = text.data(using: .utf8) {
+                                    try? data.write(to: tmp)
+                                    onPasteFile(tmp)
+                                    VoiceLog.log("voice panel paste: long text → file (\(text.count) chars)")
+                                    return
+                                }
+                            }
+                            let base = viewModel.transcript
+                            let joined = base.isEmpty ? text : (base + text)
+                            viewModel.setTranscript(joined)
+                            if !expanded {
+                                VoiceLog.log("paste → expand")
+                                withAnimation(.easeInOut(duration: 0.28)) { expanded = true }
+                            }
+                            VoiceLog.log("voice panel paste: +\(text.count) chars")
+                        } label: {
+                            Label("Paste", systemImage: "doc.on.clipboard")
+                        }
                     }
                 }
         )
@@ -529,7 +565,7 @@ struct InlineVoiceInputView: View {
             viewModel.refreshInputProvider()
         }
         .sheet(isPresented: $showModelSelector) {
-            NavigationView {
+            NavigationStack {
                 UnifiedModelPicker(config: .voiceInput())
             }
         }
@@ -579,6 +615,15 @@ struct InlineVoiceInputView: View {
                     .lineLimit(1)
                 if viewModel.isEditingTranscript {
                     Button {
+                        viewModel.endEditing(resume: false)
+                    } label: {
+                        Text("Exit", comment: "Exit transcript editing")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                    }
                     .buttonStyle(.plain)
                 }
             }
@@ -613,6 +658,12 @@ struct InlineVoiceInputView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                         Button {
+                            viewModel.manualRetry()
+                        } label: {
+                            Text("Retry", comment: "Manual retry transcription")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.orange)
+                        }
                         .buttonStyle(.plain)
                     } else {
                         Text(viewModel.transcribeError ?? "")
@@ -661,6 +712,15 @@ struct InlineVoiceInputView: View {
     /// Compact↔expand toggle. Mirrors the globe's pill styling.
     private var expandCollapseButton: some View {
         Button {
+            withAnimation(.easeInOut(duration: 0.28)) { expanded.toggle() }
+        } label: {
+            Image(systemName: expanded ? "chevron.down" : "chevron.up")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(ChatColors.secondaryText)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(ChatColors.inputIconBg))
+                .overlay(Circle().strokeBorder(ChatColors.inputIconBorder, lineWidth: 0.5))
+        }
         .accessibilityLabel(expanded
             ? Text("Collapse voice panel", comment: "Voice panel collapse")
             : Text("Expand voice panel", comment: "Voice panel expand"))
@@ -699,6 +759,16 @@ struct InlineVoiceInputView: View {
                     ToolbarItemGroup(placement: .keyboard) {
                         Spacer()
                         Button {
+                            // [T-voice-panel-gap-after-edit] Focus teardown is
+                            // owned by the isEditingTranscript observer (which
+                            // also force-resigns the responder). Clearing
+                            // `editFocused` here as well would make the observer
+                            // see focus already false and skip that release.
+                            viewModel.endEditing(resume: false)
+                        } label: {
+                            Text("Done", comment: "Finish transcript editing")
+                                .font(.body.weight(.semibold))
+                        }
                     }
                 }
                 // Fill the band and let the text view scroll inside it. Without
@@ -735,6 +805,11 @@ struct InlineVoiceInputView: View {
                         })
                         .contextMenu {
                             Button(role: .destructive) {
+                                viewModel.clearTranscript()
+                                VoiceLog.log("cleared transcript via long-press")
+                            } label: {
+                                Label(AppLocalized("Clear", comment: "Clear transcript context menu"), systemImage: "trash")
+                            }
                         }
                         // [T-voice-scroll-gesture-priority] Same boundary probe as
                         // the editing branch — the read-only transcript (used while
@@ -787,11 +862,53 @@ struct InlineVoiceInputView: View {
     /// Active ASR engine + its group, tappable to open the model selector.
     private var modelChip: some View {
         Button {
+            showModelSelector = true
+        } label: {
+            HStack(spacing: 5) {
+                if let g = activeGroupName {
+                    Text(g)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Text("·").font(.caption2).foregroundStyle(.quaternary)
+                }
+                Text(activeModelLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.secondary.opacity(0.1)))
+        }
     }
 
     /// Recognition-language switcher (options from the system's preferred locales).
     private var languageMenu: some View {
         Menu {
+            ForEach(VoiceLanguages.options) { opt in
+                Button {
+                    viewModel.language = opt.code
+                } label: {
+                    if viewModel.language == opt.code {
+                        Label(opt.label, systemImage: "checkmark")
+                    } else {
+                        Text(opt.label)
+                    }
+                }
+            }
+        } label: {
+            // Globe-only, like the keyboard's language switch key. Matches the
+            // other controls: black fill, white icon, subtle border.
+            Image(systemName: "globe")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(ChatColors.secondaryText)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(ChatColors.inputIconBg))
+                .overlay(Circle().strokeBorder(ChatColors.inputIconBorder, lineWidth: 0.5))
+        }
         .accessibilityLabel(Text("Recognition language: \(VoiceLanguages.option(for: viewModel.language).label)", comment: "Inline voice language switch"))
     }
 
@@ -827,9 +944,49 @@ struct InlineVoiceInputView: View {
     /// there was nothing to fix.
     private var correctionButton: some View {
         Button {
+            // One-time collection-consent prompt on the very first tap
+            // (T-voice-correction-collection-consent). After the user answers
+            // once — either way — it never shows again; the correction itself
+            // runs regardless of the choice.
+            if !VoiceCorrectionCollectionConsent.shared.hasPrompted {
+                showCollectionConsentPrompt = true
+            } else {
+                runManualCorrection()
+            }
+        } label: {
+            // Same 30×30 pill as the globe so swapping the glyph never reflows the layout.
+            ZStack {
+                if isCorrecting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(ChatColors.secondaryText)
+                }
+            }
+            .frame(width: 30, height: 30)
+            .background(Circle().fill(ChatColors.inputIconBg))
+            .overlay(Circle().strokeBorder(ChatColors.inputIconBorder, lineWidth: 0.5))
+        }
         .disabled(isCorrecting)
         .accessibilityLabel(Text("Correct transcript with AI", comment: "Voice manual-correction button"))
         .alert(AppLocalized("Improve voice corrections?",
+                      comment: "One-time prompt: enable correction data collection"),
+               isPresented: $showCollectionConsentPrompt) {
+            Button(AppLocalized("Enable", comment: "Enable correction data collection")) {
+                VoiceCorrectionCollectionConsent.shared.isEnabled = true
+                VoiceCorrectionCollectionConsent.shared.hasPrompted = true
+                runManualCorrection()
+            }
+            Button(AppLocalized("Not Now", comment: "Decline correction data collection"),
+                   role: .cancel) {
+                VoiceCorrectionCollectionConsent.shared.hasPrompted = true
+                runManualCorrection()
+            }
+        } message: {
+            Text("Minis can store your transcript fixes (original → corrected pairs) and accepted AI corrections in a local on-device database to make future voice corrections smarter. Nothing is uploaded. You can change this or clear the data anytime in Settings → Permissions.",
+                 comment: "One-time prompt body: correction data collection")
+        }
     }
 
     /// User tapped the AI-correction button. Run the engine on the current transcript and
@@ -905,6 +1062,49 @@ struct InlineVoiceInputView: View {
 
     private var micButton: some View {
         Button {
+            if showCancelIcon {
+                viewModel.cancelTranscription()
+            } else {
+                viewModel.handleMainButtonTap()
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: micDiameter, height: micDiameter)
+                    .shadow(color: .black.opacity(0.18), radius: expanded ? 7 : 5, y: expanded ? 3 : 2)
+
+                if viewModel.isTranscribing {
+                    TimelineView(.animation) { context in
+                        let t = context.date.timeIntervalSinceReferenceDate
+                        let angle = Angle(degrees: (t / 0.9).truncatingRemainder(dividingBy: 1) * 360)
+                        Circle()
+                            .trim(from: 0, to: 75.0 / 360.0)
+                            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                            .frame(width: micDiameter, height: micDiameter)
+                            .rotationEffect(angle)
+                    }
+                }
+
+                switch viewModel.state {
+                case .recording:
+                    InlineMiniWaveform(levels: viewModel.waveformLevels)
+                        .frame(width: expanded ? 38 : 26, height: expanded ? 24 : 18)
+                default:
+                    if showCancelIcon {
+                        Image(systemName: "xmark")
+                            .font(.system(size: expanded ? 22 : 16, weight: .semibold))
+                            .foregroundStyle(.black)
+                    } else {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: expanded ? 24 : 18, weight: .medium))
+                            .foregroundStyle(.black)
+                    }
+                }
+            }
+            .frame(width: micDiameter, height: micDiameter)
+            .contentShape(Circle())
+        }
         .buttonStyle(.plain)
         .disabled(viewModel.permissionDenied)
         .accessibilityLabel(showCancelIcon

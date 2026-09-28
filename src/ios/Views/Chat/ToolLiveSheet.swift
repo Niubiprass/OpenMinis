@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 //
 //  ToolLiveSheet.swift
 //  MinisApp
@@ -539,6 +538,22 @@ struct ToolLiveSheet: View {
 
                 if isLive, onBrowserTakeover != nil, case .browserTool = block.kind {
                     Button {
+                        onBrowserTakeover?()
+                        activeSheet = .takeoverBrowser
+                    } label: {
+                        ZStack {
+                            Image(systemName: "hand.point.up.left")
+                                .font(.system(size: 13, weight: .semibold))
+                                .offset(x: -2, y: -1)
+                            Image(systemName: "globe")
+                                .font(.system(size: 8, weight: .bold))
+                                .offset(x: 5, y: 5)
+                        }
+                        .foregroundStyle(ChatColors.primaryText)
+                        .frame(width: 32, height: 32)
+                        .background(ChatColors.secondaryBg)
+                        .clipShape(Circle())
+                    }
                 } else if case .browserTool = block.kind, browserPool != nil {
                     Button { activeSheet = .takeoverBrowser } label: {
                         toolIcon
@@ -550,14 +565,77 @@ struct ToolLiveSheet: View {
                     }
                 } else if case .fileWriteTool = block.kind {
                     Button {
+                        let text = block.streamingFileContent
+                            ?? extractWriteContent()
+                            ?? block.content
+                        UIPasteboard.general.string = text
+                        navCopyDone = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { navCopyDone = false }
+                    } label: {
+                        Image(systemName: navCopyDone ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 14))
+                            .foregroundStyle(navCopyDone ? Color.green : ChatColors.primaryText)
+                            .frame(width: 32, height: 32)
+                            .background(ChatColors.secondaryBg)
+                            .clipShape(Circle())
+                    }
                 } else if case .fileReadTool = block.kind {
                     Button {
+                        UIPasteboard.general.string = block.content
+                        navCopyDone = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { navCopyDone = false }
+                    } label: {
+                        Image(systemName: navCopyDone ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 14))
+                            .foregroundStyle(navCopyDone ? Color.green : ChatColors.primaryText)
+                            .frame(width: 32, height: 32)
+                            .background(ChatColors.secondaryBg)
+                            .clipShape(Circle())
+                    }
                 } else if case .fileEditTool = block.kind {
                     Button {
+                        let editStrings = extractEditStrings()
+                        let text = editStrings.map { "OLD:\n\($0.oldString)\n\nNEW:\n\($0.newString)" } ?? block.content
+                        UIPasteboard.general.string = text
+                        navCopyDone = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { navCopyDone = false }
+                    } label: {
+                        Image(systemName: navCopyDone ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 14))
+                            .foregroundStyle(navCopyDone ? Color.green : ChatColors.primaryText)
+                            .frame(width: 32, height: 32)
+                            .background(ChatColors.secondaryBg)
+                            .clipShape(Circle())
+                    }
                 } else if case .readImageTool = block.kind {
                     Button {
+                        if let path = block.imageFilePath, let img = UIImage(contentsOfFile: path) {
+                            UIPasteboard.general.image = img
+                        }
+                        navCopyDone = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { navCopyDone = false }
+                    } label: {
+                        Image(systemName: navCopyDone ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 14))
+                            .foregroundStyle(navCopyDone ? Color.green : ChatColors.primaryText)
+                            .frame(width: 32, height: 32)
+                            .background(ChatColors.secondaryBg)
+                            .clipShape(Circle())
+                    }
                 } else if case .memoryTool = block.kind {
                     Button {
+                        let text = memoryWriteContentFromArgs() ?? block.content
+                        UIPasteboard.general.string = text
+                        navCopyDone = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { navCopyDone = false }
+                    } label: {
+                        Image(systemName: navCopyDone ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 14))
+                            .foregroundStyle(navCopyDone ? Color.green : ChatColors.primaryText)
+                            .frame(width: 32, height: 32)
+                            .background(ChatColors.secondaryBg)
+                            .clipShape(Circle())
+                    }
                 } else {
                     Button { showTerminal = true } label: {
                         toolIcon
@@ -575,7 +653,7 @@ struct ToolLiveSheet: View {
         .padding(.vertical, 10)
         .background(Color(UIColor.systemBackground))
         .fullScreenCover(isPresented: $showTerminal) {
-            NavigationView {
+            NavigationStack {
                 // Pre-fill the shell command the tool is currently running,
                 // WITHOUT a trailing newline — the user can review/edit and
                 // press Enter themselves (intentional, not auto-run).
@@ -1500,7 +1578,17 @@ struct ToolLiveSheet: View {
             let nextBatch = min(Self.lazyRenderBatchChunks, remaining)
             HStack(spacing: 16) {
                 Button {
+                    revealedChunkCount = min(revealedChunkCount + Self.lazyRenderBatchChunks, totalChunks)
+                } label: {
+                    Label("Load more (\(nextBatch * Self.lazyRenderChunkLines) lines)", systemImage: "chevron.down")
+                        .font(.system(size: 13, weight: .medium))
+                }
                 Button {
+                    revealedChunkCount = totalChunks
+                } label: {
+                    Text("Load all")
+                        .font(.system(size: 13, weight: .medium))
+                }
             }
             .padding(.vertical, 12)
             .frame(maxWidth: .infinity)
@@ -1818,6 +1906,12 @@ struct ToolLiveSheet: View {
             // Navigation row: |< ... Live ... >|
             HStack {
                 Button {
+                    if currentIdx > 0 { withAnimation { currentIdx -= 1 } }
+                } label: {
+                    Image(systemName: "backward.end.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(currentIdx > 0 ? ChatColors.primaryText : ChatColors.tertiaryText)
+                }
                 .disabled(currentIdx <= 0)
 
                 Spacer()
@@ -1840,6 +1934,12 @@ struct ToolLiveSheet: View {
                 Spacer()
 
                 Button {
+                    if currentIdx < toolBlocks.count - 1 { withAnimation { currentIdx += 1 } }
+                } label: {
+                    Image(systemName: "forward.end.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(currentIdx < toolBlocks.count - 1 ? ChatColors.primaryText : ChatColors.tertiaryText)
+                }
                 .disabled(currentIdx >= toolBlocks.count - 1)
             }
             .padding(.horizontal, 24)
@@ -2338,6 +2438,15 @@ private struct ToolStatusBar: View {
             if toolBlocks.count > 1 {
                 HStack(spacing: 2) {
                     Button {
+                        let prev = (selectedIdx ?? displayedIdx) - 1
+                        if prev >= 0 { withAnimation { selectedIdx = prev } }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(displayedIdx > 0 ? ChatColors.primaryText : ChatColors.tertiaryText)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
                     .disabled(displayedIdx <= 0)
 
                     Text("\(displayedIdx + 1)/\(toolBlocks.count)")
@@ -2345,6 +2454,15 @@ private struct ToolStatusBar: View {
                         .foregroundStyle(ChatColors.secondaryText)
 
                     Button {
+                        let next = (selectedIdx ?? displayedIdx) + 1
+                        if next < toolBlocks.count { withAnimation { selectedIdx = next } }
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(displayedIdx < toolBlocks.count - 1 ? ChatColors.primaryText : ChatColors.tertiaryText)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
                     .disabled(displayedIdx >= toolBlocks.count - 1)
                 }
             }

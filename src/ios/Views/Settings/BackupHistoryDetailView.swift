@@ -39,6 +39,10 @@ struct BackupHistoryDetailView: View {
             if !isLive {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(role: .destructive) {
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
                 }
             }
         }
@@ -46,15 +50,163 @@ struct BackupHistoryDetailView: View {
         // undoable-by-redoing-the-backup, but a toolbar button sits next to
         // Back and is easy to hit by accident on the way out.
         .confirmationDialog("Delete this backup record?",
+                            isPresented: $showDeleteConfirm,
+                            titleVisibility: .visible) {
+            Button(AppLocalized("Delete Record Only"), role: .destructive) {
+                removeRecord()
+            }
+            // [T-backup-delete-files-too] Offered only when there is something
+            // to reach for: a package name to match on AND at least one
+            // destination it was delivered to.
+            if canDeleteRemoteFiles {
+                Button(AppLocalized("Delete Record and Files"), role: .destructive) {
+                    Task { await removeRecordAndFiles() }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            // Says exactly what each choice touches. Someone clearing a long
+            // history needs to know the first option does NOT reach into their
+            // NAS, and that the second one does and cannot be undone.
+            Text(canDeleteRemoteFiles
+                 ? AppLocalized("“Delete Record Only” removes this entry and leaves the backup files on your destinations. “Delete Record and Files” also deletes the package from each destination — that cannot be undone.")
+                 : AppLocalized("This removes the record from this list. The backup files already saved to your destinations are not deleted."))
+        }
     }
 
     /// Stop, shown only while this run is actually in flight.
     private var liveControlsSection: some View {
         Section {
+            // ONE button. This used to offer "Stop Backup" and "Stop and
+            // Delete" side by side, which made the user decide the fate of the
+            // partial work at the same moment they wanted the run to end —
+            // about staging they cannot see, under two near-identical red
+            // labels.
+            //
+            // The two decisions are now sequential, which is also their real
+            // order: stop, and then decide what to do with what is left. Once
+            // stopped the run becomes an ordinary stopped record, and the
+            // toolbar's Delete (which discards the staging with it) is right
+            // there for anyone who wants it gone.
+            Button(role: .destructive) {
+                BackupRunController.shared.stop()
+            } label: {
+                Label("Stop Backup", systemImage: "stop.circle")
+            }
+
+            // Opt-in, default OFF, and per-run rather than a stored setting —
+            // it exists to get THIS backup finished, and a preference that
+            // silently stopped the phone locking would be worse than the
+            // problem it solves. BackupRunController clears it when the run
+            // ends, on every exit path.
+            //
+            // Offered even though the audio keep-alive already extends
+            // background time: iOS can still suspend or jetsam a backgrounded
+            // app under memory pressure, which a large export is exactly the
+            // thing to trigger. This trades screen-on time for certainty.
+            Toggle(isOn: Binding(
+                get: { keepScreenAwake },
+                set: { on in
+                    keepScreenAwake = on
+                    BackupScreenAwake.set(on)
+                }
+            )) {
+                Label("Keep Screen Awake", systemImage: "sun.max")
+            }
+        } footer: {
+            Text("Stopping keeps what has been backed up so far, and this run can be resumed later. Deleting the record discards it.")
+        }
     }
 
     private var summarySection: some View {
         Section {
+            LabeledContent("Status") {
+                // An HStack, NOT a Label. `Label` reserves an icon column and
+                // sizes it from the environment; dropped into LabeledContent's
+                // value slot that column stretched, making this one row 245pt
+                // tall against its siblings' 54pt — a screen-height gap under
+                // "Completed", with the row separator drawn across the middle
+                // of it. Measured on device (iPhone 11) before and after.
+                HStack(spacing: 4) {
+                    Image(systemName: BackupHistoryRow.statusIcon(record.status))
+                    Text(BackupHistoryRow.statusText(record.status))
+                }
+                .foregroundStyle(BackupHistoryRow.statusColour(record.status))
+            }
+            LabeledContent("Started",
+                           value: record.startedAt.formatted(date: .abbreviated, time: .shortened))
+            if let d = record.duration {
+                LabeledContent("Duration", value: durationText(d))
+            }
+            if record.totalBytes > 0 {
+                LabeledContent("Size", value: ByteCountFormatter.string(
+                    fromByteCount: record.totalBytes, countStyle: .file))
+            }
+            // `value:` takes a plain String, which does NOT route through the
+            // string catalog the way a bare `Text("…")` literal does — so the
+            // Yes/No here has to be localized explicitly or it stays English
+            // in every locale.
+            LabeledContent("Encrypted",
+                           value: record.encrypted ? AppLocalized("Yes") : AppLocalized("No"))
+            if let name = record.packageName {
+                // A hand-built HStack, NOT `LabeledContent`.
+                //
+                // [T-backup-file-row-two-column] `LabeledContent` reflows to a
+                // VERTICAL stack of its own accord once the value cannot sit
+                // comfortably beside the label, and a package name — now
+                // `iPhone-17-Pro-20260823-m0pyx0fq1dg.minisbak`, longer than
+                // before the device prefix landed — is always past that
+                // threshold. Asking it to wrap the value (`.fixedSize` for
+                // vertical growth) made the value taller and so pushed it
+                // further past, which is why the row still rendered as
+                // label-above-value on device. The reflow is LabeledContent's
+                // behaviour, not something the value's modifiers can override.
+                //
+                // So the two columns are built directly: a fixed-width label
+                // that will not compress, and the value taking the rest and
+                // wrapping inside it. `layoutPriority` is what stops SwiftUI
+                // solving the width conflict by shrinking the label instead of
+                // wrapping the value.
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("File")
+                    Spacer(minLength: 0)
+                    Text(name)
+                        .multilineTextAlignment(.trailing)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .layoutPriority(1)
+                }
+            }
+            if record.skippedFiles > 0 {
+                // §3.4 tombstones — the package is deliberately incomplete, and
+                // that is worth surfacing next to the size rather than only in
+                // the log.
+                //
+                // Not orange any more, and not "too large": these files were
+                // left out because the user's own size cap said so, which is
+                // the setting working. Colouring it as a problem made every
+                // backup with one big attachment look broken.
+                //
+                // Tappable when the list is available: a bare count answers
+                // "how many" but never "which ones", which is the actual
+                // question. Older records predate the list and stay plain.
+                if record.skippedEntries.isEmpty {
+                    LabeledContent("Files excluded", value: "\(record.skippedFiles) file(s)")
+                } else {
+                    NavigationLink {
+                        BackupSkippedFilesView(record: record)
+                    } label: {
+                        LabeledContent("Files excluded",
+                                       value: "\(record.skippedFiles) file(s)")
+                    }
+                }
+            }
+            if let e = record.errorMessage {
+                Text(e).font(.footnote).foregroundStyle(.red)
+            }
+        } header: {
+            Text("Summary")
+        } footer: {
             Text("Included: \(record.categories.map(displayName).joined(separator: ", "))")
         }
     }
@@ -136,6 +288,25 @@ struct BackupHistoryDetailView: View {
 
     private var destinationsSection: some View {
         Section {
+            ForEach(record.destinations) { d in
+                // [T-backup-destination-browse] Tapping a destination opens its
+                // file browser, so "did this actually land?" is answerable
+                // without hunting through Settings for the server. Only when
+                // the saved destination still exists — a row for a server the
+                // user has since removed has nowhere to go.
+                if let remote = remote(for: d) {
+                    NavigationLink {
+                        BackupDestinationDetailView(target: .remote(remote), onChanged: {})
+                    } label: {
+                        destinationRow(d)
+                    }
+                } else {
+                    destinationRow(d)
+                }
+            }
+        } header: {
+            Text("Destinations")
+        }
     }
 
     private func destinationRow(_ d: BackupHistory.DestinationOutcome) -> some View {
@@ -175,6 +346,27 @@ struct BackupHistoryDetailView: View {
 
     private var logSection: some View {
         Section {
+            if record.log.isEmpty {
+                Text("No log for this run.").foregroundStyle(.secondary)
+            } else {
+                // [T-backup-log-newest-first] Newest first. A finished run's
+                // log is long (one line per category, plus per-destination
+                // transfer lines), and what a user opens this screen to see —
+                // how it ended — was at the very bottom.
+                ForEach(record.log.reversed()) { e in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(e.at.formatted(date: .omitted, time: .standard))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                        Text(e.message)
+                            .font(.caption)
+                            .foregroundStyle(e.isProblem ? .red : .secondary)
+                    }
+                }
+            }
+        } header: {
+            Text("Log")
+        }
     }
 
     private func durationText(_ d: TimeInterval) -> String {
