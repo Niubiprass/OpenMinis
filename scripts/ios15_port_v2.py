@@ -142,7 +142,14 @@ def fix_applocalized() -> None:
 # ------------------------------------------- 2. 全项目清除 LocalizedStringResource
 
 def strip_localizedstringresource() -> None:
-    """清掉其他文件里对 LocalizedStringResource 的显式类型标注。"""
+    """清掉其他文件里对 LocalizedStringResource 的显式类型标注。
+
+    例外：`static var/let xxx: LocalizedStringResource` 是 AppIntent 等协议
+    要求的属性（如 `static var title`），改类型会破坏协议一致性
+    （v2 第一版在这里翻过车：AudioTogglePlaybackIntent 不再符合 AppIntent）。
+    这类声明一律跳过，改由 annotate_appintent_files 用 @available 处理。
+    """
+    STATIC_DECL = re.compile(r"\bstatic\s+(?:var|let)\s+\w+\s*:\s*LocalizedStringResource")
     n = 0
     for path in swift_files(ROOT):
         if path == APPL_PATH:
@@ -151,19 +158,100 @@ def strip_localizedstringresource() -> None:
         def _fn(text: str) -> str:
             if "LocalizedStringResource" not in text:
                 return text
-            out = text
-            out = out.replace(": LocalizedStringResource?", ": String?")
-            out = out.replace(": LocalizedStringResource", ": String")
-            out = out.replace("-> LocalizedStringResource", "-> String")
-            out = out.replace("<LocalizedStringResource>", "<String>")
-            out = out.replace("[LocalizedStringResource]", "[String]")
-            out = out.replace("as? LocalizedStringResource", "as? String")
-            out = out.replace("as LocalizedStringResource", "as String")
-            return out
+            out = []
+            for ln in text.split("\n"):
+                if STATIC_DECL.search(ln):
+                    out.append(ln)  # 协议属性, 保持原类型
+                    continue
+                ln = ln.replace(": LocalizedStringResource?", ": String?")
+                ln = ln.replace(": LocalizedStringResource", ": String")
+                ln = ln.replace("-> LocalizedStringResource", "-> String")
+                ln = ln.replace("<LocalizedStringResource>", "<String>")
+                ln = ln.replace("[LocalizedStringResource]", "[String]")
+                ln = ln.replace("as? LocalizedStringResource", "as? String")
+                ln = ln.replace("as LocalizedStringResource", "as String")
+                out.append(ln)
+            return "\n".join(out)
 
         if edit(path, _fn):
             n += 1
     log("✅ 清理 LocalizedStringResource 类型标注：%d 个文件" % n)
+
+
+# AppIntents 相关协议（出现在类型继承列表中即视为意图/实体类型）
+INTENT_PROTO_RE = re.compile(
+    r":\s*(?:LiveActivityIntent|AppIntent|AppShortcutsProvider|AppEntity|AppEnum|AppShortcut)\b"
+)
+
+
+def restore_intent_props() -> None:
+    """恢复上一版脚本误改的协议属性（static var title: String -> LocalizedStringResource）。
+
+    上一版把全项目 LocalizedStringResource 标注无差别替换成 String，导致
+    AudioTogglePlaybackIntent 等意图类型不再符合 AppIntent 协议。
+    这里只处理「文件中含 AppIntents 协议」的场景，且只恢复协议要求的属性名。
+    """
+    n = 0
+    for path in swift_files(ROOT):
+        try:
+            text = read(path)
+        except OSError:
+            continue
+        if not INTENT_PROTO_RE.search(text):
+            continue
+        orig = text
+        text = re.sub(
+            r"(static\s+(?:var|let)\s+title\s*:\s*)String(\s*=)",
+            r"\1LocalizedStringResource\2", text)
+        text = re.sub(
+            r"(static\s+(?:var|let)\s+summary\s*:\s*)String(\s*=)",
+            r"\1LocalizedStringResource\2", text)
+        if text != orig:
+            write(path, text)
+            n += 1
+    log("✅ 恢复 AppIntent 协议属性（title/summary）：%d 个文件" % n)
+
+
+def annotate_file_top_decls(path: str, avail: str) -> bool:
+    """给文件的顶层类型声明加 @available(avail, *)（幂等）。已标注则跳过。"""
+    marker = "@available(iOS %s, *) // ios15-port" % avail
+    text = read(path)
+    if marker in text or "@available(iOS 16.0, *) // ios15-port" in text:
+        return False
+    lines = text.split("\n")
+    out = []
+    for ln in lines:
+        m = DECL_RE.match(ln)
+        if m and not ln.lstrip().startswith("//"):
+            out.append(m.group("ind") + marker)
+        out.append(ln)
+    write(path, "\n".join(out))
+    return True
+
+
+def annotate_appintent_files() -> None:
+    """Intents 目录之外的意图/实体类型也要隔离（如 Shared/AudioTogglePlaybackIntent）。
+
+    - LiveActivityIntent 需要 iOS 17 -> 标 17.0
+    - 其余 AppIntents API 从 iOS 16 开始 -> 标 16.0
+    前提：引用这些类型的扩展 target 会由 fix_fileprovider_deployment.py
+    抬高部署目标（AgentWidgetExtension -> 17.0），主 App 不引用它们。
+    """
+    n = 0
+    for path in swift_files(ROOT):
+        rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+        if rel.startswith("Agent/Intents/"):
+            continue  # annotate_intents 已按 16.0 处理
+        try:
+            text = read(path)
+        except OSError:
+            continue
+        if not INTENT_PROTO_RE.search(text):
+            continue
+        avail = "17.0" if "LiveActivityIntent" in text else "16.0"
+        if annotate_file_top_decls(path, avail):
+            n += 1
+    log("✅ Intents 目录外的意图类型标注 @available：%d 个文件" % n)
 
 
 # ------------------------------------------------- 3. Intents 目录整体标注
@@ -189,24 +277,7 @@ def annotate_intents() -> None:
 
     n = 0
     for path in swift_files(INTENTS_DIR):
-        def _fn(text: str) -> str:
-            if "@available(iOS 16.0, *) // ios15-port" in text:
-                return text
-            lines = text.split("\n")
-            out = []
-            for ln in lines:
-                m = DECL_RE.match(ln)
-                if m and not ln.lstrip().startswith("//"):
-                    ind = m.group("ind")
-                    out.append("%s@available(iOS 16.0, *) // ios15-port" % ind)
-                    n_insert = True
-                out.append(ln)
-            return "\n".join(out)
-
-        before = read(path)
-        after = _fn(before)
-        if after != before:
-            write(path, after)
+        if annotate_file_top_decls(path, "16.0"):
             n += 1
     log("✅ Intents 目录标注 @available(iOS 16.0, *)：%d 个文件" % n)
 
@@ -620,7 +691,9 @@ def main() -> None:
     log("=== OpenMinis -> iOS 15 移植（第二阶段）===")
     fix_applocalized()
     strip_localizedstringresource()
+    restore_intent_props()
     annotate_intents()
+    annotate_appintent_files()
     delete_modifiers()
     misc_fixes()
     write_compat()

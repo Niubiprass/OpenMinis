@@ -4,7 +4,7 @@ import Foundation
 /// Opens a specific chat session in the Minis app.
 @available(iOS 16.0, *) // ios15-port
 struct OpenSessionIntent: AppIntent {
-    static var title: String = "Open Session"
+    static var title: LocalizedStringResource = "Open Session"
     static var description = IntentDescription("Opens a Minis chat session in the app.")
     static var openAppWhenRun = true
 
