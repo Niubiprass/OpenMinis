@@ -229,7 +229,7 @@ private struct ImportSkillSheet: View {
     }
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             Form {
                 Picker("Import Method", selection: $importMode) {
                     ForEach(ImportMode.allCases, id: \.self) { mode in
@@ -881,11 +881,11 @@ private struct SkillFileDetailView: View {
             .navigationTitle(fileName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if hasChanges {
+
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(AppLocalized("Save")) { save() }
                     }
-                }
+                
             }
             .onAppear {
                 content = store.readSkillFile(skillId, relativePath: relativePath) ?? ""
@@ -912,7 +912,7 @@ struct MinisSkillsBrowserView: View {
     @StateObject private var coordinator = SkillBrowserCoordinator()
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             ZStack {
                 SkillBrowserWebView(coordinator: coordinator)
                     .ignoresSafeArea(edges: .bottom)

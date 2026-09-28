@@ -76,7 +76,7 @@ enum DeepLinkRouter {
         case "session", "sessions":
             // `session/<id>` (legacy singular) and `sessions/<id>` (canonical,
             // matches minis-sessions-cli) both route to the same place. Post
-            // `.openSessionFromIntent` so we reuse the same code path the
+            // `Notification.Name("openSessionFromIntent")` so we reuse the same code path the
             // App Intents flow uses — which already pops the navigation
             // stack back to root before opening the target session.
             let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -85,7 +85,7 @@ enum DeepLinkRouter {
                 return
             }
             NotificationCenter.default.post(
-                name: .openSessionFromIntent,
+                name: Notification.Name("openSessionFromIntent"),
                 object: nil,
                 userInfo: ["sessionId": id]
             )

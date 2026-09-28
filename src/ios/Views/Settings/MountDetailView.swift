@@ -142,7 +142,7 @@ struct MountDetailView: View {
             }
         }
         .sheet(isPresented: $showingBrowser) {
-            NavigationView{
+            NavigationStack {
                 FileBrowserView(
                     rootPath: context.hostURL,
                     rootLabel: context.linuxPath
@@ -340,6 +340,7 @@ struct MountDetailView: View {
     }
 
     private func signalFileProviderRoot() {
+        guard #available(iOS 16.0, *) else { return }
         let domainIdentifier = NSFileProviderDomainIdentifier("com.openminis.app.files")
         NSFileProviderManager.getDomainsWithCompletionHandler { domains, _ in
             guard let domain = domains.first(where: { $0.identifier == domainIdentifier }) else {

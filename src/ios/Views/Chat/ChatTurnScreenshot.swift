@@ -19,7 +19,7 @@ struct ChatScreenshotPreviewSheet: View {
     private let logger = AppLogger(category: "ScreenshotPreview")
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             ScrollView(.vertical, showsIndicators: true) {
                 Image(uiImage: image)
                     .resizable()

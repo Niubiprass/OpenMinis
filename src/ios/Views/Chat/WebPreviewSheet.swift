@@ -726,7 +726,7 @@ struct MinisLinkPreviewView: View {
     }
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             ReusableWebView(webView: holder.webView)
                 // [T-webview-preview-swipe-dismiss] Arbitrate the sheet's
                 // interactive-dismiss pan against page content at the gesture

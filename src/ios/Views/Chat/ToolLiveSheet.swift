@@ -653,7 +653,7 @@ struct ToolLiveSheet: View {
         .padding(.vertical, 10)
         .background(Color(UIColor.systemBackground))
         .fullScreenCover(isPresented: $showTerminal) {
-            NavigationView{
+            NavigationStack {
                 // Pre-fill the shell command the tool is currently running,
                 // WITHOUT a trailing newline — the user can review/edit and
                 // press Enter themselves (intentional, not auto-run).
@@ -864,11 +864,11 @@ struct ToolLiveSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 10)
                         .stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5))
                     .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 3)
-                    .contextMenu {
+                    .contextMenu (menuItems: {
                         Button { UIPasteboard.general.image = image } label: {
                             Label("Copy Image", systemImage: "doc.on.doc")
                         }
-                    }
+                    })
                     .padding(.horizontal, 12)
                     .padding(.top, action.isEmpty && url.isEmpty ? 12 : 0)
 
@@ -1801,11 +1801,11 @@ struct ToolLiveSheet: View {
                             .overlay(RoundedRectangle(cornerRadius: 10)
                                 .stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5))
                             .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 3)
-                            .contextMenu {
+                            .contextMenu (menuItems: {
                                 Button { UIPasteboard.general.image = img } label: {
                                     Label("Copy Image", systemImage: "doc.on.doc")
                                 }
-                            }
+                            })
                             .padding(.horizontal, 12)
                     }
                     .padding(.bottom, 16)

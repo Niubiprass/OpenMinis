@@ -370,7 +370,7 @@ enum ShortcutNotification {
 
 /// [T-notification-tap-vs-launch-session] Cold-launch handoff for a
 /// notification-tap navigation. On a cold launch the delegate's `didReceive`
-/// fires before ContentView has mounted its `.onReceive(.openSessionFromIntent)`
+/// fires before ContentView has mounted its `.onReceive(Notification.Name("openSessionFromIntent"))`
 /// subscriber, so the posted NotificationCenter event is simply lost — and the
 /// Launch Session preference (e.g. "New Chat") then opens a fresh session
 /// instead of the tapped one. The delegate buffers the target here;
@@ -449,7 +449,7 @@ final class ShortcutNotificationDelegate: NSObject, UNUserNotificationCenterDele
                 // consumer). Whichever runs marks the other's copy dead.
                 NotificationNavigationStore.shared.setPending(sessionId)
                 NotificationCenter.default.post(
-                    name: .openSessionFromIntent,
+                    name: Notification.Name("openSessionFromIntent"),
                     object: nil,
                     userInfo: ["sessionId": sessionId]
                 )

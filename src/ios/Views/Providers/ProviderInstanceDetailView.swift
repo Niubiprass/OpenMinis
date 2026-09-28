@@ -83,7 +83,7 @@ struct ProviderInstanceDetailView: View {
             }
         }
         .sheet(isPresented: $showManualTokenInput) {
-            NavigationView{
+            NavigationStack {
                 Form {
                     Section {
                         SecureField("Bearer token", text: $manualTokenInputText)
@@ -450,7 +450,7 @@ struct ProviderInstanceDetailView: View {
             }
             .buttonStyle(.plain)
         }
-        .contextMenu {
+        .contextMenu (menuItems: {
             if let key = rawKey {
                 Button {
                     UIPasteboard.general.string = key
@@ -458,7 +458,7 @@ struct ProviderInstanceDetailView: View {
                     Label("Copy API Key", systemImage: "doc.on.doc")
                 }
             }
-        }
+        })
     }
 
     @ViewBuilder
@@ -792,14 +792,14 @@ struct ProviderInstanceDetailView: View {
         .onTapGesture {
             editingModelEntry = entry
         }
-        .contextMenu {
+        .contextMenu (menuItems: {
             Button {
                 UIPasteboard.general.string = "entry:\(entry.compositeKey)"
                 MinisToast.show(AppLocalized("Copied: \(entry.model.displayName)"))
             } label: {
                 Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
             }
-        }
+        })
     }
 
     private func modalityIcons(for model: LLMModel) -> some View {
@@ -1102,7 +1102,7 @@ struct AddCustomModelSheet: View {
     private var instance: ProviderInstance? { store.instance(for: instanceId) }
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             List {
                 Section {
                     TextField("Model ID (e.g. claude-3-opus-latest)", text: $modelId)
@@ -1289,7 +1289,7 @@ struct ModelEntryDetailSheet: View {
     @State private var showResetAlert: Bool = false
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             List {
                 Section("Identity") {
                     HStack {

@@ -118,7 +118,7 @@ struct BrowserBenchTestView: View {
     }()
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             ScrollViewReader { proxy in
                 List {
                     ForEach(vm.logs) { entry in

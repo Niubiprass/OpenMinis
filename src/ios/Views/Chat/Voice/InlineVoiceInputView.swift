@@ -235,7 +235,7 @@ struct InlineVoiceInputView: View {
             // button, etc.) for gesture priority.
             Color.clear
                 .contentShape(Rectangle())
-                .contextMenu {
+                .contextMenu (menuItems: {
                     if UIPasteboard.general.hasImages, onPasteImage != nil {
                         Button {
                             guard let images = UIPasteboard.general.images else { return }
@@ -279,7 +279,7 @@ struct InlineVoiceInputView: View {
                             Label("Paste", systemImage: "doc.on.clipboard")
                         }
                     }
-                }
+                })
         )
         // Compact↔expand toggle (top-left) + globe (top-right). Pinned to the top
         // corners in BOTH modes. Leading/trailing insets = 12 to line up with the
@@ -565,7 +565,7 @@ struct InlineVoiceInputView: View {
             viewModel.refreshInputProvider()
         }
         .sheet(isPresented: $showModelSelector) {
-            NavigationView{
+            NavigationStack {
                 UnifiedModelPicker(config: .voiceInput())
             }
         }
@@ -803,14 +803,14 @@ struct InlineVoiceInputView: View {
                             Color.clear.preference(key: TranscriptContentHeightKey.self,
                                                    value: geo.size.height)
                         })
-                        .contextMenu {
+                        .contextMenu (menuItems: {
                             Button(role: .destructive) {
                                 viewModel.clearTranscript()
                                 VoiceLog.log("cleared transcript via long-press")
                             } label: {
                                 Label(AppLocalized("Clear", comment: "Clear transcript context menu"), systemImage: "trash")
                             }
-                        }
+                        })
                         // [T-voice-scroll-gesture-priority] Same boundary probe as
                         // the editing branch — the read-only transcript (used while
                         // dictating / reviewing) must be scrollable too. Overlay

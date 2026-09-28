@@ -186,7 +186,7 @@ struct ICloudBackupView: View {
             }
             .tint(.blue)
         }
-        .contextMenu {
+        .contextMenu (menuItems: {
             Button {
                 showRestoreConfirm = entry
             } label: {
@@ -199,7 +199,7 @@ struct ICloudBackupView: View {
             } label: {
                 Label("Delete", systemImage: "trash")
             }
-        }
+        })
     }
 
     // MARK: - Actions

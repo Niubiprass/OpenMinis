@@ -29,7 +29,7 @@ ROOT = "src/ios"
 
 # 脚本版本号。每轮修复都会改它，日志第一行就会打印，
 # 用来确认 runner 上跑的是不是最新脚本（避免又下到 CDN 缓存的旧版）。
-SCRIPT_VERSION = "v10-20260929f"
+SCRIPT_VERSION = "v10-20260929h"
 COMPAT_NAME = "iOS15Compat.swift"
 PRISTINE_COMMIT = None  # 已废弃：浅克隆下取不到真正的初始提交，改用内存基线
 # 转换前的文件内容快照（路径 -> 内容），由 snapshot_baseline() 填充，
@@ -598,8 +598,12 @@ def cleanup_artifacts() -> None:
         log("✅ 已清掉上一轮产物 %d 个" % removed)
 
 
-def _delete_call(text: str, name: str):
-    """整调用配平删除 name(...)（单行/多行都安全）。"""
+def _delete_call(text: str, name: str, drop_trailing_closure: bool = False):
+    """整调用配平删除 name(...)（单行/多行都安全）。
+
+    drop_trailing_closure=True 时连同后面的尾随闭包一起删
+    （.onGeometryChange(for: X.self) { proxy in ... } 这种）。
+    """
     pat = re.compile(re.escape(name) + r"\s*\(")
     out = text
     guard = 0
@@ -611,14 +615,100 @@ def _delete_call(text: str, name: str):
         lp = m.end() - 1
         e = _expr_end(out, lp)
         if e is None:
-            break
+            # 配不平就不动它，用占位符推进搜索位置避免死循环
+            out = out[:m.start()] + "\x00" + out[m.end():]
+            continue
+        end = e
+        if drop_trailing_closure:
+            # 吃掉尾随闭包，包括 Swift 的多个尾随闭包形态：
+            #   .onGeometryChange(for: X.self) { proxy in … } action: { … }
+            # 第一个闭包无标签，后续的都带 label:，所以要循环吃。
+            j = e
+            g2 = 0
+            while g2 < 10:
+                g2 += 1
+                while j < len(out) and out[j] in " \t\r\n":
+                    j += 1
+                k2 = j
+                lab = re.match(r"[A-Za-z_]\w*\s*:\s*", out[k2:])
+                if lab:
+                    k2 += lab.end()
+                if k2 < len(out) and out[k2] == "{":
+                    k = _match_delim(out, k2)
+                    if k:
+                        end = k
+                        j = k
+                        continue
+                break
         i = m.start()
         ls = out.rfind("\n", 0, i) + 1
         if out[ls:i].strip() == "":
             i = ls
-            if e < len(out) and out[e] == "\n":
-                e += 1
-        out = out[:i] + out[e:]
+            if end < len(out) and out[end] == "\n":
+                end += 1
+        out = out[:i] + out[end:]
+    return out.replace("\x00", name + "(")
+
+
+def strip_toolbar_conditionals(text: str) -> str:
+    """去掉 .toolbar { ... } 里最外层的 if 条件分支。
+
+    @ToolbarContentBuilder 的 buildIf（条件分支）是 iOS 16 才有的，
+    iOS 15 的 toolbar 闭包里写 if 会报 "'buildIf' is only available in
+    iOS 16.0 or newer"（第 15 轮光这一类就 16 个错误）。
+
+    只处理 toolbar 块的**直接**子语句（缩进与块内首行一致），
+    更深层的 @ViewBuilder 闭包里的 if 是合法的，绝不能碰。
+    """
+    pat = re.compile(r"\.toolbar\s*(?:\([^)]*\))?\s*\{")
+    out = text
+    pos = 0
+    guard = 0
+    while guard < 100:
+        guard += 1
+        m = pat.search(out, pos)
+        if not m:
+            break
+        lb = m.end() - 1                      # 指向 {
+        eb = _match_delim(out, lb)
+        if not eb:
+            pos = m.end()
+            continue
+        block = out[lb + 1:eb - 1]
+        # 块内首行的缩进 = toolbar 直接子语句的缩进
+        base = None
+        for ln in block.split("\n"):
+            if ln.strip():
+                base = len(ln) - len(ln.lstrip())
+                break
+        if base is None:
+            pos = eb
+            continue
+        ifpat = re.compile(r"(?m)^([ \t]*)if[ \t]+[^\n]*\{[ \t]*$")
+        inner = block
+        g2 = 0
+        while g2 < 100:
+            g2 += 1
+            im = ifpat.search(inner)
+            if not im:
+                break
+            if len(im.group(1)) != base:
+                # 不是直接子语句，放过。
+                # 注意：占位符必须加在行首且**保留原行内容**——早期版本把整行
+                # 换成 "\x01"、恢复时只写回 "if "，于是深层 if 变成了一个光秃秃
+                # 的 "if"，凭空多出语法错误。
+                inner = inner[:im.start()] + "\x01" + inner[im.start():]
+                continue
+            lb2 = inner.rfind("{", im.start(), im.end())
+            eb2 = _match_delim(inner, lb2)
+            if not eb2:
+                inner = inner[:im.start()] + "\x01" + inner[im.end():]
+                continue
+            # 去掉 "if 条件 {" 与配对的 "}"，保留分支体
+            inner = inner[:im.start()] + inner[lb2 + 1:eb2 - 1] + inner[eb2:]
+        inner = inner.replace("\x01", "")
+        out = out[:lb + 1] + inner + out[eb - 1:]
+        pos = lb + 1 + len(inner)
     return out
 
 
@@ -658,32 +748,77 @@ def stage1_fixes() -> None:
     把它改的东西整体覆盖了 —— 第 12 轮就栽在这儿：编译只剩 2 个错误，
     全是 'NavigationStack' is only available in iOS 16.0 or newer，
     因为那次替换的成果被上游还原抹掉了。
-    所以这三条规则必须在还原之后再执行一次。
+    所以这批规则必须在还原之后再执行一次。
+
+    注意：这里**不再**把 NavigationStack 替换成 NavigationView。第 15 轮就是
+    这么干的，结果 `NavigationStack(path: $navigationPath)` 变成了
+    `NavigationView(path: $navigationPath)` —— 后者根本不存在，凭空多出
+    "extra arguments at positions #1, #2" 这类级联错误，而且 path 驱动的程序化
+    导航全废。现在改成由 iOS15Compat.swift 里的 NavigationStack 替身接管。
     """
     touched = 0
-    n_path = 0
     for path in swift_files(ROOT):
         t = read(path)
-        if "NavigationStack" not in t and ".presentationDetents" not in t \
-                and ".symbolEffect" not in t:
+        if not any(k in t for k in (
+                ".presentationDetents", ".symbolEffect", ".fontWeight",
+                ".onGeometryChange", ".photosPicker", ".toolbar",
+                "lineLimit", "listRowSeparatorLeading", ".contextMenu",
+                ".gradient")):
             continue
         orig = t
-        # NavigationStack(...) / NavigationStack {  ->  NavigationView
-        for m in re.finditer(r"NavigationStack\s*\(([^)]*)\)", t):
-            if "path:" in m.group(1):
-                n_path += 1
-        t = re.sub(r"\bNavigationStack\b\s*([({])", r"NavigationView\1", t)
         # iOS 16/17 专属、iOS 15 无对应的视觉 API，整调用删除
         t = _delete_call(t, ".presentationDetents")
         t = _delete_call(t, ".symbolEffect")
+        # 纯视觉增强（字重/加粗/几何监听/图片选择器）：删掉不影响功能
+        t = _delete_call(t, ".fontWeight")
+        t = _delete_call(t, ".bold")
+        t = _delete_call(t, ".onGeometryChange", drop_trailing_closure=True)
+        t = _delete_call(t, ".photosPicker")
+        # .lineLimit(1...2) 这种区间写法是 iOS 16，退化成上限
+        t = re.sub(r"\.lineLimit\(\s*(\d+)\s*\.\.\.\s*(\d+)\s*\)",
+                   r".lineLimit(\2)", t)
+        # Alignment.listRowSeparatorLeading 是 iOS 16 的 AlignmentID
+        t = t.replace(".listRowSeparatorLeading", ".leading")
+        # 强制选中 iOS 13 的 contextMenu(menuItems:) 重载，别被 iOS 16 的
+        # menuItems:preview: 抢走
+        t = _fix_context_menu(t)
+        # Color.orange.gradient 是 iOS 16 的 ShapeStyle
+        t = re.sub(r"\b(Color\.[\w.]+)\.gradient\b", r"\1", t)
+        t = t.replace(".contentShape(.contextMenuPreview, ", ".contentShape(")
+        # @ToolbarContentBuilder 的 buildIf 是 iOS 16，去掉 toolbar 里的条件分支
+        t = strip_toolbar_conditionals(t)
         if t != orig:
             write(path, t)
             touched += 1
-    if n_path:
-        log("⚠️  %d 处 NavigationStack(path:) 在 iOS 15 上没有等价物，已保留原样"
-            % n_path)
-    log("✅ 第一阶段规则复跑（NavigationStack/presentationDetents/"
-        "symbolEffect）：%d 个文件受影响" % touched)
+    log("✅ 第一阶段规则复跑（presentationDetents/symbolEffect/fontWeight/"
+        "onGeometryChange/photosPicker/toolbar-if…）：%d 个文件受影响" % touched)
+
+
+def _fix_context_menu(text: str) -> str:
+    """.contextMenu { … }  ->  .contextMenu(menuItems: { … })
+
+    第 15 轮报了 4 处 'contextMenu(menuItems:preview:)' is only available in
+    iOS 16.0 —— 源码写的是单参数尾随闭包，编译器却去匹配 iOS 16 的双参数重载。
+    显式写出 menuItems: 标签就把重载选择钉死在 iOS 13 就有的那一版。
+    """
+    pat = re.compile(r"\.contextMenu\s*\{")
+    out = text
+    pos = 0
+    guard = 0
+    while guard < 100:
+        guard += 1
+        m = pat.search(out, pos)
+        if not m:
+            break
+        lb = m.end() - 1
+        eb = _match_delim(out, lb)
+        if not eb:
+            pos = m.end()
+            continue
+        block = out[lb:eb]
+        out = out[:lb] + "(menuItems: " + block + ")" + out[eb:]
+        pos = lb + len("(menuItems: ") + len(block) + 1
+    return out
 
 
 def snapshot_baseline() -> None:
@@ -1036,6 +1171,265 @@ def misc_fixes() -> None:
     log("✅ 零散 API 替换（sleep/axis/badge/…）：%d 个文件受影响" % touched)
 
 
+# ------------------------------------------- 5b. 第 15 轮日志里剩余的功能型 API
+
+
+def _convert_regex_literals(text: str) -> str:
+    """iOS 16 的 Regex 字面量 (/…/) 换成 MinisRegex + NSRegularExpression。
+
+    - `markdown.ranges(of: /…/)`      -> `MinisRegex.ranges(markdown, "…")`
+    - `key.wholeMatch(of: keyRegex)`  -> `MinisRegex.wholeMatch(key, keyRegex)`
+    - `static let keyRegex = /…/`     -> `static let keyRegex = "…"`
+    """
+    def _lit_to_str(body: str) -> str:
+        # 正则字面量里的 \[ 在普通字符串里要写成 \\[
+        return '"' + body.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    # 1) 内联字面量: X.ranges(of: /…/)
+    def _ranges(m):
+        return "MinisRegex.ranges(%s, %s)" % (m.group(1), _lit_to_str(m.group(2)))
+
+    text = re.sub(r"(\w+)\.ranges\(\s*of:\s*/((?:[^/\\\n]|\\.)*)/\s*\)",
+                  _ranges, text)
+
+    # 2) wholeMatch(of:) —— iOS 16 的 Regex 方法
+    text = re.sub(r"(\w+)\.wholeMatch\(\s*of:\s*(\w+)\s*\)\s*!=\s*nil",
+                  r"MinisRegex.wholeMatch(\1, \2)", text)
+
+    # 3) 正则字面量常量声明
+    def _lit_decl(m):
+        return "%s = %s" % (m.group(1), _lit_to_str(m.group(2)))
+
+    text = re.sub(
+        r"(?m)^(\s*(?:public |private |internal )?(?:static )?(?:let|var)\s+\w+\s*)"
+        r"=\s*/((?:[^/\\\n]|\\.)*)/\s*$", _lit_decl, text)
+    return text
+
+
+def _replace_flow_layout(text: str) -> str:
+    """`struct FlowLayout: Layout` -> 一个 iOS 15 可编译的 View。
+
+    `Layout` 协议是 iOS 16 才有的，而 iOS 15 拿不到子视图尺寸，做不到真正的
+    自动换行。这里退化成横向可滚动的 HStack：不会溢出，视觉上接近。
+    """
+    pat = re.compile(
+        r"(?m)^(?P<i>[ \t]*)(?P<mod>(?:private |fileprivate |internal |public )?)"
+        r"struct\s+FlowLayout\s*:\s*Layout\s*\{")
+    out = text
+    guard = 0
+    while guard < 20:
+        guard += 1
+        m = pat.search(out)
+        if not m:
+            break
+        lb = m.end() - 1
+        eb = _match_delim(out, lb)
+        if not eb:
+            break
+        ind = m.group("i")
+        repl = (
+            "%(i)s%(mod)sstruct FlowLayout<Content: View>: View {\n"
+            "%(i)s    var hSpacing: CGFloat = 8\n"
+            "%(i)s    var vSpacing: CGFloat = 8\n"
+            "%(i)s    var alignment: HorizontalAlignment = .leading\n"
+            "%(i)s    private let content: Content\n"
+            "\n"
+            "%(i)s    init(hSpacing: CGFloat = 8, vSpacing: CGFloat = 8,\n"
+            "%(i)s         alignment: HorizontalAlignment = .leading,\n"
+            "%(i)s         @ViewBuilder content: () -> Content) {\n"
+            "%(i)s        self.hSpacing = hSpacing\n"
+            "%(i)s        self.vSpacing = vSpacing\n"
+            "%(i)s        self.alignment = alignment\n"
+            "%(i)s        self.content = content()\n"
+            "%(i)s    }\n"
+            "\n"
+            "%(i)s    var body: some View {\n"
+            "%(i)s        ScrollView(.horizontal, showsIndicators: false) {\n"
+            "%(i)s            HStack(alignment: .center, spacing: hSpacing) { content }\n"
+            "%(i)s                .padding(.vertical, vSpacing > 0 ? vSpacing / 2 : 0)\n"
+            "%(i)s                .frame(maxWidth: .infinity,\n"
+            "%(i)s                       alignment: Alignment(horizontal: alignment))\n"
+            "%(i)s        }\n"
+            "%(i)s    }\n"
+            "%(i)s}"
+        ) % {"i": ind, "mod": m.group("mod")}
+        out = out[:m.start()] + repl + out[eb:]
+    return out
+
+
+def _drop_transfer_representation(text: str) -> str:
+    """删掉 `static var transferRepresentation: some TransferRepresentation { … }`。
+
+    Transferable 那套（FileRepresentation / SentTransferredFile）是 iOS 16 的；
+    iOS 15 上只保留 `struct X: Transferable` 的壳，让引用它的代码还能编译。
+    """
+    pat = re.compile(
+        r"(?m)^[ \t]*static\s+var\s+transferRepresentation\s*:[^\n]*\{")
+    out = text
+    guard = 0
+    while guard < 20:
+        guard += 1
+        m = pat.search(out)
+        if not m:
+            break
+        lb = m.end() - 1
+        eb = _match_delim(out, lb)
+        if not eb:
+            break
+        i = m.start()
+        ls = out.rfind("\n", 0, i) + 1
+        end = eb
+        if out[end:end + 1] == "\n":
+            end += 1
+        out = out[:ls] + out[end:]
+    return out
+
+
+# 注意：不能用文件顶部的 DECL_RE —— 它只认 struct/class/enum/extension，
+# 用来找「enclosing 函数」会一路穿到类型声明上，guard 就永远插不进去。
+ANY_DECL_RE = re.compile(
+    r"^[ \t]*(?:(?:public|internal|fileprivate|private|open|final|static|"
+    r"override|mutating|@\w+(?:\([^)]*\))?)\s+)*"
+    r"(?:var|let|func|init|struct|class|enum|actor|protocol|extension)\b")
+
+
+def _enclosing_decl_line(lines, idx):
+    """从 idx 往上找最近的、缩进更小的声明行（含 func/var/let）。"""
+    if idx >= len(lines):
+        idx = len(lines) - 1
+    base = len(lines[idx]) - len(lines[idx].lstrip())
+    for j in range(idx, -1, -1):
+        ln = lines[j]
+        if not ln.strip() or ln.lstrip().startswith("//"):
+            continue
+        ind = len(ln) - len(ln.lstrip())
+        if ind < base and ANY_DECL_RE.match(ln):
+            return j
+    return None
+
+
+GUARD_LINE = "guard #available(iOS 16.0, *) else { return }"
+
+
+def _guard_avail_in_funcs(text: str, tokens, version: str = "16.0") -> str:
+    """给用到了 iOS16 token 的空返回函数体开头插入 guard #available。
+
+    比给函数本身加 @available 安全：不改签名，调用点不用跟着改，
+    也就不会沿调用链一路向上传播出一堆新错误。
+    """
+    lines = text.split("\n")
+    need = set()
+    for idx, ln in enumerate(lines):
+        if not any(tok in ln for tok in tokens):
+            continue
+        j = _enclosing_decl_line(lines, idx)
+        if j is not None and "func " in lines[j] and "-> " not in lines[j]:
+            need.add(j)
+    if not need:
+        return text
+    brace_line = {}
+    for j in need:
+        k = j
+        while k < len(lines):
+            if "{" in lines[k]:
+                brace_line[k] = lines[k]
+                break
+            k += 1
+    if not brace_line:
+        return text
+    out = []
+    for idx, ln in enumerate(lines):
+        out.append(ln)
+        if idx in brace_line:
+            ind = len(ln) - len(ln.lstrip())
+            out.append(" " * (ind + 4)
+                       + "guard #available(iOS %s, *) else { return }" % version)
+    return "\n".join(out)
+
+
+def _guard_sizeThatFits(text: str) -> str:
+    """给 sizeThatFits(_:ProposedViewSize:...) 整段方法加 @available(iOS 16)。
+
+    ProposedViewSize 是 iOS 16 才有的类型，iOS 15 没有同名类型也没有这个
+    签名。加 @available 后，iOS 15 上整段方法不编译，UIViewRepresentable 退回
+    默认 intrinsic content size；iOS 16 上正常 override。
+    """
+    pat = re.compile(
+        r"(?m)^([ \t]*)func\s+sizeThatFits\(\s*_\s+proposal:\s*ProposedViewSize\b")
+    out = text
+    guard = 0
+    while guard < 20:
+        guard += 1
+        m = pat.search(out)
+        if not m:
+            break
+        ind = m.group(1)
+        ls = out.rfind("\n", 0, m.start()) + 1
+        prev_end = out.rfind("\n", 0, ls)
+        prev = out[prev_end + 1:ls] if prev_end >= 0 else ""
+        if "@available" in prev:
+            continue
+        out = out[:ls] + ("%s@available(iOS 16.0, *) // ios15-port\n" % ind) + out[ls:]
+    return out
+
+
+def stage3_api_fixes() -> None:
+    """第 15 轮 build.log 里剩下、且能机械处理的功能型 API。"""
+    n_files = 0
+    for path in swift_files(ROOT):
+        t = read(path)
+        orig = t
+
+        t = _convert_regex_literals(t)
+        t = t.replace("ShareLink(", "MinisShareLinkButton(")
+        t = _drop_transfer_representation(t)
+        # sizeThatFits(_:ProposedViewSize:uiView:context:) 是 iOS 16 的
+        # UIViewRepresentable 可选方法；iOS 15 没有 ProposedViewSize 也没有
+        # 这个签名。整段方法加 @available(iOS 16)，iOS 15 上不编译，
+        # 退回 UIViewRepresentable 默认的 intrinsic content size。
+        t = _guard_sizeThatFits(t)
+        # AVAssetImageGenerator.image(at:) 是 iOS 16 的 async 版本
+        t = re.sub(
+            r"let \(([^,]+),\s*_\)\s*=\s*try\s+await\s+(\w+)\.image\(at:\s*([^)]*)\)",
+            r"let \1 = try \2.copyCGImage(at: \3, actualTime: nil)", t)
+        # ToolbarItem(placement: .secondaryAction) 是 iOS 16 的位置
+        t = t.replace("placement: .secondaryAction", "placement: .automatic")
+        t = _replace_flow_layout(t)
+        # Locale 降级后残留的可选链
+        t = t.replace(".languageCode?.identifier.lowercased()",
+                      ".languageCode?.lowercased()")
+        # Notification.Name 的 static 成员被标成了 iOS 16（它属于 AppIntents
+        # 那一批），但名字本身就是 rawValue —— 直接换成运行时构造的同名
+        # Notification.Name，绕过 availability，不影响收发。
+        if ".openSessionFromIntent" in t:
+            t = t.replace(".openSessionFromIntent",
+                          'Notification.Name("openSessionFromIntent")')
+        # 单行赋值：SFSpeechAudioBufferRecognitionRequest.addsPunctuation (iOS 16)
+        t = re.sub(
+            r"(?m)^([ \t]*)(recognitionRequest\.addsPunctuation\s*=\s*[^\n]+)$",
+            lambda m: "%sif #available(iOS 16.0, *) {\n%s    %s\n%s}"
+                      % (m.group(1), m.group(1), m.group(2), m.group(1)), t)
+
+        # 用到了整套 iOS16 框架的函数：插 guard #available，不改签名
+        t = _guard_avail_in_funcs(t, (
+            "NSFileProviderManager.", "NSFileProviderDomain(",
+            "WeatherService.", "ShortcutNotificationDelegate",
+            "ShortcutRunTracker.", "NotificationNavigationStore."))
+
+        # 属性没法插 guard，只能标 @available —— 用它的函数上面都插了 guard，
+        # 所以引用点都在 available 上下文里
+        if "private static let fileProviderDomain" in t and not re.search(
+                r"@available[^\n]*\n\s*private static let fileProviderDomain\b", t):
+            t = re.sub(r"(?m)^([ \t]*)(private static let fileProviderDomain\b)",
+                       r"\1@available(iOS 16.0, *) // ios15-port\n\1\2", t)
+
+        if t != orig:
+            write(path, t)
+            n_files += 1
+    log("✅ 第三阶段（Regex/ShareLink/FlowLayout/FileProvider 隔离…）："
+        "%d 个文件受影响" % n_files)
+
+
 # ------------------------------------------------------- 6. iOS15 兼容层
 
 COMPAT_SWIFT = r'''//
@@ -1057,7 +1451,9 @@ public struct AnyShape: Shape {
     private let _path: (CGRect) -> Path
 
     public init<S: Shape>(_ wrapped: S) {
-        _path = wrapped.path(in:)
+        // 显式闭包，不依赖 unapplied method reference —— 后者在某些
+        // Swift 版本/泛型上下文下会推导失败
+        _path = { rect in wrapped.path(in: rect) }
     }
 
     public func path(in rect: CGRect) -> Path {
@@ -1195,31 +1591,396 @@ public struct NavigationPath: Equatable {
     public static func == (lhs: NavigationPath, rhs: NavigationPath) -> Bool {
         lhs.elements == rhs.elements
     }
+
+    /// 栈顶元素 —— iOS 15 的 shim 用它决定该 push 哪一层。
+    public var last: AnyHashable? { elements.last }
+
+    public var allElements: [AnyHashable] { elements }
 }
 
-// MARK: - ProposedViewSize (iOS 16)
+// MARK: - navigationDestination(for:) 注册表 (iOS 16)
 
-/// Size proposal used by `UIViewRepresentable.sizeThatFits`.
-public struct ProposedViewSize: Equatable {
-    public var width: CGFloat?
-    public var height: CGFloat?
+/// iOS 16 的 `.navigationDestination(for: D.self) { d in … }` 把「值 → 目标视图」的
+/// 映射交给 SwiftUI 的 path 系统。iOS 15 没有这套机制，这里用一个全局注册表
+/// 近似：注册时记下类型 → 构造器，push 时按栈顶元素的实际类型回查。
+///
+/// 局限性：全局单例，多个 NavigationStack 共享同一份映射。本项目只有
+/// ContentView 与 Settings 两处使用，且目标类型不同，实际不会串。
+public final class NavigationDestinationRegistry {
+    public static let shared = NavigationDestinationRegistry()
 
-    public init(width: CGFloat? = nil, height: CGFloat? = nil) {
-        self.width = width
-        self.height = height
+    private var handlers: [ObjectIdentifier: (Any) -> AnyView] = [:]
+    private let lock = NSLock()
+
+    public func register<D: Hashable>(_ type: D.Type,
+                                      handler: @escaping (D) -> AnyView) {
+        lock.lock()
+        defer { lock.unlock() }
+        handlers[ObjectIdentifier(type)] = { value in
+            guard let typed = value as? D else { return AnyView(EmptyView()) }
+            return handler(typed)
+        }
     }
 
-    public init(_ size: CGSize) {
-        self.width = size.width
-        self.height = size.height
+    public func resolve(_ value: Any) -> AnyView {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = ObjectIdentifier(type(of: value))
+        if let h = handlers[key] { return h(value) }
+        // 类型不完全匹配时（例如 AnyHashable 装箱差异）逐个尝试。
+        for (_, h) in handlers {
+            let probe = h(value)
+            if !(probe is AnyView) { return probe }
+        }
+        return AnyView(EmptyView())
     }
 
-    public static let zero = ProposedViewSize(width: 0, height: 0)
-    public static let infinity = ProposedViewSize(width: .infinity, height: .infinity)
-    public static let unspecified = ProposedViewSize(width: nil, height: nil)
+    public func resolveHashable(_ value: AnyHashable) -> AnyView {
+        resolve(value.base)
+    }
+}
 
-    public func replacingUnspecifiedDimensions(by size: CGSize) -> CGSize {
-        CGSize(width: width ?? size.width, height: height ?? size.height)
+/// `NavigationLink(value:)` / `NavigationStack(path:)` 共用的目标视图。
+public struct NavigationPathDestinationView: View {
+    let value: AnyHashable
+
+    public init(_ value: AnyHashable) { self.value = value }
+
+    public var body: some View {
+        NavigationDestinationRegistry.shared.resolveHashable(value)
+    }
+}
+
+/// `.navigationDestination(for:)` 的 iOS 15 替身：注册映射，不改变视图本身。
+private struct _NavigationDestinationInstaller: ViewModifier {
+    func body(content: Content) -> some View { content }
+}
+
+extension View {
+    /// iOS 16 `.navigationDestination(for:destination:)` 替身。
+    ///
+    /// 在 iOS 15 上把 `destination` 闭包登记进注册表；`NavigationLink(value:)`
+    /// 与 `NavigationStack(path:)` 随后从注册表取回目标视图。
+    public func navigationDestination<D: Hashable, V: View>(
+        for data: D.Type,
+        @ViewBuilder destination: @escaping (D) -> V
+    ) -> some View {
+        NavigationDestinationRegistry.shared.register(D.self) { d in
+            AnyView(destination(d))
+        }
+        return modifier(_NavigationDestinationInstaller())
+    }
+}
+
+// MARK: - NavigationLink(value:) (iOS 16)
+
+extension NavigationLink {
+    /// iOS 16 的 `NavigationLink(value:label:)`。
+    ///
+    /// 在 iOS 15 上退化成传统的 `NavigationLink(destination:label:)`，目的地由
+    /// `.navigationDestination` 注册表按 `value` 的实际类型解析出来。
+    public init<P: Hashable>(value: P, @ViewBuilder label: () -> Label)
+    where Destination == NavigationPathDestinationView {
+        self.init(destination: NavigationPathDestinationView(AnyHashable(value)),
+                  label: label)
+    }
+}
+
+// MARK: - NavigationStack (iOS 16)
+
+/// iOS 16 `NavigationStack` 替身。
+///
+/// 用 iOS 15 的 `NavigationView` + 一个隐藏的 `NavigationLink(isActive:)`
+/// 模拟：path 非空 → push 栈顶对应的目标；path 清空 → pop 回根。
+/// 只驱动一层（本项目 path 深度为 1，深层由视图内部的普通 NavigationLink 展开）。
+public struct NavigationStack<Root: View>: View {
+    @Binding private var path: NavigationPath
+    private let root: Root
+
+    public init(path: Binding<NavigationPath>, @ViewBuilder root: () -> Root) {
+        self._path = path
+        self.root = root()
+    }
+
+    public init(@ViewBuilder root: () -> Root) {
+        self._path = .constant(NavigationPath())
+        self.root = root()
+    }
+
+    public var body: some View {
+        NavigationView {
+            root
+                .background(
+                    NavigationLink(
+                        isActive: Binding(
+                            get: { !path.isEmpty },
+                            set: { active in
+                                if !active { path.removeLast(path.count) }
+                            }
+                        ),
+                        destination: {
+                            Group {
+                                if let top = path.last {
+                                    NavigationPathDestinationView(top)
+                                } else {
+                                    EmptyView()
+                                }
+                            }
+                        },
+                        label: { EmptyView() }
+                    )
+                    .opacity(0)
+                    .frame(width: 0, height: 0)
+                )
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+    }
+}
+
+// MARK: - NavigationSplitView (iOS 16)
+
+public enum NavigationSplitViewVisibility {
+    case automatic
+    case doubleColumn
+    case detailOnly
+}
+
+/// iOS 15 上不存在分栏容器，退化为「固定宽度侧栏 + 详情」的 HStack。
+/// 只有 iPad 宽布局会走到这里；iPhone 走 `NavigationStack` 分支。
+public struct NavigationSplitView<Sidebar: View, Detail: View>: View {
+    @Binding private var columnVisibility: NavigationSplitViewVisibility
+    private let sidebar: Sidebar
+    private let detail: Detail
+
+    public init(columnVisibility: Binding<NavigationSplitViewVisibility>,
+                @ViewBuilder sidebar: () -> Sidebar,
+                @ViewBuilder detail: () -> Detail) {
+        self._columnVisibility = columnVisibility
+        self.sidebar = sidebar()
+        self.detail = detail()
+    }
+
+    public init(@ViewBuilder sidebar: () -> Sidebar,
+                @ViewBuilder detail: () -> Detail) {
+        self._columnVisibility = .constant(.automatic)
+        self.sidebar = sidebar()
+        self.detail = detail()
+    }
+
+    public var body: some View {
+        GeometryReader { geo in
+            HStack(spacing: 0) {
+                if columnVisibility != .detailOnly {
+                    sidebar
+                        .frame(width: min(340, geo.size.width * 0.36))
+                }
+                detail
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+}
+
+// MARK: - UIHostingConfiguration (iOS 16)
+
+/// `UIHostingConfiguration` 的 iOS 15 替身。
+///
+/// 遵守 `UIContentConfiguration`，所以项目里的
+/// `cell.applyContentConfiguration(config)` 一行都不用改：cell 拿到的是
+/// 一个普通的 content configuration，内部用 `UIHostingController` 渲染。
+private final class _HostingContentCellView<Content: View>: UIView, UIContentView {
+    private var host: UIHostingController<AnyView>?
+    var configuration: UIContentConfiguration {
+        didSet { apply(configuration) }
+    }
+
+    init(configuration: UIContentConfiguration) {
+        self.configuration = configuration
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        apply(configuration)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    private func apply(_ config: UIContentConfiguration) {
+        subviews.forEach { $0.removeFromSuperview() }
+        host = nil
+        guard let config = config as? UIHostingConfiguration<Content> else { return }
+        let controller = UIHostingController(rootView: AnyView(config.content))
+        controller.view.backgroundColor = .clear
+        controller.view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(controller.view)
+        NSLayoutConstraint.activate([
+            controller.view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            controller.view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            controller.view.topAnchor.constraint(equalTo: topAnchor),
+            controller.view.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        host = controller
+    }
+}
+
+public struct UIHostingConfiguration<Content: View>: UIContentConfiguration {
+    public let content: Content
+    private let _minWidth: CGFloat?
+    private let _minHeight: CGFloat?
+
+    public init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+        self._minWidth = nil
+        self._minHeight = nil
+    }
+
+    private init(content: Content, minWidth: CGFloat?, minHeight: CGFloat?) {
+        self.content = content
+        self._minWidth = minWidth
+        self._minHeight = minHeight
+    }
+
+    public func minSize(width: CGFloat? = nil, height: CGFloat? = nil)
+    -> UIHostingConfiguration<Content> {
+        UIHostingConfiguration(content: content, minWidth: width, minHeight: height)
+    }
+
+    public func margins(_ edges: Edge.Set = .all, _ length: CGFloat? = nil)
+    -> UIHostingConfiguration<Content> {
+        self  // iOS 15 的替身不实现边距；cell 自身已按 zero margins 布局
+    }
+
+    public func makeContentView() -> UIView & UIContentView {
+        _HostingContentCellView<Content>(configuration: self)
+    }
+
+    public func updated(for state: UIConfigurationState) -> UIHostingConfiguration<Content> {
+        self
+    }
+}
+
+// MARK: - PhotosPickerItem (iOS 16)
+
+/// `PhotosUI.PhotosPickerItem` 的 iOS 15 替身。
+///
+///  photo picker 本身（`PhotosPicker` / `.photosPicker`）在 iOS 15 不存在，
+///  移植脚本会摘掉那些 modifier，所以这里的实例永远是"空"的：
+///  `loadTransferable` 返回 nil，相关代码自然走失败分支而不是崩溃。
+public struct PhotosPickerItem: Hashable {
+    public init() {}
+
+    public var itemIdentifier: String? { nil }
+    public var supportedContentTypes: [Any] { [] }
+
+    public func loadTransferable<T>(type: T.Type) async throws -> T? { nil }
+
+    public static func == (lhs: PhotosPickerItem, rhs: PhotosPickerItem) -> Bool { true }
+    public func hash(into hasher: inout Hasher) {}
+}
+
+// MARK: - Transferable / ShareLink (iOS 16)
+
+/// iOS 16 的 `Transferable` 协议替身。仅用于让 `struct X: Transferable`
+/// 的声明继续成立；真正的传输行为在 iOS 15 上不可用。
+public protocol Transferable {}
+
+/// `ShareLink(item:)` 的替身：一个走 `UIActivityViewController` 的按钮。
+public struct MinisShareLinkButton: View {
+    let item: URL
+
+    public init(item: URL) { self.item = item }
+
+    public var body: some View {
+        Button {
+            MinisSharePresenter.present(items: [item])
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+        }
+    }
+}
+
+public enum MinisSharePresenter {
+    public static func present(items: [Any]) {
+        let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }),
+              let window = scene.windows.first(where: { $0.isKeyWindow })
+                ?? scene.windows.first,
+              let root = window.rootViewController else { return }
+        var presenter = root
+        while let presented = presenter.presentedViewController {
+            presenter = presented
+        }
+        presenter.present(vc, animated: true)
+    }
+}
+
+// MARK: - Regex 字面量替身 (iOS 16)
+
+/// iOS 16 的 `Regex` 字面量 (`/…/`) 与 `wholeMatch(of:)` / `ranges(of:)`
+/// 在 iOS 15 没有对应物，移植脚本把它们改写成这里的 NSRegularExpression 包装。
+public enum MinisRegex {
+    public static func wholeMatch(_ text: String, _ pattern: String) -> Bool {
+        let full = NSRange(text.startIndex..., in: text)
+        guard let re = try? NSRegularExpression(pattern: pattern),
+              let m = re.firstMatch(in: text, range: full) else { return false }
+        return NSEqualRanges(m.range, full)
+    }
+
+    public static func ranges(_ text: String, _ pattern: String) -> [Range<String.Index>] {
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let full = NSRange(text.startIndex..., in: text)
+        return re.matches(in: text, range: full).compactMap { Range($0.range, in: text) }
+    }
+}
+
+// MARK: - MinisShareLinkButton (ShareLink 替代, iOS 15)
+
+/// iOS 15 没有 `ShareLink`（它是 iOS 16 才有的），这里用 `UIActivityViewController`
+/// 包一个等价的分享按钮。stage3 把源码里的 `ShareLink(...)` 整调用替换成它，
+/// 调用点不用改。支持 `ShareLink(item:)` / `ShareLink(item:subject:message:)` /
+/// `ShareLink("标题", item:)` 三种写法。
+import UIKit
+
+public struct MinisShareLinkButton: View {
+    public let item: Any
+    public var subject: String? = nil
+    public var message: String? = nil
+
+    public init(item: Any, subject: String? = nil, message: String? = nil) {
+        self.item = item
+        self.subject = subject
+        self.message = message
+    }
+
+    public init(_ label: String, item: Any) {
+        self.item = item
+        self.subject = nil
+        self.message = nil
+    }
+
+    public var body: some View {
+        Button(action: { share() }) {
+            Label("Share", systemImage: "square.and.arrow.up")
+        }
+    }
+
+    private func share() {
+        let items: [Any]
+        if let url = item as? URL {
+            items = [url]
+        } else if let str = item as? String {
+            items = [str]
+        } else {
+            items = [item]
+        }
+        let av = UIActivityViewController(activityItems: items,
+                                          applicationActivities: nil)
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let root = scene.windows.first?.rootViewController {
+            av.popoverPresentationController?.sourceView = root.view
+            root.present(av, animated: true, completion: nil)
+        }
     }
 }
 '''
@@ -1515,6 +2276,7 @@ def main() -> None:
     repair_orphan_trailing_closures()
     delete_modifiers()
     misc_fixes()
+    stage3_api_fixes()
     # 先注入（决定文件该放在哪），再按 pbxproj 解析出的目录写文件
     subdir = inject_compat()
     write_compat(subdir)

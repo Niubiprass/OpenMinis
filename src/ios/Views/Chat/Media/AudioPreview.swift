@@ -166,7 +166,7 @@ struct MinisAudioPreviewView: View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(displayTitle)
-                    .font(.title2.bold())
+                    .font(.title2)
                     .lineLimit(1)
                     .foregroundColor(artworkImage != nil ? .white : Color(UIColor.label))
                 Text(displaySubtitle)

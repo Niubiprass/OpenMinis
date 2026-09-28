@@ -30,7 +30,7 @@ struct KimiDeviceLoginSheet: View {
     @State private var loginTask: Task<Void, Never>?
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             VStack(spacing: 24) {
                 switch phase {
                 case .starting:

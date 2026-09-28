@@ -416,7 +416,7 @@ private struct SoulEmojiPickerSheet: View {
     ]
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             VStack(spacing: 20) {
                 // Live preview at the size the chat header actually uses, so
                 // the user judges the glyph at its real scale rather than at
@@ -527,8 +527,6 @@ private struct SoulIconEditing: ViewModifier {
                     icon = chosen
                 }
             }
-            .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem,
-                          matching: .images, photoLibrary: .shared())
             // Single-parameter form: the two-parameter `onChange` is iOS 17+,
             // and this target still deploys lower.
             .onChange(of: photoItem) { newItem in

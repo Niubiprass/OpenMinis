@@ -507,12 +507,12 @@ struct UnifiedModelPicker: View {
         }
         .toolbar { toolbarContent }
         .sheet(isPresented: $showCreateGroupSheet) {
-            NavigationView{
+            NavigationStack {
                 UnifiedModelPicker(config: createGroupConfig())
             }
         }
         .sheet(isPresented: $showGroupsManager) {
-            NavigationView{
+            NavigationStack {
                 ModelGroupsView()
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
@@ -695,14 +695,14 @@ struct UnifiedModelPicker: View {
             config.onSelectGroup?(group)
             dismissIfNeeded()
         }
-        .contextMenu {
+        .contextMenu (menuItems: {
             Button {
                 UIPasteboard.general.string = "group:\(group.id)"
                 MinisToast.show(AppLocalized("Copied: \(group.name)"))
             } label: {
                 Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
             }
-        }
+        })
     }
 
     private func isGroupSelected(_ group: ModelGroup) -> Bool {
@@ -932,14 +932,14 @@ struct UnifiedModelPicker: View {
             }
             dismissIfNeeded()
         }
-        .contextMenu {
+        .contextMenu (menuItems: {
             Button {
                 UIPasteboard.general.string = "entry:\(entry.compositeKey)"
                 MinisToast.show(AppLocalized("Copied: \(entry.model.displayName)"))
             } label: {
                 Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
             }
-        }
+        })
     }
 
     @ViewBuilder
@@ -1147,14 +1147,14 @@ struct UnifiedModelPicker: View {
                 dismissIfNeeded()
             }
         }
-        .contextMenu {
+        .contextMenu (menuItems: {
             Button {
                 UIPasteboard.general.string = "entry:\(entry.compositeKey)"
                 MinisToast.show(AppLocalized("Copied: \(entry.model.displayName)"))
             } label: {
                 Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
             }
-        }
+        })
     }
 
     // MARK: - Empty State

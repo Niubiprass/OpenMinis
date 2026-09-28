@@ -14,7 +14,7 @@ struct OpenSessionIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         NotificationCenter.default.post(
-            name: .openSessionFromIntent,
+            name: Notification.Name("openSessionFromIntent"),
             object: nil,
             userInfo: ["sessionId": session.id]
         )

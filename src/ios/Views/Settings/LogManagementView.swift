@@ -176,7 +176,7 @@ struct LogManagementView: View {
             }
         }
         .toolbar {
-            if !vm.logFiles.isEmpty && tab == "logs" {
+
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showShareSheet = true
@@ -184,7 +184,7 @@ struct LogManagementView: View {
                         Image(systemName: "square.and.arrow.up")
                     }
                 }
-            }
+            
         }
         .sheet(isPresented: $showShareSheet) {
             LogShareSheet(urls: vm.logFiles.map(\.url))
@@ -221,7 +221,7 @@ struct LogDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                ShareLink(item: url)
+                MinisShareLinkButton(item: url)
             }
         }
         .task {

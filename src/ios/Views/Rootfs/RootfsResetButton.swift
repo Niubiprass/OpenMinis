@@ -204,7 +204,7 @@ struct RootfsResetToolbarItem: ToolbarContent {
  */
 
 #Preview("Compact") {
-    NavigationView{
+    NavigationStack {
         VStack {
             RootfsResetButton(style: .compact)
         }
@@ -213,7 +213,7 @@ struct RootfsResetToolbarItem: ToolbarContent {
 }
 
 #Preview("Normal") {
-    NavigationView{
+    NavigationStack {
         List {
             Section("Actions") {
                 RootfsResetButton(style: .normal)
@@ -224,11 +224,10 @@ struct RootfsResetToolbarItem: ToolbarContent {
 }
 
 #Preview("Prominent") {
-    NavigationView{
+    NavigationStack {
         VStack(spacing: 20) {
             Text("Rootfs Management")
                 .font(.title)
-                .fontWeight(.bold)
 
             RootfsResetButton(style: .prominent)
         }

@@ -2,9 +2,13 @@
 """
 OpenMinis → iOS 15 自动移植脚本 (纯就地改写，不新增文件，避免改 pbxproj)
 
-处理体检报告命中的两类 iOS 16 API：
-  1. NavigationStack { / NavigationStack(path: )  ->  NavigationView (iOS 15 原生)
-  2. .presentationDetents([...])                   ->  整行删除 (iOS 15 无对应 API，用默认 sheet 高度)
+处理体检报告命中的 iOS 16 API：
+  1. .presentationDetents([...])  ->  整行删除 (iOS 15 无对应 API，用默认 sheet 高度)
+
+注意：NavigationStack 不再就地替换成 NavigationView。`NavigationStack(path:)`
+换过去就成了根本不存在的 `NavigationView(path:)`，而且 path 驱动的程序化
+导航会全部失效。改由第二阶段注入的 iOS15Compat.swift 提供 NavigationStack
+替身（内部用 NavigationView + 隐藏 NavigationLink 模拟一层栈）。
 
 防御性处理(体检未命中但可能存在)：
   - .symbolEffect(...)  iOS 17 专属，整行删除
@@ -30,10 +34,7 @@ def port_file(path: str) -> bool:
         return False
     original = src
 
-    # 1) NavigationStack(...) / NavigationStack {  ->  NavigationView
-    src = re.sub(r"\bNavigationStack(\s*[\(\{])", r"NavigationView\1", src)
-
-    # 2) 删除独立的 .presentationDetents([...]) 行 (iOS 16 专属)
+    # 1) 删除独立的 .presentationDetents([...]) 行 (iOS 16 专属)
     src = re.sub(
         r"^\s*\.presentationDetents\(\[[^\]]*\]\)\s*$\n",
         "",
@@ -41,7 +42,7 @@ def port_file(path: str) -> bool:
         flags=re.MULTILINE,
     )
 
-    # 3) 防御：删除独立的 .symbolEffect(...) 行 (iOS 17 专属)
+    # 2) 防御：删除独立的 .symbolEffect(...) 行 (iOS 17 专属)
     src = re.sub(
         r"^\s*\.symbolEffect\([^)]*\)\s*$\n",
         "",

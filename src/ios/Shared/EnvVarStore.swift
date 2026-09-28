@@ -257,10 +257,9 @@ final class EnvVarStore: ObservableObject {
     // MARK: - Validation
 
     /// Valid env var name: starts with a letter, contains only letters, digits, and underscores.
-    static let keyRegex = /^[A-Za-z][A-Za-z0-9_]*$/
-
+    static let keyRegex  = "^[A-Za-z][A-Za-z0-9_]*$"
     static func isValidKey(_ key: String) -> Bool {
-        key.wholeMatch(of: keyRegex) != nil
+        MinisRegex.wholeMatch(key, keyRegex)
     }
 
     // MARK: - Value Sanitization

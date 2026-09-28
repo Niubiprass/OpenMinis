@@ -339,7 +339,7 @@ private struct BridgedAssistantBlockV3: View {
         // (same pattern as BridgedAssistantFooterV3).
         .overlay {
             Color.clear.frame(width: 0, height: 0)
-                .contextMenu {
+                .contextMenu (menuItems: {
                     Button {
                         let text = message.blocks
                             .filter { if case .text = $0.kind { return true }; return false }
@@ -389,7 +389,7 @@ private struct BridgedAssistantBlockV3: View {
                             Label(AppLocalized("Compact Above"), systemImage: "arrow.down.right.and.arrow.up.left")
                         }
                     }
-                } preview: {
+                }) preview: {
                     // [T-ios-longpress-menu-preview-background] This .contextMenu
                     // is on a zero-size Color.clear overlay (kept zero-size to
                     // avoid inflating self-sizing), so without an explicit preview
@@ -497,7 +497,7 @@ private struct BridgedAssistantFooterV3: View {
         // report inflated heights to systemLayoutSizeFitting, causing height oscillation.
         .overlay {
             Color.clear.frame(width: 0, height: 0)
-                .contextMenu {
+                .contextMenu (menuItems: {
                     Button {
                         let text = message.blocks
                             .filter { if case .text = $0.kind { return true }; return false }
@@ -547,7 +547,7 @@ private struct BridgedAssistantFooterV3: View {
                             Label(AppLocalized("Compact Above"), systemImage: "arrow.down.right.and.arrow.up.left")
                         }
                     }
-                } preview: {
+                }) preview: {
                     // [T-ios-longpress-menu-preview-background] Opaque preview
                     // for the footer's zero-size Color.clear contextMenu overlay.
                     MessageContextMenuPreview(text: message.blocks
@@ -568,13 +568,13 @@ private struct BridgedAssistantFooterV3: View {
                 Text(error).font(.caption).foregroundStyle(.red).lineLimit(2)
             }
             .contentShape(Rectangle())
-            .contextMenu {
+            .contextMenu (menuItems: {
                 Button {
                     UIPasteboard.general.string = error
                 } label: {
                     Label(AppLocalized("Copy Error"), systemImage: "doc.on.doc")
                 }
-            }
+            })
             Spacer()
             if bridge.autoRetryAttempt > 0 {
                 Text("Retry in \(bridge.autoRetryCountdown)s (\(bridge.autoRetryAttempt)/\(AIChatViewModel.retryDelays.count))")

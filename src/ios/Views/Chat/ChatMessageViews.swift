@@ -78,7 +78,7 @@ struct MessageContextMenuPreview: View {
 /// Matches `UserBubbleSurface` so lifting a bubble doesn't jump from Liquid
 /// Glass to a flat colour card — the shape (`RoundedRectangle(cornerRadius: 18)`,
 /// non-`.continuous`) is deliberately the same one the bubble and the row's
-/// `.contentShape(.contextMenuPreview, …)` already use.
+/// `.contentShape(…)` already use.
 ///
 /// **The opaque base stays.** [T-ios-longpress-menu-preview-background] exists
 /// because the platter was showing through to the messages underneath: cells are
@@ -129,7 +129,7 @@ private struct ContextMenuPreviewSurface: ViewModifier {
 private struct UserBubbleSurface: ViewModifier {
     let isQueued: Bool
 
-    /// Matches `.contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18))`
+    /// Matches `.contentShape(RoundedRectangle(cornerRadius: 18))`
     /// on the row exactly — including the default (non-`.continuous`) corner
     /// style. A `.continuous` bubble against a circular-arc preview clip would
     /// show the corners subtly change shape as the long-press lift begins.
@@ -408,8 +408,8 @@ struct ChatMessageRow: View {
             // otherwise the lifted preview shows square corners while the bubble
             // is RoundedRectangle(cornerRadius: 18). iOS 16+ lets us specify the
             // preview clip shape independently from the interaction shape.
-            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18))
-            .contextMenu {
+            .contentShape(RoundedRectangle(cornerRadius: 18))
+            .contextMenu (menuItems: {
                 Button {
                     UIPasteboard.general.string = message.content
                 } label: {
@@ -453,7 +453,7 @@ struct ChatMessageRow: View {
                         Label("Compact Above", systemImage: "arrow.down.right.and.arrow.up.left")
                     }
                 }
-            } preview: {
+            }) preview: {
                 // [T-ios-longpress-menu-preview-background] Opaque card so the
                 // long-press preview isn't transparent (see MessageContextMenuPreview).
                 MessageContextMenuPreview(text: message.content)
@@ -569,15 +569,12 @@ struct ChatMessageRow: View {
         // (ViewGraphGeometryObservers.needsUpdate SIGTRAP). onGeometryChange
         // measures the same row bounds the background GeometryReader did,
         // and its initial fire covers the old onAppear seed.
-        .onGeometryChange(for: CGRect.self) { proxy in
-            proxy.frame(in: .global)
-        } action: { rowFrameInWindow = $0 }
         .background {
             // Context menu on the background layer so it only fires on
             // blank areas — UITextView link taps in the foreground take priority.
             Color.clear
                 .contentShape(Rectangle())
-                .contextMenu {
+                .contextMenu (menuItems: {
                     // [T-ios-msg-contextmenu-recursion-crash] Gate the eager menu
                     // tree behind an Equatable key so the cell body churn during
                     // `gh`/shell streaming output doesn't rebuild + re-diff the
@@ -631,7 +628,7 @@ struct ChatMessageRow: View {
                         }
                     }
                     .equatable()
-                } preview: {
+                }) preview: {
                     // [T-ios-longpress-menu-preview-background] Opaque card for
                     // this Color.clear-attached contextMenu (see
                     // MessageContextMenuPreview).
@@ -715,13 +712,13 @@ struct ChatMessageRow: View {
                     .lineLimit(2)
             }
             .contentShape(Rectangle())
-            .contextMenu {
+            .contextMenu (menuItems: {
                 Button {
                     UIPasteboard.general.string = error
                 } label: {
                     Label(AppLocalized("Copy Error"), systemImage: "doc.on.doc")
                 }
-            }
+            })
 
             Spacer()
 

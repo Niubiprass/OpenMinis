@@ -227,7 +227,7 @@ struct AlarmListView: View {
     @State private var showClearConfirm = false
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             Group {
                 if vm.alarms.isEmpty && !vm.isLoading {
                     VStack(spacing: 12) {

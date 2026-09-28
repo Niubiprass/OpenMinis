@@ -32,11 +32,11 @@ struct ZoomableImageView: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: geo.size.width)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-                .contextMenu {
+                .contextMenu (menuItems: {
                     Button { UIPasteboard.general.image = image } label: {
                         Label("Copy Image", systemImage: "doc.on.doc")
                     }
-                }
+                })
                 .scaleEffect(scale)
                 .offset(offset)
                 .gesture(

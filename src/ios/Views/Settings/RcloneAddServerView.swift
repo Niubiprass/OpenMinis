@@ -68,7 +68,7 @@ struct RcloneAddServerView: View {
     }
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             Form {
                 if connectedRemote == nil {
                     typeSection
@@ -107,12 +107,12 @@ struct RcloneAddServerView: View {
                 // of a long directory listing it moved with the scroll and
                 // could sit off-screen entirely in a folder with many
                 // entries — the one control the screen exists to offer.
-                if connectedRemote != nil {
+
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Save Here") { saveHere() }
                             .disabled(isListing)
                     }
-                }
+                
             }
             .alert("New Folder", isPresented: $showNewFolder) {
                 TextField("Folder name", text: $newFolderName)

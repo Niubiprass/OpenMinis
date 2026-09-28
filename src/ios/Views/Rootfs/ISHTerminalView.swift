@@ -96,13 +96,13 @@ struct ISHTerminalView: View {
         .navigationTitle("Minis Shell")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if showCloseButton {
+
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button { dismiss() } label: {
                         Image(systemName: "xmark")
                     }
                 }
-            }
+            
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     viewModel.clearScreen()
@@ -148,12 +148,12 @@ struct ISHTerminalView: View {
             }
         }
         .sheet(isPresented: $showFileBrowser) {
-            NavigationView{
+            NavigationStack {
                 FileBrowserView()
             }
         }
         .sheet(isPresented: $showRootfsManagement) {
-            NavigationView{
+            NavigationStack {
                 RootfsManagementView()
             }
         }
@@ -500,7 +500,7 @@ struct QuickCommandButton: View {
 }
 
 #Preview {
-    NavigationView{
+    NavigationStack {
         ISHTerminalView()
     }
 }

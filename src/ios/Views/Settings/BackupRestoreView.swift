@@ -489,7 +489,6 @@ struct BackupRestoreView: View {
                     } else {
                         BackupActionIcon(systemName: "arrow.down.doc.fill", tint: .indigo)
                         Text("Start Restore")
-                            .fontWeight(.semibold)
                     }
                     Spacer(minLength: 0)
                 }
@@ -921,7 +920,7 @@ struct ServerRestorePickerSheet: View {
     @State private var showAddServer = false
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             Form {
                 if !remotes.isEmpty {
                     Section {

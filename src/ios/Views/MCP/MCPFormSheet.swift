@@ -84,7 +84,7 @@ struct MCPFormSheet: View {
     }
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             Form {
                 Section {
                     TextField(AppLocalized("Server name"), text: $name)
@@ -106,7 +106,7 @@ struct MCPFormSheet: View {
 
                 Section(AppLocalized("Note (shown to the agent)")) {
                     TextField(AppLocalized("Optional description"), text: $note)
-                        .lineLimit(1...4)
+                        .lineLimit(4)
                 }
             }
             .navigationTitle(Text(isEditing ? "Edit Server" : "Add Server"))

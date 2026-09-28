@@ -36,7 +36,7 @@ private struct OffloadPermissionDialogContent: View {
                             .foregroundStyle(.orange)
 
                         Text("Permission Request")
-                            .font(.title3.bold())
+                            .font(.title3)
 
                         Text("The agent wants to use **\(request.commandName)**")
                             .font(.subheadline)
@@ -63,7 +63,7 @@ private struct OffloadPermissionDialogContent: View {
                             ForEach(Array(args.enumerated()), id: \.offset) { idx, arg in
                                 HStack {
                                     Text(arg.key)
-                                        .font(.footnote.bold())
+                                        .font(.footnote)
                                         .foregroundStyle(.secondary)
                                         .frame(width: 80, alignment: .trailing)
                                     Text(arg.value)

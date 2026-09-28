@@ -584,7 +584,7 @@ struct RcloneFolderBrowser: View {
     }
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             Form {
                 Section {
                     if !currentDir.isEmpty {
@@ -763,7 +763,7 @@ struct RcloneConnectionEditor: View {
     }
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             Form {
                 if let b = backend {
                     Section {

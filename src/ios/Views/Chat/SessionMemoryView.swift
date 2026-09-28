@@ -12,7 +12,7 @@ struct SessionMemoryView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             List {
                 // Section 1: Auto-injected memories
                 Section {
@@ -274,7 +274,7 @@ private struct MemoryContentView: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if fileURL != nil {
+
                 ToolbarItem(placement: .topBarTrailing) {
                     if isEditing {
                         Button("Save") {
@@ -289,7 +289,7 @@ private struct MemoryContentView: View {
                         }
                     }
                 }
-            }
+            
         }
         .overlay(alignment: .bottom) {
             if saved {
@@ -511,7 +511,7 @@ private struct MemoryGetDetailView: View {
                         Image(systemName: "magnifyingglass")
                             .foregroundStyle(.secondary)
                         Text(kw)
-                            .font(.subheadline.bold())
+                            .font(.subheadline)
                     }
                     .padding(.horizontal)
                     .padding(.top, 8)
@@ -536,7 +536,7 @@ private struct SectionHeader: View {
     let title: String
     var body: some View {
         Text(title)
-            .font(.caption.bold())
+            .font(.caption)
             .foregroundStyle(.secondary)
             .textCase(.uppercase)
             .padding(.horizontal)

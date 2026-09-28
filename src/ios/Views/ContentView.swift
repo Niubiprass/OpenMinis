@@ -561,7 +561,7 @@ private struct FolderPickerSheet: View {
     private var sessionCount: Int { sessionIds.count }
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             List {
                 Section {
                     HStack {
@@ -575,7 +575,7 @@ private struct FolderPickerSheet: View {
                     // here or prefilled by AI Suggest; never shown in the
                     // list, editable later from Rename Group.
                     TextField("Description (optional, guides auto-grouping)", text: $newFolderDesc)
-                        .lineLimit(1...2)
+                        .lineLimit(2)
                         .font(.subheadline)
                         .onChange(of: newFolderDesc) { v in
                             if v.count > 100 { newFolderDesc = String(v.prefix(100)) }
@@ -608,7 +608,6 @@ private struct FolderPickerSheet: View {
                         Spacer()
                         Button("Create", action: createIfNamed)
                             .buttonStyle(.borderless)
-                            .fontWeight(.semibold)
                             .disabled(trimmedName.isEmpty || duplicateFolder != nil)
                     }
                     // [T-folder-duplicate-name] Name already taken. Says so, and
@@ -1415,7 +1414,7 @@ struct ContentView: View {
                 switchToSession(targetId)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .openSessionFromIntent)) { note in
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("openSessionFromIntent"))) { note in
             guard let sessionId = (note.userInfo as? [String: String])?["sessionId"] else { return }
             // [T-notification-tap-vs-launch-session] Warm path owns this
             // navigation: drop the cold-launch buffer copy and stamp the
@@ -1436,7 +1435,7 @@ struct ContentView: View {
             }
         }
         .fullScreenCover(isPresented: $showTerminal) {
-            NavigationView{
+            NavigationStack {
                 ISHTerminalView(showCloseButton: true)
             }
         }
@@ -1448,7 +1447,7 @@ struct ContentView: View {
             case .settings:
                 SettingsSheet(showTerminal: $showTerminal)
             case .rootfsManagement:
-                NavigationView{
+                NavigationStack {
                     RootfsManagementView()
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
@@ -1459,11 +1458,11 @@ struct ContentView: View {
             case .browser:
                 BrowserSheetView(pool: browserPool)
             case .browserManagement:
-                NavigationView{
+                NavigationStack {
                     BrowserManagementView(pool: browserPool)
                 }
             case .syncMigrationDetail:
-                NavigationView{
+                NavigationStack {
                     SyncMigrationDetailView()
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
@@ -2079,7 +2078,7 @@ struct ContentView: View {
     // MARK: - Stack Layout (iPhone / narrow window)
 
     private var stackLayout: some View {
-        NavigationView(path: $navigationPath) {
+        NavigationStack(path: $navigationPath) {
             sessionList(useNavigationLinks: true)
                 .navigationDestination(for: String.self) { id in
                     // `.id(id)` mirrors detailView (iPad): navigationDestination
@@ -2149,7 +2148,7 @@ struct ContentView: View {
                     .font(.system(size: 48))
                     .foregroundStyle(.secondary)
                 Text("No Conversation Selected")
-                    .font(.title3.bold())
+                    .font(.title3)
                 Text("Select a conversation or start a new one")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -2840,7 +2839,7 @@ struct ContentView: View {
                                     Color(.systemBackground)
                                 }
                             })
-                            .contextMenu {
+                            .contextMenu (menuItems: {
                                 // [T-ios-crash-contextmenu-uaf] Value-only menu view,
                                 // no closure captures — see SessionContextMenu.
                                 SessionContextMenu(
@@ -2848,7 +2847,7 @@ struct ContentView: View {
                                     actions: menuActions
                                 )
                                 .equatable()
-                            }
+                            })
                         }
                         }  // if let session
                     }
@@ -2974,7 +2973,7 @@ struct ContentView: View {
                                 // triggers on every row regardless of selection state.
                                 // iPhone uses `stackList` (no selection:) and is
                                 // unaffected.
-                                .contextMenu {
+                                .contextMenu (menuItems: {
                                     // [T-ios-ipad-new-session-contextmenu-broken / GH#30]
                                     // The selected new-chat row keeps the DRAFT id as its
                                     // tag even after the user sends a message and the
@@ -3000,7 +2999,7 @@ struct ContentView: View {
                                         )
                                         .equatable()
                                     }
-                                }
+                                })
                                 .tag(session.id)
                                 .listRowInsets(EdgeInsets())
                                 .listRowSeparator(.hidden)
@@ -3812,7 +3811,7 @@ struct ContentView: View {
                         }
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
-                        .contextMenu {
+                        .contextMenu (menuItems: {
                             Button {
                                 // [T-ios-state-publish-offmain-crash] @MainActor
                                 // so the @State write stays on the main thread.
@@ -3829,7 +3828,7 @@ struct ContentView: View {
                             } label: {
                                 Label("Fork Session", systemImage: "arrow.branch")
                             }
-                        }
+                        })
                     }
                 }
             } header: {
@@ -3928,7 +3927,7 @@ struct ContentView: View {
 
             VStack(spacing: 8) {
                 Text("Welcome to Minis")
-                    .font(.title2.bold())
+                    .font(.title2)
                 Text("Your first On-Device Agent is almost ready.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -3980,12 +3979,12 @@ struct ContentView: View {
         .frame(maxHeight: .infinity)
         .padding(.horizontal, 32)
         .sheet(isPresented: $showAddProvider) {
-            NavigationView{
+            NavigationStack {
                 AddProviderView()
             }
         }
         .sheet(isPresented: $showSelectModels) {
-            NavigationView{
+            NavigationStack {
                 OnboardingModelSelectionView()
             }
         }
@@ -4328,7 +4327,7 @@ struct ContentView: View {
                 // showed a grey rounded-rect slab peeking out from under the
                 // circular button on long press. `ChatMessageRow` already
                 // declares the two shapes separately for the same reason.
-                .contentShape(.contextMenuPreview, Circle())
+                .contentShape(Circle())
         } else {
             Circle()
                 .fill(fallbackFill)
@@ -4387,7 +4386,7 @@ struct ContentView: View {
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(Self.newChatIconColor)
                 }
-                    .contextMenu {
+                    .contextMenu (menuItems: {
                         let groups = Array(ProviderConfigStore.shared.config.modelGroups.prefix(10))
                         if !groups.isEmpty {
                             Section(AppLocalized("New Chat with Group")) {
@@ -4400,7 +4399,7 @@ struct ContentView: View {
                                 }
                             }
                         }
-                    }
+                    })
             }
 
             // Search FAB or inline search bar (hidden when no sessions)
@@ -4769,7 +4768,7 @@ struct ContentView: View {
         // ScrollViewReader anchor for the mini-bar's "back to header" jump.
         .id("folderHeader-\(group.folderId ?? "")")
         .listRowInsets(EdgeInsets())
-        .contextMenu {
+        .contextMenu (menuItems: {
             if let fid = group.folderId, let folder = folders.first(where: { $0.id == fid }) {
                 Button {
                     Task { @MainActor in
@@ -4821,7 +4820,7 @@ struct ContentView: View {
                     Label("Delete Group & \(group.totalCount) Sessions", systemImage: "trash")
                 }
             }
-        }
+        })
     }
 
     /// "New chat in folder": file the just-promoted draft. Separate from the
@@ -5586,7 +5585,7 @@ private struct DeleteConfirmSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             VStack(spacing: 0) {
                 if isLoading || info == nil {
                     Spacer()
@@ -5608,7 +5607,7 @@ private struct DeleteConfirmSheet: View {
                             if info.totalFileCount > 0 {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Associated Files")
-                                        .font(.subheadline.bold())
+                                        .font(.subheadline)
                                         .foregroundStyle(.primary)
                                     ForEach(info.fileNames, id: \.self) { name in
                                         HStack(spacing: 6) {
@@ -5644,7 +5643,7 @@ private struct DeleteConfirmSheet: View {
                             dismiss()
                         } label: {
                             Text("Delete (\(info.formattedSize))")
-                                .font(.body.bold())
+                                .font(.body)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
                         }
@@ -5672,7 +5671,7 @@ private struct DeleteConfirmSheet: View {
     private func infoRow(title: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.subheadline.bold())
+                .font(.subheadline)
                 .foregroundStyle(.primary)
             Text(value)
                 .font(.subheadline)
@@ -5708,7 +5707,7 @@ private struct ExportPreviewSheet: View {
     private let previewLimit = 10000
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             VStack(spacing: 0) {
                 // Preview — summary for multi-select, full content for single.
                 if let summary {
@@ -6767,7 +6766,7 @@ struct SessionEditSheet: View {
     ]
 
     var body: some View {
-        NavigationView{
+        NavigationStack {
             List {
                 Section("Title") {
                     TextField("Session title", text: $editTitle)
@@ -6829,7 +6828,6 @@ struct SessionEditSheet: View {
                         guard !title.isEmpty else { return }
                         onSave(title, editCategory.isEmpty ? nil : editCategory)
                     }
-                    .bold()
                     .disabled(editTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -7291,7 +7289,6 @@ private struct AppearanceSettingsView: View {
                             if appLanguage == lang.id {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(.blue)
-                                    .fontWeight(.semibold)
                             }
                         }
                     }
@@ -7386,7 +7383,7 @@ private struct SettingsSheet: View {
     @State private var showFeedbackDialog = false
 
     var body: some View {
-        NavigationView(path: $navPath) {
+        NavigationStack(path: $navPath) {
             List {
                 Section {
                     NavigationLink {

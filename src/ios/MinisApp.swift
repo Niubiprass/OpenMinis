@@ -255,7 +255,7 @@ struct MinisApp: App {
                     get: { sessionLockStore.appIsLocked ? nil : openRouter.pendingPackage },
                     set: { openRouter.pendingPackage = $0 }
                 )) { pending in
-                    NavigationView{
+                    NavigationStack {
                         // Opens on the RESTORE tab with the package already
                         // loaded. Someone who just tapped a .minisbak is mid
                         // device-migration — landing them on the backup form
@@ -655,6 +655,7 @@ struct MinisApp: App {
 
     // MARK: - FileProvider
 
+    @available(iOS 16.0, *) // ios15-port
     private static let fileProviderDomain = NSFileProviderDomain(
         identifier: NSFileProviderDomainIdentifier("com.openminis.app.files"),
         displayName: "Minis"
@@ -719,6 +720,7 @@ struct MinisApp: App {
     }
 
     private static func registerFileProviderDomain() {
+        guard #available(iOS 16.0, *) else { return }
         logAppUpdateMarkerForFPTrace()
         let root = AIChatViewModel.minisAppGroupRoot
         let fm = FileManager.default

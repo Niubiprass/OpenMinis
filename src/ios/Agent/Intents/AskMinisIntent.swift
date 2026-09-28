@@ -9,7 +9,7 @@ private let logger = AppLogger(category: "AskMinisIntent")
 /// conversation — matching the "Hey Siri, ask Minis to …" experience.
 ///
 /// It reuses the exact normal send pipeline (`AIChatViewModel.send()`) and the
-/// existing `.openSessionFromIntent` navigation path — no separate agent logic.
+/// existing `Notification.Name("openSessionFromIntent")` navigation path — no separate agent logic.
 /// New session when `session` is nil; follow-up when a `SessionEntity` is given.
 @available(iOS 16.0, *) // ios15-port
 struct AskMinisIntent: AppIntent {
@@ -83,7 +83,7 @@ struct AskMinisIntent: AppIntent {
         if !sid.isEmpty {
             NotificationNavigationStore.shared.setPending(sid)
             NotificationCenter.default.post(
-                name: .openSessionFromIntent,
+                name: Notification.Name("openSessionFromIntent"),
                 object: nil,
                 userInfo: ["sessionId": sid]
             )
