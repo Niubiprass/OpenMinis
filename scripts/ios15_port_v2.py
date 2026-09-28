@@ -29,7 +29,7 @@ ROOT = "src/ios"
 
 # 脚本版本号。每轮修复都会改它，日志第一行就会打印，
 # 用来确认 runner 上跑的是不是最新脚本（避免又下到 CDN 缓存的旧版）。
-SCRIPT_VERSION = "v10-20260929d"
+SCRIPT_VERSION = "v10-20260929e"
 COMPAT_NAME = "iOS15Compat.swift"
 PRISTINE_COMMIT = None  # 已废弃：浅克隆下取不到真正的初始提交，改用内存基线
 # 转换前的文件内容快照（路径 -> 内容），由 snapshot_baseline() 填充，
@@ -622,6 +622,35 @@ def _delete_call(text: str, name: str):
     return out
 
 
+def _strip_textfield_axis(text: str) -> str:
+    """删掉 TextField(...) 里的 axis: 参数（iOS 16 专属）。
+
+    按括号配平定位参数范围，这样跨行写的
+      TextField("", text: Binding(get: {...}, set: {...}), axis: .vertical)
+    也能处理。
+    """
+    pat = re.compile(r"\bTextField\s*\(")
+    out = text
+    pos = 0
+    guard = 0
+    while guard < 200:
+        guard += 1
+        m = pat.search(out, pos)
+        if not m:
+            break
+        lp = m.end() - 1
+        e = _expr_end(out, lp)
+        if e is None or e < lp:
+            pos = m.end()
+            continue
+        body = out[m.end():e - 1]          # 参数部分，不含外层 ( )
+        nb = re.sub(r",\s*axis:\s*[\w.]+", "", body)
+        if nb != body:
+            out = out[:m.end()] + nb + out[e - 1:]
+        pos = m.end()
+    return out
+
+
 def stage1_fixes() -> None:
     """第一阶段脚本（ios15_port.py）的规则，在这里重跑一遍。
 
@@ -909,7 +938,21 @@ def misc_fixes() -> None:
                 r"Task.sleep(nanoseconds: UInt64(\1))", t)
 
             # TextField(..., axis: .vertical) -> TextField(...)
-            t = re.sub(r"(TextField\([^\n]*?),\s*axis:\s*\.\w+\)", r"\1)", t)
+            # 必须按括号配平找参数范围：真实写法里 text: 常常是一个跨多行的
+            # Binding(get:set:)，单行正则根本匹配不到（第 13 轮就是这么漏的）
+            t = _strip_textfield_axis(t)
+
+            # Locale.language.languageCode (iOS16) -> Locale.languageCode
+            # 例：loc.language.languageCode?.identifier  ->  loc.languageCode
+            t = re.sub(r"\.language\.languageCode\?\.identifier\b",
+                       ".languageCode", t)
+            t = re.sub(r"\.language\.languageCode\b", ".languageCode", t)
+            # 跟着的 .map { ... $0.identifier ... } 里 $0 已经变成 String 了
+            t = re.sub(
+                r"\.languageCode\.map\s*\{([^{}]*?)\}",
+                lambda m: ".languageCode.map {"
+                          + m.group(1).replace("$0.identifier", "$0") + "}",
+                t)
 
             # UITextView(usingTextLayoutManager:) -> UITextView()
             t = re.sub(r"\(\s*usingTextLayoutManager:\s*(?:true|false)\s*\)", "()", t)

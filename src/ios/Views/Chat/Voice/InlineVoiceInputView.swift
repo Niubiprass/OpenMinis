@@ -749,7 +749,7 @@ struct InlineVoiceInputView: View {
             TextField("", text: Binding(
                 get: { viewModel.transcript },
                 set: { viewModel.setTranscript($0); inputText = $0 }
-            ), axis: .vertical)
+            ))
                 .focused($editFocused)
                 .font(.body)
                 .multilineTextAlignment(.center)
