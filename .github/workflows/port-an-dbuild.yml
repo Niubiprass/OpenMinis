@@ -1,0 +1,99 @@
+name: iOS15 移植并打包 IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: "最低系统版本 (iOS 15 用 15.5)"
+        required: true
+        default: "15.5"
+      skip_port:
+        description: "跳过源码移植 (已移植过、只想重新打包时用)"
+        type: boolean
+        default: false
+
+# 需要写权限，才能把移植后的代码提交回你的 fork
+permissions:
+  contents: write
+
+jobs:
+  port-and-build:
+    runs-on: macos-latest
+    steps:
+      - name: 检出仓库 (含子模块)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 安装依赖工具
+        run: |
+          brew install ninja llvm libarchive pkg-config || true
+          pip3 install meson || true
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: 选 Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: 源码移植到 iOS 15
+        if: ${{ !inputs.skip_port }}
+        run: python3 scripts/ios15_port.py src/ios
+
+      - name: 提交移植结果 (幂等)
+        if: ${{ !inputs.skip_port }}
+        run: |
+          git config user.email "ios15-port@codebuddy.local"
+          git config user.name "iOS15 Port Bot"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "无改动，跳过提交"
+          else
+            git commit -m "Auto-port OpenMinis to iOS 15 (NavigationView + 去掉 presentationDetents)"
+            git push
+          fi
+
+      - name: 设置部署目标为 ${{ inputs.deploy_target }}
+        run: |
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = ${{ inputs.deploy_target }};/g' src/ios/Minis.xcodeproj/project.pbxproj
+          cp src/ios/Configs/ProviderCustomization.xcconfig.example src/ios/Configs/ProviderCustomization.xcconfig 2>/dev/null || true
+          grep -n "IPHONEOS_DEPLOYMENT_TARGET" src/ios/Minis.xcodeproj/project.pbxproj | head
+
+      - name: 编译原生依赖 (LAME→FFmpeg→iSH→Alpine)
+        run: |
+          ./deps/build_lame.sh
+          ./deps/build_ffmpeg.sh
+          ./deps/build_ish.sh
+          ./deps/prepare_alpine_rootfs.sh
+
+      - name: 编译 App (不签名)
+        run: |
+          xcodebuild -project src/ios/Minis.xcodeproj \
+            -scheme Minis \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            IPHONEOS_DEPLOYMENT_TARGET=${{ inputs.deploy_target }} \
+            -derivedDataPath DerivedData build 2>&1 | tee build.log
+
+      - name: 打包 IPA (供 TrollStore 安装)
+        run: |
+          APP=$(find DerivedData -name "Minis.app" -type d | head -1)
+          if [ -z "$APP" ]; then echo "未找到 Minis.app，构建可能失败"; exit 1; fi
+          mkdir -p Payload
+          cp -r "$APP" Payload/
+          zip -r "Minis-iOS${{ inputs.deploy_target }}.ipa" Payload
+          ls -lh "Minis-iOS${{ inputs.deploy_target }}.ipa"
+
+      - name: 上传 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-iOS${{ inputs.deploy_target }}-ipa
+          path: Minis-iOS${{ inputs.deploy_target }}.ipa
+
+      - name: 上传编译日志 (失败时排错用)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: build.log
+          if-no-files-found: ignore
