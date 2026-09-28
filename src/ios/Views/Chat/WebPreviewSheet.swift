@@ -618,7 +618,6 @@ struct MinisSafariView: View {
                 .padding(.bottom, 18) // clears the home-indicator gutter
         }
         .statusBarHidden(true)
-        .persistentSystemOverlays(.hidden)
         .preferredColorScheme(appearanceMode == 1 ? .light : appearanceMode == 2 ? .dark : nil)
         .sheet(isPresented: $showShareSheet) {
             MinisShareSheet(url: shareURL)
@@ -757,8 +756,6 @@ struct MinisLinkPreviewView: View {
                 .ignoresSafeArea(.keyboard)
                 .navigationTitle(holder.pageTitle.isEmpty ? (url.host ?? url.absoluteString) : holder.pageTitle)
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button { dismiss() } label: {
@@ -782,7 +779,6 @@ struct MinisLinkPreviewView: View {
         // unaffected (presentationSizing is iOS18+ and .page only affects
         // iPad/Mac form sheets).
         .modifier(WideSheetSizingModifier())
-        .presentationDragIndicator(.hidden)
         // [T-webview-preview-swipe-dismiss] Interactive-dismiss arbitration is
         // now done at the gesture layer by WebViewDismissArbiterGate (above),
         // which vetoes the sheet dismiss pan synchronously when the touch is on

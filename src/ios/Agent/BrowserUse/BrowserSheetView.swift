@@ -165,7 +165,6 @@ struct BrowserSheetView: View {
                     }
                 }
             }
-            .toolbar(isFullscreen ? .hidden : .visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     HStack(spacing: 12) {

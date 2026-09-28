@@ -531,7 +531,6 @@ struct UnifiedModelPicker: View {
             // model while TestSession still ran the OLD one.
             ModelQuickTestSheet(entry: entry)
                 .id(entry.id)
-                .presentationDragIndicator(.visible)
         }
     }
 

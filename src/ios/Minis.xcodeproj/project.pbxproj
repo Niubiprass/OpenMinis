@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		IOS15COMPAT0000000000000B /* iOS15Compat.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOS15COMPAT0000000000000A /* iOS15Compat.swift */; };
+
 		21FED4B7BB6F6D9476C9992E /* VoiceProvider+System.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88993FC8E3F0199C6638F664 /* VoiceProvider+System.swift */; };
 		241D530017827D7F0EB604DE /* VoiceProviderFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2941B643B8A2F048A2B154E /* VoiceProviderFactory.swift */; };
 		2A4FD49F872431D703328384 /* VoiceOutputPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 424510790AF3FB2452D3CCE3 /* VoiceOutputPlayer.swift */; };
@@ -605,6 +607,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		IOS15COMPAT0000000000000A /* iOS15Compat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "iOS15Compat.swift"; sourceTree = "<group>"; };
+
 		0ED149397BEA7E0408C92688 /* GroupVoiceModelsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GroupVoiceModelsView.swift; sourceTree = "<group>"; };
 		0F5379380323FA8C6477708C /* GroupSlotPicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GroupSlotPicker.swift; sourceTree = "<group>"; };
 		16FF3462D09402F14B610CD6 /* VoiceWaveformView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoiceWaveformView.swift; sourceTree = "<group>"; };
@@ -2661,6 +2665,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				IOS15COMPAT0000000000000B /* iOS15Compat.swift in Sources */,
 				AC0000202 /* ProviderCustomizationGenerated.swift in Sources */,
 				E54000AC1 /* DebugSkillGenerated.swift in Sources */,
 				E5FP00100 /* AppGroupChangeWatcher.swift in Sources */,

@@ -1072,6 +1072,5 @@ private struct PauseSyncSheet: View {
                 }
             }
         }
-        .presentationDragIndicator(.visible)
     }
 }

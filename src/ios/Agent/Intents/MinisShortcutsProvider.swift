@@ -11,6 +11,7 @@ import AppIntents
 /// to every AppShortcuts.strings; keys must match exactly with
 /// `\(.applicationName)` spelled `${applicationName}` in the tables.
 @available(iOS 17.0, *)
+@available(iOS 16.0, *) // ios15-port
 struct MinisShortcutsProvider: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         // Siri-facing "ask Minis" entry — opens the app and lands in the

@@ -820,10 +820,10 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     private func refreshActiveTaskBadge(sessions: Set<String>, enabled: Bool) {
         let center = UNUserNotificationCenter.current()
         guard enabled else {
-            center.setBadgeCount(0) { _ in }
+            UIApplication.shared.applicationIconBadgeNumber = 0 { _ in }
             return
         }
-        center.setBadgeCount(sessions.count) { err in
+        UIApplication.shared.applicationIconBadgeNumber = sessions.count { err in
             if let err {
                 logger.error("[Badge] setBadgeCount failed: \(err.localizedDescription)")
             }

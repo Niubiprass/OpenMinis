@@ -475,7 +475,6 @@ struct ToolLiveSheet: View {
         .onReceive(block.objectWillChange) { _ in
             blockUpdateTick += 1
         }
-        .presentationDragIndicator(.hidden)
         // Tapping a URL in shell output (underlined via attributedShellLine)
         // routes through `activeSheet` so it shares one `.sheet(item:)`
         // modifier with the browser takeover below.

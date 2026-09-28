@@ -241,7 +241,6 @@ struct SoulSettingsView: View {
             TextEditor(text: $bodyText)
                 .frame(minHeight: 220)
                 .font(.system(.body, design: .monospaced))
-                .scrollContentBackground(.hidden)
             // SwiftUI's TextEditor has no native placeholder. We render
             // a greyed hint on top when the body is empty + not being
             // typed into. allowsHitTesting(false) so taps fall through

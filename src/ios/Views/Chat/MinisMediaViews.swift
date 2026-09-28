@@ -941,7 +941,7 @@ private struct MinisTextView: UIViewRepresentable {
     let text: String
 
     func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView(usingTextLayoutManager: true)
+        let textView = UITextView()
         textView.isEditable = false
         textView.isSelectable = true
         textView.backgroundColor = .clear
@@ -1130,7 +1130,6 @@ struct MinisHTMLPreviewView: View {
         // [T-ios-html-preview-wide-sheet] Widen to a page-style sheet on
         // iPad/Mac, matching MinisMarkdownPreviewView. iPhone unaffected.
         .modifier(WideSheetSizingModifier())
-        .presentationDragIndicator(.hidden)
         .preferredColorScheme(appearanceMode == 1 ? .light : appearanceMode == 2 ? .dark : nil)
     }
 }

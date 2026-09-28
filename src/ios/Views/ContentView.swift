@@ -575,7 +575,7 @@ private struct FolderPickerSheet: View {
                     // One-sentence auto-grouping context (≤100 chars). Typed
                     // here or prefilled by AI Suggest; never shown in the
                     // list, editable later from Rename Group.
-                    TextField("Description (optional, guides auto-grouping)", text: $newFolderDesc, axis: .vertical)
+                    TextField("Description (optional, guides auto-grouping)", text: $newFolderDesc)
                         .lineLimit(1...2)
                         .font(.subheadline)
                         .onChange(of: newFolderDesc) { v in
@@ -2820,7 +2820,6 @@ struct ContentView: View {
                                 // with a hand-rolled gesture sequence — the
                                 // gesture layer is where system gestures are
                                 // beaten (see the WebView sheet-dismiss fix).
-                                .draggable(session.id)
                                 .overlay {
                                     if regeneratingTitleSessionId == session.id {
                                         ZStack {
@@ -2956,7 +2955,6 @@ struct ContentView: View {
                                 // with a hand-rolled gesture sequence — the
                                 // gesture layer is where system gestures are
                                 // beaten (see the WebView sheet-dismiss fix).
-                                .draggable(session.id)
                                 .overlay {
                                     if regeneratingTitleSessionId == session.id {
                                         ZStack {
@@ -3059,7 +3057,6 @@ struct ContentView: View {
 
         }
         .listStyle(.plain)
-        .navigationSplitViewColumnWidth(min: 340, ideal: 380, max: 500)
         .opacity(didInitialLoad ? 1 : 0)
         .overlay { if didInitialLoad, displaySessions.isEmpty, !isSearching { emptyState } }
         .overlay(alignment: .top) { folderMiniBarOverlay(scrollProxy) }
@@ -4579,7 +4576,6 @@ struct ContentView: View {
             // Dropping on a date-bucket header moves the sessions OUT of any
             // folder — the drag gesture works both directions, otherwise
             // moving out would still require a trip through the menu.
-            .dropDestination(for: String.self) { sessionIds, _ in
                 Task { @MainActor in
                     await ChatStore.shared.setFolder(nil, forSessions: sessionIds)
                     refreshSessionList()
@@ -4786,7 +4782,6 @@ struct ContentView: View {
         // ScrollViewReader anchor for the mini-bar's "back to header" jump.
         .id("folderHeader-\(group.folderId ?? "")")
         .listRowInsets(EdgeInsets())
-        .dropDestination(for: String.self) { sessionIds, _ in
             guard let fid = group.folderId else { return false }
             Task { @MainActor in
                 await ChatStore.shared.setFolder(fid, forSessions: sessionIds)

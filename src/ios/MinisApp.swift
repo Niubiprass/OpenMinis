@@ -522,7 +522,7 @@ struct MinisApp: App {
                 debugServer.restartIfDead(port: 8321)
                 #endif
 
-                try? await UNUserNotificationCenter.current().setBadgeCount(0)
+                UIApplication.shared.applicationIconBadgeNumber = 0
                 BackgroundInterruptionTracker.shared.checkOnForeground()
                 // [T-shortcuts-diag-and-pending] Scan for AppIntent runs that
                 // were marked pending but never cleared (i.e. the process was

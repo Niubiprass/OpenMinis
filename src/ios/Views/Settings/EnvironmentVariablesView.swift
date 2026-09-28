@@ -272,7 +272,6 @@ private struct EnvVarFormSheet: View {
                         TextEditor(text: $note)
                             .frame(minHeight: 80)
                             .focused($focusedField, equals: .note)
-                            .scrollContentBackground(.hidden)
                     }
                 }
 

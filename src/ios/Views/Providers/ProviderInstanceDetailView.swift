@@ -1302,7 +1302,7 @@ struct ModelEntryDetailSheet: View {
                             // stays visible while editing. Single-line +
                             // trailing alignment lost the cursor past the row
                             // edge with no horizontal autoscroll.
-                            TextField("model-id", text: $modelId, axis: .vertical)
+                            TextField("model-id", text: $modelId)
                                 .font(.system(.body, design: .monospaced))
                                 .multilineTextAlignment(.trailing)
                                 .textInputAutocapitalization(.never)
@@ -1465,7 +1465,6 @@ struct ModelEntryDetailSheet: View {
             }
             .navigationTitle("Model Details")
             .navigationBarTitleDisplayMode(.inline)
-            .scrollDismissesKeyboard(.interactively)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
@@ -1483,7 +1482,6 @@ struct ModelEntryDetailSheet: View {
                 // pin a stale TestSession.
                 ModelQuickTestSheet(entry: entry)
                     .id(entry.id)
-                    .presentationDragIndicator(.visible)
             }
             .alert(
                 AppLocalized("Force Enable Thinking"),
