@@ -29,7 +29,7 @@ ROOT = "src/ios"
 
 # 脚本版本号。每轮修复都会改它，日志第一行就会打印，
 # 用来确认 runner 上跑的是不是最新脚本（避免又下到 CDN 缓存的旧版）。
-SCRIPT_VERSION = "v10-20260929e"
+SCRIPT_VERSION = "v10-20260929f"
 COMPAT_NAME = "iOS15Compat.swift"
 PRISTINE_COMMIT = None  # 已废弃：浅克隆下取不到真正的初始提交，改用内存基线
 # 转换前的文件内容快照（路径 -> 内容），由 snapshot_baseline() 填充，
@@ -942,17 +942,32 @@ def misc_fixes() -> None:
             # Binding(get:set:)，单行正则根本匹配不到（第 13 轮就是这么漏的）
             t = _strip_textfield_axis(t)
 
-            # Locale.language.languageCode (iOS16) -> Locale.languageCode
-            # 例：loc.language.languageCode?.identifier  ->  loc.languageCode
-            t = re.sub(r"\.language\.languageCode\?\.identifier\b",
-                       ".languageCode", t)
-            t = re.sub(r"\.language\.languageCode\b", ".languageCode", t)
+            # Locale.Language / Locale.Region 系列（iOS 16 才有）降级到
+            # iOS 15 上语义等价的旧属性：
+            #   loc.language.languageCode?.identifier -> loc.languageCode
+            #   loc.region?.identifier                -> loc.regionCode
+            # 两者的差别只是 Optional<Locale.LanguageCode> vs String?，
+            # 后面的 ?.identifier / $0.identifier 要一并去掉。
+            for _old, _new in (
+                (".language.languageCode?.identifier", ".languageCode"),
+                (".language.languageCode", ".languageCode"),
+                (".language.script?.identifier", ".scriptCode"),
+                (".language.script", ".scriptCode"),
+                (".language.variant?.identifier", ".variantCode"),
+                (".language.variant", ".variantCode"),
+                (".language.maximalIdentifier", ".identifier"),
+                (".region?.identifier", ".regionCode"),
+                (".region.identifier", ".regionCode"),
+            ):
+                t = t.replace(_old, _new)
             # 跟着的 .map { ... $0.identifier ... } 里 $0 已经变成 String 了
-            t = re.sub(
-                r"\.languageCode\.map\s*\{([^{}]*?)\}",
-                lambda m: ".languageCode.map {"
-                          + m.group(1).replace("$0.identifier", "$0") + "}",
-                t)
+            for _prop in ("languageCode", "scriptCode", "variantCode",
+                          "regionCode"):
+                t = re.sub(
+                    r"\.%s\.map\s*\{([^{}]*?)\}" % _prop,
+                    lambda m: ".%s.map {" % _prop
+                              + m.group(1).replace("$0.identifier", "$0") + "}",
+                    t)
 
             # UITextView(usingTextLayoutManager:) -> UITextView()
             t = re.sub(r"\(\s*usingTextLayoutManager:\s*(?:true|false)\s*\)", "()", t)

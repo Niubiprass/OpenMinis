@@ -1300,7 +1300,7 @@ enum VoiceLanguages {
         }
         // language+region (drops script), e.g. zh-Hans-CN -> zh-CN.
         if let lang = loc.languageCode {
-            if let region = loc.region?.identifier {
+            if let region = loc.regionCode {
                 let target = "\(lang)-\(region)"
                 if let hit = supported.first(where: { $0.caseInsensitiveCompare(target) == .orderedSame }) {
                     return hit
