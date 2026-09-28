@@ -14,7 +14,7 @@ struct BrowserSheetView: View {
     private var manager: BrowserUseManager? { pool.activeManager }
 
     var body: some View {
-        NavigationStack {
+        NavigationView{
             VStack(spacing: 0) {
                 if !isFullscreen {
                     // Tab bar
@@ -473,7 +473,7 @@ private struct DownloadPulseModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         if #available(iOS 17, *) {
-            content.symbolEffect(.pulse, options: .repeating, isActive: active)
+            content
         } else {
             content
                 .opacity(active && legacyPulse ? 0.35 : 1.0)
@@ -503,7 +503,7 @@ struct BrowserDownloadPanelSheet: View {
     let onLocate: (String) -> Void
 
     var body: some View {
-        NavigationStack {
+        NavigationView{
             Group {
                 let items = center.downloads(for: sessionId)
                     .sorted { $0.startedAt > $1.startedAt }
@@ -552,7 +552,6 @@ struct BrowserDownloadPanelSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
         // Viewing the panel clears the badge; records themselves persist
         // until the user clears them (rows / Clear Completed) — the floating
         // button hides only when the list is actually empty.
@@ -765,7 +764,7 @@ private extension View {
     /// Gentle pulse on the in-progress icon where the OS supports it.
     @ViewBuilder func symbolEffectPulseIfAvailable() -> some View {
         if #available(iOS 17, *) {
-            self.symbolEffect(.pulse)
+            self
         } else {
             self
         }

@@ -29,7 +29,7 @@ ROOT = "src/ios"
 
 # 脚本版本号。每轮修复都会改它，日志第一行就会打印，
 # 用来确认 runner 上跑的是不是最新脚本（避免又下到 CDN 缓存的旧版）。
-SCRIPT_VERSION = "v10-20260929c"
+SCRIPT_VERSION = "v10-20260929d"
 COMPAT_NAME = "iOS15Compat.swift"
 PRISTINE_COMMIT = None  # 已废弃：浅克隆下取不到真正的初始提交，改用内存基线
 # 转换前的文件内容快照（路径 -> 内容），由 snapshot_baseline() 填充，
@@ -596,6 +596,65 @@ def cleanup_artifacts() -> None:
                 pass
     if removed:
         log("✅ 已清掉上一轮产物 %d 个" % removed)
+
+
+def _delete_call(text: str, name: str):
+    """整调用配平删除 name(...)（单行/多行都安全）。"""
+    pat = re.compile(re.escape(name) + r"\s*\(")
+    out = text
+    guard = 0
+    while guard < 200:
+        guard += 1
+        m = pat.search(out)
+        if not m:
+            break
+        lp = m.end() - 1
+        e = _expr_end(out, lp)
+        if e is None:
+            break
+        i = m.start()
+        ls = out.rfind("\n", 0, i) + 1
+        if out[ls:i].strip() == "":
+            i = ls
+            if e < len(out) and out[e] == "\n":
+                e += 1
+        out = out[:i] + out[e:]
+    return out
+
+
+def stage1_fixes() -> None:
+    """第一阶段脚本（ios15_port.py）的规则，在这里重跑一遍。
+
+    工作流里第一阶段确实先跑过，但第二阶段开头会从上游重新铺一遍源码，
+    把它改的东西整体覆盖了 —— 第 12 轮就栽在这儿：编译只剩 2 个错误，
+    全是 'NavigationStack' is only available in iOS 16.0 or newer，
+    因为那次替换的成果被上游还原抹掉了。
+    所以这三条规则必须在还原之后再执行一次。
+    """
+    touched = 0
+    n_path = 0
+    for path in swift_files(ROOT):
+        t = read(path)
+        if "NavigationStack" not in t and ".presentationDetents" not in t \
+                and ".symbolEffect" not in t:
+            continue
+        orig = t
+        # NavigationStack(...) / NavigationStack {  ->  NavigationView
+        for m in re.finditer(r"NavigationStack\s*\(([^)]*)\)", t):
+            if "path:" in m.group(1):
+                n_path += 1
+        t = re.sub(r"\bNavigationStack\b\s*([({])", r"NavigationView\1", t)
+        # iOS 16/17 专属、iOS 15 无对应的视觉 API，整调用删除
+        t = _delete_call(t, ".presentationDetents")
+        t = _delete_call(t, ".symbolEffect")
+        if t != orig:
+            write(path, t)
+            touched += 1
+    if n_path:
+        log("⚠️  %d 处 NavigationStack(path:) 在 iOS 15 上没有等价物，已保留原样"
+            % n_path)
+    log("✅ 第一阶段规则复跑（NavigationStack/presentationDetents/"
+        "symbolEffect）：%d 个文件受影响" % touched)
 
 
 def snapshot_baseline() -> None:
@@ -1384,9 +1443,11 @@ def main() -> None:
     # 1. 从上游拉干净原版覆盖 src/ios（浅克隆下 git 历史不可信，必须这么干）
     restore_from_upstream()
     cleanup_artifacts()
-    # 2. 给干净基线拍快照（结构自检的对照物，不依赖 git）
+    # 2. 第一阶段规则在还原之后重跑一遍（否则成果会被上游源码覆盖掉）
+    stage1_fixes()
+    # 3. 给干净基线拍快照（结构自检的对照物，不依赖 git）
     snapshot_baseline()
-    # 3. 全部转换
+    # 4. 全部转换
     fix_applocalized()
     strip_localizedstringresource()
     restore_intent_props()

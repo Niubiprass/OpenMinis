@@ -726,7 +726,7 @@ struct MinisLinkPreviewView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationView{
             ReusableWebView(webView: holder.webView)
                 // [T-webview-preview-swipe-dismiss] Arbitrate the sheet's
                 // interactive-dismiss pan against page content at the gesture
@@ -773,7 +773,6 @@ struct MinisLinkPreviewView: View {
                     }
                 }
         }
-        .presentationDetents([.large])
         // [T-ios-html-preview-wide-sheet] Widen to a page-style sheet on
         // iPad/Mac, reusing the shared modifier from AIChatView.swift. iPhone
         // unaffected (presentationSizing is iOS18+ and .page only affects

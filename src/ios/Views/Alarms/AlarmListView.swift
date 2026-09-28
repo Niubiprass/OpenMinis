@@ -227,7 +227,7 @@ struct AlarmListView: View {
     @State private var showClearConfirm = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView{
             Group {
                 if vm.alarms.isEmpty && !vm.isLoading {
                     VStack(spacing: 12) {
@@ -330,7 +330,6 @@ private struct AlarmRowView: View {
             if #available(iOS 17.0, *) {
                 Image(systemName: "bell.fill")
                     .foregroundStyle(.orange)
-                    .symbolEffect(.pulse)
             } else {
                 Image(systemName: "bell.fill")
                     .foregroundStyle(.orange)
