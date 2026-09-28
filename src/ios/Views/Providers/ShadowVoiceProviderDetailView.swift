@@ -22,35 +22,6 @@ struct ShadowVoiceProviderDetailView: View {
     var body: some View {
         List {
             Section {
-                LabeledContent {
-                    Text(instance?.label ?? "—")
-                        .foregroundStyle(.secondary)
-                } label: {
-                    Label {
-                        Text("Credential from", comment: "Shadow voice credential label")
-                    } icon: {
-                        styledIcon("key.fill", color: .blue)
-                    }
-                }
-                if let base = instance?.effectiveCustomBaseURL {
-                    LabeledContent {
-                        Text(base)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    } label: {
-                        Label {
-                            Text("Endpoint", comment: "Shadow voice endpoint label")
-                        } icon: {
-                            styledIcon("link", color: .teal)
-                        }
-                    }
-                }
-            } footer: {
-                Text("This voice service shares the API key and endpoint of its provider. To change them, edit that provider.",
-                     comment: "Shadow voice provenance note")
-            }
 
             if let asr = shadow?.inputModels, !asr.isEmpty {
                 Section(AppLocalized("Speech to Text", comment: "ASR section")) {
@@ -69,16 +40,6 @@ struct ShadowVoiceProviderDetailView: View {
             }
 
             Section {
-                Toggle(isOn: Binding(
-                    get: { !store.isVoiceShadowDisabled(instanceId) },
-                    set: { store.setVoiceShadowDisabled(!$0, for: instanceId) }
-                )) {
-                    Text("Show in Voice Services", comment: "Shadow voice enable toggle")
-                }
-            } footer: {
-                Text("Turn off to hide this voice service. The provider's text models are unaffected.",
-                     comment: "Shadow voice toggle note")
-            }
         }
         .navigationTitle(shadow?.displayName ?? instance?.label ?? AppLocalized("Voice Service"))
         .navigationBarTitleDisplayMode(.inline)
@@ -101,17 +62,5 @@ struct ShadowVoiceProviderDetailView: View {
 
     private func modelRow(_ entry: ModelEntry, systemImage: String, color: Color) -> some View {
         Button {
-            quickTestEntry = entry
-        } label: {
-            HStack(spacing: 10) {
-                styledIcon(systemImage, color: color)
-                Text(entry.baseModel.displayName)
-                    .foregroundStyle(ChatColors.primaryText)
-                Spacer()
-                Image(systemName: "bolt.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-        }
     }
 }

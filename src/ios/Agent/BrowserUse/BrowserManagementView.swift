@@ -45,12 +45,6 @@ struct BrowserManagementView: View {
             }
         }
         .confirmationDialog("Clear All Cookies?", isPresented: $showClearConfirm, titleVisibility: .visible) {
-            Button("Clear All", role: .destructive) {
-                clearAllCookies()
-            }
-        } message: {
-            Text("This will remove all cookies and website data from the Minis browser.")
-        }
         .task {
             await loadCookies()
         }
@@ -60,12 +54,6 @@ struct BrowserManagementView: View {
 
     private var userAgentSection: some View {
         Section {
-            userAgentRow(.mobileSafari)
-            userAgentRow(.desktopSafari)
-            customUserAgentRow
-        } header: {
-            Text("User Agent")
-        } footer: {
             let vp = pool.userAgentProfile.viewportSize
             Text("Viewport: \(vp.width)×\(vp.height)")
         }
@@ -82,30 +70,8 @@ struct BrowserManagementView: View {
 
     private func userAgentRow(_ profile: UserAgentProfile) -> some View {
         Button {
-            pool.setUserAgentProfile(profile)
-        } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Label(profile.displayName, systemImage: profile.icon)
-                        .foregroundStyle(Color(UIColor.label))
-                    Text(displayUA(for: profile))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                Spacer()
-                if pool.userAgentProfile == profile {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
-        }
         .contextMenu {
             Button {
-                UIPasteboard.general.string = displayUA(for: profile)
-            } label: {
-                Label("Copy User Agent", systemImage: "doc.on.doc")
-            }
         }
     }
 
@@ -113,21 +79,6 @@ struct BrowserManagementView: View {
         let isSelected = pool.userAgentProfile == .custom
         return VStack(alignment: .leading, spacing: 6) {
             Button {
-                if !customUA.isEmpty {
-                    pool.customUserAgentString = customUA
-                    pool.setUserAgentProfile(.custom)
-                }
-            } label: {
-                HStack {
-                    Label("Custom", systemImage: "pencil.line")
-                        .foregroundStyle(Color(UIColor.label))
-                    Spacer()
-                    if isSelected {
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(Color.accentColor)
-                    }
-                }
-            }
             TextField("Enter custom user agent...", text: $customUA)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -143,10 +94,6 @@ struct BrowserManagementView: View {
         .contextMenu {
             if !customUA.isEmpty {
                 Button {
-                    UIPasteboard.general.string = customUA
-                } label: {
-                    Label("Copy User Agent", systemImage: "doc.on.doc")
-                }
             }
         }
     }
@@ -155,14 +102,6 @@ struct BrowserManagementView: View {
 
     private var viewportSection: some View {
         Section {
-            defaultViewportRow
-            customViewportRow
-            if showCustomViewportEditor {
-                customViewportEditor
-            }
-        } header: {
-            Text("Web Viewport")
-        } footer: {
             let vp = pool.resolvedViewportSize()
             if pool.customViewportWidth > 0 && pool.customViewportHeight > 0 {
                 Text("Using custom viewport \(vp.width)×\(vp.height). Tap Default to revert to the UA default.")
@@ -187,38 +126,10 @@ struct BrowserManagementView: View {
 
     private var defaultViewportRow: some View {
         Button {
-            pool.setGlobalViewport(width: 0, height: 0)
-            viewportWidthText = ""
-            viewportHeightText = ""
-            withAnimation { showCustomViewportEditor = false }
-        } label: {
-            HStack {
-                Label("Default (auto by UA)", systemImage: "arrow.counterclockwise")
-                    .foregroundStyle(Color(UIColor.label))
-                Spacer()
-                if !isCustomViewportActive {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
-        }
     }
 
     private var customViewportRow: some View {
         Button {
-            withAnimation { showCustomViewportEditor = true }
-            commitCustomViewport()
-        } label: {
-            HStack {
-                Label("Custom", systemImage: "aspectratio")
-                    .foregroundStyle(Color(UIColor.label))
-                Spacer()
-                if isCustomViewportActive {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
-        }
     }
 
     /// Common viewport presets shown under the editor. Mix of mobile and
@@ -313,31 +224,6 @@ struct BrowserManagementView: View {
                 HStack(spacing: 8) {
                     ForEach(Self.viewportPresets, id: \.label) { preset in
                         Button {
-                            viewportWidthText = String(preset.width)
-                            viewportHeightText = String(preset.height)
-                            pool.setGlobalViewport(width: preset.width, height: preset.height)
-                        } label: {
-                            VStack(spacing: 2) {
-                                Text(preset.label)
-                                    .font(.system(size: 12, weight: .medium))
-                                Text("\(preset.width)×\(preset.height)")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(
-                                isPresetActive(preset)
-                                    ? Color.accentColor.opacity(0.18)
-                                    : Color(UIColor.tertiarySystemFill)
-                            )
-                            .foregroundStyle(
-                                isPresetActive(preset)
-                                    ? Color.accentColor
-                                    : Color(UIColor.label)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        }
                         .buttonStyle(.plain)
                     }
                 }
@@ -362,22 +248,6 @@ struct BrowserManagementView: View {
 
     private var cookiesSection: some View {
         Section {
-            HStack {
-                Text("Cookies")
-                Spacer()
-                Text("\(cookieCount)")
-                    .foregroundStyle(.secondary)
-            }
-
-            Button(role: .destructive) {
-                showClearConfirm = true
-            } label: {
-                Label("Clear All Cookies", systemImage: "trash")
-            }
-            .disabled(cookieCount == 0)
-        } header: {
-            Text("Cookies & Data")
-        } footer: {
             Text("Clearing cookies will sign you out of all websites in the Minis browser.")
         }
     }
@@ -388,32 +258,6 @@ struct BrowserManagementView: View {
     private var domainListSection: some View {
         if !domains.isEmpty {
             Section {
-                ForEach(domains) { group in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(group.domain)
-                                .font(.system(size: 14, weight: .medium))
-                            Text("\(group.cookies.count) cookie\(group.cookies.count == 1 ? "" : "s")")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
-                            clearCookies(for: group.domain)
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                    }
-                }
-            } header: {
-                if searchText.isEmpty {
-                    Text("Domains")
-                } else {
-                    Text("Results")
-                }
-            }
         }
     }
 

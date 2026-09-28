@@ -146,12 +146,6 @@ struct BrowserHistoryView: View {
                 }
             }
             .confirmationDialog("Clear Browsing History?", isPresented: $showClearConfirm, titleVisibility: .visible) {
-                Button("Clear All History", role: .destructive) {
-                    historyStore.clearAll()
-                }
-            } message: {
-                Text("This will remove all browsing history from the past 7 days.")
-            }
         }
     }
 
@@ -175,17 +169,6 @@ struct BrowserHistoryView: View {
         List {
             ForEach(historyStore.groupedByDay, id: \.date) { group in
                 Section {
-                    ForEach(group.entries) { entry in
-                        Button {
-                            onSelect(entry.url)
-                            dismiss()
-                        } label: {
-                            historyRow(entry)
-                        }
-                    }
-                } header: {
-                    Text(dayLabel(group.date))
-                }
             }
         }
         .listStyle(.insetGrouped)

@@ -283,6 +283,7 @@ def annotate_intents() -> None:
 
 # ------------------------------------------- 4. 删除 iOS16 装饰性修饰符
 
+# 纯单行参数式修饰符，按行删是安全的
 DELETE_LINE_RES = [
     r"\.presentationDragIndicator\(",
     r"\.toolbarBackground\(",
@@ -292,10 +293,161 @@ DELETE_LINE_RES = [
     r"\.scrollContentBackground\(",
     r"\.persistentSystemOverlays\(",
     r"\.navigationSplitViewColumnWidth\(",
-    r"\.dropDestination\(",
-    r"\.draggable\(",
     r"\.toolbar\([^\n]*for:\s*\.(?:navigationBar|bottomBar|tabBar)",
 ]
+
+# 带尾随闭包的多行构造，必须整调用配平删除，绝不能按行删！
+# .dropDestination(for: .text) { items, _ in
+#     ...
+# } isTargeted: { over in
+#     ...
+# }
+CALL_DELETE_RES = [
+    r"\.dropDestination\(",
+    r"\.draggable\(",
+]
+
+
+def _match_delim(text: str, i: int):
+    """i 指向 ( { [ 之一，返回配对闭括号之后的位置；自动跳过字符串字面量。"""
+    pairs = {"(": ")", "{": "}", "[": "]"}
+    stack = []
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    break
+                i += 1
+            i += 1
+            continue
+        if c in pairs:
+            stack.append(pairs[c])
+        elif stack and c == stack[-1]:
+            stack.pop()
+            if not stack:
+                return i + 1
+        elif c in ")}]" and not stack:
+            return None
+        i += 1
+    return None
+
+
+def _expr_end(text: str, lp: int):
+    """lp 指向调用的 "("，返回整个调用（含全部尾随闭包）结束位置。"""
+    i = _match_delim(text, lp)
+    if i is None:
+        return None
+    while True:
+        # 形如  label: { ... }  的后续尾随闭包（如 isTargeted: { over in ... }）
+        m = re.match(r"\s*\w+\s*:\s*\{", text[i:])
+        if not m:
+            m = re.match(r"\s*\{", text[i:])
+        if not m:
+            break
+        e = _match_delim(text, i + m.end() - 1)
+        if e is None:
+            return None
+        i = e
+    return i
+
+
+def delete_call_exprs() -> None:
+    """整调用配平删除多行构造（dropDestination / draggable 等）。"""
+    pats = [re.compile(p) for p in CALL_DELETE_RES]
+    touched = 0
+    for path in swift_files(ROOT):
+        text = read(path)
+        changed = False
+        for pat in pats:
+            guard = 0
+            while guard < 200:
+                guard += 1
+                m = pat.search(text)
+                if not m:
+                    break
+                lp = m.end() - 1  # 模式含 "("，m.end()-1 必指向它
+                e = _expr_end(text, lp)
+                if e is None:
+                    log("⚠️  %s: 无法配平 %s 调用，跳过" % (path, pat.pattern))
+                    break
+                i = m.start()
+                ls = text.rfind("\n", 0, i) + 1
+                if text[ls:i].strip() == "":
+                    i = ls
+                    if e < len(text) and text[e] == "\n":
+                        e += 1
+                text = text[:i] + text[e:]
+                changed = True
+        if changed:
+            write(path, text)
+            touched += 1
+    log("✅ 整体删除多行构造（dropDestination/draggable）：%d 个文件受影响" % touched)
+
+
+# 孤儿形态："} isTargeted: {" 这类行 —— 上一版脚本按行删掉了
+# .dropDestination( 开头行后残留在仓库里的半截闭包
+ORPHAN_TRAILING_RE = re.compile(r"(?m)^([ \t]*)\}[ \t]*\w+:[ \t]*\{")
+
+
+def repair_orphan_trailing_closures() -> None:
+    """自愈：清理上一版「删头留身」造成的语法残骸。
+
+    破坏形态（.dropDestination( 行已被删）：
+        <第一闭包体若干行（缩进比孤儿行深）>
+        } isTargeted: { over in        ← 孤儿行
+            <isTargeted 体>
+        }
+    从孤儿行向上吞掉缩进更深的连续非空行，从孤儿行内的 "{"
+    配平到它的结束 "}"，整段删除。幂等：清完即无匹配。
+    """
+    touched = 0
+    for path in swift_files(ROOT):
+        changed = False
+        for _ in range(50):
+            text = read(path)
+            m = ORPHAN_TRAILING_RE.search(text)
+            if not m:
+                break
+            lines = text.split("\n")
+            orphan_idx = text[: m.start()].count("\n")
+            indent_len = len(m.group(1))
+            # 1) 向上吞掉缩进更深的连续非空行（第一闭包的残骸）
+            start = orphan_idx
+            k = orphan_idx - 1
+            while k >= 0:
+                ln = lines[k]
+                if ln.strip() == "":
+                    k -= 1
+                    continue
+                li = len(ln) - len(ln.lstrip())
+                if li > indent_len:
+                    start = k
+                    k -= 1
+                    continue
+                break
+            # 2) 从孤儿行内的 "{" 配平到结束 "}"
+            brace = text.find("{", m.start())
+            end_pos = _match_delim(text, brace) if brace >= 0 else None
+            if end_pos is None:
+                log("⚠️  %s: 孤儿闭包无法配平，跳过" % path)
+                break
+            end_idx = text[:end_pos].count("\n")
+            del lines[start : end_idx + 1]
+            new = "\n".join(lines)
+            if new == text:
+                break
+            write(path, new)
+            changed = True
+        if changed:
+            touched += 1
+    if touched:
+        log("🩹 已修复上一版删行残留的孤儿闭包：%d 个文件" % touched)
 
 
 def delete_modifiers() -> None:
@@ -351,13 +503,55 @@ def misc_fixes() -> None:
             # String(localized: "x") -> "x"
             t = re.sub(r"String\(localized:\s*\"([^\"]*)\"\)", r'"\1"', t)
 
-            # UNUserNotificationCenter.setBadgeCount (iOS16) -> applicationIconBadgeNumber
-            def _badge(m):
-                arg = m.group(2).strip()
-                return "%sUIApplication.shared.applicationIconBadgeNumber = %s" % (
-                    m.group(1), arg)
-            t = re.sub(r"([ \t]*)(?:try\s+)?(?:await\s+)?[A-Za-z_][^\n]*\.setBadgeCount\(([^()]*)\)",
-                       _badge, t)
+            # UNUserNotificationCenter/UIApplication.setBadgeCount (iOS16)
+            #   -> applicationIconBadgeNumber
+            # 必须把调用连同尾随闭包（{ _ in }）一起替换，否则留下 "= 0 { _ in }" 残句
+            badge_pat = re.compile(
+                r"([ \t]*)(?:try\s+)?(?:await\s+)?[A-Za-z_][^\n{}]*?\.setBadgeCount\(")
+
+            def _badge_sub(s: str) -> str:
+                out = []
+                pos = 0
+                guard = 0
+                while guard < 500:
+                    guard += 1
+                    m = badge_pat.search(s, pos)
+                    if not m:
+                        out.append(s[pos:])
+                        break
+                    lp = m.end() - 1
+                    e = _match_delim(s, lp)
+                    if e is None:
+                        out.append(s[pos:m.end()])
+                        pos = m.end()
+                        continue
+                    arg = s[lp + 1:e - 1].strip()
+                    j = e
+                    m2 = re.match(r"[ \t]*\{", s[j:])
+                    if m2:
+                        e2 = _match_delim(s, j + m2.end() - 1)
+                        if e2 is not None:
+                            j = e2
+                    out.append(s[pos:m.start(1)] + m.group(1)
+                               + "UIApplication.shared.applicationIconBadgeNumber = " + arg)
+                    pos = j
+                return "".join(out)
+
+            t = _badge_sub(t)
+
+            # 自愈：上一版替换 setBadgeCount 时漏掉了尾随闭包，留下
+            #   ...applicationIconBadgeNumber = 0 { _ in }
+            # 删掉挂在赋值后面的残留闭包即可恢复成正确的赋值语句。
+            guard = 0
+            while guard < 200:
+                guard += 1
+                m = re.search(r"\.applicationIconBadgeNumber\s*=\s*[^\n=;]*?[^\s][ \t]*\{", t)
+                if not m:
+                    break
+                e = _match_delim(t, m.end() - 1)
+                if e is None:
+                    break
+                t = t[:m.end() - 1] + t[e:]
 
             return t
 
@@ -835,6 +1029,8 @@ def main() -> None:
     restore_intent_props()
     annotate_intents()
     annotate_appintent_files()
+    delete_call_exprs()
+    repair_orphan_trailing_closures()
     delete_modifiers()
     misc_fixes()
     # 先注入（决定文件该放在哪），再按 pbxproj 解析出的目录写文件

@@ -31,123 +31,16 @@ struct CloudSyncSettingsV2View: View {
     var body: some View {
         Form {
             Section {
-                Toggle(isOn: Binding(
-                    get: { v2Enabled },
-                    set: { newValue in
-                        if #available(iOS 17.0, *) { SyncV2Bootstrap.setEnabled(newValue) }
-                        v2Enabled = newValue
-                    }
-                )) {
-                    Text("Enable iCloud Sync")
-                }
-                if !statusText.isEmpty {
-                    NavigationLink {
-                        SyncMigrationDetailView()
-                    } label: {
-                        LabeledContent("Status") {
-                            Text(statusText).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            } footer: {
-                Text("Toggle takes effect on next app launch.")
-                    .font(.caption)
-            }
 
             if v2Enabled {
                 Section {
-                    Button {
-                        deviceNameDraft = deviceName
-                        showDeviceNameEditor = true
-                    } label: {
-                        LabeledContent("Name") {
-                            HStack(spacing: 6) {
-                                Text(deviceName).foregroundStyle(.secondary)
-                                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                } header: {
-                    Text("Upload (This Device)")
-                } footer: {
                     Text("This device name is broadcast to your other devices in the iCloud Sync zone.")
                         .font(.caption)
                 }
 
                 Section {
-                    ForEach(UploadPolicy.Category.allCases, id: \.self) { cat in
-                        Toggle(isOn: Binding(
-                            get: { categoriesEnabled[cat] ?? true },
-                            set: { newVal in
-                                UploadPolicy.setEnabled(cat, newVal)
-                                categoriesEnabled[cat] = newVal
-                                Task { await markDeviceDirty() }
-                            }
-                        )) {
-                            HStack(spacing: 12) {
-                                Image(systemName: iconName(for: cat))
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 28, height: 28)
-                                    .background(iconColor(for: cat), in: RoundedRectangle(cornerRadius: 7))
-                                Text(LocalizedStringKey(cat.displayName))
-                            }
-                        }
-                    }
-                    if categoriesEnabled[.sessionFiles] ?? true {
-                        Picker(selection: $maxFileSizeMB) {
-                            Text("256 KB").tag(0)
-                            Text("1 MB").tag(1)
-                            Text("4 MB").tag(4)
-                            Text("16 MB").tag(16)
-                            Text("64 MB").tag(64)
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "doc.zipper")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 28, height: 28)
-                                    .background(Color.gray, in: RoundedRectangle(cornerRadius: 7))
-                                Text("Max Per-File Size")
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .onChange(of: maxFileSizeMB) { newValue in
-                            UploadPolicy.maxFileSizeBytes = newValue == 0 ? 256 * 1024 : newValue * 1024 * 1024
-                        }
-                    }
-                } footer: {
-                    Text("Choose which data this device pushes to iCloud. API keys and secrets are synced securely via iCloud Keychain.")
-                        .font(.caption)
-                }
 
                 Section {
-                    if remoteDevices.isEmpty {
-                        Text("No other devices found yet. Devices appear here once they enable iCloud Sync.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(.vertical, 4)
-                    } else {
-                        ForEach(remoteDevices, id: \.id) { d in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(d.deviceName).font(.body)
-                                    Spacer()
-                                    Text(relativeDate(d.lastSeen)).font(.caption2).foregroundStyle(.secondary)
-                                }
-                                if !d.uploadTypes.isEmpty {
-                                    Text(uploadTypesSummary(d.uploadTypes))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                }
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Other Devices")
-                } footer: {
                     Text("Devices that are signed in to the same iCloud account and have sync enabled. Last seen reflects the most recent push from that device.")
                         .font(.caption)
                 }
@@ -164,22 +57,6 @@ struct CloudSyncSettingsV2View: View {
         // on teardown.
         .task { await refreshLoop() }
         .alert("Device Name", isPresented: $showDeviceNameEditor) {
-            TextField("Device name", text: $deviceNameDraft)
-            Button("Save") {
-                let trimmed = deviceNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed.isEmpty {
-                    UploadPolicy.customDeviceName = nil
-                    deviceName = DeviceIdentity.deviceName
-                } else {
-                    UploadPolicy.customDeviceName = trimmed
-                    deviceName = trimmed
-                }
-                Task { await markDeviceDirty() }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Friendly name shown to your other Minis devices.")
-        }
     }
 
     /// [T-ios-migration-timer-sessionlist-uaf-crash] Self-cancelling 5s refresh loop

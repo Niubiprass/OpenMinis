@@ -154,13 +154,6 @@ struct MountDetailView: View {
             AppLocalized("Unmount this folder?"),
             isPresented: $showingUnmountConfirm
         ) {
-            Button(AppLocalized("Unmount"), role: .destructive) {
-                unmountExternal()
-            }
-            Button(AppLocalized("Cancel"), role: .cancel) {}
-        } message: {
-            Text("The source folder in Files will not be deleted. You can re-mount it later.")
-        }
         .alert(
             AppLocalized("Error"),
             isPresented: Binding(
@@ -168,10 +161,6 @@ struct MountDetailView: View {
                 set: { if !$0 { errorText = nil } }
             )
         ) {
-            Button(AppLocalized("OK"), role: .cancel) { errorText = nil }
-        } message: {
-            Text(errorText ?? "")
-        }
     }
 
     // MARK: - Sections
@@ -212,95 +201,29 @@ struct MountDetailView: View {
 
     private var nameSection: some View {
         Section {
-            TextField("name", text: $nameText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            if nameChanged && !nameIsValid {
-                Text("Mount name must not be empty, contain '/', or be '.' or '..'.")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-        } header: {
-            Text("Name")
-        } footer: {
             Text("Becomes the folder name under /var/minis/mounts/")
         }
     }
 
     private var allowWriteSection: some View {
         Section {
-            Toggle(isOn: $allowWrite) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Allow writes")
-                    Text(allowWrite
-                         ? AppLocalized("AI, shell, and Files browser can modify files in this mount.")
-                         : AppLocalized("This mount is exposed as read-only to protect it from accidental edits."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        } header: {
-            Text("Permissions")
-        } footer: {
             Text("When off, the iSH shell and AI tools cannot create, edit, or delete files in this mount.")
         }
     }
 
     private var visibilitySection: some View {
         Section {
-            Toggle(isOn: $visibleInFiles) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Show in Files app")
-                    Text(visibleInFiles
-                         ? AppLocalized("This folder appears in Files → On My iPhone → Minis.")
-                         : AppLocalized("This folder is hidden from the iOS Files app."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            if context.isReadOnlyFromFiles {
-                Text("Read-only from the Files app. The app itself can always read and write.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("Files app")
-        }
     }
 
     private var browseSection: some View {
         Section {
             Button {
-                showingBrowser = true
-            } label: {
-                Label {
-                    Text("Browse Files")
-                } icon: {
-                    Image(systemName: "folder.fill")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.white)
-                        .frame(width: 21, height: 21)
-                        .background(.blue, in: Circle())
-                }
-            }
         }
     }
 
     private var unmountSection: some View {
         Section {
             Button(role: .destructive) {
-                showingUnmountConfirm = true
-            } label: {
-                Label {
-                    Text("Unmount")
-                } icon: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.white)
-                        .frame(width: 21, height: 21)
-                        .background(.red, in: Circle())
-                }
-            }
         }
     }
 

@@ -17,36 +17,12 @@ struct SessionMemoryView: View {
             List {
                 // Section 1: Auto-injected memories
                 Section {
-                    ForEach(autoInjected, id: \.name) { item in
-                        NavigationLink {
-                            MemoryContentView(title: item.name, content: item.content, fileURL: item.fileURL)
-                        } label: {
-                            row(name: item.name, detail: item.detail, icon: item.icon)
-                        }
-                    }
-                } header: {
-                    Text("Auto-injected")
-                } footer: {
                     Text("Loaded into system prompt at the start of each agent turn.")
                 }
 
                 // Section 2: Tool-recalled memories
                 if !toolMemories.isEmpty {
                     Section {
-                        ForEach(toolMemories) { item in
-                            NavigationLink {
-                                if item.isWrite {
-                                    MemoryWriteDetailView(item: item)
-                                } else {
-                                    MemoryGetDetailView(item: item)
-                                }
-                            } label: {
-                                row(name: item.title, detail: item.detail, icon: item.isWrite ? "square.and.pencil" : "magnifyingglass")
-                            }
-                        }
-                    } header: {
-                        Text("Tool Activity")
-                    } footer: {
                         Text("Memory reads and writes performed by the agent during this session.")
                     }
                 }
@@ -283,11 +259,6 @@ private struct MemoryContentView: View {
                         }
                     } else {
                         Button {
-                            editedContent = content
-                            isEditing = true
-                        } label: {
-                            Image(systemName: "pencil")
-                        }
                     }
                 }
             }
@@ -381,17 +352,8 @@ private struct MemoryWriteDetailView: View {
                 } else {
                     if item.writtenContent != nil {
                         Button {
-                            editedContent = item.writtenContent ?? ""
-                            isEditing = true
-                        } label: {
-                            Image(systemName: "pencil")
-                        }
                     }
                     Button {
-                        showRevokeAlert = true
-                    } label: {
-                        Image(systemName: "arrow.uturn.backward")
-                    }
                     .disabled(item.writtenContent == nil)
                 }
             }
@@ -408,14 +370,6 @@ private struct MemoryWriteDetailView: View {
             }
         }
         .alert("Revoke Memory", isPresented: $showRevokeAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Revoke", role: .destructive) {
-                revokeResult = revokeEntry()
-                showResultAlert = true
-            }
-        } message: {
-            Text("Remove this memory entry from the daily log? This cannot be undone.")
-        }
         .alert(revokeResult ?? "", isPresented: $showResultAlert) {
             Button("OK") {
                 if revokeResult?.hasPrefix("Removed") == true {

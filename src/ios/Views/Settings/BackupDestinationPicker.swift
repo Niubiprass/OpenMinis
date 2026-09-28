@@ -78,86 +78,6 @@ struct BackupDestinationPicker: View {
 
     private var savedSection: some View {
         Section {
-            ForEach(remotes) { r in
-                Toggle(isOn: Binding(
-                    get: { r.enabled },
-                    set: { on in
-                        RcloneRemoteStore.setEnabled(r.name, on)
-                        reload()
-                        onChanged()
-                    }
-                )) {
-                    NavigationLink {
-                        BackupDestinationDetailView(target: .remote(r)) {
-                            reload()
-                            onChanged()
-                        }
-                    } label: {
-                        HStack(spacing: 12) {
-                            icon(RcloneBackendCatalog.backend(for: r.backend)?.icon
-                                 ?? "externaldrive.connected.to.line.below", .blue)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(r.name)
-                                Text("\(r.backend.uppercased()) · /\(r.path)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-                .swipeActions(edge: .trailing) {
-                    Button(role: .destructive) {
-                        RcloneRemoteStore.remove(name: r.name)
-                        reload()
-                        onChanged()
-                    } label: {
-                        Label("Remove", systemImage: "trash")
-                    }
-                }
-            }
-
-            ForEach(folders) { f in
-                Toggle(isOn: Binding(
-                    get: { BackupDestinations.isSelected(f.id) },
-                    set: { on in
-                        BackupDestinations.toggle(f.id, on: on)
-                        reload()
-                        onChanged()
-                    }
-                )) {
-                    NavigationLink {
-                        BackupDestinationDetailView(target: .folder(f)) {
-                            reload()
-                            onChanged()
-                        }
-                    } label: {
-                        HStack(spacing: 12) {
-                            icon("folder.fill", .indigo)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(f.name)
-                                Text(f.sourceDisplayName)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-                .swipeActions(edge: .trailing) {
-                    // Drops it from the destination list only — the mount
-                    // itself may also be in use by the agent, and removing
-                    // that from a backup screen would be a surprise.
-                    Button(role: .destructive) {
-                        BackupDestinations.forget(f.id)
-                        reload()
-                        onChanged()
-                    } label: {
-                        Label("Remove", systemImage: "trash")
-                    }
-                }
-            }
-        } header: {
-            Text("Saved Destinations")
-        } footer: {
             Text("Backups are copied to the enabled destinations. Tap for details, or swipe to remove.")
         }
     }
@@ -166,38 +86,6 @@ struct BackupDestinationPicker: View {
 
     private var addSection: some View {
         Section {
-            Button {
-                showAddServer = true
-            } label: {
-                HStack(spacing: 12) {
-                    icon("network", .blue)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Add Server…").foregroundStyle(.primary)
-                        Text("SMB, WebDAV, SFTP, S3, FTP")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            Button {
-                showFolderPicker = true
-            } label: {
-                HStack(spacing: 12) {
-                    icon("folder.badge.plus", .indigo)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Add Folder…").foregroundStyle(.primary)
-                        // Names both cases, because "folder" alone reads as
-                        // on-device only and hides the more useful half.
-                        Text("On this iPhone, iCloud Drive, or a server connected in Files")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        } header: {
-            Text("Add New")
-        }
     }
 
     // MARK: - Helpers

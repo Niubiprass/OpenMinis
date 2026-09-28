@@ -39,95 +39,11 @@ struct ModelGroupsView: View {
 
             if !store.modelGroups.isEmpty {
                 Section {
-                    ForEach(store.modelGroups) { group in
-                        NavigationLink {
-                            ModelGroupDetailView(groupId: group.id)
-                        } label: {
-                            GroupRow(group: group)
-                        }
-                        // [T-provider-group-swipe-actions] Explicit swipe
-                        // actions REPLACE the previous `.onDelete`, which gave
-                        // a swipe-to-delete with NO confirmation: a group can
-                        // be a default/voice/vision target and removing it
-                        // silently clears those pointers (see
-                        // ProviderConfigStore.removeGroup), so one careless
-                        // swipe could reconfigure routing with no undo.
-                        // Reordering is unaffected — `.onMove` stays, and UIKit
-                        // arbitrates horizontal vs vertical drags itself.
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                pendingDeleteGroup = group
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                            Button {
-                                editingGroupId = group.id
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            .tint(.blue)
-                        }
-                    }
-                    .onMove(perform: moveGroups)
-                    // Retained so the EditButton's red-minus delete still
-                    // exists; it now routes through `pendingDeleteGroup` and
-                    // therefore asks for confirmation like the swipe does.
-                    .onDelete(perform: deleteGroups)
-                } header: {
-                    HStack {
-                        Text("Groups")
-                        Spacer()
-                        EditButton()
-                            .font(.caption)
-                            .textCase(nil)
-                    }
-                }
             }
 
             // Default assignments
             if !store.modelGroups.isEmpty {
                 Section {
-                    GroupSlotPicker(
-                        label: "Default Primary",
-                        selection: Binding(
-                            get: { store.defaultPrimaryGroupId },
-                            set: { store.defaultPrimaryGroupId = $0 }
-                        )
-                    )
-                    GroupSlotPicker(
-                        label: "Default Sub",
-                        selection: Binding(
-                            get: { store.defaultSubGroupId },
-                            set: { store.defaultSubGroupId = $0 }
-                        )
-                    )
-                    GroupSlotPicker(
-                        label: "Voice Input",
-                        selection: Binding(
-                            get: { store.voiceInputGroupId },
-                            set: { store.voiceInputGroupId = $0 }
-                        ),
-                        voiceDirection: .input
-                    )
-                    GroupSlotPicker(
-                        label: "Voice Output",
-                        selection: Binding(
-                            get: { store.voiceOutputGroupId },
-                            set: { store.voiceOutputGroupId = $0 }
-                        ),
-                        voiceDirection: .output
-                    )
-                    GroupSlotPicker(
-                        label: "Vision Input",
-                        selection: Binding(
-                            get: { store.visionGroupId },
-                            set: { store.visionGroupId = $0 }
-                        ),
-                        isVision: true
-                    )
-                } header: {
-                    Text("Defaults")
-                } footer: {
                     Text("Primary is used for main agent tasks. Sub is used for lightweight tasks like title generation. Voice Input/Output pick a group whose audio-capable models drive speech-to-text and text-to-speech; if none is set, the offline System voice is used. Vision Input picks a group whose image-capable models describe images when the chat model cannot see them itself; if none is set, models without vision cannot read images at all.")
                 }
             }
@@ -151,24 +67,6 @@ struct ModelGroupsView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button {
-                        showCreateGroup = true
-                        newGroupName = ""
-                    } label: {
-                        Label(AppLocalized("New Group"), systemImage: "plus")
-                    }
-                    if #available(iOS 17.0, *), iCloudSyncEnabled {
-                        Divider()
-                        Button {
-                            Task { await forceSyncGroups() }
-                        } label: {
-                            Label(AppLocalized("Force iCloud Sync"),
-                                  systemImage: "arrow.triangle.2.circlepath.icloud")
-                        }
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                }
             }
         }
         .overlay(alignment: .top) {
@@ -192,11 +90,6 @@ struct ModelGroupsView: View {
                 get: { editingGroupId != nil },
                 set: { if !$0 { editingGroupId = nil } }
             )) {
-                if let id = editingGroupId,
-                   store.modelGroups.contains(where: { $0.id == id }) {
-                    ModelGroupDetailView(groupId: id)
-                }
-            } label: { EmptyView() }
             .opacity(0)
         }
         // Names the group and spells out the consequence the store actually
@@ -210,21 +103,7 @@ struct ModelGroupsView: View {
             ),
             presenting: pendingDeleteGroup
         ) { group in
-            Button("Delete", role: .destructive) {
-                store.removeGroup(group.id)
-                pendingDeleteGroup = nil
-            }
-            Button("Cancel", role: .cancel) { pendingDeleteGroup = nil }
-        } message: { group in
-            Text("Delete \"\(group.name)\"? Any default, voice, or vision selection pointing at this group will be cleared. The models themselves are not deleted.")
-        }
         .alert("New Group", isPresented: $showCreateGroup) {
-            TextField("Group name", text: $newGroupName)
-            Button("Create") { createGroup() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Enter a name for the new model group.")
-        }
     }
 
     // MARK: - Actions

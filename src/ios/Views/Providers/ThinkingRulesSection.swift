@@ -82,71 +82,10 @@ struct ThinkingRulesSection: View {
     /// explains that thinking parameters here are maintained by Minis by design.
     private var unsupportedNoticeSection: some View {
         Section {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "info.circle")
-                    .foregroundStyle(.secondary)
-                Text("This provider uses an official protocol, so its thinking parameters are maintained by Minis. Custom rules apply to OpenAI-compatible providers on the Chat Completions API.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("Thinking Rules")
-        }
     }
 
     private var ruleListSection: some View {
         Section {
-            ForEach(userRules) { rule in
-                Button {
-                    editorRequest = .init(rule: rule, isNew: false)
-                } label: {
-                    ruleRow(rule, isBuiltIn: false)
-                }
-                .buttonStyle(.plain)
-            }
-            .onDelete(perform: deleteUserRules)
-            .onMove(perform: moveUserRules)
-
-            // Built-ins, collapsed. Disclosure rather than a nav push so the user stays on
-            // this page while comparing their rules against the defaults.
-            DisclosureGroup(isExpanded: $showBuiltIns) {
-                ForEach(builtInRules) { rule in
-                    Button {
-                        editorRequest = .init(rule: rule, isNew: true)
-                    } label: {
-                        ruleRow(rule, isBuiltIn: true)
-                    }
-                    .buttonStyle(.plain)
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "lock.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Default rules")
-                    Text("\(builtInRules.count)")
-                        .font(.caption)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.15), in: Capsule())
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Button {
-                editorRequest = .init(rule: nil, isNew: true)
-            } label: {
-                Label("Add Rule", systemImage: "plus.circle")
-            }
-        } header: {
-            HStack {
-                Text("Thinking Rules")
-                Spacer()
-                if !userRules.isEmpty {
-                    EditButton().font(.caption)
-                }
-            }
-        } footer: {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Rules are evaluated top to bottom. The first rule matching the model decides which thinking parameters are sent.")
                 if let hit = resolvedHitDescription() {

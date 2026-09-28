@@ -85,27 +85,9 @@ struct KimiDeviceLoginSheet: View {
 
         // The user code — tap to copy.
         Button {
-            UIPasteboard.general.string = userCode
-            copied = true
-        } label: {
-            HStack(spacing: 8) {
-                Text(userCode)
-                    .font(.system(.title, design: .monospaced).weight(.semibold))
-                Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 12)
-            .padding(.horizontal, 20)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-        }
         .buttonStyle(.plain)
 
         Button {
-            if let u = URL(string: url) { presentSafari(u) }
-        } label: {
-            Label(AppLocalized("Open verification page"), systemImage: "safari")
-        }
         .buttonStyle(.borderedProminent)
 
         HStack(spacing: 6) {

@@ -479,20 +479,6 @@ private struct FolderAlertsModifier: ViewModifier {
                 ),
                 presenting: renameCollision
             ) { pair in
-                Button("Change Name") {
-                    // Reopen the rename dialog with the text still in place so
-                    // the user edits rather than retypes.
-                    folderToRename = pair.source
-                    renameCollision = nil
-                }
-                Button("Move Chats There") {
-                    onMergeInto(pair.source, pair.target)
-                    renameCollision = nil
-                }
-                Button("Cancel", role: .cancel) { renameCollision = nil }
-            } message: { pair in
-                Text("A group named “\(pair.target.name)” already exists. Choose a different name, or move this group's chats into it.")
-            }
             .alert(
                 "Dissolve Group?",
                 isPresented: Binding(
@@ -501,17 +487,6 @@ private struct FolderAlertsModifier: ViewModifier {
                 ),
                 presenting: folderToDissolve
             ) { folder in
-                Button("Cancel", role: .cancel) { folderToDissolve = nil }
-                Button("Dissolve") {
-                    onDissolve(folder)
-                    folderToDissolve = nil
-                }
-            } message: { folder in
-                // Spell out that no session is deleted — this action sits one
-                // menu away from the one that deletes everything, and the
-                // wording is what keeps them apart.
-                Text("\(memberCount(folder.id)) sessions will move back to the main list. No session will be deleted.")
-            }
     }
 }
 
@@ -592,18 +567,6 @@ private struct FolderPickerSheet: View {
                     // swallow the whole-row tap.
                     HStack {
                         Button {
-                            runSuggest()
-                        } label: {
-                            HStack {
-                                if suggesting {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Image(systemName: "sparkles")
-                                        .foregroundStyle(Color.accentColor)
-                                }
-                                Text(suggestFailed ? "AI Suggest (failed — try again)" : "AI Suggest")
-                            }
-                        }
                         .buttonStyle(.borderless)
                         .disabled(suggesting)
                         Spacer()
@@ -618,35 +581,9 @@ private struct FolderPickerSheet: View {
                     // so this is a real choice rather than a warning to ignore.
                     if let dup = duplicateFolder {
                         Button {
-                            onChoose(.existing(dup.id))
-                        } label: {
-                            Label {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    // Folder name is user data — interpolated, not a key.
-                                    Text("“\(dup.name)” already exists")
-                                        .font(.subheadline)
-                                    Text("Rename to something else, or tap to use it")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            } icon: {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange)
-                            }
-                        }
                     }
                     if let merge = suggestedMerge {
                         Button {
-                            onChoose(.existing(merge.folderId))
-                        } label: {
-                            Label {
-                                // Folder name is user data — interpolated, not a key.
-                                Text("Move into “\(merge.folderName)”?")
-                            } icon: {
-                                Image(systemName: "sparkles")
-                                    .foregroundStyle(Color.accentColor)
-                            }
-                        }
                     }
                 }
 
@@ -672,30 +609,6 @@ private struct FolderPickerSheet: View {
                     // would be a no-op row, which reads as a broken control.
                     if anyFiled {
                         Button {
-                            onChoose(.removeFromFolder)
-                        } label: {
-                            HStack(spacing: 8) {
-                                // Sized to match FolderComposedIcon below so the
-                                // row's text baseline lines up with the group rows.
-                                ZStack {
-                                    Circle()
-                                        .fill(Color(UIColor.tertiarySystemFill))
-                                        .frame(width: 40, height: 40)
-                                    Image(systemName: "folder.badge.minus")
-                                        .foregroundStyle(.secondary)
-                                }
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("No Group")
-                                        .foregroundStyle(Color(UIColor.label))
-                                        .lineLimit(1)
-                                    Text("Remove from its current group")
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(Color(UIColor.secondaryLabel))
-                                        .lineLimit(1)
-                                }
-                                Spacer()
-                            }
-                        }
                         // VoiceOver reads label + hint as ONE action; without this
                         // the two stacked Texts are announced as unrelated elements.
                         .accessibilityElement(children: .combine)
@@ -704,35 +617,6 @@ private struct FolderPickerSheet: View {
                     }
                     ForEach(items) { item in
                             Button {
-                                onChoose(.existing(item.folder.id))
-                            } label: {
-                                // Mirrors the home group card's identity row:
-                                // same composed circle icon, same
-                                // "N chats · context" subtitle (and thus the
-                                // same localization keys).
-                                HStack(spacing: 8) {
-                                    FolderComposedIcon(glyphs: item.glyphs, diameter: 40)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        // Folder names are user data — verbatim.
-                                        Text(item.folder.name)
-                                            .foregroundStyle(Color(UIColor.label))
-                                            .lineLimit(1)
-                                        Group {
-                                            if let sub = item.subtitle {
-                                                Text("\(item.count) chats · \(sub)")
-                                            } else if item.count > 0 {
-                                                Text("\(item.count) chats")
-                                            } else {
-                                                Text("Empty group")
-                                            }
-                                        }
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(Color(UIColor.secondaryLabel))
-                                        .lineLimit(1)
-                                    }
-                                    Spacer()
-                                }
-                            }
                         }
                     }
                 }
@@ -2069,12 +1953,6 @@ struct ContentView: View {
         // in SwiftUI's transaction flush; an A/B test confirmed the font
         // injection is not its cause), so per-column injection is safe here.
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            sessionList(useNavigationLinks: false)
-                .appFontScale()
-        } detail: {
-            detailView
-                .appFontScale()
-        }
     }
 
     // MARK: - Stack Layout (iPhone / narrow window)
@@ -2599,40 +2477,9 @@ struct ContentView: View {
     private func folderMiniBar(for folder: ChatFolder, scrollProxy: ScrollViewProxy) -> some View {
         HStack(spacing: 8) {
             Button {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    scrollProxy.scrollTo("folderHeader-\(folder.id)", anchor: .top)
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    FolderComposedIcon(glyphs: folderMiniBarGlyphs(folder.id), diameter: 30)
-                    // Folder names are user data — verbatim.
-                    Text(folder.name)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color(UIColor.label))
-                        .lineLimit(1)
-                }
-                // Widen the tap zone to everything left of the chevron.
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
             .buttonStyle(.plain)
 
             Button {
-                // Retract the mark ourselves: if the header cell is culled
-                // there is no probe alive to do it, and the display guard
-                // alone would leave a stale entry pinning the NEXT
-                // expansion's bar on.
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    _ = offscreenFolderHeaderIds.remove(folder.id)
-                }
-                toggleFolderCollapsed(folder.id)
-            } label: {
-                Image(systemName: "chevron.up")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color(UIColor.secondaryLabel))
-                    .frame(width: 32, height: 32)
-                    .background(Circle().fill(Color(UIColor.tertiarySystemFill)))
-            }
             .buttonStyle(.plain)
             .accessibilityLabel(Text("Collapse Group"))
         }
@@ -2767,106 +2614,6 @@ struct ContentView: View {
             let groups = groupedSessionIDs(filteredSessions)
             ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
                 Section {
-                    // Folder card as the section's FIRST ROW, not its header:
-                    // plain-List headers carry platform-specific chrome
-                    // (spacing/padding differ between iPhone, iPad sidebar and
-                    // Catalyst), which visibly detached the card from its
-                    // member rows on iPad/macOS. Row-to-row adjacency is a
-                    // guaranteed 0pt on every platform, so the container
-                    // segments actually weld. (Cost: the card no longer pins
-                    // while its members scroll — acceptable, accordion keeps
-                    // sections short.)
-                    if group.folderId != nil, !isSelecting {
-                        folderSectionHeader(group, scrollProxy: scrollProxy)
-                            .listRowInsets(EdgeInsets())
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .modifier(SelectionDisabledIfAvailable())
-                    }
-                    ForEach(group.ids, id: \.self) { sessionId in
-                        // [T-ios-session-list-equatable-jank] Resolve via the
-                        // @State cache (sessionForRow), NOT a captured
-                        // [String:ChatSession] — see sessionsByIdCache.
-                        if let session = sessionForRow(sessionId) {
-                        if isSelecting {
-                            selectableRow(session)
-                                .id("select-\(session.id)")
-                                .listRowInsets(EdgeInsets())
-                        } else {
-                            SessionRow(
-                                session: session,
-                                // [T-ios-ipad-sidebar-running-indicator-stale]
-                                // Pass running/suspended as VALUES so a flip
-                                // changes the SessionRow value → body re-evals
-                                // in place (same identity, no cell rebuild).
-                                isActive: sidebarActivityTracker.isActive(session.id),
-                                isSuspended: sidebarConcurrencyManager.isSuspended(session.id),
-                                highlightQuery: isSearching ? searchText : nil,
-                                matchSnippet: isSearching ? searchMatchSnippets[session.id] : nil
-                            )
-                                // [T-ios-session-list-equatable-jank] Gate
-                                // parent-driven re-eval on SessionRow's cheap
-                                // custom == (rendered fields only), so a
-                                // transaction flush from unrelated ContentView
-                                // state churn doesn't deep-compare ChatSession.
-                                .equatable()
-                                // Entry D: long-press then move = drag the
-                                // session id (never the ChatSession value —
-                                // same id-only discipline as the list
-                                // projection and the menu's value-semantics
-                                // constraint). The SYSTEM arbitrates against
-                                // .contextMenu on the same press: hold still →
-                                // menu, hold then move → drag. Do not replace
-                                // with a hand-rolled gesture sequence — the
-                                // gesture layer is where system gestures are
-                                // beaten (see the WebView sheet-dismiss fix).
-                                .overlay {
-                                    if regeneratingTitleSessionId == session.id {
-                                        ZStack {
-                                            Color(.systemBackground).opacity(0.7)
-                                            ProgressView()
-                                        }
-                                    }
-                                }
-                                .background(
-                                    NavigationLink(value: session.id) { EmptyView() }
-                                        .opacity(0)
-                                )
-                            .listRowInsets(EdgeInsets())
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Group {
-                                if group.folderId != nil {
-                                    FolderMemberRowBackground(isLast: sessionId == group.ids.last)
-                                } else {
-                                    Color(.systemBackground)
-                                }
-                            })
-                            .contextMenu {
-                                // [T-ios-crash-contextmenu-uaf] Value-only menu view,
-                                // no closure captures — see SessionContextMenu.
-                                SessionContextMenu(
-                                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, filed: session.isFiled),
-                                    actions: menuActions
-                                )
-                                .equatable()
-                            }
-                        }
-                        }  // if let session
-                    }
-                } header: {
-                    // Folder groups render their card as the section's first
-                    // ROW (above); the header slot serves the date buckets,
-                    // the select-mode select-all, and — on the first folder
-                    // group only — the "Groups" divider label.
-                    if group.folderId == nil || isSelecting {
-                        sectionHeader(index: index, group: group)
-                    } else if group.showsGroupsHeader {
-                        Text("Groups")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Color(UIColor.secondaryLabel))
-                            .textCase(nil)
-                    }
-                }
             }
 
         }
@@ -2906,153 +2653,6 @@ struct ContentView: View {
             let groups = groupedSessionIDs(displaySessions)
             ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
                 Section {
-                    // Folder card as first row — see the sidebar list's
-                    // comment: plain-List headers carry platform-specific
-                    // chrome and detached the card from its members on
-                    // iPad/macOS; row adjacency welds on every platform.
-                    if group.folderId != nil, !isSelecting {
-                        folderSectionHeader(group, scrollProxy: scrollProxy)
-                            .listRowInsets(EdgeInsets())
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .modifier(SelectionDisabledIfAvailable())
-                    }
-                    ForEach(group.ids, id: \.self) { sessionId in
-                        // [T-ios-session-list-equatable-jank] Resolve via the
-                        // @State cache (sessionForRow), NOT a captured
-                        // [String:ChatSession] — see sessionsByIdCache.
-                        if let session = sessionForRow(sessionId) {
-                        if isSelecting {
-                            selectableRow(session)
-                                .id("select-\(session.id)")
-                                .listRowInsets(EdgeInsets())
-                        } else {
-                            SessionRow(
-                                session: session,
-                                isHighlighted: isSessionHighlighted(session.id),
-                                // [T-ios-ipad-sidebar-running-indicator-stale]
-                                // Pass running/suspended as VALUES so a flip
-                                // changes the SessionRow value → body re-evals
-                                // in place (same identity, no cell rebuild).
-                                isActive: sidebarActivityTracker.isActive(session.id),
-                                isSuspended: sidebarConcurrencyManager.isSuspended(session.id),
-                                highlightQuery: isSearching ? searchText : nil,
-                                matchSnippet: isSearching ? searchMatchSnippets[session.id] : nil
-                            )
-                                // [T-ios-session-list-equatable-jank] Gate
-                                // parent-driven re-eval on SessionRow's cheap
-                                // custom == (rendered fields only), so a
-                                // transaction flush from unrelated ContentView
-                                // state churn doesn't deep-compare ChatSession.
-                                .equatable()
-                                // Entry D: long-press then move = drag the
-                                // session id (never the ChatSession value —
-                                // same id-only discipline as the list
-                                // projection and the menu's value-semantics
-                                // constraint). The SYSTEM arbitrates against
-                                // .contextMenu on the same press: hold still →
-                                // menu, hold then move → drag. Do not replace
-                                // with a hand-rolled gesture sequence — the
-                                // gesture layer is where system gestures are
-                                // beaten (see the WebView sheet-dismiss fix).
-                                .overlay {
-                                    if regeneratingTitleSessionId == session.id {
-                                        ZStack {
-                                            Color(.systemBackground).opacity(0.7)
-                                            ProgressView()
-                                        }
-                                    }
-                                }
-                                // [T-ios-selected-session-contextmenu] Attach the
-                                // contextMenu to the row CONTENT, not to the list-row
-                                // modifier chain. On iPadOS / macOS this List uses
-                                // `List(selection:)` + `.tag()`; the currently-selected
-                                // row's selection gesture swallows the long-press (iPad)
-                                // / right-click (mac), so a contextMenu placed at the
-                                // list-row level never fires for the open session
-                                // (GH#30 / TG36272). Binding it to the SessionRow view
-                                // itself puts it below the selection layer, so it
-                                // triggers on every row regardless of selection state.
-                                // iPhone uses `stackList` (no selection:) and is
-                                // unaffected.
-                                .contextMenu {
-                                    // [T-ios-ipad-new-session-contextmenu-broken / GH#30]
-                                    // The selected new-chat row keeps the DRAFT id as its
-                                    // tag even after the user sends a message and the
-                                    // session is persisted (displaySessions swaps in a
-                                    // proxy with realSession data under the draft id, so
-                                    // List(selection:) stays matched). The old guard
-                                    // `if !isNewSessionId(session.id)` then suppressed the
-                                    // context menu for that row forever — until the user
-                                    // switched away and the id resolved to the real one.
-                                    // Fix: a draft row that has already been persisted
-                                    // (newSessionRealId != nil) is a real, operable
-                                    // session — surface the menu, targeting the REAL id.
-                                    // Only a truly empty, never-sent draft (no realId)
-                                    // still has no menu.
-                                    // [T-ios-crash-contextmenu-uaf] Value-only menu, no closure.
-                                    let menuSid = Self.isNewSessionId(session.id)
-                                        ? newSessionRealId
-                                        : session.id
-                                    if let menuSid {
-                                        SessionContextMenu(
-                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, filed: session.isFiled),
-                                            actions: menuActions
-                                        )
-                                        .equatable()
-                                    }
-                                }
-                                .tag(session.id)
-                                .listRowInsets(EdgeInsets())
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(
-                                    ZStack {
-                                        if group.folderId != nil {
-                                            let isLast = sessionId == group.ids.last
-                                            FolderMemberRowBackground(isLast: isLast)
-                                            // Flush selection band inside the group;
-                                            // the last member's band takes the
-                                            // container's bottom radii so it stays
-                                            // wrapped by the corners.
-                                            if isSessionHighlighted(session.id) {
-                                                UnevenRoundedRectangle(
-                                                    topLeadingRadius: 0,
-                                                    bottomLeadingRadius: isLast ? 16 : 0,
-                                                    bottomTrailingRadius: isLast ? 16 : 0,
-                                                    topTrailingRadius: 0,
-                                                    style: .continuous
-                                                )
-                                                .fill(Color(red: 183/255.0, green: 175/255.0, blue: 150/255.0).opacity(0.3))
-                                                .padding(.horizontal, 6)
-                                                .padding(.bottom, isLast ? 4 : 0)
-                                            }
-                                        } else {
-                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                                .fill(isSessionHighlighted(session.id)
-                                                      ? Color(red: 183/255.0, green: 175/255.0, blue: 150/255.0).opacity(0.3)
-                                                      : Color.clear)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                        }
-                                    }
-                                )
-                        }
-                        }  // if let session
-                    }
-                } header: {
-                    // Folder groups render their card as the section's first
-                    // ROW (above); the header slot serves the date buckets,
-                    // the select-mode select-all, and — on the first folder
-                    // group only — the "Groups" divider label.
-                    if group.folderId == nil || isSelecting {
-                        sectionHeader(index: index, group: group)
-                    } else if group.showsGroupsHeader {
-                        Text("Groups")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Color(UIColor.secondaryLabel))
-                            .textCase(nil)
-                    }
-                }
             }
 
         }
@@ -3302,12 +2902,6 @@ struct ContentView: View {
                     .overlay(alignment: .leading) {
                         if canOpenSync {
                             Button {
-                                activeToolSheet = .syncMigrationDetail
-                            } label: {
-                                titleSyncIndicator(for: migrationSubtitle)
-                                    .contentShape(Rectangle())
-                                    .padding(4)
-                            }
                             .buttonStyle(.plain)
                             .offset(x: -27)
                         }
@@ -3326,10 +2920,6 @@ struct ContentView: View {
 
                 if canOpenSync {
                     Button {
-                        activeToolSheet = .syncMigrationDetail
-                    } label: {
-                        titleLabel
-                    }
                     .buttonStyle(.plain)
                 } else {
                     titleLabel
@@ -3344,10 +2934,6 @@ struct ContentView: View {
                 }
             } else {
                 Button {
-                    activeToolSheet = .settings
-                } label: {
-                    Image(systemName: "gear")
-                }
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -3361,55 +2947,11 @@ struct ContentView: View {
                 }
             } else if hasAlarms {
                 Button {
-                    showAlarmList = true
-                } label: {
-                    Image(systemName: "alarm")
-                        .font(.system(size: 15, weight: .medium))
-                }
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
             if !isSelecting {
                 Menu {
-                    Button {
-                        showTerminal = true
-                    } label: {
-                        Label("Shell Terminal", systemImage: "terminal")
-                    }
-                    Button {
-                        activeToolSheet = .rootfsManagement
-                    } label: {
-                        Label("Rootfs Management", systemImage: "externaldrive")
-                    }
-                    Divider()
-                    Button {
-                        activeToolSheet = .browser
-                    } label: {
-                        Label("Open Browser", systemImage: "globe")
-                    }
-                    Button {
-                        activeToolSheet = .browserManagement
-                    } label: {
-                        Label("Browser Settings", systemImage: "globe.badge.chevron.backward")
-                    }
-                    #if DEBUG
-                    Divider()
-                    // [debug] Keep Screen Awake — disables auto-lock while the app
-                    // is foregrounded. Tap toggles; a checkmark shows the current
-                    // state. Memory-only (not persisted). DEBUG builds only.
-                    Button {
-                        keepScreenAwake.toggle()
-                        UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
-                    } label: {
-                        Label("Keep Screen Awake", systemImage: keepScreenAwake ? "checkmark.circle.fill" : "sun.max")
-                    }
-                    #endif
-                } label: {
-                    Image("TerminalCircle")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 24, height: 24)
-                }
             }
         }
     }
@@ -3806,36 +3348,6 @@ struct ContentView: View {
         ForEach(deviceSections, id: \.deviceId) { entry in
             let _ = syncLog.info("[iCloud] rendering section for device=\(entry.deviceId) name=\(entry.name) sessions=\(entry.ids.count)")
             Section {
-                ForEach(entry.ids, id: \.self) { sessionId in
-                    if let session = byId["\(entry.deviceId):\(sessionId)"] {
-                        NavigationLink(value: "remote:\(entry.deviceId):\(session.id)") {
-                            RemoteSessionRow(session: session)
-                        }
-                        .listRowInsets(EdgeInsets())
-                        .listRowSeparator(.hidden)
-                        .contextMenu {
-                            Button {
-                                // [T-ios-state-publish-offmain-crash] @MainActor
-                                // so the @State write stays on the main thread.
-                                let sid = session.id
-                                let deviceId = entry.deviceId
-                                Task { @MainActor in
-                                    if let forked = await SessionForkManager.shared.forkSession(
-                                        remoteSessionId: sid, remoteDeviceId: deviceId
-                                    ) {
-                                        refreshSessionList()
-                                        selectedSessionId = forked.id
-                                    }
-                                }
-                            } label: {
-                                Label("Fork Session", systemImage: "arrow.branch")
-                            }
-                        }
-                    }
-                }
-            } header: {
-                Label(entry.name, systemImage: "iphone")
-            }
         }
     }
 
@@ -4374,35 +3886,6 @@ struct ContentView: View {
                 dragOffset: $fabDragOffset,
                 didDrag: $fabDidDrag
             ) {
-                if !fabDidDrag { openSession(Self.makeNewSessionId()) }
-            } label: {
-                fabCircleSurface(
-                    tint: Self.newChatGlassTint,
-                    fallbackFill: Self.newChatBrandColor,
-                    fallbackShadowOpacity: 0.2
-                ) {
-                    Image(systemName: {
-                        if #available(iOS 17.0, *) { return "bubble.left.and.text.bubble.right" }
-                        return "plus.message.fill"
-                    }())
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(Self.newChatIconColor)
-                }
-                    .contextMenu {
-                        let groups = Array(ProviderConfigStore.shared.config.modelGroups.prefix(10))
-                        if !groups.isEmpty {
-                            Section(AppLocalized("New Chat with Group")) {
-                                ForEach(groups) { group in
-                                    Button {
-                                        openSession(Self.makeNewSessionId(groupId: group.id))
-                                    } label: {
-                                        Label(group.name, systemImage: "square.stack.3d.up")
-                                    }
-                                }
-                            }
-                        }
-                    }
-            }
 
             // Search FAB or inline search bar (hidden when no sessions)
             if !sessions.isEmpty {
@@ -4474,21 +3957,6 @@ struct ContentView: View {
                         didDrag: $searchDidDrag,
                         inverted: true
                     ) {
-                        if !searchDidDrag {
-                            withAnimation(.easeInOut(duration: 0.2)) { showSearchBar = true }
-                        }
-                    } label: {
-                        fabCircleSurface(
-                            tint: nil,
-                            fallbackFill: Color(UIColor.secondarySystemBackground),
-                            fallbackShadowOpacity: 0.15
-                        ) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.system(size: 22, weight: .semibold))
-                                .foregroundStyle(Color(UIColor.label))
-                        }
-                            .modifier(FABGlassMorphID(namespace: fabGlassNamespace))
-                    }
                     .transition(.asymmetric(
                         insertion: .scale(scale: 0.85, anchor: fabOnLeft ? .leading : .trailing).combined(with: .opacity),
                         removal: .scale(scale: 0.85, anchor: fabOnLeft ? .leading : .trailing).combined(with: .opacity)
@@ -4504,20 +3972,6 @@ struct ContentView: View {
 
     private func selectableRow(_ session: ChatSession) -> some View {
         Button {
-            if selectedIds.contains(session.id) {
-                selectedIds.remove(session.id)
-            } else {
-                selectedIds.insert(session.id)
-            }
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: selectedIds.contains(session.id) ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 22))
-                    .foregroundStyle(selectedIds.contains(session.id) ? Color.accentColor : Color(UIColor.tertiaryLabel))
-                SessionRow(session: session)
-            }
-            .padding(.leading, 16)
-        }
         .buttonStyle(.plain)
     }
 
@@ -4529,31 +3983,6 @@ struct ContentView: View {
             let groupIds = Set(group.ids)
             let allSelected = !groupIds.isEmpty && groupIds.isSubset(of: selectedIds)
             Button {
-                if allSelected {
-                    selectedIds.subtract(groupIds)
-                } else {
-                    selectedIds.formUnion(groupIds)
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: allSelected ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 18))
-                        .foregroundStyle(allSelected ? Color.accentColor : Color(UIColor.tertiaryLabel))
-                    // group.label is a stable English key (used for logic like
-                    // == "Pinned"); localize only at display via LocalizedStringKey.
-                    // Folder names are user data — render verbatim, not as a key.
-                    if group.folderId != nil {
-                        Text(group.label)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Color(UIColor.secondaryLabel))
-                    } else {
-                        Text(LocalizedStringKey(group.label))
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Color(UIColor.secondaryLabel))
-                    }
-                }
-                .textCase(nil)
-            }
             .buttonStyle(.plain)
         } else if index > 0 || group.label == "Pinned" {
             HStack(spacing: 4) {
@@ -4576,18 +4005,6 @@ struct ContentView: View {
             // Dropping on a date-bucket header moves the sessions OUT of any
             // folder — the drag gesture works both directions, otherwise
             // moving out would still require a trip through the menu.
-                Task { @MainActor in
-                    await ChatStore.shared.setFolder(nil, forSessions: sessionIds)
-                    refreshSessionList()
-                }
-                return true
-            } isTargeted: { over in
-                if over {
-                    dropTargetFolderId = ""
-                } else if dropTargetFolderId == "" {
-                    dropTargetFolderId = nil
-                }
-            }
         }
     }
 
@@ -4782,70 +4199,21 @@ struct ContentView: View {
         // ScrollViewReader anchor for the mini-bar's "back to header" jump.
         .id("folderHeader-\(group.folderId ?? "")")
         .listRowInsets(EdgeInsets())
-            guard let fid = group.folderId else { return false }
-            Task { @MainActor in
-                await ChatStore.shared.setFolder(fid, forSessions: sessionIds)
-                refreshSessionList()
-            }
-            return true
-        } isTargeted: { over in
-            if over {
-                dropTargetFolderId = group.folderId
-            } else if dropTargetFolderId == group.folderId {
-                dropTargetFolderId = nil
-            }
-        }
         .contextMenu {
             if let fid = group.folderId, let folder = folders.first(where: { $0.id == fid }) {
                 Button {
-                    Task { @MainActor in
-                        await ChatStore.shared.toggleFolderPin(fid)
-                        refreshSessionList()
-                    }
-                } label: {
-                    Label(LocalizedStringKey(folder.isPinned ? "Unpin" : "Pin"),
-                          systemImage: folder.isPinned ? "pin.slash" : "pin")
-                }
                 Button {
-                    renameFolderText = folder.name
-                    // [T-folder-rename-desc-wipe] Seed the description too.
-                    // Both fields are shared @State that outlive the dialog, and
-                    // `onRename` ALWAYS passes the desc field through (empty
-                    // clears the stored value, by design). Leaving this unseeded
-                    // meant the field opened blank — or holding whatever was
-                    // typed for a previously renamed folder — so a rename that
-                    // only touched the NAME silently wiped that folder's
-                    // description. Repeat across folders and every description
-                    // disappears, which reads as "renaming one group overwrote
-                    // them all".
-                    renameFolderDesc = folder.desc ?? ""
-                    folderToRename = folder
-                } label: {
-                    Label("Rename Group", systemImage: "square.and.pencil")
-                }
                 Button {
-                    newChatInFolder(fid)
-                } label: {
-                    Label("New Chat in Group", systemImage: "plus.bubble")
-                }
                 Divider()
                 // Dissolve is deliberately NOT destructive-tinted: it touches
                 // no user data (sessions move back to the main list). Tinting
                 // it red would train the eye to read it as the deleting item.
                 Button {
-                    folderToDissolve = folder
-                } label: {
-                    Label("Dissolve Group", systemImage: "folder.badge.minus")
-                }
                 Divider()
                 // The one destructive item, last, with the count in the title
                 // so the consequence is visible in the menu itself, not only
                 // in the confirmation sheet.
                 Button(role: .destructive) {
-                    requestDeleteFolderWithSessions(folder)
-                } label: {
-                    Label("Delete Group & \(group.totalCount) Sessions", systemImage: "trash")
-                }
             }
         }
     }
@@ -4911,40 +4279,9 @@ struct ContentView: View {
     private var selectionToolbar: some View {
         HStack(spacing: 0) {
             Menu {
-                Button {
-                    exportSessions(ids: selectedIds, format: .json)
-                } label: {
-                    Label("JSON", systemImage: "doc.text")
-                }
-                Button {
-                    exportSessions(ids: selectedIds, format: .plainText)
-                } label: {
-                    Label("Plain Text", systemImage: "text.alignleft")
-                }
-            } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 20))
-                    Text("Export")
-                        .font(.caption2)
-                }
-                .frame(maxWidth: .infinity)
-            }
             .disabled(selectedIds.isEmpty)
 
             Button {
-                let anyFiled = sessions.contains { selectedIds.contains($0.id) && $0.isFiled }
-                folderPickerRequest = FolderPickerRequest(
-                    sessionIds: selectedIds, fromMultiSelect: true, anyFiled: anyFiled)
-            } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 20))
-                    Text("Move")
-                        .font(.caption2)
-                }
-                .frame(maxWidth: .infinity)
-            }
             .disabled(selectedIds.isEmpty)
 
             // Force Sync is gated to iOS 17+ — CloudKit features (queryable
@@ -4955,42 +4292,10 @@ struct ContentView: View {
             // entry entirely when iCloud sync is off.
             if #available(iOS 17.0, *), iCloudSyncEnabled {
                 Button {
-                    runForceSyncOnSelection()
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: forceSyncInFlight ? "arrow.triangle.2.circlepath" : "icloud.and.arrow.up")
-                            .font(.system(size: 20))
-                        Text("Force Sync")
-                            .font(.caption2)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
                 .disabled(selectedIds.isEmpty || forceSyncInFlight)
             }
 
             Button(role: .destructive) {
-                deleteInfo = nil
-                isComputingDelete = true
-                showDeleteConfirm = true
-                let ids = selectedIds
-                let totalSessions = sessions.count
-                Task { @MainActor in
-                    let info = await Task.detached {
-                        Self.computeDeleteInfo(for: ids, totalSessions: totalSessions)
-                    }.value
-                    deleteInfo = info
-                    isComputingDelete = false
-                }
-            } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 20))
-                    Text("Delete")
-                        .font(.caption2)
-                }
-                .frame(maxWidth: .infinity)
-                .foregroundStyle(selectedIds.isEmpty ? Color.gray : Color.red)
-            }
             .disabled(selectedIds.isEmpty)
         }
         .padding(.vertical, 10)
@@ -5666,24 +4971,10 @@ private struct DeleteConfirmSheet: View {
                     // Buttons
                     VStack(spacing: 10) {
                         Button(role: .destructive) {
-                            onDelete()
-                            dismiss()
-                        } label: {
-                            Text("Delete (\(info.formattedSize))")
-                                .font(.body.bold())
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                        }
                         .buttonStyle(.borderedProminent)
                         .tint(.red)
 
                         Button {
-                            dismiss()
-                        } label: {
-                            Text("Cancel")
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                        }
                         .buttonStyle(.bordered)
                     }
                     .padding(.horizontal, 20)
@@ -6059,42 +5350,12 @@ private struct SessionContextMenu: View, Equatable {
 
     var body: some View {
         Button {
-            actions.send(.togglePin(key.sid))
-        } label: {
-            Label(LocalizedStringKey(key.pinned ? "Unpin" : "Pin"),
-                  systemImage: key.pinned ? "pin.slash" : "pin")
-        }
         Menu {
-            Button {
-                actions.send(.exportJSON(key.sid))
-            } label: {
-                Label("JSON", systemImage: "doc.text")
-            }
-            Button {
-                actions.send(.exportText(key.sid))
-            } label: {
-                Label("Plain Text", systemImage: "text.alignleft")
-            }
-        } label: {
-            Label("Export", systemImage: "square.and.arrow.up")
-        }
         Button {
-            actions.send(.editTitle(key.sid))
-        } label: {
-            Label("Edit Title & Category", systemImage: "square.and.pencil")
-        }
         Button {
-            actions.send(.regenerateTitle(key.sid))
-        } label: {
-            Label("Regenerate Title", systemImage: "arrow.triangle.2.circlepath")
-        }
         if BiometricAuth.isAvailable {
             if SessionLockStore.shared.isLocked(key.sid) {
                 Button {
-                    actions.send(.unlockSession(key.sid))
-                } label: {
-                    Label("Remove \(BiometricAuth.biometryDisplayName) Lock", systemImage: "lock.open")
-                }
             } else if SessionLockStore.shared.globalEnabled {
                 Button {
                     actions.send(.lockSession(key.sid))

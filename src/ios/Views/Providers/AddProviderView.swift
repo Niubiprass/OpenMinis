@@ -88,13 +88,6 @@ struct AIDataSharingConsentView: View {
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 10) {
                     Button {
-                        UserDefaults.standard.set(true, forKey: aiDataSharingConsentKey)
-                        onAccept()
-                    } label: {
-                        Text("I Understand & Agree")
-                            .font(.body.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                    }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
 
@@ -293,10 +286,6 @@ struct AddProviderView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 if selectedType != nil {
                     Button {
-                        requestExit()
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
                     .accessibilityLabel(Text("Cancel"))
                 }
             }
@@ -346,12 +335,6 @@ struct AddProviderView: View {
             handleImport(result)
         }
         .alert(AppLocalized("Import"), isPresented: $showImportResult) {
-            Button("OK") {
-                if importSucceeded { dismiss() }
-            }
-        } message: {
-            if let msg = importMessage { Text(msg) }
-        }
         .onAppear {
             if !consentAccepted && store.instances.isEmpty {
                 showDataSharingConsent = true
@@ -408,43 +391,6 @@ struct AddProviderView: View {
     @ViewBuilder
     private var typePickerSection: some View {
         Section {
-            ForEach(visibleProviderTypes, id: \.self) { type in
-                Button {
-                    selectedType = type
-                    // Only seed the label when the user hasn't typed
-                    // their own. Without this guard, switching back and
-                    // forth between provider types silently overwrites
-                    // a Chinese / custom label the user just entered.
-                    if !labelEdited {
-                        labelInput = defaultLabel(for: type)
-                    }
-                } label: {
-                    HStack(spacing: 12) {
-                        providerIcon(type)
-                            .frame(width: 32, height: 32)
-                            .background(providerColor(type).opacity(0.12))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(providerPickerLabel(type))
-                                .font(.body.weight(.medium))
-                                .foregroundStyle(Color(UIColor.label))
-                            Text(type.pickerSubtitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Spacer()
-
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-        } header: {
-            Text("Choose Provider")
-        } footer: {
             VStack(alignment: .leading, spacing: 4) {
                 Text("You can add multiple instances of the same provider (e.g. work and personal accounts).")
                 Text("OpenAI and Anthropic also work with compatible third-party endpoints — set a custom API Base URL after choosing the matching protocol.")
@@ -454,31 +400,6 @@ struct AddProviderView: View {
         voiceProviderSection
 
         Section {
-            Button {
-                showImportFile = true
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.body)
-                        .frame(width: 32, height: 32)
-                        .foregroundStyle(Color.accentColor)
-                        .background(Color.accentColor.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                    Text("Or Import Provider from File")
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(Color(UIColor.label))
-
-                    Spacer()
-
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-        } footer: {
-            Text("Import a provider configuration that was exported from another device.")
-        }
     }
 
     /// Voice-specialised vendor templates. Tapping one preseeds the standard
@@ -488,38 +409,6 @@ struct AddProviderView: View {
         let templates = VoiceProviderTemplate.all
         let notes = templates.compactMap { $0.note }
         Section {
-            ForEach(templates) { template in
-                Button {
-                    applyVoiceTemplate(template)
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: template.symbol)
-                            .font(.body)
-                            .foregroundStyle(template.tint)
-                            .frame(width: 32, height: 32)
-                            .background(template.tint.opacity(0.12))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(template.name)
-                                .font(.body.weight(.medium))
-                                .foregroundStyle(Color(UIColor.label))
-                            Text(template.capability)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Spacer()
-
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-        } header: {
-            Text("Voice Chat Providers")
-        } footer: {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Speech-to-text and text-to-speech vendors. The provider type and base URL are prefilled — just add your API key.")
                 ForEach(notes, id: \.self) { note in
@@ -548,39 +437,6 @@ struct AddProviderView: View {
     private var credentialPickerSection: some View {
         Group {
             Section {
-                if let type = selectedType {
-                    let creds = availableCredentials(for: type)
-                    ForEach(creds, id: \.self) { cred in
-                        Button {
-                            selectedCredential = cred
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: cred == .apiKey ? "key" : "person.badge.shield.checkmark")
-                                    .font(.body)
-                                    .frame(width: 28)
-                                    .foregroundStyle(Color(UIColor.label))
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(cred == .apiKey ? "API Key" : "OAuth")
-                                        .font(.body.weight(.medium))
-                                        .foregroundStyle(Color(UIColor.label))
-                                    Text(credentialDescription(type: type, credential: cred))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                Spacer()
-
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                }
-            } header: {
-                Text("Authentication")
-            }
 
             // "Responses API" is now integrated as API Format picker in Step 3
         }
@@ -641,55 +497,6 @@ struct AddProviderView: View {
     private var apiKeySection: some View {
         Group {
             Section {
-                    HStack {
-                        if showApiKeyPlaintext {
-                            TextField(keyPlaceholder, text: $apiKeyInput)
-                                .font(.system(.body, design: .monospaced))
-                                // [T-provider-label-keyboard] Same opt-out as the
-                                // SecureField below — the plaintext branch is the
-                                // SAME field, so leaving it undeclared would let
-                                // AutoFill re-attach the moment the user taps the
-                                // eye toggle.
-                                .textContentType(.oneTimeCode)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                        } else {
-                            SecureField(keyPlaceholder, text: $apiKeyInput)
-                                // [T-provider-label-keyboard] Opt the credential
-                                // field OUT of AutoFill's password association.
-                                //
-                                // An undeclared SecureField carries `.password`
-                                // semantics, which makes iOS treat the enclosing
-                                // form as a login form and go looking for the
-                                // matching USERNAME field. It picks the nearest
-                                // preceding text field — here that is "Label" —
-                                // and hangs the "密码 / Password" AutoFill bar on
-                                // it, which is what the user sees and reports as
-                                // "the Label field opens a password keyboard".
-                                //
-                                // The earlier attempt at this fixed the wrong end:
-                                // `.textContentType(.none)` on the Label field does
-                                // NOT opt out of being chosen as the username half
-                                // of a pair — the association is driven by the
-                                // password field, so the declaration has to go
-                                // here. `.oneTimeCode` is the reliable "this is a
-                                // credential, but not a saveable account password"
-                                // marker: it suppresses the strong-password /
-                                // save-to-Keychain flow and the username pairing,
-                                // while SecureField keeps doing the masking.
-                                .textContentType(.oneTimeCode)
-                        }
-                        Button {
-                            showApiKeyPlaintext.toggle()
-                        } label: {
-                            Image(systemName: showApiKeyPlaintext ? "eye.slash" : "eye")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } header: {
-                    Text("API Key")
-                } footer: {
                     Text("Your key is stored securely in the iOS Keychain and never leaves the device.")
                 }
 
@@ -700,33 +507,10 @@ struct AddProviderView: View {
             // API Format picker for OpenAI provider (hidden for voice-only templates)
             if !enteredViaVoiceTemplate, selectedType == .openAI || selectedType == .openAIResponses {
                 Section {
-                    Picker("API Format", selection: $useResponsesAPI) {
-                        Text("Chat Completions").tag(false)
-                        Text("Responses API").tag(true)
-                    }
-                } footer: {
-                    Text(useResponsesAPI
-                        ? "Uses /v1/responses endpoint format. Required for some Responses-API-only services."
-                        : "Standard /v1/chat/completions format. Compatible with most OpenAI-compatible services.")
-                }
             }
 
             Section {
                 Button {
-                    saveApiKeyInstance()
-                } label: {
-                    HStack {
-                        Spacer()
-                        if isSaving {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Text("Add Provider")
-                                .font(.body.weight(.semibold))
-                        }
-                        Spacer()
-                    }
-                }
                 .disabled((apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !emptyKeyAllowedForCurrentInput) || isSaving)
             }
         }
@@ -735,93 +519,10 @@ struct AddProviderView: View {
     @ViewBuilder
     private var oauthSection: some View {
         Section {
-            if pendingOAuthDone {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Authenticated")
-                        .font(.body.weight(.medium))
-                }
-
-                if let masked = oauthMaskedToken {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Token")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(masked)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if let authTime = oauthAuthTime {
-                    HStack {
-                        Text("Authorized")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(authTime, style: .date)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(authTime, style: .time)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } else {
-                Button {
-                    // Kimi uses a device-code sheet (RFC 8628); every other
-                    // provider drives its redirect/PKCE flow inline via startOAuth.
-                    if selectedType == .kimiCode {
-                        showKimiLogin = true
-                    } else {
-                        Task { await startOAuth() }
-                    }
-                } label: {
-                    HStack {
-                        Spacer()
-                        Text(oauthSignInLabel)
-                            .font(.body.weight(.semibold))
-                        Spacer()
-                    }
-                }
-            }
-        } header: {
-            Text("OAuth")
-        }
 
         // Manual OAuth entry — available for all providers (supports proxy services, Coding Plan tokens, etc.)
         if selectedType != .antigravity && !pendingOAuthDone {
             Section {
-                TextField(defaultBaseURL, text: $customBaseURLInput)
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-
-                SecureField("Bearer Token", text: $manualOAuthTokenInput)
-                    .font(.system(.body, design: .monospaced))
-                    // [T-provider-label-keyboard] Same AutoFill opt-out as the
-                    // API Key field — this SecureField is in the same form as
-                    // the Label field and would otherwise trigger the identical
-                    // username/password pairing.
-                    .textContentType(.oneTimeCode)
-
-                Button {
-                    saveManualOAuthInstance()
-                } label: {
-                    HStack {
-                        Spacer()
-                        Text("Add Provider")
-                            .font(.body.weight(.semibold))
-                        Spacer()
-                    }
-                }
-                .disabled(manualOAuthTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            } header: {
-                Text("Or Configure Manually")
-            } footer: {
                 Text("For third-party Coding Plans (e.g. MiniMax, Kimi) or compatible proxy endpoints, enter the API base URL and bearer token manually.")
             }
         }
@@ -829,15 +530,6 @@ struct AddProviderView: View {
         if pendingOAuthDone {
             Section {
                 Button {
-                    saveOAuthInstance()
-                } label: {
-                    HStack {
-                        Spacer()
-                        Text("Save Provider")
-                            .font(.body.weight(.semibold))
-                        Spacer()
-                    }
-                }
             }
         }
     }
@@ -846,19 +538,6 @@ struct AddProviderView: View {
 
     private var customBaseURLSection: some View {
         Section {
-            TextField(defaultBaseURL, text: $customBaseURLInput)
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-
-            if !enteredViaVoiceTemplate, selectedType != .gemini {
-                Toggle("Auto Append \"/v1\"", isOn: $appendV1SuffixInput)
-            }
-        } header: {
-            Text("Custom API Base (Optional)")
-        } footer: {
             if enteredViaVoiceTemplate {
                 Text("The voice service endpoint URL.")
             } else if selectedType == .gemini {

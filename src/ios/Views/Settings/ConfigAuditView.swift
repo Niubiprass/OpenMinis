@@ -59,13 +59,6 @@ struct ConfigAuditView: View {
             titleVisibility: .visible,
             presenting: revertCandidate
         ) { entry in
-            Button("Revert", role: .destructive) {
-                performRevert(entry)
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: { entry in
-            Text("\(entry.key)\n\(displayJSON(entry.newValueJSON)) → \(displayJSON(entry.oldValueJSON))")
-        }
     }
 
     private func reload() {
@@ -103,27 +96,10 @@ struct ConfigAuditView: View {
 
             if let caption = entry.caption, !caption.isEmpty {
                 Label {
-                    Text(caption)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                } icon: {
-                    Image(systemName: "text.quote")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
             }
 
             if entry.status == .applied {
                 Button {
-                    revert(entry)
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.uturn.backward")
-                        Text("Revert")
-                    }
-                    .font(.caption)
-                }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(revertingId == entry.id)

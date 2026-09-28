@@ -56,36 +56,6 @@ struct MountedFoldersSettingsView: View {
                 }
             } else {
                 Section {
-                    ForEach(model.entries) { entry in
-                        NavigationLink {
-                            MountDetailView(
-                                context: detailContext(for: entry),
-                                onDismiss: { model.refresh() }
-                            )
-                        } label: {
-                            MountedFolderRow(
-                                entry: entry,
-                                state: model.state(for: entry.id),
-                                sourceURL: model.resolvedURL(for: entry.id)
-                            )
-                        }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                model.remove(id: entry.id)
-                            } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-                        }
-                    }
-                } header: {
-                    HStack {
-                        Text("Mounted Folders")
-                        Spacer()
-                        Text("\(model.entries.count) / \(MountedFoldersManager.maxMountCount)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(model.isAtCapacity ? .orange : .secondary)
-                    }
-                } footer: {
                     if model.isAtCapacity {
                         Text("Mount limit reached. Remove an existing mount before adding a new one.")
                             .foregroundStyle(.orange)
@@ -98,10 +68,6 @@ struct MountedFoldersSettingsView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
-                    showingPicker = true
-                } label: {
-                    Image(systemName: "plus")
-                }
                 .disabled(model.isAtCapacity)
             }
         }
@@ -161,12 +127,6 @@ struct MountedFoldersSettingsView: View {
             )
         }
         .alert(AppLocalized("Error"),
-               isPresented: Binding(get: { errorText != nil },
-                                    set: { if !$0 { errorText = nil } })) {
-            Button(AppLocalized("OK"), role: .cancel) { errorText = nil }
-        } message: {
-            Text(errorText ?? "")
-        }
     }
 
     /// Build the MountDetailView context for an external-mount entry.
@@ -338,21 +298,6 @@ private struct AddMountSheet: View {
             Form {
                 if let url = sourceURL {
                     Section {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Source path")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Text(url.path)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.primary)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(.vertical, 2)
-                    } footer: {
-                        Text("The path above is how iOS exposes the folder you picked. Use it to confirm which app this data belongs to.")
-                            .font(.caption2)
-                    }
                 }
 
                 Section(header: Text("Mount name")) {
@@ -365,19 +310,6 @@ private struct AddMountSheet: View {
                 }
 
                 Section {
-                    Toggle(isOn: $allowWrite) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Allow writes")
-                            Text(allowWrite
-                                ? AppLocalized("AI, shell, and Files browser can modify files in this mount.")
-                                : AppLocalized("This mount will be exposed as read-only. Useful for reference vaults you don't want the AI to touch."))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                } header: {
-                    Text("Permissions")
-                } footer: {
                     Text("You can change the write permission later from the mount details page.")
                         .font(.caption)
                 }

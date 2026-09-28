@@ -58,14 +58,6 @@ struct RootfsManagementView: View {
                 Section("Browse") {
                     Button(action: { showFileBrowser = true }) {
                         Label {
-                            Text("Browse Files")
-                        } icon: {
-                            Image(systemName: "folder.fill")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.white)
-                                .frame(width: 21, height: 21)
-                                .background(.blue, in: Circle())
-                        }
                     }
                 }
 
@@ -76,40 +68,16 @@ struct RootfsManagementView: View {
                 if !viewModel.isInstalled {
                     Button(action: { viewModel.install() }) {
                         Label {
-                            Text("Install Rootfs")
-                        } icon: {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.white)
-                                .frame(width: 21, height: 21)
-                                .background(.green, in: Circle())
-                        }
                     }
                     .disabled(viewModel.isProcessing)
                 } else {
                     Button(action: { viewModel.showResetConfirmation = true }) {
                         Label {
-                            Text("Reset Rootfs")
-                        } icon: {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.white)
-                                .frame(width: 21, height: 21)
-                                .background(.orange, in: Circle())
-                        }
                     }
                     .disabled(viewModel.isProcessing)
 
                     Button(action: { viewModel.showResetWithBackupConfirmation = true }) {
                         Label {
-                            Text("Reset & Backup User Data")
-                        } icon: {
-                            Image(systemName: "archivebox.fill")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.white)
-                                .frame(width: 21, height: 21)
-                                .background(.indigo, in: Circle())
-                        }
                     }
                     .disabled(viewModel.isProcessing)
                 }
@@ -117,14 +85,6 @@ struct RootfsManagementView: View {
                 if viewModel.hasBackup {
                     Button(action: { viewModel.restoreBackup() }) {
                         Label {
-                            Text("Restore User Data")
-                        } icon: {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.white)
-                                .frame(width: 21, height: 21)
-                                .background(.teal, in: Circle())
-                        }
                     }
                     .disabled(viewModel.isProcessing || !viewModel.isInstalled)
                 }
@@ -169,21 +129,7 @@ struct RootfsManagementView: View {
             viewModel.refresh()
         }
         .alert("Reset Rootfs?", isPresented: $viewModel.showResetConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Reset", role: .destructive) {
-                viewModel.resetRootfs(keepUserData: false)
-            }
-        } message: {
-            Text("This will delete the entire rootfs. All data will be lost. The app will need to restart to reinstall.")
-        }
         .alert("Reset with Backup?", isPresented: $viewModel.showResetWithBackupConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Reset & Backup", role: .destructive) {
-                viewModel.resetRootfs(keepUserData: true)
-            }
-        } message: {
-            Text("This will backup your /root directory, then reset the rootfs. You can restore the backup later.")
-        }
         .sheet(isPresented: $showFileBrowser) {
             NavigationView {
                 FileBrowserView(rootPath: RootfsManager.shared.dataPath, rootLabel: "/")

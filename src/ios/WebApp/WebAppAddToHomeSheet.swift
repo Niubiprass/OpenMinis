@@ -62,26 +62,6 @@ struct WebAppAddToHomeSheet: View {
                         }
                     }
                     Section {
-                        Button {
-                            saveAndOpenLauncher()
-                        } label: {
-                            HStack {
-                                Spacer()
-                                if opening {
-                                    ProgressView().tint(.white)
-                                } else {
-                                    Text("Continue in Safari")
-                                        .fontWeight(.semibold)
-                                }
-                                Spacer()
-                            }
-                        }
-                        .disabled(opening || titleInput.trimmingCharacters(in: .whitespaces).isEmpty)
-                        .listRowBackground(Color.accentColor)
-                        .foregroundStyle(.white)
-                    } footer: {
-                        Text("Safari will open the launcher page. Tap the Share button → Add to Home Screen to pin the icon.")
-                    }
                 }
             }
             .navigationTitle("Add to Home Screen")
@@ -101,17 +81,6 @@ struct WebAppAddToHomeSheet: View {
     private var unsupportedSection: some View {
         Section {
             Label {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Can't add this file")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Only files inside a session, the shared folder, or a mounted folder can be added to the Home Screen.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } icon: {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-            }
         }
     }
 
@@ -146,29 +115,6 @@ struct WebAppAddToHomeSheet: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
                 ForEach(LauncherCategory.allCases, id: \.self) { c in
                     Button {
-                        category = c
-                    } label: {
-                        VStack(spacing: 4) {
-                            ZStack {
-                                Circle()
-                                    .fill(c.color.opacity(0.22))
-                                    .frame(width: 44, height: 44)
-                                Image(systemName: c.symbol)
-                                    .font(.system(size: 20, weight: .semibold))
-                                    .foregroundStyle(c.color)
-                                if category == c {
-                                    Circle()
-                                        .strokeBorder(c.color, lineWidth: 2.5)
-                                        .frame(width: 44, height: 44)
-                                }
-                            }
-                            Text(c.label)
-                                .font(.caption2)
-                                .foregroundStyle(category == c ? c.color : .secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                        }
-                    }
                     .buttonStyle(.plain)
                 }
             }

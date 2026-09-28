@@ -48,10 +48,6 @@ struct ProviderInstanceDetailView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    showExportShare = true
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                }
             }
         }
         .sheet(item: $thinkingEditorRequest) { req in
@@ -87,13 +83,6 @@ struct ProviderInstanceDetailView: View {
             NavigationView {
                 Form {
                     Section {
-                        SecureField("Bearer token", text: $manualTokenInputText)
-                            .font(.system(.body, design: .monospaced))
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                    } footer: {
-                        Text("Paste the bearer token. Whitespace and newlines will be stripped automatically.")
-                    }
                 }
                 .navigationTitle("Manual Bearer Token")
                 .navigationBarTitleDisplayMode(.inline)
@@ -118,14 +107,6 @@ struct ProviderInstanceDetailView: View {
             }
         }
         .alert("Delete Provider", isPresented: $showDeleteConfirm) {
-            Button("Delete", role: .destructive) {
-                store.removeInstance(instanceId)
-                dismiss()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will remove the provider and all its model entries. API keys will be deleted from the Keychain.")
-        }
         .alert(
             AppLocalized("Delete Model"),
             isPresented: Binding(
@@ -134,16 +115,6 @@ struct ProviderInstanceDetailView: View {
             ),
             presenting: pendingDeleteModelEntry
         ) { entry in
-            Button("Delete", role: .destructive) {
-                store.removeEntry(entry.id)
-                pendingDeleteModelEntry = nil
-            }
-            Button("Cancel", role: .cancel) {
-                pendingDeleteModelEntry = nil
-            }
-        } message: { entry in
-            Text("Are you sure you want to delete \"\(entry.model.displayName)\"? This action cannot be undone.")
-        }
     }
 
     @ViewBuilder
@@ -166,10 +137,6 @@ struct ProviderInstanceDetailView: View {
 
             // MARK: Credential
             Section {
-                credentialSection(instance)
-            } header: {
-                Text("Credential")
-            } footer: {
                 Text(instance.credentialType == .apiKey
                      ? "API key is stored securely in the iOS Keychain."
                      : "OAuth tokens are stored per-instance in the iOS Keychain.")
@@ -195,39 +162,6 @@ struct ProviderInstanceDetailView: View {
             if (instance.providerType == .openAI || instance.providerType == .openAIResponses)
                 && instance.credentialType == .apiKey {
                 Section {
-                    Picker("API Format", selection: Binding(
-                        get: { instance.providerType == .openAIResponses },
-                        set: { useResponses in
-                            // Swap between .openAI and .openAIResponses
-                            // This requires recreating the instance since providerType is let.
-                            // Carry ALL other fields forward — otherwise switching the
-                            // format would silently reset imageEndpointMode / customUserAgent
-                            // / azureMode to their defaults. [T-ios-azure-openai]
-                            let newInstance = ProviderInstance(
-                                id: instance.id,
-                                label: instance.label,
-                                providerType: useResponses ? .openAIResponses : .openAI,
-                                credentialType: instance.credentialType,
-                                isEnabled: instance.isEnabled,
-                                createdAt: instance.createdAt,
-                                customBaseURL: instance.customBaseURL,
-                                appendV1Suffix: instance.appendV1Suffix,
-                                imageEndpointMode: instance.imageEndpointMode,
-                                imageEndpointResolved: instance.imageEndpointResolved,
-                                customUserAgent: instance.customUserAgent,
-                                azureMode: instance.azureMode
-                            )
-                            store.updateInstance(newInstance)
-                        }
-                    )) {
-                        Text("Chat Completions").tag(false)
-                        Text("Responses API").tag(true)
-                    }
-                } footer: {
-                    Text(instance.providerType == .openAIResponses
-                        ? "Uses /v1/responses endpoint format."
-                        : "Standard /v1/chat/completions format.")
-                }
             }
 
             // MARK: Azure OpenAI [T-ios-azure-openai]
@@ -275,37 +209,6 @@ struct ProviderInstanceDetailView: View {
 
             // MARK: Models
             Section {
-                modelListSection(instance)
-            } header: {
-                HStack {
-                    Text("Models")
-                    Spacer()
-                    // [T-mimo-shadow-voice] Refresh always available now — the
-                    // fetch never wipes voice seed entries (replaceEntries
-                    // preserves them), so even a vendor whose /v1/models omits its
-                    // voice models can safely refresh to pull its text models.
-                    do {
-                        Button {
-                            refreshModels(instance)
-                        } label: {
-                            if isFetchingModels {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "arrow.clockwise")
-                                    Text("Refresh")
-                                }
-                                .font(.caption)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Color.secondary.opacity(0.15), in: Capsule())
-                            }
-                        }
-                        .disabled(isFetchingModels)
-                    }
-                }
-            } footer: {
                 VStack(alignment: .leading, spacing: 4) {
                     // Source info (green)
                     if let source = fetchSource {
@@ -346,23 +249,6 @@ struct ProviderInstanceDetailView: View {
             // MARK: Voice Service (shadow)
             if store.hasVoiceModels(for: instance.id) {
                 Section {
-                    NavigationLink {
-                        ShadowVoiceProviderDetailView(instanceId: instance.id)
-                    } label: {
-                        HStack {
-                            Label("Voice Service", systemImage: "waveform")
-                            Spacer()
-                            if store.isVoiceShadowDisabled(instance.id) {
-                                Text("Hidden", comment: "Voice shadow disabled badge")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                } footer: {
-                    Text("Manage ASR/TTS models and Voice Services visibility.",
-                         comment: "Voice service section footer")
-                }
             }
 
             // MARK: Danger Zone
@@ -444,20 +330,11 @@ struct ProviderInstanceDetailView: View {
             }
 
             Button {
-                showKeyRevealed.toggle()
-            } label: {
-                Image(systemName: showKeyRevealed ? "eye.slash" : "eye")
-                    .foregroundStyle(.secondary)
-            }
             .buttonStyle(.plain)
         }
         .contextMenu {
             if let key = rawKey {
                 Button {
-                    UIPasteboard.general.string = key
-                } label: {
-                    Label("Copy API Key", systemImage: "doc.on.doc")
-                }
             }
         }
     }
@@ -540,28 +417,6 @@ struct ProviderInstanceDetailView: View {
     @ViewBuilder
     private func customBaseURLSection(_ instance: ProviderInstance) -> some View {
         Section {
-            TextField(customBaseURLPlaceholder(instance), text: $editingCustomBaseURL)
-                .font(.system(.body, design: .monospaced))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .onAppear { editingCustomBaseURL = instance.customBaseURL ?? "" }
-                .onSubmit { saveCustomBaseURL(instance) }
-                .onDisappear { saveCustomBaseURL(instance) }
-
-            // [T-mimo-shadow-voice] /v1 toggle always shown — instances are no
-            // longer classified voice-only; this is a normal endpoint setting.
-            Toggle("Auto Append \"/v1\"", isOn: Binding(
-                get: { instance.appendV1Suffix },
-                set: { newValue in
-                    var updated = instance
-                    updated.appendV1Suffix = newValue
-                    store.updateInstance(updated)
-                }
-            ))
-        } header: {
-            Text("Custom API Base")
-        } footer: {
             Text(instance.appendV1Suffix
                  ? "Leave empty to use the default endpoint. \"/v1\" is appended automatically — enter the base host only."
                  : "The URL is used verbatim. Include the full path up to (but not including) the endpoint, e.g. \"/chat/completions\".")
@@ -577,31 +432,10 @@ struct ProviderInstanceDetailView: View {
     // ?api-version, into Custom API Base). Off by default.
     private func azureModeSection(_ instance: ProviderInstance) -> some View {
         Section {
-            Toggle(AppLocalized("Azure OpenAI"), isOn: Binding(
-                get: { instance.azureMode },
-                set: { on in
-                    var updated = instance
-                    updated.azureMode = on
-                    store.updateInstance(updated)
-                }
-            ))
-        } footer: {
-            Text(AppLocalized("Use Azure OpenAI authentication (api-key header). Paste your full Azure endpoint into Custom API Base above, including the ?api-version=… query. Works with both API formats."))
-        }
     }
 
     private func customUserAgentSection(_ instance: ProviderInstance) -> some View {
         Section {
-            TextField(AppLocalized("Default"), text: $editingCustomUserAgent)
-                .font(.system(.body, design: .monospaced))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .onAppear { editingCustomUserAgent = instance.customUserAgent ?? "" }
-                .onSubmit { saveCustomUserAgent(instance) }
-                .onDisappear { saveCustomUserAgent(instance) }
-        } header: {
-            Text(AppLocalized("Custom User-Agent"))
-        } footer: {
             Text(AppLocalized("Override the User-Agent header sent to this endpoint. Leave empty to use the Minis default. Useful for relays that only accept specific clients (e.g. \"claude-cli/1.0\")."))
         }
     }
@@ -620,27 +454,6 @@ struct ProviderInstanceDetailView: View {
     @ViewBuilder
     private func imageEndpointSection(_ instance: ProviderInstance) -> some View {
         Section {
-            Picker(selection: Binding(
-                get: { instance.imageEndpointMode },
-                set: { newMode in
-                    var updated = instance
-                    updated.imageEndpointMode = newMode
-                    // User-forced mode supersedes any cached probe result.
-                    if newMode != .auto {
-                        updated.imageEndpointResolved = nil
-                    }
-                    store.updateInstance(updated)
-                }
-            )) {
-                Text("Auto").tag(ImageEndpointMode.auto)
-                Text("Images Generations").tag(ImageEndpointMode.imagesGenerations)
-                Text("Chat Completions").tag(ImageEndpointMode.chatCompletions)
-            } label: {
-                Text(AppLocalized("Image Endpoint"))
-            }
-        } header: {
-            Text(AppLocalized("Image Generation"))
-        } footer: {
             imageEndpointFooter(instance)
         }
     }
@@ -671,46 +484,6 @@ struct ProviderInstanceDetailView: View {
         let hasManualToken = ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") != nil
 
         Section {
-            if hasManualToken {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Manual Bearer Token")
-                            .font(.body)
-                        Text("Configured")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 8, height: 8)
-                }
-
-                HStack(spacing: 12) {
-                    Button("Change Token") {
-                        manualTokenInputText = ""
-                        showManualTokenInput = true
-                    }
-                    .font(.caption.weight(.medium))
-
-                    Button("Remove", role: .destructive) {
-                        ProviderKeychainHelper.deleteOAuthString(instanceId: instance.id, account: "manual-oauth-token")
-                        oauthRefreshTrigger.toggle()
-                    }
-                    .font(.caption.weight(.medium))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            } else {
-                Button("Set Manual Bearer Token") {
-                    manualTokenInputText = ""
-                    showManualTokenInput = true
-                }
-                .font(.caption.weight(.medium))
-            }
-        } header: {
-            Text("Manual Token")
-        } footer: {
             Text("Use a static bearer token instead of the OAuth sign-in flow. Useful with custom proxy endpoints.")
         }
     }
@@ -727,11 +500,6 @@ struct ProviderInstanceDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button {
-                    showAddCustomModel = true
-                } label: {
-                    Label("Add Custom Model", systemImage: "plus.circle")
-                        .font(.subheadline)
-                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
@@ -764,24 +532,10 @@ struct ProviderInstanceDetailView: View {
             }
             Spacer()
             Button {
-                var updated = entry
-                updated.isHidden = !entry.isHidden
-                store.updateEntry(updated)
-            } label: {
-                Image(systemName: entry.isHidden ? "eye.slash" : "eye")
-                    .font(.caption)
-                    .foregroundStyle(entry.isHidden ? .tertiary : .secondary)
-            }
             .buttonStyle(.plain)
             .frame(minWidth: 22, minHeight: 22)
 
             Button {
-                pendingDeleteModelEntry = entry
-            } label: {
-                Image(systemName: "trash")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
             .buttonStyle(.plain)
             .frame(minWidth: 22, minHeight: 22)
 
@@ -795,11 +549,6 @@ struct ProviderInstanceDetailView: View {
         }
         .contextMenu {
             Button {
-                UIPasteboard.general.string = "entry:\(entry.compositeKey)"
-                MinisToast.show(AppLocalized("Copied: \(entry.model.displayName)"))
-            } label: {
-                Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
-            }
         }
     }
 
@@ -1106,18 +855,6 @@ struct AddCustomModelSheet: View {
         NavigationView {
             List {
                 Section {
-                    TextField("Model ID (e.g. claude-3-opus-latest)", text: $modelId)
-                        .font(.system(.subheadline, design: .monospaced))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .onChange(of: modelId) { _ in duplicateError = nil }
-
-                    TextField("Display name (optional)", text: $displayName)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                } header: {
-                    Text("Model")
-                } footer: {
                     if let duplicateError {
                         Text(duplicateError)
                             .foregroundColor(.red)
@@ -1127,38 +864,14 @@ struct AddCustomModelSheet: View {
                 }
 
                 Section {
-                    HStack {
-                        Text(AppLocalized("Context Window"))
-                        Spacer()
-                        TextField("128000", text: $contextWindowText)
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .frame(maxWidth: 120)
-                    }
-                    Toggle(AppLocalized("Thinking"), isOn: $supportsThinking)
-                } header: {
-                    Text(AppLocalized("Capabilities"))
-                } footer: {
                     Text(AppLocalized("Context window size in tokens. Leave empty for default."))
                 }
 
                 Section {
-                    Toggle("Image input", isOn: $imageInput)
-                    Toggle("PDF input", isOn: $pdfInput)
-                    Toggle("Audio input", isOn: $audioInput)
-                    Toggle("Video input", isOn: $videoInput)
-                } header: {
-                    Text("Input Modality")
-                } footer: {
                     Text("Text input is always supported. Disable modalities the model doesn't actually support to prevent sending unsupported attachments.")
                 }
 
                 Section {
-                    Toggle("Image output", isOn: $imageOutput)
-                    Toggle("Audio output", isOn: $audioOutput)
-                } header: {
-                    Text("Output Modality")
-                } footer: {
                     Text("Enable for models that generate images (e.g. gpt-image-1, dall-e-3, flux) or audio (e.g. TTS models). Text output is always enabled.")
                 }
             }
@@ -1347,121 +1060,32 @@ struct ModelEntryDetailSheet: View {
 
                 if entry.isCustom {
                     Section {
-                        HStack {
-                            Text(AppLocalized("Context Window"))
-                            Spacer()
-                            TextField("128000", text: $contextWindowText)
-                                .keyboardType(.numberPad)
-                                .multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 120)
-                        }
-                        maxTokensField()
-                        Toggle(AppLocalized("Thinking"), isOn: $supportsThinking)
-                    } header: {
-                        Text(AppLocalized("Capabilities"))
-                    } footer: {
                         Text(AppLocalized("Context window and max output tokens in tokens. Leave empty for default."))
                     }
                 } else {
                     Section {
-                        HStack {
-                            Text(AppLocalized("Context Window"))
-                            Spacer()
-                            TextField(
-                                "\(entry.baseModel.contextWindowTokens)",
-                                text: $contextWindowText
-                            )
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .frame(maxWidth: 120)
-                        }
-
-                        maxTokensField()
-
-                        HStack {
-                            Text(AppLocalized("Thinking"))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            if supportsThinking {
-                                Label(AppLocalized("Supported"), systemImage: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                                    .labelStyle(.titleAndIcon)
-                            } else if entry.baseModel.supportsReasoning == false {
-                                Text(AppLocalized("Not Supported"))
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text(AppLocalized("Unknown"))
-                                    .foregroundStyle(.tertiary)
-                                Button(AppLocalized("Force Enable")) {
-                                    showForceThinkingAlert = true
-                                }
-                                .font(.caption)
-                                .buttonStyle(.bordered)
-                                .controlSize(.mini)
-                            }
-                        }
-                    } header: {
-                        Text(AppLocalized("Capabilities"))
-                    } footer: {
                         Text(AppLocalized("Leave Context Window empty to use auto-detected value. Leave Max Output Tokens empty to follow the provider default."))
                     }
                 }
 
                 Section {
-                    Toggle("Hidden", isOn: $isHidden)
-                } footer: {
-                    Text("Hidden models won't appear in the model picker.")
-                }
 
                 Section {
-                    Toggle("Image input", isOn: $imageInput)
-                    Toggle("PDF input", isOn: $pdfInput)
-                    Toggle("Audio input", isOn: $audioInput)
-                    Toggle("Video input", isOn: $videoInput)
-                } header: {
-                    Text("Input Modality")
-                } footer: {
                     Text("Text input is always enabled. Configure which additional input modalities this model supports.")
                 }
 
                 Section {
-                    Toggle("Image output", isOn: $imageOutput)
-                    Toggle("Audio output", isOn: $audioOutput)
-                } header: {
-                    Text("Output Modality")
-                } footer: {
                     Text("Enable for models that generate images (e.g. gpt-image-1, dall-e-3, flux) or audio (e.g. TTS models). Text output is always enabled.")
                 }
 
                 if !entry.isCustom && !entry.overrides.isEmpty {
                     Section {
-                        Button(role: .destructive) {
-                            showResetAlert = true
-                        } label: {
-                            HStack {
-                                Image(systemName: "arrow.counterclockwise")
-                                Text(AppLocalized("Reset to Default"))
-                            }
-                        }
-                    } footer: {
-                        Text(AppLocalized("Clear your customizations and restore the values reported by the provider."))
-                    }
                 }
 
                 // [T-ios-model-quick-test] Quick Test button at the bottom —
                 // standard tinted Section-row style (matches Add Custom Model /
                 // Delete Provider), fires a modality-matched smoke test.
                 Section {
-                    Button {
-                        AppLogger(category: "QuickTest").info("[QuickTest] button tapped model=\(entry.model.id)")
-                        showQuickTest = true
-                    } label: {
-                        Label(AppLocalized("Quick Test"), systemImage: "bolt.badge.checkmark")
-                    }
-                    .buttonStyle(.borderless)
-                } footer: {
-                    Text(AppLocalized("Run a quick test matching this model's main capability."))
-                }
             }
             .navigationTitle("Model Details")
             .navigationBarTitleDisplayMode(.inline)
@@ -1487,24 +1111,10 @@ struct ModelEntryDetailSheet: View {
                 AppLocalized("Force Enable Thinking"),
                 isPresented: $showForceThinkingAlert
             ) {
-                Button(AppLocalized("Enable"), role: .destructive) {
-                    supportsThinking = true
-                }
-                Button(AppLocalized("Cancel"), role: .cancel) {}
-            } message: {
-                Text(AppLocalized("The provider has not declared whether this model supports thinking. Force-enabling may cause errors — you can disable it or retry if needed."))
-            }
             .alert(
                 AppLocalized("Reset Model Settings"),
                 isPresented: $showResetAlert
             ) {
-                Button(AppLocalized("Reset"), role: .destructive) {
-                    resetToDefault()
-                }
-                Button(AppLocalized("Cancel"), role: .cancel) {}
-            } message: {
-                Text(AppLocalized("This will clear all customizations (including force-enabled thinking) and restore the provider's default values."))
-            }
         }
     }
 

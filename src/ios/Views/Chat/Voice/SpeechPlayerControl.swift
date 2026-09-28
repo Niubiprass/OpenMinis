@@ -496,57 +496,18 @@ struct SpeechPlayerControl: View {
             // Pause / resume — on = blue speaker, off = dimmed muted-speaker.
             // Speaker = MUTE toggle (temporary silence; capsule stays visible).
             Button {
-                state.isMuted.toggle(); bumpIdle()
-            } label: {
-                speakerGlyph(size: 15, ring: 28).frame(width: 28, height: 28)
-            }
             .buttonStyle(.plain)
 
             // Model chip (tap to switch the TTS model).
             Button {
-                showModelSelector = true; bumpIdle()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "waveform")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Text(modelLabel.isEmpty ? "Voice" : modelLabel)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                .frame(maxWidth: 130)
-            }
             .buttonStyle(.plain)
 
             // Speed chip (tap to cycle 1×→1.25×→1.5×→2×).
             Button {
-                state.nextSpeed(); bumpIdle()
-            } label: {
-                Text(Self.speedLabel(state.speechSpeed))
-                    .font(.caption2.weight(.bold))
-                    .lineLimit(1)
-                    .foregroundStyle(state.speechSpeed > 1.0 ? Color.accentColor : .secondary)
-                    // Fixed width sized for the widest label ("1.25×") so cycling
-                    // through speeds doesn't change the chip width (→ no jitter).
-                    .frame(width: 34)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Color.secondary.opacity(0.15)))
-            }
             .buttonStyle(.plain)
 
             // Close (turn read-replies off).
             Button {
-                state.disable()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, height: 24)
-            }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 14)

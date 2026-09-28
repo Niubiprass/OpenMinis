@@ -41,56 +41,15 @@ struct RootfsResetButton: View {
         }
         .disabled(isProcessing)
         .alert("Reset Rootfs?", isPresented: $showResetAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Reset", role: .destructive) {
-                performReset(keepBackup: false)
-            }
-        } message: {
-            Text("This will delete the entire rootfs. All data will be lost. The app will need to restart.")
-        }
         .alert("Reset with Backup?", isPresented: $showBackupAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Reset & Backup", role: .destructive) {
-                performReset(keepBackup: true)
-            }
-        } message: {
-            Text("This will backup /root directory before resetting. You can restore it later.")
-        }
     }
 
     private var compactButton: some View {
         Menu {
-            Button(action: { showResetAlert = true }) {
-                Label("Reset All", systemImage: "trash")
-            }
-
-            if showBackupOption {
-                Button(action: { showBackupAlert = true }) {
-                    Label("Reset & Backup", systemImage: "archivebox")
-                }
-            }
-        } label: {
-            Image(systemName: "arrow.clockwise.circle")
-                .imageScale(.large)
-                .foregroundColor(.red)
-        }
     }
 
     private var normalButton: some View {
         Menu {
-            Button(action: { showResetAlert = true }) {
-                Label("Reset All", systemImage: "trash")
-            }
-
-            if showBackupOption {
-                Button(action: { showBackupAlert = true }) {
-                    Label("Reset & Backup", systemImage: "archivebox")
-                }
-            }
-        } label: {
-            Label("Reset Rootfs", systemImage: "arrow.clockwise")
-                .foregroundColor(.red)
-        }
     }
 
     private var prominentButton: some View {

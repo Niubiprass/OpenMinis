@@ -729,13 +729,6 @@ struct AIChatView: View {
             }
         }
         .alert(AppLocalized("Force Pull Messages"), isPresented: $showForcePullConfirm) {
-            Button(AppLocalized("Pull from iCloud"), role: .destructive) {
-                runForcePull()
-            }
-            Button(AppLocalized("Cancel"), role: .cancel) {}
-        } message: {
-            Text(AppLocalized("This will delete all local messages for this chat and re-download them from iCloud. Local changes that haven't synced yet will be lost. Continue?"))
-        }
         // [T-ios-json-open-provider-import-prompt] Shared/opened Provider-export
         // JSON: let the user choose import-as-provider vs add-as-attachment.
         // Extracted into a single modifier so the body's type-check stays cheap.
@@ -780,66 +773,12 @@ struct AIChatView: View {
             }
         }
         .alert("Enhanced Cache", isPresented: $showEnhancedCacheAlert) {
-            Button("Enable") {
-                UserDefaults.standard.set(true, forKey: "enhancedCacheConfirmed")
-                cached.vm.enhancedCacheEnabled = true
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Enhanced cache extends the cache TTL from 5 minutes to 1 hour. Cache writes cost more (2x vs 1.25x base price), but cache reads remain cheap (0.1x). Recommended for long coding sessions where request gaps may exceed 5 minutes.")
-        }
         .alert(AppLocalized("Context Near Capacity"), isPresented: Binding(get: { vm.showCompactBeforeSendPrompt }, set: { vm.showCompactBeforeSendPrompt = $0 })) {
-            Button(AppLocalized("Compact & Send")) {
-                vm.compactAndSend()
-            }
-            // [T-chat-auto-compact-opt-in] One-tap opt-in: compact now AND
-            // remember (globally, UserDefaults "autoCompactOnThreshold") to
-            // auto-compact without prompting whenever the threshold fires in
-            // future conversations.
-            Button(AppLocalized("Compact & Enable Auto-Compact")) {
-                vm.autoCompactEnabled = true
-                vm.compactAndSend()
-            }
-            Button(AppLocalized("Cancel"), role: .cancel) {
-                vm.cancelCompactBeforeSend()
-            }
-        } message: {
-            Text(AppLocalized("Conversation context is nearly full. Compact the history to free up space before sending. Enabling auto-compact will do this automatically from now on."))
-        }
         .alert(AppLocalized("Context Full"), isPresented: Binding(get: { vm.showContextExhaustedPrompt }, set: { vm.showContextExhaustedPrompt = $0 })) {
-            Button(AppLocalized("New Session")) {
-                vm.showContextExhaustedPrompt = false
-                vm.cancelCompactBeforeSend()
-                NotificationCenter.default.post(name: .newChatRequested, object: nil)
-            }
-            Button(AppLocalized("Clear Chat"), role: .destructive) {
-                vm.showContextExhaustedPrompt = false
-                vm.cancelCompactBeforeSend()
-                vm.clearChat()
-            }
-            Button(AppLocalized("Cancel"), role: .cancel) {
-                vm.cancelCompactBeforeSend()
-            }
-        } message: {
-            Text(AppLocalized("The conversation context has reached its limit. Start a new session or clear the chat to continue."))
-        }
         // [T-new-chat-menu-entry] Streaming guard for the "…" menu's New Chat:
         // confirm → stop the running task, then create; cancel → stay put.
         .alert(AppLocalized("Task Running"), isPresented: $showNewChatStopConfirm) {
-            Button(AppLocalized("Stop & New Chat"), role: .destructive) {
-                vm.cancel()
-                NotificationCenter.default.post(name: .newChatRequested, object: nil)
-            }
-            Button(AppLocalized("Cancel"), role: .cancel) {}
-        } message: {
-            Text(AppLocalized("A task is running in this chat. Starting a new chat will stop it."))
-        }
         .alert(AppLocalized("Clear Chat"), isPresented: $showClearChatConfirm) {
-            Button(AppLocalized("Clear"), role: .destructive) { vm.clearChat() }
-            Button(AppLocalized("Cancel"), role: .cancel) {}
-        } message: {
-            Text(AppLocalized("All messages in this session will be permanently deleted."))
-        }
         // Bridge VM's slash-command "/clear" request into the local @State that
         // drives the confirmation alert above, so the menu and slash-command
         // entry points share one alert instance.
@@ -853,15 +792,6 @@ struct AIChatView: View {
             get: { compactConfirmMessageId != nil },
             set: { if !$0 { compactConfirmMessageId = nil } }
         )) {
-            Button(AppLocalized("Compact"), role: .destructive) {
-                if let id = compactConfirmMessageId {
-                    Task { await vm.compactBefore(id) }
-                }
-            }
-            Button(AppLocalized("Cancel"), role: .cancel) {}
-        } message: {
-            Text(AppLocalized("Messages above this point will be compacted into a summary. This cannot be undone."))
-        }
         .offloadPermissionDialog()
         .environment(\.openMinisURL, OpenMinisURLAction { url in
             handleMinisURLTap(url)
@@ -880,10 +810,6 @@ struct AIChatView: View {
             ),
             presenting: missingMinisFileName
         ) { _ in
-            Button(AppLocalized("OK"), role: .cancel) { missingMinisFileName = nil }
-        } message: { name in
-            Text(AppLocalized("\(name) is unavailable. It may have been deleted or not yet synced from iCloud."))
-        }
         .fullScreenCover(item: $imageGallery) { presentation in
             MessageImageGallery(items: presentation.items, startIndex: presentation.startIndex)
         }
@@ -1078,20 +1004,6 @@ struct AIChatView: View {
             }
         }
         .fullScreenCover(isPresented: $showTerminal) {
-            terminalInitCommand = nil
-        } content: {
-            NavigationView {
-                ISHTerminalView(sessionId: vm.sessionId, showCloseButton: true, initCommand: terminalInitCommand)
-                    .onAppear {
-                        if let sid = vm.sessionId {
-                            minisLogger.info("🔍MOUNT Terminal onAppear — re-mounting minis for session \(sid)")
-                            vm.mountMinis(for: sid)
-                        } else {
-                            minisLogger.info("🔍MOUNT Terminal onAppear — no sessionId, skipping mount")
-                        }
-                    }
-            }
-        }
         .fullScreenCover(isPresented: $showCamera, onDismiss: {
             minisLogger.info("[QuickAction] fullScreenCover(camera) onDismiss showCamera=\(showCamera)")
         }) {
@@ -2161,59 +2073,6 @@ struct AIChatView: View {
         // unchanged and the top-clip fix does not regress.
         return VStack(spacing: legacyLayout ? -3 : -2) {
             Button {
-                if let s = titlePillSession { titlePillEditSession = s }
-            } label: {
-                // [T-navbar-title-size 2026-05-18] iOS 18 and below render
-                // the principal toolbar in a tighter band than iOS 26's
-                // liquid-glass navbar — long CJK titles (e.g. a
-                // "Download and merge Twitter video" style CJK string)
-                // overflowed at 16pt on iPhone Mini/SE and
-                // wrapped under the trailing "…" button. Drop one point
-                // on legacy iOS so they fit cleanly; keep the iOS 26
-                // size unchanged.
-                Text(sessionTitle ?? soulName)
-                    // [T-navbar-title-size 2026-05-18 / -19 / -20] iOS 16-18
-                    // principal toolbar is a fixed ~44pt band sitting just
-                    // below the status bar with very little reserved padding.
-                    // A 3-line title stack at 16pt/.caption2/9pt overflowed
-                    // the band's top against the status-bar / Dynamic Island
-                    // cutoff (a tall CJK glyph clipped its top, then "?"
-                    // appeared because the glyph rect was outside the navbar
-                    // viewport). Iterative tightening:
-                    //   2026-05-18: 16 → 15pt + `padding(.top, 2)`
-                    //   2026-05-19: 15 → 13.5pt + `minimumScaleFactor(0.85)`
-                    //                 + `fixedSize(...)` + `padding(.top, 3)`
-                    //   2026-05-20: 13.5 → 13pt + drop padding(.top) to 0 +
-                    //                 outer VStack spacing -6 → -8. Earlier
-                    //                 attempts to push the stack DOWN with
-                    //                 more padding.top failed because SwiftUI
-                    //                 vertically CENTERS the .principal item
-                    //                 in the navbar — extra height clips
-                    //                 BOTH top and bottom equally, not just
-                    //                 the bottom. Net result: shrink the
-                    //                 total stack height instead, so it
-                    //                 naturally has breathing room above
-                    //                 and below.
-                    // iOS 26 path unchanged (16pt works inside liquid-glass).
-                    .font(.system(size: legacyLayout ? 13 : 16, weight: .semibold))
-                    .minimumScaleFactor(legacyLayout ? 0.85 : 1.0)
-                    .foregroundStyle(ChatColors.primaryText)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .fixedSize(horizontal: false, vertical: true)
-                    // [NavTitleTopClip 2026-07-23] Was 4pt on iOS 26 to shove
-                    // the title into the visible band, but combined with the
-                    // now-centered 46pt frame it pushed the title's top past
-                    // the clip line again. 4 → 2: the centered frame already
-                    // positions the stack correctly, and 2pt keeps a little
-                    // breathing room above the semibold cap height without
-                    // re-introducing the top crop.
-                    .padding(.top, legacyLayout ? 0 : 2)
-                    .onReceive(NotificationCenter.default.publisher(for: .soulMdChanged)) { _ in
-                        let n = SoulStore.cachedMetadata.name
-                        soulName = n.isEmpty ? "Minis" : n
-                    }
-            }
             .buttonStyle(.plain)
             .disabled(!canEditTitle)
 
@@ -2230,28 +2089,6 @@ struct AIChatView: View {
             VStack(spacing: legacyLayout ? -1 : 1) {
                 HStack(spacing: 4) {
                     Button {
-                        showModelPicker = true
-                    } label: {
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(isAuthed ? Color.green : Color.orange)
-                                .frame(width: 6, height: 6)
-                            if isGroupBound {
-                                Image(systemName: "square.stack.3d.up")
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(ChatColors.tertiaryText)
-                            }
-                            Text(modelName)
-                                .font(.caption2)
-                                .foregroundStyle(ChatColors.secondaryText)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 8, weight: .semibold))
-                                .foregroundStyle(ChatColors.tertiaryText)
-                        }
-                        .layoutPriority(-1)
-                    }
                     .buttonStyle(.plain)
                     // [T-ios-voiceover-labels] This label is assembled from a
                     // status dot, an optional group glyph, the model name and a
@@ -2303,33 +2140,6 @@ struct AIChatView: View {
                                 .padding(.bottom, legacyLayout ? 1 : 4)
                         }
                         Button {
-                            showModelPicker = true
-                        } label: {
-                            Text("\(detail.providerLabel) · \(detail.modelName)")
-                                .font(.system(size: 9))
-                                .foregroundStyle(ChatColors.secondaryText)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                // [NavTitleClip 2026-05-16] Reserve clearance
-                                // under the resolved-detail line so the final
-                                // glyph descenders ("g","p","y") don't touch
-                                // the navbar's bottom safe-area cutoff on
-                                // iOS 26. 2 → 4pt: 2 wasn't enough when text
-                                // included descenders ("Fake Hang 1" clipped
-                                // the lowered "1" stroke).
-                                // [T-navbar-title-model-gap] Legacy needs only
-                                // 1pt — the 4pt clearance is an iOS 26
-                                // liquid-glass-band requirement; on 16-18 it
-                                // was pure height waste, now traded into the
-                                // title→model gap (see the outer VStack).
-                                .padding(.bottom, legacyLayout ? 1 : 4)
-                                // Force vertical sizing to fit the full
-                                // glyph including descender so the line's
-                                // own frame doesn't crop before the navbar
-                                // gets a chance to lay it out.
-                                .fixedSize(horizontal: false, vertical: true)
-                                .layoutPriority(-1)
-                        }
                         .buttonStyle(.plain)
                         // Show the badge whenever thinking is enabled, and ALSO
                         // when it's Off but the active model supports deep
@@ -2702,25 +2512,12 @@ struct AIChatView: View {
                     // way up to the first turn, it hides — nothing further up.
                     if !vm.isAtFirstTurn {
                         Button {
-                            vm.forceScrollToTop.send()
-                        } label: {
-                            // arrow.up.to.line: "jump to a top anchor" reads truer
-                            // for the turn-walk / scroll-to-top action than a plain
-                            // chevron, and distinguishes it from the down button's
-                            // chevron.down. Available since iOS 16 (both our legacy
-                            // and iOS 26 floors).
-                            scrollFloatingButtonLabel("arrow.up.to.line")
-                        }
                         .transition(.opacity.combined(with: .scale(scale: 0.8)))
                     }
                     // Scroll to bottom — ORIGINAL behavior: shown whenever not
                     // near the bottom (within the 20pt nearBottom threshold), so
                     // it appears as soon as you leave the bottom.
                     Button {
-                        vm.forceScrollToBottom.send()
-                    } label: {
-                        scrollFloatingButtonLabel("chevron.down")
-                    }
                     .transition(.opacity.combined(with: .scale(scale: 0.8)))
                 }
                 .padding(.trailing, 4)
@@ -2804,10 +2601,6 @@ struct AIChatView: View {
                 // (ViewGraphGeometryObservers.needsUpdate SIGTRAP). The action
                 // also fires with the initial value, covering the old onAppear.
                 .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.size.height
-                } action: { newH in
-                    floatingBarHeight = newH
-                }
                 .onDisappear {
                     floatingBarHeight = 0
                 }
@@ -2860,23 +2653,6 @@ struct AIChatView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    guard let sid = sessionId, let devId = remoteDeviceId else { return }
-                    Task {
-                        if let forked = await SessionForkManager.shared.forkSession(
-                            remoteSessionId: sid, remoteDeviceId: devId
-                        ) {
-                            // Navigate to the forked session
-                            NotificationCenter.default.post(
-                                name: .sessionDidCreate,
-                                object: forked.id,
-                                userInfo: ["navigate": true]
-                            )
-                        }
-                    }
-                } label: {
-                    Label("Fork to Continue", systemImage: "arrow.branch")
-                        .font(.subheadline.weight(.medium))
-                }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
             }
@@ -3184,12 +2960,6 @@ struct AIChatView: View {
 
         if #available(iOS 17, *) {
             Menu {
-                Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
-                Button { showPhotoPicker = true } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
-                Button { showDocumentPicker = true } label: { Label("Add File", systemImage: "doc") }
-            } label: {
-                icon
-            }
         } else {
             Button { showAttachmentMenu = true } label: {
                 icon
@@ -3236,44 +3006,6 @@ struct AIChatView: View {
         let on = voiceOutput.isEnabled
         let muted = voiceOutput.isMuted
         return Button {
-            if on && !muted {
-                // Active → mute (temporary silence, capsule stays visible).
-                voiceOutput.isMuted = true
-            } else if on && muted {
-                // Muted → fully off (capsule hides).
-                vm.speakEnabled = false
-                VoiceOutputPreferences.isEnabled = false
-            } else {
-                // Off → turn on (resume last speed, un-muted).
-                voiceOutput.isMuted = false
-                vm.speakEnabled = true
-                VoiceOutputPreferences.isEnabled = true
-            }
-        } label: {
-            HStack(spacing: 5) {
-                // Fixed-width icon slot so the size stays constant when the glyph
-                // swaps between wave / slash.
-                // [T-ios-voiceover-labels] The glyph only mirrors the on/off
-                // state that the accessibilityValue below already announces,
-                // and the row carries visible text — so it is pure decoration
-                // for VoiceOver and would otherwise be read as
-                // "speaker wave 2 fill".
-                Image(systemName: (on && !muted) ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                    .font(.system(size: 12))
-                    .frame(width: 16)
-                    .accessibilityHidden(true)
-                Text("Read replies", comment: "Voice TTS toggle (compact)")
-                    .font(.subheadline)
-            }
-            .foregroundStyle(on ? Color.accentColor : .secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                Capsule().fill(on ? Color.accentColor.opacity(0.15)
-                                  : Color.secondary.opacity(0.10))
-            )
-            .fixedSize()
-        }
         .buttonStyle(.plain)
         // [T-ios-voiceover-labels] State goes in the VALUE, not the label:
         // folding "on"/"off" into the label would lose VoiceOver's own
@@ -3292,53 +3024,16 @@ struct AIChatView: View {
     /// `/` button that opens the slash command menu.
     private var slashMenuButton: some View {
         Button {
-            if vm.showSlashMenu {
-                vm.dismissSlashMenu()
-            } else {
-                vm.showSlashMenuOverInput()
-                inputFocused = true
-            }
-        } label: {
-            Text("/")
-                .font(.system(size: 18, weight: .semibold, design: .rounded))
-                .italic()
-                .foregroundStyle(ChatColors.secondaryText)
-                .frame(width: 34, height: 34)
-                .background(ChatColors.inputIconBg)
-                .clipShape(Circle())
-                .overlay(Circle().stroke(ChatColors.inputIconBorder, lineWidth: 0.5))
-        }
     }
 
     /// "Exit Edit Mode" capsule shown while editing a past message.
     private var editExitButton: some View {
         Button {
-            vm.cancelEdit()
-        } label: {
-            Text("Exit Edit Mode", comment: "Cancel message editing")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(ChatColors.secondaryText)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(ChatColors.inputIconBg)
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(ChatColors.inputIconBorder, lineWidth: 0.5))
-        }
     }
 
     /// Speech language badge shown only while recording.
     private var languageBadgeButton: some View {
         Button {
-            speechManager.showLanguagePicker = true
-        } label: {
-            Text(speechManager.languageLabel)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(ChatColors.secondaryText)
-                .frame(width: 34, height: 34)
-                .background(ChatColors.inputIconBg)
-                .clipShape(Circle())
-                .overlay(Circle().stroke(ChatColors.inputIconBorder, lineWidth: 0.5))
-        }
     }
 
     /// Mic button plus the attached language-picker sheet.
@@ -3697,154 +3392,6 @@ struct AIChatView: View {
             // old onAppear seeding AND its diagnostic log are preserved as
             // a single unified line.
             .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .global)
-            } action: { frame in
-                let newH = frame.size.height
-                // [voice-inputbar-padding-zero] Guard against transient 0.
-                guard newH > 0 else { return }
-
-                // [T-voice-inputbar-cross-session-bleed] During session
-                // transition animations, SwiftUI fires onGeometryChange for
-                // BOTH the outgoing and incoming AIChatView. The outgoing
-                // view's frame slides offscreen. Discard measurements from
-                // offscreen views to prevent a stale cross-session height from
-                // overwriting the correct one.
-                //
-                // [T-ipad-inputbar-height-zero] The test is "is this frame
-                // horizontally inside the WINDOW", not "is its minX near zero".
-                // The original form compared minX against ±25% of
-                // UIScreen.main.bounds.width, which silently assumed the chat
-                // pane starts at global x≈0 — true only on iPhone. In a split
-                // view (iPad / Mac Catalyst with the sidebar open) the pane is
-                // inset by the sidebar width, so minX is legitimately large,
-                // EVERY measurement failed the guard, the leading-edge seed
-                // never fired, and inputBarHeight stayed 0 forever. Since it is
-                // the message list's bottom inset, the list reserved no space
-                // and the last message was permanently stuck under the composer
-                // — unable to scroll into view. Compare against the host
-                // window's bounds (falling back to the screen) and accept any
-                // frame that overlaps it horizontally: an outgoing view mid-
-                // slide is pushed a full pane-width out and still fails, which
-                // is the behaviour the guard was actually written for.
-                // Measure the slide RELATIVE TO THE PANE, not to the screen. The
-                // outgoing view is pushed by ~a full pane width, so its offset
-                // from the settled x is huge; a genuine mid-animation frame of
-                // the incoming view is only tens of points off. Keeping the same
-                // ±25% ratio the original used reproduces the iPhone behaviour
-                // exactly (there, pane == screen), while a sidebar-inset pane on
-                // iPad / Mac now compares against its OWN left edge instead of
-                // global x≈0 — which is what made every frame look "offscreen".
-                let hostWindow = inputBarWindowBounds()
-                let paneW = frame.width > 1 ? frame.width : hostWindow.width
-                let tolerance = paneW * 0.25
-                let onscreen = frame.minX >= hostWindow.minX - tolerance
-                    && frame.maxX <= hostWindow.maxX + tolerance
-
-                // [T-voice-inputbar-stale-height] Leading-edge first write,
-                // trailing-edge thereafter. The FIRST non-zero height (session
-                // open / initial composer layout) is applied synchronously so the
-                // message list's bottom inset is correct on its first pass and it
-                // snaps straight to the bottom — the pure-trailing debounce made
-                // the list scroll once to a "fake bottom" (small/old height), then
-                // again 300ms later when the real height landed ("scroll, pause,
-                // scroll" on session open).
-                // [T-voice-inputbar-anim-tail] Record the freshest ON-SCREEN
-                // height BEFORE either commit path runs — both the seed's and the
-                // debounce's settle-confirm read this, so it must already reflect
-                // the current callback (writing it after the seed's `return`
-                // would leave the confirm reading a stale/zero value).
-                if onscreen { latestInputBarFrameH = newH }
-                // [T-voice-inputbar-collapse-selfheal] Liveness, recorded for
-                // EVERY callback — an off-screen sample is still proof the host
-                // is laying out, which is exactly what the health probe asks.
-                inputBarGeometryTick &+= 1
-                inputBarLastGeometryAt = CFAbsoluteTimeGetCurrent()
-
-                if !didSeedInputBarHeight, onscreen {
-                    didSeedInputBarHeight = true
-                    inputBarHeightDebounce?.cancel()
-                    inputBarHeight = newH
-                    AppLogger(category: "InputBarLayout").info("inputBarHeight seeded=\(newH) x=\(Int(frame.minX))")
-                    // [T-inputbar-stale-across-reentry] The seed is applied
-                    // SYNCHRONOUSLY (the message list needs a bottom inset on its
-                    // very first pass, else it scrolls to a fake bottom). That
-                    // means it can capture a mid-animation frame — the exact
-                    // hazard the old code avoided by never re-arming the seed,
-                    // at the cost of letting a stale height live forever. Keep
-                    // the synchronous seed AND make it self-correcting: confirm
-                    // against the freshest reported geometry once the panel's
-                    // 280ms animation has provably finished. No new measurement
-                    // is taken; we only re-read what onGeometryChange reported.
-                    let voiceAtSeed = voiceInputActive
-                    inputBarHeightDebounce = Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: UInt64(380) * 1_000_000)
-                        guard !Task.isCancelled, voiceAtSeed == voiceInputActive else { return }
-                        let settled = latestInputBarFrameH
-                        if settled > 0, abs(settled - newH) > 0.5 {
-                            inputBarHeight = settled
-                            AppLogger(category: "InputBarLayout").info("inputBarHeight SEED-CORRECTED \(newH)→\(settled) — seed had caught an animation frame")
-                        }
-                    }
-                    return
-                }
-                // Subsequent changes debounce: onGeometryChange fires during
-                // SwiftUI layout animation frames, sampling mid-transition
-                // heights. If the height then stabilizes (e.g. compact voice
-                // mode = fixed size), no further callback fires to correct it —
-                // inputBarHeight gets stuck at the animation mid-frame value.
-                // Wait 300ms (> animation duration 200ms) to capture the settled
-                // post-animation value.
-                guard onscreen else {
-                    AppLogger(category: "InputBarLayout").info("inputBarHeight discarded=\(newH) offscreen x=\(Int(frame.minX))…\(Int(frame.maxX)) win=\(Int(hostWindow.minX))…\(Int(hostWindow.maxX))")
-                    return
-                }
-                inputBarHeightDebounce?.cancel()
-                let voiceAtCapture = voiceInputActive
-                inputBarHeightDebounce = Task { @MainActor in
-                    // [T-voice-inputbar-anim-tail] 380ms, not 300ms. The panel's
-                    // expand/collapse and transcript-band animations are
-                    // .easeInOut(duration: 0.28) — the old 300ms window left only
-                    // 20ms of margin (its comment claimed the animation was
-                    // 200ms, which is stale), so the timer routinely expired
-                    // while the panel was still moving and SwiftUI's final
-                    // geometry callback had not landed yet.
-                    try? await Task.sleep(nanoseconds: UInt64(380) * 1_000_000)
-                    guard !Task.isCancelled else { return }
-                    // [T-voice-inputbar-branch-swap] During rapid streaming
-                    // re-renders, voiceInputActive can glitch for one frame,
-                    // swapping the AnyView branch from InlineVoiceInputView
-                    // to PastableTextView. The text view's height (~115pt)
-                    // is wrong for the voice panel (~161pt compact). Discard
-                    // if the branch flipped back by the time debounce fires.
-                    if voiceAtCapture != voiceInputActive {
-                        AppLogger(category: "InputBarLayout").info("inputBarHeight discarded=\(newH) branchSwap voice=\(voiceAtCapture)→\(voiceInputActive)")
-                        return
-                    }
-                    // Commit the LATEST height, not the one that armed the timer.
-                    let committed = latestInputBarFrameH > 0 ? latestInputBarFrameH : newH
-                    inputBarHeight = committed
-                    let armed = newH
-                    AppLogger(category: "InputBarLayout").info("inputBarHeight settled=\(committed) x=\(Int(frame.minX))\(abs(committed - armed) > 0.5 ? " (armedWith=\(armed), used latest)" : "")")
-
-                    // [T-voice-inputbar-anim-tail] Settle-confirm. Even the
-                    // latest recorded frame can be a tail sample if the final
-                    // callback lands after this task wakes. Re-check once more
-                    // after another animation-length beat and correct if the
-                    // panel moved — this is the backstop that guarantees the
-                    // bottom inset can never stay frozen on a transitional
-                    // height, which is the bottom-gap symptom. No new
-                    // measurement is taken: we only re-read what
-                    // onGeometryChange already reported.
-                    try? await Task.sleep(nanoseconds: UInt64(320) * 1_000_000)
-                    guard !Task.isCancelled else { return }
-                    guard voiceAtCapture == voiceInputActive else { return }
-                    let settled = latestInputBarFrameH
-                    if settled > 0, abs(settled - committed) > 0.5 {
-                        inputBarHeight = settled
-                        AppLogger(category: "InputBarLayout").info("inputBarHeight CORRECTED \(committed)→\(settled) — commit had caught an animation-tail frame")
-                    }
-                }
-            }
             .overlay(alignment: .topLeading) {
                 // Extracted into a named struct + AnyView-erased so the
                 // overlay does not deepen `inputBar`'s already-fragile
@@ -4163,15 +3710,6 @@ struct AIChatView: View {
                             )
                         } else {
                             Button {
-                                vm.executeSlashCommand(cmd)
-                            } label: {
-                                SlashCommandRow(
-                                    cmd: cmd,
-                                    isSelected: isSelected,
-                                    memoryEnabled: vm.memoryEnabled
-                                )
-                                .contentShape(Rectangle())
-                            }
                             .buttonStyle(SlashMenuButtonStyle(isSelected: isSelected))
                         }
                     }
@@ -4226,11 +3764,6 @@ struct AIChatView: View {
                                 ForEach(Array(rows.enumerated()), id: \.offset) { index, entry in
                                     let isSelected = index == vm.mentionSelectedIndex
                                     Button {
-                                        vm.selectMention(entry)
-                                    } label: {
-                                        MentionRow(entry: entry, isSelected: isSelected, query: vm.mentionFilter)
-                                            .contentShape(Rectangle())
-                                    }
                                     .buttonStyle(SlashMenuButtonStyle(isSelected: isSelected))
                                     .id(index)
                                 }
@@ -4698,10 +4231,6 @@ private struct ProviderImportPromptModifier: ViewModifier {
                     set: { if !$0 { result = nil } }
                 )
             ) {
-                Button(AppLocalized("OK"), role: .cancel) { result = nil }
-            } message: {
-                Text(result ?? "")
-            }
     }
 }
 
@@ -4836,8 +4365,6 @@ private struct NavBarStyleModifier: ViewModifier {
                     // initial fire covers the old onAppear seed.
                     Color.clear
                         .onGeometryChange(for: CGFloat.self) { proxy in
-                            proxy.safeAreaInsets.top
-                        } action: { topSafeAreaInset = $0 }
                         .ignoresSafeArea()
                         .frame(height: 0)
                 }
@@ -5108,123 +4635,6 @@ private struct ChatTrailingMenu: View, Equatable {
         }()
         #endif
         return Menu {
-            Button { onNewChat() } label: {
-                Label(AppLocalized("New Chat"), systemImage: "square.and.pencil")
-            }
-
-            Divider()
-
-            // [T-chat-menu-compact-entry] Compact above Clear Chat.
-            Button { onCompact() } label: {
-                Label(AppLocalized("Compact Messages"), systemImage: "arrow.down.right.and.arrow.up.left")
-            }
-            .disabled(messagesEmpty)
-
-            Button(role: .destructive) { onClearChat() } label: {
-                Label(AppLocalized("Clear Chat"), systemImage: "trash")
-            }
-            .disabled(messagesEmpty)
-
-            Divider()
-
-            // iCloud sync actions: iOS 17+ (v2 sync engine) AND the user's
-            // iCloud Sync toggle on.
-            if #available(iOS 17.0, *), iCloudSyncEnabled {
-                Button { onForceSync() } label: {
-                    Label(AppLocalized("Force iCloud Sync"), systemImage: "icloud.and.arrow.up")
-                }
-                .disabled(!hasSession || isForcePulling)
-
-                Button { onForcePull() } label: {
-                    Label(AppLocalized("Force Pull Messages"), systemImage: "icloud.and.arrow.down")
-                }
-                .disabled(!hasSession || isForcePulling)
-
-                Divider()
-            }
-
-            Button { onOpenTerminal() } label: {
-                Label(AppLocalized("Open Terminal"), systemImage: "terminal")
-            }
-
-            Button { onOpenBrowser() } label: {
-                Label(AppLocalized("Open Browser"), systemImage: "globe")
-            }
-
-            Button { onBrowseFiles() } label: {
-                Label(AppLocalized("Browse Chat Files"), systemImage: "folder")
-            }
-
-            Divider()
-
-            Button { onSkills() } label: {
-                Label(AppLocalized("Skills in Session"), systemImage: "puzzlepiece.extension")
-            }
-
-            Button { onMCPs() } label: {
-                Label(AppLocalized("MCPs in Session"), systemImage: "wrench.and.screwdriver")
-            }
-
-            if memoryEnabled {
-                Button { onMemories() } label: {
-                    Label(AppLocalized("Memories in Session"), systemImage: "brain.head.profile")
-                }
-            }
-
-            Toggle(isOn: Binding(
-                get: { speakEnabled },
-                set: { setSpeakEnabled($0) }
-            )) {
-                Label(AppLocalized("Speak Responses"), systemImage: "speaker.wave.2")
-            }
-
-            // [T-codex-fast-mode-menu-group] Model-control toggles in their
-            // own divider-separated section (mirrors the UIKit buildMenu).
-            if showEnhancedCacheToggle || showFastModeToggle {
-                Divider()
-
-                if showEnhancedCacheToggle {
-                    Toggle(isOn: Binding(
-                        get: { enhancedCacheEnabled },
-                        set: { setEnhancedCache($0) }
-                    )) {
-                        Label(AppLocalized("Enhanced Cache"), systemImage: "clock.arrow.circlepath")
-                    }
-                }
-
-                if showFastModeToggle {
-                    Toggle(isOn: Binding(
-                        get: { fastModeEnabled },
-                        set: { setFastMode($0) }
-                    )) {
-                        Label(AppLocalized("Enable Fast Mode"), systemImage: "bolt.fill")
-                    }
-                }
-            }
-
-            Divider()
-
-            Button { onTokenUsage() } label: {
-                Label(AppLocalized("Token Usage"), systemImage: "number")
-            }
-
-            #if DEBUG
-            Divider()
-
-            Button { onCopyRequests() } label: {
-                let n = LastAPIRequestBody.shared.getAll().count
-                Label("Copy Requests (\(n))", systemImage: "arrow.up.doc")
-            }
-
-            Button { onCopySessionData() } label: {
-                Label("Copy Session Data", systemImage: "tray.and.arrow.up")
-            }
-            #endif
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(ChatColors.primaryText)
-        }
         // [T-ios-voiceover-labels] Matches the label the UIKit ellipsis button
         // elsewhere in this file already sets, so both read the same.
         .accessibilityLabel(Text("More options", comment: "VoiceOver label for the overflow menu button"))
@@ -5471,41 +4881,11 @@ private struct MoveToSessionSheet: View {
             List {
                 if !isSearching {
                     Button {
-                        let newId = "\(Self.newSessionPrefix)\(UUID().uuidString)"
-                        dismiss()
-                        onSelect(newId)
-                    } label: {
-                        Label(AppLocalized("New Chat"), systemImage: "plus.bubble")
-                    }
                 }
 
                 Section(isSearching ? AppLocalized("Results") : AppLocalized("Recent")) {
                     ForEach(displayedSessions) { session in
                         Button {
-                            dismiss()
-                            onSelect(session.id)
-                        } label: {
-                            HStack(spacing: 8) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    highlightedText(
-                                        session.title ?? AppLocalized("New Chat"),
-                                        font: .system(size: 16, weight: .semibold),
-                                        color: Color(UIColor.label)
-                                    )
-                                    .lineLimit(1)
-                                    highlightedText(
-                                        session.lastMessage ?? AppLocalized("No messages yet"),
-                                        font: .system(size: 14),
-                                        color: Color(UIColor.secondaryLabel)
-                                    )
-                                    .lineLimit(1)
-                                }
-                                Spacer(minLength: 1)
-                                Text(relativeDate(session.updatedAt))
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Color(UIColor.tertiaryLabel))
-                            }
-                        }
                     }
                 }
             }
@@ -5711,17 +5091,6 @@ private struct SessionLockGateOverlay: View {
                     .multilineTextAlignment(.center)
 
                 Button {
-                    promptForBiometricUnlock()
-                } label: {
-                    Label(attemptFailed
-                          ? AppLocalized("Try again")
-                          : AppLocalized("Unlock"),
-                          systemImage: "faceid")
-                        .font(.system(size: 16, weight: .semibold))
-                        .padding(.horizontal, 22).padding(.vertical, 10)
-                        .background(.tint, in: Capsule())
-                        .foregroundStyle(.white)
-                }
             }
             .padding(.horizontal, 32)
         }
@@ -5910,25 +5279,6 @@ private struct SpeechLanguagePickerSheet: View {
 
     private func languageRow(_ loc: Locale) -> some View {
         Button {
-            speechManager.setLanguage(loc)
-            dismiss()
-        } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(speechManager.displayName(for: loc))
-                        .foregroundStyle(.primary)
-                    Text(loc.identifier)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if loc.identifier == speechManager.locale.identifier {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(Color.accentColor)
-                        .fontWeight(.semibold)
-                }
-            }
-        }
     }
 }
 
@@ -5953,16 +5303,6 @@ struct CompactSummarySheet: View {
                 if onRevert != nil {
                     Divider()
                     Button(role: .destructive) {
-                        showRevertConfirm = true
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.uturn.backward")
-                            Text("Revert Compact")
-                        }
-                        .font(.system(size: 15, weight: .medium))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                    }
                     .buttonStyle(.plain)
                     .foregroundStyle(.red)
                 }
@@ -5978,25 +5318,9 @@ struct CompactSummarySheet: View {
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        UIPasteboard.general.string = summary
-                        copied = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
-                    } label: {
-                        Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc.fill")
-                            .foregroundStyle(copied ? .green : .secondary)
-                    }
                 }
             }
             .alert("Revert this compact?", isPresented: $showRevertConfirm) {
-                Button("Cancel", role: .cancel) {}
-                Button("Revert", role: .destructive) {
-                    let action = onRevert
-                    dismiss()
-                    action?()
-                }
-            } message: {
-                Text("The summary will be discarded and the messages it covered will become active again. This may push the conversation past the model's context window — if that happens, long-press a message to re-compact from that point.")
-            }
         }
     }
 }
@@ -6113,12 +5437,6 @@ private struct StatRow: View {
         HStack {
             if let customIcon {
                 Label {
-                    Text(label)
-                } icon: {
-                    customIcon
-                        .resizable()
-                        .frame(width: 14, height: 14)
-                }
             } else {
                 Label(label, systemImage: icon)
             }

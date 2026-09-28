@@ -116,48 +116,11 @@ struct RcloneAddServerView: View {
                 }
             }
             .alert("New Folder", isPresented: $showNewFolder) {
-                TextField("Folder name", text: $newFolderName)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Button("Cancel", role: .cancel) { newFolderName = "" }
-                // [T-backup-newfolder-create-missing] NO `.disabled()` here.
-                // Alert buttons are not regular views: SwiftUI renders an
-                // alert's actions through UIAlertController, and a disabled
-                // action is OMITTED ENTIRELY rather than greyed out. The name
-                // field starts empty, so the guard was true the moment the
-                // alert appeared and the Create button simply did not exist —
-                // the user saw a New Folder dialog offering only Cancel
-                // (reported verbatim: "只有取消", with a screenshot).
-                //
-                // The sibling dialog in BackupDestinationDetailView never had
-                // the modifier and always showed Create, which is why leaving
-                // and re-entering "fixed" it: re-entry goes through that
-                // screen, not this one.
-                //
-                // Empty input is rejected inside the action instead, where it
-                // costs nothing — createFolder() already trims and ignores a
-                // blank name.
-                Button("Create") { Task { await createFolder() } }
-            } message: {
-                Text("Created inside \(displayPath).")
-            }
             // [T-sftp-absolute-path] Go-to-path. No `.disabled()` on these
             // buttons: an alert's actions are UIAlertActions, and a disabled
             // one is omitted entirely rather than greyed out (that is what
             // removed the Create button in the New Folder dialog).
             .alert("Go to Path", isPresented: $showPathEditor) {
-                TextField("Path", text: $pathInput)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Button("Cancel", role: .cancel) { }
-                Button("Go") {
-                    let target = Self.normalizedInputPath(pathInput,
-                                                          isSFTP: RcloneBackendCatalog.usesAbsolutePaths(backend?.type ?? ""))
-                    Task { await list(dir: target) }
-                }
-            } message: {
-                Text("Type a folder path to jump straight to it, including one outside the starting directory.")
-            }
         }
     }
 
@@ -165,35 +128,6 @@ struct RcloneAddServerView: View {
 
     private var typeSection: some View {
         Section {
-            ForEach(RcloneBackendCatalog.all) { b in
-                Button {
-                    backend = b
-                    values = [:]
-                    if displayName.isEmpty { displayName = defaultName(for: b) }
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: b.icon)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 28, height: 28)
-                            .background(backend?.type == b.type ? Color.blue : Color.gray,
-                                        in: Circle())
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(b.title).foregroundStyle(.primary)
-                            Text(b.subtitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if backend?.type == b.type {
-                            Image(systemName: "checkmark").foregroundStyle(.blue)
-                        }
-                    }
-                }
-            }
-        } header: {
-            Text("Type")
-        }
     }
 
     // MARK: - Step 2
@@ -202,57 +136,10 @@ struct RcloneAddServerView: View {
     private var detailsSection: some View {
         if let b = backend {
             Section {
-                TextField("Name", text: $displayName)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-            } header: {
-                Text("Name")
-            } footer: {
                 Text("Shown in the destination list.")
             }
 
             Section {
-                ForEach(b.fields) { f in
-                    // The field's NAME is shown above the input rather than
-                    // used as its placeholder. Using the placeholder alone
-                    // meant a row read "backups" with nothing saying that was
-                    // the Share — an example value looks like a label, and a
-                    // label looks like a value. Name on top, example inside,
-                    // one line of plain English underneath for the terms a
-                    // user has no way to guess.
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text(f.label)
-                                .font(.footnote.weight(.medium))
-                                .foregroundStyle(.secondary)
-                            if f.isOptional {
-                                Text("Optional")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        if f.isSecret {
-                            SecureField(f.placeholder.isEmpty ? f.label : f.placeholder,
-                                        text: binding(for: f.key))
-                                .textContentType(.password)
-                        } else {
-                            TextField(f.placeholder.isEmpty ? f.label : f.placeholder,
-                                      text: binding(for: f.key))
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
-                                .keyboardType(keyboardType(f.keyboard))
-                        }
-                        if !f.hint.isEmpty {
-                            Text(f.hint)
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            } header: {
-                Text("Connection")
-            } footer: {
                 // Say where the password goes. "Stored in the Keychain" is the
                 // difference between this and typing a password into a text
                 // file, and the user cannot see that from the form itself.
@@ -264,29 +151,6 @@ struct RcloneAddServerView: View {
     private var connectSection: some View {
         Section {
             Button {
-                Task { await connect() }
-            } label: {
-                // Badged like every other action row in the backup screens
-                // (Test Connection, Remove Destination, Choose from Files…):
-                // a 21pt tinted circle with a white glyph, via
-                // `BackupActionIcon`. This row was the odd one out as bare
-                // text.
-                //
-                // The spinner occupies the SAME leading slot as the icon
-                // rather than being pushed in front of the label, so the row's
-                // text does not shift sideways when a connection starts.
-                Label {
-                    Text(isConnecting ? "Connecting…" : "Connect")
-                        .foregroundStyle(isConnecting ? AnyShapeStyle(.secondary)
-                                                      : AnyShapeStyle(.tint))
-                } icon: {
-                    if isConnecting {
-                        ProgressView().frame(width: 21, height: 21)
-                    } else {
-                        BackupActionIcon(systemName: "bolt.horizontal.fill", tint: .blue)
-                    }
-                }
-            }
             .disabled(isConnecting || !requiredFieldsFilled)
 
             if !requiredFieldsFilled && !isConnecting {
@@ -323,77 +187,6 @@ struct RcloneAddServerView: View {
     @ViewBuilder
     private var browseSection: some View {
         Section {
-            if !currentDir.isEmpty {
-                Button {
-                    let parent = (currentDir as NSString).deletingLastPathComponent
-                    Task { await list(dir: parent == "." ? "" : parent) }
-                } label: {
-                    Label("Up one level", systemImage: "arrow.up.left")
-                }
-            }
-            if isListing {
-                HStack { ProgressView(); Text("Loading…").foregroundStyle(.secondary) }
-            } else if folderEntries.isEmpty {
-                Text("No folders here.").foregroundStyle(.secondary)
-            } else {
-                // Folders only. This step picks a DESTINATION, and the files
-                // already in a backups directory — often hundreds of them —
-                // are un-tappable rows that push the folders being navigated
-                // off the screen.
-                ForEach(folderEntries) { e in
-                    Button {
-                        Task { await list(dir: e.path) }
-                    } label: {
-                        HStack {
-                            Label(e.name, systemImage: "folder.fill")
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                }
-            }
-        } header: {
-            HStack(spacing: 8) {
-                // A deep path is easily wider than the screen. Truncating it
-                // hides exactly the tail the user needs — the folder they are
-                // standing in — so it scrolls instead, and the capsule makes
-                // it read as one addressable object rather than loose text.
-                // [T-sftp-absolute-path] Tapping the path opens an editor, so a
-                // location that cannot be reached by clicking through folders
-                // is still reachable: on SFTP the browser starts in the login
-                // user's HOME, and everything above it — `/srv/backup` and the
-                // like — was previously unreachable with no way to type it.
-                Button {
-                    pathInput = displayPath
-                    showPathEditor = true
-                } label: {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        Text(displayPath)
-                            .font(.footnote.weight(.medium))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Color(.secondarySystemFill), in: Capsule())
-                    }
-                }
-                .buttonStyle(.plain)
-                // Pinned so it stays reachable however long the path is.
-                Button {
-                    newFolderName = ""
-                    showNewFolder = true
-                } label: {
-                    Label("New Folder", systemImage: "folder.badge.plus")
-                        .labelStyle(.iconOnly)
-                        .font(.body)
-                }
-                .buttonStyle(.borderless)
-                .disabled(isListing)
-            }
-            .textCase(nil)
-        } footer: {
             Text("Browse to the folder where backups should be saved, then tap Save Here.")
         }
     }

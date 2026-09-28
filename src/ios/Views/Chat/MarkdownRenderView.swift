@@ -600,12 +600,6 @@ final class MarkdownRenderView: UIView, UIGestureRecognizerDelegate {
 
         UIView.animate(withDuration: 0.15) { toast.alpha = 1 }
         UIView.animate(withDuration: 0.3, delay: 0.8, options: []) {
-            flash.alpha = 0
-            toast.alpha = 0
-        } completion: { _ in
-            flash.removeFromSuperview()
-            toast.removeFromSuperview()
-        }
     }
 
     // MARK: - Long-Press → Promote to UITextView

@@ -461,18 +461,6 @@ struct MirrorsSectionView: View {
     var body: some View {
         Section(AppLocalized("Mirrors")) {
             Button {
-                vm.runAllTests()
-            } label: {
-                Label {
-                    Text(AppLocalized("Detect Fast Mirrors"))
-                } icon: {
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.white)
-                        .frame(width: 21, height: 21)
-                        .background(.orange, in: Circle())
-                }
-            }
             .disabled(vm.isTesting)
 
             if vm.isTesting {
@@ -482,27 +470,6 @@ struct MirrorsSectionView: View {
 
             ForEach(MirrorCategory.allCases) { category in
                 NavigationLink {
-                    MirrorCategoryDetailView(category: category)
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: category.systemImage)
-                            .font(.system(size: 9))
-                            .foregroundStyle(.white)
-                            .frame(width: 21, height: 21)
-                            .background(category.iconColor, in: Circle())
-                        Text(category.displayName)
-                        Spacer()
-                        if vm.isActive(for: category),
-                           let selected = vm.selectedMirror(for: category) {
-                            Text(selected.name)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if let fastest = vm.fastestResult(for: category) {
-                            latencyBadge(fastest.latencyMs)
-                        }
-                    }
-                }
             }
         }
     }
@@ -559,19 +526,11 @@ struct MirrorCategoryDetailView: View {
                     // Show all mirrors for this category (no test results yet)
                     ForEach(MirrorEntry.mirrors(for: category), id: \.id) { mirror in
                         Button {
-                            vm.selectMirror(mirror)
-                        } label: {
-                            mirrorRowStatic(mirror)
-                        }
                         .buttonStyle(.plain)
                     }
                 } else {
                     ForEach(sortedResults) { result in
                         Button {
-                            vm.selectMirror(result.mirror)
-                        } label: {
-                            mirrorRow(result)
-                        }
                         .buttonStyle(.plain)
                     }
                 }
@@ -579,18 +538,6 @@ struct MirrorCategoryDetailView: View {
 
             Section {
                 Button {
-                    vm.runTest(for: category)
-                } label: {
-                    Label {
-                        Text(AppLocalized("Test Speed"))
-                    } icon: {
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.white)
-                            .frame(width: 21, height: 21)
-                            .background(.orange, in: Circle())
-                    }
-                }
                 .disabled(vm.isTesting)
 
                 if vm.isTesting {

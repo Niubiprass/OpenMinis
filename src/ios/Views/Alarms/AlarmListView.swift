@@ -268,22 +268,11 @@ struct AlarmListView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(role: .destructive) {
-                        showClearConfirm = true
-                    } label: {
-                        Text("Clear All")
-                    }
                     .disabled(vm.alarms.isEmpty)
                     .opacity(vm.alarms.isEmpty ? 0 : 1)
                 }
             }
             .alert("Clear All Alarms?", isPresented: $showClearConfirm) {
-                Button("Clear All", role: .destructive) {
-                    vm.clearAll()
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("All \(vm.alarms.count) alarm(s) will be removed. This cannot be undone.")
-            }
             .onAppear { vm.load() }
         }
     }

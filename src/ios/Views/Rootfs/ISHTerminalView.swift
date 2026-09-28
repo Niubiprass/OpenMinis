@@ -106,10 +106,6 @@ struct ISHTerminalView: View {
             }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
-                    viewModel.clearScreen()
-                } label: {
-                    Image(systemName: "paintbrush")
-                }
             }
         }
         .onAppear {

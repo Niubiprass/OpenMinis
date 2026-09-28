@@ -42,21 +42,8 @@ struct ChatScreenshotPreviewSheet: View {
                 ToolbarItem(placement: .primaryAction) {
                     HStack(spacing: 16) {
                         Button {
-                            copyImage(image)
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                                .font(.system(size: 14))
-                        }
                         Button {
-                            shareImage(image)
-                        } label: {
-                            Image(systemName: "square.and.arrow.up")
-                        }
                         Button {
-                            saveImageToPhotos(image)
-                        } label: {
-                            Image(systemName: "square.and.arrow.down")
-                        }
                     }
                 }
             }

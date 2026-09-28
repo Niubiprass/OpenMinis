@@ -156,52 +156,15 @@ struct MessageImageGallery: View {
             Spacer()
 
             Button {
-                guard let img = currentImage else { return }
-                UIPasteboard.general.image = img
-                copyDone = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copyDone = false }
-            } label: {
-                chromeIcon(copyDone ? "checkmark" : "doc.on.doc",
-                           tint: copyDone ? .green : nil)
-            }
             .disabled(copyDone || currentImage == nil)
 
             Button {
-                saveCurrentToPhotos()
-            } label: {
-                Group {
-                    switch saveStatus {
-                    case .idle:
-                        Image(systemName: "square.and.arrow.down").offset(y: -1)
-                    case .saving:
-                        ProgressView().tint(ChatColors.primaryText)
-                    case .saved:
-                        Image(systemName: "checkmark").foregroundStyle(.green)
-                    case .failed:
-                        Image(systemName: "exclamationmark.triangle")
-                    }
-                }
-                .font(.body.weight(.semibold))
-                .foregroundStyle(ChatColors.primaryText)
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
-                .background(.ultraThinMaterial, in: Circle())
-            }
             .disabled(saveStatus != .idle || currentImage == nil)
 
             Button {
-                guard let img = currentImage else { return }
-                PrintHelper.printImage(img, jobName: AppLocalized("Image"))
-            } label: {
-                chromeIcon("printer")
-            }
             .disabled(currentImage == nil)
 
             Button {
-                showShareSheet = true
-            } label: {
-                chromeIcon("square.and.arrow.up")
-            }
             .disabled(currentImage == nil)
         }
         .padding(.horizontal)
@@ -234,17 +197,6 @@ struct MessageImageGallery: View {
                 return
             }
             PHPhotoLibrary.shared().performChanges {
-                PHAssetChangeRequest.creationRequestForAsset(from: image)
-            } completionHandler: { success, _ in
-                DispatchQueue.main.async {
-                    saveStatus = success ? .saved : .failed
-                    if success {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                            saveStatus = .idle
-                        }
-                    }
-                }
-            }
         }
     }
 

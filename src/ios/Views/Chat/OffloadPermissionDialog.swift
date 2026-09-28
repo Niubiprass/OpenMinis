@@ -91,24 +91,10 @@ private struct OffloadPermissionDialogContent: View {
             // ScrollView, so they stay tappable even with very long arg lists.
             VStack(spacing: 10) {
                 Button {
-                    OffloadPermissionManager.shared.respond(to: request.id, allowed: true)
-                } label: {
-                    Text("Allow in Session")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
                 .buttonStyle(.borderedProminent)
                 .tint(.blue)
 
                 Button {
-                    OffloadPermissionManager.shared.respond(to: request.id, allowed: false)
-                } label: {
-                    Text("Deny in Session")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
             }

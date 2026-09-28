@@ -29,31 +29,6 @@ struct GroupSlotPicker: View {
 
     var body: some View {
         Menu {
-            Picker(selection: $selection) {
-                Text("None", comment: "No group selected").tag(String?.none)
-                ForEach(store.modelGroups) { group in
-                    Text(group.name).tag(Optional(group.id))
-                }
-            } label: { EmptyView() }
-
-            Divider()
-            Button {
-                showCreate = true
-            } label: {
-                Label("Create group from models…", systemImage: "plus.rectangle.on.folder")
-            }
-        } label: {
-            HStack {
-                Text(label)
-                    .foregroundStyle(Color(UIColor.label))
-                Spacer()
-                Text(selectedName)
-                    .foregroundStyle(.secondary)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
         .sheet(isPresented: $showCreate) {
             NavigationView {
                 UnifiedModelPicker(config: createGroupConfig())

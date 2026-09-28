@@ -120,50 +120,6 @@ struct BackupSettingsView: View {
         Form {
             deviceNameSection
             Section {
-                // Row styling mirrors the iCloud Sync category list
-                // (CloudSyncSettingsV2View): a 28pt rounded-square badge with a
-                // white glyph. Same kind of choice, so it should look the same
-                // rather than inventing a second visual language for it.
-                ForEach(BackupCategory.backupable, id: \.self) { category in
-                    Toggle(isOn: binding(for: category)) {
-                        HStack(spacing: 12) {
-                            BackupCategoryIcon(category: category)
-                            Text(displayName(category))
-                        }
-                    }
-                }
-
-                // §3.4's cap, surfaced. Only meaningful when a category that
-                // actually carries files is selected — with only DB-backed
-                // categories on, nothing would ever hit it.
-                if selected.contains(where: \.carriesFileTree) {
-                    // Ordered smallest to largest, with "no files at all" at
-                    // the top as the extreme of the same axis.
-                    Picker(selection: $maxFileSizeMB) {
-                        Text("Don't back up files").tag(BackupSettingsView.noFilesTag)
-                        Text("1 MB").tag(1)
-                        Text("2 MB").tag(2)
-                        Text("5 MB").tag(5)
-                        Text("10 MB").tag(10)
-                        Text("50 MB").tag(50)
-                        Text("100 MB").tag(100)
-                        Text("500 MB").tag(500)
-                        Text("Unlimited").tag(BackupSettingsView.unlimitedTag)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "doc.zipper")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 28, height: 28)
-                                .background(Color.gray, in: Circle())
-                            Text("Max Per-File Size")
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-            } header: {
-                Text("Include")
-            } footer: {
                 // The cap's consequence is stated, because §3.4's whole point is
                 // that a skipped file leaves a tombstone rather than silently
                 // vanishing — the user should know that before it happens, not
@@ -193,33 +149,6 @@ struct BackupSettingsView: View {
             // passphrase), so this is the UI expressing a real invariant, not
             // inventing one.
             Section {
-                Toggle(isOn: $encryptBackup.animation()) {
-                    HStack(spacing: 12) {
-                        Image(systemName: encryptBackup ? "lock.fill" : "lock.open.fill")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 28, height: 28)
-                            .background(encryptBackup ? Color.green : Color.gray,
-                                        in: Circle())
-                        Text("Encrypt Backup")
-                    }
-                }
-                if encryptBackup {
-                    SecureField("Passphrase", text: $passphrase)
-                        .textContentType(.newPassword)
-                    if !passphrase.isEmpty {
-                        SecureField("Confirm passphrase", text: $confirmPassphrase)
-                            .textContentType(.newPassword)
-                        if passphrase != confirmPassphrase {
-                            Text("Passphrases don't match.")
-                                .font(.footnote)
-                                .foregroundStyle(.red)
-                        }
-                    }
-                }
-            } header: {
-                Text("Encryption")
-            } footer: {
                 if encryptBackup {
                     // Both halves are load-bearing: what the passphrase covers,
                     // and that losing it is final. A user who doesn't
@@ -238,22 +167,6 @@ struct BackupSettingsView: View {
 
             if !embedded {
                 Section {
-                    NavigationLink {
-                        BackupRestoreView()
-                    } label: {
-                        Label {
-                            Text("Restore from Backup…")
-                        } icon: {
-                            Image(systemName: "arrow.down.doc")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.white)
-                                .frame(width: 21, height: 21)
-                                .background(.indigo, in: Circle())
-                        }
-                    }
-                } footer: {
-                    Text("Restoring merges a backup into your existing data. Nothing is deleted.")
-                }
             }
 
             Section {
@@ -270,34 +183,6 @@ struct BackupSettingsView: View {
                 // which already shows the status text and the full log; the
                 // control stays a control.
                 Button(role: runController.isRunning ? .destructive : nil) {
-                    if runController.isRunning {
-                        BackupRunController.shared.stop()
-                        return
-                    }
-                    // The Task is handed to the controller so Stop (here or
-                    // in the run's detail view) can cancel it — a view can be
-                    // dismissed mid-backup, and a running task nobody holds is
-                    // one nobody can stop.
-                    let t = Task { await runExport() }
-                    BackupRunController.shared.started(task: t)
-                } label: {
-                    // [T-restore-primary-action] Badged like every other
-                    // action row in the backup screens, and matching Start
-                    // Restore on the other tab — a bare glyph here was the odd
-                    // one out. Red while running, so Stop reads as the
-                    // destructive action it is.
-                    HStack(spacing: 10) {
-                        BackupActionIcon(
-                            systemName: runController.isRunning
-                                ? "stop.fill" : "externaldrive.badge.timemachine",
-                            tint: runController.isRunning ? .red : .blue)
-                        Text(runController.isRunning ? "Stop Backup" : "Start Backup")
-                    }
-                    // Without maxWidth the row sizes to its content and sits
-                    // left; this is what centres it in the Form row.
-                    .frame(maxWidth: .infinity)
-                    .fontWeight(.medium)
-                }
                 // The start-time requirements gate STARTING only. Applying
                 // them while running would disable the button mid-run and
                 // leave no way to stop the backup from this screen.
@@ -370,55 +255,6 @@ struct BackupSettingsView: View {
 
             if let result {
                 Section {
-                    LabeledContent("Size", value: byteText(result.totalBytes))
-                    if result.skippedFiles > 0 {
-                        // §3.4: a size-capped export has gaps, and the user is
-                        // told here rather than discovering it at restore time.
-                        // "too large" would be wrong when files were left out
-                        // on purpose — nothing exceeded anything.
-                        LabeledContent(maxFileSizeMB == Self.noFilesTag
-                                       ? "Files not included"
-                                       : "Excluded (too large)",
-                                       value: "\(result.skippedFiles) file(s)")
-                    }
-                    // Share / Save need the local file — gone once it was
-                    // removed after full delivery. The destinations list below
-                    // is what remains relevant then.
-                    if shareURL != nil {
-                        Button {
-                            showShare = true
-                        } label: {
-                            Label("Share…", systemImage: "square.and.arrow.up")
-                        }
-                        Button {
-                            showSaveToFiles = true
-                        } label: {
-                            Label("Save to Files…", systemImage: "folder")
-                        }
-                    }
-
-                    // Per-destination outcome. Reported individually rather
-                    // than as one combined status: "2 of 3 saved" is only
-                    // actionable if the user can see WHICH one failed.
-                    ForEach(deliveryResults) { r in
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Image(systemName: r.succeeded
-                                  ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                                .foregroundStyle(r.succeeded ? .green : .orange)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(r.folderName)
-                                if let error = r.error {
-                                    Text(error)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .font(.footnote)
-                    }
-                } header: {
-                    Text("Backup Ready")
-                } footer: {
                     if localCopyRemoved {
                         Text("Delivered to all \(deliveryResults.count) destination(s) and verified. The copy on this iPhone was removed to save space.")
                     } else if deliveryResults.isEmpty {
@@ -488,29 +324,12 @@ struct BackupSettingsView: View {
                 get: { openedRemoteName != nil },
                 set: { if !$0 { openedRemoteName = nil } }
             )) {
-                // Resolved on push. If the remote vanished (removed by a swipe
-                // while this was open) show nothing rather than a stale
-                // snapshot of a destination that no longer exists.
-                if let name = openedRemoteName,
-                   let r = RcloneRemoteStore.remotes.first(where: { $0.name == name }) {
-                    BackupDestinationDetailView(target: .remote(r)) {
-                        remotes = RcloneRemoteStore.remotes
-                    }
-                }
-            } label: { EmptyView() }
                 .opacity(0)
 
             NavigationLink(isActive: Binding(
                 get: { openedFolderId != nil },
                 set: { if !$0 { openedFolderId = nil } }
             )) {
-                if let id = openedFolderId,
-                   let folder = BackupDestinations.eligibleFolders.first(where: { $0.id == id }) {
-                    BackupDestinationDetailView(target: .folder(folder)) {
-                        destinationIds = BackupDestinations.selectedIds
-                    }
-                }
-            } label: { EmptyView() }
                 .opacity(0)
         }
         .sheet(isPresented: $showAddDestination) {
@@ -637,10 +456,6 @@ struct BackupSettingsView: View {
 
         if let note = transfer.cleanupNote {
             Label {
-                Text(note).font(.caption)
-            } icon: {
-                Image(systemName: "sparkles").foregroundStyle(.green)
-            }
             .foregroundStyle(.secondary)
         }
 
@@ -692,32 +507,6 @@ struct BackupSettingsView: View {
     /// solves it without an entitlement.
     private var deviceNameSection: some View {
         Section {
-            HStack(spacing: 12) {
-                Image(systemName: "iphone")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 28, height: 28)
-                    .background(Color.blue, in: Circle())
-                // The placeholder is the automatic name, so an untouched field
-                // shows the user what will be used rather than sitting blank.
-                TextField(DeviceIdentity.automaticName, text: $deviceNameDraft)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.words)
-                    .submitLabel(.done)
-                    .onSubmit { commitDeviceName() }
-                    // Committed on every change, not only on submit: this
-                    // screen is usually left by swiping back or by tapping
-                    // Create Backup, neither of which fires onSubmit — and a
-                    // name that silently failed to save would be worse than
-                    // no field at all.
-                    //
-                    // Single-parameter `onChange`, because the deployment
-                    // target is iOS 16 and the two-parameter overload is 17+.
-                    .onChange(of: deviceNameDraft) { _ in commitDeviceName() }
-            }
-        } header: {
-            Text("Device Name")
-        } footer: {
             // Says what the name is FOR — the whole point is the filename —
             // and how to get back to the default, which an empty field does
             // not otherwise advertise.
@@ -740,37 +529,6 @@ struct BackupSettingsView: View {
     private var historySection: some View {
         if !history.records.isEmpty {
             Section {
-                ForEach(history.records) { r in
-                    NavigationLink {
-                        BackupHistoryDetailView(record: r)
-                    } label: {
-                        BackupHistoryRow(record: r)
-                    }
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            BackupHistory.shared.remove(r.id)
-                        } label: {
-                            Label("Remove", systemImage: "trash")
-                        }
-                        // Continuing an interrupted run is now an explicit act
-                        // on the run itself, so the user can see WHICH backup
-                        // they are continuing. Start Backup no longer adopts it
-                        // silently — that produced a package pinned to the old
-                        // run's snapshot, missing everything written since.
-                        if isResumable(r) {
-                            Button {
-                                let t = Task { await runExport(resuming: true) }
-                                BackupRunController.shared.started(task: t)
-                            } label: {
-                                Label("Resume", systemImage: "play.circle")
-                            }
-                            .tint(.blue)
-                        }
-                    }
-                }
-            } header: {
-                Text("Backup History")
-            } footer: {
                 Text("Records from the past month. Older ones are removed automatically.")
             }
         }
@@ -788,143 +546,6 @@ struct BackupSettingsView: View {
     private var destinationSection: some View {
         let eligible = BackupDestinations.eligibleFolders
         Section {
-            // Network drives added in-app (SMB / WebDAV / SFTP / S3 / FTP).
-            // Listed first: a user who went to the trouble of typing in a
-            // server address is more invested in it than in a folder they
-            // happened to pick from Files.
-            ForEach(remotes) { r in
-                // Toggle enables/disables delivery; the row itself opens the
-                // details. Disabling keeps the server and its credential, so
-                // skipping one destination for a while costs nothing to undo.
-                // A NavigationLink used to sit INSIDE the Toggle's label, which
-                // drew the link's disclosure chevron wedged between the text
-                // and the switch. Pinched there it read as a stray glyph rather
-                // than "there is more behind this row" — the position a
-                // chevron needs to mean that is the trailing edge, and the
-                // switch already owns it.
-                //
-                // The row is still tappable: navigation moves to an explicit
-                // hidden link driven by state, so the label area pushes the
-                // detail view and the switch keeps its own hit area.
-                HStack(spacing: 12) {
-                    Image(systemName: RcloneBackendCatalog.backend(for: r.backend)?.icon
-                          ?? "externaldrive.connected.to.line.below")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 28, height: 28)
-                        .background(Color.blue, in: Circle())
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(r.name)
-                        Text("\(r.backend.uppercased()) · /\(r.path)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    // Claims the gap between the text and the switch, so the
-                    // whole left side of the row opens the details.
-                    Spacer(minLength: 8)
-                        .contentShape(Rectangle())
-                    Toggle("", isOn: Binding(
-                        get: { r.enabled },
-                        set: { on in
-                            RcloneRemoteStore.setEnabled(r.name, on)
-                            remotes = RcloneRemoteStore.remotes
-                        }
-                    ))
-                    .labelsHidden()
-                    .fixedSize()
-                }
-                .contentShape(Rectangle())
-                .onTapGesture { openedRemoteName = r.name }
-                .swipeActions(edge: .trailing) {
-                    Button(role: .destructive) {
-                        RcloneRemoteStore.remove(name: r.name)
-                        remotes = RcloneRemoteStore.remotes
-                    } label: {
-                        Label("Remove", systemImage: "trash")
-                    }
-                }
-            }
-
-            if eligible.isEmpty && remotes.isEmpty {
-                // Empty is the NORMAL starting state, so this reads as the
-                // next step rather than a problem to fix.
-                //
-                // It used to say the backup "is saved on this device", which
-                // offered the one outcome a backup must never have: the
-                // package lands in the app's own sandbox, so it dies with the
-                // app it is meant to protect — uninstall, a wiped device or a
-                // lost phone takes the backup with it. Presenting that as a
-                // working fallback invited the user to consider themselves
-                // backed up when nothing had left the device.
-                Text("No destinations yet — add one to back up.")
-                    .foregroundStyle(.secondary)
-            } else if !eligible.isEmpty {
-                // Same badge treatment as the category rows above, so the two
-                // lists read as one screen rather than two styles.
-                ForEach(eligible) { folder in
-                    // Same shape as the server rows above — no NavigationLink
-                    // inside the Toggle, so no chevron pinched against the
-                    // switch.
-                    HStack(spacing: 12) {
-                        Image(systemName: "folder.fill")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 28, height: 28)
-                            .background(Color.indigo, in: Circle())
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(folder.name)
-                            Text(folder.sourceDisplayName)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 8)
-                            .contentShape(Rectangle())
-                        Toggle("", isOn: destinationBinding(for: folder))
-                            .labelsHidden()
-                            .fixedSize()
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture { openedFolderId = folder.id }
-                    .swipeActions(edge: .trailing) {
-                        // Removes it from THIS list only. The underlying mount
-                        // survives, because the user may also have added it for
-                        // the agent and deleting that from here would be a
-                        // surprise.
-                        Button(role: .destructive) {
-                            BackupDestinations.forget(folder.id)
-                            destinationIds = BackupDestinations.selectedIds
-                        } label: {
-                            Label("Remove", systemImage: "trash")
-                        }
-                    }
-                }
-            }
-            // ONE entry point. Two buttons ("Add Folder" / "Add Server")
-            // asked the user to know which mechanism they wanted before they
-            // knew what was on offer — and a server they had already set up
-            // was invisible until they guessed correctly. The picker shows
-            // saved servers first and offers both ways to add a new one.
-            Button {
-                showAddDestination = true
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 28, height: 28)
-                        .background(Color.green, in: Circle())
-                    Text("Add Backup Destination…")
-                }
-            }
-
-            if let destinationWarning {
-                Text(destinationWarning)
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-            }
-        } header: {
-            Text("Backup Destinations")
-        } footer: {
             if eligible.isEmpty {
                 Text("Add a folder to also copy each backup there — including a server connected in the Files app (SMB, WebDAV) or a cloud provider.")
             } else {
@@ -1014,21 +635,6 @@ struct BackupSettingsView: View {
             // mid-export doesn't get the process suspended ~30s later.
             let summary = try await BackupBackgroundAssertion.run("BackupExport") {
                 try await BackupExporter().export(options: options) { id in
-                    // Ties this record to its staging tree, so an interrupted
-                    // run can be identified and offered for Resume.
-                    Task { @MainActor in
-                        BackupHistory.shared.setBackupId(runId, id)
-                    }
-                } progressDetailed: { text, transient in
-                    // `transient` is a live counter line ("120/400 · about 40s
-                    // left"); the history log replaces the previous one instead
-                    // of stacking a new row every second.
-                    Task { @MainActor in
-                        statusText = text
-                        BackupRunController.shared.update(status: text)
-                        BackupHistory.shared.log(runId, text, isTransient: transient)
-                    }
-                }
             }
             // Out of tmp/ before anything else: iOS can purge that directory,
             // and the share sheet may be dismissed and re-opened later.

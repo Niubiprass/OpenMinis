@@ -85,23 +85,10 @@ struct ModelGroupDetailView: View {
             ToolbarItem(placement: .secondaryAction) {
                 if let group {
                     Button {
-                        UIPasteboard.general.string = "group:\(group.id)"
-                        MinisToast.show(AppLocalized("Copied: \(group.name)"))
-                    } label: {
-                        Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
-                    }
                 }
             }
         }
         .alert("Delete Group", isPresented: $showDeleteConfirm) {
-            Button("Delete", role: .destructive) {
-                store.removeGroup(groupId)
-                dismiss()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will delete the group. Model entries and provider instances are not affected.")
-        }
     }
 
     @ViewBuilder
@@ -125,30 +112,6 @@ struct ModelGroupDetailView: View {
 
             // MARK: Strategy
             Section {
-                Picker("Strategy", selection: Binding(
-                    get: { group.strategy },
-                    set: { newStrategy in
-                        var updated = group
-                        updated.strategy = newStrategy
-                        store.updateGroup(updated)
-                    }
-                )) {
-                    HStack {
-                        settingsIcon("arrow.down.circle", color: .blue)
-                        Text("Fallback")
-                    }
-                    .tag(RoutingStrategy.fallback)
-                    HStack {
-                        settingsIcon("arrow.triangle.branch", color: .orange)
-                        Text("Load Balance")
-                    }
-                    .tag(RoutingStrategy.loadBalance)
-                }
-                .pickerStyle(.inline)
-                .labelsHidden()
-            } header: {
-                Text("Routing Strategy")
-            } footer: {
                 if group.strategy == .fallback {
                     Text("Models are tried in order. If one fails, the next is used.")
                 } else {
@@ -159,30 +122,6 @@ struct ModelGroupDetailView: View {
             // MARK: Fallback Strategy
             if group.strategy == .fallback {
                 Section {
-                    Picker("Fallback Strategy", selection: Binding(
-                        get: { group.fallbackStrategy },
-                        set: { newStrategy in
-                            var updated = group
-                            updated.fallbackStrategy = newStrategy
-                            store.updateGroup(updated)
-                        }
-                    )) {
-                        HStack {
-                            settingsIcon("hand.raised.circle", color: .teal)
-                            Text("Default")
-                        }
-                        .tag(FallbackStrategy.limited)
-                        HStack {
-                            settingsIcon("arrow.2.squarepath", color: .mint)
-                            Text("Always")
-                        }
-                        .tag(FallbackStrategy.always)
-                    }
-                    .pickerStyle(.inline)
-                    .labelsHidden()
-                } header: {
-                    Text("Fallback Strategy")
-                } footer: {
                     if group.fallbackStrategy == .limited {
                         Text("Only switch to the next model on provider-level errors such as rate limiting, invalid API key, or provider rejection. Network and server errors are retried on the current model first.")
                     } else {
@@ -193,49 +132,6 @@ struct ModelGroupDetailView: View {
 
             // MARK: Members
             Section {
-                if group.memberEntryIds.isEmpty {
-                    Text("No models in this group")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(group.memberEntryIds, id: \.self) { entryId in
-                        // System engine member ids ("__builtin_system_speech__/…")
-                        // are virtual — they never resolve via store.entry, so
-                        // check them first or they'd render as stale.
-                        if let sysEntry = UnifiedModelPicker.systemEntry(for: entryId) {
-                            systemMemberRow(entry: sysEntry)
-                        } else if let entry = store.entry(for: entryId) {
-                            memberRow(entry: entry, group: group)
-                        } else {
-                            staleMemberRow(entryId: entryId, group: group)
-                        }
-                    }
-                    .onMove { from, to in
-                        moveMember(from: from, to: to, in: group)
-                    }
-                    .onDelete { offsets in
-                        deleteMember(at: offsets, from: group)
-                    }
-                }
-
-                Button {
-                    showAddModels = true
-                } label: {
-                    Label("Add Models", systemImage: "plus.circle")
-                        .font(.subheadline)
-                }
-            } header: {
-                HStack {
-                    Text("Models")
-                    Spacer()
-                    Button(editMode.isEditing ? AppLocalized("Done") : AppLocalized("Edit")) {
-                        withAnimation {
-                            editMode = editMode.isEditing ? .inactive : .active
-                        }
-                    }
-                    .font(.caption)
-                }
-            } footer: {
                 if group.strategy == .fallback {
                     Text("Drag to reorder. The first model is tried first.")
                 }
@@ -243,103 +139,6 @@ struct ModelGroupDetailView: View {
 
             // MARK: Session Defaults
             Section {
-                // Thinking
-                Toggle(isOn: Binding(
-                    get: { group.defaultThinkingLevel != nil },
-                    set: { enabled in
-                        var updated = group
-                        updated.defaultThinkingLevel = enabled ? .medium : nil
-                        store.updateGroup(updated)
-                    }
-                )) {
-                    HStack {
-                        Image("ThinkingIcon")
-                            .resizable()
-                            .renderingMode(.template)
-                            .foregroundStyle(.white)
-                            .frame(width: 11, height: 11)
-                            .frame(width: 21, height: 21)
-                            .background(.purple, in: Circle())
-                        Text("Enable Reasoning")
-                    }
-                }
-
-                if group.defaultThinkingLevel != nil {
-                    let maxLevel = groupMaxThinkingLevel(group)
-                    let levels = groupThinkingLevels(group)
-                    Picker("Intensity", selection: Binding(
-                        get: {
-                            // [T-thinking-levels-data-driven] A stored level may
-                            // no longer be offered (the catalog now declares a
-                            // sparse set, or membership changed). A segmented
-                            // picker whose selection matches no tag renders with
-                            // NOTHING highlighted, so snap the displayed value
-                            // onto the nearest offered tier at or below it.
-                            let current = group.defaultThinkingLevel ?? .medium
-                            if levels.contains(current) { return current }
-                            return levels.last(where: { $0 <= current })
-                                ?? levels.first
-                                ?? current
-                        },
-                        set: { level in
-                            var updated = group
-                            updated.defaultThinkingLevel = min(level, maxLevel)
-                            store.updateGroup(updated)
-                        }
-                    )) {
-                        ForEach(levels, id: \.self) { level in
-                            Text(level.displayName).tag(level)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                // Context Limit
-                Toggle(isOn: Binding(
-                    get: { group.contextLimitTokens != nil },
-                    set: { enabled in
-                        var updated = group
-                        if enabled {
-                            // Restore the user's last selection verbatim, defaulting
-                            // to 128K for first-time activation. The slider is fixed
-                            // 7-stop and accepts any value; we no longer cap by group
-                            // member context window because that field is noisy /
-                            // unreliable for image-output and "router"-style models.
-                            updated.contextLimitTokens = updated.lastContextLimitTokens ?? 128_000
-                        } else {
-                            // Remember the current value so the next ON restores it.
-                            if let cur = updated.contextLimitTokens {
-                                updated.lastContextLimitTokens = cur
-                            }
-                            updated.contextLimitTokens = nil
-                        }
-                        store.updateGroup(updated)
-                    }
-                )) {
-                    HStack {
-                        settingsIcon("memorychip", color: .indigo)
-                        Text("Limit Context Window")
-                    }
-                }
-
-                if group.contextLimitTokens != nil {
-                    ContextLimitSlider(
-                        value: Binding(
-                            get: { group.contextLimitTokens },
-                            set: { newVal in
-                                var updated = group
-                                updated.contextLimitTokens = newVal
-                                if let v = newVal {
-                                    updated.lastContextLimitTokens = v
-                                }
-                                store.updateGroup(updated)
-                            }
-                        )
-                    )
-                }
-            } header: {
-                Text("Session Defaults")
-            } footer: {
                 Text("Applied automatically when a new session is bound to this group.")
             }
 
@@ -493,12 +292,6 @@ struct ModelGroupDetailView: View {
             Spacer()
 
             Button {
-                removeMember(entryId: entryId, from: group)
-            } label: {
-                Image(systemName: "trash")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
             .buttonStyle(.plain)
         }
     }

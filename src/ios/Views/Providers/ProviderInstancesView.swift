@@ -34,10 +34,6 @@ struct ProviderInstancesView: View {
                     Section(type.displayName) {
                         ForEach(instancesOfType) { instance in
                             NavigationLink {
-                                ProviderInstanceDetailView(instanceId: instance.id)
-                            } label: {
-                                InstanceRow(instance: instance)
-                            }
                             // [T-provider-group-swipe-actions] Swipe actions and
                             // `.onMove` coexist without extra work: UIKit routes a
                             // horizontal drag to the row's swipe actions and a
@@ -51,15 +47,7 @@ struct ProviderInstancesView: View {
                                 // so a long swipe cannot delete a provider (and
                                 // its keys) without the confirmation below.
                                 Button(role: .destructive) {
-                                    pendingDeleteInstance = instance
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
                                 Button {
-                                    editingInstanceId = instance.id
-                                } label: {
-                                    Label("Edit", systemImage: "pencil")
-                                }
                                 .tint(.blue)
                             }
                         }
@@ -90,10 +78,6 @@ struct ProviderInstancesView: View {
                     }
                     ForEach(shadows) { shadow in
                         NavigationLink {
-                            ShadowVoiceProviderDetailView(instanceId: shadow.instanceId)
-                        } label: {
-                            ShadowVoiceRow(shadow: shadow)
-                        }
                     }
                 }
             }
@@ -126,28 +110,6 @@ struct ProviderInstancesView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button {
-                        showAddProvider = true
-                    } label: {
-                        Label(AppLocalized("Add Provider"), systemImage: "plus")
-                    }
-                    Button {
-                        showImportFile = true
-                    } label: {
-                        Label(AppLocalized("Import Provider"), systemImage: "square.and.arrow.down")
-                    }
-                    if #available(iOS 17.0, *), iCloudSyncEnabled {
-                        Divider()
-                        Button {
-                            Task { await forceSyncProviders() }
-                        } label: {
-                            Label(AppLocalized("Force iCloud Sync"),
-                                  systemImage: "arrow.triangle.2.circlepath.icloud")
-                        }
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                }
             }
         }
         .sheet(isPresented: $showAddProvider) {
@@ -192,14 +154,6 @@ struct ProviderInstancesView: View {
                 get: { editingInstanceId != nil },
                 set: { if !$0 { editingInstanceId = nil } }
             )) {
-                // Resolved at push time: if the provider was deleted while this
-                // was open, show nothing rather than a detail screen bound to a
-                // vanished id.
-                if let id = editingInstanceId,
-                   store.instances.contains(where: { $0.id == id }) {
-                    ProviderInstanceDetailView(instanceId: id)
-                }
-            } label: { EmptyView() }
             .opacity(0)
         }
         // Same wording and same call (`store.removeInstance`) as the Delete
@@ -213,19 +167,7 @@ struct ProviderInstancesView: View {
             ),
             presenting: pendingDeleteInstance
         ) { instance in
-            Button("Delete", role: .destructive) {
-                store.removeInstance(instance.id)
-                pendingDeleteInstance = nil
-            }
-            Button("Cancel", role: .cancel) { pendingDeleteInstance = nil }
-        } message: { _ in
-            Text("This will remove the provider and all its model entries. API keys will be deleted from the Keychain.")
-        }
         .alert(AppLocalized("Import"), isPresented: $showImportResult) {
-            Button("OK") {}
-        } message: {
-            if let msg = importMessage { Text(msg) }
-        }
         .overlay(alignment: .top) {
             if let msg = forceSyncToast {
                 Text(msg)
