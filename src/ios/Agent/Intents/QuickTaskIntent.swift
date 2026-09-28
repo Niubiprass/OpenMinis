@@ -53,7 +53,7 @@ enum QuickTask: String, AppEnum {
 /// Runs a predefined quick task — enables single-utterance Siri invocation.
 @available(iOS 16.0, *) // ios15-port
 struct QuickTaskIntent: AppIntent {
-    static var title: LocalizedStringResource = "Quick Task"
+    static var title: String = "Quick Task"
     static var description = IntentDescription("Runs a predefined Minis task like sleep analysis, weather check, or morning briefing.")
     static var openAppWhenRun = false
 

@@ -7,7 +7,7 @@ import Foundation
 @available(iOS 17.0, *)
 @available(iOS 16.0, *) // ios15-port
 struct RetryRunIntent: AppIntent {
-    static var title: LocalizedStringResource = "Retry Run"
+    static var title: String = "Retry Run"
     static var description = IntentDescription("Re-runs the AI agent from a specific user message in a session. Presents a list of user messages to choose from, then retries from that point.")
     static var openAppWhenRun = false
 

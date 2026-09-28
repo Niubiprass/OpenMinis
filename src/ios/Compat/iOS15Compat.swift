@@ -1,4 +1,3 @@
-// >>>IOS15PORTED>>>
 //
 //  iOS15Compat.swift
 //  MinisApp
@@ -127,7 +126,7 @@ extension LabeledContent where Label == Text {
 
 /// Minimal stand-in for SwiftUI's iOS 16 `NavigationPath`.
 ///
-/// The port replaces `NavigationView(path:)` with `NavigationView`, so these
+/// The port replaces `NavigationStack(path:)` with `NavigationView`, so these
 /// values are carried but never drive navigation on iOS 15. Kept as a real
 /// type so existing `@State` declarations and helpers still compile.
 public struct NavigationPath: Equatable {

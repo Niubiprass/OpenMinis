@@ -15,12 +15,8 @@ import re
 import sys
 
 PBX_PATH = "src/ios/Minis.xcodeproj/project.pbxproj"
-# 各扩展 target -> 部署目标。这些扩展依赖主 App 用不到的新系统 API,
-# 抬高部署目标后它们在 iOS 15.5 上不被系统加载(对应功能失效), 但主 App 不受影响。
-TARGETS = {
-    "MinisFileProvider": "16.0",     # NSFileProvider* 系列 iOS16 API
-    "AgentWidgetExtension": "17.0",  # LiveActivityIntent / 灵动岛按钮 iOS17
-}
+TARGET = "MinisFileProvider"
+TARGET_DEPLOY = "16.0"
 
 
 def find_block(text, uuid):
@@ -44,7 +40,7 @@ def find_block(text, uuid):
     return m.start(), len(text)
 
 
-def process_target(TARGET, TARGET_DEPLOY):
+def main():
     try:
         text = open(PBX_PATH).read()
     except FileNotFoundError:
@@ -97,12 +93,7 @@ def process_target(TARGET, TARGET_DEPLOY):
         print("✅ 已将 %s 部署目标设为 iOS %s（配置 %s）" % (TARGET, TARGET_DEPLOY, cu))
 
     open(PBX_PATH, "w").write(text)
-    print("🎉 %s 完成，共修改 %d 个配置。" % (TARGET, changed))
-
-
-def main():
-    for t, d in TARGETS.items():
-        process_target(t, d)
+    print("🎉 完成，共修改 %d 个配置。" % changed)
 
 
 if __name__ == "__main__":
