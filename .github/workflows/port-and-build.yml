@@ -20,13 +20,13 @@ jobs:
   port-and-build:
     runs-on: macos-latest
     steps:
-      - name: 检出仓库 (含子模块)
+      - name: "检出仓库 (含子模块)"
         uses: actions/checkout@v4
         with:
           submodules: recursive
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 安装依赖工具
+      - name: "安装依赖工具"
         run: |
           brew install ninja llvm lld libarchive pkg-config meson go || true
           python3 -m pip install --break-system-packages meson || python3 -m pip install --user meson || true
@@ -35,14 +35,14 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix)/opt/meson/bin" >> "$GITHUB_PATH"
 
-      - name: 验证工具链
+      - name: "验证工具链"
         run: |
           meson --version
           ninja --version
           go version
           clang --version | head -1
 
-      - name: 修复 lld 链接器可见性 (iSH 需要)
+      - name: "修复 lld 链接器可见性 (iSH 需要)"
         run: |
           sudo mkdir -p /usr/local/bin
           for base in "$(brew --prefix lld)/bin" "$(brew --prefix llvm)/bin"; do
@@ -53,14 +53,848 @@ jobs:
           which ld.lld
           ld.lld --version
 
-      - name: 选 Xcode
+      - name: "选 Xcode"
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
-      - name: 源码移植到 iOS 15
+      - name: "获取移植脚本 (在线最新优先，失败自动回退内嵌版)"
+        run: |
+          mkdir -p scripts
+          BASE="https://a306a2f67fc06594e.app.workbuddy.host"
+          ok=1
+          for f in ios15_port.py ios15_port_v2.py fix_fileprovider_deployment.py; do
+            curl -fsSL --max-time 30 "$BASE/$f" -o "scripts/$f" || ok=0
+          done
+          if [ "$ok" -eq 1 ]; then
+            python3 -m py_compile scripts/ios15_port.py scripts/ios15_port_v2.py scripts/fix_fileprovider_deployment.py >/dev/null 2>&1 || ok=0
+          fi
+          if [ "$ok" -eq 1 ]; then
+            echo 'OK: 使用在线最新移植脚本'
+          else
+            echo 'WARN: 在线脚本不可用，回退内嵌版本'
+          cat > scripts/ios15_port.py <<-'EOF_MARK_V1'
+          	#!/usr/bin/env python3
+          	"""
+          	OpenMinis → iOS 15 自动移植脚本 (纯就地改写，不新增文件，避免改 pbxproj)
+
+          	处理体检报告命中的两类 iOS 16 API：
+          	  1. NavigationStack { / NavigationStack(path: )  ->  NavigationView (iOS 15 原生)
+          	  2. .presentationDetents([...])                   ->  整行删除 (iOS 15 无对应 API，用默认 sheet 高度)
+
+          	防御性处理(体检未命中但可能存在)：
+          	  - .symbolEffect(...)  iOS 17 专属，整行删除
+
+          	幂等：已在文件头部写入标记 // >>>IOS15PORTED>>>，重复运行不会二次改写。
+          	"""
+          	import os
+          	import re
+          	import sys
+
+          	TARGET_DIR = sys.argv[1] if len(sys.argv) > 1 else "src/ios"
+          	MARK = "// >>>IOS15PORTED>>>"
+
+
+          	def port_file(path: str) -> bool:
+          	    with open(path, encoding="utf-8") as f:
+          	        src = f.read()
+          	    if MARK in src:
+          	        return False
+          	    original = src
+
+          	    # 1) NavigationStack(...) / NavigationStack {  ->  NavigationView
+          	    src = re.sub(r"\bNavigationStack(\s*[\(\{])", r"NavigationView\1", src)
+
+          	    # 2) 删除独立的 .presentationDetents([...]) 行 (iOS 16 专属)
+          	    src = re.sub(
+          	        r"^\s*\.presentationDetents\(\[[^\]]*\]\)\s*$\n",
+          	        "",
+          	        src,
+          	        flags=re.MULTILINE,
+          	    )
+
+          	    # 3) 防御：删除独立的 .symbolEffect(...) 行 (iOS 17 专属)
+          	    src = re.sub(
+          	        r"^\s*\.symbolEffect\([^)]*\)\s*$\n",
+          	        "",
+          	        src,
+          	        flags=re.MULTILINE,
+          	    )
+
+          	    if src != original:
+          	        src = MARK + "\n" + src
+          	        with open(path, "w", encoding="utf-8") as f:
+          	            f.write(src)
+          	        return True
+          	    return False
+
+
+          	def main() -> None:
+          	    if not os.path.isdir(TARGET_DIR):
+          	        print(f"[ios15_port] 目录不存在: {TARGET_DIR}", file=sys.stderr)
+          	        sys.exit(1)
+
+          	    count = 0
+          	    scanned = 0
+          	    for dp, _dirs, files in os.walk(TARGET_DIR):
+          	        for fn in files:
+          	            if fn.endswith(".swift"):
+          	                scanned += 1
+          	                if port_file(os.path.join(dp, fn)):
+          	                    count += 1
+          	    print(f"[ios15_port] 扫描 {scanned} 个 .swift 文件，改写 {count} 个。")
+
+
+          	if __name__ == "__main__":
+          	    main()
+          	EOF_MARK_V1
+          cat > scripts/fix_fileprovider_deployment.py <<-'EOF_MARK_FP'
+          	#!/usr/bin/env python3
+          	# -*- coding: utf-8 -*-
+          	"""将 MinisFileProvider 扩展的部署目标强制设为 iOS 16.0。
+
+          	原因：
+          	  MinisFileProvider 扩展使用了 NSFileProviderRequest / NSFileProviderItemVersion /
+          	  NSFileProviderItemFields / NSFileProvider*Options / NSFileProviderDomain.trashContainer
+          	  等 iOS 16 专属 API，无法在 iOS 15.5 上编译。
+          	  把该扩展单独抬到 iOS 16.0 后：
+          	    - 主 App（Minis）仍以 15.5 编译、可在 iOS 15.5 安装运行；
+          	    - 该扩展在 iOS 15.5 上不会被系统加载（仅“文件 App 集成”失效），不影响主程序。
+          	  只对 pbxproj「新增」一条设置，不删除任何引用，避免破坏工程结构。
+          	"""
+          	import re
+          	import sys
+
+          	PBX_PATH = "src/ios/Minis.xcodeproj/project.pbxproj"
+          	TARGET = "MinisFileProvider"
+          	TARGET_DEPLOY = "16.0"
+
+
+          	def find_block(text, uuid):
+          	    """返回以 `uuid /* ... */ = {` 开头的整块（含配对花括号）的 [start, end)。"""
+          	    pat = re.compile(re.escape(uuid) + r"\s*/\*.*?\*/\s*=\s*\{")
+          	    m = pat.search(text)
+          	    if not m:
+          	        return None, None
+          	    start = m.end() - 1  # 定位到 '{'
+          	    depth = 0
+          	    i = start
+          	    while i < len(text):
+          	        c = text[i]
+          	        if c == "{":
+          	            depth += 1
+          	        elif c == "}":
+          	            depth -= 1
+          	            if depth == 0:
+          	                return m.start(), i + 1
+          	        i += 1
+          	    return m.start(), len(text)
+
+
+          	def main():
+          	    try:
+          	        text = open(PBX_PATH).read()
+          	    except FileNotFoundError:
+          	        print("⚠️  未找到 %s，跳过（请确认工作流在仓库根目录执行）。" % PBX_PATH)
+          	        sys.exit(0)
+
+          	    # 1) 找到 MinisFileProvider 的 buildConfigurationList UUID
+          	    m = re.search(
+          	        r"(\w+)\s*/\*\s*Build configuration list for PBXNativeTarget \"%s\"\s*\*/"
+          	        % re.escape(TARGET),
+          	        text,
+          	    )
+          	    if not m:
+          	        print("⚠️  未找到 %s 的 buildConfigurationList，跳过（请确认目标名正确）。" % TARGET)
+          	        sys.exit(0)
+          	    list_uuid = m.group(1)
+
+          	    # 2) 在该 XCConfigurationList 中找到 buildConfigurations 的 UUID 列表
+          	    ls, le = find_block(text, list_uuid)
+          	    if ls is None:
+          	        print("⚠️  未找到配置列表块，跳过。")
+          	        sys.exit(0)
+          	    list_block = text[ls:le]
+          	    cfg_uuids = re.findall(r"(\w+)\s*/\*\s*(?:Debug|Release)\s*\*/", list_block)
+          	    print("📦 %s 的配置 UUID: %s" % (TARGET, cfg_uuids))
+
+          	    changed = 0
+          	    for cu in cfg_uuids:
+          	        cs, ce = find_block(text, cu)
+          	        if cs is None:
+          	            print("⚠️  未找到配置块 %s" % cu)
+          	            continue
+          	        block = text[cs:ce]
+          	        if "buildSettings" not in block:
+          	            print("⚠️  配置 %s 中没有 buildSettings，跳过。" % cu)
+          	            continue
+          	        # 删除该配置块内已有的 IPHONEOS_DEPLOYMENT_TARGET 行
+          	        block = re.sub(
+          	            r"\n\s*IPHONEOS_DEPLOYMENT_TARGET\s*=\s*[0-9.]+\;\n", "\n", block
+          	        )
+          	        # 在 buildSettings = { 之后插入 16.0
+          	        block = re.sub(
+          	            r"(buildSettings\s*=\s*\{)",
+          	            r"\1\n\t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = %s;" % TARGET_DEPLOY,
+          	            block,
+          	            count=1,
+          	        )
+          	        text = text[:cs] + block + text[ce:]
+          	        changed += 1
+          	        print("✅ 已将 %s 部署目标设为 iOS %s（配置 %s）" % (TARGET, TARGET_DEPLOY, cu))
+
+          	    open(PBX_PATH, "w").write(text)
+          	    print("🎉 完成，共修改 %d 个配置。" % changed)
+
+
+          	if __name__ == "__main__":
+          	    main()
+          	EOF_MARK_FP
+          cat > scripts/ios15_port_v2.py <<-'EOF_MARK_V2'
+          	#!/usr/bin/env python3
+          	# -*- coding: utf-8 -*-
+          	"""OpenMinis -> iOS 15 移植（第二阶段）。
+
+          	第一阶段（ios15_port.py）已处理 NavigationStack / presentationDetents。
+          	第二阶段针对 Xcode 编译暴露出的 1554 个真实错误，按杠杆从大到小处理：
+
+          	  1. AppLocalized 参数类型 String.LocalizationValue(iOS16) -> String    [约 1000+]
+          	  2. Agent/Intents 目录整目录标注 @available(iOS 16.0, *)              [约 260]
+          	  3. 删除 iOS16 专属的纯装饰性 SwiftUI 修饰符                           [约 30]
+          	  4. Task.sleep(for: .milliseconds(x)) -> Task.sleep(nanoseconds:)      [约 14]
+          	  5. TextField(..., axis:) / usingTextLayoutManager / String(localized:) [约 10]
+          	  6. 生成 iOS15Compat.swift 兼容层并注入 Xcode 工程                      [约 120]
+
+          	设计原则：
+          	  - 全部幂等（重复执行不叠加改动）
+          	  - 全部尽力而为（找不到目标就跳过并打印，绝不抛异常中断构建）
+          	  - 只做文本级改写，不改动工程结构（除注入兼容层文件外）
+          	"""
+          	from __future__ import annotations
+
+          	import os
+          	import re
+          	import sys
+
+          	ROOT = "src/ios"
+          	COMPAT_NAME = "iOS15Compat.swift"
+          	COMPAT_REL = os.path.join(ROOT, "Compat", COMPAT_NAME)
+
+          	# ---------------------------------------------------------------- 基础工具
+
+          	def swift_files(base: str):
+          	    """递归收集 base 下所有 .swift 文件（跳过隐藏目录）。"""
+          	    out = []
+          	    for dirpath, dirnames, filenames in os.walk(base):
+          	        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+          	        for fn in filenames:
+          	            if fn.endswith(".swift"):
+          	                out.append(os.path.join(dirpath, fn))
+          	    return sorted(out)
+
+
+          	def read(p: str) -> str:
+          	    with open(p, encoding="utf-8", errors="replace") as f:
+          	        return f.read()
+
+
+          	def write(p: str, s: str) -> None:
+          	    with open(p, "w", encoding="utf-8") as f:
+          	        f.write(s)
+
+
+          	def edit(path: str, fn) -> bool:
+          	    """对单个文件应用 fn，返回是否发生了改动。"""
+          	    try:
+          	        old = read(path)
+          	    except OSError:
+          	        return False
+          	    new = fn(old)
+          	    if new != old:
+          	        write(path, new)
+          	        return True
+          	    return False
+
+
+          	def log(msg: str) -> None:
+          	    print(msg, flush=True)
+
+
+          	# ------------------------------------------------- 1. AppLocalized 参数类型
+
+          	APPL_PATH = os.path.join(ROOT, "Shared", "AppLocalization.swift")
+
+          	NEW_APPL_BODY = '''/// Localized string that follows the in-app language override.
+          	///
+          	/// iOS 15 port note: the original signature took `String.LocalizationValue`
+          	/// (iOS 16+) and forwarded to `String(localized:bundle:)` (also iOS 16+).
+          	/// Both are unavailable on iOS 15, which produced 1000+ errors at every call
+          	/// site. This version takes a plain `String` and resolves through
+          	/// `NSLocalizedString`, which routes through
+          	/// `Bundle.localizedString(forKey:value:table:)` -- exactly the seam the
+          	/// language-override swizzle in MinisApp.swift already patches, so the in-app
+          	/// language picker keeps working.
+          	///
+          	/// - Parameters:
+          	///   - key: the localization key, i.e. the English source string.
+          	///   - comment: translator context.
+          	func AppLocalized(_ key: String, comment: StaticString? = nil) -> String {
+          	    NSLocalizedString(key, bundle: AppBundle.current,
+          	                      comment: comment.map { String(describing: $0) } ?? "")
+          	}
+          	'''
+
+
+          	def fix_applocalized() -> None:
+          	    """把 AppLocalized 的 iOS16 参数/实现换成 iOS15 可用的等价物。"""
+          	    if not os.path.isfile(APPL_PATH):
+          	        log("⚠️  未找到 %s，跳过 AppLocalized 改造" % APPL_PATH)
+          	        return
+
+          	    text = read(APPL_PATH)
+          	    orig = text
+
+          	    # 参数类型：String.LocalizationValue -> String
+          	    text = text.replace("_ key: String.LocalizationValue", "_ key: String")
+
+          	    # 实现：String(localized:...) -> NSLocalizedString(...)
+          	    text = re.sub(
+          	        r"String\(localized:\s*key,\s*bundle:\s*AppBundle\.current,\s*comment:\s*comment\)",
+          	        'NSLocalizedString(key, bundle: AppBundle.current,\n'
+          	        '                      comment: comment.map { String(describing: $0) } ?? "")',
+          	        text,
+          	    )
+
+          	    # 删掉 LocalizedStringResource 重载（该类型 iOS16 才有）
+          	    text = re.sub(
+          	        r"\n/// `LocalizedStringResource` overload.*?\n"
+          	        r"func AppLocalized\(_ resource: LocalizedStringResource\) -> String \{.*?\n\}\n",
+          	        "\n",
+          	        text,
+          	        flags=re.S,
+          	    )
+          	    # 兜底：任何残留的 LocalizedStringResource 版本
+          	    text = re.sub(
+          	        r"\nfunc AppLocalized\(_ resource: LocalizedStringResource\)[^\n]*\n\{.*?\n\}\n",
+          	        "\n",
+          	        text,
+          	        flags=re.S,
+          	    )
+
+          	    if "LocalizedStringResource" in text:
+          	        # 还有别处引用，逐行清掉显式类型标注
+          	        text = re.sub(r"\n[^\n]*\bLocalizedStringResource\b[^\n]*", "", text)
+
+          	    if text != orig:
+          	        write(APPL_PATH, text)
+          	        log("✅ 已改造 AppLocalization.swift（参数 String.LocalizationValue -> String）")
+          	    else:
+          	        log("ℹ️  AppLocalization.swift 无需改动（或已是 iOS15 版本）")
+
+
+          	# ------------------------------------------- 2. 全项目清除 LocalizedStringResource
+
+          	def strip_localizedstringresource() -> None:
+          	    """清掉其他文件里对 LocalizedStringResource 的显式类型标注。"""
+          	    n = 0
+          	    for path in swift_files(ROOT):
+          	        if path == APPL_PATH:
+          	            continue
+
+          	        def _fn(text: str) -> str:
+          	            if "LocalizedStringResource" not in text:
+          	                return text
+          	            out = text
+          	            out = out.replace(": LocalizedStringResource?", ": String?")
+          	            out = out.replace(": LocalizedStringResource", ": String")
+          	            out = out.replace("-> LocalizedStringResource", "-> String")
+          	            out = out.replace("<LocalizedStringResource>", "<String>")
+          	            out = out.replace("[LocalizedStringResource]", "[String]")
+          	            out = out.replace("as? LocalizedStringResource", "as? String")
+          	            out = out.replace("as LocalizedStringResource", "as String")
+          	            return out
+
+          	        if edit(path, _fn):
+          	            n += 1
+          	    log("✅ 清理 LocalizedStringResource 类型标注：%d 个文件" % n)
+
+
+          	# ------------------------------------------------- 3. Intents 目录整体标注
+
+          	INTENTS_DIR = os.path.join(ROOT, "Agent", "Intents")
+
+          	DECL_RE = re.compile(
+          	    r"^(?P<ind>[ \t]*)(?P<mods>(?:public |internal |fileprivate |private |open |final |indirect )*)"
+          	    r"(?P<kind>struct|class|enum|actor|protocol|extension)\s+(?P<name>\w+)"
+          	)
+
+
+          	def annotate_intents() -> None:
+          	    """给 Agent/Intents 下每个顶层声明加 @available(iOS 16.0, *)。
+
+          	    AppIntents 框架在 iOS 15 上不存在对应 API，整块标注后编译器不再检查其
+          	    内部实现；引用点集中在该目录内（AppShortcutsProvider 等），因此不会把
+          	    错误扩散到主 App。
+          	    """
+          	    if not os.path.isdir(INTENTS_DIR):
+          	        log("⚠️  未找到 %s，跳过 Intents 标注" % INTENTS_DIR)
+          	        return
+
+          	    n = 0
+          	    for path in swift_files(INTENTS_DIR):
+          	        def _fn(text: str) -> str:
+          	            if "@available(iOS 16.0, *) // ios15-port" in text:
+          	                return text
+          	            lines = text.split("\n")
+          	            out = []
+          	            for ln in lines:
+          	                m = DECL_RE.match(ln)
+          	                if m and not ln.lstrip().startswith("//"):
+          	                    ind = m.group("ind")
+          	                    out.append("%s@available(iOS 16.0, *) // ios15-port" % ind)
+          	                    n_insert = True
+          	                out.append(ln)
+          	            return "\n".join(out)
+
+          	        before = read(path)
+          	        after = _fn(before)
+          	        if after != before:
+          	            write(path, after)
+          	            n += 1
+          	    log("✅ Intents 目录标注 @available(iOS 16.0, *)：%d 个文件" % n)
+
+
+          	# ------------------------------------------- 4. 删除 iOS16 装饰性修饰符
+
+          	DELETE_LINE_RES = [
+          	    r"\.presentationDragIndicator\(",
+          	    r"\.toolbarBackground\(",
+          	    r"\.listRowSeparatorLeading\(",
+          	    r"\.scrollIndicators\(",
+          	    r"\.scrollDismissesKeyboard\(",
+          	    r"\.scrollContentBackground\(",
+          	    r"\.persistentSystemOverlays\(",
+          	    r"\.navigationSplitViewColumnWidth\(",
+          	    r"\.dropDestination\(",
+          	    r"\.draggable\(",
+          	    r"\.toolbar\([^\n]*for:\s*\.(?:navigationBar|bottomBar|tabBar)",
+          	]
+
+
+          	def delete_modifiers() -> None:
+          	    """删除 iOS16 专属、纯视觉/交互增强的修饰符整行（iOS15 无对应 API）。"""
+          	    pats = [re.compile(p) for p in DELETE_LINE_RES]
+          	    total = 0
+          	    touched = 0
+          	    for path in swift_files(ROOT):
+          	        def _fn(text: str) -> str:
+          	            lines = text.split("\n")
+          	            out = []
+          	            for ln in lines:
+          	                if any(p.search(ln) for p in pats):
+          	                    continue
+          	                out.append(ln)
+          	            return "\n".join(out)
+
+          	        before = read(path)
+          	        after = _fn(before)
+          	        if after != before:
+          	            write(path, after)
+          	            touched += 1
+          	    log("✅ 删除 iOS16 装饰性修饰符：%d 个文件受影响" % touched)
+
+
+          	# ------------------------------------------------------- 5. 零散 API 替换
+
+          	def misc_fixes() -> None:
+          	    """零散但确定可行的替换。"""
+          	    touched = 0
+          	    for path in swift_files(ROOT):
+          	        def _fn(t: str) -> str:
+          	            orig = t
+
+          	            # Task.sleep(for: .milliseconds(n)) -> Task.sleep(nanoseconds:)
+          	            t = re.sub(
+          	                r"Task\.sleep\(for:\s*\.milliseconds\(([^()]*)\)\)",
+          	                r"Task.sleep(nanoseconds: UInt64(\1) * 1_000_000)", t)
+          	            t = re.sub(
+          	                r"Task\.sleep\(for:\s*\.seconds\(([^()]*)\)\)",
+          	                r"Task.sleep(nanoseconds: UInt64(\1) * 1_000_000_000)", t)
+          	            t = re.sub(
+          	                r"Task\.sleep\(for:\s*\.nanoseconds\(([^()]*)\)\)",
+          	                r"Task.sleep(nanoseconds: UInt64(\1))", t)
+
+          	            # TextField(..., axis: .vertical) -> TextField(...)
+          	            t = re.sub(r"(TextField\([^\n]*?),\s*axis:\s*\.\w+\)", r"\1)", t)
+
+          	            # UITextView(usingTextLayoutManager:) -> UITextView()
+          	            t = re.sub(r"\(\s*usingTextLayoutManager:\s*(?:true|false)\s*\)", "()", t)
+          	            t = re.sub(r",\s*usingTextLayoutManager:\s*(?:true|false)", "", t)
+
+          	            # String(localized: "x") -> "x"
+          	            t = re.sub(r"String\(localized:\s*\"([^\"]*)\"\)", r'"\1"', t)
+
+          	            # UNUserNotificationCenter.setBadgeCount (iOS16) -> applicationIconBadgeNumber
+          	            def _badge(m):
+          	                arg = m.group(2).strip()
+          	                return "%sUIApplication.shared.applicationIconBadgeNumber = %s" % (
+          	                    m.group(1), arg)
+          	            t = re.sub(r"([ \t]*)(?:try\s+)?(?:await\s+)?[A-Za-z_][^\n]*\.setBadgeCount\(([^()]*)\)",
+          	                       _badge, t)
+
+          	            return t
+
+          	        before = read(path)
+          	        after = _fn(before)
+          	        if after != before:
+          	            write(path, after)
+          	            touched += 1
+          	    log("✅ 零散 API 替换（sleep/axis/badge/…）：%d 个文件受影响" % touched)
+
+
+          	# ------------------------------------------------------- 6. iOS15 兼容层
+
+          	COMPAT_SWIFT = r'''//
+          	//  iOS15Compat.swift
+          	//  MinisApp
+          	//
+          	//  iOS 15 port: SwiftUI types introduced in iOS 16, reimplemented with the
+          	//  iOS 15 API surface. Behaviour is intentionally close-but-not-identical --
+          	//  these exist so the app compiles and stays usable on iOS 15.5, not to win
+          	//  design awards.
+          	//
+
+          	import SwiftUI
+
+          	// MARK: - AnyShape (iOS 16)
+
+          	/// Type-erased `Shape`. iOS 16 ships this; iOS 15 needs a hand-rolled version.
+          	public struct AnyShape: Shape {
+          	    private let _path: (CGRect) -> Path
+
+          	    public init<S: Shape>(_ wrapped: S) {
+          	        _path = wrapped.path(in:)
+          	    }
+
+          	    public func path(in rect: CGRect) -> Path {
+          	        _path(rect)
+          	    }
+          	}
+
+          	// MARK: - UnevenRoundedRectangle (iOS 16)
+
+          	/// Rectangle with a per-corner radius. iOS 16 ships this; iOS 15 does not.
+          	public struct UnevenRoundedRectangle: Shape {
+          	    public var topLeadingRadius: CGFloat
+          	    public var bottomLeadingRadius: CGFloat
+          	    public var bottomTrailingRadius: CGFloat
+          	    public var topTrailingRadius: CGFloat
+          	    public var style: RoundedCornerStyle
+
+          	    public init(topLeadingRadius: CGFloat = 0,
+          	                bottomLeadingRadius: CGFloat = 0,
+          	                bottomTrailingRadius: CGFloat = 0,
+          	                topTrailingRadius: CGFloat = 0,
+          	                style: RoundedCornerStyle = .continuous) {
+          	        self.topLeadingRadius = topLeadingRadius
+          	        self.bottomLeadingRadius = bottomLeadingRadius
+          	        self.bottomTrailingRadius = bottomTrailingRadius
+          	        self.topTrailingRadius = topTrailingRadius
+          	        self.style = style
+          	    }
+
+          	    public func path(in rect: CGRect) -> Path {
+          	        let w = rect.width
+          	        let h = rect.height
+          	        let tl = max(0, min(topLeadingRadius, min(w, h) / 2))
+          	        let tr = max(0, min(topTrailingRadius, min(w, h) / 2))
+          	        let bl = max(0, min(bottomLeadingRadius, min(w, h) / 2))
+          	        let br = max(0, min(bottomTrailingRadius, min(w, h) / 2))
+
+          	        var p = Path()
+          	        p.move(to: CGPoint(x: rect.minX + tl, y: rect.minY))
+          	        p.addLine(to: CGPoint(x: rect.maxX - tr, y: rect.minY))
+          	        if tr > 0 {
+          	            p.addArc(center: CGPoint(x: rect.maxX - tr, y: rect.minY + tr),
+          	                     radius: tr, startAngle: .degrees(-90), endAngle: .degrees(0),
+          	                     clockwise: false)
+          	        }
+          	        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - br))
+          	        if br > 0 {
+          	            p.addArc(center: CGPoint(x: rect.maxX - br, y: rect.maxY - br),
+          	                     radius: br, startAngle: .degrees(0), endAngle: .degrees(90),
+          	                     clockwise: false)
+          	        }
+          	        p.addLine(to: CGPoint(x: rect.minX + bl, y: rect.maxY))
+          	        if bl > 0 {
+          	            p.addArc(center: CGPoint(x: rect.minX + bl, y: rect.maxY - bl),
+          	                     radius: bl, startAngle: .degrees(90), endAngle: .degrees(180),
+          	                     clockwise: false)
+          	        }
+          	        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + tl))
+          	        if tl > 0 {
+          	            p.addArc(center: CGPoint(x: rect.minX + tl, y: rect.minY + tl),
+          	                     radius: tl, startAngle: .degrees(180), endAngle: .degrees(270),
+          	                     clockwise: false)
+          	        }
+          	        p.closeSubpath()
+          	        return p
+          	    }
+          	}
+
+          	// MARK: - LabeledContent (iOS 16)
+
+          	/// Label + value row. iOS 16 ships this; iOS 15 approximates it with an
+          	/// `HStack` that pushes the content to the trailing edge.
+          	public struct LabeledContent<Label: View, Content: View>: View {
+          	    private let label: Label
+          	    private let content: Content
+
+          	    public init(@ViewBuilder content: () -> Content,
+          	                @ViewBuilder label: () -> Label) {
+          	        self.content = content()
+          	        self.label = label()
+          	    }
+
+          	    public var body: some View {
+          	        HStack(alignment: .firstTextBaseline) {
+          	            label
+          	            Spacer(minLength: 8)
+          	            content
+          	        }
+          	    }
+          	}
+
+          	extension LabeledContent where Label == Text {
+          	    /// `LabeledContent("Title", value: "…")`
+          	    public init<S1: StringProtocol, S2: StringProtocol>(_ title: S1, value: S2)
+          	    where Content == Text {
+          	        self.init(content: { Text(value) }, label: { Text(title) })
+          	    }
+
+          	    /// `LabeledContent("Title") { … }`
+          	    public init<S: StringProtocol>(_ title: S, @ViewBuilder content: () -> Content) {
+          	        self.init(content: content, label: { Text(title) })
+          	    }
+          	}
+
+          	// MARK: - NavigationPath (iOS 16)
+
+          	/// Minimal stand-in for SwiftUI's iOS 16 `NavigationPath`.
+          	///
+          	/// The port replaces `NavigationStack(path:)` with `NavigationView`, so these
+          	/// values are carried but never drive navigation on iOS 15. Kept as a real
+          	/// type so existing `@State` declarations and helpers still compile.
+          	public struct NavigationPath: Equatable {
+          	    private var elements: [AnyHashable]
+
+          	    public init() {
+          	        elements = []
+          	    }
+
+          	    public init<C: Collection>(_ elements: C) where C.Element: Hashable {
+          	        self.elements = elements.map { AnyHashable($0) }
+          	    }
+
+          	    public var count: Int { elements.count }
+          	    public var isEmpty: Bool { elements.isEmpty }
+
+          	    public mutating func append<V: Hashable>(_ value: V) {
+          	        elements.append(AnyHashable(value))
+          	    }
+
+          	    public mutating func removeLast(_ k: Int = 1) {
+          	        guard k > 0 else { return }
+          	        elements.removeLast(min(k, elements.count))
+          	    }
+
+          	    public static func == (lhs: NavigationPath, rhs: NavigationPath) -> Bool {
+          	        lhs.elements == rhs.elements
+          	    }
+          	}
+
+          	// MARK: - ProposedViewSize (iOS 16)
+
+          	/// Size proposal used by `UIViewRepresentable.sizeThatFits`.
+          	public struct ProposedViewSize: Equatable {
+          	    public var width: CGFloat?
+          	    public var height: CGFloat?
+
+          	    public init(width: CGFloat? = nil, height: CGFloat? = nil) {
+          	        self.width = width
+          	        self.height = height
+          	    }
+
+          	    public init(_ size: CGSize) {
+          	        self.width = size.width
+          	        self.height = size.height
+          	    }
+
+          	    public static let zero = ProposedViewSize(width: 0, height: 0)
+          	    public static let infinity = ProposedViewSize(width: .infinity, height: .infinity)
+          	    public static let unspecified = ProposedViewSize(width: nil, height: nil)
+
+          	    public func replacingUnspecifiedDimensions(by size: CGSize) -> CGSize {
+          	        CGSize(width: width ?? size.width, height: height ?? size.height)
+          	    }
+          	}
+          	'''
+
+
+          	def write_compat() -> None:
+          	    os.makedirs(os.path.dirname(COMPAT_REL), exist_ok=True)
+          	    write(COMPAT_REL, COMPAT_SWIFT)
+          	    log("✅ 已写入兼容层 %s" % COMPAT_REL)
+
+
+          	# --------------------------------------------------- pbxproj 注入兼容层
+
+          	PBX = os.path.join(ROOT, "Minis.xcodeproj", "project.pbxproj")
+
+
+          	def _section(text: str, name: str):
+          	    b = text.find("/* Begin %s section */" % name)
+          	    e = text.find("/* End %s section */" % name)
+          	    return b, e
+
+
+          	def _block(text: str, uuid: str):
+          	    m = re.search(re.escape(uuid) + r"\s*/\*.*?\*/\s*=\s*\{", text)
+          	    if not m:
+          	        return None, None
+          	    start = m.end() - 1
+          	    depth = 0
+          	    i = start
+          	    while i < len(text):
+          	        c = text[i]
+          	        if c == "{":
+          	            depth += 1
+          	        elif c == "}":
+          	            depth -= 1
+          	            if depth == 0:
+          	                return m.start(), i + 1
+          	        i += 1
+          	    return m.start(), len(text)
+
+
+          	def inject_compat() -> None:
+          	    """把 iOS15Compat.swift 加入主 App target 的编译源。"""
+          	    if not os.path.isfile(PBX):
+          	        log("⚠️  未找到 %s，跳过注入（兼容层不会参与编译）" % PBX)
+          	        return
+
+          	    text = read(PBX)
+          	    if "/* %s */" % COMPAT_NAME in text:
+          	        log("ℹ️  兼容层已在工程中，跳过注入")
+          	        return
+
+          	    ref = "IOS15COMPAT0000000000000A"
+          	    build = "IOS15COMPAT0000000000000B"
+          	    while ref in text or build in text:
+          	        ref += "A"
+          	        build += "B"
+
+          	    # 1) PBXFileReference
+          	    b, e = _section(text, "PBXFileReference")
+          	    if b < 0:
+          	        log("⚠️  找不到 PBXFileReference section，跳过注入")
+          	        return
+          	    ins = '\t\t%s /* %s */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "%s"; sourceTree = "<group>"; };\n' % (
+          	        ref, COMPAT_NAME, COMPAT_NAME)
+          	    text = text[:b + len("/* Begin PBXFileReference section */")] + "\n" + ins + text[b + len("/* Begin PBXFileReference section */"):]
+
+          	    # 2) PBXBuildFile
+          	    b2, _ = _section(text, "PBXBuildFile")
+          	    if b2 >= 0:
+          	        ins2 = '\t\t%s /* %s in Sources */ = {isa = PBXBuildFile; fileRef = %s /* %s */; };\n' % (
+          	            build, COMPAT_NAME, ref, COMPAT_NAME)
+          	        marker = "/* Begin PBXBuildFile section */"
+          	        text = text[:b2 + len(marker)] + "\n" + ins2 + text[b2 + len(marker):]
+
+          	    # 3) 挂到 mainGroup 的 children
+          	    mg = re.search(r"mainGroup = (\w+)", text)
+          	    if mg:
+          	        gs, ge = _block(text, mg.group(1))
+          	        if gs is not None:
+          	            blk = text[gs:ge]
+          	            if "children" in blk:
+          	                newblk = re.sub(r"(children\s*=\s*\()",
+          	                                r"\1\n\t\t\t\t%s /* %s */," % (ref, COMPAT_NAME),
+          	                                blk, count=1)
+          	                text = text[:gs] + newblk + text[ge:]
+
+          	    # 4) 加入主 App target 的 Sources phase
+          	    tm = re.search(r"(\w+)\s*/\*\s*Minis\s*\*/\s*=\s*\{\s*isa = PBXNativeTarget;", text)
+          	    if tm:
+          	        ts, te = _block(text, tm.group(1))
+          	        tblock = text[ts:te]
+          	        # 找 PBXSourcesBuildPhase section 范围，判断哪个 phase 属于它
+          	        sb, se = _section(text, "PBXSourcesBuildPhase")
+          	        src_ids = set()
+          	        if sb >= 0:
+          	            src_ids = set(re.findall(r"(\w+)\s*/\*\s*Sources\s*\*/", text[sb:se]))
+          	        for pid in re.findall(r"(\w+)\s*/\*[^)]*?\*/", tblock):
+          	            pass
+          	        phases = re.findall(r"(\w+)\s*/\*\s*([^*]*?)\s*\*/", tblock)
+          	        chosen = None
+          	        for pid, pname in phases:
+          	            if pid in src_ids or pname == "Sources":
+          	                chosen = pid
+          	                break
+          	        if chosen:
+          	            ps, pe = _block(text, chosen)
+          	            if ps is not None:
+          	                pblk = text[ps:pe]
+          	                if "files" in pblk:
+          	                    newp = re.sub(r"(files\s*=\s*\()",
+          	                                  r"\1\n\t\t\t\t%s /* %s in Sources */," % (build, COMPAT_NAME),
+          	                                  pblk, count=1)
+          	                    text = text[:ps] + newp + text[pe:]
+          	                    log("✅ 兼容层已加入 target 的 Sources phase (%s)" % chosen)
+          	                else:
+          	                    log("⚠️  Sources phase 没有 files 列表")
+          	            else:
+          	                log("⚠️  未定位到 Sources phase 块")
+          	        else:
+          	            log("⚠️  未在主 target 中找到 Sources phase，兼容层可能不参与编译")
+          	    else:
+          	        log("⚠️  未找到名为 Minis 的 PBXNativeTarget，跳过 Sources 注入")
+
+          	    write(PBX, text)
+
+
+          	# ------------------------------------------------------------------ main
+
+          	def main() -> None:
+          	    if not os.path.isdir(ROOT):
+          	        log("⚠️  未找到 %s，请在仓库根目录执行本脚本" % ROOT)
+          	        sys.exit(0)
+
+          	    log("=== OpenMinis -> iOS 15 移植（第二阶段）===")
+          	    fix_applocalized()
+          	    strip_localizedstringresource()
+          	    annotate_intents()
+          	    delete_modifiers()
+          	    misc_fixes()
+          	    write_compat()
+          	    inject_compat()
+          	    log("=== 完成 ===")
+
+
+          	if __name__ == "__main__":
+          	    main()
+          	EOF_MARK_V2
+          fi
+          python3 -m py_compile scripts/ios15_port.py scripts/ios15_port_v2.py scripts/fix_fileprovider_deployment.py
+          echo 'OK: 移植脚本已就绪并通过语法检查'
+
+      - name: "源码移植到 iOS 15 (第一阶段: 导航/弹窗)"
         if: ${{ !inputs.skip_port }}
         run: python3 scripts/ios15_port.py src/ios
 
-      - name: 提交移植结果 (幂等)
+      - name: "源码移植到 iOS 15 (第二阶段: 本地化/Intents/兼容层)"
+        if: ${{ !inputs.skip_port }}
+        run: python3 scripts/ios15_port_v2.py
+
+      - name: "提交移植结果 (幂等)"
         if: ${{ !inputs.skip_port }}
         run: |
           git config user.email "ios15-port@codebuddy.local"
@@ -69,21 +903,19 @@ jobs:
           if git diff --cached --quiet; then
             echo "无改动，跳过提交"
           else
-            git commit -m "Auto-port OpenMinis to iOS 15 (NavigationView + 去掉 presentationDetents)"
+            git commit -m "Auto-port OpenMinis to iOS 15"
             git push
           fi
 
-      - name: 设置部署目标 (主 App=${{ inputs.deploy_target }}, FileProvider 扩展=16.0)
+      - name: "设置部署目标 (主 App=${{ inputs.deploy_target }}, FileProvider 扩展=16.0)"
         run: |
-          # 先把所有目标（含工程级）设为 15.5
           sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = ${{ inputs.deploy_target }};/g' src/ios/Minis.xcodeproj/project.pbxproj
-          # MinisFileProvider 扩展用了 iOS16 专属 API，单独抬到 16.0（15.5 上不被系统加载，不影响主程序）
           python3 scripts/fix_fileprovider_deployment.py
           cp src/ios/Configs/ProviderCustomization.xcconfig.example src/ios/Configs/ProviderCustomization.xcconfig 2>/dev/null || true
           echo "=== 部署目标分布 ==="
           grep -n "IPHONEOS_DEPLOYMENT_TARGET" src/ios/Minis.xcodeproj/project.pbxproj | head
 
-      - name: 编译原生依赖 (LAME→FFmpeg→iSH→Alpine→RClone)
+      - name: "编译原生依赖 (LAME/FFmpeg/iSH/Alpine/RClone)"
         run: |
           ./deps/build_lame.sh
           ./deps/build_ffmpeg.sh
@@ -92,7 +924,7 @@ jobs:
           sed -i '' 's/-miphoneos-version-min=[0-9.]*/-miphoneos-version-min=${{ inputs.deploy_target }}/; s/-mios-simulator-version-min=[0-9.]*/-mios-simulator-version-min=${{ inputs.deploy_target }}/' deps/build_rclone_ios.sh
           ./deps/build_rclone_ios.sh
 
-      - name: 编译 App (不签名)
+      - name: "编译 App (不签名)"
         run: |
           set +e
           xcodebuild -project src/ios/Minis.xcodeproj \
@@ -106,12 +938,12 @@ jobs:
           echo "=== 编译日志尾部 ==="
           tail -n 50 build.log
           if [ "$RC" -ne 0 ]; then
-            echo "❌ 编译失败 (xcodebuild 退出码 $RC)，请在产物 build-logs 中搜索 'error:'"
+            echo "编译失败 (xcodebuild 退出码 $RC)，请在产物 build-logs 中搜索 error:"
             exit "$RC"
           fi
-          echo "✅ 编译成功"
+          echo "编译成功"
 
-      - name: 打包 IPA (供 TrollStore 安装)
+      - name: "打包 IPA (供 TrollStore 安装)"
         if: success()
         run: |
           echo "=== 所有 Minis.app 候选及大小 ==="
@@ -122,27 +954,27 @@ jobs:
           fi
           echo "=== 选用: $APP ==="
           du -sh "$APP"
-          if [ ! -f "$APP/Info.plist" ]; then echo "❌ Info.plist 不存在，打包中止"; exit 1; fi
+          if [ ! -f "$APP/Info.plist" ]; then echo "Info.plist 不存在，打包中止"; exit 1; fi
           rm -rf Payload "Minis-iOS${{ inputs.deploy_target }}.ipa"
           mkdir -p Payload
           ditto "$APP" "Payload/Minis.app"
           zip -qry "Minis-iOS${{ inputs.deploy_target }}.ipa" Payload
           if ! unzip -l "Minis-iOS${{ inputs.deploy_target }}.ipa" | grep -q "Payload/Minis.app/Info.plist"; then
-            echo "❌ IPA 结构错误（缺少 Payload/Minis.app/Info.plist）"; exit 1
+            echo "IPA 结构错误（缺少 Payload/Minis.app/Info.plist）"; exit 1
           fi
           SIZE=$(stat -f%z "Minis-iOS${{ inputs.deploy_target }}.ipa")
           echo "IPA 大小: $SIZE 字节"
-          if [ "$SIZE" -lt 10000000 ]; then echo "❌ IPA 小于 10MB，疑似空包，中止上传"; exit 1; fi
+          if [ "$SIZE" -lt 10000000 ]; then echo "IPA 小于 10MB，疑似空包，中止上传"; exit 1; fi
           ls -lh "Minis-iOS${{ inputs.deploy_target }}.ipa"
 
-      - name: 上传 IPA
+      - name: "上传 IPA"
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Minis-iOS${{ inputs.deploy_target }}-ipa
           path: Minis-iOS${{ inputs.deploy_target }}.ipa
 
-      - name: 上传编译日志 (失败时排错用)
+      - name: "上传编译日志 (失败时排错用)"
         if: always()
         uses: actions/upload-artifact@v4
         with:
