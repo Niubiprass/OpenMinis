@@ -389,16 +389,7 @@ private struct BridgedAssistantBlockV3: View {
                             Label(AppLocalized("Compact Above"), systemImage: "arrow.down.right.and.arrow.up.left")
                         }
                     }
-                }) preview: {
-                    // [T-ios-longpress-menu-preview-background] This .contextMenu
-                    // is on a zero-size Color.clear overlay (kept zero-size to
-                    // avoid inflating self-sizing), so without an explicit preview
-                    // SwiftUI snapshots that transparent overlay → see-through
-                    // preview. Supply an opaque card of the message text.
-                    MessageContextMenuPreview(text: message.blocks
-                        .filter { if case .text = $0.kind { return true }; return false }
-                        .map(\.content).joined(separator: "\n\n"))
-                }
+                }) 
         }
     }
 
@@ -547,13 +538,7 @@ private struct BridgedAssistantFooterV3: View {
                             Label(AppLocalized("Compact Above"), systemImage: "arrow.down.right.and.arrow.up.left")
                         }
                     }
-                }) preview: {
-                    // [T-ios-longpress-menu-preview-background] Opaque preview
-                    // for the footer's zero-size Color.clear contextMenu overlay.
-                    MessageContextMenuPreview(text: message.blocks
-                        .filter { if case .text = $0.kind { return true }; return false }
-                        .map(\.content).joined(separator: "\n\n"))
-                }
+                }) 
         }
     }
 

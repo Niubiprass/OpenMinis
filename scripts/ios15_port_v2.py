@@ -29,7 +29,7 @@ ROOT = "src/ios"
 
 # 脚本版本号。每轮修复都会改它，日志第一行就会打印，
 # 用来确认 runner 上跑的是不是最新脚本（避免又下到 CDN 缓存的旧版）。
-SCRIPT_VERSION = "v10-20260929h"
+SCRIPT_VERSION = "v10-20260929i"
 COMPAT_NAME = "iOS15Compat.swift"
 PRISTINE_COMMIT = None  # 已废弃：浅克隆下取不到真正的初始提交，改用内存基线
 # 转换前的文件内容快照（路径 -> 内容），由 snapshot_baseline() 填充，
@@ -795,30 +795,65 @@ def stage1_fixes() -> None:
 
 
 def _fix_context_menu(text: str) -> str:
-    """.contextMenu { … }  ->  .contextMenu(menuItems: { … })
+    """处理 .contextMenu 的两种 iOS 16 写法，使其兼容 iOS 15：
 
-    第 15 轮报了 4 处 'contextMenu(menuItems:preview:)' is only available in
-    iOS 16.0 —— 源码写的是单参数尾随闭包，编译器却去匹配 iOS 16 的双参数重载。
-    显式写出 menuItems: 标签就把重载选择钉死在 iOS 13 就有的那一版。
+    1) .contextMenu { … } preview: { … }
+       —— preview: 是 iOS 16 才有的自定义预览标签块，iOS 15 没有对应物，
+          整块删掉。删完变成 .contextMenu { … }（iOS 14 尾随闭包，iOS 15 可用）。
+    2) .contextMenu { … }
+       —— 显式改写成 .contextMenu(menuItems: { … })，把重载钉死在 iOS 13 那版，
+          避免编译器去选 iOS 16 的 menuItems:preview: 双参重载。
     """
-    pat = re.compile(r"\.contextMenu\s*\{")
+    # 第 1 步：删掉紧跟在 .contextMenu 调用后面的 preview: { … } 块
     out = text
     pos = 0
     guard = 0
-    while guard < 100:
+    while guard < 300:
         guard += 1
-        m = pat.search(out, pos)
+        m = re.compile(r"\.contextMenu").search(out, pos)
         if not m:
             break
-        lb = m.end() - 1
-        eb = _match_delim(out, lb)
+        i = m.end()
+        while i < len(out) and out[i] in " \t\r\n":
+            i += 1
+        if i >= len(out) or out[i] not in "{(":
+            pos = m.end()
+            continue
+        eb = _match_delim(out, i)        # .contextMenu {…} 或 (menuItems:{…}) 的结束 }
         if not eb:
             pos = m.end()
             continue
-        block = out[lb:eb]
-        out = out[:lb] + "(menuItems: " + block + ")" + out[eb:]
+        # 调用结束后跳过空白，看是否紧跟 preview: { … }
+        k = eb
+        while k < len(out) and out[k] in " \t\r\n":
+            k += 1
+        if out[k:k + 8] == "preview:":
+            p = k + 8
+            while p < len(out) and out[p] in " \t\r\n":
+                p += 1
+            if out[p] == "{":
+                pe = _match_delim(out, p)
+                if pe:
+                    out = out[:k] + out[pe:]   # 删掉 preview: { … }
+                    continue                   # 重新扫描，可能有多个 contextMenu
+        pos = eb
+    # 第 2 步：剩余的 .contextMenu { … } 改写成 (menuItems: { … })
+    out2 = out
+    pos = 0
+    while guard < 600:
+        guard += 1
+        m = re.compile(r"\.contextMenu\s*\{").search(out2, pos)
+        if not m:
+            break
+        lb = m.end() - 1
+        eb = _match_delim(out2, lb)
+        if not eb:
+            pos = m.end()
+            continue
+        block = out2[lb:eb]
+        out2 = out2[:lb] + "(menuItems: " + block + ")" + out2[eb:]
         pos = lb + len("(menuItems: ") + len(block) + 1
-    return out
+    return out2
 
 
 def snapshot_baseline() -> None:
