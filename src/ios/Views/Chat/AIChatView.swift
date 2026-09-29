@@ -1526,7 +1526,7 @@ struct AIChatView: View {
                 }
             )
         }
-        .onChange(of: selectedPhotoItems) { handlePhotoSelectionChange(items) }
+        .onChange(of: selectedPhotoItems) { items in handlePhotoSelectionChange(items) }
         .fileImporter(
             isPresented: $showDocumentPicker,
             allowedContentTypes: [.image, .pdf, .plainText, .json, .sourceCode, .presentation, .spreadsheet, .data],
@@ -1554,7 +1554,10 @@ struct AIChatView: View {
         }
         .onChange(of: shareCoordinator.bufferVersion) { newVersion in
             // Warm start: user is already in a session when share arrives
-            minisLogger.info("[Share] AIChatView.onChange(bufferVersion)=\(newVersion) sessionId=\(sessionId ?? "nil") draftId=\(draftId ?? "nil") hasBuffer=\(shareCoordinator.pendingShareBuffer != nil)")
+            let logSessionId = sessionId ?? "nil"
+            let logDraftId = draftId ?? "nil"
+            let logHasBuffer = shareCoordinator.pendingShareBuffer != nil
+            minisLogger.info("[Share] AIChatView.onChange(bufferVersion)=\(newVersion) sessionId=\(logSessionId) draftId=\(logDraftId) hasBuffer=\(logHasBuffer)")
             injectPendingShareIfNeeded()
         }
         .onDisappear { handleDisappear() }
@@ -1595,7 +1598,7 @@ struct AIChatView: View {
             if vm.errorMessage != nil { return .failed }
             return .finished
         }
-        .onChange(of: vm.isProcessing) { handleProcessingChanged(processing) }
+        .onChange(of: vm.isProcessing) { processing in handleProcessingChanged(processing) }
         // [T-ios-retry-hide-when-processing] Inject the view model so deep
         // descendants (e.g. ToolCapsuleView's long-press menu) can react to
         // `vm.isProcessing` without threading the vm through every level.

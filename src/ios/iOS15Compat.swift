@@ -424,6 +424,8 @@ public struct UIHostingConfiguration<Content: View>: UIContentConfiguration {
     }
 }
 
+import UniformTypeIdentifiers
+
 // MARK: - PhotosPickerItem (iOS 16)
 
 /// `PhotosUI.PhotosPickerItem` 的 iOS 15 替身。
@@ -435,7 +437,7 @@ public struct PhotosPickerItem: Hashable {
     public init() {}
 
     public var itemIdentifier: String? { nil }
-    public var supportedContentTypes: [Any] { [] }
+    public var supportedContentTypes: [UTType] { [] }
 
     public func loadTransferable<T>(type: T.Type) async throws -> T? { nil }
 
