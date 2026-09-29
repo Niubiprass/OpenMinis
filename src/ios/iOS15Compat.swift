@@ -563,7 +563,7 @@ enum UIKitPickerPresenter {
 /// Retained delegate for the UIKit photo & document pickers. Held as `@State`
 /// on AIChatView so it lives as long as the view; closures are assigned at
 /// presentation time to capture the current view model.
-final class AttachmentPickerCoordinator: NSObject, PHPickerViewControllerDelegate, UIDocumentPickerViewControllerDelegate {
+final class AttachmentPickerCoordinator: NSObject, PHPickerViewControllerDelegate, UIDocumentPickerDelegate {
     var onPhotos: (([PHPickerResult]) -> Void)?
     var onFiles: (([URL]) -> Void)?
 
