@@ -896,7 +896,58 @@ struct AIChatView: View {
         
     }
 
-    var body: some View {
+        /// iOS 15 photo/video picker bridge: consumes `PHPickerResult`s and feeds the
+    /// existing attachment pipeline (loading placeholders -> concurrent load ->
+    /// finalize), mirroring `handlePhotoSelectionChange` which the port stripped.
+    /// Restores "Choose Photos & Videos" on iOS 15 (and on every version of this
+    /// ported build, where the original `.photosPicker` was removed).
+    private func handlePHPickerResults(_ results: [PHPickerResult]) {
+        guard !results.isEmpty else { return }
+        let kinds: [InputAttachment.Kind] = results.map { r in
+            r.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) ? .video : .image
+        }
+        let placeholderIDs = vm.addLoadingPlaceholders(kinds: kinds)
+        let jobs = zip(placeholderIDs, results).map { (id: $0, result: $1,
+            isVideo: $1.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)) }
+
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                for job in jobs {
+                    group.addTask {
+                        let provider = job.result.itemProvider
+                        if job.isVideo {
+                            // Copy the provider's temporary export to a stable temp URL
+                            // first — the original is invalidated once this callback returns.
+                            guard
+                                let exported = try? await provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier),
+                                let tmpDir = try? FileManager.default.url(for: .itemReplacementDirectory,
+                                                                         in: .userDomainMask,
+                                                                         appropriateFor: exported,
+                                                                         create: true),
+                                let tmp = try? tmpDir.appendingPathComponent("picked-\(UUID().uuidString).\(exported.pathExtension)"),
+                                (try? FileManager.default.copyItem(at: exported, to: tmp)) != nil
+                            else {
+                                await MainActor.run { vm.markPlaceholderFailed(id: job.id) }
+                                return
+                            }
+                            await MainActor.run { vm.finalizeVideoPlaceholder(id: job.id, from: tmp) }
+                        } else {
+                            if let data = try? await provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) {
+                                await MainActor.run { vm.finalizeImagePlaceholder(id: job.id, data: data, fileExtension: nil) }
+                            } else if let img = try? await provider.loadObject(ofClass: UIImage.self) as? UIImage,
+                                      let data = img.pngData() ?? img.jpegData(compressionQuality: 0.9) {
+                                await MainActor.run { vm.finalizeImagePlaceholder(id: job.id, data: data, fileExtension: nil) }
+                            } else {
+                                await MainActor.run { vm.markPlaceholderFailed(id: job.id) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+var body: some View {
         ZStack {
             // Messages — floating tool preview overlaid at bottom
             messagesArea
@@ -1540,6 +1591,13 @@ struct AIChatView: View {
             case .failure(let error):
                 minisLogger.error("File import failed: \(error.localizedDescription)")
             }
+        }
+        // [iOS15-FIX] The original `.photosPicker(isPresented:)` modifier (iOS 16+)
+        // was stripped by the iOS-15 port, leaving "Choose Photos & Videos" dead.
+        // Present a PHPickerViewController (iOS 14+) instead and bridge its results
+        // into the same attachment pipeline the photo-picker path used.
+        .sheet(isPresented: $showPhotoPicker) {
+            PHPickerView(onPicked: handlePHPickerResults)
         }
         .onAppear { handleAppear() }
         .observingQuickActions(modifier: quickActionObserver)
