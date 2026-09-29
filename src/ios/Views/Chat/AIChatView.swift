@@ -1572,9 +1572,11 @@ struct AIChatView: View {
                         // Re-check: a retry started during the 1.5s window would
                         // otherwise be focused by this older timer.
                         guard !vm.turnStartedByRetry else { return }
-                        let lastAssistantLength = vm.messages.last.flatMap {
-                            $0.role == .assistant ? $0.blocks.reduce(0) { $0 + $1.content.count } : nil
-                        } ?? 0
+                        let lastMessage = vm.messages.last
+                        var lastAssistantLength = 0
+                        if let m = lastMessage, m.role == .assistant {
+                            lastAssistantLength = m.blocks.reduce(0) { $0 + $1.content.count }
+                        }
                         if lastAssistantLength < 600 {
                             inputFocused = true
                         }
