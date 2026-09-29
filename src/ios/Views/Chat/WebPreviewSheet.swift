@@ -666,7 +666,7 @@ struct MinisSafariView: View {
                 .frame(width: 44, height: 44)
                 .background(
                     Circle()
-                        .fill(.ultraThinMaterial)
+                        .fill(Color(UIColor.tertiarySystemFill))
                 )
                 .overlay(
                     Circle()

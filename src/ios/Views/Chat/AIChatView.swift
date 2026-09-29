@@ -2894,7 +2894,7 @@ struct AIChatView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(.ultraThinMaterial)
+            .background(Color(UIColor.tertiarySystemFill))
         }
     }
     #endif
@@ -3692,7 +3692,7 @@ struct AIChatView: View {
                             .foregroundStyle(ChatColors.secondaryText)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(.ultraThinMaterial)
+                            .background(Color(UIColor.tertiarySystemFill))
                             .clipShape(Capsule())
                     }
                     .padding(.top, 6)
@@ -5568,7 +5568,7 @@ private struct SessionLockGateOverlay: View {
     private var gateView: some View {
         ZStack {
             Rectangle()
-                .fill(.regularMaterial)
+                .fill(Color(UIColor.secondarySystemBackground))
                 .ignoresSafeArea()
                 .overlay {
                     Color(UIColor.systemBackground).opacity(0.4)

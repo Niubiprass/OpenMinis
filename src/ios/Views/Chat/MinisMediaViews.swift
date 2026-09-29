@@ -796,7 +796,7 @@ struct MinisImageFilePreviewView: View {
                         .foregroundStyle(ChatColors.primaryText)
                         .frame(width: 44, height: 44)
                         .contentShape(Circle())
-                        .background(.ultraThinMaterial, in: Circle())
+                        .background(Color(UIColor.tertiarySystemFill), in: Circle())
                 }
                 .padding(.horizontal)
                 .padding(.top, 2)

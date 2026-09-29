@@ -73,7 +73,7 @@ struct MinisAudioPreviewView: View {
                     .aspectRatio(contentMode: .fill)
                     .ignoresSafeArea()
                 Rectangle()
-                    .fill(.ultraThinMaterial)
+                    .fill(Color(UIColor.tertiarySystemFill))
                     .ignoresSafeArea()
                 dominantColor
                     .opacity(0.5)
@@ -97,7 +97,7 @@ struct MinisAudioPreviewView: View {
                     .foregroundStyle(ChatColors.primaryText)
                     .frame(width: 44, height: 44)
                     .contentShape(Circle())
-                    .background(.ultraThinMaterial, in: Circle())
+                    .background(Color(UIColor.tertiarySystemFill), in: Circle())
             }
             .buttonStyle(.plain)
 
@@ -112,7 +112,7 @@ struct MinisAudioPreviewView: View {
                     .foregroundStyle(ChatColors.primaryText)
                     .frame(width: 44, height: 44)
                     .contentShape(Circle())
-                    .background(.ultraThinMaterial, in: Circle())
+                    .background(Color(UIColor.tertiarySystemFill), in: Circle())
             }
             .buttonStyle(.plain)
 
@@ -125,7 +125,7 @@ struct MinisAudioPreviewView: View {
                     .foregroundStyle(ChatColors.primaryText)
                     .frame(width: 44, height: 44)
                     .contentShape(Circle())
-                    .background(.ultraThinMaterial, in: Circle())
+                    .background(Color(UIColor.tertiarySystemFill), in: Circle())
             }
             .buttonStyle(.plain)
         }
