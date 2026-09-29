@@ -1000,7 +1000,9 @@ struct ToolLiveSheet: View {
                     let output = text.hasPrefix(cmdPrefix) ? String(text.dropFirst(cmdPrefix.count)) : text
                     let chunks = Self.chunkedLines(output.isEmpty ? " " : output)
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
+                        // [iOS15-OOM-FIX] Use LazyVStack so thousands of tool-output
+                        // chunks are materialized on demand, not all at once.
+                        LazyVStack(alignment: .leading, spacing: 0) {
                             Text("$ \(cmd)")
                                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                                 .foregroundColor(.white)
@@ -1401,7 +1403,8 @@ struct ToolLiveSheet: View {
                     Divider()
 
                     // Memory content body
-                    VStack(alignment: .leading, spacing: 0) {
+                    // [iOS15-OOM-FIX] LazyVStack: only render visible chunks.
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         let chunks = isStreaming
                             ? Self.liveChunkedLines(memoryContent.isEmpty ? " " : memoryContent)
                             : Self.chunkedLines(memoryContent.isEmpty ? " " : memoryContent)
@@ -1467,7 +1470,8 @@ struct ToolLiveSheet: View {
                     Divider()
 
                     // File content — chunked rendering
-                    VStack(alignment: .leading, spacing: 0) {
+                    // [iOS15-OOM-FIX] LazyVStack: only render visible chunks.
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(chunks, id: \.id) { chunk in
                             Text(chunk.text)
                                 .font(.system(size: 13, design: .monospaced))
