@@ -449,38 +449,6 @@ public struct PhotosPickerItem: Hashable {
 /// 的声明继续成立；真正的传输行为在 iOS 15 上不可用。
 public protocol Transferable {}
 
-/// `ShareLink(item:)` 的替身：一个走 `UIActivityViewController` 的按钮。
-public struct MinisShareLinkButton: View {
-    let item: URL
-
-    public init(item: URL) { self.item = item }
-
-    public var body: some View {
-        Button {
-            MinisSharePresenter.present(items: [item])
-        } label: {
-            Image(systemName: "square.and.arrow.up")
-        }
-    }
-}
-
-public enum MinisSharePresenter {
-    public static func present(items: [Any]) {
-        let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
-        guard let scene = UIApplication.shared.connectedScenes
-                .compactMap({ $0 as? UIWindowScene })
-                .first(where: { $0.activationState == .foregroundActive }),
-              let window = scene.windows.first(where: { $0.isKeyWindow })
-                ?? scene.windows.first,
-              let root = window.rootViewController else { return }
-        var presenter = root
-        while let presented = presenter.presentedViewController {
-            presenter = presented
-        }
-        presenter.present(vc, animated: true)
-    }
-}
-
 // MARK: - Regex 字面量替身 (iOS 16)
 
 /// iOS 16 的 `Regex` 字面量 (`/…/`) 与 `wholeMatch(of:)` / `ranges(of:)`

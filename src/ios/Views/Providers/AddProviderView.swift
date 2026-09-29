@@ -331,13 +331,15 @@ struct AddProviderView: View {
             .interactiveDismissDisabled()
         }
         .sheet(isPresented: $showKimiLogin) {
-            // [T-kimi-oauth] RFC 8628 device-code login. On success, mark the
-            // OAuth step done + surface the masked token, matching startOAuth().
-            KimiDeviceLoginSheet(instanceId: pendingInstanceId) { success in
-                if success {
-                    oauthAuthTime = Date()
-                    oauthMaskedToken = loadMaskedToken(type: .kimiCode)
-                    pendingOAuthDone = true
+            if #available(iOS 16.0, *) {
+                // [T-kimi-oauth] RFC 8628 device-code login. On success, mark the
+                // OAuth step done + surface the masked token, matching startOAuth().
+                KimiDeviceLoginSheet(instanceId: pendingInstanceId) { success in
+                    if success {
+                        oauthAuthTime = Date()
+                        oauthMaskedToken = loadMaskedToken(type: .kimiCode)
+                        pendingOAuthDone = true
+                    }
                 }
             }
         }

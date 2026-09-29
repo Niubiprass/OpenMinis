@@ -88,7 +88,7 @@ private struct FlowLayout<Content: View>: View {
             HStack(alignment: .center, spacing: hSpacing) { content }
                 .padding(.vertical, vSpacing > 0 ? vSpacing / 2 : 0)
                 .frame(maxWidth: .infinity,
-                       alignment: Alignment(horizontal: alignment))
+                       alignment: Alignment(horizontal: alignment, vertical: .center))
         }
     }
 }

@@ -328,7 +328,7 @@ struct MinisApp: App {
                     // appearance after the first is a no-op.
                     ConfigRegistry.shared.registerBuiltinsIfNeeded()
                     // Register notification delegate for shortcut task tap-to-open
-                    ShortcutNotificationDelegate.shared.register()
+                    if #available(iOS 16.0, *) { ShortcutNotificationDelegate.shared.register() }
                     // Register App Shortcuts with the system so Siri and Spotlight discover them
                     if #available(iOS 17.0, *) {
                         MinisShortcutsProvider.updateAppShortcutParameters()
@@ -533,7 +533,7 @@ struct MinisApp: App {
                 // against ChatStore whether each orphan actually completed before
                 // warning. Wrapped in a Task so scenePhase handling stays
                 // synchronous; the scan is advisory and nothing below depends on it.
-                Task { await ShortcutRunTracker.checkPendingOnForeground() }
+                if #available(iOS 16.0, *) { Task { await ShortcutRunTracker.checkPendingOnForeground() } }
                 AgentLiveActivityManager.shared.cleanupStaleActivities(source: "scenePhase.active")
                 // [T-ios-live-activity-soft-finish] If a completed task's Live
                 // Activity is lingering (soft-finished, awaiting the user), the
@@ -890,9 +890,11 @@ struct MinisApp: App {
     }
 
     private static func signalFileProvider() {
-        NSFileProviderManager(for: fileProviderDomain)?.signalEnumerator(for: .rootContainer) { error in
-            if let error {
-                lifecycleLog.warning("[FileProvider] signal failed: \(error.localizedDescription)")
+        if #available(iOS 16.0, *) {
+            NSFileProviderManager(for: fileProviderDomain)?.signalEnumerator(for: .rootContainer) { error in
+                if let error {
+                    lifecycleLog.warning("[FileProvider] signal failed: \(error.localizedDescription)")
+                }
             }
         }
     }

@@ -1421,7 +1421,7 @@ struct ContentView: View {
             // handling time so an in-flight launch `.task` (the post can land
             // during its `await listSessions()`) doesn't clobber the target
             // session with the Launch Session default afterwards.
-            NotificationNavigationStore.shared.markHandled()
+            if #available(iOS 16.0, *) { NotificationNavigationStore.shared.markHandled() }
             // Skip navigation if the target session is already visible
             if isWideLayout {
                 guard selectedSessionId != sessionId && newSessionRealId != sessionId else { return }
@@ -1654,12 +1654,18 @@ struct ContentView: View {
             // post arrived while this .task was awaiting listSessions() and
             // .onReceive already navigated — handledRecently suppresses the
             // launch-screen default so it can't clobber that navigation.
-            if let notificationTarget = NotificationNavigationStore.shared.takePending() {
+            let pendingNotificationTarget: String? = {
+                if #available(iOS 16.0, *), let t = NotificationNavigationStore.shared.takePending() { t } else { nil }
+            }()
+            let notificationHandledRecently: Bool = {
+                if #available(iOS 16.0, *), NotificationNavigationStore.shared.handledRecently { true } else { false }
+            }()
+            if let notificationTarget = pendingNotificationTarget {
                 shareLog.info("[Share] .task: notification tap target=\(notificationTarget.prefix(8)) — overriding launchScreen logic")
                 var tx = Transaction()
                 tx.disablesAnimations = true
                 withTransaction(tx) { openSession(notificationTarget) }
-            } else if NotificationNavigationStore.shared.handledRecently {
+            } else if notificationHandledRecently {
                 shareLog.info("[Share] .task: notification navigation just handled — skipping launchScreen logic")
             } else if quickActionPending {
                 shareLog.info("[Share] .task: quick action pending — deferring launchScreen logic to QuickActionRouter")

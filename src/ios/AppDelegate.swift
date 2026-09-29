@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        guard #available(iOS 16.0, *) else { return }
+        guard #available(iOS 16.0, *) else { return true }
         if #available(iOS 17.0, *) {
             CLBackgroundActivitySession().invalidate()
         }

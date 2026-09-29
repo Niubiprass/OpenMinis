@@ -76,9 +76,11 @@ struct ProviderInstanceDetailView: View {
             ModelEntryDetailSheet(entry: entry)
         }
         .sheet(isPresented: $showKimiLogin) {
-            if let instance = instance {
-                KimiDeviceLoginSheet(instanceId: instance.id) { _ in
-                    oauthRefreshTrigger.toggle()
+            if #available(iOS 16.0, *) {
+                if let instance = instance {
+                    KimiDeviceLoginSheet(instanceId: instance.id) { _ in
+                        oauthRefreshTrigger.toggle()
+                    }
                 }
             }
         }

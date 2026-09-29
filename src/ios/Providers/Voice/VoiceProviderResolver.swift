@@ -158,6 +158,7 @@ final class VoiceOutputState: ObservableObject {
     /// player. `VoiceOutputState` is a never-deallocated singleton, so an
     /// unretained observer token is safe.
     private func registerLiveActivityToggleObserver() {
+        guard #available(iOS 17.0, *) else { return }
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         let observer = Unmanaged.passUnretained(self).toOpaque()
         CFNotificationCenterAddObserver(

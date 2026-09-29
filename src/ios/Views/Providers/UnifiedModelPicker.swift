@@ -618,7 +618,8 @@ struct UnifiedModelPicker: View {
                 .font(.body.weight(.semibold))
                 .disabled(selectedEntryIds.isEmpty)
             }
-        } else {
+        }
+        if !isMulti {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Done") { dismiss() }
             }
