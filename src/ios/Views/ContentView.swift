@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 private let shareLog = AppLogger(category: "Share")
 private let draftLog = AppLogger(category: "DraftSession")
@@ -325,7 +326,7 @@ private struct FolderSurface: ViewModifier {
                 }
             } else {
                 if #available(iOS 26.0, *) {
-                    content.background(shape.fill(.regularMaterial))
+                    content.background(shape.fill(Color(UIColor.secondarySystemBackground)))
                 } else {
                     content.background(shape.fill(Color(UIColor.secondarySystemBackground)))
                 }
@@ -1609,7 +1610,7 @@ struct ContentView: View {
                         }
                     }
                     .padding(24)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .background(Color(UIColor.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 16))
                 }
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.2), value: isExporting)
@@ -2644,7 +2645,7 @@ struct ContentView: View {
         .padding(.trailing, 8)
         .frame(height: 48)
         .frame(maxWidth: 320)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(Color(UIColor.tertiarySystemFill), in: Capsule())
         .overlay(Capsule().stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5))
         .shadow(color: Color.black.opacity(0.15), radius: 8, y: 2)
         .padding(.top, 8)
@@ -4973,7 +4974,7 @@ struct ContentView: View {
             .disabled(selectedIds.isEmpty)
         }
         .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
+        .background(Color(UIColor.tertiarySystemFill))
     }
 
     /// Force-sync the given sessions: bumps each session, its messages,

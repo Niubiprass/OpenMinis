@@ -488,7 +488,7 @@ struct MessageListTestView: View {
             controlsPanel
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .background(.ultraThinMaterial)
+                .background(Color(UIColor.tertiarySystemFill))
         }
         .navigationTitle("Message List V3 Test")
         .navigationBarTitleDisplayMode(.inline)
@@ -616,7 +616,7 @@ struct MessageListTestView: View {
         }
         .padding(10)
         .frame(maxWidth: 280)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .background(Color(UIColor.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
         .padding(.trailing, 8)
         .padding(.top, 8)
         .accessibilityIdentifier("jitterOverlay")
