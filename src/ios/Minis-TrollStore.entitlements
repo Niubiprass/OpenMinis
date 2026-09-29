@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 共享 App Group：主 App 与 Share/Widget/FileProvider 扩展通信 -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.openminis.app</string>
+	</array>
+
+	<!-- 设备能力（声明即用，运行时向用户请求授权；侧载可用） -->
+	<key>com.apple.developer.healthkit</key>
+	<true/>
+	<key>com.apple.developer.homekit</key>
+	<true/>
+	<key>com.apple.developer.weatherkit</key>
+	<true/>
+
+	<!-- iCloud / CloudKit（侧载下同步功能降级但不会导致安装失败，保留声明） -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.com.openminis.app</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<key>com.apple.developer.ubiquity-container-identifiers</key>
+	<array>
+		<string>iCloud.com.openminis.app</string>
+	</array>
+
+	<!-- TrollStore / 侧载必需：iSH 沙盒靠 ARM64 JIT 运行 Linux，必须声明 -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!--
+	  已刻意移除的 entitlement（侧载会导致安装/启动失败）：
+	    • com.apple.developer.nfc.readersession.formats  —— NFC 需 Apple 服务器授权，受限
+	    • com.apple.developer.healthkit.access (health-records) —— 临床记录需 Apple 授权，受限
+	  如需这些功能，请用自有开发者账号签名，而非 TrollStore 侧载。
+	-->
+</dict>
+</plist>

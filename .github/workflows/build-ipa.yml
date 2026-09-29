@@ -44,9 +44,9 @@ jobs:
           xcodebuild -version
       - name: 配置模板
         run: cp src/ios/Configs/ProviderCustomization.xcconfig.example src/ios/Configs/ProviderCustomization.xcconfig
-      - name: 部署目标改15.5
+      - name: 部署目标改15.0（覆盖最宽 TrollStore 机型）
         run: |
-          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g' src/ios/Minis.xcodeproj/project.pbxproj
+          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' src/ios/Minis.xcodeproj/project.pbxproj
           grep -n "IPHONEOS_DEPLOYMENT_TARGET" src/ios/Minis.xcodeproj/project.pbxproj | head
       - name: 原生依赖(LAME→FFmpeg→iSH→Alpine)
         run: |
@@ -64,7 +64,7 @@ jobs:
           mkdir Payload && cp -r "$APP" Payload/ && zip -r Minis.ipa Payload && ls -lh Minis.ipa
       - uses: actions/upload-artifact@v4
         with:
-          name: Minis-iOS15.5-ipa
+          name: Minis-iOS15-ipa
           path: Minis.ipa
       - name: 上传编译日志
         if: always()
