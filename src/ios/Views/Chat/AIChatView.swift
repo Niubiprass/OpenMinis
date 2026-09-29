@@ -956,27 +956,46 @@ struct AIChatView: View {
                         if job.isVideo {
                             // Copy the provider's temporary export to a stable temp URL
                             // first — the original is invalidated once this callback returns.
-                            guard
-                                let exported = try? await provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier),
-                                let tmpDir = try? FileManager.default.url(for: .itemReplacementDirectory,
-                                                                         in: .userDomainMask,
-                                                                         appropriateFor: exported,
-                                                                         create: true),
-                                let tmp = try? tmpDir.appendingPathComponent("picked-\(UUID().uuidString).\(exported.pathExtension)"),
-                                (try? FileManager.default.copyItem(at: exported, to: tmp)) != nil
-                            else {
-                                await MainActor.run { vm.markPlaceholderFailed(id: job.id) }
-                                return
+                            // [iOS15-FIX] NSItemProvider's `async` loaders are iOS 16+; use the
+                            // iOS 14+ callback variant wrapped in a continuation.
+                            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                                provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
+                                    defer { cont.resume() }
+                                    guard
+                                        let exported = url,
+                                        let tmpDir = try? FileManager.default.url(for: .itemReplacementDirectory,
+                                                                                 in: .userDomainMask,
+                                                                                 appropriateFor: exported,
+                                                                                 create: true),
+                                        let tmp = try? tmpDir.appendingPathComponent("picked-\(UUID().uuidString).\(exported.pathExtension)"),
+                                        (try? FileManager.default.copyItem(at: exported, to: tmp)) != nil
+                                    else {
+                                        Task { @MainActor in vm.markPlaceholderFailed(id: job.id) }
+                                        return
+                                    }
+                                    Task { @MainActor in vm.finalizeVideoPlaceholder(id: job.id, from: tmp) }
+                                }
                             }
-                            await MainActor.run { vm.finalizeVideoPlaceholder(id: job.id, from: tmp) }
                         } else {
-                            if let data = try? await provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) {
-                                await MainActor.run { vm.finalizeImagePlaceholder(id: job.id, data: data, fileExtension: nil) }
-                            } else if let img = try? await provider.loadObject(ofClass: UIImage.self) as? UIImage,
-                                      let data = img.pngData() ?? img.jpegData(compressionQuality: 0.9) {
-                                await MainActor.run { vm.finalizeImagePlaceholder(id: job.id, data: data, fileExtension: nil) }
-                            } else {
-                                await MainActor.run { vm.markPlaceholderFailed(id: job.id) }
+                            // [iOS15-FIX] image data loader is iOS 16+ async; fall back to the
+                            // iOS 14+ callback form (with UIImage fallback) via a continuation.
+                            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                                    if let data = data {
+                                        Task { @MainActor in vm.finalizeImagePlaceholder(id: job.id, data: data, fileExtension: nil) }
+                                        cont.resume()
+                                        return
+                                    }
+                                    provider.loadObject(ofClass: UIImage.self) { obj, _ in
+                                        defer { cont.resume() }
+                                        if let img = obj as? UIImage,
+                                           let png = img.pngData() ?? img.jpegData(compressionQuality: 0.9) {
+                                            Task { @MainActor in vm.finalizeImagePlaceholder(id: job.id, data: png, fileExtension: nil) }
+                                        } else {
+                                            Task { @MainActor in vm.markPlaceholderFailed(id: job.id) }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
