@@ -336,6 +336,9 @@ struct AIChatView: View {
     @State private var showCamera = false
     @State private var showPhotoPicker = false
     @State private var showDocumentPicker = false
+    /// Retained delegate for the UIKit photo/document pickers (iOS 15 fix —
+    /// the SwiftUI sheet/fileImporter on this 15+-modifier chain gets dropped).
+    @State private var attachmentPickerCoordinator = AttachmentPickerCoordinator()
     @State private var showMoveToSheet = false
     @State private var showClearChatConfirm = false
     /// [T-new-chat-menu-entry] Confirmation gate for "New Chat" from the "…"
@@ -896,7 +899,42 @@ struct AIChatView: View {
         
     }
 
-        /// iOS 15 photo/video picker bridge: consumes `PHPickerResult`s and feeds the
+        /// iOS 15: present the PHPicker directly through UIKit. SwiftUI's sheet
+    /// presentation on this 15+-modifier chain is silently dropped on iOS 15.
+    private func presentPhotoPicker() {
+        showPhotoPicker = true
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter = .any(of: [.images, .videos])
+        config.selectionLimit = 0 // unlimited
+        config.preferredAssetRepresentationMode = .current
+        let picker = PHPickerViewController(configuration: config)
+        attachmentPickerCoordinator.onPhotos = { [self] results in
+            showPhotoPicker = false
+            handlePHPickerResults(results)
+        }
+        picker.delegate = attachmentPickerCoordinator
+        UIKitPickerPresenter.present(picker)
+    }
+
+    /// iOS 15: present the document picker directly through UIKit (replaces the
+    /// `.fileImporter` that iOS 15 dropped on this view chain). `asCopy: true`
+    /// yields plain temp-file copies that `addFileAttachment` consumes as-is.
+    private func presentDocumentPicker() {
+        showDocumentPicker = true
+        let types: [UTType] = [.image, .pdf, .plainText, .json, .sourceCode, .presentation, .spreadsheet, .data]
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+        picker.allowsMultipleSelection = true
+        attachmentPickerCoordinator.onFiles = { [self] urls in
+            showDocumentPicker = false
+            for url in urls {
+                vm.addFileAttachment(from: url)
+            }
+        }
+        picker.delegate = attachmentPickerCoordinator
+        UIKitPickerPresenter.present(picker)
+    }
+
+    /// iOS 15 photo/video picker bridge: consumes `PHPickerResult`s and feeds the
     /// existing attachment pipeline (loading placeholders -> concurrent load ->
     /// finalize), mirroring `handlePhotoSelectionChange` which the port stripped.
     /// Restores "Choose Photos & Videos" on iOS 15 (and on every version of this
@@ -1578,27 +1616,13 @@ var body: some View {
             )
         }
         .onChange(of: selectedPhotoItems) { items in handlePhotoSelectionChange(items) }
-        .fileImporter(
-            isPresented: $showDocumentPicker,
-            allowedContentTypes: [.image, .pdf, .plainText, .json, .sourceCode, .presentation, .spreadsheet, .data],
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls):
-                for url in urls {
-                    vm.addFileAttachment(from: url)
-                }
-            case .failure(let error):
-                minisLogger.error("File import failed: \(error.localizedDescription)")
-            }
-        }
         // [iOS15-FIX] The original `.photosPicker(isPresented:)` modifier (iOS 16+)
         // was stripped by the iOS-15 port, leaving "Choose Photos & Videos" dead.
-        // Present a PHPickerViewController (iOS 14+) instead and bridge its results
-        // into the same attachment pipeline the photo-picker path used.
-        .sheet(isPresented: $showPhotoPicker) {
-            PHPickerView(onPicked: handlePHPickerResults)
-        }
+        // The PHPicker is now presented directly via UIKit (see presentPhotoPicker)
+        // because this view chain carries 15+ `.sheet` modifiers and iOS 15's
+        // SwiftUI silently drops sheet presentations on such chains — the
+        // `.sheet(isPresented: $showPhotoPicker)` + `.fileImporter` that used to
+        // live here never appeared on iOS 15.
         .onAppear { handleAppear() }
         .observingQuickActions(modifier: quickActionObserver)
         .onChange(of: vm.sessionId) { _ in
@@ -3255,8 +3279,8 @@ var body: some View {
         if #available(iOS 17, *) {
             Menu {
                 Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
-                Button { showPhotoPicker = true } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
-                Button { showDocumentPicker = true } label: { Label("Add File", systemImage: "doc") }
+                Button { presentPhotoPicker() } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
+                Button { presentDocumentPicker() } label: { Label("Add File", systemImage: "doc") }
             } label: {
                 icon
             }
@@ -3266,8 +3290,8 @@ var body: some View {
             }
             .confirmationDialog("Add Attachment", isPresented: $showAttachmentMenu) {
                 Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
-                Button { showPhotoPicker = true } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
-                Button { showDocumentPicker = true } label: { Label("Add File", systemImage: "doc") }
+                Button { presentPhotoPicker() } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
+                Button { presentDocumentPicker() } label: { Label("Add File", systemImage: "doc") }
             }
         }
     }
