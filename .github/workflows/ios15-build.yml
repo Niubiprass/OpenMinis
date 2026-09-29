@@ -61,6 +61,11 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "--- meson check ---"; which meson && meson --version || echo "[warn] meson still not on PATH"
 
+      - name: Install Go (rclone-mobile requires go 1.25)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
       - name: Prepare build-time customization file
         run: |
           cp src/ios/Configs/ProviderCustomization.xcconfig.example \
@@ -91,6 +96,12 @@ jobs:
 
       - name: Prepare Alpine rootfs
         run: ./deps/prepare_alpine_rootfs.sh
+
+      - name: Build RClone XCFramework
+        run: |
+          set -e
+          sed -i '' 's/-miphoneos-version-min=[0-9.]*/-miphoneos-version-min=${{ inputs.deployment_target }}/; s/-mios-simulator-version-min=[0-9.]*/-mios-simulator-version-min=${{ inputs.deployment_target }}/' deps/build_rclone_ios.sh
+          ./deps/build_rclone_ios.sh
 
       - name: Apply iOS deployment target
         if: ${{ inputs.deployment_target != '16.0' }}
