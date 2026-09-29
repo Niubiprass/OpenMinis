@@ -6,7 +6,7 @@ on:
       deployment_target:
         description: "Minimum iOS version the app is built for (16.0 is the upstream minimum)"
         required: false
-        default: "16.0"
+        default: "15.0"
       configuration:
         description: "Build configuration"
         required: false
@@ -54,8 +54,10 @@ jobs:
 
       - name: Install native build dependencies
         run: |
-          brew install ninja llvm libarchive pkg-config
+          brew install ninja llvm libarchive pkg-config lld
           python3 -m pip install --break-system-packages --user meson
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
 
       - name: Prepare build-time customization file
         run: |
