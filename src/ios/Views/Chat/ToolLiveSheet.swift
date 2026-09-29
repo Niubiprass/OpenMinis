@@ -1166,7 +1166,10 @@ struct ToolLiveSheet: View {
                             // on the outer VStack drops the SwiftUI default
                             // line spacing; the per-line backgrounds own all
                             // the visible padding.
-                            VStack(alignment: .leading, spacing: 0) {
+                            // [iOS15-OOM-FIX] LazyVStack: diff rows were built eagerly,
+                            // so a large diff materialized every row at once and grew the
+                            // SwiftUI attribute graph until the process was killed.
+                            LazyVStack(alignment: .leading, spacing: 0) {
                                 // Removed lines (red)
                                 if !oldText.isEmpty {
                                     let oldChunks = Self.chunkedDiffLines(oldText, prefix: "- ")
@@ -1649,7 +1652,9 @@ struct ToolLiveSheet: View {
                     // [T-ios-tool-result-lazy-render] In the detail (non-live)
                     // view reveal only an initial window and grow on scroll.
                     let chunks = isLive ? allChunks : Array(allChunks.prefix(max(revealedChunkCount, 1)))
-                    VStack(alignment: .leading, spacing: 0) {
+                    // [iOS15-OOM-FIX] LazyVStack: chunk rows were materialized eagerly,
+                    // so every "load more" tap grew the live view graph until memory died.
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         Text("$ \(cmd)")
                             .font(.system(size: 13, weight: .bold, design: .monospaced))
                             .foregroundColor(.white)
@@ -1714,7 +1719,9 @@ struct ToolLiveSheet: View {
                         // [T-ios-tool-result-lazy-render] Reveal an initial
                         // window in the detail view; grow on scroll / tap.
                         let chunks = isLive ? allChunks : Array(allChunks.prefix(max(revealedChunkCount, 1)))
-                        VStack(alignment: .leading, spacing: 0) {
+                        // [iOS15-OOM-FIX] LazyVStack: same eager-materialization growth
+                        // as the shell card above.
+                        LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(chunks, id: \.id) { chunk in
                                 Text(chunk.text)
                                     .font(.system(size: 13, design: .monospaced))
