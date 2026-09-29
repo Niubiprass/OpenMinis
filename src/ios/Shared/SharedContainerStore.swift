@@ -5,6 +5,28 @@ import Foundation
 enum SharedContainerStore {
     static let appGroupID = "group.com.openminis.app"
 
+    /// The App Group container URL.
+    ///
+    /// On normally-provisioned builds this is the shared container created for
+    /// `group.com.openminis.app`. On builds where the App Group is **not**
+    /// registered — most notably TrollStore-signed IPA, which ships no
+    /// provisioning profile to create the shared container — the system
+    /// returns `nil` from `containerURL(forSecurityApplicationGroupIdentifier:)`.
+    /// In that case we transparently fall back to a private subdirectory of
+    /// the app's own sandbox, so callers never have to deal with a `nil`
+    /// container (and a force-unwrap crash on launch).
+    static var containerDirectory: URL {
+        if let container = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID) {
+            return container
+        }
+        let fallback = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MinisAppGroupFallback", isDirectory: true)
+        try? FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
+        return fallback
+    }
+
     private static let pendingShareKey = "pendingShare"
 
     static var sharedDefaults: UserDefaults? {
