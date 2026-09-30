@@ -70,6 +70,9 @@ jobs:
         run: |
           set -e
           brew install ninja llvm lld libarchive pkg-config meson go || true
+          # ldid: fakesign + 写 entitlements 用（打包 IPA 那步优先用它，
+          # 取不到则回退到 macOS 自带 codesign）。取不到不影响构建。
+          brew install ldid || true
 
           # meson 必须真的能用。踩过的坑（本次 push 构建就死在这）：
           #   pip install --user meson
@@ -299,6 +302,75 @@ jobs:
           rm -rf Payload "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa"
           mkdir -p Payload
           ditto "$APP" "Payload/Minis.app"
+
+          # ============================================================
+          # 写入 entitlements（关键）
+          # ------------------------------------------------------------
+          # 编译时是 CODE_SIGNING_ALLOWED=NO → 二进制不带任何权限；如果打包只是
+          # 裸 zip，TrollStore 的安装预览里就看不到 App Group / Keychain 组，
+          # group.com.openminis.app 容器也不会被创建，分享扩展、跨进程共享、
+          # iSH 状态同步全部落空（"人家的包有、我的没有"就是这个原因）。
+          # 这里按各 target 自己的 .entitlements 做 ad-hoc(fakesign) 签名，
+          # TrollStore 安装时会读取并保留这些 entitlements。
+          # ============================================================
+          ENT_DIR="src/ios"
+          dump_ent() {  # $1 = Mach-O
+            if command -v ldid >/dev/null 2>&1; then
+              ldid -e "$1" 2>/dev/null || true
+            else
+              codesign -d --entitlements :- "$1" 2>/dev/null || true
+            fi
+          }
+          sign_macho() {  # $1 = Mach-O, $2 = entitlements 文件(可空)
+            if [ -n "$2" ] && [ -f "$2" ]; then
+              if command -v ldid >/dev/null 2>&1; then ldid -S"$2" "$1"
+              else codesign --force --sign - --timestamp=none --entitlements "$2" "$1"; fi
+            else
+              if command -v ldid >/dev/null 2>&1; then ldid -S "$1"
+              else codesign --force --sign - --timestamp=none "$1"; fi
+            fi
+          }
+
+          MAIN_EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' Payload/Minis.app/Info.plist)
+          echo "主可执行文件: $MAIN_EXE"
+          echo "签名工具: $(command -v ldid || echo codesign)"
+
+          # 1) 内层 Mach-O (dylib / framework / 原生依赖): 纯 ad-hoc
+          find Payload -type f -perm -u+x ! -path "*.appex/*" | while read -r F; do
+            case "$F" in "Payload/Minis.app/$MAIN_EXE") continue;; esac
+            if file "$F" | grep -q "Mach-O"; then sign_macho "$F" ""; fi
+          done
+
+          # 2) 内嵌扩展 (.appex): 按名字匹配同名 .entitlements
+          find Payload/Minis.app -maxdepth 3 -name "*.appex" -type d | while read -r APPEX; do
+            NAME=$(basename "$APPEX" .appex)
+            EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist" 2>/dev/null || echo "$NAME")
+            ENT=$(find "$ENT_DIR" -name "${NAME}.entitlements" | head -1)
+            echo "扩展 $NAME -> exe=$EXE ent=${ENT:-(无)}"
+            sign_macho "$APPEX/$EXE" "$ENT"
+          done
+
+          # 3) 主 App (最后签, 带上 App Group / iCloud / HealthKit …)
+          sign_macho "Payload/Minis.app/$MAIN_EXE" "$ENT_DIR/Minis.entitlements"
+
+          # 4) 校验: 主 App 必须真的带上 App Group, 否则 TrollStore 不会创建容器
+          ENTOUT=$(dump_ent "Payload/Minis.app/$MAIN_EXE")
+          echo "--- 主 App entitlements ---"
+          echo "$ENTOUT" | head -40
+          if echo "$ENTOUT" | grep -q "group.com.openminis.app"; then
+            echo "✅ 主 App 已带 App Group: group.com.openminis.app"
+          else
+            echo "❌ 主 App 未带上 App Group 权限 (TrollStore 将不会创建共享容器)"; exit 1
+          fi
+          for APPEX in $(find Payload/Minis.app -maxdepth 3 -name "*.appex" -type d); do
+            EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist" 2>/dev/null || basename "$APPEX" .appex)
+            if dump_ent "$APPEX/$EXE" | grep -q "group.com.openminis.app"; then
+              echo "✅ $(basename "$APPEX") 已带 App Group"
+            else
+              echo "⚠️  $(basename "$APPEX") 未带 App Group (该扩展可能无法与主 App 共享数据)"
+            fi
+          done
+
           zip -qry "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa" Payload
           if ! unzip -l "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa" | grep -q "Payload/Minis.app/Info.plist"; then
             echo "IPA 结构错误 (缺少 Payload/Minis.app/Info.plist)"; exit 1
