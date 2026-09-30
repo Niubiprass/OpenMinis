@@ -762,8 +762,8 @@ HOSTING_FITTING = '''
         }
         isMeasuring = true
         defer { isMeasuring = false }
-        var size = host.view.sizeThatFits(in: CGSize(width: width,
-                                                     height: CGFloat.greatestFiniteMagnitude))
+        var size = host.view.sizeThatFits(CGSize(width: width,
+                                                 height: CGFloat.greatestFiniteMagnitude))
         if !(size.height > 0) {
             size = host.view.sizeThatFits(CGSize(width: width, height: 0))
         }
