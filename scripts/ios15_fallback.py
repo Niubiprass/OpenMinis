@@ -984,6 +984,90 @@ def fix_message_list_defer(t):
     return t.replace(OLD, NEW)
 
 
+def fix_widget_activitykit(t):
+    """AgentWidgetExtension 在 iOS 15.5 上根本没有 ActivityKit 框架, 但
+    AgentLiveActivityWidget.swift 顶层 `import ActivityKit` 会让编译器以**强链接**
+    方式把该 framework 写进扩展的 load command; dyld 在加载扩展时因找不到库而
+    崩 (Library not loaded: .../ActivityKit.framework/ActivityKit), 持续吐崩溃日志。
+    所有 ActivityKit 的实际使用都包在 @available(iOSApplicationExtension 16.2, *)
+    里, iOS 15.5 上根本不会执行 —— 因此只需把它改成**弱链接**, dyld 即可容忍缺失。
+    """
+    if '"-weak_framework"' in t:
+        return t
+    for uuid in ("E5H000070", "E5H000071"):  # AgentWidgetExtension Debug / Release
+        marker = "%s /*" % uuid
+        idx = t.find(marker)
+        if idx < 0:
+            print("  SKIP (缺 widget config %s)" % uuid)
+            continue
+        bs = t.find("buildSettings = {", idx)
+        if bs < 0:
+            continue
+        nl = t.find("\n", bs)
+        insert = ('\n\t\t\t\tOTHER_LDFLAGS = (\n\t\t\t\t\t"-weak_framework",\n'
+                  '\t\t\t\t\tActivityKit,\n\t\t\t\t);')
+        t = t[:nl + 1] + insert + "\n" + t[nl + 1:]
+    return t
+
+
+def fix_markdown_measure_width(t):
+    """iOS15: SelectableMarkdownView 的自排版测量宽度必须稳定。
+
+    invalidateCellSizeIfNeeded 原先用 `bounds.width` 当测量宽度。iOS 15 上
+    SwiftUI 递归排版时会把视图的 bounds.width 临时设成离谱值 (895 / 1382 / 1e7),
+    于是 sizeThatFits 在极宽宽度下排版, 返回的高度远小于真实高度 —— 单元格 Commit
+    了这个错误高度, 消息正文被裁切/错位 ("不显示不对齐")。
+
+    文本视图始终位于集合视图 cell 内, 真实宽度不可能超过 collectionView 的内容
+    宽度。因此把"提议宽度"钳制到 collectionView 宽度 (解析方式与 ios15FittingSize
+    一致): 正常最终宽度 (≈358) 原样使用, 离谱的临时宽度钳到 ~390。这样测量宽度
+    稳定, lastComputedHeight 不再抖动, 正文正确换行对齐。
+    attachment 布局 (updateAttachmentViews) 同理钳制 containerWidth。"""
+    # ---- invalidateCellSizeIfNeeded 的测量宽度 ----
+    OLD1 = '''        // [JitterFix] Measure at the actual render width (bounds.width) when
+        // available. textContainer.size.width can be transiently set to the
+        // outer-cell probe width (~402) by SwiftUI's preferredLayoutAttributes
+        // pass — measuring at that wrong width would write a 23pt-too-small
+        // height into lastComputedHeight, producing the streaming spike.
+        let measureWidth: CGFloat = bounds.width > 1 ? bounds.width : textContainer.size.width'''
+    NEW1 = '''        // [IOS15-FIX] Measure at the actual render width, but clamp the
+        // proposed width to the collectionView's content width. On iOS 15 SwiftUI's
+        // recursive layout passes transiently set bounds.width to bogus values
+        // (895 / 1382 / 1e7); measuring at those makes sizeThatFits lay the text
+        // out far too wide, returning a height that is far too short — the cell
+        // commits that wrong height and the message body renders clipped / mis-
+        // aligned ("不显示不对齐"). The text view always lives inside a
+        // collection-view cell, so its real width can never exceed the
+        // collectionView content width; clamp to that.
+        let cvContentWidth = (findCollectionView()?.bounds.width ?? 0)
+        let proposedMeasureW = bounds.width
+        let measureWidth: CGFloat
+        if proposedMeasureW > 1, proposedMeasureW < 100_000,
+           (cvContentWidth <= 1 || proposedMeasureW <= cvContentWidth + 1) {
+            measureWidth = proposedMeasureW
+        } else if cvContentWidth > 1 {
+            measureWidth = cvContentWidth
+        } else {
+            measureWidth = textContainer.size.width
+        }'''
+    if OLD1 in t:
+        t = t.replace(OLD1, NEW1)
+    # ---- updateAttachmentViews 的 containerWidth ----
+    OLD2 = '''        let containerWidth = self.textContainer.size.width'''
+    NEW2 = '''        // [IOS15-FIX] Clamp the text-container width to a sane value. During
+        // SwiftUI's recursive layout passes on iOS 15 textContainer.size.width is
+        // transiently bogus (895 / 1382 / 1e7); using it to size/position
+        // attachment views mis-aligns every image/table in the message body. The
+        // text view can never be wider than its collection-view cell, so clamp.
+        let cvContentWidthUAV = (findCollectionView()?.bounds.width ?? 0)
+        let rawContainerWidth = self.textContainer.size.width
+        let containerWidth = (cvContentWidthUAV > 1 && rawContainerWidth > cvContentWidthUAV + 1)
+            ? cvContentWidthUAV : rawContainerWidth'''
+    if OLD2 in t:
+        t = t.replace(OLD2, NEW2)
+    return t
+
+
 def main():
     print("== iOS 15 兜底修复 v2 (ROOT=%s) ==" % ROOT)
     print("-- 文件指纹/结构自检 --")
@@ -1016,6 +1100,8 @@ def main():
     edit("ShareExtension/ShareViewController.swift", fix_share_extension_timeout, "分享扩展加 8s 超时兜底 (防永久挂住)")
     edit("Shared/SharedContainerStore.swift", fix_share_store, "PendingShare 双通道存储 (UserDefaults + 共享容器文件)")
     edit("Agent/MessageList/MessageListLayout.swift", fix_message_list_defer, "iOS15: 大幅缩小(>50pt)修正立即生效, 消黑块虚高")
+    edit("Minis.xcodeproj/project.pbxproj", fix_widget_activitykit, "Widget 弱链接 ActivityKit (iOS15.5 无此框架, dyld 崩)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_markdown_measure_width, "iOS15: 测量宽度钳制到集合视图宽度, 消正文错位/裁切")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
