@@ -399,8 +399,24 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
 
     private func ios15FittingSize(_ targetSize: CGSize) -> CGSize {
         var width = targetSize.width
-        if !(width > 0) || width.isInfinite {
-            width = window?.bounds.width ?? UIScreen.main.bounds.width
+        // ⚠️ 关键: 布局引擎问"压缩尺寸"时传的是 UIView.layoutFittingCompressedSize,
+        // 宽高都是 Double.greatestFiniteMagnitude (≈1.8e308)。它是**有限数**,
+        // 所以 `width.isInfinite` 拦不住 —— 之前直接把它当真实宽度交给 SwiftUI,
+        // 内容按无界宽度排版: 长文本不换行、按自然宽度居中渲染 → 左右被裁;
+        // 同时 TextKit 在这个荒谬宽度下抛 NSException → 自排版永远退回估算
+        // 高度 → 单元格之间大片黑块（日志实测 1977 次全部 threw）。
+        // 这里把"未指定/哨兵"宽度替换成集合视图的真实宽度。
+        if !(width > 0) || width.isInfinite || width >= 1_000_000 {
+            var probe: UIView? = superview
+            var cvW: CGFloat = 0
+            while let v = probe {
+                if let collection = v as? UICollectionView {
+                    cvW = collection.bounds.width
+                    break
+                }
+                probe = v.superview
+            }
+            width = cvW > 0 ? cvW : (window?.bounds.width ?? UIScreen.main.bounds.width)
         }
         let probeCvW = (superview?.superview as? UICollectionView)?.bounds.width ?? -1
         print("[IOS15Size] in targetW=\(targetSize.width) w=\(width) cellW=\(bounds.width) cvW=\(probeCvW) hostNil=\(host == nil)")
@@ -409,8 +425,8 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         }
         isMeasuring = true
         defer { isMeasuring = false }
-        var size = host.sizeThatFits(in: CGSize(width: width,
-                                               height: CGFloat.greatestFiniteMagnitude))
+        var size = host.view.sizeThatFits(CGSize(width: width,
+                                                 height: CGFloat.greatestFiniteMagnitude))
         if !(size.height > 0) {
             size = host.view.sizeThatFits(CGSize(width: width, height: 0))
         }
