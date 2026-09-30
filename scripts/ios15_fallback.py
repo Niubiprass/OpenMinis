@@ -825,18 +825,13 @@ SHARE_STORE_NEW = '''    // ios15-port IOS15_SHARE_FILE_FALLBACK
     // 所以改成双通道: UserDefaults 能用就写, 同时**始终**往共享容器写一份文件;
     // 读取时两边都试。共享容器路径在日志里已证实存在
     // (/private/var/mobile/Containers/Shared/AppGroup/.../)。
-    static var containerDirectory: URL {
-        if let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) {
-            return url
-        }
-        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    }
+    // 注意: containerDirectory 已在文件其它位置定义(返回 App Group 容器 URL),
+    // 此处直接复用, 不再重复声明, 否则触发 "invalid redeclaration"。
 
     static var sharedFileDirectory: URL? {
-        let base = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)
-            ?? containerDirectory
-        return base.appendingPathComponent("ShareExtension", isDirectory: true)
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
+            .appendingPathComponent("ShareExtension", isDirectory: true)
     }
 
     private static var pendingShareFileURL: URL {
