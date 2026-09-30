@@ -51,6 +51,23 @@ def edit(relpath, func, label=None):
         print("  no-op  ", relpath, ("(" + label + ")") if label else "")
 
 
+def edit_glob(pattern, func, label=None):
+    """对 ROOT 下匹配 pattern 的文件做变换 (兼容层文件名/路径由 pbxproj 决定)。"""
+    import glob as _glob
+    hits = _glob.glob(os.path.join(ROOT, pattern), recursive=True)
+    if not hits:
+        print("  SKIP (glob 无命中):", pattern)
+        return
+    for p in hits:
+        t = read(p)
+        n = func(t)
+        if n != t:
+            write(p, n)
+            print("  EDIT ✅", os.path.relpath(p, ROOT), ("(" + label + ")") if label else "")
+        else:
+            print("  no-op  ", os.path.relpath(p, ROOT), ("(" + label + ")") if label else "")
+
+
 # ----------------------------------------------------------- 括号 / 字符串工具
 def _skip_string(text, i):
     """text[i] 是引号, 返回字面量结束后下标; 处理多行串与 \\( 插值嵌套。"""
@@ -612,6 +629,22 @@ def fix_sleep_for(t):
     return re.sub(r"Task\.sleep\(for:\s*\.milliseconds\((\d+)\)\)", _repl, t)
 
 
+def fix_compat_shim(t):
+    """兼容层 iOS15Compat.swift 里的两处修补。
+
+    1) PhotosPickerItem.supportedContentTypes 原写作 [Any] -> 下游
+       `$0.conforms(to: .movie)` 的 $0 被推成 Any, 报 "Any has no member
+       'conforms' / cannot infer ... 'movie'"。真类型是 [UTType], 改成 [UTType]。
+    2) 相应地需要 import UniformTypeIdentifiers。
+    """
+    t = t.replace("public var supportedContentTypes: [Any] { [] }",
+                  "public var supportedContentTypes: [UTType] { [] }")
+    if "supportedContentTypes: [UTType]" in t and "import UniformTypeIdentifiers" not in t:
+        t = t.replace("import SwiftUI",
+                      "import SwiftUI\nimport UniformTypeIdentifiers", 1)
+    return t
+
+
 # =====================================================================
 def main():
     print("== iOS 15 兜底修复 v2 (ROOT=%s) ==" % ROOT)
@@ -639,6 +672,7 @@ def main():
     edit("Shared/LoggingManager.swift", fix_ish_verbose_trace, "ish_set_verbose_trace 补桩")
     edit("Views/Settings/MemoryManagementView.swift", fix_force_sync_memory, "forceSyncMemory 调用点守卫")
     edit("Views/Chat/AIChatView.swift", fix_aichat_view, "拆分超长字符串插值")
+    edit_glob("**/iOS15Compat.swift", fix_compat_shim, "兼容层 PhotosPickerItem.supportedContentTypes: [Any]->[UTType]")
 
     # ---- 诊断: 把关键文件片段打到运行日志 (失败时我能看到编译时真实源码) ----
     print("-- 诊断 dump (AppDelegate 20-84) --")
