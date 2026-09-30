@@ -371,6 +371,42 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     @available(*, unavailable)
     required init?(coder: NSCoder) { nil }
 
+
+    // ios15-port IOS15_HOSTING_FITTING
+    // 集合视图自排版入口: 布局引擎问"给定宽度下你多高"。
+    // 原替身没实现, 宽度会退化成 SwiftUI 理想宽(长文本远超屏宽 -> 左右被裁),
+    // 高度也算错(单元格之间的黑块 / 内容贴不了底)。
+    override func systemLayoutSizeFitting(_ targetSize: CGSize) -> CGSize {
+        ios15FittingSize(targetSize)
+    }
+
+    override func systemLayoutSizeFitting(
+        _ targetSize: CGSize,
+        withHorizontalFittingPriority horizontalFittingPriority: UILayoutPriority,
+        verticalFittingPriority: UILayoutPriority
+    ) -> CGSize {
+        ios15FittingSize(targetSize)
+    }
+
+    private func ios15FittingSize(_ targetSize: CGSize) -> CGSize {
+        guard let host = host else { return super.systemLayoutSizeFitting(targetSize) }
+        var width = targetSize.width
+        if !(width > 0) || width.isInfinite {
+            width = window?.bounds.width ?? UIScreen.main.bounds.width
+        }
+        let measured = host.view.systemLayoutSizeFitting(
+            CGSize(width: width, height: 0),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel)
+        var height = measured.height
+        if !(height > 0) {
+            let fallback = super.systemLayoutSizeFitting(targetSize).height
+            if fallback > 0 { height = fallback }
+        }
+        if !(height > 0) && bounds.height > 0 { height = bounds.height }
+        return CGSize(width: width, height: max(0, height))
+    }
+
     private func apply(_ config: UIContentConfiguration) {
         subviews.forEach { $0.removeFromSuperview() }
         host = nil
