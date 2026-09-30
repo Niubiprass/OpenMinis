@@ -552,6 +552,7 @@ public struct MinisShareLinkButton: View {
 }
 
 
+// iOS15_RUNTIME_FIX_APPLIED 1.14
 /// iOS 15 photo + document pickers (UIKit-based; bypasses SwiftUI's broken
 /// multi-sheet chain on iOS 15 which silently drops presentations).
 enum UIKitPickerPresenter {
