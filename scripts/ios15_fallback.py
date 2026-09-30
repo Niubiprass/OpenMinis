@@ -1068,6 +1068,83 @@ def fix_markdown_measure_width(t):
     return t
 
 
+def fix_markdown_render_width(t):
+    """iOS15: 渲染端宽度钳制 (第二轮).
+
+    测量端 (invalidateCellSizeIfNeeded) 已在 fix_markdown_measure_width 钳好,
+    但渲染端仍是错宽:
+      1) SelfSizingCell.preferredLayoutAttributesFitting 收到的提议宽度在 iOS15
+         递归排版中瞬态为 895/1382/1e7 → super/explicit 测量在错宽下运行,
+         写入过矮高度 (日志实测 pref=1091 vs TextKit 真值 1481.3) → 单元格
+         压扁, 内容垂直错位;
+      2) SelectableMarkdownTextView 自身 frame 被瞬态设为超宽且未被纠正,
+         widthTracksTextView 让容器跟着超宽 → 文本按 ~2x 真实宽度换行;
+      3) 瞬态无界宽度 pass 还会留下残留的 contentOffset.x (isScrollEnabled=
+         false 本不应有), 之后每行文字左移被裁 —— 左右两边都缺一块。
+    """
+    # ---- ① 文本视图渲染端: frame 超宽回钳 + 残留水平偏移清零 ----
+    OLD1 = '''        if textContainer.size.height < CGFloat.greatestFiniteMagnitude {
+            textContainer.size.height = CGFloat.greatestFiniteMagnitude
+        }
+
+        let currentWidth = textContainer.size.width'''
+    NEW1 = '''        if textContainer.size.height < CGFloat.greatestFiniteMagnitude {
+            textContainer.size.height = CGFloat.greatestFiniteMagnitude
+        }
+
+        // [IOS15-FIX] Render-path width clamp. On iOS 15 SwiftUI's recursive
+        // layout passes transiently set this view's frame to bogus widths
+        // (895 / 1382 / 1e7) and the text container (widthTracksTextView)
+        // follows, so the text is typeset at that bogus width. The measurement
+        // path is already clamped in invalidateCellSizeIfNeeded, but the render
+        // geometry kept the wrong value: lines wrap at ~2x the real width and
+        // every paragraph is clipped / mis-aligned. This view always lives
+        // inside a collection-view cell, so its real width can never exceed
+        // the collectionView width — restore it here.
+        if let rCv = findCollectionView(), rCv.bounds.width > 1,
+           bounds.width > rCv.bounds.width + 1 {
+            var rf = frame
+            rf.size.width = rCv.bounds.width
+            frame = rf
+        }
+        // [IOS15-FIX] A transient unbounded-width pass can leave a stale
+        // horizontal contentOffset on this non-scrolling text view; every line
+        // then renders shifted and is clipped on BOTH edges.
+        if !isScrollEnabled, contentOffset.x != 0 {
+            contentOffset.x = 0
+        }
+
+        let currentWidth = textContainer.size.width'''
+    if OLD1 in t:
+        t = t.replace(OLD1, NEW1)
+    # ---- ② cell 自排版: 提议宽度入口钳制 ----
+    OLD2 = '''    override func preferredLayoutAttributesFitting(
+        _ layoutAttributes: UICollectionViewLayoutAttributes
+    ) -> UICollectionViewLayoutAttributes {
+        // Cache-hit short-circuit BEFORE super:'''
+    NEW2 = '''    override func preferredLayoutAttributesFitting(
+        _ layoutAttributes: UICollectionViewLayoutAttributes
+    ) -> UICollectionViewLayoutAttributes {
+        // [IOS15-FIX] Clamp a bogus proposed width before ANY measure path
+        // runs. On iOS 15 the proposed width is transiently garbage
+        // (895 / 1382 / 1e7) during recursive layout passes; measuring at it
+        // writes a far-too-short height (observed pref=1091 vs TextKit's true
+        // 1481.3) into the layout, squashing the cell and mis-aligning the
+        // message body. The cell can never be wider than its collection view.
+        var layoutAttributes = layoutAttributes
+        if let iCv = superview as? UICollectionView, iCv.bounds.width > 1,
+           layoutAttributes.size.width > iCv.bounds.width + 1
+           || layoutAttributes.size.width < 1 {
+            let clamped = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
+            clamped.size.width = iCv.bounds.width
+            layoutAttributes = clamped
+        }
+        // Cache-hit short-circuit BEFORE super:'''
+    if OLD2 in t:
+        t = t.replace(OLD2, NEW2)
+    return t
+
+
 def main():
     print("== iOS 15 兜底修复 v2 (ROOT=%s) ==" % ROOT)
     print("-- 文件指纹/结构自检 --")
@@ -1102,6 +1179,8 @@ def main():
     edit("Agent/MessageList/MessageListLayout.swift", fix_message_list_defer, "iOS15: 大幅缩小(>50pt)修正立即生效, 消黑块虚高")
     edit("Minis.xcodeproj/project.pbxproj", fix_widget_activitykit, "Widget 弱链接 ActivityKit (iOS15.5 无此框架, dyld 崩)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_markdown_measure_width, "iOS15: 测量宽度钳制到集合视图宽度, 消正文错位/裁切")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_markdown_render_width, "iOS15: 渲染端 frame/偏移钳制 + cell 自排版提议宽度钳制, 消正文错位(第二轮)")
+    edit("Agent/MessageList/MessageListInfrastructure.swift", fix_markdown_render_width, "iOS15: cell 自排版提议宽度入口钳制")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
