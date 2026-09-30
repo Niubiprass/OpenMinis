@@ -732,6 +732,7 @@ HOSTING_FITTING = '''
     /// _systemLayoutSizeFittingSize 反复嵌套）。所以这里只用
     /// `sizeThatFits` 这条不经过布局引擎的路径。
     private var isMeasuring: Bool = false
+    private var lastLoggedWidth: CGFloat = -1
 
     private func ios15FittingSize(_ targetSize: CGSize) -> CGSize {
         var width = targetSize.width
@@ -750,6 +751,14 @@ HOSTING_FITTING = '''
         }
         var height = size.height
         if !(height > 0) { height = bounds.height }
+        // 诊断: 宽度变化时打一行 (LoggingManager 会捕获进日志文件)。
+        // cellW=单元格宽 cvW=集合视图宽 idealW=SwiftUI 理想宽 —— 用来定位
+        // "文字被左右裁掉"到底是哪一层把宽度算错了。
+        if abs(width - lastLoggedWidth) > 0.5 {
+            lastLoggedWidth = width
+            let cvW = (superview?.superview as? UICollectionView)?.bounds.width ?? -1
+            print("[IOS15Size] fit targetW=\\(targetSize.width) w=\\(width) h=\\(height) idealW=\\(size.width) cellW=\\(bounds.width) cvW=\\(cvW)")
+        }
         return CGSize(width: width, height: max(0, height))
     }
 
