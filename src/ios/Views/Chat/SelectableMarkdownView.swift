@@ -7233,6 +7233,28 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             textContainer.size.height = CGFloat.greatestFiniteMagnitude
         }
 
+        // [IOS15-FIX] Render-path width clamp. On iOS 15 SwiftUI's recursive
+        // layout passes transiently set this view's frame to bogus widths
+        // (895 / 1382 / 1e7) and the text container (widthTracksTextView)
+        // follows, so the text is typeset at that bogus width. The measurement
+        // path is already clamped in invalidateCellSizeIfNeeded, but the render
+        // geometry kept the wrong value: lines wrap at ~2x the real width and
+        // every paragraph is clipped / mis-aligned. This view always lives
+        // inside a collection-view cell, so its real width can never exceed
+        // the collectionView width — restore it here.
+        if let rCv = findCollectionView(), rCv.bounds.width > 1,
+           bounds.width > rCv.bounds.width + 1 {
+            var rf = frame
+            rf.size.width = rCv.bounds.width
+            frame = rf
+        }
+        // [IOS15-FIX] A transient unbounded-width pass can leave a stale
+        // horizontal contentOffset on this non-scrolling text view; every line
+        // then renders shifted and is clipped on BOTH edges.
+        if !isScrollEnabled, contentOffset.x != 0 {
+            contentOffset.x = 0
+        }
+
         let currentWidth = textContainer.size.width
 
         // If the textContainer width changed (rotation, size class change, etc.),

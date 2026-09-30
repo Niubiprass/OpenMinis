@@ -151,6 +151,20 @@ class SelfSizingCell: UICollectionViewCell {
     override func preferredLayoutAttributesFitting(
         _ layoutAttributes: UICollectionViewLayoutAttributes
     ) -> UICollectionViewLayoutAttributes {
+        // [IOS15-FIX] Clamp a bogus proposed width before ANY measure path
+        // runs. On iOS 15 the proposed width is transiently garbage
+        // (895 / 1382 / 1e7) during recursive layout passes; measuring at it
+        // writes a far-too-short height (observed pref=1091 vs TextKit's true
+        // 1481.3) into the layout, squashing the cell and mis-aligning the
+        // message body. The cell can never be wider than its collection view.
+        var layoutAttributes = layoutAttributes
+        if let iCv = superview as? UICollectionView, iCv.bounds.width > 1,
+           layoutAttributes.size.width > iCv.bounds.width + 1
+           || layoutAttributes.size.width < 1 {
+            let clamped = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
+            clamped.size.width = iCv.bounds.width
+            layoutAttributes = clamped
+        }
         // Cache-hit short-circuit BEFORE super: when UIKit re-asks a cell to
         // self-size at a width it already measured, return the cached
         // height directly and skip both `super.preferredLayoutAttributesFitting`
