@@ -853,7 +853,7 @@ SHARE_STORE_NEW = '''    static var sharedFileDirectory: URL? {
 
     static func loadPendingShare() -> PendingShare? {
         let decoder = JSONDecoder()
-        decoder.dateEncodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .iso8601
         if let defaults = sharedDefaults,
            let data = defaults.data(forKey: pendingShareKey),
            let share = try? decoder.decode(PendingShare.self, from: data) {
