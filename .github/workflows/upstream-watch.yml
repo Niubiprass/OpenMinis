@@ -1,0 +1,112 @@
+name: 上游版本监听 (OpenMinis)
+
+# 定时检查上游 OpenMinis 是否发布了新版本 (tag)。
+# 一旦发现比"上次已通知版本"更新的 tag，就开一个 issue 提醒人工评估是否同步到 iOS15 版。
+# 按既定策略：只在"大版本新功能"上线时才手动同步，平时小更新可忽略本提醒。
+on:
+  schedule:
+    - cron: "23 8 * * *"        # 北京时间每天 16:23 检查一次
+  workflow_dispatch: {}          # 也可手动 Run workflow 立即检查
+
+permissions:
+  issues: write
+  contents: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: "检查上游新 tag 并开提醒 issue"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo "=== 当前钉住的上游版本 (port-and-build.yml 的 upstream_ref 默认) ==="
+          PINNED=$(awk '/upstream_ref:/{f=1} f&&/default: "/{print; exit}' .github/workflows/port-and-build.yml | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
+          echo "当前钉住: ${PINNED:-未知}"
+
+          echo "=== 获取上游 OpenMinis 最新 tag (按 semver 取最大) ==="
+          LATEST=$(curl -s "https://api.github.com/repos/OpenMinis/OpenMinis/tags?per_page=30" | python3 -c "
+          import sys,json,re
+          try:
+              d=json.load(sys.stdin)
+          except Exception:
+              d=[]
+          if not isinstance(d,list) or not d:
+              print(''); sys.exit()
+          def v(t):
+              m=re.findall(r'\d+', t)
+              return tuple(int(x) for x in m)
+          best=max(d, key=lambda x: v(x.get('name','')))
+          print(best.get('name',''))
+          ")
+          echo "上游最新: ${LATEST:-<无>}"
+          if [ -z "$LATEST" ]; then
+            echo "无法获取上游 tag，跳过"
+            exit 0
+          fi
+
+          echo "=== 读取上次已通知版本 ==="
+          LAST=$(cat .github/upstream_version.txt 2>/dev/null | tr -d '[:space:]' || true)
+          echo "上次通知: ${LAST:-无}"
+
+          if [ "$LATEST" = "$LAST" ]; then
+            echo "无新版本，退出"
+            exit 0
+          fi
+
+          echo "=== 检测到新版本 $LATEST (上次 $LAST) ==="
+
+          echo "--- 拉取 release notes ---"
+          NOTES=$(curl -s "https://api.github.com/repos/OpenMinis/OpenMinis/releases/tags/$LATEST" | python3 -c "
+          import sys,json
+          try:
+              d=json.load(sys.stdin)
+          except Exception:
+              d={}
+          if isinstance(d,dict) and d.get('body'):
+              print(d['body'][:1800])
+          " 2>/dev/null || true)
+
+          echo "--- 是否已有同版本 open issue (避免重复开单) ---"
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --label upstream-release --state open --json title -q '.[].title' 2>/dev/null | grep -F "$LATEST" || true)
+          if [ -n "$EXISTING" ]; then
+            echo "已存在关于 $LATEST 的 issue，跳过创建"
+          else
+            BODY_FILE=$(mktemp)
+            {
+              echo "上游 OpenMinis 已发布新版本 **$LATEST**。"
+              echo ""
+              echo "- 你当前 iOS15 版钉住的上游版本：**${PINNED:-未知}**"
+              echo "- 上次通知版本：${LAST:-无}"
+              echo ""
+              echo "> 按既定策略，只在**大版本新功能**上线时才同步；平时小更新可忽略。"
+              echo ""
+              if [ -n "$NOTES" ]; then
+                echo "### 上游 Release Notes（$LATEST）"
+                echo ""
+                echo "$NOTES"
+                echo ""
+              fi
+              echo "### 升级操作"
+              echo "到 **Actions → iOS15 移植并打包 IPA → Run workflow**，将 \`upstream_ref\` 改为 \`$LATEST\` 即可触发同步构建（含运行时修复 + 4 条自检）。"
+            } > "$BODY_FILE"
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "上游新版本 $LATEST 已发布，可评估同步到 iOS15 版" \
+              --label upstream-release \
+              --body-file "$BODY_FILE"
+            echo "已创建提醒 issue"
+          fi
+
+          echo "=== 更新状态文件 (记录已通知版本，避免重复提醒) ==="
+          echo "$LATEST" > .github/upstream_version.txt
+          git config user.email "bot@workbuddy.local"
+          git config user.name "iOS15 Port Bot"
+          git add .github/upstream_version.txt
+          git commit -m "chore: 记录上游最新通知版本 $LATEST" || echo "无改动可提交"
+          git push || echo "⚠️ 状态文件推送失败，下次运行会重试"
+          echo "done"
