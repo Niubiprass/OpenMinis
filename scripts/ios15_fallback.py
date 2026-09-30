@@ -487,14 +487,47 @@ def fix_force_sync_memory(t):
 
 
 def fix_aichat_view(t):
-    """拆分超长字符串插值 + 降级 Task.sleep(for:) (Duration 推断是类型检查超时的元凶)。"""
+    """拆分超长字符串插值 + 抽离超大 onChange 闭包体 + 降级 Task.sleep(for:)。
+
+    核心: iOS 17 SDK 下 `onChange(of:)` 有「废弃单参」与「新 initial-双参」两个
+    重载, 编译器会对超大闭包体按两种重载各做一遍类型检查 -> "unable to
+    type-check in reasonable time"。把闭包体抽成方法后闭包变为一行调用, 两种
+    重载都瞬间可解。
+    """
     old = (
         'AppLogger(category: "InputBarLayout").error("[InputBarHealth] STALLED — no geometry callback 900ms after foreground. committed=\\(inputBarHeight) latest=\\(latestInputBarFrameH) lastReport=\\(String(format: "%.1f", age))s ago voice=\\(voiceInputActive) editing=\\(voiceVM.isEditingTranscript) seeded=\\(didSeedInputBarHeight). The composer host is not laying out; expect a blank bottom area. Leaving and re-entering the session rebuilds it.")')
     new = (
         'let _stallMsg = "[InputBarHealth] STALLED — no geometry callback 900ms after foreground. committed=\\(inputBarHeight) latest=\\(latestInputBarFrameH) lastReport=\\(String(format: "%.1f", age))s ago voice=\\(voiceInputActive) editing=\\(voiceVM.isEditingTranscript) seeded=\\(didSeedInputBarHeight). The composer host is not laying out; expect a blank bottom area. Leaving and re-entering the session rebuilds it."\n'
         '                    AppLogger(category: "InputBarLayout").error(_stallMsg)')
     t = t.replace(old, new)
+    t = _extract_onchange_scene_phase(t)
     return fix_sleep_for(t)
+
+
+def _extract_onchange_scene_phase(t):
+    """把 `.onChange(of: scenePhase) { phase in <119 行> }` 的体抽成方法。"""
+    m = re.search(r"\.onChange\(of: scenePhase\)\s*\{", t)
+    if not m:
+        return t
+    lb = m.end() - 1
+    eb = _match_delim(t, lb)
+    if eb is None:
+        return t
+    body = t[lb + 1:eb - 1]
+    if "handleScenePhaseChange" in body:
+        return t  # 已处理
+    # 去掉闭包签名 "phase in"
+    body = re.sub(r"^[ \t]*phase\s+in[ \t]*\n", "", body, count=1)
+    new_closure = (".onChange(of: scenePhase) { phase in\n"
+                   "            handleScenePhaseChange(phase)\n"
+                   "        }")
+    t = t[:m.start()] + new_closure + t[eb:]
+    ext = ("\n\n// ios15-port: 抽离超大 onChange 闭包体, 规避 iOS17 SDK 下 onChange\n"
+           "// 新旧重载各做一遍类型检查导致的 'unable to type-check' 超时。\n"
+           "private extension AIChatView {\n"
+           "    func handleScenePhaseChange(_ phase: ScenePhase) {"
+           + body + "\n    }\n}\n")
+    return t.rstrip() + ext
 
 
 def fix_sleep_for(t):
