@@ -395,18 +395,30 @@ final class MessageListLayout: UICollectionViewLayout {
                 // content doesn't overflow the frozen cell frame and overlap
                 // adjacent cells. Only defer shrinking or stable cells.
                 if preferred <= original + 0.5 {
-                    // Shrinking or stable — defer the update.
-                    if abs(preferred - original) > 0.5 {
-                        deferredHeights[index] = preferred
+                    let shrink = original - preferred
+                    // [IOS15-FIX] Large shrink = over-estimated estimate corrected
+                    // to the real measured height. Parking it freezes an inflated
+                    // contentSize, leaving phantom voids (black blocks) when the
+                    // user scrolls up into the un-corrected region. Apply large
+                    // shrinks immediately; defer only tiny (<50pt) token-level
+                    // deltas to avoid streaming scroll jitter.
+                    if shrink > 50 {
+                        // Fall through — let the invalidate decision below apply
+                        // the corrected (smaller) height to contentSize now.
+                    } else {
+                        // Shrinking or stable — defer the small update.
+                        if abs(preferred - original) > 0.5 {
+                            deferredHeights[index] = preferred
+                        }
+                        // [T-video-squish-evidence] Only worth a line when a REAL
+                        // correction is being parked (large deltas are the media
+                        // placeholder→loaded case). Token-by-token streaming
+                        // produces sub-30pt shrinks constantly; those stay quiet.
+                        if abs(preferred - original) > 30 {
+                            AppLogger(category: "CellSizing").info("[CellSizing][DEFER-PARKED] idx=\(index) pref=\(String(format: "%.0f", preferred)) orig=\(String(format: "%.0f", original)) — deferSelfSizing, not growing, correction parked")
+                        }
+                        return false
                     }
-                    // [T-video-squish-evidence] Only worth a line when a REAL
-                    // correction is being parked (large deltas are the media
-                    // placeholder→loaded case). Token-by-token streaming
-                    // produces sub-30pt shrinks constantly; those stay quiet.
-                    if abs(preferred - original) > 30 {
-                        AppLogger(category: "CellSizing").info("[CellSizing][DEFER-PARKED] idx=\(index) pref=\(String(format: "%.0f", preferred)) orig=\(String(format: "%.0f", original)) — deferSelfSizing, not growing, correction parked")
-                    }
-                    return false
                 }
                 // Growing while deferred + has cache — allow through
             } else {
