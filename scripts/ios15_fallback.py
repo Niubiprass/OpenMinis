@@ -646,6 +646,64 @@ def fix_compat_shim(t):
 
 
 # =====================================================================
+# onGeometryChange 回填实现 (iOS 16 API → iOS 15)
+# ---------------------------------------------------------------------
+# iOS 16 的 .onGeometryChange(for:of:action:) 是本 App **唯一**的几何测量来源：
+#   * inputBarHeight      → 消息列表底部内边距（用户现象："执行任务字不会上移"）
+#   * floatingBarHeight   → 悬浮工具条高度
+#   * topSafeAreaInset    → 导航栏顶部安全区
+#   * inputBottomRowWidth → 朗读行宽度判定
+# 流水线早期把它整调用删掉，于是 inputBarHeight 恒为 0：消息列表底部不留空，
+# 最后一条消息被输入栏永久盖住、滚不进可视区（上游注释原话：
+# "the last message was permanently stuck under the composer"）。
+# 这里用 iOS 15 就有的 GeometryReader + PreferenceKey 复刻同一语义：
+# 后台测量（不影响被测量视图的尺寸）、值变化时才回调（Equatable 去重）。
+GEOM_BACKPORT = '''
+
+// MARK: - onGeometryChange 回填 (iOS 16 API)
+// ios15-port IOS15_GEOM_BACKPORT  (见 scripts/ios15_fallback.py)
+// 复刻 iOS 16 `onGeometryChange(for:of:action:)`：把被测视图的几何值转成
+// Preference，值变化时才回调 action。iOS 15 无此 API，而它承载着输入栏高度等
+// 关键测量（缺失会导致最后一条消息被输入栏盖住、底部渲染成黑区）。
+
+private struct IOS15GeometryValueKey<T: Equatable>: PreferenceKey {
+    static var defaultValue: T? { nil }
+    static func reduce(value: inout T?, nextValue: () -> T?) {
+        if let next = nextValue() { value = next }
+    }
+}
+
+extension View {
+    func onGeometryChange15<T: Equatable>(
+        for type: T.Type,
+        of transform: @escaping (GeometryProxy) -> T,
+        action: @escaping (T) -> Void
+    ) -> some View {
+        self
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(key: IOS15GeometryValueKey<T>.self,
+                                    value: transform(proxy))
+                        .allowsHitTesting(false)
+                }
+            )
+            .onPreferenceChange(IOS15GeometryValueKey<T>.self) { value in
+                if let value = value { action(value) }
+            }
+    }
+}
+'''
+
+
+def inject_geom_backport(t):
+    """把 onGeometryChange 的 iOS 15 回填实现注入兼容层文件（幂等）。"""
+    if "IOS15_GEOM_BACKPORT" in t:
+        return t
+    return t.rstrip() + "\n" + GEOM_BACKPORT
+
+
+# =====================================================================
 def main():
     print("== iOS 15 兜底修复 v2 (ROOT=%s) ==" % ROOT)
     print("-- 文件指纹/结构自检 --")
@@ -673,6 +731,32 @@ def main():
     edit("Views/Settings/MemoryManagementView.swift", fix_force_sync_memory, "forceSyncMemory 调用点守卫")
     edit("Views/Chat/AIChatView.swift", fix_aichat_view, "拆分超长字符串插值")
     edit_glob("**/iOS15Compat.swift", fix_compat_shim, "兼容层 PhotosPickerItem.supportedContentTypes: [Any]->[UTType]")
+    edit_glob("**/iOS15Compat.swift", inject_geom_backport, "注入 onGeometryChange 回填实现")
+
+    # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
+    print("-- 诊断 dump (几何测量回填点) --")
+    n15 = 0
+    for root, _, files in os.walk(ROOT):
+        for fn in files:
+            if not fn.endswith(".swift"):
+                continue
+            fp = os.path.join(root, fn)
+            txt = read(fp)
+            if ".onGeometryChange15(" in txt:
+                rel = os.path.relpath(fp, ROOT)
+                for i, l in enumerate(txt.split("\n"), 1):
+                    if ".onGeometryChange15(" in l:
+                        print("   %-56s L%d" % (rel, i))
+                        n15 += 1
+    print("   回填点合计 %d 处" % n15)
+    p = os.path.join(ROOT, "iOS15Compat.swift")
+    print("   回填实现(IOS15_GEOM_BACKPORT): %s" % (
+        ("存在" if "IOS15_GEOM_BACKPORT" in read(p) else "缺失")
+        if os.path.isfile(p) else "缺 iOS15Compat.swift"))
+    p = os.path.join(ROOT, "Views/Chat/AIChatView.swift")
+    if os.path.isfile(p):
+        txt = read(p)
+        print("   inputBarHeight 写入点: %d 处" % txt.count("inputBarHeight = newH"))
 
     # ---- 诊断: 把关键文件片段打到运行日志 (失败时我能看到编译时真实源码) ----
     print("-- 诊断 dump (AppDelegate 20-84) --")

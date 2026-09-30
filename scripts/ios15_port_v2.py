@@ -789,10 +789,22 @@ def stage1_fixes() -> None:
         # iOS 16/17 专属、iOS 15 无对应的视觉 API，整调用删除
         t = _delete_call(t, ".presentationDetents")
         t = _delete_call(t, ".symbolEffect")
-        # 纯视觉增强（字重/加粗/几何监听/图片选择器）：删掉不影响功能
+        # 纯视觉增强（字重/加粗/图片选择器）：删掉不影响功能
         t = _delete_call(t, ".fontWeight")
         t = _delete_call(t, ".bold")
-        t = _delete_call(t, ".onGeometryChange", drop_trailing_closure=True)
+        # ⚠️ onGeometryChange 绝不能删！它是"几何测量"的唯一来源：
+        #   * inputBarHeight（输入栏高度）→ 消息列表底部内边距
+        #   * floatingBarHeight（悬浮工具条高度）
+        #   * topSafeAreaInset（导航栏高度）/ inputBottomRowWidth
+        # 之前整调用删除，导致 inputBarHeight 永远是 0：消息列表底部不留空，
+        # **最后一条消息被输入栏永久盖住、滚不进可视区**（用户现象："执行任务
+        # 字不会上移"），底部还会渲染成一块黑区。
+        # 上游注释自己写明了这个后果（"the last message was permanently stuck
+        # under the composer — unable to scroll into view"）。
+        # 改为调用 iOS15Compat.swift 里的回填实现（GeometryReader+PreferenceKey，
+        # 与 iOS 16 原版语义一致：值变化时才回调）。
+        t = _replace_outside_comments(
+            t, ".onGeometryChange(", ".onGeometryChange15(")
         t = _delete_call(t, ".photosPicker")
         # .lineLimit(1...2) 这种区间写法是 iOS 16，退化成上限
         t = re.sub(r"\.lineLimit\(\s*(\d+)\s*\.\.\.\s*(\d+)\s*\)",
@@ -817,7 +829,7 @@ def stage1_fixes() -> None:
             write(path, t)
             touched += 1
     log("✅ 第一阶段规则复跑（presentationDetents/symbolEffect/fontWeight/"
-        "onGeometryChange/photosPicker/toolbar-if…）：%d 个文件受影响" % touched)
+        "onGeometryChange→回填15/photosPicker/toolbar-if…）：%d 个文件受影响" % touched)
 
 
 def _fix_context_menu(text: str) -> str:

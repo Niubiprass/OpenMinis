@@ -207,6 +207,32 @@ jobs:
           fi
           echo "::endgroup::"
 
+          echo "::group::断言5: 几何测量回填必须就位 (否则 inputBarHeight=0 → 最后一条消息被输入栏永久盖住)"
+          # onGeometryChange 是 inputBarHeight/floatingBarHeight/topSafeAreaInset 的
+          # 唯一来源。早期流水线把整调用删掉, 导致 inputBarHeight 恒为 0:
+          # 消息列表底部不留空, 最后一条消息被输入栏挡住、滚不进可视区
+          # ("执行任务字不会上移"), 底部还会渲染成一块黑区。
+          # 现在改成改名调用 iOS15Compat.swift 里的回填实现, 这里做硬性回归拦截。
+          N15=$(grep -rn "\.onGeometryChange15(" src/ios --include=*.swift | wc -l | tr -d ' ')
+          LEFT=$(grep -rn "\.onGeometryChange(" src/ios --include=*.swift | wc -l | tr -d ' ')
+          IMPL=$(grep -c "func onGeometryChange15" src/ios/iOS15Compat.swift 2>/dev/null | tr -d ' ')
+          SEED=$(grep -c "inputBarHeight = newH" src/ios/Views/Chat/AIChatView.swift 2>/dev/null | tr -d ' ')
+          echo "回填点=$N15 未处理=$LEFT 回填实现=$IMPL inputBarHeight写入点=$SEED"
+          if [ "$LEFT" != "0" ]; then
+            echo "❌ 仍有 $LEFT 处未处理的 .onGeometryChange( —— v2 的改名规则失效了"; exit 1
+          fi
+          if [ "$N15" -lt 5 ]; then
+            echo "❌ 回填点只有 $N15 处 (应 ≥5: AIChatView 4 + ChatMessageViews 1)"; exit 1
+          fi
+          if [ "$IMPL" = "0" ]; then
+            echo "❌ iOS15Compat.swift 缺 onGeometryChange15 回填实现"; exit 1
+          fi
+          if [ "$SEED" = "0" ]; then
+            echo "❌ AIChatView 的 inputBarHeight 写入点丢失 (底部内边距会算错)"; exit 1
+          fi
+          echo "✅ 几何测量回填就位 ($N15 处)"
+          echo "::endgroup::"
+
       - name: "设置部署目标 (主 App=${{ env.DEPLOY_TARGET }}, 扩展单独抬高)"
         run: |
           set -e
