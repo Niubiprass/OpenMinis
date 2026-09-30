@@ -9,7 +9,7 @@ struct ListSessionsIntent: AppIntent {
     static var openAppWhenRun = false
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
-        let sessions = await ChatStore.shared.listSessions().filter { !$0.isChild }
+        let sessions = await ChatStore.shared.listSessions()
 
         if sessions.isEmpty {
             return .result(value: "No sessions found.")

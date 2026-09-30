@@ -243,20 +243,11 @@ private let logger = AppLogger(category: "SessionsOffload")
     ///                   non-nil → install a session-level directEntry binding before send().
     ///   - source: Written to `vm.sessionSource` on new sessions (e.g. "cli").
     ///
-    /// Returns immediately once the prompt has been dispatched. `status` is
-    /// the truthful outcome of `submitProgrammaticPrompt`: "Running" (a new
-    /// loop started), "Queued" (the session was busy — the prompt runs as a
-    /// fresh turn when its loop ends), or ok:false with `error` when the vm
-    /// declined it. The caller polls via `getSessionStatus` — the prior
+    /// Always returns immediately with status "Running" once the prompt has
+    /// been dispatched. The caller polls via `getSessionStatus` — the prior
     /// `--wait` / `--timeout` blocking mode was removed because the iSH
     /// shell is single-threaded and blocking it deadlocked agent loops that
     /// dispatched prompts then tried to do further work.
-    ///
-    /// [T-p0-programmatic-prompt] This used to do `vm.inputText = prompt;
-    /// vm.send()` and answer `ok: true, status: Running` unconditionally.
-    /// `send()` silently returns while `isProcessing` is true, so a send into
-    /// a busy session — including an agent sending to ITSELF from a
-    /// shell_execute — reported success and did nothing.
     @objc public static func sendPrompt(
         sessionId: String?,
         prompt: String,
@@ -314,8 +305,9 @@ private let logger = AppLogger(category: "SessionsOffload")
             // Attachments.
             _ = stageAttachments(paths: attachmentPaths, on: vm)
 
-            // Send through the one programmatic channel.
-            let outcome = vm.submitProgrammaticPrompt(prompt, origin: .cli, silent: true)
+            // Send.
+            vm.inputText = prompt
+            vm.send()
 
             // Resolve model name for the response.
             var modelName = vm.selectedModel.displayName
@@ -324,32 +316,16 @@ private let logger = AppLogger(category: "SessionsOffload")
                 modelName = resolved
             }
 
-            switch outcome {
-            case .sent, .queued:
-                output = [
-                    "ok": true,
-                    "action": "send",
-                    "session_id": sid,
-                    "is_new_session": isNew,
-                    "model_name": modelName,
-                    "status": outcome == .sent ? "Running" : "Queued",
-                    "queued": outcome == .queued,
-                    "queue_position": outcome == .queued ? vm.promptQueue.count : 0,
-                    "prompt": prompt,
-                    "response_text": "",
-                ]
-            case .rejected(let reason):
-                output = [
-                    "ok": false,
-                    "action": "send",
-                    "session_id": sid,
-                    "is_new_session": isNew,
-                    "model_name": modelName,
-                    "error": "send_rejected",
-                    "reason": reason,
-                    "prompt": prompt,
-                ]
-            }
+            output = [
+                "ok": true,
+                "action": "send",
+                "session_id": sid,
+                "is_new_session": isNew,
+                "model_name": modelName,
+                "status": "Running",
+                "prompt": prompt,
+                "response_text": "",
+            ]
             sem.signal()
         }
         sem.wait()

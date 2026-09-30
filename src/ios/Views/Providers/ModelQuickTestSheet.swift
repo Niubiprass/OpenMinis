@@ -242,8 +242,7 @@ final class TestSession: ObservableObject {
             }
             let req = VoiceOutputRequest(
                 input: "Hi! This is Minis testing text to speech.",
-                model: entry.model.id, voice: entry.model.id, speed: nil, responseFormat: .mp3,
-                resolvedModel: entry.model)
+                model: entry.model.id, voice: entry.model.id, speed: nil, responseFormat: .mp3)
             let data = try await voice.synthesize(req)
             guard !data.isEmpty else { throw QuickTestError.noOutput(AppLocalized("No audio was returned.")) }
             return .audio(data)

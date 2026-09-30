@@ -206,7 +206,7 @@ final class AntigravityOAuthManager: NSObject, ObservableObject {
                 error: error,
                 isFatal: { [weak self] in self?.isRefreshTokenInvalid($0) ?? false },
                 loadCurrent: { ProviderKeychainHelper.loadOAuthToken(instanceId: instanceId, as: AntigravityTokenStorage.self) },
-                markNeedsReauth: { ProviderKeychainHelper.markOAuthNeedsReauth(instanceId: instanceId) },
+                deleteCredentials: { ProviderKeychainHelper.deleteOAuthToken(instanceId: instanceId) },
                 log: { logger.info($0) }
             )
         }

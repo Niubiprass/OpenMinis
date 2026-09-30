@@ -97,7 +97,7 @@ nonisolated struct MinisAlarmMetadata: AlarmMetadata {}
                     systemImageName: "stop.circle"
                 )
                 let alert = AlarmPresentation.Alert(
-                    title: String(stringLiteral: label),
+                    title: LocalizedStringResource(stringLiteral: label),
                     stopButton: stopButton
                 )
                 let attributes = AlarmAttributes<MinisAlarmMetadata>(
@@ -178,7 +178,7 @@ nonisolated struct MinisAlarmMetadata: AlarmMetadata {}
                     systemImageName: "checkmark"
                 )
                 let alert = AlarmPresentation.Alert(
-                    title: String(stringLiteral: label),
+                    title: LocalizedStringResource(stringLiteral: label),
                     stopButton: stopButton
                 )
                 let attributes = AlarmAttributes<MinisAlarmMetadata>(

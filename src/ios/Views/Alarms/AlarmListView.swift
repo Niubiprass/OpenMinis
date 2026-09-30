@@ -113,10 +113,7 @@ class AlarmListViewModel: ObservableObject {
     @Published var error: String?
 
     func load() {
-        // [T-visionos-alarmkit-launch] See ContentView.fetchAlarmsIfNeeded:
-        // @available passes on visionOS, so the framework probe must gate
-        // every entry into AlarmOffloadBridge, not only the shell command.
-        guard #available(iOS 26.0, *), alarmkit_is_usable() else { return }
+        guard #available(iOS 26.0, *) else { return }
         isLoading = true
         _loadImpl()
     }
@@ -141,7 +138,7 @@ class AlarmListViewModel: ObservableObject {
 
     func delete(id: String) {
         alarms.removeAll { $0.id == id }
-        guard #available(iOS 26.0, *), alarmkit_is_usable() else { return }
+        guard #available(iOS 26.0, *) else { return }
         _cancelImpl(id: id)
     }
 
@@ -153,7 +150,7 @@ class AlarmListViewModel: ObservableObject {
     func clearAll() {
         let ids = alarms.map { $0.id }
         alarms.removeAll()
-        guard #available(iOS 26.0, *), alarmkit_is_usable() else { return }
+        guard #available(iOS 26.0, *) else { return }
         _clearAllImpl(ids: ids)
     }
 

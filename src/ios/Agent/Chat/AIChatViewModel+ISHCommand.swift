@@ -20,8 +20,7 @@ extension AIChatViewModel {
         let effectiveTimeout = timeout ?? defaultCommandTimeout
         logger.info("Executing command via coordinator (timeout: \(Int(effectiveTimeout))s): \(command)")
 
-        // [T-p2-shared-workspace] A helper's shell runs in its parent's bucket.
-        guard let sid = fsSessionId else {
+        guard let sid = sessionId else {
             return CommandResult(output: "Error: no session", exitCode: -1)
         }
 

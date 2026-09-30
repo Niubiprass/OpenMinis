@@ -412,13 +412,14 @@ struct BrowserDownloadBanner: View {
 // MARK: - Floating download button (chat overlay)
 
 /// Round 36×36 floating button shown near the scroll-jump buttons while the
-/// session has active/unviewed native browser downloads. Shares the scroll
-/// buttons' surface (`FloatingCircleButtonSurface`: glass on iOS 26+,
-/// system-background circle + stroke + shadow below). Badge = in-flight + unviewed terminal entries;
+/// session has active/unviewed native browser downloads. Mirrors the scroll
+/// buttons' visual language (semi-transparent system background circle, gray
+/// stroke, soft shadow). Badge = in-flight + unviewed terminal entries;
 /// hidden entirely at badge 0. Tapping opens BrowserDownloadPanelSheet.
 /// [T-browser-download-ux-v2]
 struct BrowserDownloadFloatingButton: View {
     @ObservedObject private var center = BrowserDownloadCenter.shared
+    @Environment(\.colorScheme) private var colorScheme
     let sessionId: String
     let action: () -> Void
 
@@ -436,15 +437,16 @@ struct BrowserDownloadFloatingButton: View {
             Button(action: action) {
                 Image(systemName: "arrow.down.circle")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(FloatingCircleButtonSurface.glyphStyle)
+                    .foregroundStyle(.secondary)
                     .modifier(DownloadPulseModifier(active: downloading, legacyPulse: $legacyPulse))
                     .frame(width: 36, height: 36)
-                    .modifier(FloatingCircleButtonSurface(
-                        legacyLightOpacity: 0.5,
-                        legacyStrokeOpacity: 0.25,
-                        legacyShadowOpacity: 0.12,
-                        legacyShadowRadius: 4
-                    ))
+                    .background {
+                        Color(.systemBackground)
+                            .opacity(colorScheme == .dark ? 0.8 : 0.5)
+                            .clipShape(Circle())
+                    }
+                    .overlay(Circle().stroke(Color.gray.opacity(0.25), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
                     .overlay(alignment: .topTrailing) {
                         if badge > 0 {
                             Text("\(badge)")

@@ -32,6 +32,18 @@
 				<string>com.openminis.app.minisbak</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Any File</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleIcons</key>
 	<dict>
@@ -145,16 +157,6 @@
 		<string>fr</string>
 		<string>de</string>
 		<string>ru</string>
-		<string>es</string>
-		<string>id</string>
-		<string>ms</string>
-		<string>fil</string>
-		<string>th</string>
-		<string>tr</string>
-		<string>pl</string>
-		<string>ro</string>
-		<string>pt-BR</string>
-		<string>hr</string>
 	</array>
 	<key>CFBundleURLTypes</key>
 	<array>

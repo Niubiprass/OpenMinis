@@ -71,9 +71,8 @@ struct AskMinisIntent: AppIntent {
             for await processing in vm.$isProcessing.values where !processing { break }
         }
 
-        // [T-programmatic-prompt-no-composer] Existing sessions reuse the
-        // user's cached vm — never route the prompt through their composer.
-        vm.send(overrideText: prompt)
+        vm.inputText = prompt
+        vm.send()
 
         let sid = vm.sessionId ?? session?.id ?? ""
         logger.info("AskMinis send sid=\(sid.prefix(8)) new=\(session == nil)")

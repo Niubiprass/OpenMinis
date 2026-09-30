@@ -5,31 +5,49 @@ import Foundation
 enum SharedContainerStore {
     static let appGroupID = "group.com.openminis.app"
 
-    private static let pendingShareKey = "pendingShare"
-
-    /// Best-effort container directory. TrollStore unsigned installs have no
-    /// provisioning profile, so App Groups are unavailable and
-    /// `containerURL(forSecurityApplicationGroupIdentifier:)` returns nil.
-    /// Fall back to the app's own Application Support directory.
+    /// The App Group container URL.
+    ///
+    /// On normally-provisioned builds this is the shared container created for
+    /// `group.com.openminis.app`. On builds where the App Group is **not**
+    /// registered — most notably TrollStore-signed IPA, which ships no
+    /// provisioning profile to create the shared container — the system
+    /// returns `nil` from `containerURL(forSecurityApplicationGroupIdentifier:)`.
+    /// In that case we transparently fall back to a private subdirectory of
+    /// the app's own sandbox, so callers never have to deal with a `nil`
+    /// container (and a force-unwrap crash on launch).
     static var containerDirectory: URL {
-        let fm = FileManager.default
-        if let url = fm.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) {
-            return url
+        if let container = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID) {
+            return container
         }
-        let fallback = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let fallback = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MinisAppGroupFallback", isDirectory: true)
-        try? fm.createDirectory(at: fallback, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
         return fallback
     }
 
+    private static let pendingShareKey = "pendingShare"
+
     static var sharedDefaults: UserDefaults? {
-        UserDefaults(suiteName: appGroupID)
+        // TrollStore-signed builds have no registered App Group, so `suiteName:`
+        // returns nil. Fall back to the app's own standard defaults so the
+        // pending-share handshake still works for the "Open in Minis" path,
+        // which runs entirely inside the main app's sandbox (no cross-process
+        // sharing required — unlike the Share Extension).
+        UserDefaults(suiteName: appGroupID) ?? UserDefaults.standard
     }
 
-    /// Directory in the shared container for transferring attachment files.
+    /// Directory for transferring attachment files into the app.
+    ///
+    /// Layered on top of `containerDirectory`: when the App Group exists this is
+    /// the shared container (so a supported Share Extension could write here),
+    /// and when it doesn't we transparently fall back to a private subdirectory
+    /// of the app's own sandbox. The "Open in Minis" document-import path runs
+    /// inside the main app itself, so this fallback keeps it fully functional on
+    /// TrollStore where App Groups are unavailable.
     static var sharedFileDirectory: URL? {
-        FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
+        containerDirectory
             .appendingPathComponent("ShareExtension", isDirectory: true)
     }
 

@@ -64,7 +64,7 @@ struct MemoryManagementView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button {
-                            Task { await forceSyncMemory() }
+                            if #available(iOS 17.0, *) { Task { await forceSyncMemory() } }
                         } label: {
                             Label(AppLocalized("Force iCloud Sync"),
                                   systemImage: "arrow.triangle.2.circlepath.icloud")

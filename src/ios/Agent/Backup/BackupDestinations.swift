@@ -2,29 +2,6 @@ import Foundation
 
 private let logger = AppLogger(category: "Backup")
 
-/// [T-backup-stop-during-upload] A cancellation signal that survives the hop
-/// into a detached task.
-///
-/// Structured concurrency propagates cancellation to CHILD tasks only, and the
-/// rclone upload deliberately runs detached (it is a long blocking call that
-/// must not occupy a cooperative thread). Without this flag the detached work
-/// had no way to observe Stop at all, which is why `RcloneChunkedUpload`'s
-/// `isCancelled` hook sat at its `{ false }` default and every upload ran to
-/// completion regardless.
-final class CancellationFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _cancelled = false
-
-    var isCancelled: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return _cancelled
-    }
-
-    func cancel() {
-        lock.lock(); _cancelled = true; lock.unlock()
-    }
-}
-
 /// The mounted folders a finished backup is delivered into
 /// (docs/backup-restore-design.md §6.2 path 2).
 ///
@@ -231,18 +208,9 @@ enum BackupDestinations {
             ($0.id, $0.name, manager.resolvedURL(for: $0.id))
         }
 
-        // [T-backup-stop-during-upload] Same cancellation bridge as the remote
-        // loop below — a detached task inherits nothing, so copying to a slow
-        // mounted folder (a NAS over WebDAV) was equally unstoppable.
-        let mountCancelFlag = CancellationFlag()
-        let mountResults = await withTaskCancellationHandler {
-            await Task.detached(priority: .utility) { () -> [DeliveryResult] in
+        let mountResults = await Task.detached(priority: .utility) { () -> [DeliveryResult] in
             var results: [DeliveryResult] = []
             for target in targets {
-                if mountCancelFlag.isCancelled {
-                    logger.info("[Backup] delivery cancelled before folder '\(target.name)'")
-                    break
-                }
                 guard let root = target.root else {
                     results.append(.init(id: target.id, folderName: target.name,
                                          destination: nil,
@@ -261,10 +229,7 @@ enum BackupDestinations {
                 }
             }
             return results
-            }.value
-        } onCancel: {
-            mountCancelFlag.cancel()
-        }
+        }.value
 
         // rclone remotes (SMB / WebDAV / S3 / …) — a second, independent
         // delivery path. Kept separate from the mounted-folder loop rather
@@ -282,31 +247,11 @@ enum BackupDestinations {
         // Disabled remotes stay configured but are skipped.
         let remotes = RcloneRemoteStore.enabledRemotes
         guard !remotes.isEmpty else { return [] }
-        // [T-backup-sync-offmain] MUST wait: the detached upload below talks to
-        // rclone immediately, and a half-written config would fail the transfer
-        // with a bogus "remote not found".
-        await RcloneRemoteStore.syncToRcloneAndWait()
+        RcloneRemoteStore.syncToRclone()
 
-        // [T-backup-stop-during-upload] A `Task.detached` does NOT inherit the
-        // parent's cancellation, so Stop could not reach the upload — the
-        // longest phase of a backup and the one users are most likely to want
-        // to abort. The parent's state is captured into a flag the detached
-        // work can poll, and a child task flips it when the parent is
-        // cancelled. (Kept detached rather than a plain child task: the
-        // rclone call below is a long BLOCKING synchronous call, and running it
-        // on the caller's executor would stall whatever cooperative thread it
-        // lands on.)
-        let cancelFlag = CancellationFlag()
-        return await withTaskCancellationHandler {
-            await Task.detached(priority: .utility) { () -> [DeliveryResult] in
+        return await Task.detached(priority: .utility) { () -> [DeliveryResult] in
             var out: [DeliveryResult] = []
             for r in remotes {
-                // Between destinations is a clean place to stop: the package
-                // already delivered stays delivered, the next one never starts.
-                if cancelFlag.isCancelled {
-                    logger.info("[Backup] upload cancelled before remote '\(r.name)'")
-                    break
-                }
                 do {
                     // Report bytes as they go. RcloneTransfer already polls
                     // core/stats for this; nothing was listening, so the UI sat
@@ -315,14 +260,6 @@ enum BackupDestinations {
                     // stall.
                     try RcloneTransfer.upload(packageURL: packageURL,
                                               remote: r, backupId: backupId,
-                                              // [T-backup-stop-during-upload]
-                                              // Was left at its `{ false }`
-                                              // default, so the chunk loop's
-                                              // `if isCancelled()` check could
-                                              // never fire and an upload ran to
-                                              // completion no matter what Stop
-                                              // did.
-                                              isCancelled: { cancelFlag.isCancelled },
                                               progress: { p in
                         Task { @MainActor in
                             BackupTransferStatus.shared.update(name: r.name,
@@ -349,10 +286,7 @@ enum BackupDestinations {
                 }
             }
             return out
-            }.value
-        } onCancel: {
-            cancelFlag.cancel()
-        }
+        }.value
     }
 
     // MARK: - Reading packages back

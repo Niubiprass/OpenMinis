@@ -34,7 +34,7 @@ protocol RefreshableOAuthToken {
 ///      scraped from the body), via the `oauth_http_status=<code>` marker; and
 ///   2. the OAuth `error` field parsed from the JSON body with JSONDecoder.
 ///
-/// A failure is fatal (re-login-worthy) only when the HTTP status is one of the
+/// A failure is fatal (delete-worthy) only when the HTTP status is one of the
 /// auth-rejection codes AND/OR the parsed `error` code is in the provider's
 /// known-fatal set. Providers pass their own fatal-code set so the differing
 /// semantics (xAI/Codex honor `refresh_token_reused`; Google honors
@@ -92,7 +92,7 @@ enum OAuthRefreshErrorClassifier {
     }
 
     /// Structured verdict: is this refresh failure a genuine token-invalid error
-    /// that warrants marking the instance for re-login?
+    /// that warrants clearing credentials?
     ///
     /// - Parameters:
     ///   - error: the thrown error.
@@ -167,12 +167,12 @@ enum OAuthRefreshErrorClassifier {
 /// deterministically without touching the real Keychain or the network.
 enum OAuthRefreshCoordinator {
 
-    /// Decide what storage to use (or whether to mark the instance for re-login) after a
+    /// Decide what storage to use (or whether to clear credentials) after a
     /// refresh attempt threw `error`.
     ///
     /// The critical guard is *compare-before-delete*: on a token-invalid error
-    /// (`invalid_grant` / `refresh_token_reused` / HTTP 400-403) we mark the
-    /// instance for re-login ONLY when the currently-persisted refresh token is
+    /// (`invalid_grant` / `refresh_token_reused` / HTTP 400-403) we clear the
+    /// stored credentials ONLY when the currently-persisted refresh token is
     /// still the one we failed with. If a concurrent refresh already rotated it
     /// to a new value, this request is stale and returning `current` preserves
     /// the freshly-written token instead of wiping it (the bug that logged users
@@ -185,7 +185,7 @@ enum OAuthRefreshCoordinator {
     ///   - error: the thrown refresh error.
     ///   - isFatal: classifies `error` as "refresh token itself invalid" vs transient.
     ///   - loadCurrent: reads the latest persisted storage (may reflect a concurrent rotation).
-    ///   - markNeedsReauth: flags the instance as needing re-login (credentials are kept).
+    ///   - deleteCredentials: clears persisted credentials.
     ///   - log: optional human-readable trace sink.
     /// - Returns: the storage to continue with.
     /// - Throws: `LLMError.invalidAPIKey` when credentials are genuinely gone /
@@ -197,7 +197,7 @@ enum OAuthRefreshCoordinator {
         error: Error,
         isFatal: (LLMError) -> Bool,
         loadCurrent: () -> T?,
-        markNeedsReauth: () -> Void,
+        deleteCredentials: () -> Void,
         log: ((String) -> Void)? = nil
     ) throws -> T {
         // Re-load the latest persisted state — a concurrent winner may have
@@ -209,14 +209,8 @@ enum OAuthRefreshCoordinator {
                 log?("Stale invalid_grant ignored — token already rotated; keeping new credentials")
                 return current
             }
-            // [T-oauth-keep-credentials] Never delete on a rejected refresh:
-            // the classifier can misread a transient reply, and a wiped
-            // credential cannot be recovered. Mark the instance so the UI shows
-            // it red and routing skips it; the mark lapses on its own once a
-            // new credential is stored (re-login, or a Keychain sync from a
-            // peer), and only an explicit Sign Out removes the blob.
-            log?("Refresh token invalid, marking instance for re-login (credentials kept): \(llmError)")
-            markNeedsReauth()
+            log?("Refresh token invalid, clearing credentials: \(llmError)")
+            deleteCredentials()
             throw LLMError.invalidAPIKey(detail: "\(providerName): refresh token invalid — \(llmError)")
         }
 

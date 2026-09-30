@@ -114,9 +114,7 @@ actor TypedVocabularyBuilder {
     /// than reinvent.
     static func fetchUserMessages(since: Double) async -> [SourceMessage] {
         var result: [SourceMessage] = []
-        // [T-child-session-leak] A child session's "user" messages are the
-        // delegating model's brief, not text the person typed — skip them.
-        let sessions = await ChatStore.shared.listSessions().filter { !$0.isChild }
+        let sessions = await ChatStore.shared.listSessions()
         for session in sessions {
             let raws = await ChatStore.shared.loadMessages(sessionId: session.id)
             for raw in raws where raw.role == .user {
