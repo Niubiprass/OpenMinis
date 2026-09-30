@@ -7516,6 +7516,16 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         } else {
             measureWidth = textContainer.size.width
         }
+        // [IOS15-FIX] 宽度兜底消毒: 若上面三分支仍落到离谱瞬态宽度
+        // (1e7 / 2273 / 1382 等, 来自 SwiftUI 递归排版或 widthTracksTextView
+        // 把 textContainer 设到 greatestFiniteMagnitude 再经 Guard 钳到 1e7),
+        // 直接放弃本次测量, 避免写出荒谬 newHeight (850/712) 触发 FIRST-MEASURE
+        // 死循环 -> 主线程卡死。集合视图 cell 真实宽度恒 < 2000, 这里以此封顶。
+        if !(measureWidth.isFinite && measureWidth > 1 && measureWidth < 2000) {
+            cellSizeLogger.info("[invalidateCell][SKIP-BADWIDTH] boundsW=\(String(format: "%.0f", bounds.width)) tcW=\(String(format: "%.0f", textContainer.size.width)) cvW=\(String(format: "%.0f", (findCollectionView()?.bounds.width ?? 0))) — unstable width, skip measure")
+            return
+        }
+
         // [TableGenDedup] Compute the sum of every TableAttachment's generation
         // counter. Streaming tables mutate rows in place without changing
         // textStorage.length, so the (storageLen, width) fingerprint alone

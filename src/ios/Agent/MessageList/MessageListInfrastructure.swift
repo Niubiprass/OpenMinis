@@ -552,6 +552,26 @@ class SelfSizingCell: UICollectionViewCell {
                 + "dir=\(delta > 0 ? "RESERVED-TOO-MUCH" : "LAID-OUT-SHORT") key=\(contentKey ?? "-")")
         }
         #endif
+        // [IOS15-FIX] 以 TextKit 实测高度兜底, 修正 SwiftUI 排版路径
+        // 少算一行导致的末行裁切 (日志实测 cellH=256 但 TextKit 实测 273 ->
+        // 末行被 clipsToBounds 裁掉, "不显示/不对齐")。遍历 contentView 子树里
+        // 所有 SelectableMarkdownTextView, 累加它们的 lastComputedHeight
+        // (由 invalidateCellSizeIfNeeded 在稳定宽度下算出的权威 TextKit 高度),
+        // 取与 SwiftUI 测量值的较大者。两路径一致后 FIRST-MEASURE 冲突消失,
+        // 主线程卡死 (卡死/什么都点不了) 随之消除。
+        var _ios15Reconciled = fittingSize.height
+        var _ios15TkSum: CGFloat = 0
+        var _ios15Found = false
+        for _v in hostingSubtree {
+            if let _mdv = _v as? SelectableMarkdownTextView {
+                let _h = _mdv.lastComputedHeight
+                if _h > 1 { _ios15TkSum += _h; _ios15Found = true }
+            }
+        }
+        if _ios15Found, _ios15TkSum > _ios15Reconciled, _ios15TkSum < _ios15Reconciled + 500 {
+            _ios15Reconciled = _ios15TkSum
+        }
+        fittingSize.height = _ios15Reconciled
         attrs.size.height = fittingSize.height
         // Don't cache very small heights (< 4pt) — these typically represent
         // empty text blocks that will receive content shortly via streaming.
