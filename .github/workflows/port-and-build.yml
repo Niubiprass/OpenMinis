@@ -18,6 +18,7 @@ on:
       - "scripts/ios15_port.py"
       - "scripts/ios15_port_v2.py"
       - "scripts/fix_fileprovider_deployment.py"
+      - "scripts/ios15_runtime_fixes.py"
       - "scripts/autofix.py"
       - ".github/workflows/port-and-build.yml"
 
@@ -47,7 +48,7 @@ jobs:
       - name: "打印本次脚本指纹 (确认用的是最新版)"
         run: |
           echo "在线脚本来源: $SCRIPT_REPO @ $SCRIPT_REF / $SCRIPT_DIR"
-          for f in ios15_port.py ios15_port_v2.py fix_fileprovider_deployment.py autofix.py; do
+          for f in ios15_port.py ios15_port_v2.py ios15_runtime_fixes.py fix_fileprovider_deployment.py autofix.py; do
             if [ -f "$SCRIPT_DIR/$f" ]; then
               printf '  %-34s %s\n' "$f" "$(shasum -a 256 "$SCRIPT_DIR/$f" | cut -c1-16)"
             else
@@ -154,6 +155,9 @@ jobs:
 
       - name: "源码移植到 iOS 15 (第二阶段: 本地化/Intents/兼容层)"
         run: python3 "$SCRIPT_DIR/ios15_port_v2.py"
+
+      - name: "运行时修复 (Material→实心色 / 工具输出 LazyVStack / AppGroup 兜底 / PHPicker 桥接)"
+        run: python3 "$SCRIPT_DIR/ios15_runtime_fixes.py"
 
       - name: "提交移植结果 (幂等)"
         run: |
