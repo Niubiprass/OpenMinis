@@ -15,8 +15,24 @@ class ShareViewController: UIViewController {
             let vm = ShareViewModel()
             let items = (extensionContext?.inputItems as? [NSExtensionItem]) ?? []
             NSLog("[ShareExt] inputItems count: %d", items.count)
-            await vm.processExtensionItems(items)
-            let saved = vm.save()
+    // ios15-port IOS15_SHARE_TIMEOUT
+    // 之前 await 单个 NSItemProvider 时, 若它在 iOS 15 上不回调, 整个处理会
+    // 永久挂住: 分享面板既没反应也不关闭, 主 App 也收不到 minis://share。
+    // 这里加 8 秒超时: 超时也要继续走 redirectToHostApp + completeRequest,
+    // 至少把主 App 唤起来。
+            let saved = await withTaskGroup(of: Bool.self) { group -> Bool in
+                group.addTask { @MainActor in
+                    await vm.processExtensionItems(items)
+                    return vm.save()
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    return false
+                }
+                let first = await group.next() ?? false
+                group.cancelAll()
+                return first
+            }
             NSLog("[ShareExt] save() returned: %@", saved ? "true" : "false")
 
             // Verify what was saved

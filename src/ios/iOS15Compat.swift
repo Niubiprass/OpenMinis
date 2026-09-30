@@ -395,12 +395,15 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     /// _systemLayoutSizeFittingSize 反复嵌套）。所以这里只用
     /// `sizeThatFits` 这条不经过布局引擎的路径。
     private var isMeasuring: Bool = false
+    private var lastLoggedWidth: CGFloat = -1
 
     private func ios15FittingSize(_ targetSize: CGSize) -> CGSize {
         var width = targetSize.width
         if !(width > 0) || width.isInfinite {
             width = window?.bounds.width ?? UIScreen.main.bounds.width
         }
+        let probeCvW = (superview?.superview as? UICollectionView)?.bounds.width ?? -1
+        print("[IOS15Size] in targetW=\(targetSize.width) w=\(width) cellW=\(bounds.width) cvW=\(probeCvW) hostNil=\(host == nil)")
         guard let host = host, !isMeasuring else {
             return CGSize(width: width, height: max(0, bounds.height))
         }
@@ -413,6 +416,7 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         }
         var height = size.height
         if !(height > 0) { height = bounds.height }
+        print("[IOS15Size] out w=\(width) h=\(height) idealW=\(size.width) idealH=\(size.height)")
         return CGSize(width: width, height: max(0, height))
     }
 
