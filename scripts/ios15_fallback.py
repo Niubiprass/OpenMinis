@@ -739,6 +739,8 @@ HOSTING_FITTING = '''
         if !(width > 0) || width.isInfinite {
             width = window?.bounds.width ?? UIScreen.main.bounds.width
         }
+        let probeCvW = (superview?.superview as? UICollectionView)?.bounds.width ?? -1
+        print("[IOS15Size] in targetW=\\(targetSize.width) w=\\(width) cellW=\\(bounds.width) cvW=\\(probeCvW) hostNil=\\(host == nil)")
         guard let host = host, !isMeasuring else {
             return CGSize(width: width, height: max(0, bounds.height))
         }
@@ -751,14 +753,7 @@ HOSTING_FITTING = '''
         }
         var height = size.height
         if !(height > 0) { height = bounds.height }
-        // 诊断: 宽度变化时打一行 (LoggingManager 会捕获进日志文件)。
-        // cellW=单元格宽 cvW=集合视图宽 idealW=SwiftUI 理想宽 —— 用来定位
-        // "文字被左右裁掉"到底是哪一层把宽度算错了。
-        if abs(width - lastLoggedWidth) > 0.5 {
-            lastLoggedWidth = width
-            let cvW = (superview?.superview as? UICollectionView)?.bounds.width ?? -1
-            print("[IOS15Size] fit targetW=\\(targetSize.width) w=\\(width) h=\\(height) idealW=\\(size.width) cellW=\\(bounds.width) cvW=\\(cvW)")
-        }
+        print("[IOS15Size] out w=\\(width) h=\\(height) idealW=\\(size.width) idealH=\\(size.height)")
         return CGSize(width: width, height: max(0, height))
     }
 
