@@ -736,8 +736,24 @@ HOSTING_FITTING = '''
 
     private func ios15FittingSize(_ targetSize: CGSize) -> CGSize {
         var width = targetSize.width
-        if !(width > 0) || width.isInfinite {
-            width = window?.bounds.width ?? UIScreen.main.bounds.width
+        // ⚠️ 关键: 布局引擎问"压缩尺寸"时传的是 UIView.layoutFittingCompressedSize,
+        // 宽高都是 Double.greatestFiniteMagnitude (≈1.8e308)。它是**有限数**,
+        // 所以 `width.isInfinite` 拦不住 —— 之前直接把它当真实宽度交给 SwiftUI,
+        // 内容按无界宽度排版: 长文本不换行、按自然宽度居中渲染 → 左右被裁;
+        // 同时 TextKit 在这个荒谬宽度下抛 NSException → 自排版永远退回估算
+        // 高度 → 单元格之间大片黑块（日志实测 1977 次全部 threw）。
+        // 这里把"未指定/哨兵"宽度替换成集合视图的真实宽度。
+        if !(width > 0) || width.isInfinite || width >= 1_000_000 {
+            var probe: UIView? = superview
+            var cvW: CGFloat = 0
+            while let v = probe {
+                if let collection = v as? UICollectionView {
+                    cvW = collection.bounds.width
+                    break
+                }
+                probe = v.superview
+            }
+            width = cvW > 0 ? cvW : (window?.bounds.width ?? UIScreen.main.bounds.width)
         }
         let probeCvW = (superview?.superview as? UICollectionView)?.bounds.width ?? -1
         print("[IOS15Size] in targetW=\\(targetSize.width) w=\\(width) cellW=\\(bounds.width) cvW=\\(probeCvW) hostNil=\\(host == nil)")
@@ -766,6 +782,105 @@ SHARE_TIMEOUT = '''    // ios15-port IOS15_SHARE_TIMEOUT
     // 这里加 8 秒超时: 超时也要继续走 redirectToHostApp + completeRequest,
     // 至少把主 App 唤起来。
 '''
+
+
+SHARE_STORE_OLD = '''    static var sharedFileDirectory: URL? {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
+            .appendingPathComponent("ShareExtension", isDirectory: true)
+    }
+
+    // MARK: - Write (called by Share Extension)
+
+    static func savePendingShare(_ share: PendingShare) {
+        guard let defaults = sharedDefaults else { return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        if let data = try? encoder.encode(share) {
+            defaults.set(data, forKey: pendingShareKey)
+            defaults.synchronize()
+        }
+    }
+
+    // MARK: - Read & Consume (called by main app)
+
+    static func loadPendingShare() -> PendingShare? {
+        guard let defaults = sharedDefaults,
+              let data = defaults.data(forKey: pendingShareKey) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(PendingShare.self, from: data)
+    }
+
+    static func clearPendingShare() {
+        sharedDefaults?.removeObject(forKey: pendingShareKey)
+        sharedDefaults?.synchronize()
+    }
+'''
+
+SHARE_STORE_NEW = '''    static var sharedFileDirectory: URL? {
+        let base = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)
+            ?? containerDirectory
+        return base.appendingPathComponent("ShareExtension", isDirectory: true)
+    }
+
+    // ios15-port IOS15_SHARE_FILE_FALLBACK
+    // 巨魔(iOS 15)环境下 UserDefaults(suiteName:) 可能拿不到 (sharedDefaults == nil),
+    // 那时扩展辛苦处理完的数据会被 `guard ... else { return }` 静默丢弃 —— 主 App
+    // 只能读到 "loadPendingShare returned nil — no data from extension"。
+    // 所以改成双通道: UserDefaults 能用就写, 同时**始终**往共享容器写一份文件;
+    // 读取时两边都试。共享容器路径在日志里已证实存在
+    // (/private/var/mobile/Containers/Shared/AppGroup/.../)。
+    private static var pendingShareFileURL: URL {
+        containerDirectory.appendingPathComponent("pending-share.json")
+    }
+
+    // MARK: - Write (called by Share Extension)
+
+    static func savePendingShare(_ share: PendingShare) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(share) else { return }
+        if let defaults = sharedDefaults {
+            defaults.set(data, forKey: pendingShareKey)
+            defaults.synchronize()
+        }
+        try? data.write(to: pendingShareFileURL)
+    }
+
+    // MARK: - Read & Consume (called by main app)
+
+    static func loadPendingShare() -> PendingShare? {
+        let decoder = JSONDecoder()
+        decoder.dateEncodingStrategy = .iso8601
+        if let defaults = sharedDefaults,
+           let data = defaults.data(forKey: pendingShareKey),
+           let share = try? decoder.decode(PendingShare.self, from: data) {
+            return share
+        }
+        if let data = try? Data(contentsOf: pendingShareFileURL),
+           let share = try? decoder.decode(PendingShare.self, from: data) {
+            return share
+        }
+        return nil
+    }
+
+    static func clearPendingShare() {
+        sharedDefaults?.removeObject(forKey: pendingShareKey)
+        sharedDefaults?.synchronize()
+        try? FileManager.default.removeItem(at: pendingShareFileURL)
+    }
+'''
+
+
+def fix_share_store(t):
+    """PendingShare 改双通道存储 (UserDefaults + 共享容器文件) —— 幂等。"""
+    if "IOS15_SHARE_FILE_FALLBACK" in t:
+        return t
+    if SHARE_STORE_OLD not in t:
+        return t
+    return t.replace(SHARE_STORE_OLD, SHARE_STORE_NEW, 1)
 
 
 def fix_share_extension_timeout(t):
@@ -840,6 +955,7 @@ def main():
     edit_glob("**/iOS15Compat.swift", inject_geom_backport, "注入 onGeometryChange 回填实现")
     edit_glob("**/iOS15Compat.swift", fix_hosting_config_shim, "UIHostingConfiguration 替身补系统LayoutSizeFitting (自排版)")
     edit("ShareExtension/ShareViewController.swift", fix_share_extension_timeout, "分享扩展加 8s 超时兜底 (防永久挂住)")
+    edit("Shared/SharedContainerStore.swift", fix_share_store, "PendingShare 双通道存储 (UserDefaults + 共享容器文件)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
