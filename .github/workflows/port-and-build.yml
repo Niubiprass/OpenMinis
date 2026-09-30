@@ -203,18 +203,6 @@ jobs:
           fi
           echo "::endgroup::"
 
-      - name: "提交移植结果 (幂等)"
-        run: |
-          git config user.email "ios15-port@codebuddy.local"
-          git config user.name "iOS15 Port Bot"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "无改动, 跳过提交"
-          else
-            git commit -m "Auto-port OpenMinis to iOS 15 (scripts @ $(git rev-parse --short HEAD))" || true
-            git push || echo "WARN: push 失败(可能是分支保护), 不影响后续编译"
-          fi
-
       - name: "设置部署目标 (主 App=${{ env.DEPLOY_TARGET }}, 扩展单独抬高)"
         run: |
           set -e
@@ -270,6 +258,23 @@ jobs:
             exit "$RC"
           fi
           echo "编译成功"
+
+      - name: "提交移植结果 (幂等, 且仅编译成功后才提交)"
+        run: |
+          # 关键: 本步骤必须在"编译 App"成功之后。
+          # 之前它位于编译之前, 导致 1.14 移植编译失败时仍把约 300 个坏文件提交到 main,
+          # 污染了 ios15-build.yml 所依赖的 src/ios (原本能正常出包的源码)。
+          # 现在: 编译失败 -> 作业中止 -> 不提交 -> main 保持可用。
+          # 只 add src/ios: 避免把编译产物 (DerivedData/deps) 一并提交。
+          git config user.email "ios15-port@codebuddy.local"
+          git config user.name "iOS15 Port Bot"
+          git add -A src/ios
+          if git diff --cached --quiet; then
+            echo "无改动, 跳过提交"
+          else
+            git commit -m "Auto-port OpenMinis to iOS 15 (scripts @ $(git rev-parse --short HEAD))" || true
+            git push || echo "WARN: push 失败(可能是分支保护), 不影响后续打包"
+          fi
 
       - name: "打包 IPA (供 TrollStore 安装)"
         if: success()
