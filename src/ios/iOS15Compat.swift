@@ -602,3 +602,37 @@ struct PHPickerView: UIViewControllerRepresentable {
     }
 }
 
+
+// MARK: - onGeometryChange 回填 (iOS 16 API)
+// ios15-port IOS15_GEOM_BACKPORT  (见 scripts/ios15_fallback.py)
+// 复刻 iOS 16 `onGeometryChange(for:of:action:)`：把被测视图的几何值转成
+// Preference，值变化时才回调 action。iOS 15 无此 API，而它承载着输入栏高度等
+// 关键测量（缺失会导致最后一条消息被输入栏盖住、底部渲染成黑区）。
+
+private struct IOS15GeometryValueKey<T: Equatable>: PreferenceKey {
+    static var defaultValue: T? { nil }
+    static func reduce(value: inout T?, nextValue: () -> T?) {
+        if let next = nextValue() { value = next }
+    }
+}
+
+extension View {
+    func onGeometryChange15<T: Equatable>(
+        for type: T.Type,
+        of transform: @escaping (GeometryProxy) -> T,
+        action: @escaping (T) -> Void
+    ) -> some View {
+        self
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(key: IOS15GeometryValueKey<T>.self,
+                                    value: transform(proxy))
+                        .allowsHitTesting(false)
+                }
+            )
+            .onPreferenceChange(IOS15GeometryValueKey<T>.self) { value in
+                if let value = value { action(value) }
+            }
+    }
+}

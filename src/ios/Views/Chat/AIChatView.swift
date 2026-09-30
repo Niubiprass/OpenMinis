@@ -2804,6 +2804,11 @@ _ios15Seg7
                 // layout and trips a precondition on the iOS 18 async renderer
                 // (ViewGraphGeometryObservers.needsUpdate SIGTRAP). The action
                 // also fires with the initial value, covering the old onAppear.
+                .onGeometryChange15(for: CGFloat.self) { proxy in
+                    proxy.size.height
+                } action: { newH in
+                    floatingBarHeight = newH
+                }
                 .onDisappear {
                     floatingBarHeight = 0
                 }
@@ -3763,6 +3768,12 @@ _ios15Seg7
                     // [T-ios-geometry-observer-crash] traced an async-renderer
                     // SIGTRAP to that scaffold, and this file already
                     // standardised on the observer for exactly that reason.
+                    .onGeometryChange15(for: CGFloat.self) { proxy in
+                        proxy.size.width
+                    } action: { w in
+                        guard w > 0, abs(w - inputBottomRowWidth) > 0.5 else { return }
+                        inputBottomRowWidth = w
+                    }
                     // Padding applied AFTER the observer, so the measured
                     // width is the row's own usable space and needs no
                     // constant subtracted back out of it.
@@ -3818,6 +3829,155 @@ _ios15Seg7
             // floating-bar site). Fires with the initial value too, so the
             // old onAppear seeding AND its diagnostic log are preserved as
             // a single unified line.
+            .onGeometryChange15(for: CGRect.self) { proxy in
+                proxy.frame(in: .global)
+            } action: { frame in
+                let newH = frame.size.height
+                // [voice-inputbar-padding-zero] Guard against transient 0.
+                guard newH > 0 else { return }
+
+                // [T-voice-inputbar-cross-session-bleed] During session
+                // transition animations, SwiftUI fires onGeometryChange for
+                // BOTH the outgoing and incoming AIChatView. The outgoing
+                // view's frame slides offscreen. Discard measurements from
+                // offscreen views to prevent a stale cross-session height from
+                // overwriting the correct one.
+                //
+                // [T-ipad-inputbar-height-zero] The test is "is this frame
+                // horizontally inside the WINDOW", not "is its minX near zero".
+                // The original form compared minX against ±25% of
+                // UIScreen.main.bounds.width, which silently assumed the chat
+                // pane starts at global x≈0 — true only on iPhone. In a split
+                // view (iPad / Mac Catalyst with the sidebar open) the pane is
+                // inset by the sidebar width, so minX is legitimately large,
+                // EVERY measurement failed the guard, the leading-edge seed
+                // never fired, and inputBarHeight stayed 0 forever. Since it is
+                // the message list's bottom inset, the list reserved no space
+                // and the last message was permanently stuck under the composer
+                // — unable to scroll into view. Compare against the host
+                // window's bounds (falling back to the screen) and accept any
+                // frame that overlaps it horizontally: an outgoing view mid-
+                // slide is pushed a full pane-width out and still fails, which
+                // is the behaviour the guard was actually written for.
+                // Measure the slide RELATIVE TO THE PANE, not to the screen. The
+                // outgoing view is pushed by ~a full pane width, so its offset
+                // from the settled x is huge; a genuine mid-animation frame of
+                // the incoming view is only tens of points off. Keeping the same
+                // ±25% ratio the original used reproduces the iPhone behaviour
+                // exactly (there, pane == screen), while a sidebar-inset pane on
+                // iPad / Mac now compares against its OWN left edge instead of
+                // global x≈0 — which is what made every frame look "offscreen".
+                let hostWindow = inputBarWindowBounds()
+                let paneW = frame.width > 1 ? frame.width : hostWindow.width
+                let tolerance = paneW * 0.25
+                let onscreen = frame.minX >= hostWindow.minX - tolerance
+                    && frame.maxX <= hostWindow.maxX + tolerance
+
+                // [T-voice-inputbar-stale-height] Leading-edge first write,
+                // trailing-edge thereafter. The FIRST non-zero height (session
+                // open / initial composer layout) is applied synchronously so the
+                // message list's bottom inset is correct on its first pass and it
+                // snaps straight to the bottom — the pure-trailing debounce made
+                // the list scroll once to a "fake bottom" (small/old height), then
+                // again 300ms later when the real height landed ("scroll, pause,
+                // scroll" on session open).
+                // [T-voice-inputbar-anim-tail] Record the freshest ON-SCREEN
+                // height BEFORE either commit path runs — both the seed's and the
+                // debounce's settle-confirm read this, so it must already reflect
+                // the current callback (writing it after the seed's `return`
+                // would leave the confirm reading a stale/zero value).
+                if onscreen { latestInputBarFrameH = newH }
+                // [T-voice-inputbar-collapse-selfheal] Liveness, recorded for
+                // EVERY callback — an off-screen sample is still proof the host
+                // is laying out, which is exactly what the health probe asks.
+                inputBarGeometryTick &+= 1
+                inputBarLastGeometryAt = CFAbsoluteTimeGetCurrent()
+
+                if !didSeedInputBarHeight, onscreen {
+                    didSeedInputBarHeight = true
+                    inputBarHeightDebounce?.cancel()
+                    inputBarHeight = newH
+                    AppLogger(category: "InputBarLayout").info("inputBarHeight seeded=\(newH) x=\(Int(frame.minX))")
+                    // [T-inputbar-stale-across-reentry] The seed is applied
+                    // SYNCHRONOUSLY (the message list needs a bottom inset on its
+                    // very first pass, else it scrolls to a fake bottom). That
+                    // means it can capture a mid-animation frame — the exact
+                    // hazard the old code avoided by never re-arming the seed,
+                    // at the cost of letting a stale height live forever. Keep
+                    // the synchronous seed AND make it self-correcting: confirm
+                    // against the freshest reported geometry once the panel's
+                    // 280ms animation has provably finished. No new measurement
+                    // is taken; we only re-read what onGeometryChange reported.
+                    let voiceAtSeed = voiceInputActive
+                    inputBarHeightDebounce = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: UInt64(380) * 1_000_000)
+                        guard !Task.isCancelled, voiceAtSeed == voiceInputActive else { return }
+                        let settled = latestInputBarFrameH
+                        if settled > 0, abs(settled - newH) > 0.5 {
+                            inputBarHeight = settled
+                            AppLogger(category: "InputBarLayout").info("inputBarHeight SEED-CORRECTED \(newH)→\(settled) — seed had caught an animation frame")
+                        }
+                    }
+                    return
+                }
+                // Subsequent changes debounce: onGeometryChange fires during
+                // SwiftUI layout animation frames, sampling mid-transition
+                // heights. If the height then stabilizes (e.g. compact voice
+                // mode = fixed size), no further callback fires to correct it —
+                // inputBarHeight gets stuck at the animation mid-frame value.
+                // Wait 300ms (> animation duration 200ms) to capture the settled
+                // post-animation value.
+                guard onscreen else {
+                    AppLogger(category: "InputBarLayout").info("inputBarHeight discarded=\(newH) offscreen x=\(Int(frame.minX))…\(Int(frame.maxX)) win=\(Int(hostWindow.minX))…\(Int(hostWindow.maxX))")
+                    return
+                }
+                inputBarHeightDebounce?.cancel()
+                let voiceAtCapture = voiceInputActive
+                inputBarHeightDebounce = Task { @MainActor in
+                    // [T-voice-inputbar-anim-tail] 380ms, not 300ms. The panel's
+                    // expand/collapse and transcript-band animations are
+                    // .easeInOut(duration: 0.28) — the old 300ms window left only
+                    // 20ms of margin (its comment claimed the animation was
+                    // 200ms, which is stale), so the timer routinely expired
+                    // while the panel was still moving and SwiftUI's final
+                    // geometry callback had not landed yet.
+                    try? await Task.sleep(nanoseconds: UInt64(380) * 1_000_000)
+                    guard !Task.isCancelled else { return }
+                    // [T-voice-inputbar-branch-swap] During rapid streaming
+                    // re-renders, voiceInputActive can glitch for one frame,
+                    // swapping the AnyView branch from InlineVoiceInputView
+                    // to PastableTextView. The text view's height (~115pt)
+                    // is wrong for the voice panel (~161pt compact). Discard
+                    // if the branch flipped back by the time debounce fires.
+                    if voiceAtCapture != voiceInputActive {
+                        AppLogger(category: "InputBarLayout").info("inputBarHeight discarded=\(newH) branchSwap voice=\(voiceAtCapture)→\(voiceInputActive)")
+                        return
+                    }
+                    // Commit the LATEST height, not the one that armed the timer.
+                    let committed = latestInputBarFrameH > 0 ? latestInputBarFrameH : newH
+                    inputBarHeight = committed
+                    let armed = newH
+                    AppLogger(category: "InputBarLayout").info("inputBarHeight settled=\(committed) x=\(Int(frame.minX))\(abs(committed - armed) > 0.5 ? " (armedWith=\(armed), used latest)" : "")")
+
+                    // [T-voice-inputbar-anim-tail] Settle-confirm. Even the
+                    // latest recorded frame can be a tail sample if the final
+                    // callback lands after this task wakes. Re-check once more
+                    // after another animation-length beat and correct if the
+                    // panel moved — this is the backstop that guarantees the
+                    // bottom inset can never stay frozen on a transitional
+                    // height, which is the bottom-gap symptom. No new
+                    // measurement is taken: we only re-read what
+                    // onGeometryChange already reported.
+                    try? await Task.sleep(nanoseconds: UInt64(320) * 1_000_000)
+                    guard !Task.isCancelled else { return }
+                    guard voiceAtCapture == voiceInputActive else { return }
+                    let settled = latestInputBarFrameH
+                    if settled > 0, abs(settled - committed) > 0.5 {
+                        inputBarHeight = settled
+                        AppLogger(category: "InputBarLayout").info("inputBarHeight CORRECTED \(committed)→\(settled) — commit had caught an animation-tail frame")
+                    }
+                }
+            }
             .overlay(alignment: .topLeading) {
                 // Extracted into a named struct + AnyView-erased so the
                 // overlay does not deepen `inputBar`'s already-fragile
@@ -5072,6 +5232,9 @@ struct NavBarStyleModifier: ViewModifier {
                         // before, and the action's initial fire covers the old
                         // onAppear seed.
                         Color.clear
+                            .onGeometryChange15(for: CGFloat.self) { proxy in
+                                proxy.safeAreaInsets.top
+                            } action: { topSafeAreaInset = $0 }
                             .ignoresSafeArea()
                             .frame(height: 0)
                     }
