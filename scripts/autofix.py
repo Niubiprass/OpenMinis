@@ -218,6 +218,12 @@ DECL_RE = re.compile(
     r"static|@\w+(?:\([^)]*\))?)\s+)*"
     r"(?P<kind>var|let|func|class|struct|enum|protocol|extension|actor)\b")
 
+# 仅匹配「类型」声明（不含 var/let/func），用于把 @available 标到类型而非存储属性。
+TYPE_DECL_RE = re.compile(
+    r"^(?P<ind>[ \t]*)(?:(?:public|private|internal|fileprivate|open|final|"
+    r"indirect|static|@\w+(?:\([^)]*\))?)\s+)*"
+    r"(?P<kind>class|struct|enum|protocol|extension|actor)\b")
+
 
 def _enclosing_decl_line(lines, idx):
     """从 idx 往上找最近的、缩进更小的声明行。"""
@@ -232,6 +238,23 @@ def _enclosing_decl_line(lines, idx):
     return None
 
 
+def _enclosing_type_line(lines, idx):
+    """从 idx 往上找最近的、缩进更小的「类型」声明行（struct/class/enum/...）。
+
+    与 _enclosing_decl_line 的区别：后者匹配任意声明（含 var/let/func），
+    本函数只匹配类型声明，用于「存储属性需要 @available 时」改标其所属类型。
+    """
+    base = len(lines[idx]) - len(lines[idx].lstrip()) if idx < len(lines) else 0
+    for j in range(idx, -1, -1):
+        ln = lines[j]
+        if not ln.strip() or ln.lstrip().startswith("//"):
+            continue
+        ind = len(ln) - len(ln.lstrip())
+        if ind < base and TYPE_DECL_RE.match(ln):
+            return j
+    return None
+
+
 def _add_available(text: str, line_no: int, version: str) -> str:
     """给包含该行的成员声明加 @available(iOS version, *)。"""
     lines = text.split("\n")
@@ -239,6 +262,14 @@ def _add_available(text: str, line_no: int, version: str) -> str:
     j = _enclosing_decl_line(lines, idx)
     if j is None:
         return text
+    # 若最近声明是「存储属性」(var/let)，@available 不能直接标在属性上
+    # （Swift 报 "stored properties cannot be marked potentially unavailable"，
+    # 且会形成 autofix 反复加注的死循环）。改为标在其所属类型上。
+    if re.match(r"^\s*(?:public |private |internal |fileprivate |open |final |static )*(?:var|let)\b", lines[j]):
+        tj = _enclosing_type_line(lines, j)
+        if tj is None:
+            return text
+        j = tj
     # 已经标过就不重复加
     for k in range(max(0, j - 3), j):
         if "@available" in lines[k]:
@@ -418,7 +449,11 @@ def main() -> int:
 
         # 4) 项目自己定义的符号：先试撤回我们加的标注
         defpath, deftext = _find_definition(ROOT, symbol)
-        if defpath:
+        # 关键：Agent/Intents/ 里 v2 刻意整目录标注 @available(iOS 16) 的类型
+        # （AppIntents 框架在 iOS 15 不存在）是「必需」注解，绝不能撤回，否则
+        # 类型体里全是 iOS 16 API，撤回后反而爆出上百个错误。这类定义直接跳过
+        # 撤回，落到第 5 步在「调用点」补 @available（正确做法）。
+        if defpath and "Agent/Intents/" not in defpath:
             d2 = _strip_available(touched.get(defpath) or deftext, symbol)
             if d2 != (touched.get(defpath) or deftext):
                 stats["strip"] += 1

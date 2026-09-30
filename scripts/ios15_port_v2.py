@@ -38,8 +38,12 @@ BASELINE = {}
 
 # 上游原版仓库。每次构建都从这里拉干净源码覆盖 src/ios，
 # 和用户 fork 的提交历史彻底解耦。
+# 尊重 UPSTREAM_REF 环境变量（port-and-build.yml 注入，默认 1.14）。
+# 用户策略：默认钉死 1.14（tag），只在 App Store 大版本新功能上线时
+# 改成新 tag，避免上游 main 的小更新静默弄坏 TrollStore 包。
+_UP_REF = os.environ.get("UPSTREAM_REF", "main")
 UPSTREAM_TGZ = ("https://codeload.github.com/OpenMinis/OpenMinis"
-                "/tar.gz/refs/heads/main")
+                "/tar.gz/%s" % _UP_REF)
 
 # ---------------------------------------------------------------- 基础工具
 
@@ -1939,21 +1943,6 @@ public struct PhotosPickerItem: Hashable {
 /// iOS 16 的 `Transferable` 协议替身。仅用于让 `struct X: Transferable`
 /// 的声明继续成立；真正的传输行为在 iOS 15 上不可用。
 public protocol Transferable {}
-
-/// `ShareLink(item:)` 的替身：一个走 `UIActivityViewController` 的按钮。
-public struct MinisShareLinkButton: View {
-    let item: URL
-
-    public init(item: URL) { self.item = item }
-
-    public var body: some View {
-        Button {
-            MinisSharePresenter.present(items: [item])
-        } label: {
-            Image(systemName: "square.and.arrow.up")
-        }
-    }
-}
 
 public enum MinisSharePresenter {
     public static func present(items: [Any]) {

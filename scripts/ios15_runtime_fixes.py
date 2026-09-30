@@ -449,10 +449,15 @@ def fix_picker():
                 s = s.replace(anchor,
                               anchor + "\n    @State private var attachmentPickerCoordinator = AttachmentPickerCoordinator()",
                               1)
-            mbody = "var body: some View {"
-            idx = s.rfind(mbody)
-            if idx != -1:
-                s = s[:idx] + BRIDGE_METHODS + "\n    " + s[idx:]
+            # 关键修复：把桥接方法插进「主 struct AIChatView」作用域，而不是
+            # rfind("var body: some View {") 命中的「最后一个 body」（那通常是某个
+            # 嵌套子视图的 body），否则方法被放进错误作用域，AIChatView 的按钮
+            # 调用 presentPhotoPicker() 会报 cannot find in scope。
+            av_anchor = "struct AIChatView: View {"
+            aidx = s.find(av_anchor)
+            if aidx != -1:
+                at = aidx + len(av_anchor)
+                s = s[:at] + "\n" + BRIDGE_METHODS.rstrip("\n") + "\n" + s[at:]
         write(p, s)
         print(f"  [runtime-fix] AIChatView 桥接 (photo 按钮 {n1} / doc 按钮 {n2})")
 
