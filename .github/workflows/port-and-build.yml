@@ -24,6 +24,7 @@ on:
       - "scripts/fix_fileprovider_deployment.py"
       - "scripts/ios15_runtime_fixes.py"
       - "scripts/autofix.py"
+      - "scripts/ios15_fallback.py"
       - ".github/workflows/port-and-build.yml"
 
 permissions:
@@ -168,6 +169,9 @@ jobs:
       - name: "运行时修复 (Material→实心色 / 工具输出 LazyVStack / AppGroup 兜底 / PHPicker 桥接)"
         run: python3 "$SCRIPT_DIR/ios15_runtime_fixes.py"
 
+      - name: "源码移植到 iOS 15 (第三阶段: 真实 iOS16/17 依赖兜底)"
+        run: python3 "$SCRIPT_DIR/ios15_fallback.py" src/ios
+
       - name: "自检: 运行时补丁是否真的生效 (不通过则立即变红, 避免静默回归)"
         run: |
           set -e
@@ -222,41 +226,18 @@ jobs:
           sed -i '' 's/-miphoneos-version-min=[0-9.]*/-miphoneos-version-min=${{ env.DEPLOY_TARGET }}/; s/-mios-simulator-version-min=[0-9.]*/-mios-simulator-version-min=${{ env.DEPLOY_TARGET }}/' deps/build_rclone_ios.sh
           ./deps/build_rclone_ios.sh
 
-      - name: "编译 App (不签名) + 自动降级收敛"
+      - name: "编译 App (不签名)"
         run: |
-          set +e
-          MAXROUND=6
-          ROUND=0
-          RC=1
-          while [ "$ROUND" -lt "$MAXROUND" ]; do
-            ROUND=$((ROUND+1))
-            echo "============ 第 $ROUND 轮编译 ============"
-            xcodebuild -project src/ios/Minis.xcodeproj \
-              -scheme Minis \
-              -configuration Release \
-              -destination 'generic/platform=iOS' \
-              CODE_SIGNING_ALLOWED=NO \
-              -derivedDataPath DerivedData build > build.log 2>&1
-            RC=$?
-            echo "=== 编译错误行 (error:, 最多 80 条) ==="
-            grep -n "error:" build.log | grep -v "0 errors" | head -80 || true
-            if [ "$RC" -eq 0 ]; then
-              echo "✅ 编译成功 (第 $ROUND 轮)"
-              break
-            fi
-            echo "⚠️  第 $ROUND 轮编译失败 (退出码 $RC), 触发自动降级修复..."
-            python3 "$SCRIPT_DIR/autofix.py" build.log src/ios
-            FIXRC=$?
-            if [ "$FIXRC" -eq 1 ]; then
-              echo "autofix 本轮无可用改动, 终止循环避免空转"
-              break
-            fi
-          done
           set -e
-          if [ "$RC" -ne 0 ]; then
-            echo "编译失败 (经过 $ROUND 轮自动降级仍未解决), 完整日志见产物 build-logs"
-            exit "$RC"
-          fi
+          echo "============ 编译 (Release / iOS) ============"
+          xcodebuild -project src/ios/Minis.xcodeproj \
+            -scheme Minis \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath DerivedData build > build.log 2>&1
+          echo "=== 编译错误行 (error:, 最多 80 条) ==="
+          grep -n "error:" build.log | grep -v "0 errors" | head -80 || true
           echo "编译成功"
 
       - name: "提交移植结果 (幂等, 且仅编译成功后才提交)"
