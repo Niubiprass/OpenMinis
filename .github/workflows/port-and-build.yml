@@ -13,6 +13,10 @@ on:
         default: "yes"
         type: choice
         options: ["yes", "no"]
+      upstream_ref:
+        description: "上游版本锚点 (tag 或 commit sha)。默认钉死 1.14，只在 App Store 大版本新功能上线、你决定升级时改成新 tag (如 1.15)。平时小更新不要改。"
+        required: false
+        default: "1.14"
   push:
     paths:
       - "scripts/ios15_port.py"
@@ -31,6 +35,9 @@ jobs:
     env:
       # push 触发时 inputs 为空，统一用这个环境变量兜底
       DEPLOY_TARGET: ${{ inputs.deploy_target || '15.5' }}
+      # 上游版本锚点：默认钉死 tag 1.14。push 触发 (无 inputs) 时回退到 1.14，
+      # 避免上游 main 的小改动悄悄弄坏 TrollStore 包。只在你决定升级大版本时手动改。
+      UPSTREAM_REF: ${{ inputs.upstream_ref || '1.14' }}
       # 在线脚本的源：就是把本仓库 scripts/ 目录当成"在线脚本库"。
       # 你在 GitHub 上直接改 scripts/*.py 并提交，下次 Run workflow 就生效。
       SCRIPT_REPO: ${{ github.repository }}
@@ -122,16 +129,18 @@ jobs:
       - name: "选 Xcode"
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
-      - name: "拉取上游 OpenMinis 干净源码, 覆盖 src/ios"
+      - name: "拉取上游 OpenMinis 干净源码 (钉死 UPSTREAM_REF=$UPSTREAM_REF), 覆盖 src/ios"
         run: |
           set -e
           # 浅克隆的 git 历史里 src/ios 已被改过, 不能作为还原基线。
           # 直接从上游 OpenMinis 拉 tarball 覆盖, 保证每次从原文开始。
+          # 锚点由 UPSTREAM_REF 控制: 默认 tag 1.14 (稳定, 不随上游小改漂动);
+          # 想升级大版本时把它改成新 tag (如 1.15) 或 commit sha 再手动重跑。
           TMP=$(mktemp -d)
           OK=0
           for URL in \
-            "https://codeload.github.com/OpenMinis/OpenMinis/tar.gz/refs/heads/main" \
-            "https://github.com/OpenMinis/OpenMinis/archive/refs/heads/main.tar.gz" ; do
+            "https://codeload.github.com/OpenMinis/OpenMinis/tar.gz/$UPSTREAM_REF" \
+            "https://github.com/OpenMinis/OpenMinis/archive/$UPSTREAM_REF.tar.gz" ; do
             echo "尝试: $URL"
             if curl -fsSL --retry 3 --retry-delay 3 --max-time 300 "$URL" -o "$TMP/up.tgz"; then
               OK=1; break
@@ -158,6 +167,41 @@ jobs:
 
       - name: "运行时修复 (Material→实心色 / 工具输出 LazyVStack / AppGroup 兜底 / PHPicker 桥接)"
         run: python3 "$SCRIPT_DIR/ios15_runtime_fixes.py"
+
+      - name: "自检: 运行时补丁是否真的生效 (不通过则立即变红, 避免静默回归)"
+        run: |
+          set -e
+          # 这些补丁用的是精确字符串锚点: 上游大改版后锚点可能失效,
+          # 脚本只打 WARN 然后跳过, 构建照样绿、装上才崩。这里把"补丁未生效"
+          # 变成硬性构建失败, 让回归在云端就暴露。
+
+          echo "::group::断言1: App Group 强解包必须为 0 (否则 TrollStore 启动崩溃)"
+          N=$(grep -rn "containerURL(forSecurityApplicationGroupIdentifier:.*!" src/ios | wc -l | tr -d ' ')
+          if [ "$N" = "0" ]; then echo "✅ 强解包 = 0"; else echo "❌ 仍有 $N 处强解包, AppGroup 补丁未生效 (上游可能改了锚点)"; exit 1; fi
+          echo "::endgroup::"
+
+          echo "::group::断言2: 照片/文件按钮必须已桥接 (否则附件入口丢失)"
+          P=$(grep -c "Button { showPhotoPicker = true }" src/ios/Views/Chat/AIChatView.swift 2>/dev/null | tr -d ' ')
+          D=$(grep -c "Button { showDocumentPicker = true }" src/ios/Views/Chat/AIChatView.swift 2>/dev/null | tr -d ' ')
+          if [ "$P" = "0" ] && [ "$D" = "0" ]; then echo "✅ 按钮已替换为 UIKit 桥接"; else echo "❌ 照片/文档按钮未替换 (P=$P D=$D), 上游可能改了按钮文案"; exit 1; fi
+          echo "::endgroup::"
+
+          echo "::group::断言3: 运行时补丁哨兵必须存在 (证明注入了 UIKit picker 类型)"
+          if grep -q "iOS15_RUNTIME_FIX_APPLIED" src/ios/iOS15Compat.swift; then echo "✅ 哨兵存在"; else echo "❌ iOS15Compat 未注入 picker 类型, 补丁失效"; exit 1; fi
+          echo "::endgroup::"
+
+          echo "::group::断言4: ToolLiveSheet 不得全部变 LazyVStack (否则 iOS15 嵌套高度测量异常)"
+          # 正确状态: 顶层容器用 LazyVStack, 但其内层容器保留为普通 VStack。
+          # 危险状态: 全部变成 LazyVStack -> 出现嵌套 LazyVStack -> 内容静默消失。
+          # 判定: 只要存在 LazyVStack, 就必须至少保留一些普通 VStack (内层未误改)。
+          LAZY=$(grep -c "LazyVStack(alignment: .leading, spacing: 0) {" src/ios/Views/Chat/ToolLiveSheet.swift 2>/dev/null | tr -d ' ')
+          INNER=$(grep -c "[^y]VStack(alignment: .leading, spacing: 0) {" src/ios/Views/Chat/ToolLiveSheet.swift 2>/dev/null | tr -d ' ')
+          if [ "$LAZY" -gt 0 ] && [ "$INNER" -eq 0 ]; then
+            echo "⚠️ 全部变 LazyVStack (Lazy=$LAZY, 内层 VStack=0), 疑似嵌套, 需人工确认"
+          else
+            echo "✅ 顶层 Lazy=$LAZY, 内层普通 VStack=$INNER (无全部-Lazy 的嵌套隐患)"
+          fi
+          echo "::endgroup::"
 
       - name: "提交移植结果 (幂等)"
         run: |
