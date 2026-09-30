@@ -135,8 +135,8 @@ struct ModelSelectionEntityQuery: EntityQuery, EntityStringQuery {
         let groupItems: [IntentItem<ModelSelectionEntity>] = store.config.modelGroups.map { group in
             IntentItem(
                 ModelSelectionEntity(group: group),
-                title: LocalizedStringResource(stringLiteral: group.name),
-                subtitle: LocalizedStringResource(stringLiteral: "Group · \(group.memberEntryIds.count) model\(group.memberEntryIds.count == 1 ? "" : "s")")
+                title: "\(group.name)",
+                subtitle: "\("Group · \(group.memberEntryIds.count) model\(group.memberEntryIds.count == 1 ? "" : "s")")"
             )
         }
 
@@ -156,8 +156,8 @@ struct ModelSelectionEntityQuery: EntityQuery, EntityStringQuery {
                 .map { entry in
                     IntentItem(
                         ModelSelectionEntity(entry: entry),
-                        title: LocalizedStringResource(stringLiteral: entry.model.displayName),
-                        subtitle: LocalizedStringResource(stringLiteral: entry.model.id)
+                        title: "\(entry.model.displayName)",
+                        subtitle: "\(entry.model.id)"
                     )
                 }
         }
@@ -177,7 +177,7 @@ struct ModelSelectionEntityQuery: EntityQuery, EntityStringQuery {
                 guard !items.isEmpty else { continue }
                 let label = store.instance(for: iid)?.label ?? "Unknown Provider"
                 sections.append(IntentItemSection(
-                    LocalizedStringResource(stringLiteral: label),
+                    "\(label)",
                     items: items
                 ))
             }
