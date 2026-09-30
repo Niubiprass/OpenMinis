@@ -388,22 +388,31 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         ios15FittingSize(targetSize)
     }
 
+    /// 递归保险。曾经在这里调 `host.view.systemLayoutSizeFitting(...)`：
+    /// 宿主视图是四边钉在本视图上的，布局引擎解析它的尺寸时会反过来问
+    /// "本视图多大"，于是又调回 systemLayoutSizeFitting —— 无限递归 →
+    /// 栈溢出 EXC_BAD_ACCESS（实测崩溃栈: ios15FittingSize ↔
+    /// _systemLayoutSizeFittingSize 反复嵌套）。所以这里只用
+    /// `sizeThatFits` 这条不经过布局引擎的路径。
+    private var isMeasuring: Bool = false
+
     private func ios15FittingSize(_ targetSize: CGSize) -> CGSize {
-        guard let host = host else { return super.systemLayoutSizeFitting(targetSize) }
         var width = targetSize.width
         if !(width > 0) || width.isInfinite {
             width = window?.bounds.width ?? UIScreen.main.bounds.width
         }
-        let measured = host.view.systemLayoutSizeFitting(
-            CGSize(width: width, height: 0),
-            withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel)
-        var height = measured.height
-        if !(height > 0) {
-            let fallback = super.systemLayoutSizeFitting(targetSize).height
-            if fallback > 0 { height = fallback }
+        guard let host = host, !isMeasuring else {
+            return CGSize(width: width, height: max(0, bounds.height))
         }
-        if !(height > 0) && bounds.height > 0 { height = bounds.height }
+        isMeasuring = true
+        defer { isMeasuring = false }
+        var size = host.sizeThatFits(in: CGSize(width: width,
+                                               height: CGFloat.greatestFiniteMagnitude))
+        if !(size.height > 0) {
+            size = host.view.sizeThatFits(CGSize(width: width, height: 0))
+        }
+        var height = size.height
+        if !(height > 0) { height = bounds.height }
         return CGSize(width: width, height: max(0, height))
     }
 
