@@ -500,13 +500,22 @@ def fix_aichat_view(t):
         'let _stallMsg = "[InputBarHealth] STALLED — no geometry callback 900ms after foreground. committed=\\(inputBarHeight) latest=\\(latestInputBarFrameH) lastReport=\\(String(format: "%.1f", age))s ago voice=\\(voiceInputActive) editing=\\(voiceVM.isEditingTranscript) seeded=\\(didSeedInputBarHeight). The composer host is not laying out; expect a blank bottom area. Leaving and re-entering the session rebuilds it."\n'
         '                    AppLogger(category: "InputBarLayout").error(_stallMsg)')
     t = t.replace(old, new)
-    t = _extract_onchange_scene_phase(t)
+    t = _extract_onchange(t, "scenePhase", "handleScenePhaseChange", "phase", "ScenePhase")
+    t = _extract_onchange(t, "vm.isProcessing", "handleProcessingChange", "processing", "Bool")
+    t = _extract_onchange(t, "vm.fallbackTrigger", "handleFallbackTriggerPulse", None, None)
     return fix_sleep_for(t)
 
 
-def _extract_onchange_scene_phase(t):
-    """把 `.onChange(of: scenePhase) { phase in <119 行> }` 的体抽成方法。"""
-    m = re.search(r"\.onChange\(of: scenePhase\)\s*\{", t)
+def _extract_onchange(t, of_expr, method_name, param_name=None, param_type=None):
+    """把 `.onChange(of: of_expr) { ... }` 的体抽成方法。
+
+    iOS 17 SDK 下 onChange 有新旧两个重载, 修饰符链上的超大闭包体会让编译器
+    "unable to type-check this expression in reasonable time"。抽成方法后
+    闭包只剩一行调用。
+    param_name/param_type 为 None 时, 方法不带参数 (闭包形如 `{ _ in ... }`)。
+    """
+    pat = re.compile(r"\.onChange\(of:\s*" + re.escape(of_expr) + r"\)\s*\{")
+    m = pat.search(t)
     if not m:
         return t
     lb = m.end() - 1
@@ -514,19 +523,23 @@ def _extract_onchange_scene_phase(t):
     if eb is None:
         return t
     body = t[lb + 1:eb - 1]
-    if "handleScenePhaseChange" in body:
+    if method_name in body:
         return t  # 已处理
-    # 去掉闭包签名 "phase in"
-    body = re.sub(r"^[ \t]*phase\s+in[ \t]*\n", "", body, count=1)
-    new_closure = (".onChange(of: scenePhase) { phase in\n"
-                   "            handleScenePhaseChange(phase)\n"
-                   "        }")
+    # 去掉闭包签名 (如 "phase in" / "processing in" / "_ in")
+    body = re.sub(r"^[ \t]*(?:\w+|_)\s+in[ \t]*\n", "", body, count=1)
+    if param_name and param_type:
+        new_closure = (".onChange(of: %s) { %s in\n            %s(%s)\n        }"
+                       % (of_expr, param_name, method_name, param_name))
+        method = ("    func %s(_ %s: %s) {%s\n    }"
+                  % (method_name, param_name, param_type, body))
+    else:
+        new_closure = (".onChange(of: %s) { _ in\n            %s()\n        }"
+                       % (of_expr, method_name))
+        method = ("    func %s() {%s\n    }" % (method_name, body))
     t = t[:m.start()] + new_closure + t[eb:]
-    ext = ("\n\n// ios15-port: 抽离超大 onChange 闭包体, 规避 iOS17 SDK 下 onChange\n"
-           "// 新旧重载各做一遍类型检查导致的 'unable to type-check' 超时。\n"
-           "private extension AIChatView {\n"
-           "    func handleScenePhaseChange(_ phase: ScenePhase) {"
-           + body + "\n    }\n}\n")
+    ext = ("\n\n// ios15-port: 抽离超大 onChange 闭包体, 规避修饰符链上表达式\n"
+           "// 的类型检查超时。\n"
+           "private extension AIChatView {\n" + method + "\n}\n")
     return t.rstrip() + ext
 
 
@@ -580,10 +593,10 @@ def main():
     if os.path.isfile(p):
         for i, l in enumerate(read(p).split("\n")[130:165], start=131):
             print("   %4d| %s" % (i, l))
-    print("-- 诊断 dump (AIChatView 1525-1565) --")
+    print("-- 诊断 dump (AIChatView 1450-1800) --")
     p = os.path.join(ROOT, "Views/Chat/AIChatView.swift")
     if os.path.isfile(p):
-        for i, l in enumerate(read(p).split("\n")[1524:1565], start=1525):
+        for i, l in enumerate(read(p).split("\n")[1449:1800], start=1450):
             print("   %4d| %s" % (i, l))
     print("-- 诊断 dump (UnifiedModelPicker toolbarContent) --")
     p = os.path.join(ROOT, "Views/Providers/UnifiedModelPicker.swift")
