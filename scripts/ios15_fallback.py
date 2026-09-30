@@ -1065,6 +1065,21 @@ def fix_markdown_measure_width(t):
             ? cvContentWidthUAV : rawContainerWidth'''
     if OLD2 in t:
         t = t.replace(OLD2, NEW2)
+    # ---- 宽度兜底消毒 (防 FIRST-MEASURE 死循环) ----
+    OLD3 = "        // [TableGenDedup] Compute the sum of every TableAttachment's generation"
+    NEW3 = r'''        // [IOS15-FIX] 宽度兜底消毒: 若上面三分支仍落到离谱瞬态宽度
+        // (1e7 / 2273 / 1382 等, 来自 SwiftUI 递归排版或 widthTracksTextView
+        // 把 textContainer 设到 greatestFiniteMagnitude 再经 Guard 钳到 1e7),
+        // 直接放弃本次测量, 避免写出荒谬 newHeight (850/712) 触发 FIRST-MEASURE
+        // 死循环 -> 主线程卡死。集合视图 cell 真实宽度恒 < 2000, 这里以此封顶。
+        if !(measureWidth.isFinite && measureWidth > 1 && measureWidth < 2000) {
+            cellSizeLogger.info("[invalidateCell][SKIP-BADWIDTH] boundsW=\(String(format: "%.0f", bounds.width)) tcW=\(String(format: "%.0f", textContainer.size.width)) cvW=\(String(format: "%.0f", (findCollectionView()?.bounds.width ?? 0))) — unstable width, skip measure")
+            return
+        }
+
+        // [TableGenDedup] Compute the sum of every TableAttachment's generation'''
+    if OLD3 in t:
+        t = t.replace(OLD3, NEW3)
     return t
 
 
@@ -1145,6 +1160,42 @@ def fix_markdown_render_width(t):
     return t
 
 
+def fix_markdown_layout_reconcile(t):
+    """iOS15: preferredLayoutAttributesFitting 以 TextKit 实测高度兜底。
+
+    日志实测 cellH=256 但 TextKit 实测 273 -> 末行被 clipsToBounds 裁掉
+    ("不显示/不对齐")。invalidateCellSizeIfNeeded 在稳定宽度下算出的
+    lastComputedHeight 与 SwiftUI 排版路径不一致会触发 FIRST-MEASURE 死循环
+    (主线程卡死)。遍历 contentView 子树里的 SelectableMarkdownTextView,
+    累加其 TextKit 权威高度, 取与 SwiftUI 测量值的较大者作为最终高度,
+    既修裁切又让两测量路径一致 -> 循环收敛。"""
+    OLD = "        attrs.size.height = fittingSize.height"
+    NEW = '''        // [IOS15-FIX] 以 TextKit 实测高度兜底, 修正 SwiftUI 排版路径
+        // 少算一行导致的末行裁切 (日志实测 cellH=256 但 TextKit 实测 273 ->
+        // 末行被 clipsToBounds 裁掉, "不显示/不对齐")。遍历 contentView 子树里
+        // 所有 SelectableMarkdownTextView, 累加它们的 lastComputedHeight
+        // (由 invalidateCellSizeIfNeeded 在稳定宽度下算出的权威 TextKit 高度),
+        // 取与 SwiftUI 测量值的较大者。两路径一致后 FIRST-MEASURE 冲突消失,
+        // 主线程卡死 (卡死/什么都点不了) 随之消除。
+        var _ios15Reconciled = fittingSize.height
+        var _ios15TkSum: CGFloat = 0
+        var _ios15Found = false
+        for _v in hostingSubtree {
+            if let _mdv = _v as? SelectableMarkdownTextView {
+                let _h = _mdv.lastComputedHeight
+                if _h > 1 { _ios15TkSum += _h; _ios15Found = true }
+            }
+        }
+        if _ios15Found, _ios15TkSum > _ios15Reconciled, _ios15TkSum < _ios15Reconciled + 500 {
+            _ios15Reconciled = _ios15TkSum
+        }
+        fittingSize.height = _ios15Reconciled
+        attrs.size.height = fittingSize.height'''
+    if OLD in t:
+        t = t.replace(OLD, NEW)
+    return t
+
+
 def main():
     print("== iOS 15 兜底修复 v2 (ROOT=%s) ==" % ROOT)
     print("-- 文件指纹/结构自检 --")
@@ -1181,6 +1232,7 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_markdown_measure_width, "iOS15: 测量宽度钳制到集合视图宽度, 消正文错位/裁切")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_markdown_render_width, "iOS15: 渲染端 frame/偏移钳制 + cell 自排版提议宽度钳制, 消正文错位(第二轮)")
     edit("Agent/MessageList/MessageListInfrastructure.swift", fix_markdown_render_width, "iOS15: cell 自排版提议宽度入口钳制")
+    edit("Agent/MessageList/MessageListInfrastructure.swift", fix_markdown_layout_reconcile, "iOS15: TextKit 高度兜底, 修末行裁切 + 收敛 FIRST-MEASURE 死循环")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
