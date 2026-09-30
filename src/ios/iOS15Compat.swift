@@ -424,8 +424,6 @@ public struct UIHostingConfiguration<Content: View>: UIContentConfiguration {
     }
 }
 
-import UniformTypeIdentifiers
-
 // MARK: - PhotosPickerItem (iOS 16)
 
 /// `PhotosUI.PhotosPickerItem` 的 iOS 15 替身。
@@ -437,7 +435,7 @@ public struct PhotosPickerItem: Hashable {
     public init() {}
 
     public var itemIdentifier: String? { nil }
-    public var supportedContentTypes: [UTType] { [] }
+    public var supportedContentTypes: [Any] { [] }
 
     public func loadTransferable<T>(type: T.Type) async throws -> T? { nil }
 
@@ -450,6 +448,38 @@ public struct PhotosPickerItem: Hashable {
 /// iOS 16 的 `Transferable` 协议替身。仅用于让 `struct X: Transferable`
 /// 的声明继续成立；真正的传输行为在 iOS 15 上不可用。
 public protocol Transferable {}
+
+/// `ShareLink(item:)` 的替身：一个走 `UIActivityViewController` 的按钮。
+public struct MinisShareLinkButton: View {
+    let item: URL
+
+    public init(item: URL) { self.item = item }
+
+    public var body: some View {
+        Button {
+            MinisSharePresenter.present(items: [item])
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+        }
+    }
+}
+
+public enum MinisSharePresenter {
+    public static func present(items: [Any]) {
+        let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }),
+              let window = scene.windows.first(where: { $0.isKeyWindow })
+                ?? scene.windows.first,
+              let root = window.rootViewController else { return }
+        var presenter = root
+        while let presented = presenter.presentedViewController {
+            presenter = presented
+        }
+        presenter.present(vc, animated: true)
+    }
+}
 
 // MARK: - Regex 字面量替身 (iOS 16)
 
@@ -521,32 +551,11 @@ public struct MinisShareLinkButton: View {
     }
 }
 
-// ─────────────────────────────────────────────────────────────
-// MARK: - iOS 15 photo & document pickers (merged from PHPickerView.swift)
-// ─────────────────────────────────────────────────────────────
 
-/// iOS 15-compatible photo + video picker.
-///
-/// The upstream build presented the picker with SwiftUI's
-/// `.photosPicker(isPresented:selection:)` modifier, which is iOS 16+. The iOS-15
-/// port stripped that modifier so the app would compile — with the side effect that
-/// the "Choose Photos & Videos" button did nothing on iOS 15 (in fact on every
-/// version of this ported build). `PHPickerViewController` has been available since
-/// iOS 14, so this `UIViewControllerRepresentable` restores image/video picking
-/// with zero iOS-16-only dependencies.
-/// Presents view controllers directly on the top-most UIKit view controller,
-/// bypassing SwiftUI's presentation system entirely.
-///
-/// Why: AIChatView's body chain carries 15+ `.sheet` modifiers plus a
-/// `.fileImporter`. iOS 16+ tolerates that; **iOS 15's SwiftUI silently drops
-/// presentations** when many `.sheet(isPresented:)` modifiers share one view
-/// chain — the camera still works because it uses `.fullScreenCover`, while
-/// the photo picker sheet and the document fileImporter never appear.
-/// Presenting through UIKit sidesteps every one of those quirks.
+/// iOS 15 photo + document pickers (UIKit-based; bypasses SwiftUI's broken
+/// multi-sheet chain on iOS 15 which silently drops presentations).
 enum UIKitPickerPresenter {
     static func present(_ vc: UIViewController) {
-        // Let a dismissing confirmationDialog finish its animation first;
-        // presenting while another dismissal is in flight gets dropped.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             guard var top = scenes.flatMap({ $0.windows }).first(where: { $0.isKeyWindow })?.rootViewController else {
@@ -560,9 +569,6 @@ enum UIKitPickerPresenter {
     }
 }
 
-/// Retained delegate for the UIKit photo & document pickers. Held as `@State`
-/// on AIChatView so it lives as long as the view; closures are assigned at
-/// presentation time to capture the current view model.
 final class AttachmentPickerCoordinator: NSObject, PHPickerViewControllerDelegate, UIDocumentPickerDelegate {
     var onPhotos: (([PHPickerResult]) -> Void)?
     var onFiles: (([URL]) -> Void)?
@@ -573,8 +579,6 @@ final class AttachmentPickerCoordinator: NSObject, PHPickerViewControllerDelegat
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        // `asCopy: true` pickers hand out plain temp-file copies — no security
-        // scope needed (addFileAttachment's scope calls are harmless no-ops).
         onFiles?(urls)
     }
 
@@ -582,13 +586,12 @@ final class AttachmentPickerCoordinator: NSObject, PHPickerViewControllerDelegat
 }
 
 struct PHPickerView: UIViewControllerRepresentable {
-    /// Called once the user finishes (or cancels) picking. Empty array = cancel.
     let onPicked: ([PHPickerResult]) -> Void
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration(photoLibrary: .shared())
         config.filter = .any(of: [.images, .videos])
-        config.selectionLimit = 0 // 0 = unlimited
+        config.selectionLimit = 0
         config.preferredAssetRepresentationMode = .current
         let picker = PHPickerViewController(configuration: config)
         picker.delegate = context.coordinator
@@ -611,3 +614,4 @@ struct PHPickerView: UIViewControllerRepresentable {
         }
     }
 }
+

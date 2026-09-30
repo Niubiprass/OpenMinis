@@ -158,7 +158,6 @@ final class VoiceOutputState: ObservableObject {
     /// player. `VoiceOutputState` is a never-deallocated singleton, so an
     /// unretained observer token is safe.
     private func registerLiveActivityToggleObserver() {
-        guard #available(iOS 17.0, *) else { return }
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         let observer = Unmanaged.passUnretained(self).toOpaque()
         CFNotificationCenterAddObserver(
@@ -500,18 +499,20 @@ enum VoiceProviderResolver {
               canServe(entry.model, direction: direction),
               let instance = store.instance(for: entry.providerInstanceId),
               instance.isEnabled, voiceCredentialOK(instance),
-              VoiceProviderFactory.make(for: instance) != nil else { return nil }
+              // [T-voice-capability-probe] Probe, not a build — see
+              // VoiceProviderFactory.supportsVoice.
+              VoiceProviderFactory.supportsVoice(for: instance) else { return nil }
         return entry
     }
 
     /// Whether `model` can serve `direction`: dedicated voice model OR multimodal
-    /// with the required audio modality.
+    /// with the required audio modality — except that a catalog-tagged
+    /// OpenRouter model is judged by its voice role
+    /// ([T-openrouter-voice-catalog], `LLMModel.isVoiceInputCandidate`).
     private static func canServe(_ model: LLMModel, direction: VoiceDirection) -> Bool {
-        if direction.isVoiceModel(model) { return true }
-        let m = model.capabilities.supportedModalities
         switch direction {
-        case .input:  return m.contains(.audioInput)
-        case .output: return m.contains(.audioOutput)
+        case .input:  return model.isVoiceInputCandidate
+        case .output: return model.isVoiceOutputCandidate
         }
     }
 
@@ -531,7 +532,9 @@ enum VoiceProviderResolver {
                   canServe(entry.model, direction: direction),
                   let instance = store.instance(for: entry.providerInstanceId),
                   instance.isEnabled, voiceCredentialOK(instance),
-                  VoiceProviderFactory.make(for: instance) != nil else { return nil }
+                  // [T-voice-capability-probe] Probe, not a build — see
+                  // VoiceProviderFactory.supportsVoice.
+                  VoiceProviderFactory.supportsVoice(for: instance) else { return nil }
             return entry
         }
     }
