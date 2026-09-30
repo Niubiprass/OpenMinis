@@ -696,6 +696,67 @@ extension View {
 '''
 
 
+# =====================================================================
+# UIHostingConfiguration 替身: 补上自排版测量
+# ---------------------------------------------------------------------
+# 消息列表是 UIKit 集合视图, 每个单元格用 UIHostingConfiguration(iOS16) 承载
+# SwiftUI 内容; iOS 15 用的是 iOS15Compat.swift 里的替身。替身只把宿主视图
+# 四边钉住, **没有实现 systemLayoutSizeFitting**, 于是集合视图自排版问
+# "给定宽度下你多高" 时只能靠 intrinsic size 猜:
+#   * 宽度退化成 SwiftUI 的"理想宽" —— 长文本远超屏宽 -> 文字左右被裁
+#     (用户现象: "字不会自己对齐")
+#   * 高度算错 -> 单元格之间出现大片黑块、内容无法贴底
+#     (用户现象: "有黑块" / "输出的结果不会上移, 看不到内容")
+# 这里显式按"提议宽度"量一次, 返回 (提议宽, SwiftUI 在该宽度下的理想高)。
+HOSTING_FITTING = '''
+    // ios15-port IOS15_HOSTING_FITTING
+    // 集合视图自排版入口: 布局引擎问"给定宽度下你多高"。
+    // 原替身没实现, 宽度会退化成 SwiftUI 理想宽(长文本远超屏宽 -> 左右被裁),
+    // 高度也算错(单元格之间的黑块 / 内容贴不了底)。
+    override func systemLayoutSizeFitting(_ targetSize: CGSize) -> CGSize {
+        ios15FittingSize(targetSize)
+    }
+
+    override func systemLayoutSizeFitting(
+        _ targetSize: CGSize,
+        withHorizontalFittingPriority horizontalFittingPriority: UILayoutPriority,
+        verticalFittingPriority: UILayoutPriority
+    ) -> CGSize {
+        ios15FittingSize(targetSize)
+    }
+
+    private func ios15FittingSize(_ targetSize: CGSize) -> CGSize {
+        guard let host = host else { return super.systemLayoutSizeFitting(targetSize) }
+        var width = targetSize.width
+        if !(width > 0) || width.isInfinite {
+            width = window?.bounds.width ?? UIScreen.main.bounds.width
+        }
+        let measured = host.view.systemLayoutSizeFitting(
+            CGSize(width: width, height: 0),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel)
+        var height = measured.height
+        if !(height > 0) {
+            let fallback = super.systemLayoutSizeFitting(targetSize).height
+            if fallback > 0 { height = fallback }
+        }
+        if !(height > 0) && bounds.height > 0 { height = bounds.height }
+        return CGSize(width: width, height: max(0, height))
+    }
+
+'''
+
+
+def fix_hosting_config_shim(t):
+    """给 UIHostingConfiguration 替身补自排版测量 (幂等)。"""
+    if "IOS15_HOSTING_FITTING" in t:
+        return t
+    anchor = "    private func apply(_ config: UIContentConfiguration) {"
+    if anchor not in t:
+        return t
+    return t.replace(anchor, HOSTING_FITTING + anchor, 1)
+
+
 def inject_geom_backport(t):
     """把 onGeometryChange 的 iOS 15 回填实现注入兼容层文件（幂等）。"""
     if "IOS15_GEOM_BACKPORT" in t:
@@ -732,6 +793,7 @@ def main():
     edit("Views/Chat/AIChatView.swift", fix_aichat_view, "拆分超长字符串插值")
     edit_glob("**/iOS15Compat.swift", fix_compat_shim, "兼容层 PhotosPickerItem.supportedContentTypes: [Any]->[UTType]")
     edit_glob("**/iOS15Compat.swift", inject_geom_backport, "注入 onGeometryChange 回填实现")
+    edit_glob("**/iOS15Compat.swift", fix_hosting_config_shim, "UIHostingConfiguration 替身补系统LayoutSizeFitting (自排版)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
