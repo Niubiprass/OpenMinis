@@ -341,12 +341,29 @@ jobs:
             if file "$F" | grep -q "Mach-O"; then sign_macho "$F" ""; fi
           done
 
-          # 2) 内嵌扩展 (.appex): 按名字匹配同名 .entitlements
+          # 2) 内嵌扩展 (.appex): 用 CFBundleIdentifier 末段匹配同名 .entitlements
+          #    工程里的 bundle id 是 com.openminis.app.{ShareExtension|AgentWidget|FileProvider},
+          #    与 entitlements 目录名一一对应。之前按"扩展目录名"匹配会完全对不上
+          #    (构建产物叫 MinisShare / AgentWidgetExtension / MinisFileProvider),
+          #    结果三个扩展都没拿到 App Group。排除主 App 的 Minis.entitlements。
           find Payload/Minis.app -maxdepth 3 -name "*.appex" -type d | while read -r APPEX; do
-            NAME=$(basename "$APPEX" .appex)
-            EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist" 2>/dev/null || echo "$NAME")
-            ENT=$(find "$ENT_DIR" -name "${NAME}.entitlements" | head -1)
-            echo "扩展 $NAME -> exe=$EXE ent=${ENT:-(无)}"
+            EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist" 2>/dev/null || basename "$APPEX" .appex)
+            BID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist" 2>/dev/null || basename "$APPEX" .appex)
+            LAST=$(echo "$BID" | awk -F. '{print $NF}' | tr -d ' \r')
+            ENT=""
+            # a) 精确匹配: entitlements 文件名 == bundle id 末段
+            for E in $(find "$ENT_DIR" -name "*.entitlements" ! -name "Minis.entitlements"); do
+              S=$(basename "$E" .entitlements | tr 'A-Z' 'a-z')
+              if [ "$S" = "$(echo "$LAST" | tr 'A-Z' 'a-z')" ]; then ENT="$E"; break; fi
+            done
+            # b) 兜底: 子串互含
+            if [ -z "$ENT" ]; then
+              for E in $(find "$ENT_DIR" -name "*.entitlements" ! -name "Minis.entitlements"); do
+                S=$(basename "$E" .entitlements | tr 'A-Z' 'a-z')
+                case "$(echo "$LAST" | tr 'A-Z' 'a-z')" in *"$S"*) ENT="$E"; break;; esac
+              done
+            fi
+            echo "扩展 $(basename "$APPEX") (bundle=$BID) -> exe=$EXE ent=${ENT:-(无)}"
             sign_macho "$APPEX/$EXE" "$ENT"
           done
 
