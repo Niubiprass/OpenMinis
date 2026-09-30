@@ -760,6 +760,38 @@ HOSTING_FITTING = '''
 '''
 
 
+SHARE_TIMEOUT = '''    // ios15-port IOS15_SHARE_TIMEOUT
+    // 之前 await 单个 NSItemProvider 时, 若它在 iOS 15 上不回调, 整个处理会
+    // 永久挂住: 分享面板既没反应也不关闭, 主 App 也收不到 minis://share。
+    // 这里加 8 秒超时: 超时也要继续走 redirectToHostApp + completeRequest,
+    // 至少把主 App 唤起来。
+'''
+
+
+def fix_share_extension_timeout(t):
+    """给分享扩展的处理加超时兜底 (幂等)。"""
+    if "IOS15_SHARE_TIMEOUT" in t:
+        return t
+    old = """            await vm.processExtensionItems(items)
+            let saved = vm.save()"""
+    new = SHARE_TIMEOUT + """            let saved = await withTaskGroup(of: Bool.self) { group -> Bool in
+                group.addTask { @MainActor in
+                    await vm.processExtensionItems(items)
+                    return vm.save()
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    return false
+                }
+                let first = await group.next() ?? false
+                group.cancelAll()
+                return first
+            }"""
+    if old not in t:
+        return t
+    return t.replace(old, new, 1)
+
+
 def fix_hosting_config_shim(t):
     """给 UIHostingConfiguration 替身补自排版测量 (幂等)。"""
     if "IOS15_HOSTING_FITTING" in t:
@@ -807,6 +839,7 @@ def main():
     edit_glob("**/iOS15Compat.swift", fix_compat_shim, "兼容层 PhotosPickerItem.supportedContentTypes: [Any]->[UTType]")
     edit_glob("**/iOS15Compat.swift", inject_geom_backport, "注入 onGeometryChange 回填实现")
     edit_glob("**/iOS15Compat.swift", fix_hosting_config_shim, "UIHostingConfiguration 替身补系统LayoutSizeFitting (自排版)")
+    edit("ShareExtension/ShareViewController.swift", fix_share_extension_timeout, "分享扩展加 8s 超时兜底 (防永久挂住)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
