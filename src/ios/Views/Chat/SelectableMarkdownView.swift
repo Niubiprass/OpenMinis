@@ -6544,7 +6544,15 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         }
 
         let fullRange = NSRange(location: 0, length: textStorage.length)
-        let containerWidth = self.textContainer.size.width
+        // [IOS15-FIX] Clamp the text-container width to a sane value. During
+        // SwiftUI's recursive layout passes on iOS 15 textContainer.size.width is
+        // transiently bogus (895 / 1382 / 1e7); using it to size/position
+        // attachment views mis-aligns every image/table in the message body. The
+        // text view can never be wider than its collection-view cell, so clamp.
+        let cvContentWidthUAV = (findCollectionView()?.bounds.width ?? 0)
+        let rawContainerWidth = self.textContainer.size.width
+        let containerWidth = (cvContentWidthUAV > 1 && rawContainerWidth > cvContentWidthUAV + 1)
+            ? cvContentWidthUAV : rawContainerWidth
 
         // Ensure TextKit has laid out all glyphs including trailing attachments.
         // UIKit may have clamped textContainer height to the current bounds, which
@@ -7466,12 +7474,26 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         // attributed strings) before discovering NOOP. Skipping here saves
         // that cost on every repeated call (SwiftUI reuse / didMoveToWindow
         // bursts each trigger an UAV chain that includes this).
-        // [JitterFix] Measure at the actual render width (bounds.width) when
-        // available. textContainer.size.width can be transiently set to the
-        // outer-cell probe width (~402) by SwiftUI's preferredLayoutAttributes
-        // pass — measuring at that wrong width would write a 23pt-too-small
-        // height into lastComputedHeight, producing the streaming spike.
-        let measureWidth: CGFloat = bounds.width > 1 ? bounds.width : textContainer.size.width
+        // [IOS15-FIX] Measure at the actual render width, but clamp the
+        // proposed width to the collectionView's content width. On iOS 15 SwiftUI's
+        // recursive layout passes transiently set bounds.width to bogus values
+        // (895 / 1382 / 1e7); measuring at those makes sizeThatFits lay the text
+        // out far too wide, returning a height that is far too short — the cell
+        // commits that wrong height and the message body renders clipped / mis-
+        // aligned ("不显示不对齐"). The text view always lives inside a
+        // collection-view cell, so its real width can never exceed the
+        // collectionView content width; clamp to that.
+        let cvContentWidth = (findCollectionView()?.bounds.width ?? 0)
+        let proposedMeasureW = bounds.width
+        let measureWidth: CGFloat
+        if proposedMeasureW > 1, proposedMeasureW < 100_000,
+           (cvContentWidth <= 1 || proposedMeasureW <= cvContentWidth + 1) {
+            measureWidth = proposedMeasureW
+        } else if cvContentWidth > 1 {
+            measureWidth = cvContentWidth
+        } else {
+            measureWidth = textContainer.size.width
+        }
         // [TableGenDedup] Compute the sum of every TableAttachment's generation
         // counter. Streaming tables mutate rows in place without changing
         // textStorage.length, so the (storageLen, width) fingerprint alone
