@@ -927,6 +927,63 @@ def inject_geom_backport(t):
 
 
 # =====================================================================
+def fix_message_list_defer(t):
+    """iOS15: 不让"大幅缩小"的修正被冻结。
+
+    MessageListLayout 在 deferSelfSizing(用户浏览)期间，会把 cell 高度*缩小*
+    的修正 park 到 deferredHeights、return false，使 contentSize 冻结在旧(高估)
+    高度。iOS 15 上大量 cell 从估算值(est=1346)缩到真实值(pref=750)，这些 500+
+    pt 的虚高空间变成黑色空洞；滚动停止后的 thaw 只恢复数值 offset，导致往上滚
+    看到黑块/内容不上移。
+
+    修法：仅当缩小量 > 50pt(即"过估被修正"这一类)时**立即生效**；<50pt 的流式
+    token 级微调仍延迟，避免滚动抖动。已测量 cell 走 heightCache，优先于估算。
+    """
+    OLD = '''                if preferred <= original + 0.5 {
+                    // Shrinking or stable — defer the update.
+                    if abs(preferred - original) > 0.5 {
+                        deferredHeights[index] = preferred
+                    }
+                    // [T-video-squish-evidence] Only worth a line when a REAL
+                    // correction is being parked (large deltas are the media
+                    // placeholder→loaded case). Token-by-token streaming
+                    // produces sub-30pt shrinks constantly; those stay quiet.
+                    if abs(preferred - original) > 30 {
+                        AppLogger(category: "CellSizing").info("[CellSizing][DEFER-PARKED] idx=\\(index) pref=\\(String(format: "%.0f", preferred)) orig=\\(String(format: "%.0f", original)) — deferSelfSizing, not growing, correction parked")
+                    }
+                    return false
+                }'''
+    NEW = '''                if preferred <= original + 0.5 {
+                    let shrink = original - preferred
+                    // [IOS15-FIX] Large shrink = over-estimated estimate corrected
+                    // to the real measured height. Parking it freezes an inflated
+                    // contentSize, leaving phantom voids (black blocks) when the
+                    // user scrolls up into the un-corrected region. Apply large
+                    // shrinks immediately; defer only tiny (<50pt) token-level
+                    // deltas to avoid streaming scroll jitter.
+                    if shrink > 50 {
+                        // Fall through — let the invalidate decision below apply
+                        // the corrected (smaller) height to contentSize now.
+                    } else {
+                        // Shrinking or stable — defer the small update.
+                        if abs(preferred - original) > 0.5 {
+                            deferredHeights[index] = preferred
+                        }
+                        // [T-video-squish-evidence] Only worth a line when a REAL
+                        // correction is being parked (large deltas are the media
+                        // placeholder→loaded case). Token-by-token streaming
+                        // produces sub-30pt shrinks constantly; those stay quiet.
+                        if abs(preferred - original) > 30 {
+                            AppLogger(category: "CellSizing").info("[CellSizing][DEFER-PARKED] idx=\\(index) pref=\\(String(format: "%.0f", preferred)) orig=\\(String(format: "%.0f", original)) — deferSelfSizing, not growing, correction parked")
+                        }
+                        return false
+                    }
+                }'''
+    if OLD not in t:
+        return t
+    return t.replace(OLD, NEW)
+
+
 def main():
     print("== iOS 15 兜底修复 v2 (ROOT=%s) ==" % ROOT)
     print("-- 文件指纹/结构自检 --")
@@ -958,6 +1015,7 @@ def main():
     edit_glob("**/iOS15Compat.swift", fix_hosting_config_shim, "UIHostingConfiguration 替身补系统LayoutSizeFitting (自排版)")
     edit("ShareExtension/ShareViewController.swift", fix_share_extension_timeout, "分享扩展加 8s 超时兜底 (防永久挂住)")
     edit("Shared/SharedContainerStore.swift", fix_share_store, "PendingShare 双通道存储 (UserDefaults + 共享容器文件)")
+    edit("Agent/MessageList/MessageListLayout.swift", fix_message_list_defer, "iOS15: 大幅缩小(>50pt)修正立即生效, 消黑块虚高")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
