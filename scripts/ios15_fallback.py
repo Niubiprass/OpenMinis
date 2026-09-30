@@ -762,8 +762,8 @@ HOSTING_FITTING = '''
         }
         isMeasuring = true
         defer { isMeasuring = false }
-        var size = host.sizeThatFits(in: CGSize(width: width,
-                                               height: CGFloat.greatestFiniteMagnitude))
+        var size = host.view.sizeThatFits(in: CGSize(width: width,
+                                                     height: CGFloat.greatestFiniteMagnitude))
         if !(size.height > 0) {
             size = host.view.sizeThatFits(CGSize(width: width, height: 0))
         }
@@ -818,20 +818,27 @@ SHARE_STORE_OLD = '''    static var sharedFileDirectory: URL? {
     }
 '''
 
-SHARE_STORE_NEW = '''    static var sharedFileDirectory: URL? {
-        let base = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)
-            ?? containerDirectory
-        return base.appendingPathComponent("ShareExtension", isDirectory: true)
-    }
-
-    // ios15-port IOS15_SHARE_FILE_FALLBACK
+SHARE_STORE_NEW = '''    // ios15-port IOS15_SHARE_FILE_FALLBACK
     // 巨魔(iOS 15)环境下 UserDefaults(suiteName:) 可能拿不到 (sharedDefaults == nil),
     // 那时扩展辛苦处理完的数据会被 `guard ... else { return }` 静默丢弃 —— 主 App
     // 只能读到 "loadPendingShare returned nil — no data from extension"。
     // 所以改成双通道: UserDefaults 能用就写, 同时**始终**往共享容器写一份文件;
     // 读取时两边都试。共享容器路径在日志里已证实存在
     // (/private/var/mobile/Containers/Shared/AppGroup/.../)。
+    static var containerDirectory: URL {
+        if let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) {
+            return url
+        }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    }
+
+    static var sharedFileDirectory: URL? {
+        let base = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)
+            ?? containerDirectory
+        return base.appendingPathComponent("ShareExtension", isDirectory: true)
+    }
+
     private static var pendingShareFileURL: URL {
         containerDirectory.appendingPathComponent("pending-share.json")
     }
