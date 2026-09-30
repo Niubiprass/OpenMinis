@@ -103,7 +103,11 @@ def _skip_interp(text, i):
 
 
 def _match_delim(text, i):
-    """text[i] 为 ( [ { 之一, 返回配对闭合符之后的下标; 配不平返回 None。"""
+    """text[i] 为 ( [ { 之一, 返回配对闭合符之后的下标; 配不平返回 None。
+
+    跳过字符串 (含插值/多行) 与 `//` `/* */` 注释 —— 本项目注释里常出现
+    `{`/`}` (例如 `// snapshot ({...})`), 不跳注释会误判括号配平。
+    """
     pairs = {"(": ")", "[": "]", "{": "}"}
     if i >= len(text) or text[i] not in pairs:
         return None
@@ -112,6 +116,14 @@ def _match_delim(text, i):
     n = len(text)
     while j < n and stack:
         c = text[j]
+        if c == "/" and j + 1 < n and text[j + 1] == "/":
+            k = text.find("\n", j)
+            j = n if k < 0 else k
+            continue
+        if c == "/" and j + 1 < n and text[j + 1] == "*":
+            k = text.find("*/", j + 2)
+            j = n if k < 0 else k + 2
+            continue
         if c == '"':
             j = _skip_string(text, j)
             continue
@@ -503,7 +515,53 @@ def fix_aichat_view(t):
     t = _extract_onchange(t, "scenePhase", "handleScenePhaseChange", "phase", "ScenePhase")
     t = _extract_onchange(t, "vm.isProcessing", "handleProcessingChange", "processing", "Bool")
     t = _extract_onchange(t, "vm.fallbackTrigger", "handleFallbackTriggerPulse", None, None)
+    t = _split_view_body_chain(t)
     return fix_sleep_for(t)
+
+
+def _split_view_body_chain(t, every=8, body_head="    var body: some View {"):
+    """把巨型 `var body`（单表达式修饰符链）用 `let` 中间变量切成多段。
+
+    Swift 的类型检查对**单个表达式**有固定时间预算；AIChatView.body 是一条
+    1180 行 / 69 个修饰符的单一表达式，必然超时。切成 9 段后每段独立预算，
+    语义完全不变（链式求值顺序、类型都不变）。
+    """
+    if "_ios15Seg0" in t:
+        return t
+    lines = t.split("\n")
+    bi = None
+    for i, l in enumerate(lines):
+        if l == body_head:
+            bi = i
+            break
+    if bi is None:
+        return t
+    start = sum(len(x) + 1 for x in lines[:bi])
+    lb = start + lines[bi].index("{")
+    eb = _match_delim(t, lb)
+    if eb is None:
+        return t
+    inner = t[lb + 1:eb - 1]
+    ilines = inner.split("\n")
+    splits = [k for k, l in enumerate(ilines) if l.startswith("        .")]
+    if len(splits) < every + 1:
+        return t
+    base = "\n".join(ilines[:splits[0]])
+    groups = []
+    for gi in range(0, len(splits), every):
+        a = splits[gi]
+        b = splits[gi + every] if gi + every < len(splits) else len(ilines)
+        groups.append("\n".join(ilines[a:b]))
+    out = []
+    prev = base
+    for i, g in enumerate(groups):
+        if i < len(groups) - 1:
+            out.append("        let _ios15Seg%d = %s\n%s" % (i, prev, g))
+            prev = "_ios15Seg%d" % i
+        else:
+            out.append("%s\n%s" % (prev, g))
+    new_inner = "\n" + "\n\n".join(out) + "\n    "
+    return t[:lb + 1] + new_inner + t[eb - 1:]
 
 
 def _extract_onchange(t, of_expr, method_name, param_name=None, param_type=None):
