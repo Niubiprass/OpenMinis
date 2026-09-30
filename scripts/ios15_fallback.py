@@ -434,7 +434,7 @@ def fix_scheduled_job_runner(t):
 
 
 def fix_voice_provider_resolver(t):
-    return guard_func_body(t, "private func registerLiveActivityToggleObserver()", "17.0")
+    return fix_sleep_for(guard_func_body(t, "private func registerLiveActivityToggleObserver()", "17.0"))
 
 
 def fix_system_voice_catalog(t):
@@ -487,13 +487,25 @@ def fix_force_sync_memory(t):
 
 
 def fix_aichat_view(t):
-    """拆分超长字符串插值, 消除 'type-check ... in reasonable time' 超时。"""
+    """拆分超长字符串插值 + 降级 Task.sleep(for:) (Duration 推断是类型检查超时的元凶)。"""
     old = (
         'AppLogger(category: "InputBarLayout").error("[InputBarHealth] STALLED — no geometry callback 900ms after foreground. committed=\\(inputBarHeight) latest=\\(latestInputBarFrameH) lastReport=\\(String(format: "%.1f", age))s ago voice=\\(voiceInputActive) editing=\\(voiceVM.isEditingTranscript) seeded=\\(didSeedInputBarHeight). The composer host is not laying out; expect a blank bottom area. Leaving and re-entering the session rebuilds it.")')
     new = (
         'let _stallMsg = "[InputBarHealth] STALLED — no geometry callback 900ms after foreground. committed=\\(inputBarHeight) latest=\\(latestInputBarFrameH) lastReport=\\(String(format: "%.1f", age))s ago voice=\\(voiceInputActive) editing=\\(voiceVM.isEditingTranscript) seeded=\\(didSeedInputBarHeight). The composer host is not laying out; expect a blank bottom area. Leaving and re-entering the session rebuilds it."\n'
         '                    AppLogger(category: "InputBarLayout").error(_stallMsg)')
-    return t.replace(old, new)
+    t = t.replace(old, new)
+    return fix_sleep_for(t)
+
+
+def fix_sleep_for(t):
+    """Task.sleep(for: .milliseconds(N)) (iOS 16 + Duration 推断) -> nanoseconds (iOS 13+)。
+
+    既消除 iOS 16 依赖, 又去掉 Duration/.milliseconds 的类型推断 —— 后者是
+    "unable to type-check in reasonable time" 的常见成因。
+    """
+    def _repl(m):
+        return "Task.sleep(nanoseconds: %d)" % (int(m.group(1)) * 1_000_000)
+    return re.sub(r"Task\.sleep\(for:\s*\.milliseconds\((\d+)\)\)", _repl, t)
 
 
 # =====================================================================
@@ -534,6 +546,11 @@ def main():
     p = os.path.join(ROOT, "Agent/Intents/ModelSelectionEntity.swift")
     if os.path.isfile(p):
         for i, l in enumerate(read(p).split("\n")[130:165], start=131):
+            print("   %4d| %s" % (i, l))
+    print("-- 诊断 dump (AIChatView 1525-1565) --")
+    p = os.path.join(ROOT, "Views/Chat/AIChatView.swift")
+    if os.path.isfile(p):
+        for i, l in enumerate(read(p).split("\n")[1524:1565], start=1525):
             print("   %4d| %s" % (i, l))
     print("-- 诊断 dump (UnifiedModelPicker toolbarContent) --")
     p = os.path.join(ROOT, "Views/Providers/UnifiedModelPicker.swift")
