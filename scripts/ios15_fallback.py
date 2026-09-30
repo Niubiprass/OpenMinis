@@ -194,15 +194,21 @@ def fix_unified_model_picker(t):
 # F2. LocalizedStringResource(stringLiteral: X) -> "\(X)"
 #     (显式调协议见证初始化器在 iOS15 部署目标下编译不过; 改用插值字面量隐式转换)
 # =====================================================================
-def strip_lsr_calls(t):
-    key = "LocalizedStringResource(stringLiteral:"
+def _strip_lsr_for(t, typename):
+    """把 typename(stringLiteral: EXPR) 换成 "\(EXPR)" (插值字面量隐式转 LSR)。
+
+    同时覆盖 v2 的 strip_localizedstringresource 把
+    `title: LocalizedStringResource(stringLiteral: X)` 误改成
+    `title: String(stringLiteral: X)` 的污染 —— 因此 typename 也允许 String。
+    """
+    key = typename + "(stringLiteral:"
     out = t
     start = 0
     while True:
         idx = out.find(key, start)
         if idx < 0:
             break
-        lp = idx + len("LocalizedStringResource")
+        lp = idx + len(typename)
         rp = _match_delim(out, lp)
         if rp is None:
             start = idx + len(key)
@@ -213,6 +219,12 @@ def strip_lsr_calls(t):
         out = out[:idx] + repl + out[rp:]
         start = idx + len(repl)
     return out
+
+
+def strip_lsr_calls(t):
+    t = _strip_lsr_for(t, "LocalizedStringResource")
+    t = _strip_lsr_for(t, "String")
+    return t
 
 
 # =====================================================================
@@ -254,16 +266,20 @@ NNS_SHIM = '''
 
 // ios15-port: NotificationNavigationStore 是 iOS 16 的通知深链类型。这里把垫片
 // 直接写进 ContentView.swift (在 .pbxproj 里, 必然参与编译), 调用点保持不变;
-// iOS 15 上深链静默 no-op (整个点击通知跳转功能本就是 iOS 16+)。
+// iOS 15 上深链静默 no-op (整个点击通知跳转功能本就是 iOS 16+)。标记 @MainActor
+// 以匹配 NotificationNavigationStore 的主线程隔离。
+@MainActor
 func nnsMarkHandled() {
     if #available(iOS 16.0, *) { NotificationNavigationStore.shared.markHandled() }
 }
 
+@MainActor
 func nnsTakePending() -> String? {
     if #available(iOS 16.0, *) { return NotificationNavigationStore.shared.takePending() }
     return nil
 }
 
+@MainActor
 var nnsHandledRecently: Bool {
     if #available(iOS 16.0, *) { return NotificationNavigationStore.shared.handledRecently }
     return false
@@ -374,10 +390,29 @@ def fix_minis_app(t):
     t = re.sub(
         r"(?m)^[ \t]*@available\(iOS 16\.0, \*\) // ios15-port\n(?=[ \t]*private static let fileProviderDomain\b)",
         "", t)
+    # NSFileProviderDomain(identifier:displayName:) 是 iOS 16 才有的两参便利初始化器;
+    # 换用 iOS 11 就有的三参版本 (pathRelativeToDocumentStorage 语义等价)。
+    t = t.replace(
+        'NSFileProviderDomain(\n'
+        '        identifier: NSFileProviderDomainIdentifier("com.openminis.app.files"),\n'
+        '        displayName: "Minis"\n'
+        '    )',
+        'NSFileProviderDomain(\n'
+        '        identifier: NSFileProviderDomainIdentifier("com.openminis.app.files"),\n'
+        '        displayName: "Minis",\n'
+        '        pathRelativeToDocumentStorage: "com.openminis.app.files"\n'
+        '    )')
     return t
 
 
 def fix_app_delegate(t):
+    # v2 的 _guard_avail_in_funcs 把多行 `func application(...) -> Bool` 误判成
+    # 无返回值, 在其体首插入了 `guard #available(iOS 16, *) else { return }` ——
+    # 空 return 在 -> Bool 函数里直接 "non-void function should return a value"。
+    # 撤掉这个错误 guard, 改为在调用点精确守卫。
+    t = t.replace(
+        "    ) -> Bool {\n        guard #available(iOS 16.0, *) else { return }\n",
+        "    ) -> Bool {\n")
     return guard_call(t, "ShortcutNotificationDelegate.shared.register()", "16.0")
 
 
@@ -428,6 +463,40 @@ def fix_login_sheet_guards(t):
 
 
 # =====================================================================
+# 补充修复 (上一轮遗漏 / 本轮新暴露)
+# =====================================================================
+def fix_ish_verbose_trace(t):
+    """iSH 的 C 符号 ish_set_verbose_trace 在 iOS 15 构建里没声明 -> 补 no-op 桩。"""
+    if "func ish_set_verbose_trace" in t:
+        return t
+    stub = (
+        "\n\n"
+        "// iOS 15 兜底: 上游期望宿主提供 ish_set_verbose_trace (iSH 内核 trace 开关),\n"
+        "// 在 iOS 15 构建里该 C 符号未声明。补一个私有 no-op 桩, 不影响功能。\n"
+        "private func ish_set_verbose_trace(_ enabled: Bool) {}\n")
+    return t.rstrip() + stub
+
+
+def fix_force_sync_memory(t):
+    """forceSyncMemory 上游标了 @available(iOS 17)，但调用点在
+    `if #available(iOS 17.0, *), iCloudSyncEnabled` 的 ToolbarContentBuilder 里
+    没有被认作 iOS 17 上下文 -> 给调用点再包一层 #available。"""
+    t = t.replace("Task { await forceSyncMemory() }",
+                  "Task { if #available(iOS 17.0, *) { await forceSyncMemory() } }")
+    return t
+
+
+def fix_aichat_view(t):
+    """拆分超长字符串插值, 消除 'type-check ... in reasonable time' 超时。"""
+    old = (
+        'AppLogger(category: "InputBarLayout").error("[InputBarHealth] STALLED — no geometry callback 900ms after foreground. committed=\\(inputBarHeight) latest=\\(latestInputBarFrameH) lastReport=\\(String(format: "%.1f", age))s ago voice=\\(voiceInputActive) editing=\\(voiceVM.isEditingTranscript) seeded=\\(didSeedInputBarHeight). The composer host is not laying out; expect a blank bottom area. Leaving and re-entering the session rebuilds it.")')
+    new = (
+        'let _stallMsg = "[InputBarHealth] STALLED — no geometry callback 900ms after foreground. committed=\\(inputBarHeight) latest=\\(latestInputBarFrameH) lastReport=\\(String(format: "%.1f", age))s ago voice=\\(voiceInputActive) editing=\\(voiceVM.isEditingTranscript) seeded=\\(didSeedInputBarHeight). The composer host is not laying out; expect a blank bottom area. Leaving and re-entering the session rebuilds it."\n'
+        '                    AppLogger(category: "InputBarLayout").error(_stallMsg)')
+    return t.replace(old, new)
+
+
+# =====================================================================
 def main():
     print("== iOS 15 兜底修复 v2 (ROOT=%s) ==" % ROOT)
     print("-- 文件指纹/结构自检 --")
@@ -451,12 +520,20 @@ def main():
     edit("Views/Chat/ChatInputBar.swift", fix_chat_input_bar, "补 Alignment vertical:")
     edit("Views/Providers/AddProviderView.swift", fix_login_sheet_guards, "登录 Sheet 守卫")
     edit("Views/Providers/ProviderInstanceDetailView.swift", fix_login_sheet_guards, "登录 Sheet 守卫")
+    edit("Shared/LoggingManager.swift", fix_ish_verbose_trace, "ish_set_verbose_trace 补桩")
+    edit("Views/Settings/MemoryManagementView.swift", fix_force_sync_memory, "forceSyncMemory 调用点守卫")
+    edit("Views/Chat/AIChatView.swift", fix_aichat_view, "拆分超长字符串插值")
 
     # ---- 诊断: 把关键文件片段打到运行日志 (失败时我能看到编译时真实源码) ----
     print("-- 诊断 dump (AppDelegate 20-84) --")
     p = os.path.join(ROOT, "AppDelegate.swift")
     if os.path.isfile(p):
         for i, l in enumerate(read(p).split("\n")[19:84], start=20):
+            print("   %4d| %s" % (i, l))
+    print("-- 诊断 dump (ModelSelectionEntity LSR 区域) --")
+    p = os.path.join(ROOT, "Agent/Intents/ModelSelectionEntity.swift")
+    if os.path.isfile(p):
+        for i, l in enumerate(read(p).split("\n")[130:165], start=131):
             print("   %4d| %s" % (i, l))
     print("-- 诊断 dump (UnifiedModelPicker toolbarContent) --")
     p = os.path.join(ROOT, "Views/Providers/UnifiedModelPicker.swift")
