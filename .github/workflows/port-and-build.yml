@@ -236,6 +236,26 @@ jobs:
           echo "✅ 几何测量回填就位 ($N15 处)"
           echo "::endgroup::"
 
+          echo "::group::断言6: iOS15 兜底 —— NSTextContainer 风暴熔断 + 高度钳制必须生效 (否则新对话发送主线程卡死)"
+          G=src/ios/Shared/NSTextContainerSetSizeGuard.m
+          if [ ! -f "$G" ]; then echo "❌ 找不到 $G"; exit 1; fi
+          if grep -q "kStormForwardLimit = 40" "$G" && grep -q "kMaxContainerHeight = 1e5" "$G" && grep -q "storm-breaker SKIP" "$G" ; then
+            echo "✅ 风暴熔断(kStormForwardLimit=40) + 1e5 高度钳制 + storm-breaker 已注入"
+          else
+            echo "❌ ios15_fallback 未生效: kStormForwardLimit / kMaxContainerHeight / storm-breaker 缺失 —— 主线程卡死修复没进包! 上游可能改了 NSTextContainerSetSizeGuard.m 锚点"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::断言7: iOS15 兜底 —— codeTextView 必须关闭 widthTracksTextView (否则超宽 setSize 风暴)"
+          if grep -q "codeTextView.textContainer.widthTracksTextView = false" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ codeTextView 宽度不再跟随 frame"
+          else
+            echo "❌ codeTextView.widthTracksTextView 未关闭 —— 卡死修复没进包! 上游可能改了 SelectableMarkdownView.swift 锚点"
+            exit 1
+          fi
+          echo "::endgroup::"
+
       - name: "设置部署目标 (主 App=${{ env.DEPLOY_TARGET }}, 扩展单独抬高)"
         run: |
           set -e
