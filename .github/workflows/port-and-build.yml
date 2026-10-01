@@ -353,6 +353,12 @@ jobs:
             echo "❌ v22 maxWidth 未注入 —— 超宽理想宽仍会把气泡布局到 x=-49805, 闪字/空白复发!"
             exit 1
           fi
+          echo "::group::断言16: v23 CADisplayLink 帧同步修正必须就位 (保证每帧绘制前几何已修正 → 视觉不闪)"
+          if grep -q "ios15FrameFixTick" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "CADisplayLink" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ 帧同步修正已注入 (渲染前拉回, 污染帧不会出现在屏幕上)"
+          else
+            echo "❌ v23 帧同步修正缺失 —— 污染帧仍会被渲染出去一帧, 闪字复发!"; exit 1
+          fi
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
           if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ KVO 抢帧已注入"
