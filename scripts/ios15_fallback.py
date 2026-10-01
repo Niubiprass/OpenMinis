@@ -1462,6 +1462,24 @@ def fix_clip_v3_property(t):
     // [IOS15-FIX-CLIP v3] 每视图记住最后正常的容器帧 (如 358@16)。superview 被
     // SwiftUI 瞬态污染 (宽 494/779 被父视图居中成负 x → 行首裁字) 时精确还原,
     // 不猜宽度。见 layoutSubviews 里 IOS15-FIX-CLIP v3 块。
+    // [IOS15-FIX-CLIP v21] intrinsicContentSize 钳宽 —— 污染帧的源头。
+    // v4 把 textContainer 的宽度上限设为 1e5 (防 CoreText 按 1e7/greatestFiniteMagnitude
+    // 近乎无限排版而卡死主线程), 但 UITextView.intrinsicContentSize 直接把容器宽当作
+    // "理想宽"报给 SwiftUI —— 于是上报 1e5+32 = 100032 (日志 idealW 实证),
+    // SwiftUI 据此把气泡布局成宽 100000、在父视图里居中后 x = -49805
+    // (sv0=(-49805.0, 160.0, 100000.0, 461.67) 实证) → 内容整个飞到屏幕外。
+    // 渲染端抢回来、SwiftUI 每个 tick 又写出去 → 拉锯 = 闪字; 布局高度随之错乱 =
+    // 上下空白 / 输出衔接不上 / 部分字不显示。
+    // 这里把对外报告的"理想宽"钳到真实可用宽, 1e5 不再泄露进布局, 污染帧从根本上
+    // 不再产生 (抢帧/KVO 只留作兜底)。
+    override var intrinsicContentSize: CGSize {
+        let sz = super.intrinsicContentSize
+        let cvW = findCollectionView()?.bounds.width ?? 0
+        let cap = cvW > 33 ? cvW - 32 : sz.width
+        let w = (cap > 1 && sz.width > cap) ? cap : sz.width
+        return CGSize(width: w, height: sz.height)
+    }
+
     var ios15LastSaneSVFrame: CGRect?
     // [IOS15-FIX-CLIP v14] 渲染端算出的实际需求高度 (usedRect + 上下 inset)。
     // 老会话 cell 高度欠账 (如 286 字符只给 252pt) → 半截字; SwiftUI 把 frame 高

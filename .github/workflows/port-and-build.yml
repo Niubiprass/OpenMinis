@@ -339,6 +339,13 @@ jobs:
             echo "❌ 测量宽 v17 钳制缺失 —— 测量(390/494)≠渲染(358), 高度对不上!"
             exit 1
           fi
+          echo "::group::断言14: v21 intrinsicContentSize 理想宽钳制必须就位 (堵住 1e5 泄露 → 污染帧 x=-49805)"
+          if grep -q "override var intrinsicContentSize" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "cvW > 33 ? cvW - 32 : sz.width" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ 理想宽已钳到真实可用宽 (污染源 1e5 不再进入布局)"
+          else
+            echo "❌ intrinsicContentSize 钳制缺失 —— 气泡仍会被布局成宽 100000 / x=-49805, 闪字与空白复发!"
+            exit 1
+          fi
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
           if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ KVO 抢帧已注入"
