@@ -7303,6 +7303,23 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 bounds = _rb
                 _didFix = true
             }
+            // [IOS15-FIX-CLIP v2] 上游只在"测量"阶段钳了宽度, 但 frame/superview 帧
+            // 仍会被 iOS15 SwiftUI 递归排版传入的瞬时离谱 bounds.width (1e7) 焊死 ——
+            // 日志 svFrame 实测宽 1e7、origin.x=-5e6, 整块文本被推到屏幕外/被裁。这里
+            // 把失控的 superview 帧钳回: 宽收到集合视图宽度、origin.x 归零。钳制目标
+            // 低于触发阈值 (cvW 与 0), 重排后会落到阈值内, 不会形成死循环。
+            if let _sv = superview,
+               _sv.frame.size.width > rCv2.bounds.width * 2 || _sv.frame.origin.x < -rCv2.bounds.width {
+                var _svf = _sv.frame
+                if _svf.size.width > rCv2.bounds.width * 2 {
+                    _svf.size.width = rCv2.bounds.width
+                }
+                if _svf.origin.x < -rCv2.bounds.width {
+                    _svf.origin.x = 0
+                }
+                _sv.frame = _svf
+                _didFix = true
+            }
             if _didFix {
                 layoutManager.ensureLayout(for: textContainer)
                 setNeedsLayout()

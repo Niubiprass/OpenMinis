@@ -109,7 +109,7 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
         }
         return;
     }
-    if (newSize.width > 1e7) newSize.width = 1e7;
+    if (newSize.width > 1e5) newSize.width = 1e5;
     // [IOS15-FIX-STORM] 容器高度上限改有限值: 旧版钳到 1e7 仍近乎无限, iOS 15 上
     // 让 fillLayoutHole 对长流式消息病态循环 (多秒主线程卡死)。钳到 kMaxContainerHeight
     // (1e5 ≈ 16× 最高真实气泡) 既保留"足够高不裁真实内容", 又给 CoreText 有限终点。
