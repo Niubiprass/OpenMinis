@@ -1329,7 +1329,8 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     // 设成 647.3 -> 每次真正 setSize -> CoreText 用 647 宽排版 -> 主线程卡死 + 文字
     // 不对齐(每行按 647 排版被可视边界两边裁)。钳到屏宽斩断 647.3↔390 横跳。
     // widthTracksTextView=false 的代码块容器(宽10000横滚) 不在此列, 保留横滚宽度。
-    if (self.widthTracksTextView) {
+    // 注意: 本方法 self 被推断为 id, 需强转 NSTextContainer* 才能点出属性 (CI 实测编译报错)。
+    if (((NSTextContainer *)self).widthTracksTextView) {
         CGFloat _sw = (CGFloat)[UIScreen mainScreen].bounds.size.width;
         if (newSize.width > _sw) {
             newSize.width = _sw;
