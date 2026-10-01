@@ -1025,6 +1025,37 @@ def fix_defer_large_shrink(t):
     return t.replace(OLD, NEW)
 
 
+def fix_hosting_content_maxwidth(t):
+    """v22: 给 UIHostingConfiguration 替身喂给 SwiftUI 的 rootView 设最大宽度。
+
+    v21 的教训: 钳 UITextView.intrinsicContentSize 没打中 —— v21 日志里污染帧
+    sv0 仍是 (-49805.0, …, 100000.0)、(-261.7, …, 913.3)、(-246.7, …, 883.3),
+    idealW 仍 100032/2378/945/915/726。原因: 超宽"理想宽"来自 **SwiftUI 内容树**
+    (Text/表格在"无限宽"提议下不换行, 理想宽 = 单行宽), SwiftUI 依此把内容视图布局成
+    宽 ~100000 并在父视图里居中 → x = -49805, 内容飞出屏幕。SwiftUI 内部子视图的摆放
+    由 SwiftUI 布局引擎决定, UIKit 侧约束(含 intrinsicContentSize)管不到。
+
+    修法: 在替身构造 UIHostingController 时给 rootView 加 frame(maxWidth:),
+    让内容的理想宽被压到可用宽 → Text 正常换行 → 不再有超宽/负 x 的污染帧,
+    抢帧拉锯(闪字)与随之的高度错乱(空白/衔接不上)一并根除。
+    """
+    if "frame(maxWidth: _ios15ContentMaxW" in t:
+        return t
+    OLD = "        let controller = UIHostingController(rootView: AnyView(config.content))"
+    NEW = '''        // [IOS15-FIX-CLIP v22] 给 SwiftUI 内容设最大宽度上限。
+        // SwiftUI 的 Text / 表格等在"无限宽"提议下不换行, 理想宽可达 100032 / 2378,
+        // 于是 SwiftUI 把内容视图布局成宽 ~100000 并在父视图里居中 → x = -49805
+        // (sv0 日志实证) → 内容飞出屏幕; 渲染端抢回来、SwiftUI 每 tick 又写出去
+        // = 拉锯闪字, 布局高度随之错乱 = 上下空白 / 输出衔接不上。
+        // 设 maxWidth 后内容理想宽被压到可用宽, 污染帧从根本上不再产生。
+        // maxWidth 只是上限: 内容更窄时按内容宽排布, 右对齐的用户气泡不受影响。
+        let _ios15ContentMaxW = max(UIScreen.main.bounds.width - 32, 200)
+        let controller = UIHostingController(rootView: AnyView(config.content.frame(maxWidth: _ios15ContentMaxW, alignment: .leading)))'''
+    if OLD in t:
+        return t.replace(OLD, NEW)
+    return t
+
+
 def fix_widget_activitykit(t):
     """AgentWidgetExtension 在 iOS 15.5 上根本没有 ActivityKit / AppIntents 框架,
     但源码顶层的 `import ActivityKit` / `import AppIntents` (Agent/Intents/*.swift
@@ -1711,6 +1742,7 @@ def main():
     edit_glob("**/iOS15Compat.swift", fix_compat_shim, "兼容层 PhotosPickerItem.supportedContentTypes: [Any]->[UTType]")
     edit_glob("**/iOS15Compat.swift", inject_geom_backport, "注入 onGeometryChange 回填实现")
     edit_glob("**/iOS15Compat.swift", fix_hosting_config_shim, "UIHostingConfiguration 替身补系统LayoutSizeFitting (自排版)")
+    edit_glob("**/iOS15Compat.swift", fix_hosting_content_maxwidth, "v22: SwiftUI rootView 设 maxWidth (压住超宽理想宽 → 根除污染帧/闪字/空白)")
     edit("ShareExtension/ShareViewController.swift", fix_share_extension_timeout, "分享扩展加 8s 超时兜底 (防永久挂住)")
     edit("Shared/SharedContainerStore.swift", fix_share_store, "PendingShare 双通道存储 (UserDefaults + 共享容器文件)")
     edit("Agent/MessageList/MessageListLayout.swift", fix_message_list_defer, "iOS15: 大幅缩小(>50pt)修正立即生效, 消黑块虚高")

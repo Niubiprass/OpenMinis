@@ -346,6 +346,13 @@ jobs:
             echo "❌ intrinsicContentSize 钳制缺失 —— 气泡仍会被布局成宽 100000 / x=-49805, 闪字与空白复发!"
             exit 1
           fi
+          echo "::group::断言15: v22 SwiftUI rootView maxWidth 必须就位 (压住超宽理想宽 → 根除污染帧)"
+          if grep -q "frame(maxWidth: _ios15ContentMaxW" src/ios/iOS15Compat.swift ; then
+            echo "✅ SwiftUI 内容最大宽度已设 (理想宽不再 100032/2378, x=-49805 污染帧不再产生)"
+          else
+            echo "❌ v22 maxWidth 未注入 —— 超宽理想宽仍会把气泡布局到 x=-49805, 闪字/空白复发!"
+            exit 1
+          fi
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
           if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ KVO 抢帧已注入"
