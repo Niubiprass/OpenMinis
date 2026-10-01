@@ -1329,12 +1329,18 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     // 设成 647.3 -> 每次真正 setSize -> CoreText 用 647 宽排版 -> 主线程卡死 + 文字
     // 不对齐(每行按 647 排版被可视边界两边裁)。钳到屏宽斩断 647.3↔390 横跳。
     // widthTracksTextView=false 的代码块容器(宽10000横滚) 不在此列, 保留横滚宽度。
-    // 注意: 本方法 self 被推断为 id, 需强转 NSTextContainer* 才能点出属性 (CI 实测编译报错)。
-    if (((NSTextContainer *)self).widthTracksTextView) {
-        CGFloat _sw = (CGFloat)[UIScreen mainScreen].bounds.size.width;
-        if (newSize.width > _sw) {
-            newSize.width = _sw;
-        }
+    // 注意1: 本方法 self 被推断为 id, 需强转 NSTextContainer* 才能点出属性 (CI 实测编译报错)。
+    // 注意2(v10 关键): 必须放过"无限宽测量"。App 会故意用 greatestFiniteMagnitude
+    // 量文本自然尺寸 (上面已先被钳到 1e5)。v9.1 把它也压成 390 -> 测量语义被破坏,
+    // 调用方永远拿不到预期结果 -> 同步死循环: 实测单容器 44131 次 setSize、
+    // tick 号卡在 1716 不前进、508 次 MAIN HANG 峰值 9993ms (v8 仅 2s 级)。
+    // 因此只钳"离谱但有限"的宽度 (647.3 / 589.3 / 895 / 1382 这类, 来自 SwiftUI
+    // 递归排版把 frame 瞬态设宽、widthTracksTextView 让容器去追), 阈值上界 2000。
+    CGFloat _origW = newSize.width;
+    CGFloat _sw = (CGFloat)[UIScreen mainScreen].bounds.size.width;
+    if (((NSTextContainer *)self).widthTracksTextView &&
+        _origW > _sw && _origW < 2000) {
+        newSize.width = _sw;
     }'''
     if OLD3 in t:
         t = t.replace(OLD3, NEW3)
