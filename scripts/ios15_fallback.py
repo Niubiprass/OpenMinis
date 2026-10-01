@@ -984,6 +984,38 @@ def fix_message_list_defer(t):
     return t.replace(OLD, NEW)
 
 
+def fix_defer_large_shrink(t):
+    """iOS15: 大幅"收缩"修正(-100pt 以上)不被 deferSelfSizing 冻结。
+
+    日志证据 (minis-2026-10-01-6.log 17:52): 回复里的工具控制台输出先按全文
+    (699 字 ≈ 833pt) 测量提交, 随后折叠成卡片 (~245pt); 这个 -570pt 级别的
+    收缩修正被 deferSelfSizing 欠账, 直到滚动结束/forceScrollToBottom 才结算,
+    期间用户看到"回复位置一大片空白" (contentSize 3027→2440 才恢复)。
+
+    修法: delta < -100pt 的收缩立即生效 —— 移除虚高空白不会像"增高"那样把
+    相邻 cell 顶开, 滚动中立即应用是安全的。小的 (<100pt) 流式微调仍走原
+    defer 逻辑防抖。
+    """
+    if "IOS15-FIX-BLANK" in t:
+        return t
+    OLD = '''            let isLargeGrowth = delta > 30
+            if cellHasGrowableMediaAttachment && isLargeGrowth {'''
+    NEW = '''            let isLargeGrowth = delta > 30
+            // [IOS15-FIX-BLANK] A large NEGATIVE correction (tool console
+            // output collapsing from full text into its card, long blocks
+            // re-wrapping) that stays deferred during deferSelfSizing leaves a
+            // multi-second blank void exactly where the reply renders. Removing
+            // phantom space cannot overlap neighbouring cells the way a growth
+            // can, so large shrinks are safe to apply immediately.
+            if delta < -100 {
+                cellSizeLogger.info("[CellSize] ALLOW through defer — large shrink " + String(format: "%.1f", delta) + " applies immediately (IOS15-FIX-BLANK)")
+                // Fall through to the normal invalidate path below.
+            } else if cellHasGrowableMediaAttachment && isLargeGrowth {'''
+    if OLD not in t:
+        return t
+    return t.replace(OLD, NEW)
+
+
 def fix_widget_activitykit(t):
     """AgentWidgetExtension 在 iOS 15.5 上根本没有 ActivityKit 框架, 但
     AgentLiveActivityWidget.swift 顶层 `import ActivityKit` 会让编译器以**强链接**
@@ -1394,19 +1426,64 @@ def fix_code_textview_widthtrack(t):
 # 打印 superview 的 frame 与文本视图相对 superview 的原点, 区分"父视图布局把文本
 # 推出左边界"还是"自身坐标偏移"。用 String(describing:) 拼接, 避免 \( 插值转义。
 def fix_left_clip_diag_superview(t):
+    """v5: 老会话双边裁字修复 —— 渲染端容器/自身宽度钳回 + 强制 TextKit 重排。
+
+    日志证据 (minis-2026-10-01-6.log): 新会话对齐了, 老会话仍每行首尾同时被裁
+    (both-edge clip)。机制: 老会话从磁盘一次性载入, 初始布局若遇到 SwiftUI
+    递归排版传入的瞬时离谱宽度 (895/1382), 文本容器便按超宽排版; 之后没有
+    流式重测路径替它纠正, 容器宽度就此卡死 —— 每一行都按超宽排版、被可视
+    边界两边裁掉。新会话因流式不断重测而自愈, 所以只有老会话犯病。
+
+    修法: 渲染路径上 (仅限不可滚动的正文视图) 发现 textContainer/自身宽度
+    超过真实可用宽度 (min(superview, collectionView)) 时钳回, 清掉残留的
+    bounds.origin.x, 并强制 TextKit 立即重排。诊断 v2 同步打印自身几何。
+    """
     OLD = '''        let currentWidth = textContainer.size.width'''
-    NEW = '''        // [IOS15-FIX-STORM][LEFT-CLIP-DIAG] 左裁字补充诊断: v3 实测
-        // contentOffset.x 清零与 frame.origin.x 负向检测均为 0 -> 左裁字不是
-        // offset / 负原点问题, 而是别的机制。这里再打印 superview 的 frame 与文本
-        // 视图相对 superview 的原点, 区分"父视图布局把文本推出左边界"还是"自身偏移"。
-        let _svf2 = superview?.frame ?? .zero
-        let _relX = frame.origin.x - _svf2.origin.x
-        if _relX < -0.5 || frame.origin.x < -0.5 {
-            struct _NegXDiag2 { static var lastLog: CFTimeInterval = 0 }
-            let _now3 = CACurrentMediaTime()
-            if _now3 - _NegXDiag2.lastLog > 1.0 {
-                _NegXDiag2.lastLog = _now3
-                AppLogger(category: "CellSize").info("[LEFT-CLIP-DIAG] NEG-SV frameX=" + String(describing: frame.origin.x) + " relX=" + String(describing: _relX) + " svFrame=" + String(describing: _svf2) + " svType=" + String(describing: type(of: superview)) + " cvW=" + String(describing: (findCollectionView()?.bounds.width ?? 0)))
+    NEW = '''        // [IOS15-FIX-CLIP] 老会话双边裁字修复: 容器/自身宽度钳回 + 强制重排。
+        // 仅限不可滚动视图 (可滚动的代码块视图自管宽度/偏移, 不动)。
+        if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {
+            let _svW = superview?.bounds.width ?? 0
+            // 真实宽度 = min(superview, collectionView); superview 宽度瞬时
+            // 异常小 (<200) 时退回 collectionView 宽度, 防止把容器钳成窄条。
+            let _realW = _svW > 200 ? min(_svW, rCv2.bounds.width) : rCv2.bounds.width
+            let _tcOldW = textContainer.size.width
+            var _didFix = false
+            if textContainer.size.width > _realW + 1 {
+                textContainer.size.width = _realW
+                _didFix = true
+            }
+            if bounds.width > _realW + 1 || frame.size.width > _realW + 1 {
+                var _rf = frame
+                _rf.size.width = _realW
+                frame = _rf
+                _didFix = true
+            }
+            if bounds.origin.x != 0 {
+                var _rb = bounds
+                _rb.origin.x = 0
+                bounds = _rb
+                _didFix = true
+            }
+            if _didFix {
+                layoutManager.ensureLayout(forTextContainer: textContainer)
+                setNeedsLayout()
+                struct _ClipFixLog { static var lastLog: CFTimeInterval = 0 }
+                let _nowF = CACurrentMediaTime()
+                if _nowF - _ClipFixLog.lastLog > 1.0 {
+                    _ClipFixLog.lastLog = _nowF
+                    AppLogger(category: "CellSize").info("[LEFT-CLIP-FIX] clamped tcW " + String(describing: _tcOldW) + " -> " + String(describing: _realW) + " (svW=" + String(describing: _svW) + " cvW=" + String(describing: rCv2.bounds.width) + ") frameW=" + String(describing: frame.size.width) + " boundsO=" + String(describing: bounds.origin) + " storageLen=" + String(describing: textStorage.length))
+                }
+            }
+        }
+        // [LEFT-CLIP-DIAG v2] 旧 relX=frameX-svFrameX 跨坐标系相减没有意义
+        // (文本框在 x=16 容器内从 0 起永远触发)。改为低频打印自身几何,
+        // 供验证双边裁字是否根除。
+        {
+            struct _ClipDiag2 { static var lastLog: CFTimeInterval = 0 }
+            let _nowD = CACurrentMediaTime()
+            if _nowD - _ClipDiag2.lastLog > 5.0 {
+                _ClipDiag2.lastLog = _nowD
+                AppLogger(category: "CellSize").info("[LEFT-CLIP-DIAG2] frame=" + String(describing: frame) + " boundsO=" + String(describing: bounds.origin) + " tcW=" + String(describing: textContainer.size.width) + " svFrame=" + String(describing: (superview?.frame ?? .zero)) + " scroll=" + String(describing: isScrollEnabled) + " storageLen=" + String(describing: textStorage.length))
             }
         }
 
@@ -1456,7 +1533,8 @@ def main():
     # ---- v4: setSize 风暴熔断 + 有限高度 + 代码块 widthTracksTextView + 左裁字诊断 ----
     edit("Shared/NSTextContainerSetSizeGuard.m", fix_textcontainer_guard_stormbreaker, "v4: setSize 风暴熔断(同tick>40次锁定) + 容器高度上限1e7→1e5, 斩断 CoreText fillLayoutHole 12s 卡死")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_code_textview_widthtrack, "v4: codeTextView 关 widthTracksTextView 并固定容器宽, 消代码块 589.3x17.3 重排风暴")
-    edit("Views/Chat/SelectableMarkdownView.swift", fix_left_clip_diag_superview, "v4: LEFT-CLIP-DIAG 补 superview 原点诊断, 定位左裁字真因")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_left_clip_diag_superview, "v5: 老会话双边裁字修复 — 渲染端容器宽度钳回+强制重排 (原 v4 仅诊断)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_defer_large_shrink, "v5: 大幅收缩(-100pt)修正立即生效, 消回复后大片空白 (控制台输出折叠卡片欠账数秒)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")

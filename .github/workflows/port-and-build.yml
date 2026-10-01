@@ -256,6 +256,24 @@ jobs:
           fi
           echo "::endgroup::"
 
+          echo "::group::断言8: v6 老会话双边裁字修复必须就位 (渲染端容器宽度钳回+强制重排)"
+          if grep -q "IOS15-FIX-CLIP" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "LEFT-CLIP-FIX" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ 左裁字渲染端修复已注入"
+          else
+            echo "❌ IOS15-FIX-CLIP 缺失 —— 老会话裁字修复没进包! 上游可能改了渲染函数锚点"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::断言9: v6 回复后大片空白修复必须就位 (大幅收缩修正立即生效)"
+          if grep -q "IOS15-FIX-BLANK" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "delta < -100" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ 大幅收缩不欠账已注入"
+          else
+            echo "❌ IOS15-FIX-BLANK 缺失 —— 空白修复没进包! 上游可能改了 isDeferred 块锚点"
+            exit 1
+          fi
+          echo "::endgroup::"
+
       - name: "设置部署目标 (主 App=${{ env.DEPLOY_TARGET }}, 扩展单独抬高)"
         run: |
           set -e
