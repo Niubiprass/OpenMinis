@@ -7278,19 +7278,50 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             }
         }
 
-        // [IOS15-FIX-STORM][LEFT-CLIP-DIAG] 左裁字补充诊断: v3 实测
-        // contentOffset.x 清零与 frame.origin.x 负向检测均为 0 -> 左裁字不是
-        // offset / 负原点问题, 而是别的机制。这里再打印 superview 的 frame 与文本
-        // 视图相对 superview 的原点, 区分"父视图布局把文本推出左边界"还是"自身偏移"。
-        let _svf2 = superview?.frame ?? .zero
-        let _relX = frame.origin.x - _svf2.origin.x
-        if _relX < -0.5 || frame.origin.x < -0.5 {
-            struct _NegXDiag2 { static var lastLog: CFTimeInterval = 0 }
-            let _now3 = CACurrentMediaTime()
-            if _now3 - _NegXDiag2.lastLog > 1.0 {
-                _NegXDiag2.lastLog = _now3
-                AppLogger(category: "CellSize").info("[LEFT-CLIP-DIAG] NEG-SV frameX=" + String(describing: frame.origin.x) + " relX=" + String(describing: _relX) + " svFrame=" + String(describing: _svf2) + " svType=" + String(describing: type(of: superview)) + " cvW=" + String(describing: (findCollectionView()?.bounds.width ?? 0)))
+        // [IOS15-FIX-CLIP] 老会话双边裁字修复: 容器/自身宽度钳回 + 强制重排。
+        // 仅限不可滚动视图 (可滚动的代码块视图自管宽度/偏移, 不动)。
+        if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {
+            let _svW = superview?.bounds.width ?? 0
+            // 真实宽度 = min(superview, collectionView); superview 宽度瞬时
+            // 异常小 (<200) 时退回 collectionView 宽度, 防止把容器钳成窄条。
+            let _realW = _svW > 200 ? min(_svW, rCv2.bounds.width) : rCv2.bounds.width
+            let _tcOldW = textContainer.size.width
+            var _didFix = false
+            if textContainer.size.width > _realW + 1 {
+                textContainer.size.width = _realW
+                _didFix = true
             }
+            if bounds.width > _realW + 1 || frame.size.width > _realW + 1 {
+                var _rf = frame
+                _rf.size.width = _realW
+                frame = _rf
+                _didFix = true
+            }
+            if bounds.origin.x != 0 {
+                var _rb = bounds
+                _rb.origin.x = 0
+                bounds = _rb
+                _didFix = true
+            }
+            if _didFix {
+                layoutManager.ensureLayout(for: textContainer)
+                setNeedsLayout()
+                struct _ClipFixLog { static var lastLog: CFTimeInterval = 0 }
+                let _nowF = CACurrentMediaTime()
+                if _nowF - _ClipFixLog.lastLog > 1.0 {
+                    _ClipFixLog.lastLog = _nowF
+                    AppLogger(category: "CellSize").info("[LEFT-CLIP-FIX] clamped tcW " + String(describing: _tcOldW) + " -> " + String(describing: _realW) + " (svW=" + String(describing: _svW) + " cvW=" + String(describing: rCv2.bounds.width) + ") frameW=" + String(describing: frame.size.width) + " boundsO=" + String(describing: bounds.origin) + " storageLen=" + String(describing: textStorage.length))
+                }
+            }
+        }
+        // [LEFT-CLIP-DIAG v2] 旧 relX=frameX-svFrameX 跨坐标系相减没有意义
+        // (文本框在 x=16 容器内从 0 起永远触发)。改为低频打印自身几何,
+        // 供验证双边裁字是否根除。
+        struct _ClipDiag2 { static var lastLog: CFTimeInterval = 0 }
+        let _nowD = CACurrentMediaTime()
+        if _nowD - _ClipDiag2.lastLog > 5.0 {
+            _ClipDiag2.lastLog = _nowD
+            AppLogger(category: "CellSize").info("[LEFT-CLIP-DIAG2] frame=" + String(describing: frame) + " boundsO=" + String(describing: bounds.origin) + " tcW=" + String(describing: textContainer.size.width) + " svFrame=" + String(describing: (superview?.frame ?? .zero)) + " scroll=" + String(describing: isScrollEnabled) + " storageLen=" + String(describing: textStorage.length))
         }
 
         let currentWidth = textContainer.size.width
@@ -7686,7 +7717,16 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 return found
             }()
             let isLargeGrowth = delta > 30
-            if cellHasGrowableMediaAttachment && isLargeGrowth {
+            // [IOS15-FIX-BLANK] A large NEGATIVE correction (tool console
+            // output collapsing from full text into its card, long blocks
+            // re-wrapping) that stays deferred during deferSelfSizing leaves a
+            // multi-second blank void exactly where the reply renders. Removing
+            // phantom space cannot overlap neighbouring cells the way a growth
+            // can, so large shrinks are safe to apply immediately.
+            if delta < -100 {
+                cellSizeLogger.info("[CellSize] ALLOW through defer — large shrink " + String(format: "%.1f", delta) + " applies immediately (IOS15-FIX-BLANK)")
+                // Fall through to the normal invalidate path below.
+            } else if cellHasGrowableMediaAttachment && isLargeGrowth {
                 cellSizeLogger.info("[AttachHang][CellSize] ALLOW through defer — media attachment placeholder→loaded growth prev=\(String(format: "%.1f", previousHeight))→new=\(String(format: "%.1f", newHeight)) delta=\(String(format: "%+.1f", delta))")
                 // Fall through to the normal invalidate path below.
             } else {
