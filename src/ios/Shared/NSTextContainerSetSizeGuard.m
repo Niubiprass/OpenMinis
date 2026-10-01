@@ -114,6 +114,18 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // 让 fillLayoutHole 对长流式消息病态循环 (多秒主线程卡死)。钳到 kMaxContainerHeight
     // (1e5 ≈ 16× 最高真实气泡) 既保留"足够高不裁真实内容", 又给 CoreText 有限终点。
     if (newSize.height > kMaxContainerHeight) newSize.height = kMaxContainerHeight;
+    // [IOS15-FIX-WIDTH] 正文容器宽度硬钳制: 仅对 widthTracksTextView=true 的容器
+    // (正文消息气泡)。这类容器会跟随 SwiftUI 递归排版的瞬时 frame 宽(647.3) 把自身
+    // 设成 647.3 -> 每次真正 setSize -> CoreText 用 647 宽排版 -> 主线程卡死 + 文字
+    // 不对齐(每行按 647 排版被可视边界两边裁)。钳到屏宽斩断 647.3↔390 横跳。
+    // widthTracksTextView=false 的代码块容器(宽10000横滚) 不在此列, 保留横滚宽度。
+    // 注意: 本方法 self 被推断为 id, 需强转 NSTextContainer* 才能点出属性 (CI 实测编译报错)。
+    if (((NSTextContainer *)self).widthTracksTextView) {
+        CGFloat _sw = (CGFloat)[UIScreen mainScreen].bounds.size.width;
+        if (newSize.width > _sw) {
+            newSize.width = _sw;
+        }
+    }
 
     _NSTextContainerGuardState *holder = objc_getAssociatedObject(self, kGuardStateKey);
     if (!holder) {
