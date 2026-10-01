@@ -5306,6 +5306,68 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         return CGSize(width: w, height: sz.height)
     }
 
+    // [IOS15-FIX-CLIP v23] 帧同步修正: v22 的 frame(maxWidth:) 把 77% 的理想宽压到了
+    // 358, 但表格/代码块等节点不理这个上限, sv0 仍出现 (-49805,…,100000)、
+    // (-676,…,1742)、(-184.7,…,759.3) —— SwiftUI 里还有节点在撑宽, 继续压是打地鼠。
+    // 换思路: 不再指望它不产生污染帧, 而是保证【屏幕上渲染的每一帧都是修正后的】。
+    // CADisplayLink 的回调发生在每帧绘制之前, 在这里修正几何 → 用户永远看不到
+    // 污染帧 → 视觉上彻底不闪, 且不依赖 SwiftUI 配合。
+    static var _ios15FixLink: CADisplayLink?
+    static var _ios15FixViews = NSHashTable<SelectableMarkdownTextView>.weakObjects()
+
+    static func ios15RegisterFrameFix(_ tv: SelectableMarkdownTextView) {
+        _ios15FixViews.add(tv)
+        if _ios15FixLink == nil {
+            let link = CADisplayLink(target: SelectableMarkdownTextView.self,
+                                     selector: #selector(ios15FrameFixTick))
+            link.add(to: .main, forMode: .common)
+            _ios15FixLink = link
+        }
+    }
+
+    @objc static func ios15FrameFixTick() {
+        var need = false
+        for tv in _ios15FixViews.allObjects {
+            if tv.window == nil { continue }
+            if tv.ios15ApplyFrameFix() { need = true }
+        }
+        // SwiftUI 不再写污染帧时自动停机, 不常驻耗电
+        if !need {
+            _ios15FixLink?.invalidate()
+            _ios15FixLink = nil
+            _ios15FixViews.removeAllObjects()
+        }
+    }
+
+    /// 渲染前修正: 只把 superview 的 x/宽 拉回可用范围 (导致内容飞出屏幕的部分),
+    /// 轻量执行; 容器宽/偏移等完整修正仍由 layoutSubviews 负责。
+    /// 返回 true = 本帧仍有污染 (需继续监控)。
+    func ios15ApplyFrameFix() -> Bool {
+        guard !isScrollEnabled else { return false }
+        guard let sv = superview, let cv = findCollectionView(), cv.bounds.width > 1 else { return false }
+        let cvW = cv.bounds.width
+        let f = sv.frame
+        let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
+        if !polluted {
+            if f.size.width > 200, f.origin.x > 0.5, f.size.width < cvW - 0.5 {
+                ios15LastSaneSVFrame = f
+            }
+            return false
+        }
+        var fix = f
+        if let last = ios15LastSaneSVFrame,
+           last.size.width > 0, last.size.width <= cvW,
+           last.origin.x > 0.5, last.size.width < cvW - 0.5 {
+            fix.origin.x = last.origin.x
+            fix.size.width = last.size.width
+        } else {
+            fix.origin.x = 16
+            fix.size.width = cvW - 32
+        }
+        sv.frame = fix
+        return true
+    }
+
     var ios15LastSaneSVFrame: CGRect?
     // [IOS15-FIX-CLIP v14] 渲染端算出的实际需求高度 (usedRect + 上下 inset)。
     // 老会话 cell 高度欠账 (如 286 字符只给 252pt) → 半截字; SwiftUI 把 frame 高
@@ -7377,10 +7439,13 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                     _fix.origin.x = 16
                     _fix.size.width = _cvW - 32
                 }
-                _sv.frame = _fix
-                _didFix = true
-                _widthChanged = true
-            } else if _svf0.size.width > 200 && _svf0.origin.x > 0.5 && _svf0.size.width < _cvW - 0.5 {
+                    _sv.frame = _fix
+                    _didFix = true
+                    _widthChanged = true
+                    // [v23] 发现污染帧 → 注册帧同步修正, 保证后续每帧绘制前都被拉回,
+                    // 用户看不到污染帧 (闪字的视觉根源)。
+                    SelectableMarkdownTextView.ios15RegisterFrameFix(self)
+                } else if _svf0.size.width > 200 && _svf0.origin.x > 0.5 && _svf0.size.width < _cvW - 0.5 {
                 // 只记录"带边距的正常帧", 全宽贴边帧(390@0)绝不入库, 防记忆被污染
                 ios15LastSaneSVFrame = _svf0
             }
