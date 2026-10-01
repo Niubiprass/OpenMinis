@@ -406,17 +406,26 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         // 同时 TextKit 在这个荒谬宽度下抛 NSException → 自排版永远退回估算
         // 高度 → 单元格之间大片黑块（日志实测 1977 次全部 threw）。
         // 这里把"未指定/哨兵"宽度替换成集合视图的真实宽度。
-        if !(width > 0) || width.isInfinite || width >= 1_000_000 {
-            var probe: UIView? = superview
-            var cvW: CGFloat = 0
-            while let v = probe {
-                if let collection = v as? UICollectionView {
-                    cvW = collection.bounds.width
-                    break
-                }
-                probe = v.superview
+        var probe: UIView? = superview
+        var cvW: CGFloat = 0
+        while let v = probe {
+            if let collection = v as? UICollectionView {
+                cvW = collection.bounds.width
+                break
             }
+            probe = v.superview
+        }
+        if !(width > 0) || width.isInfinite || width >= 1_000_000 {
             width = cvW > 0 ? cvW : (window?.bounds.width ?? UIScreen.main.bounds.width)
+        }
+        // [IOS15-FIX v17] 有限但超界的宽度同样要钳。SwiftUI 递归排版会把文本
+        // "理想宽" (494/895/1382) 传进来 —— 按 494 宽排出的高度被提交成 cell 高度
+        // (日志实证: 卡住的 252 = 按 494 宽排出; 渲染端 358 宽需要 ~300+ → 末行被
+        // 拦腰裁断 / 短消息上下大片空白)。钳到 cvW-32 (=358) 与渲染端 superview
+        // 修正宽度一致: 测量宽 == 渲染宽 → cell 高度吻合, 污染帧与拉锯闪烁同源消失。
+        let measCapW15 = cvW > 33 ? cvW - 32 : cvW
+        if measCapW15 > 1, width > measCapW15 {
+            width = measCapW15
         }
         let probeCvW = (superview?.superview as? UICollectionView)?.bounds.width ?? -1
         print("[IOS15Size] in targetW=\(targetSize.width) w=\(width) cellW=\(bounds.width) cvW=\(probeCvW) hostNil=\(host == nil)")

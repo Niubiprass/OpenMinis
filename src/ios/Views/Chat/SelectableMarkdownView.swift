@@ -6566,8 +6566,10 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         // text view can never be wider than its collection-view cell, so clamp.
         let cvContentWidthUAV = (findCollectionView()?.bounds.width ?? 0)
         let rawContainerWidth = self.textContainer.size.width
-        let containerWidth = (cvContentWidthUAV > 1 && rawContainerWidth > cvContentWidthUAV + 1)
-            ? cvContentWidthUAV : rawContainerWidth
+        // [IOS15-FIX v17] 同样钳到 cvW-32 与渲染端一致 (原钳 cvW=390 仍比渲染宽 358 大 9%,
+        // attachment 高度按 390 算 → 在 358 里放不下 → 衔接错位/重叠)。
+        let capW15UAV = cvContentWidthUAV > 33 ? cvContentWidthUAV - 32 : cvContentWidthUAV
+        let containerWidth = capW15UAV > 1 ? min(rawContainerWidth, capW15UAV) : rawContainerWidth
 
         // Ensure TextKit has laid out all glyphs including trailing attachments.
         // UIKit may have clamped textContainer height to the current bounds, which
@@ -7655,12 +7657,17 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         // collectionView content width; clamp to that.
         let cvContentWidth = (findCollectionView()?.bounds.width ?? 0)
         let proposedMeasureW = bounds.width
+        // [IOS15-FIX v17] 测量宽必须与渲染宽一致: 渲染端 (v14) 把正文视图钳到
+        // cvW-32 (=358, 16pt 双边距) 排版, 测量若用更宽的 cvW(390) 或污染宽
+        // (494/895) 算出的 cell 高度偏小 → 末行被拦腰裁断 ("上下一半一半");
+        // 卡住的 252 正是按 494 污染宽排出的高度。统一钳到 cvW-32。
+        let measCapW = cvContentWidth > 33 ? cvContentWidth - 32 : cvContentWidth
         let measureWidth: CGFloat
         if proposedMeasureW > 1, proposedMeasureW < 100_000,
-           (cvContentWidth <= 1 || proposedMeasureW <= cvContentWidth + 1) {
+           proposedMeasureW <= measCapW + 1 {
             measureWidth = proposedMeasureW
-        } else if cvContentWidth > 1 {
-            measureWidth = cvContentWidth
+        } else if measCapW > 1 {
+            measureWidth = measCapW
         } else {
             measureWidth = textContainer.size.width
         }
