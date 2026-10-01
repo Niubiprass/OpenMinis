@@ -328,6 +328,12 @@ jobs:
             echo "❌ 测量宽 v17 钳制缺失 —— 测量(390/494)≠渲染(358), 高度对不上!"
             exit 1
           fi
+          echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
+          if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ KVO 抢帧已注入"
+          else
+            echo "❌ KVO 抢帧缺失 —— 污染帧仍会渲染出去一帧, 闪字复发!"; exit 1
+          fi
           echo "::endgroup::"
 
       - name: "设置部署目标 (主 App=${{ env.DEPLOY_TARGET }}, 扩展单独抬高)"
@@ -461,6 +467,25 @@ jobs:
             sign_macho "$APPEX/$EXE" "$ENT"
           done
 
+          # 2.5) [TrollStore 无沙盒全套] 在上游 entitlements 基础上合并注入。
+          #      TrollStore 安装时原样保留这些键 (amfid 校验被 TrollStore 绕过)。
+          #      效果: App 运行在沙盒外 → 可访问设备上所有数据容器 (所有容器都是
+          #      mobile uid 的文件)、整个钥匙串组、以 root 权限执行内置 helper。
+          MAIN_ENT="$ENT_DIR/Minis.entitlements"
+          if [ -f "$MAIN_ENT" ]; then
+            add_ent() { /usr/libexec/PlistBuddy -c "Add :$1 $2 $3" "$MAIN_ENT" 2>/dev/null || echo "  (已存在: $1)"; }
+            add_ent platform-application bool true
+            add_ent com.apple.private.security.no-sandbox bool true
+            add_ent com.apple.private.skip-library-validation bool true
+            add_ent com.apple.system-task-ports bool true
+            add_ent com.apple.private.memorystatus bool true
+            add_ent get-task-allow bool true
+            echo "=== 主 App entitlements (合并无沙盒键后) ==="
+            plutil -p "$MAIN_ENT" || cat "$MAIN_ENT"
+          else
+            echo "⚠️ 未找到 Minis.entitlements, 跳过无沙盒注入"
+          fi
+
           # 3) 主 App (最后签, 带上 App Group / iCloud / HealthKit …)
           sign_macho "Payload/Minis.app/$MAIN_EXE" "$ENT_DIR/Minis.entitlements"
 
@@ -472,6 +497,11 @@ jobs:
             echo "✅ 主 App 已带 App Group: group.com.openminis.app"
           else
             echo "❌ 主 App 未带上 App Group 权限 (TrollStore 将不会创建共享容器)"; exit 1
+          fi
+          if echo "$ENTOUT" | grep -q "no-sandbox"; then
+            echo "✅ 无沙盒 entitlements 已嵌入 (沙盒外运行 / 全容器 / 全钥匙串)"
+          else
+            echo "❌ no-sandbox 未嵌入 —— 沙盒解除失败!"; exit 1
           fi
           for APPEX in $(find Payload/Minis.app -maxdepth 3 -name "*.appex" -type d); do
             EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist" 2>/dev/null || basename "$APPEX" .appex)
