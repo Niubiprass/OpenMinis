@@ -3813,6 +3813,8 @@
 				OTHER_LDFLAGS = (
 					"-weak_framework",
 					ActivityKit,
+					"-weak_framework",
+					AppIntents,
 				);
 				CODE_SIGN_ENTITLEMENTS = AgentWidget/AgentWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -3845,6 +3847,8 @@
 				OTHER_LDFLAGS = (
 					"-weak_framework",
 					ActivityKit,
+					"-weak_framework",
+					AppIntents,
 				);
 				CODE_SIGN_ENTITLEMENTS = AgentWidget/AgentWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
