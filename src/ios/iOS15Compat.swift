@@ -449,7 +449,15 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         subviews.forEach { $0.removeFromSuperview() }
         host = nil
         guard let config = config as? UIHostingConfiguration<Content> else { return }
-        let controller = UIHostingController(rootView: AnyView(config.content))
+        // [IOS15-FIX-CLIP v22] 给 SwiftUI 内容设最大宽度上限。
+        // SwiftUI 的 Text / 表格等在"无限宽"提议下不换行, 理想宽可达 100032 / 2378,
+        // 于是 SwiftUI 把内容视图布局成宽 ~100000 并在父视图里居中 → x = -49805
+        // (sv0 日志实证) → 内容飞出屏幕; 渲染端抢回来、SwiftUI 每 tick 又写出去
+        // = 拉锯闪字, 布局高度随之错乱 = 上下空白 / 输出衔接不上。
+        // 设 maxWidth 后内容理想宽被压到可用宽, 污染帧从根本上不再产生。
+        // maxWidth 只是上限: 内容更窄时按内容宽排布, 右对齐的用户气泡不受影响。
+        let _ios15ContentMaxW = max(UIScreen.main.bounds.width - 32, 200)
+        let controller = UIHostingController(rootView: AnyView(config.content.frame(maxWidth: _ios15ContentMaxW, alignment: .leading)))
         controller.view.backgroundColor = .clear
         controller.view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(controller.view)
