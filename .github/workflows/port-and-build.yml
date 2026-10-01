@@ -274,11 +274,29 @@ jobs:
           fi
           echo "::endgroup::"
 
-          echo "::group::断言10: v12 老会话裁字真修复必须就位 (superview 污染帧还原 + 容器宽度上限1e5)"
+          echo "::group::断言10: v13 老会话裁字真修复必须就位 (贴边+污染帧还原 + 重排风暴已消除)"
           if grep -q "IOS15-FIX-CLIP v3" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "ios15LastSaneSVFrame" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "✅ superview 污染帧还原 (v3 + 正常帧记录) 已注入"
+            echo "✅ superview 污染/贴边帧还原 (v3 + 正常帧记录) 已注入"
           else
             echo "❌ IOS15-FIX-CLIP v3 缺失 —— 老会话裁字真修复没进包! 上游可能改了渲染函数锚点"
+            exit 1
+          fi
+          if grep -q "invalidateIntrinsicContentSize" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v13 重排风暴已消除 (ensureLayout+setNeedsLayout 换为 invalidateIntrinsicContentSize)"
+          else
+            echo "❌ v13 invalidateIntrinsicContentSize 缺失 —— 按住屏幕闪字/半截字未修!"
+            exit 1
+          fi
+          if grep -q "ensureLayout(for: textContainer)" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "❌ v12 重排风暴 ensureLayout(for:) 仍在 —— 必须移除!"
+            exit 1
+          else
+            echo "✅ v12 重排风暴 ensureLayout(for:) 已移除"
+          fi
+          if grep -q "_edgeTouch" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v13 贴边判定 (_edgeTouch: x<=0.5 且 w>=cvW-1) 已注入"
+          else
+            echo "❌ v13 贴边判定缺失 —— 字贴屏幕边未修!"
             exit 1
           fi
           if grep -q "newSize.width > 1e5" src/ios/Shared/NSTextContainerSetSizeGuard.m ; then
