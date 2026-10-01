@@ -274,29 +274,38 @@ jobs:
           fi
           echo "::endgroup::"
 
-          echo "::group::断言10: v13 老会话裁字真修复必须就位 (贴边+污染帧还原 + 重排风暴已消除)"
-          if grep -q "IOS15-FIX-CLIP v3" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "ios15LastSaneSVFrame" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "✅ superview 污染/贴边帧还原 (v3 + 正常帧记录) 已注入"
+          echo "::group::断言10: v14 老会话裁字/半截字/闪屏修复必须就位"
+          if grep -q "_edgeTouch" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "ios15LastSaneSVFrame" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ superview 污染/贴边帧判定 + 正常帧记录已注入"
           else
-            echo "❌ IOS15-FIX-CLIP v3 缺失 —— 老会话裁字真修复没进包! 上游可能改了渲染函数锚点"
+            echo "❌ IOS15-FIX-CLIP v3/v14 缺失 —— 老会话裁字真修复没进包! 上游可能改了渲染函数锚点"
             exit 1
           fi
-          if grep -q "invalidateIntrinsicContentSize" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "✅ v13 重排风暴已消除 (ensureLayout+setNeedsLayout 换为 invalidateIntrinsicContentSize)"
+          if grep -q "textContainerInset = UIEdgeInsets" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v14 贴边内边距适应已注入 (不再抢 SwiftUI frame → 消除拉锯闪屏闪字)"
           else
-            echo "❌ v13 invalidateIntrinsicContentSize 缺失 —— 按住屏幕闪字/半截字未修!"
+            echo "❌ v14 贴边内边距适应缺失 —— 抢 frame 的拉锯仍在, 闪屏闪字未修!"
             exit 1
           fi
-          if grep -q "ensureLayout(for: textContainer)" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "❌ v12 重排风暴 ensureLayout(for:) 仍在 —— 必须移除!"
+          if grep -q "ios15LastNeededH" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v14 高度欠账修复已注入 (按 usedRect 撑高, 修老会话半截字)"
+          else
+            echo "❌ v14 高度欠账修复缺失 —— 老会话最后一行被拦腰裁断未修!"
             exit 1
-          else
-            echo "✅ v12 重排风暴 ensureLayout(for:) 已移除"
           fi
-          if grep -q "_edgeTouch" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "✅ v13 贴边判定 (_edgeTouch: x<=0.5 且 w>=cvW-1) 已注入"
+          # v14 有意为撑高算一次 ensureLayout; 闪字的真凶是 setNeedsLayout (重排风暴),
+          # 在注入块作用域内精确判定才算数 (文件本俸就有别的 setNeedsLayout)。
+          if python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.find('[IOS15-FIX-CLIP v14] 状态判定'); e=t.find('[LEFT-CLIP-DIAG2]'); raise SystemExit(0 if 0<s<e and 'setNeedsLayout(' not in t[s:e] else 1)"; then
+            echo "✅ v14 注入块内无 setNeedsLayout —— 重排风暴 (闪字元凶) 已根除"
           else
-            echo "❌ v13 贴边判定缺失 —— 字贴屏幕边未修!"
+            echo "❌ v14 注入块内仍有 setNeedsLayout —— 重排风暴会复发!"
+            exit 1
+          fi
+          echo "::group::断言11: AgentWidgetExtension 必须弱链接 AppIntents+ActivityKit (iOS15.5 无这两个框架, 强链接 → dyld 崩)"
+          if grep -q '"-weak_framework",' Minis.xcodeproj/project.pbxproj && grep -q "AppIntents," Minis.xcodeproj/project.pbxproj ; then
+            echo "✅ AppIntents / ActivityKit 弱链接已写入 widget target (dyld 不再 Library missing)"
+          else
+            echo "❌ AppIntents 弱链接缺失 —— AgentWidgetExtension 会 Library not loaded 崩溃!"
             exit 1
           fi
           if grep -q "newSize.width > 1e5" src/ios/Shared/NSTextContainerSetSizeGuard.m ; then

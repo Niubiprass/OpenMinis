@@ -1017,15 +1017,24 @@ def fix_defer_large_shrink(t):
 
 
 def fix_widget_activitykit(t):
-    """AgentWidgetExtension 在 iOS 15.5 上根本没有 ActivityKit 框架, 但
-    AgentLiveActivityWidget.swift 顶层 `import ActivityKit` 会让编译器以**强链接**
-    方式把该 framework 写进扩展的 load command; dyld 在加载扩展时因找不到库而
-    崩 (Library not loaded: .../ActivityKit.framework/ActivityKit), 持续吐崩溃日志。
-    所有 ActivityKit 的实际使用都包在 @available(iOSApplicationExtension 16.2, *)
-    里, iOS 15.5 上根本不会执行 —— 因此只需把它改成**弱链接**, dyld 即可容忍缺失。
+    """AgentWidgetExtension 在 iOS 15.5 上根本没有 ActivityKit / AppIntents 框架,
+    但源码顶层的 `import ActivityKit` / `import AppIntents` (Agent/Intents/*.swift
+    与 AgentLiveActivityWidget 会被编译进扩展) 会让编译器以**强链接**方式把 framework
+    写进扩展的 load command; dyld 加载扩展时因找不到库而崩 —— "Library not loaded:
+    .../AppIntents.framework/AppIntents" (10 份崩溃日志实证; 上一版只弱链接了
+    ActivityKit, AppIntents 漏网)。所有实际使用都包在 @available(iOS 16+, *)
+    里, iOS 15.5 上根本不会执行 —— 因此只需改成**弱链接**, dyld 即可容忍缺失。
     """
-    if '"-weak_framework"' in t:
+    OLD_ONE = ('OTHER_LDFLAGS = (\n\t\t\t\t\t"-weak_framework",\n'
+               '\t\t\t\t\tActivityKit,\n\t\t\t\t);')
+    NEW_BOTH = ('OTHER_LDFLAGS = (\n\t\t\t\t\t"-weak_framework",\n'
+                '\t\t\t\t\tActivityKit,\n'
+                '\t\t\t\t\t"-weak_framework",\n'
+                '\t\t\t\t\tAppIntents,\n\t\t\t\t);')
+    if NEW_BOTH in t:
         return t
+    if OLD_ONE in t:  # 上一版只插了 ActivityKit: 就地补全 AppIntents
+        return t.replace(OLD_ONE, NEW_BOTH)
     for uuid in ("E5H000070", "E5H000071"):  # AgentWidgetExtension Debug / Release
         marker = "%s /*" % uuid
         idx = t.find(marker)
@@ -1036,8 +1045,7 @@ def fix_widget_activitykit(t):
         if bs < 0:
             continue
         nl = t.find("\n", bs)
-        insert = ('\n\t\t\t\tOTHER_LDFLAGS = (\n\t\t\t\t\t"-weak_framework",\n'
-                  '\t\t\t\t\tActivityKit,\n\t\t\t\t);')
+        insert = '\n\t\t\t\t' + NEW_BOTH
         t = t[:nl + 1] + insert + "\n" + t[nl + 1:]
     return t
 
@@ -1438,7 +1446,11 @@ def fix_clip_v3_property(t):
     // [IOS15-FIX-CLIP v3] 每视图记住最后正常的容器帧 (如 358@16)。superview 被
     // SwiftUI 瞬态污染 (宽 494/779 被父视图居中成负 x → 行首裁字) 时精确还原,
     // 不猜宽度。见 layoutSubviews 里 IOS15-FIX-CLIP v3 块。
-    var ios15LastSaneSVFrame: CGRect?'''
+    var ios15LastSaneSVFrame: CGRect?
+    // [IOS15-FIX-CLIP v14] 渲染端算出的实际需求高度 (usedRect + 上下 inset)。
+    // 老会话 cell 高度欠账 (如 286 字符只给 252pt) → 半截字; SwiftUI 把 frame 高
+    // 拉回欠账值时, 用它检出并重撑。
+    var ios15LastNeededH: CGFloat = 0'''
     if "ios15LastSaneSVFrame: CGRect?" in t:
         return t
     if OLD in t:
@@ -1473,52 +1485,65 @@ def fix_left_clip_diag_superview(t):
     NEW = '''        // [IOS15-FIX-CLIP] 老会话双边裁字修复: 容器/自身宽度钳回 + 强制重排。
         // 仅限不可滚动视图 (可滚动的代码块视图自管宽度/偏移, 不动)。
             if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {
-            // [IOS15-FIX-CLIP v3] superview 帧污染/贴边修复。
-            // v12 漏网: 帧停在 x=0, w=cvW(全宽贴边) 既不满足 宽>cvW+1 也不满足 x<-0.5,
-            // 于是既不修又被记成"正常帧" → 25/32 采样卡在贴边。v13 补判定:
-            // x<=0.5 且 w>=cvW-1 即贴边 (正常帧 358@16 / 382@4 永不命中)。
-            // 恢复: 优先记忆正常帧(精确还原 16/4pt 边距); 无记忆退回 x=16,w=cvW-32(=358@16),
-            // 兼容 AI 气泡, 用户气泡(382@4)仅左多12/右少12pt, 不裁字。
-            // 记忆只收"带边距的正常帧", 绝不留全宽贴边帧(防记忆被污染成 390@0)。
-            // 必须在 _svW/_realW 计算之前执行, 否则 _realW 仍用污染宽度算错。
+            // [IOS15-FIX-CLIP v14] 状态判定 + 修复。
+            // 污染 (太宽 > cvW+1 或 x < -0.5): 气泡被 SwiftUI 居中推出屏幕 → 行首裁字,
+            //   必须抢 frame 还原 (inset 救不了已经移出屏幕的那部分)。
+            // 贴边 (x<=0.5 且 w>=cvW-1): SwiftUI 的布局模型本身就是"全宽@0"。v12/v13 抢
+            //   frame 还原 358@16 → SwiftUI 每个布局 pass 又把 superview 拉回 390@0, 两态
+            //   交替渲染 = 闪屏闪字 (v13 日志 49 次拉锯实证)。v14 贴边不再抢 frame, 改用
+            //   "内边距适应": 设 inset.left/right=16 让文字渲染在 16..374, 不贴边不裁字,
+            //   SwiftUI 侧完全不动 → 布局稳定, 拉锯与闪烁的根没了。
+            let _cvW = rCv2.bounds.width
             var _didFix = false
             var _widthChanged = false
-            if let _sv = superview {
-                let _cvW = rCv2.bounds.width
-                let _svf = _sv.frame
-                let _polluted = _svf.size.width > _cvW + 1 || _svf.origin.x < -0.5
-                let _edgeTouch = _svf.origin.x <= 0.5 && _svf.size.width >= _cvW - 1
-                if _polluted || _edgeTouch {
-                    var _fix = _svf
-                    if let _last = ios15LastSaneSVFrame,
-                       _last.size.width > 0, _last.size.width <= _cvW,
-                       _last.origin.x > 0.5, _last.size.width < _cvW - 0.5 {
-                        // 记忆正常帧: 精确还原 16/4pt 边距 (每个正常 pass 都回写, 换消息自动刷新)
-                        _fix.origin.x = _last.origin.x
-                        _fix.size.width = _last.size.width
-                    } else {
-                        // 无记忆: 退回 16pt 左距 + 双边 16pt(=358@16), 不再全宽贴边
-                        _fix.origin.x = 16
-                        _fix.size.width = _cvW - 32
-                    }
-                    _sv.frame = _fix
-                    _didFix = true
-                } else if _svf.size.width > 200 && _svf.origin.x > 0.5 && _svf.size.width < _cvW - 0.5 {
-                    // 仅记录"带边距的正常帧", 全宽贴边帧(390@0)绝不入库, 防记忆被污染
-                    ios15LastSaneSVFrame = _svf
+            let _svf0 = superview?.frame ?? .zero
+            let _polluted = _svf0.size.width > _cvW + 1 || _svf0.origin.x < -0.5
+            let _edgeTouch = !_polluted && _svf0.origin.x <= 0.5 && _svf0.size.width >= _cvW - 1
+            if _polluted, let _sv = superview {
+                var _fix = _svf0
+                if let _last = ios15LastSaneSVFrame,
+                   _last.size.width > 0, _last.size.width <= _cvW,
+                   _last.origin.x > 0.5, _last.size.width < _cvW - 0.5 {
+                    _fix.origin.x = _last.origin.x
+                    _fix.size.width = _last.size.width
+                } else {
+                    _fix.origin.x = 16
+                    _fix.size.width = _cvW - 32
                 }
+                _sv.frame = _fix
+                _didFix = true
+                _widthChanged = true
+            } else if _svf0.size.width > 200 && _svf0.origin.x > 0.5 && _svf0.size.width < _cvW - 0.5 {
+                // 只记录"带边距的正常帧", 全宽贴边帧(390@0)绝不入库, 防记忆被污染
+                ios15LastSaneSVFrame = _svf0
             }
-            // 用【修正后】的 superview 宽推导真实可用宽, 保证文本视图与 superview 同宽一致
-            // (v12 用污染前的 _svW 会算出 390, 文本视图不收窄 → 右裁/仍贴边)。
+            // [v14] 内边距适应: 贴边 → inset 16/16; 正常帧 → inset 0/0。仅状态翻转才写,
+            // 避免每 pass 赋值。
+            if _edgeTouch {
+                if textContainerInset.left < 15.5 {
+                    textContainerInset = UIEdgeInsets(top: textContainerInset.top, left: 16, bottom: textContainerInset.bottom, right: 16)
+                    _didFix = true
+                    _widthChanged = true
+                }
+            } else if !_polluted, textContainerInset.left > 0.5 {
+                textContainerInset = UIEdgeInsets(top: textContainerInset.top, left: 0, bottom: textContainerInset.bottom, right: 0)
+                _didFix = true
+                _widthChanged = true
+            }
+            // 容器/宽度钳制。贴边模式: 容器被 inset 自动收窄到 cvW-32, frame 保持 SwiftUI
+            // 给的全宽 (不动它); 污染/正常模式: 按修正后的 superview 宽钳。
             let _svW = superview?.bounds.width ?? 0
-            let _realW = _svW > 1 ? min(_svW, rCv2.bounds.width) : rCv2.bounds.width
+            var _realW = _svW > 1 ? min(_svW, _cvW) : _cvW
+            if _edgeTouch {
+                _realW = max(_realW - 32, 100)
+            }
             let _tcOldW = textContainer.size.width
             if textContainer.size.width > _realW + 1 {
                 textContainer.size.width = _realW
                 _didFix = true
                 _widthChanged = true
             }
-            if bounds.width > _realW + 1 || frame.size.width > _realW + 1 {
+            if !_edgeTouch, bounds.width > _realW + 1 || frame.size.width > _realW + 1 {
                 var _rf = frame
                 _rf.size.width = _realW
                 frame = _rf
@@ -1531,19 +1556,36 @@ def fix_left_clip_diag_superview(t):
                 bounds = _rb
                 _didFix = true
             }
-            if _didFix {
-                // [IOS15-FIX-CLIP v13] 用 invalidateIntrinsicContentSize 提示父布局按新宽重测高度,
-                // 替代 v12 的 ensureLayout+setNeedsLayout —— 后者=重排风暴(91次/会话), 与 SwiftUI
-                // 互拉扯 → 按住屏幕闪字、TextKit 行片段错乱(半截字/整行消失)。
-                // 仅当宽度真变时才 invalidate, 避免无谓重测放大风暴。
-                if _widthChanged {
+            // [IOS15-FIX-CLIP v14] 高度欠账修复 (老会话半截字)。老会话一次性载入时按污染
+            // 宽度测出的 cell 高度偏小 (286 字符只拿到 252pt), 渲染端钳宽后文字 re-wrap 需要
+            // 更高 → 最后一行被拦腰裁断 (截图实证)。这里排版后按 usedRect 撑高自身与气泡;
+            // ios15LastNeededH 记住需求高度, SwiftUI 重排把 frame 高拉回去时也能检出并重撑。
+            // 刻意**不调用 setNeedsLayout** —— 那是 v12/v13 闪字的元凶。
+            if _widthChanged || frame.size.height < ios15LastNeededH - 0.5 {
+                layoutManager.ensureLayout(for: textContainer)
+                let _needH = layoutManager.usedRect(for: textContainer).height + textContainerInset.top + textContainerInset.bottom
+                ios15LastNeededH = _needH
+                if textStorage.length > 0, _needH > 1 {
+                    if frame.size.height < _needH - 0.5 {
+                        var _hf = frame
+                        _hf.size.height = _needH
+                        frame = _hf
+                        _didFix = true
+                    }
+                    if let _sv = superview, _sv.frame.size.height > 1, _sv.frame.size.height < _needH - 0.5 {
+                        var _sf = _sv.frame
+                        _sf.size.height = _needH
+                        _sv.frame = _sf
+                    }
                     invalidateIntrinsicContentSize()
                 }
+            }
+            if _didFix {
                 struct _ClipFixLog { static var lastLog: CFTimeInterval = 0 }
                 let _nowF = CACurrentMediaTime()
                 if _nowF - _ClipFixLog.lastLog > 1.0 {
                     _ClipFixLog.lastLog = _nowF
-                    AppLogger(category: "CellSize").info("[LEFT-CLIP-FIX v13] clamped tcW " + String(describing: _tcOldW) + " -> " + String(describing: _realW) + " (svW=" + String(describing: _svW) + " cvW=" + String(describing: rCv2.bounds.width) + ") frameW=" + String(describing: frame.size.width) + " boundsO=" + String(describing: bounds.origin) + " storageLen=" + String(describing: textStorage.length))
+                    AppLogger(category: "CellSize").info("[LEFT-CLIP-FIX v14] tcW " + String(describing: _tcOldW) + " -> " + String(describing: textContainer.size.width) + " (svW=" + String(describing: _svW) + " cvW=" + String(describing: _cvW) + " edge=" + String(describing: _edgeTouch) + " poll=" + String(describing: _polluted) + ") frameW=" + String(describing: frame.size.width) + " frameH=" + String(describing: frame.size.height) + " needH=" + String(describing: ios15LastNeededH) + " insetL=" + String(describing: textContainerInset.left) + " storageLen=" + String(describing: textStorage.length))
                 }
             }
         }
