@@ -1319,7 +1319,7 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     # ---- ③ 高度上限改 1e5 (原来是 1e7) ----
     OLD3 = '''    if (newSize.width > 1e7) newSize.width = 1e7;
     if (newSize.height > 1e7) newSize.height = 1e7;'''
-    NEW3 = '''    if (newSize.width > 1e7) newSize.width = 1e7;
+    NEW3 = '''    if (newSize.width > 1e5) newSize.width = 1e5;
     // [IOS15-FIX-STORM] 容器高度上限改有限值: 旧版钳到 1e7 仍近乎无限, iOS 15 上
     // 让 fillLayoutHole 对长流式消息病态循环 (多秒主线程卡死)。钳到 kMaxContainerHeight
     // (1e5 ≈ 16× 最高真实气泡) 既保留"足够高不裁真实内容", 又给 CoreText 有限终点。
@@ -1462,6 +1462,23 @@ def fix_left_clip_diag_superview(t):
                 var _rb = bounds
                 _rb.origin.x = 0
                 bounds = _rb
+                _didFix = true
+            }
+            // [IOS15-FIX-CLIP v2] 上游只在"测量"阶段钳了宽度, 但 frame/superview 帧
+            // 仍会被 iOS15 SwiftUI 递归排版传入的瞬时离谱 bounds.width (1e7) 焊死 ——
+            // 日志 svFrame 实测宽 1e7、origin.x=-5e6, 整块文本被推到屏幕外/被裁。这里
+            // 把失控的 superview 帧钳回: 宽收到集合视图宽度、origin.x 归零。钳制目标
+            // 低于触发阈值 (cvW 与 0), 重排后会落到阈值内, 不会形成死循环。
+            if let _sv = superview,
+               _sv.frame.size.width > rCv2.bounds.width * 2 || _sv.frame.origin.x < -rCv2.bounds.width {
+                var _svf = _sv.frame
+                if _svf.size.width > rCv2.bounds.width * 2 {
+                    _svf.size.width = rCv2.bounds.width
+                }
+                if _svf.origin.x < -rCv2.bounds.width {
+                    _svf.origin.x = 0
+                }
+                _sv.frame = _svf
                 _didFix = true
             }
             if _didFix {

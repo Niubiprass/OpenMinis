@@ -274,6 +274,21 @@ jobs:
           fi
           echo "::endgroup::"
 
+          echo "::group::断言10: v8 老会话裁字真修复必须就位 (superview 失控帧钳制 + 容器宽度上限1e5)"
+          if grep -q "IOS15-FIX-CLIP v2" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "_sv.frame.size.width > rCv2.bounds.width \* 2" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ superview 失控帧钳制已注入"
+          else
+            echo "❌ IOS15-FIX-CLIP v2 缺失 —— 老会话裁字真修复没进包! 上游可能改了渲染函数锚点"
+            exit 1
+          fi
+          if grep -q "newSize.width > 1e5" src/ios/Shared/NSTextContainerSetSizeGuard.m ; then
+            echo "✅ 容器宽度上限已降到 1e5"
+          else
+            echo "❌ 容器宽度上限未降到 1e5 —— 1e7 宽度仍会让 CoreText 近乎无限排版! 上游可能改了 guard 锚点"
+            exit 1
+          fi
+          echo "::endgroup::"
+
       - name: "设置部署目标 (主 App=${{ env.DEPLOY_TARGET }}, 扩展单独抬高)"
         run: |
           set -e
