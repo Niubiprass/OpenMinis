@@ -315,6 +315,19 @@ jobs:
             echo "❌ 容器宽度上限未降到 1e5 —— 1e7 宽度仍会让 CoreText 近乎无限排版! 上游可能改了 guard 锚点"
             exit 1
           fi
+          echo "::group::断言12: v17 测量宽必须钳到 cvW-32 与渲染端一致 (消末行裁半/上下空白/污染帧拉锯)"
+          if grep -q "measCapW15" src/ios/iOS15Compat.swift ; then
+            echo "✅ ios15FittingSize 有限超界宽度钳制已就位 (替身 cell 自排版)"
+          else
+            echo "❌ ios15FittingSize v17 钳制缺失 —— cell 高度仍按污染宽(494)算, 末行裁半/空白复发!"
+            exit 1
+          fi
+          if grep -q "measCapW" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "capW15UAV" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ invalidateCellSize/attachment 测量宽钳到 cvW-32 已就位"
+          else
+            echo "❌ 测量宽 v17 钳制缺失 —— 测量(390/494)≠渲染(358), 高度对不上!"
+            exit 1
+          fi
           echo "::endgroup::"
 
       - name: "设置部署目标 (主 App=${{ env.DEPLOY_TARGET }}, 扩展单独抬高)"

@@ -743,17 +743,26 @@ HOSTING_FITTING = '''
         // 同时 TextKit 在这个荒谬宽度下抛 NSException → 自排版永远退回估算
         // 高度 → 单元格之间大片黑块（日志实测 1977 次全部 threw）。
         // 这里把"未指定/哨兵"宽度替换成集合视图的真实宽度。
-        if !(width > 0) || width.isInfinite || width >= 1_000_000 {
-            var probe: UIView? = superview
-            var cvW: CGFloat = 0
-            while let v = probe {
-                if let collection = v as? UICollectionView {
-                    cvW = collection.bounds.width
-                    break
-                }
-                probe = v.superview
+        var probe: UIView? = superview
+        var cvW: CGFloat = 0
+        while let v = probe {
+            if let collection = v as? UICollectionView {
+                cvW = collection.bounds.width
+                break
             }
+            probe = v.superview
+        }
+        if !(width > 0) || width.isInfinite || width >= 1_000_000 {
             width = cvW > 0 ? cvW : (window?.bounds.width ?? UIScreen.main.bounds.width)
+        }
+        // [IOS15-FIX v17] 有限但超界的宽度同样要钳。SwiftUI 递归排版会把文本
+        // "理想宽" (494/895/1382) 传进来 —— 按 494 宽排出的高度被提交成 cell 高度
+        // (日志实证: 卡住的 252 = 按 494 宽排出; 渲染端 358 宽需要 ~300+ → 末行被
+        // 拦腰裁断 / 短消息上下大片空白)。钳到 cvW-32 (=358) 与渲染端 superview
+        // 修正宽度一致: 测量宽 == 渲染宽 → cell 高度吻合, 污染帧与拉锯闪烁同源消失。
+        let measCapW15 = cvW > 33 ? cvW - 32 : cvW
+        if measCapW15 > 1, width > measCapW15 {
+            width = measCapW15
         }
         let probeCvW = (superview?.superview as? UICollectionView)?.bounds.width ?? -1
         print("[IOS15Size] in targetW=\\(targetSize.width) w=\\(width) cellW=\\(bounds.width) cvW=\\(probeCvW) hostNil=\\(host == nil)")
@@ -1081,12 +1090,17 @@ def fix_markdown_measure_width(t):
         // collectionView content width; clamp to that.
         let cvContentWidth = (findCollectionView()?.bounds.width ?? 0)
         let proposedMeasureW = bounds.width
+        // [IOS15-FIX v17] 测量宽必须与渲染宽一致: 渲染端 (v14) 把正文视图钳到
+        // cvW-32 (=358, 16pt 双边距) 排版, 测量若用更宽的 cvW(390) 或污染宽
+        // (494/895) 算出的 cell 高度偏小 → 末行被拦腰裁断 ("上下一半一半");
+        // 卡住的 252 正是按 494 污染宽排出的高度。统一钳到 cvW-32。
+        let measCapW = cvContentWidth > 33 ? cvContentWidth - 32 : cvContentWidth
         let measureWidth: CGFloat
         if proposedMeasureW > 1, proposedMeasureW < 100_000,
-           (cvContentWidth <= 1 || proposedMeasureW <= cvContentWidth + 1) {
+           proposedMeasureW <= measCapW + 1 {
             measureWidth = proposedMeasureW
-        } else if cvContentWidth > 1 {
-            measureWidth = cvContentWidth
+        } else if measCapW > 1 {
+            measureWidth = measCapW
         } else {
             measureWidth = textContainer.size.width
         }'''
@@ -1101,8 +1115,10 @@ def fix_markdown_measure_width(t):
         // text view can never be wider than its collection-view cell, so clamp.
         let cvContentWidthUAV = (findCollectionView()?.bounds.width ?? 0)
         let rawContainerWidth = self.textContainer.size.width
-        let containerWidth = (cvContentWidthUAV > 1 && rawContainerWidth > cvContentWidthUAV + 1)
-            ? cvContentWidthUAV : rawContainerWidth'''
+        // [IOS15-FIX v17] 同样钳到 cvW-32 与渲染端一致 (原钳 cvW=390 仍比渲染宽 358 大 9%,
+        // attachment 高度按 390 算 → 在 358 里放不下 → 衔接错位/重叠)。
+        let capW15UAV = cvContentWidthUAV > 33 ? cvContentWidthUAV - 32 : cvContentWidthUAV
+        let containerWidth = capW15UAV > 1 ? min(rawContainerWidth, capW15UAV) : rawContainerWidth'''
     if OLD2 in t:
         t = t.replace(OLD2, NEW2)
     # ---- 宽度兜底消毒 (防 FIRST-MEASURE 死循环) ----
