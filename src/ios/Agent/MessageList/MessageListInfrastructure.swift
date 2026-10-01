@@ -568,7 +568,11 @@ class SelfSizingCell: UICollectionViewCell {
                 if _h > 1 { _ios15TkSum += _h; _ios15Found = true }
             }
         }
-        if _ios15Found, _ios15TkSum > _ios15Reconciled, _ios15TkSum < _ios15Reconciled + 500 {
+        // [IOS15-FIX] 上限 2500: 日志实测 643.7 vs TextKit 1198 (含工具卡长消息)
+        // 差 554pt 恰好被旧上限 +500 拒掉 → reconcile 永远不生效 → 缓存钉死 643.7
+        // → FIRST-MEASURE 无限纠偏 → DeferDebt OWED/CONSUME 自旋 → setSize 风暴
+        // → 主线程 15s 卡死。TextKit 是权威测量 (源码注释自认), 放宽到 2500。
+        if _ios15Found, _ios15TkSum > _ios15Reconciled, _ios15TkSum < _ios15Reconciled + 2500 {
             _ios15Reconciled = _ios15TkSum
         }
         fittingSize.height = _ios15Reconciled
