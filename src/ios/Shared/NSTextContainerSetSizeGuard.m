@@ -114,24 +114,13 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // 让 fillLayoutHole 对长流式消息病态循环 (多秒主线程卡死)。钳到 kMaxContainerHeight
     // (1e5 ≈ 16× 最高真实气泡) 既保留"足够高不裁真实内容", 又给 CoreText 有限终点。
     if (newSize.height > kMaxContainerHeight) newSize.height = kMaxContainerHeight;
-    // [IOS15-FIX-WIDTH] 正文容器宽度硬钳制: 仅对 widthTracksTextView=true 的容器
-    // (正文消息气泡)。这类容器会跟随 SwiftUI 递归排版的瞬时 frame 宽(647.3) 把自身
-    // 设成 647.3 -> 每次真正 setSize -> CoreText 用 647 宽排版 -> 主线程卡死 + 文字
-    // 不对齐(每行按 647 排版被可视边界两边裁)。钳到屏宽斩断 647.3↔390 横跳。
-    // widthTracksTextView=false 的代码块容器(宽10000横滚) 不在此列, 保留横滚宽度。
-    // 注意1: 本方法 self 被推断为 id, 需强转 NSTextContainer* 才能点出属性 (CI 实测编译报错)。
-    // 注意2(v10 关键): 必须放过"无限宽测量"。App 会故意用 greatestFiniteMagnitude
-    // 量文本自然尺寸 (上面已先被钳到 1e5)。v9.1 把它也压成 390 -> 测量语义被破坏,
-    // 调用方永远拿不到预期结果 -> 同步死循环: 实测单容器 44131 次 setSize、
-    // tick 号卡在 1716 不前进、508 次 MAIN HANG 峰值 9993ms (v8 仅 2s 级)。
-    // 因此只钳"离谱但有限"的宽度 (647.3 / 589.3 / 895 / 1382 这类, 来自 SwiftUI
-    // 递归排版把 frame 瞬态设宽、widthTracksTextView 让容器去追), 阈值上界 2000。
-    CGFloat _origW = newSize.width;
-    CGFloat _sw = (CGFloat)[UIScreen mainScreen].bounds.size.width;
-    if (((NSTextContainer *)self).widthTracksTextView &&
-        _origW > _sw && _origW < 2000) {
-        newSize.width = _sw;
-    }
+    // [REVERTED-v11] 曾在此处加过"正文容器宽度硬钳制"(v9/v9.1/v10 三版), 已全部移除:
+    // 实测三版全部更差 —— 目标宽度只能靠猜(屏宽390), 而真实可用宽是 358, 按 390 排版
+    // 显示在 358 框里必然错位(用户反馈"字更加对不齐"); 且 v9.1 把 App 故意用的
+    // greatestFiniteMagnitude 无限宽测量也钳成 390, 破坏测量语义 -> 布局永不收敛 ->
+    // 单容器 44131 次同步死循环 + 508 次 10s 卡死。结论: 不要在派生的容器尺寸上
+    // 和 UIKit 对抗(widthTracksTextView=true 时宽度由 UIKit 从 frame 派生), 要修
+    // 就修产生它的 frame 源头。此处回退到已验证最好的 v8 行为。
 
     _NSTextContainerGuardState *holder = objc_getAssociatedObject(self, kGuardStateKey);
     if (!holder) {
