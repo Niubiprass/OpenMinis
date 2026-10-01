@@ -1080,6 +1080,17 @@ def fix_markdown_measure_width(t):
         // [TableGenDedup] Compute the sum of every TableAttachment's generation'''
     if OLD3 in t:
         t = t.replace(OLD3, NEW3)
+    # ---- FIRST-MEASURE 纠偏只用于"文本比 cell 高"(防 109↔100 双向震荡) ----
+    OLD4 = "                  abs(cell.bounds.height - newHeight) > 8 else { return }"
+    NEW4 = '''                  // [IOS15-FIX] 仅当文本实测高度比已提交 cell 高度更高(有末行裁切
+                  // 风险)时才纠偏。newH < cellH 表示 cell 比文本需要的高(多余空间
+                  // 不可见, 无害); 原来的 abs() 在 newH<cellH 时也 invalidate, 但
+                  // preferredLayoutAttributesFitting 的 reconcile 取 max() 永远
+                  // 维持较高的 cellH → 每次纠偏都不被采纳 → 109.3↔100.3 永久震荡
+                  // (日志实测), 持续喂 DeferDebt OWED/CONSUME 循环参与 setSize 风暴。
+                  (newHeight - cell.bounds.height) > 8 else { return }'''
+    if OLD4 in t:
+        t = t.replace(OLD4, NEW4)
     return t
 
 
@@ -1126,7 +1137,23 @@ def fix_markdown_render_width(t):
         // horizontal contentOffset on this non-scrolling text view; every line
         // then renders shifted and is clipped on BOTH edges.
         if !isScrollEnabled, contentOffset.x != 0 {
+            struct _LeftClipDiag { static var lastLog: CFTimeInterval = 0 }
+            let _now = CACurrentMediaTime()
+            if _now - _LeftClipDiag.lastLog > 1.0 {
+                _LeftClipDiag.lastLog = _now
+                AppLogger(category: "CellSize").info("[LEFT-CLIP-DIAG] zeroing contentOffset.x=\(String(format: "%.1f", contentOffset.x)) frameOrigin=\(String(format: "%.1f,%.1f", frame.origin.x, frame.origin.y)) frameSize=\(String(format: "%.0fx%.0f", frame.size.width, frame.size.height)) boundsW=\(String(format: "%.0f", bounds.width)) tcW=\(String(format: "%.0f", textContainer.size.width)) storageLen=\(textStorage.length)")
+            }
             contentOffset.x = 0
+        }
+        // [IOS15-DIAG] 左裁字诊断: frame.origin.x 为负 (文本起点被推出 cell 左边界)
+        let _fminX = frame.origin.x
+        if _fminX < -0.5 {
+            struct _NegXDiag { static var lastLog: CFTimeInterval = 0 }
+            let _now2 = CACurrentMediaTime()
+            if _now2 - _NegXDiag.lastLog > 1.0 {
+                _NegXDiag.lastLog = _now2
+                AppLogger(category: "CellSize").info("[LEFT-CLIP-DIAG] NEGATIVE frame.origin.x=\(String(format: "%.1f", _fminX)) frameSize=\(String(format: "%.0fx%.0f", frame.size.width, frame.size.height)) superview=\(String(describing: type(of: superview))) boundsW=\(String(format: "%.0f", bounds.width))")
+            }
         }
 
         let currentWidth = textContainer.size.width'''
@@ -1186,7 +1213,11 @@ def fix_markdown_layout_reconcile(t):
                 if _h > 1 { _ios15TkSum += _h; _ios15Found = true }
             }
         }
-        if _ios15Found, _ios15TkSum > _ios15Reconciled, _ios15TkSum < _ios15Reconciled + 500 {
+        // [IOS15-FIX] 上限 2500: 日志实测 643.7 vs TextKit 1198 (含工具卡长消息)
+        // 差 554pt 恰好被旧上限 +500 拒掉 → reconcile 永远不生效 → 缓存钉死 643.7
+        // → FIRST-MEASURE 无限纠偏 → DeferDebt OWED/CONSUME 自旋 → setSize 风暴
+        // → 主线程 15s 卡死。TextKit 是权威测量 (源码注释自认), 放宽到 2500。
+        if _ios15Found, _ios15TkSum > _ios15Reconciled, _ios15TkSum < _ios15Reconciled + 2500 {
             _ios15Reconciled = _ios15TkSum
         }
         fittingSize.height = _ios15Reconciled
