@@ -1227,6 +1227,195 @@ def fix_markdown_layout_reconcile(t):
     return t
 
 
+# =====================================================================
+# F7. NSTextContainerSetSizeGuard: 风暴熔断 + 有限高度上限 (iOS 15 卡死根因)
+# ---------------------------------------------------------------------
+# v3 实测: FIRST-MEASURE 高度纠偏死循环已斩断 (739→2), 但 setSize: 风暴仍在:
+#   * guard 日志 `size=589.3x17.3` 5791 次, `size=456.0x177.3` 1893 次
+#   * 完整卡死堆栈 #0 CoreFoundation + #1-#7 全 CoreText (fillLayoutHole)
+#   * `MAIN HANG` 178 次, 最长 11918ms
+# 风暴宽度 589.3/456.0 只出现在 guard 日志、不出现在任何 App 日志 ->
+# 是 UIKit/TextKit 内部对"其它文本视图"(代码块 codeTextView、表格
+# TableCellTextView) 反复 setSize 驱动 CoreText 重排。根因两点:
+#   1) 这些视图 widthTracksTextView 默认 true, 递归排版探针把 frame 宽瞬态设成
+#      离谱值 -> 容器宽去追 -> setSize 风暴;
+#   2) guard 把 .greatestFiniteMagnitude 钳成 1e7, CoreText 在近乎无限的容器上
+#      fillLayoutHole 病态循环 (长消息每个 token 追加都重排整段)。
+# 修法(v4):
+#   A) 同容器同 tick 转发 setSize: 超过 kStormForwardLimit(40) 次即锁定、保留已
+#      提交几何、不再转发 -> 斩断 re-entrant 链, 单次卡顿从 12s 降到几十 ms;
+#   B) 容器高度上限从 1e7 降到 1e5 (≈16× 最高真实气泡), fillLayoutHole 永远有
+#      有限终点。
+def fix_textcontainer_guard_stormbreaker(t):
+    if "IOS15-FIX-STORM" in t:
+        return t  # 幂等
+    # ---- ① 常量: 风暴阈值 + 有限高度上限 ----
+    OLD1 = '''static const NSInteger kRepeatThreshold = 2;'''
+    NEW1 = '''static const NSInteger kRepeatThreshold = 2;
+
+// [IOS15-FIX-STORM] 风暴熔断阈值: 同一容器在同一 runloop tick 内被转发 setSize:
+// 超过这个次数, 停止转发、保留已提交几何, 斩断 CoreText fillLayoutHole 的
+// re-entrant 链 (实测完整堆栈 CoreFoundation + #1-#7 全 CoreText, 最长 11918ms
+// 主线程卡死)。40 是经验值: 正常一 tick 内单个容器合法 setSize 远不到此数
+// (多 cell 批量排版时每容器也就几次), 但 re-entrant 风暴会一 tick 内打几千次。
+static const NSInteger kStormForwardLimit = 40;
+
+// [IOS15-FIX-STORM] 容器高度上限。源码用 .greatestFiniteMagnitude 关掉高度钳制;
+// 旧 guard 钳到 1e7 (仍近乎无限)。iOS 15 上近乎无限的容器让 fillLayoutHole 对长
+// 流式消息病态循环。1e5(≈100000pt ≈ 16× 最高真实气泡) 既保留"足够高不裁真实
+// 内容", 又给 CoreText 一个有限终点 -> 单次 typeset 成本有界。
+static const CGFloat kMaxContainerHeight = 1e5;'''
+    if OLD1 in t:
+        t = t.replace(OLD1, NEW1)
+    # ---- ② GuardState 加 per-tick 转发计数 + 熔断标志 ----
+    OLD2 = '''typedef struct {
+    CGSize lastSize;
+    uint64_t lastTick;
+    NSInteger repeatCount;
+    BOOL initialized;
+} GuardState;'''
+    NEW2 = '''typedef struct {
+    CGSize lastSize;
+    uint64_t lastTick;
+    NSInteger repeatCount;
+    NSInteger commitCount;   // [IOS15-FIX-STORM] 本 tick 内已转发次数
+    BOOL stormed;            // [IOS15-FIX-STORM] 本 tick 熔断已触发
+    BOOL initialized;
+} GuardState;'''
+    if OLD2 in t:
+        t = t.replace(OLD2, NEW2)
+    # ---- ③ 高度上限改 1e5 (原来是 1e7) ----
+    OLD3 = '''    if (newSize.width > 1e7) newSize.width = 1e7;
+    if (newSize.height > 1e7) newSize.height = 1e7;'''
+    NEW3 = '''    if (newSize.width > 1e7) newSize.width = 1e7;
+    // [IOS15-FIX-STORM] 容器高度上限改有限值: 旧版钳到 1e7 仍近乎无限, iOS 15 上
+    // 让 fillLayoutHole 对长流式消息病态循环 (多秒主线程卡死)。钳到 kMaxContainerHeight
+    // (1e5 ≈ 16× 最高真实气泡) 既保留"足够高不裁真实内容", 又给 CoreText 有限终点。
+    if (newSize.height > kMaxContainerHeight) newSize.height = kMaxContainerHeight;'''
+    if OLD3 in t:
+        t = t.replace(OLD3, NEW3)
+    # ---- ④ 拿到 s 后、dedup 之前: 熔断后直接跳过转发 ----
+    OLD4 = '''    GuardState *s = &holder->state;
+
+    if (s->initialized && s->lastTick == gRunloopTick &&
+        CGSizeEqualToSize(s->lastSize, newSize)) {'''
+    NEW4 = '''    GuardState *s = &holder->state;
+
+    // [IOS15-FIX-STORM] 风暴熔断: 本 tick 已经触发过熔断, 直接跳过转发、保留
+    // 上次已提交几何。这样 re-entrant 的 setSize 链在到达阈值后立刻断掉, 不再
+    // 驱动 CoreText fillLayoutHole 自旋 (实测 11918ms 主线程卡死的根因)。
+    if (s->initialized && s->lastTick == gRunloopTick && s->stormed) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] storm-breaker SKIP "
+                  @"size=%.1fx%.1f tick=%llu total=%llu container=%p",
+                  newSize.width, newSize.height,
+                  (unsigned long long)gRunloopTick,
+                  (unsigned long long)gShortCircuitCount,
+                  (__bridge void *)self);
+        }
+        return;
+    }
+
+    if (s->initialized && s->lastTick == gRunloopTick &&
+        CGSizeEqualToSize(s->lastSize, newSize)) {'''
+    if OLD4 in t:
+        t = t.replace(OLD4, NEW4)
+    # ---- ⑤ else 分支重置时一并重置 per-tick 计数/熔断 ----
+    OLD5 = '''    } else {
+        // Different tick or different size — reset bookkeeping.
+        s->lastSize = newSize;
+        s->lastTick = gRunloopTick;
+        s->repeatCount = 1;
+        s->initialized = YES;
+    }'''
+    NEW5 = '''    } else {
+        // Different tick or different size — reset bookkeeping.
+        s->lastSize = newSize;
+        s->lastTick = gRunloopTick;
+        s->repeatCount = 1;
+        s->commitCount = 0;   // [IOS15-FIX-STORM] 重置本 tick 转发计数
+        s->stormed = NO;      // [IOS15-FIX-STORM] 重置熔断标志
+        s->initialized = YES;
+    }'''
+    if OLD5 in t:
+        t = t.replace(OLD5, NEW5)
+    # ---- ⑥ 转发前递增计数, 超阈值即熔断 ----
+    OLD6 = '''    ((void (*)(id, SEL, CGSize))gOriginalSetSize)(self, _cmd, newSize);
+}'''
+    NEW6 = '''    // [IOS15-FIX-STORM] 累加本 tick 转发次数; 超过阈值即置熔断标志,
+    // 后续同 tick 调用走上面的 storm-breaker SKIP 直接 return。
+    s->commitCount += 1;
+    if (s->commitCount > kStormForwardLimit) {
+        s->stormed = YES;
+    }
+    ((void (*)(id, SEL, CGSize))gOriginalSetSize)(self, _cmd, newSize);
+}'''
+    if OLD6 in t:
+        t = t.replace(OLD6, NEW6)
+    return t
+
+
+# =====================================================================
+# F8. codeTextView: 关闭 widthTracksTextView, 固定容器宽 (代码块风暴源)
+# ---------------------------------------------------------------------
+# SelectableMarkdownView 的代码块 codeTextView 用默认 widthTracksTextView=true。
+# 它嵌在 cell 的 NSTextAttachment 视图树里, 递归排版探针 (preferredLayoutAttributes
+# Fitting) 把 frame 宽瞬态设成离谱值 (589.3/456.0), widthTracksTextView 让容器宽去
+# 追 -> 每次探针都触发 CoreText 重排 -> v3 日志实测 589.3x17.3 (5791 次) 风暴。
+# 代码块本就横滚, 不需要靠 frame 宽决定换行; 改为 widthTracksTextView=false 并固定
+# 容器宽 (足够大=不换行), frame 仍按自然内容宽显示, 探针不再驱动重排。
+def fix_code_textview_widthtrack(t):
+    OLD = '''        codeTextView.textContainer.lineFragmentPadding = 0
+        codeTextView.textContainer.lineBreakMode = .byClipping
+
+        let codeStyle = NSMutableParagraphStyle()'''
+    NEW = '''        codeTextView.textContainer.lineFragmentPadding = 0
+        codeTextView.textContainer.lineBreakMode = .byClipping
+        // [IOS15-FIX-STORM] 代码块横滚, 不需要容器宽跟随 frame。默认
+        // widthTracksTextView=true 时, 递归排版探针把 frame 宽瞬态设成离谱值
+        // (589.3/456.0), 容器宽去追 -> 每次探针触发 CoreText 重排风暴 (实测 5791
+        // 次 setSize:)。关掉跟随并固定容器宽为足够大的值(=不换行), frame 仍按
+        // sizeThatFits 的自然内容宽显示, 探针不再驱动重排。
+        codeTextView.textContainer.widthTracksTextView = false
+        codeTextView.textContainer.size.width = 10000
+
+        let codeStyle = NSMutableParagraphStyle()'''
+    if OLD in t:
+        t = t.replace(OLD, NEW)
+    return t
+
+
+# =====================================================================
+# F9. LEFT-CLIP-DIAG 补充: superview 原点诊断 (查清 v3 仍未定位的左裁字机制)
+# ---------------------------------------------------------------------
+# v3 实测 contentOffset.x 清零计数与 frame.origin.x 负向检测均为 0, 说明左裁字
+# 既不是残留水平偏移、也不是文本视图自身负原点 -> 是别的机制。这里在渲染路径
+# 打印 superview 的 frame 与文本视图相对 superview 的原点, 区分"父视图布局把文本
+# 推出左边界"还是"自身坐标偏移"。用 String(describing:) 拼接, 避免 \( 插值转义。
+def fix_left_clip_diag_superview(t):
+    OLD = '''        let currentWidth = textContainer.size.width'''
+    NEW = '''        // [IOS15-FIX-STORM][LEFT-CLIP-DIAG] 左裁字补充诊断: v3 实测
+        // contentOffset.x 清零与 frame.origin.x 负向检测均为 0 -> 左裁字不是
+        // offset / 负原点问题, 而是别的机制。这里再打印 superview 的 frame 与文本
+        // 视图相对 superview 的原点, 区分"父视图布局把文本推出左边界"还是"自身偏移"。
+        let _svf2 = superview?.frame ?? .zero
+        let _relX = frame.origin.x - _svf2.origin.x
+        if _relX < -0.5 || frame.origin.x < -0.5 {
+            struct _NegXDiag2 { static var lastLog: CFTimeInterval = 0 }
+            let _now3 = CACurrentMediaTime()
+            if _now3 - _NegXDiag2.lastLog > 1.0 {
+                _NegXDiag2.lastLog = _now3
+                AppLogger(category: "CellSize").info("[LEFT-CLIP-DIAG] NEG-SV frameX=" + String(describing: frame.origin.x) + " relX=" + String(describing: _relX) + " svFrame=" + String(describing: _svf2) + " svType=" + String(describing: type(of: superview)) + " cvW=" + String(describing: (findCollectionView()?.bounds.width ?? 0)))
+            }
+        }
+
+        let currentWidth = textContainer.size.width'''
+    if OLD in t:
+        t = t.replace(OLD, NEW)
+    return t
+
+
 def main():
     print("== iOS 15 兜底修复 v2 (ROOT=%s) ==" % ROOT)
     print("-- 文件指纹/结构自检 --")
@@ -1264,6 +1453,10 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_markdown_render_width, "iOS15: 渲染端 frame/偏移钳制 + cell 自排版提议宽度钳制, 消正文错位(第二轮)")
     edit("Agent/MessageList/MessageListInfrastructure.swift", fix_markdown_render_width, "iOS15: cell 自排版提议宽度入口钳制")
     edit("Agent/MessageList/MessageListInfrastructure.swift", fix_markdown_layout_reconcile, "iOS15: TextKit 高度兜底, 修末行裁切 + 收敛 FIRST-MEASURE 死循环")
+    # ---- v4: setSize 风暴熔断 + 有限高度 + 代码块 widthTracksTextView + 左裁字诊断 ----
+    edit("Shared/NSTextContainerSetSizeGuard.m", fix_textcontainer_guard_stormbreaker, "v4: setSize 风暴熔断(同tick>40次锁定) + 容器高度上限1e7→1e5, 斩断 CoreText fillLayoutHole 12s 卡死")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_code_textview_widthtrack, "v4: codeTextView 关 widthTracksTextView 并固定容器宽, 消代码块 589.3x17.3 重排风暴")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_left_clip_diag_superview, "v4: LEFT-CLIP-DIAG 补 superview 原点诊断, 定位左裁字真因")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
@@ -1315,6 +1508,15 @@ def main():
                 for j in range(i, min(i + 22, len(txt))):
                     print("   %4d| %s" % (j + 1, txt[j]))
                 break
+    # ---- 诊断: guard 熔断是否落地 ----
+    print("-- 诊断 dump (NSTextContainerSetSizeGuard 熔断) --")
+    p = os.path.join(ROOT, "Shared/NSTextContainerSetSizeGuard.m")
+    if os.path.isfile(p):
+        gt = read(p)
+        print("   IOS15-FIX-STORM 标记: %s" % ("存在" if "IOS15-FIX-STORM" in gt else "缺失"))
+        print("   kStormForwardLimit:   %s" % ("存在" if "kStormForwardLimit" in gt else "缺失"))
+        print("   kMaxContainerHeight:  %s" % ("存在" if "kMaxContainerHeight" in gt else "缺失"))
+        print("   高度上限已降(非1e7):   %s" % ("是" if "kMaxContainerHeight) newSize.height = kMaxContainerHeight" in gt else "否"))
     print("== iOS 15 兜底修复 v2 完成 ==")
 
 
