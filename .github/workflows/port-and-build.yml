@@ -274,11 +274,11 @@ jobs:
           fi
           echo "::endgroup::"
 
-          echo "::group::断言10: v8 老会话裁字真修复必须就位 (superview 失控帧钳制 + 容器宽度上限1e5)"
-          if grep -q "IOS15-FIX-CLIP v2" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "_sv.frame.size.width > rCv2.bounds.width \* 2" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "✅ superview 失控帧钳制已注入"
+          echo "::group::断言10: v12 老会话裁字真修复必须就位 (superview 污染帧还原 + 容器宽度上限1e5)"
+          if grep -q "IOS15-FIX-CLIP v3" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "ios15LastSaneSVFrame" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ superview 污染帧还原 (v3 + 正常帧记录) 已注入"
           else
-            echo "❌ IOS15-FIX-CLIP v2 缺失 —— 老会话裁字真修复没进包! 上游可能改了渲染函数锚点"
+            echo "❌ IOS15-FIX-CLIP v3 缺失 —— 老会话裁字真修复没进包! 上游可能改了渲染函数锚点"
             exit 1
           fi
           if grep -q "newSize.width > 1e5" src/ios/Shared/NSTextContainerSetSizeGuard.m ; then

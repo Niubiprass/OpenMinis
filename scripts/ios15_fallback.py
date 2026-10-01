@@ -1426,6 +1426,27 @@ def fix_code_textview_widthtrack(t):
 
 
 # =====================================================================
+# F8b. v12: 记录最后正常容器帧的存储属性 (IOS15-FIX-CLIP v3 配套)
+# ---------------------------------------------------------------------
+# v3 的 superview 污染还原需要"正常帧"参照 (如 358@16), 精确还原 16pt 边距
+# 而不是钳成一个猜的宽度。属性挂在 SelectableMarkdownTextView 上, 每个
+# 正常 layoutSubviews pass 回写, 换消息(回收复用)后第一次正常 pass 刷新。
+def fix_clip_v3_property(t):
+    """v12: 给 SelectableMarkdownTextView 注入 ios15LastSaneSVFrame 存储属性。"""
+    OLD = "final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate {"
+    NEW = OLD + '''
+    // [IOS15-FIX-CLIP v3] 每视图记住最后正常的容器帧 (如 358@16)。superview 被
+    // SwiftUI 瞬态污染 (宽 494/779 被父视图居中成负 x → 行首裁字) 时精确还原,
+    // 不猜宽度。见 layoutSubviews 里 IOS15-FIX-CLIP v3 块。
+    var ios15LastSaneSVFrame: CGRect?'''
+    if "ios15LastSaneSVFrame: CGRect?" in t:
+        return t
+    if OLD in t:
+        return t.replace(OLD, NEW, 1)
+    return t
+
+
+# =====================================================================
 # F9. LEFT-CLIP-DIAG 补充: superview 原点诊断 (查清 v3 仍未定位的左裁字机制)
 # ---------------------------------------------------------------------
 # v3 实测 contentOffset.x 清零计数与 frame.origin.x 负向检测均为 0, 说明左裁字
@@ -1445,16 +1466,46 @@ def fix_left_clip_diag_superview(t):
     超过真实可用宽度 (min(superview, collectionView)) 时钳回, 清掉残留的
     bounds.origin.x, 并强制 TextKit 立即重排。诊断 v2 同步打印自身几何。
     """
+    # 幂等守卫: 用布局块内独有的赋值语句判定 (属性注释里也有 v3 字样, 不能用)。
+    if "ios15LastSaneSVFrame = _svf" in t:
+        return t
     OLD = '''        let currentWidth = textContainer.size.width'''
     NEW = '''        // [IOS15-FIX-CLIP] 老会话双边裁字修复: 容器/自身宽度钳回 + 强制重排。
         // 仅限不可滚动视图 (可滚动的代码块视图自管宽度/偏移, 不动)。
         if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {
+            // [IOS15-FIX-CLIP v3] superview 帧污染修复 (v2 阈值太松全漏网): 实测污染帧
+            // 494.33@-52 / 779.33@-194.67 —— 宽度被 SwiftUI 瞬态撑到文本理想宽后, 在
+            // 父视图里居中 → x 变负 → 整个气泡左移出屏, 行首被裁 (截图实证)。
+            // 旧阈值 (宽>2*cvW=780 或 x<-cvW=-390) 对这些值全部不触发。
+            // 新判定: 宽 > cvW+1 或 x < -0.5 即污染 (正常帧 358@16 / 382@4 永不命中)。
+            // 恢复: 优先还原"最后记录的正常帧" (精确还原 16pt 边距; 每个正常 pass 都
+            // 回写, 换消息后第一次正常 pass 自动刷新), 无记录则退回 cvW@0。
+            // 必须在 _svW/_realW 计算之前执行, 否则 _realW 仍用污染宽度算错。
+            var _didFix = false
+            if let _sv = superview {
+                let _cvW = rCv2.bounds.width
+                let _svf = _sv.frame
+                if _svf.size.width > _cvW + 1 || _svf.origin.x < -0.5 {
+                    var _fix = _svf
+                    if let _last = ios15LastSaneSVFrame,
+                       _last.size.width <= _cvW, _last.size.width > 200 {
+                        _fix.origin.x = _last.origin.x
+                        _fix.size.width = _last.size.width
+                    } else {
+                        _fix.origin.x = 0
+                        _fix.size.width = _cvW
+                    }
+                    _sv.frame = _fix
+                    _didFix = true
+                } else if _svf.size.width > 200 {
+                    ios15LastSaneSVFrame = _svf
+                }
+            }
             let _svW = superview?.bounds.width ?? 0
             // 真实宽度 = min(superview, collectionView); superview 宽度瞬时
             // 异常小 (<200) 时退回 collectionView 宽度, 防止把容器钳成窄条。
             let _realW = _svW > 200 ? min(_svW, rCv2.bounds.width) : rCv2.bounds.width
             let _tcOldW = textContainer.size.width
-            var _didFix = false
             if textContainer.size.width > _realW + 1 {
                 textContainer.size.width = _realW
                 _didFix = true
@@ -1471,23 +1522,10 @@ def fix_left_clip_diag_superview(t):
                 bounds = _rb
                 _didFix = true
             }
-            // [IOS15-FIX-CLIP v2] 上游只在"测量"阶段钳了宽度, 但 frame/superview 帧
-            // 仍会被 iOS15 SwiftUI 递归排版传入的瞬时离谱 bounds.width (1e7) 焊死 ——
-            // 日志 svFrame 实测宽 1e7、origin.x=-5e6, 整块文本被推到屏幕外/被裁。这里
-            // 把失控的 superview 帧钳回: 宽收到集合视图宽度、origin.x 归零。钳制目标
-            // 低于触发阈值 (cvW 与 0), 重排后会落到阈值内, 不会形成死循环。
-            if let _sv = superview,
-               _sv.frame.size.width > rCv2.bounds.width * 2 || _sv.frame.origin.x < -rCv2.bounds.width {
-                var _svf = _sv.frame
-                if _svf.size.width > rCv2.bounds.width * 2 {
-                    _svf.size.width = rCv2.bounds.width
-                }
-                if _svf.origin.x < -rCv2.bounds.width {
-                    _svf.origin.x = 0
-                }
-                _sv.frame = _svf
-                _didFix = true
-            }
+            // [IOS15-FIX-CLIP v2 → v3 已迁移] superview 帧修复移到块首
+            // (_svW/_realW 计算之前), 恢复后的正常宽度才能传导给容器钳制。
+            // 旧 v2 阈值 (宽>2*cvW 或 x<-cvW) 实测对 494.33@-52 / 779.33@-194.67
+            // 全部漏网, 已由块首 v3 逻辑 (宽>cvW+1 或 x<-0.5 + 正常帧还原) 取代。
             if _didFix {
                 layoutManager.ensureLayout(for: textContainer)
                 setNeedsLayout()
@@ -1555,6 +1593,7 @@ def main():
     # ---- v4: setSize 风暴熔断 + 有限高度 + 代码块 widthTracksTextView + 左裁字诊断 ----
     edit("Shared/NSTextContainerSetSizeGuard.m", fix_textcontainer_guard_stormbreaker, "v4: setSize 风暴熔断(同tick>40次锁定) + 容器高度上限1e7→1e5, 斩断 CoreText fillLayoutHole 12s 卡死")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_code_textview_widthtrack, "v4: codeTextView 关 widthTracksTextView 并固定容器宽, 消代码块 589.3x17.3 重排风暴")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_clip_v3_property, "v12: 记录最后正常容器帧属性 (superview 污染精确还原)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_left_clip_diag_superview, "v5: 老会话双边裁字修复 — 渲染端容器宽度钳回+强制重排 (原 v4 仅诊断)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_defer_large_shrink, "v5: 大幅收缩(-100pt)修正立即生效, 消回复后大片空白 (控制台输出折叠卡片欠账数秒)")
 
