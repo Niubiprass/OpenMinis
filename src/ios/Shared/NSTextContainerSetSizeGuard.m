@@ -18,6 +18,19 @@ static const void *kGuardStateKey = &kGuardStateKey;
 // a reentrancy storm is broken.
 static const NSInteger kRepeatThreshold = 2;
 
+// [IOS15-FIX-STORM] 风暴熔断阈值: 同一容器在同一 runloop tick 内被转发 setSize:
+// 超过这个次数, 停止转发、保留已提交几何, 斩断 CoreText fillLayoutHole 的
+// re-entrant 链 (实测完整堆栈 CoreFoundation + #1-#7 全 CoreText, 最长 11918ms
+// 主线程卡死)。40 是经验值: 正常一 tick 内单个容器合法 setSize 远不到此数
+// (多 cell 批量排版时每容器也就几次), 但 re-entrant 风暴会一 tick 内打几千次。
+static const NSInteger kStormForwardLimit = 40;
+
+// [IOS15-FIX-STORM] 容器高度上限。源码用 .greatestFiniteMagnitude 关掉高度钳制;
+// 旧 guard 钳到 1e7 (仍近乎无限)。iOS 15 上近乎无限的容器让 fillLayoutHole 对长
+// 流式消息病态循环。1e5(≈100000pt ≈ 16× 最高真实气泡) 既保留"足够高不裁真实
+// 内容", 又给 CoreText 一个有限终点 -> 单次 typeset 成本有界。
+static const CGFloat kMaxContainerHeight = 1e5;
+
 // Monotonic tick id, bumped from a runloop observer (BeforeWaiting).
 // Two setSize: calls within the same tick share the same value here.
 static uint64_t gRunloopTick = 0;
@@ -29,6 +42,8 @@ typedef struct {
     CGSize lastSize;
     uint64_t lastTick;
     NSInteger repeatCount;
+    NSInteger commitCount;   // [IOS15-FIX-STORM] 本 tick 内已转发次数
+    BOOL stormed;            // [IOS15-FIX-STORM] 本 tick 熔断已触发
     BOOL initialized;
 } GuardState;
 
@@ -95,7 +110,10 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
         return;
     }
     if (newSize.width > 1e7) newSize.width = 1e7;
-    if (newSize.height > 1e7) newSize.height = 1e7;
+    // [IOS15-FIX-STORM] 容器高度上限改有限值: 旧版钳到 1e7 仍近乎无限, iOS 15 上
+    // 让 fillLayoutHole 对长流式消息病态循环 (多秒主线程卡死)。钳到 kMaxContainerHeight
+    // (1e5 ≈ 16× 最高真实气泡) 既保留"足够高不裁真实内容", 又给 CoreText 有限终点。
+    if (newSize.height > kMaxContainerHeight) newSize.height = kMaxContainerHeight;
 
     _NSTextContainerGuardState *holder = objc_getAssociatedObject(self, kGuardStateKey);
     if (!holder) {
@@ -104,6 +122,22 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     }
 
     GuardState *s = &holder->state;
+
+    // [IOS15-FIX-STORM] 风暴熔断: 本 tick 已经触发过熔断, 直接跳过转发、保留
+    // 上次已提交几何。这样 re-entrant 的 setSize 链在到达阈值后立刻断掉, 不再
+    // 驱动 CoreText fillLayoutHole 自旋 (实测 11918ms 主线程卡死的根因)。
+    if (s->initialized && s->lastTick == gRunloopTick && s->stormed) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] storm-breaker SKIP "
+                  @"size=%.1fx%.1f tick=%llu total=%llu container=%p",
+                  newSize.width, newSize.height,
+                  (unsigned long long)gRunloopTick,
+                  (unsigned long long)gShortCircuitCount,
+                  (__bridge void *)self);
+        }
+        return;
+    }
 
     if (s->initialized && s->lastTick == gRunloopTick &&
         CGSizeEqualToSize(s->lastSize, newSize)) {
@@ -131,9 +165,17 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
         s->lastSize = newSize;
         s->lastTick = gRunloopTick;
         s->repeatCount = 1;
+        s->commitCount = 0;   // [IOS15-FIX-STORM] 重置本 tick 转发计数
+        s->stormed = NO;      // [IOS15-FIX-STORM] 重置熔断标志
         s->initialized = YES;
     }
 
+    // [IOS15-FIX-STORM] 累加本 tick 转发次数; 超过阈值即置熔断标志,
+    // 后续同 tick 调用走上面的 storm-breaker SKIP 直接 return。
+    s->commitCount += 1;
+    if (s->commitCount > kStormForwardLimit) {
+        s->stormed = YES;
+    }
     ((void (*)(id, SEL, CGSize))gOriginalSetSize)(self, _cmd, newSize);
 }
 

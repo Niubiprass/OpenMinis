@@ -1604,6 +1604,13 @@ final class CodeBlockAttachment: NSTextAttachment {
         codeTextView.textContainerInset = UIEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
         codeTextView.textContainer.lineFragmentPadding = 0
         codeTextView.textContainer.lineBreakMode = .byClipping
+        // [IOS15-FIX-STORM] 代码块横滚, 不需要容器宽跟随 frame。默认
+        // widthTracksTextView=true 时, 递归排版探针把 frame 宽瞬态设成离谱值
+        // (589.3/456.0), 容器宽去追 -> 每次探针触发 CoreText 重排风暴 (实测 5791
+        // 次 setSize:)。关掉跟随并固定容器宽为足够大的值(=不换行), frame 仍按
+        // sizeThatFits 的自然内容宽显示, 探针不再驱动重排。
+        codeTextView.textContainer.widthTracksTextView = false
+        codeTextView.textContainer.size.width = 10000
 
         let codeStyle = NSMutableParagraphStyle()
         codeStyle.lineSpacing = 4
@@ -7268,6 +7275,21 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             if _now2 - _NegXDiag.lastLog > 1.0 {
                 _NegXDiag.lastLog = _now2
                 AppLogger(category: "CellSize").info("[LEFT-CLIP-DIAG] NEGATIVE frame.origin.x=\(String(format: "%.1f", _fminX)) frameSize=\(String(format: "%.0fx%.0f", frame.size.width, frame.size.height)) superview=\(String(describing: type(of: superview))) boundsW=\(String(format: "%.0f", bounds.width))")
+            }
+        }
+
+        // [IOS15-FIX-STORM][LEFT-CLIP-DIAG] 左裁字补充诊断: v3 实测
+        // contentOffset.x 清零与 frame.origin.x 负向检测均为 0 -> 左裁字不是
+        // offset / 负原点问题, 而是别的机制。这里再打印 superview 的 frame 与文本
+        // 视图相对 superview 的原点, 区分"父视图布局把文本推出左边界"还是"自身偏移"。
+        let _svf2 = superview?.frame ?? .zero
+        let _relX = frame.origin.x - _svf2.origin.x
+        if _relX < -0.5 || frame.origin.x < -0.5 {
+            struct _NegXDiag2 { static var lastLog: CFTimeInterval = 0 }
+            let _now3 = CACurrentMediaTime()
+            if _now3 - _NegXDiag2.lastLog > 1.0 {
+                _NegXDiag2.lastLog = _now3
+                AppLogger(category: "CellSize").info("[LEFT-CLIP-DIAG] NEG-SV frameX=" + String(describing: frame.origin.x) + " relX=" + String(describing: _relX) + " svFrame=" + String(describing: _svf2) + " svType=" + String(describing: type(of: superview)) + " cvW=" + String(describing: (findCollectionView()?.bounds.width ?? 0)))
             }
         }
 
