@@ -5293,6 +5293,48 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
     // 老会话 cell 高度欠账 (如 286 字符只给 252pt) → 半截字; SwiftUI 把 frame 高
     // 拉回欠账值时, 用它检出并重撑。
     var ios15LastNeededH: CGFloat = 0
+    // [IOS15-FIX-CLIP v18] KVO 抢帧: SwiftUI 在自己的布局 tick 里把 superview 写成
+    // 污染帧, 等 layoutSubviews 再修就来不及 —— 污染帧已经渲染出去一帧 = 闪字。
+    // 这里 block-KVO superview.frame, 在它被写坏的同一调用栈内立刻改回 (CA 提交前),
+    // 污染帧永远到不了屏幕 → 抢帧拉锯的闪烁根除。
+    // NSKeyValueObservation 在观察者或目标释放时自动失效, 无需手动移除。
+    var ios15KvoToken: NSKeyValueObservation?
+    weak var ios15KvoTarget: UIView?
+    var ios15KvoFixing = false
+    func ios15InstallKVO() {
+        if let tok = ios15KvoToken, let tgt = ios15KvoTarget, tgt === superview { return }
+        ios15KvoToken?.invalidate()
+        ios15KvoToken = nil
+        ios15KvoTarget = nil
+        guard let sv = superview else { return }
+        ios15KvoTarget = sv
+        ios15KvoToken = sv.observe(\.frame, options: [.new]) { [weak self] obj, _ in
+            guard let self = self, !self.ios15KvoFixing else { return }
+            let f = obj.frame
+            let cvW = self.findCollectionView()?.bounds.width ?? 0
+            guard cvW > 1 else { return }
+            let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
+            if !polluted {
+                if f.size.width > 200, f.origin.x > 0.5, f.size.width < cvW - 0.5 {
+                    self.ios15LastSaneSVFrame = f
+                }
+                return
+            }
+            var fix = f
+            if let last = self.ios15LastSaneSVFrame,
+               last.size.width > 0, last.size.width <= cvW,
+               last.origin.x > 0.5, last.size.width < cvW - 0.5 {
+                fix.origin.x = last.origin.x
+                fix.size.width = last.size.width
+            } else {
+                fix.origin.x = 16
+                fix.size.width = cvW - 32
+            }
+            self.ios15KvoFixing = true
+            obj.frame = fix
+            self.ios15KvoFixing = false
+        }
+    }
     private var attachmentViews: [UIView] = []
     /// Returns true if the text storage contains NSTextAttachment objects but no attachment views
     /// have been created yet. Used by updateUIView to detect the LazyVStack reappear case where
@@ -7299,6 +7341,7 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             //   交替渲染 = 闪屏闪字 (v13 日志 49 次拉锯实证)。v14 贴边不再抢 frame, 改用
             //   "内边距适应": 设 inset.left/right=16 让文字渲染在 16..374, 不贴边不裁字,
             //   SwiftUI 侧完全不动 → 布局稳定, 拉锯与闪烁的根没了。
+            ios15InstallKVO()
             let _cvW = rCv2.bounds.width
             var _didFix = false
             var _widthChanged = false
@@ -7391,7 +7434,7 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 let _nowF = CACurrentMediaTime()
                 if _nowF - _ClipFixLog.lastLog > 1.0 {
                     _ClipFixLog.lastLog = _nowF
-                    AppLogger(category: "CellSize").info("[LEFT-CLIP-FIX v14] tcW " + String(describing: _tcOldW) + " -> " + String(describing: textContainer.size.width) + " (svW=" + String(describing: _svW) + " cvW=" + String(describing: _cvW) + " edge=" + String(describing: _edgeTouch) + " poll=" + String(describing: _polluted) + ") frameW=" + String(describing: frame.size.width) + " frameH=" + String(describing: frame.size.height) + " needH=" + String(describing: ios15LastNeededH) + " insetL=" + String(describing: textContainerInset.left) + " storageLen=" + String(describing: textStorage.length))
+                    AppLogger(category: "CellSize").info("[LEFT-CLIP-FIX v18] tcW " + String(describing: _tcOldW) + " -> " + String(describing: textContainer.size.width) + " sv0=" + String(describing: _svf0) + " (svW=" + String(describing: _svW) + " cvW=" + String(describing: _cvW) + " edge=" + String(describing: _edgeTouch) + " poll=" + String(describing: _polluted) + ") frameW=" + String(describing: frame.size.width) + " frameH=" + String(describing: frame.size.height) + " needH=" + String(describing: ios15LastNeededH) + " insetL=" + String(describing: textContainerInset.left) + " storageLen=" + String(describing: textStorage.length))
                 }
             }
         }
