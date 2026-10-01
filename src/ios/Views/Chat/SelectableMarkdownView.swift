@@ -7284,49 +7284,58 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
 
         // [IOS15-FIX-CLIP] 老会话双边裁字修复: 容器/自身宽度钳回 + 强制重排。
         // 仅限不可滚动视图 (可滚动的代码块视图自管宽度/偏移, 不动)。
-        if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {
-            // [IOS15-FIX-CLIP v3] superview 帧污染修复 (v2 阈值太松全漏网): 实测污染帧
-            // 494.33@-52 / 779.33@-194.67 —— 宽度被 SwiftUI 瞬态撑到文本理想宽后, 在
-            // 父视图里居中 → x 变负 → 整个气泡左移出屏, 行首被裁 (截图实证)。
-            // 旧阈值 (宽>2*cvW=780 或 x<-cvW=-390) 对这些值全部不触发。
-            // 新判定: 宽 > cvW+1 或 x < -0.5 即污染 (正常帧 358@16 / 382@4 永不命中)。
-            // 恢复: 优先还原"最后记录的正常帧" (精确还原 16pt 边距; 每个正常 pass 都
-            // 回写, 换消息后第一次正常 pass 自动刷新), 无记录则退回 cvW@0。
+            if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {
+            // [IOS15-FIX-CLIP v3] superview 帧污染/贴边修复。
+            // v12 漏网: 帧停在 x=0, w=cvW(全宽贴边) 既不满足 宽>cvW+1 也不满足 x<-0.5,
+            // 于是既不修又被记成"正常帧" → 25/32 采样卡在贴边。v13 补判定:
+            // x<=0.5 且 w>=cvW-1 即贴边 (正常帧 358@16 / 382@4 永不命中)。
+            // 恢复: 优先记忆正常帧(精确还原 16/4pt 边距); 无记忆退回 x=16,w=cvW-32(=358@16),
+            // 兼容 AI 气泡, 用户气泡(382@4)仅左多12/右少12pt, 不裁字。
+            // 记忆只收"带边距的正常帧", 绝不留全宽贴边帧(防记忆被污染成 390@0)。
             // 必须在 _svW/_realW 计算之前执行, 否则 _realW 仍用污染宽度算错。
             var _didFix = false
+            var _widthChanged = false
             if let _sv = superview {
                 let _cvW = rCv2.bounds.width
                 let _svf = _sv.frame
-                if _svf.size.width > _cvW + 1 || _svf.origin.x < -0.5 {
+                let _polluted = _svf.size.width > _cvW + 1 || _svf.origin.x < -0.5
+                let _edgeTouch = _svf.origin.x <= 0.5 && _svf.size.width >= _cvW - 1
+                if _polluted || _edgeTouch {
                     var _fix = _svf
                     if let _last = ios15LastSaneSVFrame,
-                       _last.size.width <= _cvW, _last.size.width > 200 {
+                       _last.size.width > 0, _last.size.width <= _cvW,
+                       _last.origin.x > 0.5, _last.size.width < _cvW - 0.5 {
+                        // 记忆正常帧: 精确还原 16/4pt 边距 (每个正常 pass 都回写, 换消息自动刷新)
                         _fix.origin.x = _last.origin.x
                         _fix.size.width = _last.size.width
                     } else {
-                        _fix.origin.x = 0
-                        _fix.size.width = _cvW
+                        // 无记忆: 退回 16pt 左距 + 双边 16pt(=358@16), 不再全宽贴边
+                        _fix.origin.x = 16
+                        _fix.size.width = _cvW - 32
                     }
                     _sv.frame = _fix
                     _didFix = true
-                } else if _svf.size.width > 200 {
+                } else if _svf.size.width > 200 && _svf.origin.x > 0.5 && _svf.size.width < _cvW - 0.5 {
+                    // 仅记录"带边距的正常帧", 全宽贴边帧(390@0)绝不入库, 防记忆被污染
                     ios15LastSaneSVFrame = _svf
                 }
             }
+            // 用【修正后】的 superview 宽推导真实可用宽, 保证文本视图与 superview 同宽一致
+            // (v12 用污染前的 _svW 会算出 390, 文本视图不收窄 → 右裁/仍贴边)。
             let _svW = superview?.bounds.width ?? 0
-            // 真实宽度 = min(superview, collectionView); superview 宽度瞬时
-            // 异常小 (<200) 时退回 collectionView 宽度, 防止把容器钳成窄条。
-            let _realW = _svW > 200 ? min(_svW, rCv2.bounds.width) : rCv2.bounds.width
+            let _realW = _svW > 1 ? min(_svW, rCv2.bounds.width) : rCv2.bounds.width
             let _tcOldW = textContainer.size.width
             if textContainer.size.width > _realW + 1 {
                 textContainer.size.width = _realW
                 _didFix = true
+                _widthChanged = true
             }
             if bounds.width > _realW + 1 || frame.size.width > _realW + 1 {
                 var _rf = frame
                 _rf.size.width = _realW
                 frame = _rf
                 _didFix = true
+                _widthChanged = true
             }
             if bounds.origin.x != 0 {
                 var _rb = bounds
@@ -7334,18 +7343,19 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 bounds = _rb
                 _didFix = true
             }
-            // [IOS15-FIX-CLIP v2 → v3 已迁移] superview 帧修复移到块首
-            // (_svW/_realW 计算之前), 恢复后的正常宽度才能传导给容器钳制。
-            // 旧 v2 阈值 (宽>2*cvW 或 x<-cvW) 实测对 494.33@-52 / 779.33@-194.67
-            // 全部漏网, 已由块首 v3 逻辑 (宽>cvW+1 或 x<-0.5 + 正常帧还原) 取代。
             if _didFix {
-                layoutManager.ensureLayout(for: textContainer)
-                setNeedsLayout()
+                // [IOS15-FIX-CLIP v13] 用 invalidateIntrinsicContentSize 提示父布局按新宽重测高度,
+                // 替代 v12 的 ensureLayout+setNeedsLayout —— 后者=重排风暴(91次/会话), 与 SwiftUI
+                // 互拉扯 → 按住屏幕闪字、TextKit 行片段错乱(半截字/整行消失)。
+                // 仅当宽度真变时才 invalidate, 避免无谓重测放大风暴。
+                if _widthChanged {
+                    invalidateIntrinsicContentSize()
+                }
                 struct _ClipFixLog { static var lastLog: CFTimeInterval = 0 }
                 let _nowF = CACurrentMediaTime()
                 if _nowF - _ClipFixLog.lastLog > 1.0 {
                     _ClipFixLog.lastLog = _nowF
-                    AppLogger(category: "CellSize").info("[LEFT-CLIP-FIX] clamped tcW " + String(describing: _tcOldW) + " -> " + String(describing: _realW) + " (svW=" + String(describing: _svW) + " cvW=" + String(describing: rCv2.bounds.width) + ") frameW=" + String(describing: frame.size.width) + " boundsO=" + String(describing: bounds.origin) + " storageLen=" + String(describing: textStorage.length))
+                    AppLogger(category: "CellSize").info("[LEFT-CLIP-FIX v13] clamped tcW " + String(describing: _tcOldW) + " -> " + String(describing: _realW) + " (svW=" + String(describing: _svW) + " cvW=" + String(describing: rCv2.bounds.width) + ") frameW=" + String(describing: frame.size.width) + " boundsO=" + String(describing: bounds.origin) + " storageLen=" + String(describing: textStorage.length))
                 }
             }
         }
