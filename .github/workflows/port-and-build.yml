@@ -17,6 +17,12 @@ on:
         description: "上游版本锚点 (tag 或 commit sha)。默认钉死 1.14，只在 App Store 大版本新功能上线、你决定升级时改成新 tag (如 1.15)。平时小更新不要改。"
         required: false
         default: "1.14"
+      unsandbox:
+        description: "解除沙盒 (注入 no-sandbox): 1=沙盒外运行/全容器, 0=保持沙盒内 (若装上打不开就选 0 重跑)"
+        required: false
+        default: "1"
+        type: choice
+        options: ["1", "0"]
   push:
     paths:
       - "scripts/ios15_port.py"
@@ -44,6 +50,10 @@ jobs:
       SCRIPT_REPO: ${{ github.repository }}
       SCRIPT_REF: ${{ github.ref_name }}
       SCRIPT_DIR: scripts
+      # 是否给主 App 注入"解除沙盒"entitlements (TrollStore 保留)。
+      # v19: 去掉 platform-application 后只留 no-sandbox。若某环境下仍起不来,
+      # 手动 Run workflow 时把 unsandbox 选 0, 即可得到"沙盒内运行"的可用包。
+      UNSANDBOX: ${{ inputs.unsandbox || '1' }}
 
     steps:
       - name: "检出仓库 (含子模块)"
@@ -471,19 +481,22 @@ jobs:
           #      TrollStore 安装时原样保留这些键 (amfid 校验被 TrollStore 绕过)。
           #      效果: App 运行在沙盒外 → 可访问设备上所有数据容器 (所有容器都是
           #      mobile uid 的文件)、整个钥匙串组、以 root 权限执行内置 helper。
+          # 开关: UNSANDBOX=1 才注入 (下轮若仍不兼容可直接置 0, 不用改代码)。
+          # v19 教训: v18 加了 platform-application → App 启动即闪退打不开
+          # (platform-application 让 SpringBoard 以平台应用身份启动它, 普通侧载
+          #  App 不具备该身份的启动条件)。v19 只留解除沙盒真正需要的那一个键。
+          echo "UNSANDBOX=${UNSANDBOX:-0}"
           MAIN_ENT="$ENT_DIR/Minis.entitlements"
-          if [ -f "$MAIN_ENT" ]; then
+          if [ "${UNSANDBOX:-0}" = "1" ] && [ -f "$MAIN_ENT" ]; then
             add_ent() { /usr/libexec/PlistBuddy -c "Add :$1 $2 $3" "$MAIN_ENT" 2>/dev/null || echo "  (已存在: $1)"; }
-            add_ent platform-application bool true
+            # 解除沙盒的核心键 (唯一必需):
             add_ent com.apple.private.security.no-sandbox bool true
+            # 低风险辅助键:
             add_ent com.apple.private.skip-library-validation bool true
-            add_ent com.apple.system-task-ports bool true
-            add_ent com.apple.private.memorystatus bool true
-            add_ent get-task-allow bool true
             echo "=== 主 App entitlements (合并无沙盒键后) ==="
             plutil -p "$MAIN_ENT" || cat "$MAIN_ENT"
           else
-            echo "⚠️ 未找到 Minis.entitlements, 跳过无沙盒注入"
+            echo "ℹ️ UNSANDBOX 未开启, 保持上游原始 entitlements (沙盒内运行)"
           fi
 
           # 3) 主 App (最后签, 带上 App Group / iCloud / HealthKit …)
@@ -498,10 +511,14 @@ jobs:
           else
             echo "❌ 主 App 未带上 App Group 权限 (TrollStore 将不会创建共享容器)"; exit 1
           fi
-          if echo "$ENTOUT" | grep -q "no-sandbox"; then
-            echo "✅ 无沙盒 entitlements 已嵌入 (沙盒外运行 / 全容器 / 全钥匙串)"
+          if [ "${UNSANDBOX:-0}" = "1" ]; then
+            if echo "$ENTOUT" | grep -q "no-sandbox"; then
+              echo "✅ 无沙盒 entitlements 已嵌入 (沙盒外运行 / 全容器 / 全钥匙串)"
+            else
+              echo "❌ no-sandbox 未嵌入 —— 沙盒解除失败!"; exit 1
+            fi
           else
-            echo "❌ no-sandbox 未嵌入 —— 沙盒解除失败!"; exit 1
+            echo "ℹ️ UNSANDBOX=0, 本次为沙盒内运行包"
           fi
           for APPEX in $(find Payload/Minis.app -maxdepth 3 -name "*.appex" -type d); do
             EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist" 2>/dev/null || basename "$APPEX" .appex)
