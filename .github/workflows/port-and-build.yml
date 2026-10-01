@@ -302,7 +302,8 @@ jobs:
             exit 1
           fi
           echo "::group::断言11: AgentWidgetExtension 必须弱链接 AppIntents+ActivityKit (iOS15.5 无这两个框架, 强链接 → dyld 崩)"
-          if grep -q '"-weak_framework",' Minis.xcodeproj/project.pbxproj && grep -q "AppIntents," Minis.xcodeproj/project.pbxproj ; then
+          # 注意路径: ios15_fallback.py 以 ROOT=src/ios 运行, pbxproj 在 src/ios/ 下
+          if grep -q '"-weak_framework",' src/ios/Minis.xcodeproj/project.pbxproj && grep -q "AppIntents," src/ios/Minis.xcodeproj/project.pbxproj ; then
             echo "✅ AppIntents / ActivityKit 弱链接已写入 widget target (dyld 不再 Library missing)"
           else
             echo "❌ AppIntents 弱链接缺失 —— AgentWidgetExtension 会 Library not loaded 崩溃!"
