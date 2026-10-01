@@ -1465,7 +1465,7 @@ def fix_left_clip_diag_superview(t):
                 _didFix = true
             }
             if _didFix {
-                layoutManager.ensureLayout(forTextContainer: textContainer)
+                layoutManager.ensureLayout(for: textContainer)
                 setNeedsLayout()
                 struct _ClipFixLog { static var lastLog: CFTimeInterval = 0 }
                 let _nowF = CACurrentMediaTime()
@@ -1478,13 +1478,11 @@ def fix_left_clip_diag_superview(t):
         // [LEFT-CLIP-DIAG v2] 旧 relX=frameX-svFrameX 跨坐标系相减没有意义
         // (文本框在 x=16 容器内从 0 起永远触发)。改为低频打印自身几何,
         // 供验证双边裁字是否根除。
-        {
-            struct _ClipDiag2 { static var lastLog: CFTimeInterval = 0 }
-            let _nowD = CACurrentMediaTime()
-            if _nowD - _ClipDiag2.lastLog > 5.0 {
-                _ClipDiag2.lastLog = _nowD
-                AppLogger(category: "CellSize").info("[LEFT-CLIP-DIAG2] frame=" + String(describing: frame) + " boundsO=" + String(describing: bounds.origin) + " tcW=" + String(describing: textContainer.size.width) + " svFrame=" + String(describing: (superview?.frame ?? .zero)) + " scroll=" + String(describing: isScrollEnabled) + " storageLen=" + String(describing: textStorage.length))
-            }
+        struct _ClipDiag2 { static var lastLog: CFTimeInterval = 0 }
+        let _nowD = CACurrentMediaTime()
+        if _nowD - _ClipDiag2.lastLog > 5.0 {
+            _ClipDiag2.lastLog = _nowD
+            AppLogger(category: "CellSize").info("[LEFT-CLIP-DIAG2] frame=" + String(describing: frame) + " boundsO=" + String(describing: bounds.origin) + " tcW=" + String(describing: textContainer.size.width) + " svFrame=" + String(describing: (superview?.frame ?? .zero)) + " scroll=" + String(describing: isScrollEnabled) + " storageLen=" + String(describing: textStorage.length))
         }
 
         let currentWidth = textContainer.size.width'''
