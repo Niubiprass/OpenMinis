@@ -349,6 +349,25 @@ jobs:
             echo "❌ intrinsicContentSize 钳制缺失 —— 气泡仍会被布局成宽 100000 / x=-49805, 闪字与空白复发!"
             exit 1
           fi
+          echo "::group::断言37: v37 attachmentBounds probe 宽全局钳位必须就位 (9 处泄漏 → superview 撑到 817/1077/100000)"
+          if grep -q "private func ios15ClampProbeWidth" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "guard proposed >= 100_000 else { return proposed }" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            # 反向断言: 裸 `width: lineFrag.width` 必须为 0 处。
+            # 日志(minis-2026-10-03 5.log)实证 sv0 宽度谱系 100000→1616→1077.67→984→817.67,
+            # poll=true 106 次全是 "tcW 390.0 -> 358.0" 单向拉锯 = "终端框卡一下再显示";
+            # 连带高度欠账 167pt/71pt → 末行被拦腰裁断 = "上下一半一半"。
+            # v28 只钳了表格 isOversizedProbe 一处, 其余 8 处泄漏路径全漏。
+            _v37_leak=$(grep -c "width: lineFrag.width" src/ios/Views/Chat/SelectableMarkdownView.swift || true)
+            if [ "$_v37_leak" = "0" ]; then
+              echo "✅ probe 宽全局钳位已就位, 9 处泄漏路径全部收敛 (裸 lineFrag.width = 0)"
+            else
+              echo "❌ 仍有 $_v37_leak 处裸 'width: lineFrag.width' —— attachmentBounds probe 宽泄漏未堵, 污染帧拉锯与末行裁切会复发!"
+              exit 1
+            fi
+          else
+            echo "❌ v37 probe 宽钳位缺失 —— superview 仍会被撑到屏宽 2~256 倍, 终端框卡顿 + 末行裁半复发!"
+            exit 1
+          fi
           echo "::group::断言15: v22 SwiftUI rootView maxWidth 必须就位 (压住超宽理想宽 → 根除污染帧)"
           if grep -q "frame(maxWidth: _ios15ContentMaxW" src/ios/iOS15Compat.swift ; then
             echo "✅ SwiftUI 内容最大宽度已设 (理想宽不再 100032/2378, x=-49805 污染帧不再产生)"
