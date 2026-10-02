@@ -2274,7 +2274,12 @@ final class TableAttachment: NSTextAttachment {
         let elapsed = CACurrentMediaTime() - t0
         Self.attachBoundsHotPath_record(elapsed: elapsed, cacheHit: _diagCacheHit, rows: rows.count, cols: alignments.count)
         let height = layout.totalHeight + Self.verticalMargin * 2
-        let returnWidth = isOversizedProbe ? clampedWidth : usableWidth
+        // [IOS15-FIX-TABLE-PROBE v28] probe 返回宽 32768 在 iOS15 上把 superview
+        // frame 撑爆 (log11: sv0 宽 32768 → 白色巨块盖住内容 + 表格显示不全)。
+        // 钳到真实容器宽: iOS15 气泡宽已硬钉 358, 无需 SwiftUI max-width 发现。
+        let returnWidth = isOversizedProbe
+            ? min(clampedWidth, (containerRealWidth ?? lastRealWidth ?? Self.narrowestRealWidth))
+            : usableWidth
         return CGRect(x: 0, y: 0, width: returnWidth, height: height)
     }
 
@@ -7501,10 +7506,24 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // v26 改用 UITextView.sizeThatFits 标准 API 测量: 不改变 textContainer 状态、
             // 不触发重排风暴, 同样能拿到不受当前容器高限制的真实需求高度。
             let _realW2 = max(200.0, _cvW - 32)
+            var _ios15WRegrabbed = false
             if abs(textContainer.size.width - _realW2) > 0.5 {
                 textContainer.size.width = _realW2
+                _ios15WRegrabbed = true
+            }
+            // [IOS15-FIX-RELC v28] 抢回宽度后必须强制重排。log11 实证: SwiftUI poll 每帧把
+            // 容器宽打回 390 (cvW=390), TextKit 行碎片按 ~374pt 排版; v18 抢回 358 时仅改
+            // textContainer.size 而不 invalidate, 旧行碎片不会被重排 → 358 视口裁掉行尾
+            // 16pt ("字显示不完全"/行尾半截字)。签名 invalidateLayout(forCharacterRange:
+            // actualCharacterRange:) 为 v25-fix2 编译验证过的合法形式; 不碰容器高 (v26 已定),
+            // 不会引发 100000 风暴。先 invalidate 再 sizeThatFits, 保证测高按新宽 re-wrap。
+            if _ios15WRegrabbed, textStorage.length > 0 {
+                layoutManager.invalidateLayout(forCharacterRange: NSMakeRange(0, textStorage.length), actualCharacterRange: nil)
             }
             let _needH = sizeThatFits(CGSize(width: _realW2, height: .greatestFiniteMagnitude)).height
+            if _ios15WRegrabbed {
+                layoutManager.ensureLayout(for: textContainer)
+            }
             ios15LastNeededH = _needH
             if textStorage.length > 0, _needH > 1 {
                 if frame.size.height < _needH - 0.5 {
