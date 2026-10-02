@@ -2305,9 +2305,20 @@ final class TableAttachment: NSTextAttachment {
         // [IOS15-FIX-TABLE-PROBE v28] probe 返回宽 32768 在 iOS15 上把 superview
         // frame 撑爆 (log11: sv0 宽 32768 → 白色巨块盖住内容 + 表格显示不全)。
         // 钳到真实容器宽: iOS15 气泡宽已硬钉 358, 无需 SwiftUI max-width 发现。
-        let returnWidth = isOversizedProbe
-            ? min(clampedWidth, (containerRealWidth ?? lastRealWidth ?? Self.narrowestRealWidth))
-            : usableWidth
+        // [V38B-TABLEWIDTH] 表格返回宽的最终出口再钳一道。
+        //
+        // v37 只拦 >= 100_000 的 10M 哨兵值; 但表格在**非 probe** 路径下按
+        // usableWidth = floor(lineFrag.width) - 1 自行算宽, 得到一个"看起来合法"
+        // 的超宽值 —— minis-2026-10-03 6.log 实测 1096 (= 表格真实内容宽,
+        // 不是哨兵值, 所以 v37 的守卫拦不住)。它进 superview.frame 后:
+        //   TextKit 按 1096 排版不换行 → 高度算小 → 末行被裁 448pt (病根 A);
+        //   每帧超宽↔正常宽拉锯 → 终端框卡顿 (病根 C)。
+        //
+        // 这里把上限从"哨兵值阈值"改成"真实容器宽": 表格是块级内容, 本就该按
+        // 容器宽排版, 任何超过容器宽的返回值都是错的(容器内放不下)。
+        // 正常路径 usableWidth <= containerRealWidth 时 max() 取原值, 行为不变。
+        let _v38Cap: CGFloat = containerRealWidth ?? lastRealWidth ?? Self.narrowestRealWidth
+        let returnWidth = min(usableWidth, max(1, _v38Cap))
         return CGRect(x: 0, y: 0, width: returnWidth, height: height)
     }
 
@@ -7599,6 +7610,26 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                     _didFix = true
                 }
                 invalidateIntrinsicContentSize()
+            }
+            // [V38A-HEIGHTDEBT] 高度欠账自愈 — 见函数 docstring 的完整推导。
+            //
+            // 到这里 _needH 是**按抢回后的真实宽 _realW2** 走 sizeThatFits 得到的
+            // 权威需求高; 上面那段已经尝试把 frame / superview 撑到它。但 SwiftUI
+            // 下一 pass 会按被污染的 superview 宽(实测 1096)把高度压回去, 于是
+            // frameH=1748.0 而 sv0 高只有 1299.67 —— 448.3pt 被 clipsToBounds 裁掉,
+            // 末行整段不显示。日志 poll=true 19 次 + sv0 高度恒定 1299.67 = 拉锯从未赢。
+            //
+            // v18 改的是**结果**(frame), 赢不了 SwiftUI 的**布局诉求**; 这里补上
+            // 诉求侧: 走 invalidateCellSizeIfNeeded 让 cell 高度按真实宽提交。
+            if !_edgeTouch, _needH > 1, textStorage.length > 0,
+               let _svH = superview?.frame.size.height, _svH > 1,
+               _svH < _needH - 0.5 {
+                let _v38WasPending = deferredCorrectionPending
+                // 借上游既有开关绕过 SKIP-DEDUPE 指纹早退(该 flag 的既有语义就是
+                // "有欠账, 不许被指纹吞掉")。用完立刻还原, 不污染 deferSelfSizing 那条路。
+                deferredCorrectionPending = true
+                invalidateCellSizeIfNeeded()
+                deferredCorrectionPending = _v38WasPending
             }
             if _didFix {
                 struct _ClipFixLog { static var lastLog: CFTimeInterval = 0 }
