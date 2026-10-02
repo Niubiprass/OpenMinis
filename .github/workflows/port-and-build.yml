@@ -377,6 +377,15 @@ jobs:
           else
             echo "❌ v26 缺失 —— 容器高 100000 风暴仍会耗光守卫预算, 宽度修正被连坐丢弃, 横向裁切复发!"; exit 1
           fi
+          echo "::group::断言20: v27 iOS15 cmark-gfm table 扩展必须启用 (否则表格整段降级为巨型单行纯文本 → 撑爆测量宽 → 高度振荡跳字/半截字/表格乱码)"
+          # iOS16/15 两个分支的 extensionNames 名单都必须含 "table" (共 2 处)。
+          TL=$(grep 'extensionNames = \[' src/ios/Agent/Markdown/MinisMarkdownParser.swift | grep -c '"table"' | tr -d ' ')
+          TN=$(grep -c 'extensionNames = \[' src/ios/Agent/Markdown/MinisMarkdownParser.swift | tr -d ' ')
+          if grep -q "IOS15-FIX-TABLE" src/ios/Agent/Markdown/MinisMarkdownParser.swift && [ "$TN" = "2" ] && [ "$TL" = "2" ]; then
+            echo "✅ v27 已注入: iOS15/16 两分支都启用 table 扩展, 表格走 UIKit TableAttachment 渲染"
+          else
+            echo "❌ v27 缺失 (标记=$(grep -c 'IOS15-FIX-TABLE' src/ios/Agent/Markdown/MinisMarkdownParser.swift) 名单处数=$TN 含table=$TL) —— iOS15 表格仍会降级为无换行巨型单行!"; exit 1
+          fi
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
           if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ KVO 抢帧已注入"

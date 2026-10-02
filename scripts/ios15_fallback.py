@@ -1859,6 +1859,41 @@ def fix_left_clip_diag_superview(t):
     return t
 
 
+def fix_markdown_table_extension(t):
+    """v27: iOS 15 表格整段降级为无换行纯文本的根治。
+
+    日志+视频实证 (minis-2026-10-02 10.log / RPReplay_Final1790910320):
+    流式结束后表格仍渲染成 `||项目|状态|||--|---||| 系统 | Alpine...` 一整段
+    换行全丢的段落 —— 相邻行行尾`|`+行首`|`拼成 `||`。cmark 压根没把表格
+    识别为 table 节点 (分隔行 |---|---| 都留在正文里)。
+
+    根因: MinisMarkdownParser.parseMarkdown 的 GFM 扩展名单里, "table" 只在
+    #available(iOS 16.0) 分支加入; iOS 15 走 else 分支没有 "table" → 表格
+    解析关闭。上游部署目标 16+, else 是死代码, 并非表格需要 iOS16 API ——
+    实测 TableAttachment: NSTextAttachment / TableCellTextView: UITextView /
+    自定义 TableLayout 全是纯 UIKit, iOS 15 完全可用。
+
+    危害链: 表格→巨型单行段落(自然宽 ~1022)→ SwiftUI ideal width 被撑爆 →
+    superview 污染 1022x252 → cell 高 721↔1078 振荡(delta 357) → 跳字/
+    底部半截字 + 表格乱码。启用 table 扩展一并根治。
+    """
+    if "IOS15-FIX-TABLE" in t:
+        return t
+    OLD = '''        } else {
+            extensionNames = ["autolink", "strikethrough", "tagfilter", "tasklist"]
+        }'''
+    NEW = '''        } else {
+            // [IOS15-FIX-TABLE] iOS 15.5 也启用 table 扩展: 表格渲染路径
+            // (TableAttachment/TableCellTextView/TableLayout) 是纯 UIKit, 无
+            // iOS16-only API。缺 table 扩展时表格整段降级为无换行纯文本
+            // (巨型单行, 自然宽 ~1022) → 撑爆测量宽 → cell 高振荡 → 跳字/半截字。
+            extensionNames = ["autolink", "strikethrough", "tagfilter", "tasklist", "table"]
+        }'''
+    if OLD not in t:
+        raise RuntimeError("fix_markdown_table_extension: 未命中 MinisMarkdownParser.swift 的扩展名单 else 分支 (上游结构变了?)")
+    return t.replace(OLD, NEW)
+
+
 def main():
     print("== iOS 15 兜底修复 v2 (ROOT=%s) ==" % ROOT)
     print("-- 文件指纹/结构自检 --")
@@ -1904,6 +1939,7 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_clip_v3_property, "v12: 记录最后正常容器帧属性 (superview 污染精确还原)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_left_clip_diag_superview, "v5: 老会话双边裁字修复 — 渲染端容器宽度钳回+强制重排 (原 v4 仅诊断)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_defer_large_shrink, "v5: 大幅收缩(-100pt)修正立即生效, 消回复后大片空白 (控制台输出折叠卡片欠账数秒)")
+    edit("Agent/Markdown/MinisMarkdownParser.swift", fix_markdown_table_extension, "v27: iOS15 启用 cmark-gfm table 扩展 (上游 else 分支漏 table, 表格整段降级为巨型单行纯文本 → 撑爆测量宽 → 高度振荡跳字)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
