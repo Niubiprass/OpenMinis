@@ -386,6 +386,18 @@ jobs:
           else
             echo "❌ v27 缺失 (标记=$(grep -c 'IOS15-FIX-TABLE' src/ios/Agent/Markdown/MinisMarkdownParser.swift) 名单处数=$TN 含table=$TL) —— iOS15 表格仍会降级为无换行巨型单行!"; exit 1
           fi
+          echo "::group::断言21: v28 表格 probe 宽度钳制 + 抢宽强制重排 (32768 污染 sv → 白色巨块; 抢回 358 不重排 → 行尾裁字)"
+          if grep -q "IOS15-FIX-TABLE-PROBE v28" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "min(clampedWidth, (containerRealWidth" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v28 probe 钳制已注入"
+          else
+            echo "❌ v28 probe 钳制缺失 —— 表格消息 superview 仍会被 32768 撑爆, 白色巨块复发!"; exit 1
+          fi
+          if grep -q "IOS15-FIX-RELC v28" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "_ios15WRegrabbed" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v28 抢宽强制重排已注入"
+          else
+            echo "❌ v28 强制重排缺失 —— poll 打回 390 后旧行碎片仍按 390 排版, 行尾裁字复发!"; exit 1
+          fi
+          echo "::endgroup::"
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
           if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ KVO 抢帧已注入"

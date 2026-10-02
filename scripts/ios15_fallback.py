@@ -1814,10 +1814,24 @@ def fix_left_clip_diag_superview(t):
             // v26 改用 UITextView.sizeThatFits 标准 API 测量: 不改变 textContainer 状态、
             // 不触发重排风暴, 同样能拿到不受当前容器高限制的真实需求高度。
             let _realW2 = max(200.0, _cvW - 32)
+            var _ios15WRegrabbed = false
             if abs(textContainer.size.width - _realW2) > 0.5 {
                 textContainer.size.width = _realW2
+                _ios15WRegrabbed = true
+            }
+            // [IOS15-FIX-RELC v28] 抢回宽度后必须强制重排。log11 实证: SwiftUI poll 每帧把
+            // 容器宽打回 390 (cvW=390), TextKit 行碎片按 ~374pt 排版; v18 抢回 358 时仅改
+            // textContainer.size 而不 invalidate, 旧行碎片不会被重排 → 358 视口裁掉行尾
+            // 16pt ("字显示不完全"/行尾半截字)。签名 invalidateLayout(forCharacterRange:
+            // actualCharacterRange:) 为 v25-fix2 编译验证过的合法形式; 不碰容器高 (v26 已定),
+            // 不会引发 100000 风暴。先 invalidate 再 sizeThatFits, 保证测高按新宽 re-wrap。
+            if _ios15WRegrabbed, textStorage.length > 0 {
+                layoutManager.invalidateLayout(forCharacterRange: NSMakeRange(0, textStorage.length), actualCharacterRange: nil)
             }
             let _needH = sizeThatFits(CGSize(width: _realW2, height: .greatestFiniteMagnitude)).height
+            if _ios15WRegrabbed {
+                layoutManager.ensureLayout(for: textContainer)
+            }
             ios15LastNeededH = _needH
             if textStorage.length > 0, _needH > 1 {
                 if frame.size.height < _needH - 0.5 {
@@ -1854,6 +1868,34 @@ def fix_left_clip_diag_superview(t):
         }
 
         let currentWidth = textContainer.size.width'''
+    if OLD in t:
+        t = t.replace(OLD, NEW)
+    return t
+
+
+def fix_table_probe_width(t):
+    """v28: 表格 probe 返回宽 32768 污染 superview → 白色巨块盖住内容。
+
+    log11 实证 (minis-2026-10-02 11.log): 含表格消息 (storageLen=856) 的
+    [LEFT-CLIP-FIX v18] 反复出现 sv0=(16, y, 32768.0, 825.7) — superview 宽被
+    撑到 32768; [TextContainerGuard] short-circuited setSize: 32768.0x817.7。
+    根因: TableAttachment.attachmentBounds 对 SwiftUI intrinsic-size probe
+    (lineFrag.width=10_000_000) 返回 clampedWidth=32_768 (上游设计: 让 SwiftUI
+    做 max-width 发现)。iOS16 上游没事, iOS15 上这个 32768 glyph rect 直接把
+    superview frame 撑爆, 白底表格 view 尺寸/位置错乱 → 用户看到白色矩形盖住
+    消息内容 + 表格自身显示不全。
+
+    修复: probe 分支的返回宽钳到真实宽度 (containerRealWidth → lastRealWidth →
+    narrowestRealWidth 兜底), 高度逻辑保持不变 (高度本来就用真实宽计算)。
+    iOS15 上 SwiftUI 不需要 32768 max-width 发现 — 气泡宽已被 v24 硬钉 358。
+    """
+    OLD = "        let returnWidth = isOversizedProbe ? clampedWidth : usableWidth"
+    NEW = """        // [IOS15-FIX-TABLE-PROBE v28] probe 返回宽 32768 在 iOS15 上把 superview
+        // frame 撑爆 (log11: sv0 宽 32768 → 白色巨块盖住内容 + 表格显示不全)。
+        // 钳到真实容器宽: iOS15 气泡宽已硬钉 358, 无需 SwiftUI max-width 发现。
+        let returnWidth = isOversizedProbe
+            ? min(clampedWidth, (containerRealWidth ?? lastRealWidth ?? Self.narrowestRealWidth))
+            : usableWidth"""
     if OLD in t:
         t = t.replace(OLD, NEW)
     return t
@@ -1940,6 +1982,7 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_left_clip_diag_superview, "v5: 老会话双边裁字修复 — 渲染端容器宽度钳回+强制重排 (原 v4 仅诊断)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_defer_large_shrink, "v5: 大幅收缩(-100pt)修正立即生效, 消回复后大片空白 (控制台输出折叠卡片欠账数秒)")
     edit("Agent/Markdown/MinisMarkdownParser.swift", fix_markdown_table_extension, "v27: iOS15 启用 cmark-gfm table 扩展 (上游 else 分支漏 table, 表格整段降级为巨型单行纯文本 → 撑爆测量宽 → 高度振荡跳字)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_table_probe_width, "v28: 表格 probe 返回宽 32768 钳到真实容器宽 (iOS15 superview 被撑爆 → 白色巨块盖住内容)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
