@@ -423,10 +423,9 @@ jobs:
             # 反向断言: 地板必须严格小于哨兵值 100000, 否则条件永不成立(等效没修)。
             #          地板还必须落在高度钳位**之前** —— 钳位先跑的话, 未来收紧 kMaxContainerHeight
             #          就再也认不出原始哨兵值了。
-            _v38c_pos=$(python3 -c "
-p=open('src/ios/Shared/NSTextContainerSetSizeGuard.m',encoding='utf-8').read()
-f=p.find('kProbeHeightFloor = 8000.0'); c=p.find('if (newSize.height > kMaxContainerHeight)')
-print('OK' if f!=-1 and c!=-1 and f<c else 'BAD')")
+            # 【坑】不能用多行 python3 -c "...":裸换行会破坏 YAML 的折叠标量,
+            # workflow 直接解析失败(run#97 就是这么挂的, 连编译都没到)。全部写成单行。
+            _v38c_pos=$(python3 -c "p=open('src/ios/Shared/NSTextContainerSetSizeGuard.m',encoding='utf-8').read(); f=p.find('kProbeHeightFloor = 8000.0'); c=p.find('if (newSize.height > kMaxContainerHeight)'); print('OK' if f!=-1 and c!=-1 and f<c else 'BAD')")
             if [ "$_v38c_pos" = "OK" ]; then
               echo "✅ v38-C 哨兵高度收敛已就位 (8000 地板严格小于哨兵 100000, 且在高度钳位之前)"
             else
