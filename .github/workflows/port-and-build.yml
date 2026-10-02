@@ -371,6 +371,12 @@ jobs:
           else
             echo "❌ v25 高度修复缺失 —— usedRect 仍被 textContainer 高度死锁, 末行半截字/整条不显示复发!"; exit 1
           fi
+          echo "::group::断言19: v26 必须就位 (A=sizeThatFits 测高不再炸容器高 100000; B=守卫熔断收窄为同尺寸才丢, 正确宽度修正不被连坐)"
+          if grep -q "sizeThatFits(CGSize(width: _realW2, height: .greatestFiniteMagnitude))" src/ios/Views/Chat/SelectableMarkdownView.swift && ! grep -q "textContainer.size.height = 100000" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "kStormForwardLimit \* 4" src/ios/Shared/NSTextContainerSetSizeGuard.m && grep -q "_newTick" src/ios/Shared/NSTextContainerSetSizeGuard.m ; then
+            echo "✅ v26 已注入: 风暴源头消除 + 熔断不再连坐正确修正, 不换行/横向裁切根除"
+          else
+            echo "❌ v26 缺失 —— 容器高 100000 风暴仍会耗光守卫预算, 宽度修正被连坐丢弃, 横向裁切复发!"; exit 1
+          fi
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
           if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ KVO 抢帧已注入"
