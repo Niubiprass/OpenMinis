@@ -7487,10 +7487,10 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // 容器/宽度钳制。贴边模式: 容器被 inset 自动收窄到 cvW-32, frame 保持 SwiftUI
             // 给的全宽 (不动它); 污染/正常模式: 按修正后的 superview 宽钳。
             let _svW = superview?.bounds.width ?? 0
-            var _realW = _svW > 1 ? min(_svW, _cvW) : _cvW
-            if _edgeTouch {
-                _realW = max(_realW - 32, 100)
-            }
+            // [V32-WIDTH] 渲染宽统一 = cvW-32。贴边(全宽390+16 inset)与气泡(358@16+0 inset)
+            // 的文字可用宽都恒为 358; 旧逻辑按抖动的 bounds 再 -32 → 326/358 翻转 (log15 tcW
+            // 326×132/358×115) → re-wrap 闪烁(字忽隐忽现)+边距不稳(不贴边)+双引擎测宽分歧。
+            let _realW = max(_cvW - 32, 100)
             let _tcOldW = textContainer.size.width
             if textContainer.size.width > _realW + 1 {
                 textContainer.size.width = _realW
@@ -7832,16 +7832,10 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         // cvW-32 (=358, 16pt 双边距) 排版, 测量若用更宽的 cvW(390) 或污染宽
         // (494/895) 算出的 cell 高度偏小 → 末行被拦腰裁断 ("上下一半一半");
         // 卡住的 252 正是按 494 污染宽排出的高度。统一钳到 cvW-32。
+        // [V32-WIDTH] 测高宽统一 = cvW-32, 与渲染宽严格一致; 不再跟随 SwiftUI 抖动的
+        // bounds.width(在 326/358 摆动) → 两引擎测不同宽 → 高度分歧振荡 + 末行裁切。
         let measCapW = cvContentWidth > 33 ? cvContentWidth - 32 : cvContentWidth
-        let measureWidth: CGFloat
-        if proposedMeasureW > 1, proposedMeasureW < 100_000,
-           proposedMeasureW <= measCapW + 1 {
-            measureWidth = proposedMeasureW
-        } else if measCapW > 1 {
-            measureWidth = measCapW
-        } else {
-            measureWidth = textContainer.size.width
-        }
+        let measureWidth: CGFloat = (measCapW > 1) ? measCapW : max(textContainer.size.width, 200)
         // [IOS15-FIX] 宽度兜底消毒: 若上面三分支仍落到离谱瞬态宽度
         // (1e7 / 2273 / 1382 等, 来自 SwiftUI 递归排版或 widthTracksTextView
         // 把 textContainer 设到 greatestFiniteMagnitude 再经 Guard 钳到 1e7),
