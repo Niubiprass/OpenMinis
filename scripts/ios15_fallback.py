@@ -1915,6 +1915,139 @@ def fix_table_probe_width(t):
     return t
 
 
+def fix_probe_width_global_clamp_v37(t):
+    """v37: 全局钳住 probe 宽度 — 治"终端框卡一下再显示" + 末行"上下一半一半"。
+
+    日志实证 (minis-2026-10-03 5.log, 9016 行):
+      1) [LEFT-CLIP-FIX v18] sv0 宽度谱系 (按出现顺序):
+         100000.0 → 1616.0 → 1077.67 → 984.0 → 817.67, 而 svW 恒被抢回 358.0。
+         817.67 = 屏宽 390 的 2.1 倍, 横跨到屏幕外。
+      2) poll=true 命中 106 次, 全部是 `tcW 390.0 -> 358.0` 一个方向 —
+         SwiftUI 每帧写下超宽, v18 每帧抢回 358。两个引擎以 3.6 倍速互相拉扯
+         = 用户看到的"终端框卡一下再显示"(每次重排都是一次可见闪烁)。
+      3) 高度连带崩: sv0 高 279.67 而 needH/frameH 446.67 → 欠账 167pt;
+         另一条 63.67 vs 135.0 → 欠账 71pt。118 个样本 116 个异常。
+         末行被 clipsToBounds 拦腰切断 = "上下一半一半"。
+      4) FIRST-MEASURE CORRECTION 36 条, 欠账 8~566pt(中位 43.6), 无一条 <8pt,
+         即纠偏机制一直在满负荷救火, 仍追不上每帧的污染重排。
+
+    根因: SwiftUI/UIHostingConfiguration 的 intrinsic-size 探测会合成
+    lineFrag.width = 10_000_000, 而**全文件 7 个 attachmentBounds override
+    里有 9 处 return 路径把 lineFrag.width 原样当返回宽度**:
+      2206 表格 usableWidth<=0 兜底 / 3386 RenderedBlock / 3504 图片 block
+      3552 公式 block 约束宽 / 3554 公式 block 返回宽 / 3574 公式占位
+      4452 视频缩略图 / 4464 视频 / 4474 图片占位
+    v28 只钳了 2199 (表格 isOversizedProbe 分支) 一处, 其余 8 处全漏。
+    probe 宽 100000 经 attachmentBounds → makeView → superview.frame 一路放大,
+    把 UITextView 的 superview 撑到 817/1077/100000, TextKit 按错宽排版,
+    高度算错 → 末行裁切; 每帧重排 → 闪烁卡顿。
+
+    修法 (不逐处改 9 个 return, 而是加一个共用钳位器):
+      1) 在 SelectableMarkdownTextView 上加静态方法
+         ios15ClampProbeWidth(_:textContainer:), 正常布局时原样返回 proposed
+         (行为零变化), 只有 >= 100_000 的 probe 值才钳到 textContainer 真实宽。
+      2) 把 9 处 `width: lineFrag.width` 统一换成走该钳位器。
+
+    为什么这样最稳: probe 宽只是"给 SwiftUI 做 max-width 发现"用的哨兵值,
+    iOS16 上游依赖它拿 1e5+32=100032 去发现 max-width; 但本项目 v22 已经
+    给 hosting 内容加了 .frame(maxWidth:), 发现机制早已被接管, iOS15 上这个
+    哨兵值有且仅有"撑爆 superview"这一个副作用。钳掉它 = 副作用归零,
+    且正常布局路径一个字节都不变 → 回归风险最低。
+    """
+    if "V37-PROBECLAMP" in t:
+        return t
+
+    # ---- 1) 注入钳位器 (文件级全局函数, 9 处泄漏路径跨 4 个类都能调) ----
+    # 踩坑: 最初把钳位器写成 SelectableMarkdownTextView 的 static 方法, 但 9 处泄漏
+    # 分布在 TableAttachment / ThematicBreakAttachment / MathAttachment /
+    # VideoAttachment 四个不同类里, 它们不是 SelectableMarkdownTextView 的子类,
+    # 写 Self.ios15ClampProbeWidth 会编译不过 (Swift 解析不到成员)。
+    # 改成文件顶层 private func, 全文件可见, 且不污染模块命名空间。
+    #
+    # 锚点必须是**上游原生**代码: v22 注释锚点在 pristine 基线上不存在,
+    # 会让本补丁在"干净基线 + 全部补丁"的 CI 流水线里直接 raise。
+    # 踩坑清单第 1 条: 必须在 pristine 上验证锚点命中。
+    ANCHOR = "func encodeRawMinisURL(_ destination: String) -> URL? {"
+    if ANCHOR not in t:
+        raise RuntimeError("fix_probe_width_global_clamp_v37: 未找到顶层函数锚点 (上游结构变了?)")
+
+    CLAMP_HELPER = '''// [V37-PROBECLAMP] 把 SwiftUI intrinsic-size probe 的合成线段宽钳到真实内容宽。
+//
+// 背景: UIHostingConfiguration 做 intrinsic-size 探测时, TextKit 会合成
+// lineFrag.width = 10_000_000 (10M) 的"无限宽"线段, 目的是让 attachment
+// 报告自己的理想宽、供 SwiftUI 做 max-width 发现。本项目 v22 已用
+// .frame(maxWidth:) 接管了发现机制, 这个 10M 哨兵值在 iOS15 上只剩
+// 一个副作用: 它经 attachmentBounds → makeView 一路写进 superview.frame,
+// 把 UITextView 的父容器撑到屏宽的 2~256 倍。
+//
+// 日志实证 (minis-2026-10-03 5.log): sv0 宽度 100000 → 1616 → 1077.67
+// → 984 → 817.67, 而 v18 每帧把 tcW 抢回 358 (poll=true 106 次,
+// 全部 "390.0 -> 358.0" 单向) = 两引擎以 3.6 倍速拉锯 = "终端框卡一下"。
+// 连带高度欠账 167pt / 71pt → 末行被拦腰裁断 = "上下一半一半"。
+//
+// 关键: 正常布局时 lineFrag.width 就是真实内容宽 (358), 钳位器原样返回,
+// **行为完全不变**; 只有 >= 100_000 的 probe 值才被钳到真实宽。
+private func ios15ClampProbeWidth(_ proposed: CGFloat, textContainer: NSTextContainer?) -> CGFloat {
+    // 非 probe: 真实布局线段, 原样返回。
+    guard proposed >= 100_000 else { return proposed }
+    // probe: 取 textContainer 真实宽 (探测期 container 仍保持真实宽度,
+    // 只有 proposedLineFragment 被合成, 与 v28 注释里的观察一致)。
+    if let tcW = textContainer?.size.width, tcW > 0, tcW < 100_000 {
+        return max(1, min(tcW, proposed))
+    }
+    // 拿不到 container 就退回一个保守值, 绝不能让 10M 逃出去。
+    return min(proposed, 390.0 - 32.0)
+}
+
+func encodeRawMinisURL(_ destination: String) -> URL? {'''
+    t = t.replace(ANCHOR, CLAMP_HELPER, 1)
+
+    # ---- 2) 9 处泄漏路径统一钳位 ----
+    # 每处单独锚定, 避免误伤正常的 lineFrag.width 用法
+    # (如 3502 的 min(img.size.width, lineFrag.width) 是图片尺寸上限, 不是返回宽)。
+    LEAKS = [
+        '        return CGRect(x: 0, y: 0, width: lineFrag.width, height: Self.minRowHeight)',
+        '        CGRect(x: 0, y: 0, width: lineFrag.width, height: 1 + Self.verticalMargin * 2)',
+        '                return CGRect(x: 0, y: 0, width: lineFrag.width, height: imgH)',
+        '                let constraintSize = CGSize(width: lineFrag.width, height: .greatestFiniteMagnitude)',
+        '                return CGRect(x: 0, y: 0, width: lineFrag.width, height: max(ceil(textHeight), Self.blockPlaceholderHeight))',
+        '            return CGRect(x: 0, y: 0, width: lineFrag.width, height: Self.blockPlaceholderHeight)',
+        '            return CGRect(x: 0, y: 0, width: lineFrag.width, height: h + 24)',
+        '        return CGRect(x: 0, y: 0, width: lineFrag.width, height: Self.placeholderHeight)',
+    ]
+
+    applied = 0
+    for old in LEAKS:
+        if old not in t:
+            raise RuntimeError(
+                "fix_probe_width_global_clamp_v37: 未命中泄漏锚点\n  " + old[:100])
+        new = old.replace("width: lineFrag.width",
+                          "width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer)", 1)
+        t = t.replace(old, new, 1)
+        applied += 1
+
+    # 视频缩略图有两条相同 return (4452 / 4464), 上面 replace 已各吃掉一条;
+    # 这里按出现次数补齐剩余的那条。
+    guard_old = '            return CGRect(x: 0, y: 0, width: lineFrag.width, height: h + 24)'
+    while guard_old in t:
+        t = t.replace(guard_old,
+                      '            return CGRect(x: 0, y: 0, width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer), height: h + 24)', 1)
+        applied += 1
+
+    # 反向断言: 全部替换完, 不应再有裸的 `width: lineFrag.width`
+    leftover = t.count("width: lineFrag.width")
+    if leftover:
+        raise RuntimeError(
+            f"fix_probe_width_global_clamp_v37: 替换后仍有 {leftover} 处裸 width: lineFrag.width, "
+            "说明存在未登记的泄漏路径 — 需补锚点, 禁止带着遗漏出包")
+
+    if t.count("V37-PROBECLAMP") < 1 or t.count("ios15ClampProbeWidth") != 1 + applied:
+        raise RuntimeError(
+            f"fix_probe_width_global_clamp_v37: 注入后标记/调用数不符 "
+            f"(applied={applied}, 调用数={t.count('ios15ClampProbeWidth')})")
+    return t
+
+
 def fix_markdown_table_extension(t):
     """v27: iOS 15 表格整段降级为无换行纯文本的根治。
 
@@ -2452,6 +2585,7 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_defer_large_shrink, "v5: 大幅收缩(-100pt)修正立即生效, 消回复后大片空白 (控制台输出折叠卡片欠账数秒)")
     edit("Agent/Markdown/MinisMarkdownParser.swift", fix_markdown_table_extension, "v27: iOS15 启用 cmark-gfm table 扩展 (上游 else 分支漏 table, 表格整段降级为巨型单行纯文本 → 撑爆测量宽 → 高度振荡跳字)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_table_probe_width, "v28: 表格 probe 返回宽 32768 钳到真实容器宽 (iOS15 superview 被撑爆 → 白色巨块盖住内容)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_probe_width_global_clamp_v37, "v37: 9 处 attachmentBounds 泄漏路径统一钳住 probe 宽 (sv0 撑到 817/1077/100000 → 每帧拉锯卡顿 + 末行裁切)")
     # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")
