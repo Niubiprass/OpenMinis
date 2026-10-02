@@ -1678,7 +1678,9 @@ def fix_clip_v3_property(t):
         ios15KvoTarget = sv
         ios15KvoToken = sv.observe(\\.frame, options: [.new]) { [weak self] obj, _ in
             guard let self = self, !self.ios15KvoFixing else { return }
-            let f = obj.frame
+            // [V41-LETFIX] let -> var: v41 要在补齐高度后把新值交棒给后续宽度修正
+            // (`f = _hFix`), Swift 的 let 不可重新赋值, 保持 let 会编译失败。
+            var f = obj.frame
             // [IOS15-FIX-DISPLAYLINK v29] findCollectionView 死角兜底
             // (同 ios15ApplyFrameFix): 遍历失败时用屏宽, 不放弃同栈抢帧。
             let _cvW0 = self.findCollectionView()?.bounds.width ?? 0
@@ -2830,6 +2832,334 @@ def fix_framefix_height_unconditional_v40(t):
     return t
 
 
+def _v41_marks(t, mark):
+    """数 v41 诊断标记, 判据 = 该标记出现在 **NSLog 调用** 里。
+
+    【踩坑记录·两连坑】
+      坑1: 最初用 t.count(mark), 结果注释行 `// [V41-KVOHEIGHT] ...` 也被计入
+           → "期望 1 实际 2"。
+      坑2: 改成"行首 strip 后以 mark 开头", 但注入的标记本身就在注释行上
+           → "期望 1 实际 0"。
+    教训: 标记计数必须锚定**语义唯一**的那个形态, 不能靠"看起来像标记"的模糊匹配。
+    NSLog("...") 是这段代码里唯一真正会产生日志的语句, 用它当判据最稳。
+    """
+    return t.count('NSLog("[' + mark + ']')
+
+
+def fix_kvo_height_clamp_v41(t):
+    """v41: KVO 抢帧器补高度 — 真凶是"pass 内的几何是对的, pass 之后又被SwiftUI 写回"。
+
+    ## 先纠正 v39/v40 的诊断错误 (log9 逐行交叉比对后的结论)
+
+    v39 与 v40 的 docstring 都断定"高度补齐代码一次都没执行过", 依据是
+    `V40-HCHAIN` 触发 0 次 + 同一storageLen 的 `svH` 恒定不变。**这个结论是错的。**
+
+    把 log9 里同一毫秒、**同一个 layoutSubviews 调用内**的两个日志点并排看:
+
+    ```
+    07:28:44.501  [LEFT-CLIP-FIX  v18] sv0=(16.0, 296.0, 100000.0, 1455.33)
+    07:28:44.501  [LEFT-CLIP-DIAG2]    svFrame=(16.0, 296.0, 358.0, 2000.33)
+    ```
+
+    `_svf0` 是第 7554 行 `let _svf0 = superview?.frame ?? .zero` 在
+    **layoutSubviews 开头**抓的快照; DIAG2 在**同一个函数末尾**(第 7711 行)读实时值。
+    两行时间戳完全相同 → 同一个 pass 内superview 从
+    `100000 x 1455.33` 变成 `358 x 2000.33`。
+
+    **v18 + v40 在这个 pass 里确实把几何彻底修好了。**
+    2000.33 == 那个 storageLen=1155 的 needH, 358 == 正确内容宽。
+
+    分组统计五组文本, 每一组都是同样的双值分布:
+
+    | storageLen | DIAG2(修好后) | v18 开头快照(脏值) |
+    |---|---|---|
+    |   327 | 358.0 x  563.7 |   764.7 x  349.3 |
+    |   936 | 358.0 x 1501.7 |  1783.3 x 1073.0 |
+    |   252 | 358.0 x  399.0 |   609.7 x  280.0 |
+    |   664 | 358.0 x 1175.7 |  1012.3 x  818.7 |
+    |  1155 | 358.0 x 2000.3 | 100000.0 x 1455.3 |
+
+    修好后的高度**全部等于对应的 needH**, 一处不差。
+
+    所以 `V40-HCHAIN` 打印 0 次的原因是它自己写错了位置: 它长在
+    `ios15ApplyFrameFix` 里读`sv.frame`, 而那个时刻值**已经是对的**,
+    条件 `f.size.height + 0.5 < needH` 自然恒为 false。
+    **诊断挂在"结果已修好"的那一层, 永远打不出来。**
+    (v40 引入它时的注释还特意写"判定必须用补齐之前的 f" —— 补齐是上一段做的,
+    而上一段读到的就已经是修好的值了。这个假设从一开始就站不住。)
+
+    同理, `poll=true` 50/59 也不是"污染分支一直在跑"那么乐观——
+    `_svf0` 是**上一次 SwiftUI 留下的脏值**, 恰恰证明 SwiftUI 在 pass 之后又写回过。
+
+    ## 真凶: KVO 抢帧器只修宽度, 高度完全没人管
+
+    抢帧的最后一环是 `ios15InstallKVO()` 里那个 block-KVO
+    (`sv.observe(\.frame)`), 它在 SwiftUI 写坏 frame 的**同一调用栈内**改回来。
+    v29 之后它长这样:
+
+    ```swift
+    let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
+    if !polluted {
+        if 宽窄正常 { self.ios15LastSaneSVFrame = f }
+        return                // <-- 宽度一干净就放过
+    }
+    var fix = f
+    ...
+    fix.origin.x = ...; fix.size.width = ...     // <-- 只写 x 和 width
+    obj.frame = fix                // <-- 高度原样带着脏值提交
+    ```
+
+    两个洞:
+      1. `polluted` 判据**只看宽度**。SwiftUI 写回 `(16, y, 358, 1455.3)`
+         这种"宽度对、高度矮"的帧时, 直接 `return`, 高度没人补。
+      2. 即使 `polluted == true` 走了修正分支, 也只改 x/width,
+         `fix.size.height` 保持 SwiftUI 给的欠账值原样提交。
+
+    于是 log9 那个 100000 x 1455.33 → 358 x 2000.33 的过程是:
+      - KVO 抓到 100000 宽 → 修宽度 → 但高度仍是 1455.33
+      - 帧同步 `ios15ApplyFrameFix` 修高度到 2000.33(pass 内, DIAG2 看到的就是它)
+      - **pass 结束, SwiftUI 布局收尾再写一次 358 x 1455.33**
+      - 下一次 KVO 触发时宽度已正常 → `if !polluted { return }` → **高度不补**
+      - 屏幕最终渲染的是 1455.33, 而文字需要 2000.33 → **末行 545pt 被裁掉**
+
+    这与用户症状精确对应: "字显示不出来 / 只有一半字 / 终端框结束后不接结果"。
+
+    ## v41 修法: KVO 里把高度与宽度拆成两个独立维度
+
+    与 v40 在 `ios15ApplyFrameFix` 里做的同构, 但改在**真正会漏的那一层**:
+
+    1. 在 `let polluted` 之前无条件补高度(与 v40 手法一致)
+    2. `polluted` 判据增加高度维度, 让"宽度正常但高度欠账"也能进修正分支
+    3. 修正分支里同时写 `fix.size.height`
+    4. 保留 `ios15KvoFixing` 重入保护(补高度会二次触发 KVO)
+
+    ## 诊断: 打穿"pass 内 vs pass 后"
+
+    v40 的诊断之所以哑, 是因为它只在一个时刻读一个值。
+    v41 打**两个**:
+      - `[V41-KVOPRE]` KVO 抓到的原始值(脏)
+      - `[V41-KVOPOST]` 补齐后即将提交的值
+      - `[V41-KVODEBT]` 若本次 pass 结束后仍欠账(SwiftUI 又写回), 记一笔并节流
+
+    有了 KVOPRE/KVOPOST, "KVO 修好了" 与 "KVO 压根没被触发" 立刻可区分;
+    KVODEBT 则直接回答"是谁在 pass 之后把高度压回去的"。
+
+    ## 为什么这次不猜终端块的 isScrollEnabled
+
+    上一版 v41 的隐患是"早期注册锚点落在 `if !isScrollEnabled` 内, 可能漏掉终端块"。
+    本版**完全不碰注册**, 因此该隐患自动消失。
+    另外 log9 已实测 `scroll=false` 19/19, 说明这些气泡文本视图确实不可滚动,
+    原来的 `guard !isScrollEnabled` 从来不是拦路虎。
+    """
+    if "V41-KVOPOST" in t:
+        return t
+
+    # ---- 第一处: KVO 观察器内, polluted 判定之前无条件补高度 ----
+    # 【踩坑记录】缩进必须逐字符对齐产物。KVO 闭包体是 12 空格,
+    # 锚点失败时先 repr 打印真实缩进, 不要凭印象猜(上一版就栽在 16 vs 12 上)。
+    ANCHOR = """            let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
+            if !polluted {
+                if f.size.width > 200, f.origin.x > 0.5, f.size.width < cvW - 0.5 {
+                    self.ios15LastSaneSVFrame = f
+                }
+                return
+            }"""
+    if ANCHOR not in t:
+        raise RuntimeError("fix_kvo_height_clamp_v41: 未找到 KVO polluted 判据锚点 (上游结构变了?)")
+
+    NEW = """            // [V41-KVOPRE] 抢帧器抓到的**原始**值(脏)。见函数 docstring「诊断打穿pass 内 vs pass 后」。
+            struct _KvoPre { static var last: CFTimeInterval = 0 }
+            let _kvoNow = CACurrentMediaTime()
+            if _kvoNow - _KvoPre.last > 0.5 {
+                _KvoPre.last = _kvoNow
+                NSLog("[V41-KVOPRE] sv=(%.1f,%.1f,%.1f,%.1f) needH=%.1f cvW=%.1f",
+                      f.origin.x, f.origin.y, f.size.width, f.size.height,
+                      self.ios15LastNeededH, cvW)
+            }
+            // [V41-KVOHEIGHT] 高度与宽度**两个独立维度** — 见函数 docstring 的完整推导。
+            //
+            // v39/v40 都误判为"补齐代码没执行"。log9 逐行交叉比对证明**恰恰相反**:
+            // 同一毫秒同一 layoutSubviews 内, DIAG2 读到的 superview 已经是
+            // 358 x needH(修好的), 说明 v18+v40 在 pass 内把几何修好了;
+            // 欠账是 **pass 结束后 SwiftUI 布局收尾又写回** 的。
+            //
+            // 漏水的最后一环是这个 KVO 抢帧器: 它只修 x/width, 高度从不写。
+            // 于是"宽度正常 + 高度欠账"这种帧(正是 SwiftUI 收尾写回的形态)
+            // 会被下面的 `if !polluted { return }` 直接放过 —— 高度永远补不上,
+            // 屏幕渲染的是欠账高度, 末行被裁 → "字只剩一半/终端框不接结果"。
+            //
+            // 幂等 + 重入安全: 下面写 frame 时有 ios15KvoFixing 保护。
+            if self.ios15LastNeededH > 1, f.size.height + 0.5 < self.ios15LastNeededH {
+                var _hFix = f
+                _hFix.size.height = self.ios15LastNeededH
+                self.ios15KvoFixing = true
+                obj.frame = _hFix
+                self.ios15KvoFixing = false
+                // [V41-KVOHEIGHT-HIT] 补齐真的执行了(节流 0.5s)。v39/v40 之所以
+                // 判"补齐没跑"是因为诊断挂在结果已修好的那一层; 这里挂在
+                // "即将写入欠账值"的那一刻, 只要欠账被补就必定打出来。
+                struct _KvoHit { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                let _kh = CACurrentMediaTime()
+                if _kh - _KvoHit.last > 0.5 {
+                    _KvoHit.last = _kh
+                    _KvoHit.n &+= 1
+                    NSLog("[V41-KVOHEIGHT] fixed svH=%.1f -> needH=%.1f debt=%.1f svW=%.1f n=%u",
+                          f.size.height, self.ios15LastNeededH,
+                          self.ios15LastNeededH - f.size.height, f.size.width, _KvoHit.n)
+                }
+                // 补完立刻交棒: 下面的宽度修正必须基于新高度继续, 不能return。
+                f = _hFix
+            }
+            // [V41-KVOPOST] 即将提交的值(应为 358 x needH)。见 docstring「诊断」。
+            if self.ios15LastNeededH > 1, f.size.height + 0.5 >= self.ios15LastNeededH {
+                struct _KvoPost { static var last: CFTimeInterval = 0 }
+                let _kpo = CACurrentMediaTime()
+                if _kpo - _KvoPost.last > 0.5 {
+                    _KvoPost.last = _kpo
+                    NSLog("[V41-KVOPOST] sv=(%.1f,%.1f,%.1f,%.1f) needH=%.1f",
+                          f.origin.x, f.origin.y, f.size.width, f.size.height,
+                          self.ios15LastNeededH)
+                }
+            }
+            // [V41-POLLED] polluted 判据增加**高度维度**: 宽度正常但高度欠账的帧
+            // 也必须进修正分支, 不能被 `if !polluted { return }` 放过。
+            let _hDebt = self.ios15LastNeededH > 1 && f.size.height + 0.5 < self.ios15LastNeededH
+            let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt
+            if !polluted {
+                if f.size.width > 200, f.origin.x > 0.5, f.size.width < cvW - 0.5 {
+                    self.ios15LastSaneSVFrame = f
+                }
+                return
+            }"""
+    t = t.replace(ANCHOR, NEW, 1)
+
+    # ---- 第二处: 修正分支里同时写高度 ----
+    ANCHOR2 = """            var fix = f
+            if let last = self.ios15LastSaneSVFrame,
+               last.size.width > 0, last.size.width <= cvW,
+               last.origin.x > 0.5, last.size.width < cvW - 0.5 {
+                fix.origin.x = last.origin.x
+                fix.size.width = last.size.width
+            } else {
+                fix.origin.x = 16
+                fix.size.width = cvW - 32
+            }
+            self.ios15KvoFixing = true
+            obj.frame = fix
+            self.ios15KvoFixing = false"""
+    if ANCHOR2 not in t:
+        raise RuntimeError("fix_kvo_height_clamp_v41: 未找到 KVO 修正分支锚点 (上游结构变了?)")
+
+    NEW2 = """            var fix = f
+            if let last = self.ios15LastSaneSVFrame,
+               last.size.width > 0, last.size.width <= cvW,
+               last.origin.x > 0.5, last.size.width < cvW - 0.5 {
+                fix.origin.x = last.origin.x
+                fix.size.width = last.size.width
+            } else {
+                fix.origin.x = 16
+                fix.size.width = cvW - 32
+            }
+            // [V41-KVOFIXH] 提交前再兜一次高度。上面的 V41-KVOHEIGHT 已经在
+            // polluted 之前补过一次, 这里是幂等重复, 防的是"宽度修正路径里
+            // 顺带把高度带回去"。留着是因为这段是**真正写 frame** 的地方,
+            // 任何绕过前面那段高度的路径都在这里被拦住。
+            if self.ios15LastNeededH > 1, fix.size.height + 0.5 < self.ios15LastNeededH {
+                // [V41-KVOFIXH-HIT] 兜底命中: 说明有路径绕过了前面的 V41-KVOHEIGHT,
+                // 或宽度修正把高度带回去了。节流 0.5s, 正常情况下不该频繁出现。
+                struct _FixH { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                let _fh = CACurrentMediaTime()
+                if _fh - _FixH.last > 0.5 {
+                    _FixH.last = _fh
+                    _FixH.n &+= 1
+                    NSLog("[V41-KVOFIXH] rescue fixH=%.1f -> needH=%.1f debt=%.1f n=%u",
+                          fix.size.height, self.ios15LastNeededH,
+                          self.ios15LastNeededH - fix.size.height, _FixH.n)
+                }
+                fix.size.height = self.ios15LastNeededH
+            }
+            self.ios15KvoFixing = true
+            obj.frame = fix
+            self.ios15KvoFixing = false"""
+    t = t.replace(ANCHOR2, NEW2, 1)
+
+    # ---- 第三处: pass 末尾的"回写侦测" — 回答"是谁在 pass 之后压回高度" ----
+    #挂在 DIAG2 旁边(每 5s 一次, 与 DIAG2 同步采样, 便于逐条对照)。
+    # 这里读到的 superview 高度若仍< needH, 说明 SwiftUI 在本pass 结束后又写回了。
+    ANCHOR3 = """        struct _ClipDiag2 { static var lastLog: CFTimeInterval = 0 }
+        let _nowD = CACurrentMediaTime()
+        if _nowD - _ClipDiag2.lastLog > 5.0 {
+            _ClipDiag2.lastLog = _nowD"""
+    if ANCHOR3 not in t:
+        raise RuntimeError("fix_kvo_height_clamp_v41: 未找到 DIAG2 锚点 (上游结构变了?)")
+
+    NEW3 = """        // [V41-DEBT] pass 末尾回写侦测 — 见函数 docstring「诊断打穿 pass 内 vs pass 后」。
+        // 与下面的 LEFT-CLIP-DIAG2 同一时刻采样、同一节流周期, 可逐条对照:
+        //   DIAG2 高度 == needH  → 本pass 内修好了, 欠账是 SwiftUI 事后写回的
+        //   V41-DEBT 触发        → 证实"事后写回"确实发生, 且欠账幅度是多少
+        // 诊断挂在**一定执行**的位置(函数末尾无条件路径), 不像 v40 那样
+        // 挂在"结果已修好"的分支里导致永远打不出来。
+        if ios15LastNeededH > 1, (superview?.frame.size.height ?? 0) + 0.5 < ios15LastNeededH {
+            struct _DebtLog { static var last: CFTimeInterval = 0; static var hits: UInt = 0 }
+            struct _DebtSum { static var sum: CGFloat = 0; static var n: UInt = 0 }
+            _DebtLog.hits &+= 1
+            let _nowDebt = CACurrentMediaTime()
+            if _nowDebt - _DebtLog.last > 5.0 {
+                _DebtLog.last = _nowDebt
+                _DebtSum.sum += ios15LastNeededH - (superview?.frame.size.height ?? 0)
+                _DebtSum.n &+= 1
+                NSLog("[V41-DEBT] passEnd svH=%.1f needH=%.1f debt=%.1f svW=%.1f hits=%u avgDebt=%.1f storageLen=%lu",
+                      superview?.frame.size.height ?? 0, ios15LastNeededH,
+                      ios15LastNeededH - (superview?.frame.size.height ?? 0),
+                      superview?.frame.size.width ?? 0,
+                      _DebtLog.hits,
+                      _DebtSum.n > 0 ? _DebtSum.sum / CGFloat(_DebtSum.n) : CGFloat(0),
+                      UInt(textStorage.length))
+            }
+        }
+        struct _ClipDiag2 { static var lastLog: CFTimeInterval = 0 }
+        let _nowD = CACurrentMediaTime()
+        if _nowD - _ClipDiag2.lastLog > 5.0 {
+            _ClipDiag2.lastLog = _nowD"""
+    t = t.replace(ANCHOR3, NEW3, 1)
+
+    # ---- 断言 ----
+    if _v41_marks(t, "V41-KVOHEIGHT") != 1:
+        raise RuntimeError(
+            f"fix_kvo_height_clamp_v41: KVO 补高标记数不符 (期望 1, 实际 {_v41_marks(t, 'V41-KVOHEIGHT')})")
+    if _v41_marks(t, "V41-KVOFIXH") != 1:
+        raise RuntimeError(
+            f"fix_kvo_height_clamp_v41: KVO 兜底标记数不符 (期望 1, 实际 {_v41_marks(t, 'V41-KVOFIXH')})")
+    if _v41_marks(t, "V41-KVOPOST") != 1:
+        raise RuntimeError(
+            f"fix_kvo_height_clamp_v41: KVOPOST 标记数不符 (期望 1, 实际 {_v41_marks(t, 'V41-KVOPOST')})")
+    if _v41_marks(t, "V41-DEBT") != 1:
+        raise RuntimeError(
+            f"fix_kvo_height_clamp_v41: DEBT 标记数不符 (期望 1, 实际 {_v41_marks(t, 'V41-DEBT')})")
+
+    # 硬要求 1: 补高度必须在 polluted 判定之前
+    i_h = t.index("V41-KVOHEIGHT")
+    i_p = t.index("let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt")
+    if i_h > i_p:
+        raise RuntimeError("fix_kvo_height_clamp_v41: KVO 补高度必须在 polluted 判据之前")
+
+    # 硬要求 2: polluted 判据必须含高度维度, 否则"宽度正常+高度欠账"仍被放过
+    if "_hDebt" not in t[i_p:i_p + 120]:
+        raise RuntimeError("fix_kvo_height_clamp_v41: polluted 判据缺少高度维度 _hDebt")
+
+    # 硬要求 3: 兜底补高必须在 `obj.frame = fix` 之前
+    i_fh = t.index("V41-KVOFIXH")
+    i_fa = t.index("obj.frame = fix", i_fh)
+    if i_fh > i_fa:
+        raise RuntimeError("fix_kvo_height_clamp_v41: 兜底补高必须在 obj.frame = fix 之前")
+
+    # 硬要求 4: V41 不得改动注册路径(上一版的思路已被证伪, 避免半吊子残留)
+    if "V41-REGISTER" in t:
+        raise RuntimeError("fix_kvo_height_clamp_v41: 检测到已废弃的 V41-REGISTER 残留, 请先清理")
+
+    return t
+
+
 def fix_table_width_clamp_v38b(t):
     """v38-B: 表格 attachmentBounds 宽度钳到真实容器宽 — 治"第 10 条泄漏"。
 
@@ -3082,6 +3412,7 @@ def main():
     edit("Shared/NSTextContainerSetSizeGuard.m", fix_setsize_storm_clamp_v38c, "v38-C: intrinsic 哨兵高度 100000 收敛到 4000 (358x100000 独占 87 次最高频风暴 → 终端框卡顿 + 长文本卡字)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_clamp_v39, "v39: 帧同步补上高度 — 治'字显示不全/排版不对'(v23 帧同步只修宽度不修高度, 每帧把 v18 撑好的高度改回去 → svH 恒为 needH 的 0.50~0.74, 37/37)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_unconditional_v40, "v40: 高度补齐挪出 polluted 分支 — 治'块重叠/字只剩一半'(v39 实测: textView 自身 frameH==needH 已 52/52 全对, 但 superview 52/52 仍欠 23.7~476pt。根因: polluted 判据只看宽度, 宽度修好后早退, v39 的高度代码一行没跑 → 宽度修好反而挡住了高度)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_height_clamp_v41, "v41: KVO 抢帧器补高度 — 治'字只剩一半/终端框不接结果'(推翻 v39/v40 的诊断: log9 同一毫秒同一 layoutSubviews 内 DIAG2 读到 358x2000.33 而开头快照是 100000x1455.33 → v18+v40 在 pass 内**确实修好了**, 欠账是 pass 结束后 SwiftUI 写回的。真凶: KVO 抢帧器只修x/width 从不写高度, 且 polluted 判据只看宽度 → '宽度正常+高度欠账'的帧被 if !polluted { return } 放过 → 末行被裁。v41: KVO 内无条件补高度 + polluted 增加高度维度 + 提交前兜底 + pass 末尾 V41-DEBT 回写侦测)")
     # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")

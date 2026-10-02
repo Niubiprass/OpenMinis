@@ -428,6 +428,56 @@ jobs:
             echo "❌ v39 缺失 —— 帧同步每帧只改宽度不改高度, svH 恒为 needH 的 0.5~0.74, 排版必然不对!"
             exit 1
           fi
+          echo "::group::断言43: v41 KVO 抢帧器必须补高度 (推翻 v39/v40 诊断: 欠账是 pass 之后被 SwiftUI 写回的)"
+          # 【v41 的诊断反转 —— log9 逐行交叉比对】
+          # v39/v40 都断定"高度补齐代码一次都没执行过"。**该结论是错的。**
+          # 把 log9 里同一毫秒、**同一个 layoutSubviews 调用内**的两个日志点并排:
+          #   07:28:44.501[LEFT-CLIP-FIX  v18] sv0=(16.0, 296.0, 100000.0, 1455.33)
+          #   07:28:44.501  [LEFT-CLIP-DIAG2]    svFrame=(16.0, 296.0, 358.0, 2000.33)
+          # _svf0 是函数**开头**抓的快照, DIAG2 在**同一函数末尾**读实时值 →
+          # v18+v40 在这个 pass 内把几何**彻底修好了**(358 == 正确宽, 2000.33 == needH)。
+          # 五组文本无一例外都是双值分布(327/936/252/664/1155), 修好后高度全部等于 needH。
+          # V40-HCHAIN 打 0 次的原因: 它读 sv.frame 时值已经是对的, 条件恒为 false。
+          #   → 诊断挂在"结果已修好"的那一层, 永远打不出来。同型第三次踩坑。
+          #
+          # 真凶: 抢帧的最后一环 ios15InstallKVO() 里的 block-KVO **只修 x/width,
+          # 高度从不写**, 且 polluted 判据也只看宽度。于是 SwiftUI 布局收尾写回的
+          # "宽度正常 + 高度欠账"帧被 `if !polluted { return }` 直接放过,
+          # 末行被裁 → 用户症状: 字只剩一半 / 终端框结束不接结果。
+          if grep -q "V41-KVOHEIGHT" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "V41-KVOFIXH" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "V41-DEBT" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            # 【加固·重要】位置判据必须锚**真正执行的赋值语句**, 不能锚注释标记。
+            # 反向证伪(10/10)已证明: 锚注释时把注释挪走就骗过检查, 判据形同虚设。
+            _v41_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); a=t.index('_hFix.size.height = self.ios15LastNeededH'); h=t.index(chr(10)+'                f = _hFix'); p=t.index('let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt'); r=t.index(chr(10)+'                fix.size.height = self.ios15LastNeededH'); w=t.index(chr(10)+'            obj.frame = fix', r); print('OK' if a<h<p<r<w else 'BAD')")
+            # 判据必须含高度维度, 否则"宽度正常+高度欠账"仍被 !polluted 放过。
+            _v41_dim=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); p=t.index('let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt'); print('OK' if '_hDebt' in t[p:p+120] else 'BAD')")
+            # 编译正确性: KVO 闭包内必须 var f(v41 要f = _hFix 重新赋值), 且三元表达式
+            # 两侧必须同类型(CGFloat vs Int 会直接编译失败)。
+            _v41_swift=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('ios15KvoToken = sv.observe'); e=t.index('private var attachmentViews', s); g=t[s:e]; a='var f = obj.frame' in g; b=chr(10)+'            let f = obj.frame' not in g; c='CGFloat(0),' in t; print('OK' if a and b and c else 'BAD')")
+            # 五条诊断必须都在 NSLog 里(锚 NSLog 字符串, 不锚注释)。
+            _v41_diag=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); ms=['V41-KVOPRE','V41-KVOHEIGHT','V41-KVOPOST','V41-KVOFIXH','V41-DEBT']; print('OK' if all(t.count('NSLog(\"['+m+']')==1 for m in ms) else 'BAD')")
+            # 反向断言: 兜底补高条件不得被阉割(改成 if false 之类)。
+            # 【为什么单独断言】反向证伪 9 项里它曾漏掉 —— 位置判据锚的是赋值语句,
+            # 把整个 if 体换成 `if false {` 后赋值语句仍在, 位置判据察觉不到。
+            # 必须额外验"条件本身还在"。
+            _v41_resc=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); c='if self.ios15LastNeededH > 1, fix.size.height + 0.5 < self.ios15LastNeededH {'; print('OK' if c in t else 'BAD')")
+            # 反向断言: 重入保护必须两处都在。补高度会二次触发 KVO, 没有它会无限递归。
+            # 【为什么单独断言】同上, 改成 false 后赋值语句仍在, 位置判据漏。
+            _v41_guard=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('ios15KvoToken = sv.observe'); e=t.index('private var attachmentViews', s); g=t[s:e]; print('OK' if g.count('ios15KvoFixing = true')==2 and g.count('ios15KvoFixing = false')==2 else 'BAD')")
+            # 反向断言: 不得残留已废弃的 v41 注册方案(思路已被证伪, 残留=半吊子)。
+            _v41_clean=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); print('OK' if 'V41-REGISTER' not in t and 'V41-TICK' not in t else 'BAD')")
+            if [ "$_v41_pos" = "OK" ] && [ "$_v41_dim" = "OK" ] && [ "$_v41_swift" = "OK" ] && [ "$_v41_diag" = "OK" ] && [ "$_v41_clean" = "OK" ] && [ "$_v41_resc" = "OK" ] && [ "$_v41_guard" = "OK" ]; then
+              echo "✅ v41 KVO 抢帧器已补高度 (无条件补高 + polluted 含高度维度 + 提交前兜底 + 5 条诊断就位)"
+            else
+              echo "❌ v41 异常 (位置=$_v41_pos 维度=$_v41_dim Swift=$_v41_swift 诊断=$_v41_diag 残留=$_v41_clean 兜底=$_v41_resc 重入=$_v41_guard) —— SwiftUI 写回的高度欠账仍无人拦截, 末行裁字必然复发!"
+              exit 1
+            fi
+          else
+            echo "❌ v41 KVO 补高度缺失 —— 抢帧器只修宽度, '宽度正常+高度欠账'的帧被 !polluted 放过, 字只剩一半/终端框不接结果必然复发!"
+            exit 1
+          fi
+          echo "::endgroup::"
 
           echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
           # 病根A 实证 (minis-2026-10-03 6.log):
