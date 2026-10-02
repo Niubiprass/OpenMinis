@@ -427,11 +427,11 @@ jobs:
             echo "❌ v30-C 输入栏自愈缺失 —— STALLED 只能退出重进会话!"; exit 1
           fi
           echo "::endgroup::"
-          echo "::group::断言24: v32 渲染宽+测高宽统一 cvW-32 (log15 实证 tcW 326×132/358×115 翻转 → 字不贴边/滑动忽隐忽现/双引擎高度振荡 1477↔1310)"
-          if [ "$(grep -c 'V32-WIDTH' src/ios/Views/Chat/SelectableMarkdownView.swift)" -ge 2 ] && grep -q "max(_cvW - 32, 100)" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "let measureWidth: CGFloat = (measCapW > 1)" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "✅ v32 宽度稳定(渲染+测高统一 cvW-32)已注入"
+          echo "::group::断言24: v32+v33 渲染宽/测高宽/_realW2 三处统一 per-cell contentW (log17 实证: 气泡型 cell 实为 326@16, v28 遗留 _realW2=cvW-32=358 把 326 的框撑爆 → 边框裁字/卡字/终端框卡内容; 测高 358≠渲染 326 → 溢出)"
+          if [ "$(grep -c 'V32-WIDTH' src/ios/Views/Chat/SelectableMarkdownView.swift)" -ge 2 ] && grep -q "V33-WIDTH2" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "min(bounds.width, _cvW) - textContainerInset.left - textContainerInset.right" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "min(bounds.width, cvContentWidth) - textContainerInset.left - textContainerInset.right" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v32+v33 宽度三处统一 contentW(渲染/测高/_realW2)已注入"
           else
-            echo "❌ v32 宽度稳定缺失 —— 326↔358 翻转复发, 字忽隐忽现/不贴边/高度振荡!"; exit 1
+            echo "❌ v32/v33 宽度统一缺失 —— 测宽≠渲染宽 → 溢出裁字/卡字复发!"; exit 1
           fi
           echo "::endgroup::"
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"

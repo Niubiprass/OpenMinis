@@ -2085,10 +2085,11 @@ def fix_width_stabilize_v32(t):
                 _realW = max(_realW - 32, 100)
             }"""
     RENDER_NEW = """            let _svW = superview?.bounds.width ?? 0
-            // [V32-WIDTH] 渲染宽统一 = cvW-32。贴边(全宽390+16 inset)与气泡(358@16+0 inset)
-            // 的文字可用宽都恒为 358; 旧逻辑按抖动的 bounds 再 -32 → 326/358 翻转 (log15 tcW
-            // 326×132/358×115) → re-wrap 闪烁(字忽隐忽现)+边距不稳(不贴边)+双引擎测宽分歧。
-            let _realW = max(_cvW - 32, 100)"""
+            // [V32-WIDTH] 渲染宽 = 本 cell 真实内容宽 (视图宽 - 内边距), 不再硬编码 cvW-32。
+            // log17 反转假设: 气泡型 cell 的 superview 实为 326@16 (非 358), v28 遗留的
+            // _realW2=cvW-32=358 会把文字容器撑到 358 塞进 326 框 → 右侧溢出被裁(边框裁字)。
+            // 贴边型(390-16×2=358)与气泡型(326-0=326)各取自己的真实宽, 渲染/测高同式 → 永不溢出。
+            let _realW = max(200.0, min(bounds.width, _cvW) - textContainerInset.left - textContainerInset.right)"""
     MEASURE_OLD = """        let measCapW = cvContentWidth > 33 ? cvContentWidth - 32 : cvContentWidth
         let measureWidth: CGFloat
         if proposedMeasureW > 1, proposedMeasureW < 100_000,
@@ -2099,10 +2100,9 @@ def fix_width_stabilize_v32(t):
         } else {
             measureWidth = textContainer.size.width
         }"""
-    MEASURE_NEW = """        // [V32-WIDTH] 测高宽统一 = cvW-32, 与渲染宽严格一致; 不再跟随 SwiftUI 抖动的
-        // bounds.width(在 326/358 摆动) → 两引擎测不同宽 → 高度分歧振荡 + 末行裁切。
-        let measCapW = cvContentWidth > 33 ? cvContentWidth - 32 : cvContentWidth
-        let measureWidth: CGFloat = (measCapW > 1) ? measCapW : max(textContainer.size.width, 200)"""
+    MEASURE_NEW = """        // [V32-WIDTH] 测高宽 = 与渲染完全相同的式子(视图宽 - 内边距), 严格 measure==render。
+        // 气泡型 cell 宽 326、贴边型 358 各自正确; 不再用 cvW-32 硬编码(会把 326 的框撑爆)。
+        let measureWidth: CGFloat = max(200.0, min(bounds.width, cvContentWidth) - textContainerInset.left - textContainerInset.right)"""
     if "V32-WIDTH" in t:
         return t
     if RENDER_OLD not in t:
@@ -2114,6 +2114,27 @@ def fix_width_stabilize_v32(t):
         return t
     t = t.replace(MEASURE_OLD, MEASURE_NEW, 1)
     return t
+
+
+def fix_realw2_v33(t):
+    """v33: 修正 v28 遗留的 _realW2 硬编码 cvW-32 — 治"边框裁字/卡字/终端框卡内容"。
+
+    log17 实证 (v32 包): 气泡型 cell 的 superview 实为 326@16 (frame=(0,0,326,25.33)),
+    而 v28 在渲染函数末尾注入的 `let _realW2 = max(200.0, _cvW - 32)` = 358 会把
+    textContainer 强行撑到 358 —— 塞进 326 宽的框里, 右侧 32pt 溢出被裁 → "边框裁字/卡字";
+    终端/代码框(内部再嵌一层)同理被卡。v32 已把 _realW 与测高宽改为 per-cell contentW,
+    但 _realW2 是该函数最后一次赋值, 会覆盖 v32 → 必须一并改为 contentW, 三者才一致。
+    """
+    OLD = """            let _realW2 = max(200.0, _cvW - 32)"""
+    NEW = """            // [V33-WIDTH2] 与 _realW/测高宽 同一式子(视图宽 - 内边距): 气泡型 326、贴边型 358
+            // 各取真实宽, 绝不把 326 的框撑到 358 (那会右侧溢出裁字)。不再硬编码 cvW-32。
+            let _realW2 = max(200.0, min(bounds.width, _cvW) - textContainerInset.left - textContainerInset.right)"""
+    if "V33-WIDTH2" in t:
+        return t
+    if OLD not in t:
+        print("   [fix_realw2_v33] _realW2 锚点未命中, 跳过")
+        return t
+    return t.replace(OLD, NEW, 1)
 
 
 def fix_inputbar_kick(t):
@@ -2211,7 +2232,8 @@ def main():
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")
     edit("Views/Chat/AIChatView.swift", fix_inputbar_kick, "v30-C: 输入栏假死自愈 — STALLED 时就地重建 composer host (草稿保留)")
-    edit("Views/Chat/SelectableMarkdownView.swift", fix_width_stabilize_v32, "v32: 渲染宽+测高宽统一钉死 cvW-32 — 消除 326↔358 翻转 (字不贴边/滑动忽隐忽现/双引擎高度振荡)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_width_stabilize_v32, "v32: 渲染宽+测高宽统一 per-cell contentW(视图宽-内边距) — 消除测宽分歧与溢出裁字")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_realw2_v33, "v33: v28 遗留 _realW2 硬编码 cvW-32 改为 contentW — 修边框裁字/卡字/终端框卡内容")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
