@@ -365,6 +365,12 @@ jobs:
           else
             echo "❌ v24 硬钉宽度缺失 —— 气泡仍会被表格/代码块撑到 730/100000, 字不显示/空白/闪字复发!"; exit 1
           fi
+          echo "::group::断言18: v25 高度死锁修复必须就位 (textContainer 高放开重算 usedRect → 根除末行半截字/整条不显示)"
+          if grep -q "ios15LastGoodFitH" src/ios/iOS15Compat.swift && grep -q "_realW2 = max(200.0, _cvW - 32)" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v25 已注入: 测量 0 高度回退 + 渲染端放开容器高重算 usedRect, 半截字/不显示根除"
+          else
+            echo "❌ v25 高度修复缺失 —— usedRect 仍被 textContainer 高度死锁, 末行半截字/整条不显示复发!"; exit 1
+          fi
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
           if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ KVO 抢帧已注入"
