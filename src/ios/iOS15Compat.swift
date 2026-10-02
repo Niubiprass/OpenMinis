@@ -461,9 +461,17 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         controller.view.backgroundColor = .clear
         controller.view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(controller.view)
+        // [IOS15-FIX-CLIP v24] 硬钉 hosting 视图宽度 = 可用宽, 左对齐 + 裁切溢出。
+        // 病根: 四边钉死让 hosting view 跟随已被污染的父宽(表格/代码块不理 maxWidth,
+        // 理想宽 730/100000), 气泡超宽 → 双侧裁字 + 右侧空白 + SwiftUI 抢帧闪字。
+        // 改成硬钉宽度=可用宽(max(屏宽-32,200)): view 帧恒为 358, SwiftUI 据此向 root
+        // 提议 358 → 所有子节点按 358 排布, 超宽帧从根上不再产生; clipsToBounds 把
+        // 任何内部溢出(超宽表格)裁在 358 内 → 气泡恒等于可用宽。
+        let _ios15AvailW = max(UIScreen.main.bounds.width - 32, 200)
+        controller.view.clipsToBounds = true
         NSLayoutConstraint.activate([
             controller.view.leadingAnchor.constraint(equalTo: leadingAnchor),
-            controller.view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            controller.view.widthAnchor.constraint(equalToConstant: _ios15AvailW),
             controller.view.topAnchor.constraint(equalTo: topAnchor),
             controller.view.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
