@@ -7493,24 +7493,42 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // 更高 → 最后一行被拦腰裁断 (截图实证)。这里排版后按 usedRect 撑高自身与气泡;
             // ios15LastNeededH 记住需求高度, SwiftUI 重排把 frame 高拉回去时也能检出并重撑。
             // 刻意**不调用 setNeedsLayout** —— 那是 v12/v13 闪字的元凶。
-            if _widthChanged || frame.size.height < ios15LastNeededH - 0.5 {
-                layoutManager.ensureLayout(for: textContainer)
-                let _needH = layoutManager.usedRect(for: textContainer).height + textContainerInset.top + textContainerInset.bottom
-                ios15LastNeededH = _needH
-                if textStorage.length > 0, _needH > 1 {
-                    if frame.size.height < _needH - 0.5 {
-                        var _hf = frame
-                        _hf.size.height = _needH
-                        frame = _hf
-                        _didFix = true
-                    }
-                    if let _sv = superview, _sv.frame.size.height > 1, _sv.frame.size.height < _needH - 0.5 {
-                        var _sf = _sv.frame
-                        _sf.size.height = _needH
-                        _sv.frame = _sf
-                    }
-                    invalidateIntrinsicContentSize()
+            // [v25] 高度死锁修复 (末行半截字 / 整条不显示)。
+            // 旧逻辑用 usedRect 直接读高度, 但 textContainer.size.height 跟随 frame.height
+            // (UITextView 内部维护), 当 frame 初值为小值时反向截断 usedRect → 算出的需求
+            // 高度永远 ≤ 小值 → 撑高不触发 → 内容溢出底部被裁 (日志实证 frameH=252 而真实
+            // 需 ~260, 旧 usedRect 永远停在 243)。这里临时把容器高放开到充足值, 强制
+            // invalidateLayout+ensureLayout, 让 usedRect 反映完整内容高度, 再据此撑高自身与
+            // superview, 最后把容器高还原交由 UITextView 自行管理。
+            // 无条件执行: 旧判定依赖"frame<needH"触发, 但 needH 本身也来自受限 usedRect,
+            // 会陷入"frame 小→usedRect 小→needH 小→不撑高"的死锁, 每帧用放开后的容器高
+            // 重算才能稳定得到真实需求高度 (稳态后 frame==needH, 无需再改, 不会空转)。
+            let _realW2 = max(200.0, _cvW - 32)
+            if abs(textContainer.size.width - _realW2) > 0.5 {
+                textContainer.size.width = _realW2
+            }
+            let _savedTH = textContainer.size.height
+            textContainer.size.height = 100000
+            layoutManager.invalidateLayout(forCharacterRange: NSMakeRange(0, textStorage.length), actualCharacterRange: nil)
+            layoutManager.ensureLayout(for: textContainer)
+            let _usedH = layoutManager.usedRect(for: textContainer).height
+            textContainer.size.height = _savedTH
+            let _needH = _usedH + textContainerInset.top + textContainerInset.bottom
+            ios15LastNeededH = _needH
+            if textStorage.length > 0, _needH > 1 {
+                if frame.size.height < _needH - 0.5 {
+                    var _hf = frame
+                    _hf.size.height = _needH
+                    frame = _hf
+                    _didFix = true
                 }
+                if let _sv = superview, _sv.frame.size.height > 1, _sv.frame.size.height < _needH - 0.5 {
+                    var _sf = _sv.frame
+                    _sf.size.height = _needH
+                    _sv.frame = _sf
+                    _didFix = true
+                }
+                invalidateIntrinsicContentSize()
             }
             if _didFix {
                 struct _ClipFixLog { static var lastLog: CFTimeInterval = 0 }

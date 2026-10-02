@@ -396,6 +396,7 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     /// `sizeThatFits` 这条不经过布局引擎的路径。
     private var isMeasuring: Bool = false
     private var lastLoggedWidth: CGFloat = -1
+    private var ios15LastGoodFitH: CGFloat = 0
 
     private func ios15FittingSize(_ targetSize: CGSize) -> CGSize {
         var width = targetSize.width
@@ -434,14 +435,25 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         }
         isMeasuring = true
         defer { isMeasuring = false }
+        // [v25] 测量前先强制宿主视图布局: SwiftUI 内容未布局时 sizeThatFits 返回 0
+        // (日志实证 56 次 out h=0.0 → cell 高度塌缩 → 整条消息不显示)。
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
         var size = host.view.sizeThatFits(CGSize(width: width,
                                                  height: CGFloat.greatestFiniteMagnitude))
         if !(size.height > 0) {
             size = host.view.sizeThatFits(CGSize(width: width, height: 0))
         }
         var height = size.height
-        if !(height > 0) { height = bounds.height }
+        // [v25] 仍失败且有历史好值 → 用历史好值兜底, 避免塌缩成 0。
+        if !(height > 0), ios15LastGoodFitH > 1 {
+            height = ios15LastGoodFitH
+            size.width = width
+        } else if !(height > 0) {
+            height = bounds.height
+        }
         print("[IOS15Size] out w=\(width) h=\(height) idealW=\(size.width) idealH=\(size.height)")
+        if height > 1 { ios15LastGoodFitH = max(ios15LastGoodFitH, height) }
         return CGSize(width: width, height: max(0, height))
     }
 
