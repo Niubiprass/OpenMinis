@@ -8,7 +8,28 @@
   等 iOS 16 专属 API，无法在 iOS 15.5 上编译。
   把该扩展单独抬到 iOS 16.0 后：
     - 主 App（Minis）仍以 15.5 编译、可在 iOS 15.5 安装运行；
-    - 该扩展在 iOS 15.5 上不会被系统加载（仅“文件 App 集成”失效），不影响主程序。
+    - 编译能通过（这是本脚本存在的唯一目的）。
+
+⚠️ 重要更正（2026-10-03，设备实证）：
+  本脚本原注释写"该扩展在 iOS 15.5 上不会被系统加载，不影响主程序" —— **这是错的**。
+  iOS 不会因为扩展的部署目标高于系统版本就拒绝加载它；系统会照常拉起、照常 dyld，
+  然后因为二进制里用到的 iOS 16 符号在 15.5 上不存在而直接 SIGABRT：
+
+    Symbol not found: _$s10Foundation12CharacterSetV12charactersInACSSh_tcfC
+    Referenced from: Minis.app/PlugIns/MinisFileProvider.appex/MinisFileProvider
+    Expected in:     /System/Library/Frameworks/Foundation.framework/Foundation
+    DYLD / Symbol missing / SIGABRT / "terminated at launch; ignore backtrace"
+
+  （该符号是 CharacterSet.init(charactersIn:) 的 Swift 泛型桥接桩，iOS 16 才有。）
+
+  设备侧在 8 分钟内记录到 12 次同样的秒崩（3 波，每波 3–4 个 incident），
+  说明有东西在反复拉起这个扩展（大概率是 Files App 枚举已注册的 File Provider）。
+
+  真正的处置不在本脚本，而在打包阶段：workflow 的「剥离 iOS 15 不可启动的扩展」
+  步骤会按 otool 实测结果把部署目标 >15.5 或链接了缺失框架的 appex 从包里剔除，
+  使"文件"App 集成在 iOS 15.5 上不可用（本来就用不了），但不再产生崩溃。
+
+  抬高部署目标只改 Mach-O 里的平台版本标记，**不会**让缺失的符号出现。
   只对 pbxproj「新增」一条设置，不删除任何引用，避免破坏工程结构。
 """
 import re
