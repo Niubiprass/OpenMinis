@@ -2105,13 +2105,22 @@ def fix_width_stabilize_v32(t):
         let measureWidth: CGFloat = max(200.0, min(bounds.width, cvContentWidth) - textContainerInset.left - textContainerInset.right)"""
     if "V32-WIDTH" in t:
         return t
+    # 锚点未命中 = 补丁静默失效。这里必须炸, 不能只打警告: v32 就因为
+    # "锚点未命中也放行"而在本地跑成no-op, 而 CI 断言只 grep 注释里的
+    # V32-WIDTH 标记, 于是注释在、赋值没换, 断言照样绿灯 —— 静默回归。
     if RENDER_OLD not in t:
-        print("   [fix_width_stabilize_v32] 渲染宽锚点未命中, 跳过渲染部分")
-    else:
-        t = t.replace(RENDER_OLD, RENDER_NEW, 1)
+        raise RuntimeError(
+            "[fix_width_stabilize_v32] 渲染宽锚点未命中 —— 上游 SelectableMarkdownView "
+            "的 _realW 形态已变(不是 `var _realW = _svW > 1 ? min(_svW, _cvW) : _cvW` "
+            "那三行), 渲染宽将仍是错的。必须更新 RENDER_OLD 后再发版。"
+        )
+    t = t.replace(RENDER_OLD, RENDER_NEW, 1)
     if MEASURE_OLD not in t:
-        print("   [fix_width_stabilize_v32] 测高宽锚点未命中, 跳过测高部分")
-        return t
+        raise RuntimeError(
+            "[fix_width_stabilize_v32] 测高宽锚点未命中 —— 上游 invalidateCellSizeIfNeeded "
+            "的 measureWidth 形态已变(不是 measCapW + proposedMeasureW 三分支那串), "
+            "测高宽将与渲染宽不一致 → 高度振荡/末行裁切。必须更新 MEASURE_OLD 后再发版。"
+        )
     t = t.replace(MEASURE_OLD, MEASURE_NEW, 1)
     return t
 
@@ -2132,8 +2141,11 @@ def fix_realw2_v33(t):
     if "V33-WIDTH2" in t:
         return t
     if OLD not in t:
-        print("   [fix_realw2_v33] _realW2 锚点未命中, 跳过")
-        return t
+        raise RuntimeError(
+            "[fix_realw2_v33] _realW2 锚点未命中 —— 上游 SelectableMarkdownView 里没有 "
+            "`let _realW2 = max(200.0, _cvW - 32)` 这行。它是渲染函数最后一次宽度赋值, "
+            "不改它就会覆盖 v32 的 contentW, 把 326 宽的气泡撑到 358 → 溢出裁字。"
+        )
     return t.replace(OLD, NEW, 1)
 
 

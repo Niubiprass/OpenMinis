@@ -326,18 +326,20 @@ jobs:
             echo "❌ 容器宽度上限未降到 1e5 —— 1e7 宽度仍会让 CoreText 近乎无限排版! 上游可能改了 guard 锚点"
             exit 1
           fi
-          echo "::group::断言12: v17 测量宽必须钳到 cvW-32 与渲染端一致 (消末行裁半/上下空白/污染帧拉锯)"
+          echo "::group::断言12: 测量宽必须钳到真实 contentW 与渲染端一致 (消末行裁半/上下空白/污染帧拉锯)"
           if grep -q "measCapW15" src/ios/iOS15Compat.swift ; then
             echo "✅ ios15FittingSize 有限超界宽度钳制已就位 (替身 cell 自排版)"
           else
             echo "❌ ios15FittingSize v17 钳制缺失 —— cell 高度仍按污染宽(494)算, 末行裁半/空白复发!"
             exit 1
           fi
-          if grep -q "measCapW" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "capW15UAV" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "✅ invalidateCellSize/attachment 测量宽钳到 cvW-32 已就位"
+          # v32 起测高宽改用与渲染端完全相同的 contentW 式子(视图宽 - 内边距),
+          # 不再有 measCapW(=cvContentWidth-32)这个变量; 但要求"测高宽被钳到真实可用
+          # 宽度"这个语义仍在: contentW 式子必须带 cvContentWidth/bounds 上界与 200 下界。
+          if grep -q "capW15UAV" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "max(200.0, min(bounds.width, cvContentWidth) - textContainerInset.left - textContainerInset.right)" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ attachment 测量宽钳制 + 测高宽 contentW 式子已就位"
           else
-            echo "❌ 测量宽 v17 钳制缺失 —— 测量(390/494)≠渲染(358), 高度对不上!"
-            exit 1
+            echo "❌ 测量宽钳制缺失 —— 测高宽未取真实 contentW, 高度对不上渲染宽!"; exit 1
           fi
           echo "::group::断言14: v21 intrinsicContentSize 理想宽钳制必须就位 (堵住 1e5 泄露 → 污染帧 x=-49805)"
           if grep -q "override var intrinsicContentSize" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "cvW > 33 ? cvW - 32 : sz.width" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
@@ -428,10 +430,16 @@ jobs:
           fi
           echo "::endgroup::"
           echo "::group::断言24: v32+v33 渲染宽/测高宽/_realW2 三处统一 per-cell contentW (log17 实证: 气泡型 cell 实为 326@16, v28 遗留 _realW2=cvW-32=358 把 326 的框撑爆 → 边框裁字/卡字/终端框卡内容; 测高 358≠渲染 326 → 溢出)"
-          if [ "$(grep -c 'V32-WIDTH' src/ios/Views/Chat/SelectableMarkdownView.swift)" -ge 2 ] && grep -q "V33-WIDTH2" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "min(bounds.width, _cvW) - textContainerInset.left - textContainerInset.right" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "min(bounds.width, cvContentWidth) - textContainerInset.left - textContainerInset.right" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "✅ v32+v33 宽度三处统一 contentW(渲染/测高/_realW2)已注入"
+          # 注意: 只 grep 注释标记会被"补丁写了注释但赋值没换"骗过 (v32 就这样蒙混
+          # 过了 —— 锚点与真实源码不符, 替换全部 no-op, 但 V32-WIDTH 注释确实存在)。
+          # 故此处校验三处**真实赋值语句**。
+          if [ "$(grep -cE 'let _realW = max\(200\.0, min\(bounds\.width, _cvW\) - textContainerInset\.left - textContainerInset\.right\)' src/ios/Views/Chat/SelectableMarkdownView.swift)" -eq 1 ] \
+             && [ "$(grep -cE 'let _realW2 = max\(200\.0, min\(bounds\.width, _cvW\) - textContainerInset\.left - textContainerInset\.right\)' src/ios/Views/Chat/SelectableMarkdownView.swift)" -eq 1 ] \
+             && [ "$(grep -cE 'let measureWidth: CGFloat = max\(200\.0, min\(bounds\.width, cvContentWidth\) - textContainerInset\.left - textContainerInset\.right\)' src/ios/Views/Chat/SelectableMarkdownView.swift)" -eq 1 ] \
+             && ! grep -qE 'let _realW2 = max\(200\.0, _cvW - 32\)' src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v32+v33 宽度三处统一 contentW(渲染/测高/_realW2)三条赋值均已落地"
           else
-            echo "❌ v32/v33 宽度统一缺失 —— 测宽≠渲染宽 → 溢出裁字/卡字复发!"; exit 1
+            echo "❌ v32/v33 宽度统一缺失或只落了注释 —— 测宽≠渲染宽 → 溢出裁字/卡字复发!"; exit 1
           fi
           echo "::endgroup::"
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
