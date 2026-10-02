@@ -418,6 +418,49 @@ jobs:
           grep -n "error:" build.log | grep -v "0 errors" | head -80 || true
           echo "编译成功"
 
+      - name: "剥离 iOS 15 不可启动的 Widget 扩展 (缺失 _AppIntents_SwiftUI 框架)"
+        if: success()
+        run: |
+          set -e
+          # 上游 OpenMinis 1.14 (目标 iOS 16+) 的 AgentWidgetExtension 链接了私有框架
+          # /System/Library/Frameworks/_AppIntents_SwiftUI.framework/_AppIntents_SwiftUI,
+          # 该框架在 iOS 15.5 (19F77) 上根本不存在。侧载后系统每次启动该 Widget 扩展都会在
+          # dyld 阶段因 "Library not loaded" 直接 SIGABRT 崩溃 (terminated at launch)。
+          # fix_widget_activitykit 已把 ActivityKit/AppIntents 弱链接, 但 _AppIntents_SwiftUI
+          # 是 Swift 编译器按 SwiftUI+AppIntents 用法**自动硬链接**的更深私有框架, 弱链接救不了
+          # (崩溃日志实证: Library not loaded: _AppIntents_SwiftUI.framework/_AppIntents_SwiftUI)。
+          # 唯一稳妥的办法: 在 iOS 15 包里直接剔除这个永远无法在 iOS 15 上运行的 appex ——
+          # Widget 在 iOS 15.5 上不可用, 但主 App 不再被它拖崩。
+          APP="DerivedData/Build/Products/Release-iphoneos/Minis.app"
+          if [ ! -d "$APP" ]; then
+            APP=$(find DerivedData -name "Minis.app" -type d -exec du -sk {} + | sort -rn | head -1 | cut -f2)
+          fi
+          echo "=== 待处理 .app: $APP ==="
+          PLUGINS="$APP/PlugIns"
+          if [ -d "$PLUGINS" ]; then
+            echo "=== 剥离前 PlugIns ==="
+            ls "$PLUGINS"
+            for appex in "$PLUGINS"/*.appex; do
+              [ -d "$appex" ] || continue
+              BAD=0
+              for f in "$appex"/*; do
+                if [ -f "$f" ] && [ -x "$f" ] && otool -L "$f" 2>/dev/null | grep -q "_AppIntents_SwiftUI"; then
+                  BAD=1
+                fi
+              done
+              if [ "$BAD" = "1" ]; then
+                echo "剔除 $(basename "$appex") (链接了 iOS 15.5 缺失的 _AppIntents_SwiftUI)"
+                rm -rf "$appex"
+              else
+                echo "保留 $(basename "$appex") (未引用缺失框架)"
+              fi
+            done
+            echo "=== 剥离后 PlugIns ==="
+            ls "$PLUGINS" 2>/dev/null || echo "(无 PlugIns)"
+          else
+            echo "无 PlugIns 目录, 跳过"
+          fi
+
       - name: "提交移植结果 (幂等, 且仅编译成功后才提交)"
         run: |
           # 关键: 本步骤必须在"编译 App"成功之后。
@@ -576,6 +619,17 @@ jobs:
           echo "IPA 大小: $SIZE 字节"
           if [ "$SIZE" -lt 10000000 ]; then echo "IPA 小于 10MB, 疑似空包, 中止上传"; exit 1; fi
           ls -lh "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa"
+
+      - name: "自检: IPA 不得含 iOS 15 不可启动的 _AppIntents_SwiftUI 扩展"
+        if: success()
+        run: |
+          set -e
+          if unzip -l "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa" | grep -q "AgentWidgetExtension.appex"; then
+            echo "IPA 仍含 AgentWidgetExtension.appex, 剔除步骤未生效 (iOS 15 dyld 启动崩溃根因仍在)"
+            exit 1
+          else
+            echo "IPA 已剔除 AgentWidgetExtension.appex (iOS 15 dyld 启动崩溃根因已移除)"
+          fi
 
       - name: "上传 IPA"
         if: success()
