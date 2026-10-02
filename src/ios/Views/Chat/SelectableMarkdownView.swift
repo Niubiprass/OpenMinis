@@ -5419,6 +5419,21 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             fix.origin.x = 16
             fix.size.width = cvW - 32
         }
+        // [V39-FIXHEIGHT] 帧同步补上高度 — 见函数 docstring 的完整推导。
+        //
+        // v38 实测(log7): svH恒定只有 needH 的 0.50~0.74, 37/37 无一例外,
+        // 且 svH 恒等于 frameH。原因是**两条修复路径各修一半**:
+        //   v18 layoutSubviews  修宽度 + 修高度 → 但它在中间, 会被下一帧覆盖;
+        //   v23 帧同步(本函数)  只修宽度        → 完全没有 height 字样(实测 grep = 0 命中)。
+        // 而末行被裁是**高度**不足造成的, 跟宽度无关 —— 所以只修宽度永远治不好裁字。
+        //
+        // 帧同步是最后一写(CADisplayLink tick 在 SwiftUI 布局 pass 与 layoutSubviews 之后),
+        // 在这里写高度才能真正留在屏幕上。这也是 v38-A 在 layoutSubviews 里纠正 37 次
+        // 全部无效的原因: 它的对手每帧都在把它改回去。
+        if let _needH39 = Optional(ios15LastNeededH), _needH39 > 1,
+           fix.size.height + 0.5 < _needH39 {
+            fix.size.height = _needH39
+        }
         sv.frame = fix
         return true
     }

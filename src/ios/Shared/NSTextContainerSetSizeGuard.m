@@ -124,12 +124,16 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // (同日志实测 cell 高上限), 100000 是它的 57 倍。按 100000 高排版后 TextKit
     // 认为下方还有 ~98000pt 假空白, usedRect/高度回报都不可信。
     //
-    // 修法: 高度 >= 8000 (远高于任何真实气泡, 远低于 1e5) 判定为探测哨兵,
-    // 压到 kProbeHeightCeiling。真实尺寸 (<8000) 一个字节都不受影响。
+    // 修法: 高度 >= 3000 判定为探测哨兵, 压到 2000。
+    //
+    // 【v39 实测修正】初版取 8000/4000 过于保守: log7 显示 4000 反而成了新的最高频
+    // (358x4000 × 131 次), 因为 4000 仍远超真实需求。log7 实测真实气泡最高只有
+    // **901.3pt**(FIRST-MEASURE newH 与 needH 双向确认), 3000 已有 3.3× 余量,
+    // 2000 也有 2.2× 余量。既保持"真实尺寸零影响", 又能把哨兵排版成本再降一半。
     // 哨兵本身不丢弃(下游需要它做 max-width/高度发现), 只是不再让 CoreText
     // 在十万点高度上真的排版。
-    const CGFloat kProbeHeightFloor = 8000.0;
-    const CGFloat kProbeHeightCeiling = 4000.0;
+    const CGFloat kProbeHeightFloor = 3000.0;
+    const CGFloat kProbeHeightCeiling = 2000.0;
     if (newSize.height >= kProbeHeightFloor) {
         if (gProbeHeightCount == 0) {
             NSLog(@"[TextContainerGuard] [V38C] probe-height %.0f -> %.0f "
