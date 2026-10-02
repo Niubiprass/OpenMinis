@@ -17,6 +17,34 @@ private let responderLogger = AppLogger(category: "MarkdownResponder")
 /// unencoded inside a minis:// link), returning a parseable URL (or nil if it
 /// still can't be formed). Used by both the link path (SelectableMarkdownTheme)
 /// and the image path (ImageAttachment), so it lives at file scope.
+// [V37-PROBECLAMP] 把 SwiftUI intrinsic-size probe 的合成线段宽钳到真实内容宽。
+//
+// 背景: UIHostingConfiguration 做 intrinsic-size 探测时, TextKit 会合成
+// lineFrag.width = 10_000_000 (10M) 的"无限宽"线段, 目的是让 attachment
+// 报告自己的理想宽、供 SwiftUI 做 max-width 发现。本项目 v22 已用
+// .frame(maxWidth:) 接管了发现机制, 这个 10M 哨兵值在 iOS15 上只剩
+// 一个副作用: 它经 attachmentBounds → makeView 一路写进 superview.frame,
+// 把 UITextView 的父容器撑到屏宽的 2~256 倍。
+//
+// 日志实证 (minis-2026-10-03 5.log): sv0 宽度 100000 → 1616 → 1077.67
+// → 984 → 817.67, 而 v18 每帧把 tcW 抢回 358 (poll=true 106 次,
+// 全部 "390.0 -> 358.0" 单向) = 两引擎以 3.6 倍速拉锯 = "终端框卡一下"。
+// 连带高度欠账 167pt / 71pt → 末行被拦腰裁断 = "上下一半一半"。
+//
+// 关键: 正常布局时 lineFrag.width 就是真实内容宽 (358), 钳位器原样返回,
+// **行为完全不变**; 只有 >= 100_000 的 probe 值才被钳到真实宽。
+private func ios15ClampProbeWidth(_ proposed: CGFloat, textContainer: NSTextContainer?) -> CGFloat {
+    // 非 probe: 真实布局线段, 原样返回。
+    guard proposed >= 100_000 else { return proposed }
+    // probe: 取 textContainer 真实宽 (探测期 container 仍保持真实宽度,
+    // 只有 proposedLineFragment 被合成, 与 v28 注释里的观察一致)。
+    if let tcW = textContainer?.size.width, tcW > 0, tcW < 100_000 {
+        return max(1, min(tcW, proposed))
+    }
+    // 拿不到 container 就退回一个保守值, 绝不能让 10M 逃出去。
+    return min(proposed, 390.0 - 32.0)
+}
+
 func encodeRawMinisURL(_ destination: String) -> URL? {
     let prefix = "minis://"
     guard destination.hasPrefix(prefix) else { return URL(string: destination) }
@@ -2203,7 +2231,7 @@ final class TableAttachment: NSTextAttachment {
         // point variations between layout passes hit the cached layout.
         let usableWidth = floor(lineFrag.width) - 1
         guard usableWidth > 0 else {
-            return CGRect(x: 0, y: 0, width: lineFrag.width, height: Self.minRowHeight)
+            return CGRect(x: 0, y: 0, width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer), height: Self.minRowHeight)
         }
         // [TableProbeFix] SwiftUI / UIHostingConfiguration's intrinsic-size
         // probing pass calls `attachmentBounds` with a synthesized lineFrag
@@ -3383,7 +3411,7 @@ final class ThematicBreakAttachment: NSTextAttachment {
     static let verticalMargin: CGFloat = 0
 
     override func attachmentBounds(for textContainer: NSTextContainer?, proposedLineFragment lineFrag: CGRect, glyphPosition position: CGPoint, characterIndex charIndex: Int) -> CGRect {
-        CGRect(x: 0, y: 0, width: lineFrag.width, height: 1 + Self.verticalMargin * 2)
+        CGRect(x: 0, y: 0, width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer), height: 1 + Self.verticalMargin * 2)
     }
 
     func makeView(width: CGFloat) -> UIView {
@@ -3501,7 +3529,7 @@ final class MathAttachment: NSTextAttachment {
             let imgW = min(img.size.width, lineFrag.width)
             let imgH = img.size.height
             if isBlock {
-                return CGRect(x: 0, y: 0, width: lineFrag.width, height: imgH)
+                return CGRect(x: 0, y: 0, width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer), height: imgH)
             } else {
                 // [issue #117-4] TRUE BASELINE ALIGNMENT.
                 //
@@ -3549,9 +3577,9 @@ final class MathAttachment: NSTextAttachment {
         if renderFailed {
             let fallbackFont = UIFont.monospacedSystemFont(ofSize: theme.baseFontSize * 0.85, weight: .regular)
             if isBlock {
-                let constraintSize = CGSize(width: lineFrag.width, height: .greatestFiniteMagnitude)
+                let constraintSize = CGSize(width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer), height: .greatestFiniteMagnitude)
                 let textHeight = (latex as NSString).boundingRect(with: constraintSize, options: [.usesLineFragmentOrigin], attributes: [.font: fallbackFont], context: nil).height
-                return CGRect(x: 0, y: 0, width: lineFrag.width, height: max(ceil(textHeight), Self.blockPlaceholderHeight))
+                return CGRect(x: 0, y: 0, width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer), height: max(ceil(textHeight), Self.blockPlaceholderHeight))
             } else {
                 // [T-ios-math-inline-fallback-width] Measure the actual fallback
                 // text width so the label doesn't overflow. The old hardcoded 40pt
@@ -3571,7 +3599,7 @@ final class MathAttachment: NSTextAttachment {
             }
         }
         if isBlock {
-            return CGRect(x: 0, y: 0, width: lineFrag.width, height: Self.blockPlaceholderHeight)
+            return CGRect(x: 0, y: 0, width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer), height: Self.blockPlaceholderHeight)
         }
         return CGRect(x: 0, y: 0, width: 40, height: Self.inlinePlaceholderHeight)
     }
@@ -4449,7 +4477,7 @@ final class VideoAttachment: NSTextAttachment {
             let h = min(width * aspect, UIScreen.main.bounds.height / 2)
             logBoundsBranch(2, height: h + 24, aspect: aspect, width: width)
             // +24 for filename label below
-            return CGRect(x: 0, y: 0, width: lineFrag.width, height: h + 24)
+            return CGRect(x: 0, y: 0, width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer), height: h + 24)
         }
         // [T-ios-video-squish] No thumbnail yet — use the recorded display
         // size (track-metadata probe or a previous run's thumbnail) so a
@@ -4461,7 +4489,7 @@ final class VideoAttachment: NSTextAttachment {
             let aspect = known.height / known.width
             let h = min(width * aspect, UIScreen.main.bounds.height / 2)
             logBoundsBranch(1, height: h + 24, aspect: aspect, width: width)
-            return CGRect(x: 0, y: 0, width: lineFrag.width, height: h + 24)
+            return CGRect(x: 0, y: 0, width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer), height: h + 24)
         }
         // [T-attach-bounds-probe-kick] Same closed loop as ImageAttachment: with
         // no thumbnail and no recorded size this branch returns 200pt and kicks
@@ -4471,7 +4499,7 @@ final class VideoAttachment: NSTextAttachment {
             Self.kickTrackProbe(source: source)
         }
         logBoundsBranch(0, height: Self.placeholderHeight, aspect: 0, width: width)
-        return CGRect(x: 0, y: 0, width: lineFrag.width, height: Self.placeholderHeight)
+        return CGRect(x: 0, y: 0, width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer), height: Self.placeholderHeight)
     }
 
     /// [T-attach-bounds-probe-kick] See `ImageAttachment.kickHeaderProbe` — same
