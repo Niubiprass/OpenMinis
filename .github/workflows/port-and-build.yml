@@ -410,11 +410,11 @@ jobs:
             echo "❌ v29 屏宽兜底缺失 —— hosting 层级遍历失败时抢帧被放弃, 白块死角仍在!"; exit 1
           fi
           echo "::endgroup::"
-          echo "::group::断言23: v30 双引擎测高反振荡 + 流式测高节流 + 输入栏假死自愈 (log13 实证: est=1176↔850 每帧翻转 326pt 跳动, totalShortCircuits=3217 主线程打满 → STALLED/停止迟钝)"
-          if grep -q "V30-FLIPBLOCK" src/ios/Agent/MessageList/MessageListLayout.swift && grep -q "v30FlipLastGrowAt" src/ios/Agent/MessageList/MessageListLayout.swift ; then
-            echo "✅ v30-A 双引擎测高反振荡已注入"
+          echo "::group::断言23: v31 双引擎测高反振荡(静止态反向锁) + 流式测高节流 + 输入栏假死自愈 (log14 实证: 1201↔945 ~10s 翻转仍跳动, v30-A 2s窗口过期放行)"
+          if grep -q "V31-FLIPLOCK" src/ios/Agent/MessageList/MessageListLayout.swift && grep -q "v31MaxH" src/ios/Agent/MessageList/MessageListLayout.swift ; then
+            echo "✅ v31-A 双引擎测高反振荡(静止态反向锁)已注入"
           else
-            echo "❌ v30-A 反振荡缺失 —— 1176↔850 ping-pong 复发, 列表高度瞬间跳动!"; exit 1
+            echo "❌ v31-A 反振荡缺失 —— 1201↔945 ping-pong 复发, 列表高度瞬间跳动!"; exit 1
           fi
           if grep -q "V30-THROTTLE" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "ios15LastFullMeasureAt" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ v30-B 流式测高节流已注入 (~8次/秒)"

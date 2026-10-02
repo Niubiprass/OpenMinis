@@ -1975,34 +1975,33 @@ def fix_flip_block(t):
     OLD = """        return shouldInvalidate
     }
     private static var invIdxCounts: [Int: Int] = [:]"""
-    NEW = """        // [V30-FLIPBLOCK] 双引擎测高反振荡 (log13 实证 est=1176↔850 每帧翻转)
-        if shouldInvalidate, preferred < original - 100 {
-            let _v30Now = CACurrentMediaTime()
-            if let _v30GrowAt = Self.v30FlipLastGrowAt[index], _v30Now - _v30GrowAt < 2.0 {
-                if let _v30Strike = Self.v30FlipShrinkStrikes[index],
-                   abs(_v30Strike.value - preferred) < 1, _v30Strike.count >= 1 {
-                    // 同一缩回值连续第 2 次 → 真实塌缩, 放行
-                    AppLogger(category: "CellSizing").info("[CellSizing][V30-FLIPBLOCK] idx=\\(index) shrink repeated → allowed (real collapse)")
-                } else {
-                    Self.v30FlipShrinkStrikes[index] = (value: preferred, count: 1)
-                    AppLogger(category: "CellSizing").info("[CellSizing][V30-FLIPBLOCK] idx=\\(index) shrink \\(String(format: "%.0f", original))→\\(String(format: "%.0f", preferred)) blocked (1st) — suspected ping-pong")
-                    return false
-                }
-            } else {
-                Self.v30FlipShrinkStrikes[index] = nil
+    NEW = """        // [V31-FLIPLOCK] 反振荡: 锁定到观测到的最大高度, 仅静止态(!defer)拦截向下翻回
+        // (SwiftUI 在 iOS15 欠测 → 把 cell 压到 945, TextKit 真值 1201, 两者拉锯跳动).
+        // 宁可短暂偏高是多高也不能裁字; 流式/滚动(deferSelfSizing)期间完全放行, 真实增长与
+        // 工具卡塌缩不被误杀. 长窗口(20s)容错: 真实塌缩会在窗口过期后落地.
+        if shouldInvalidate, !deferSelfSizing, heightCache[index] != nil, delta > 100 {
+            let _v31Max = Self.v31MaxH[index] ?? -1
+            if preferred < _v31Max - 100, CACurrentMediaTime() - (Self.v31MaxAt[index] ?? 0) < 20.0 {
+                AppLogger(category: "CellSizing").info("[CellSizing][V31-FLIPLOCK] idx=\\(index) shrink-back blocked(oscillation) est=\\(String(format: "%.0f", original))→pref=\\(String(format: "%.0f", preferred)) max=\\(String(format: "%.0f", _v31Max))")
+                return false
             }
-        }
-        if shouldInvalidate, preferred > original + 100 {
-            Self.v30FlipLastGrowAt[index] = CACurrentMediaTime()
+            Self.v31MaxH[index] = max(_v31Max, max(preferred, original))
+            Self.v31MaxAt[index] = CACurrentMediaTime()
         }
         return shouldInvalidate
     }
-    // [V30-FLIPBLOCK] 状态: idx → 最近 >100pt 增高 invalidate 时间 / 最近被拦缩回值+计数
-    private static var v30FlipLastGrowAt: [Int: CFTimeInterval] = [:]
-    private static var v30FlipShrinkStrikes: [Int: (value: CGFloat, count: Int)] = [:]
+    // [V31-FLIPLOCK] 状态: idx → 观测到的最大高度 / 最近一次接受时刻 (防裁字, 仅向下翻回拦截)
+    private static var v31MaxH: [Int: CGFloat] = [:]
+    private static var v31MaxAt: [Int: CFTimeInterval] = [:]
     private static var invIdxCounts: [Int: Int] = [:]"""
-    if "V30-FLIPBLOCK" in t:
+    if "V31-FLIPLOCK" in t:
         return t
+    # 幂等: 若残留 v30-A 块先剥离, 回到 fresh 锚点再注入 v31
+    V30_MARK = "    // [V30-FLIPBLOCK]"
+    if V30_MARK in t:
+        _v31s = t.index(V30_MARK)
+        _v31e = t.index("private static var invIdxCounts", _v31s)
+        t = t[:_v31s] + t[_v31e:]
     if OLD not in t:
         print("   [fix_flip_block] 锚点未命中, 跳过")
         return t
