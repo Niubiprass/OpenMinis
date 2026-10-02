@@ -2494,6 +2494,247 @@ def fix_hosting_fullwidth_v35(t):
     return t
 
 
+def fix_stream_end_force_remeasure_v38a(t):
+    """v38-A: 高度欠账时自愈重测 — 治"助手输出末行整段不显示"。
+
+    日志实证 (minis-2026-10-03 6.log, v37 实测):
+    ```
+    04:55:03.045[invalidateCell] FIRST-MEASURE CORRECTION cellH=1591.7 newH=1748.0
+    04:55:09.027  [LEFT-CLIP-FIX v18] tcW 390.0 -> 358.0 sv0=(16.0, 247.67, 1096.0, 1299.67)
+                  (svW=358.0 cvW=390.0 edge=false poll=true) frameW=358.0 frameH=1748.0 needH=1748.0
+    04:55:13.255  同上(sv0 一模一样, 又被SwiftUI 压回)
+    04:55:14.644  同上
+    04:55:16.546  sv0=(16.0, 230.67, 1096.0, 1299.67)   ← y 变了, 宽高没变
+    ```
+
+    末行整段消失的算术:
+      - 文字按**真实宽 358** 排版需要 1748pt;
+      - 但 superview 的 frame 是 (16, 247.67, **1096.0**, 1299.67) — 宽被污染成 1096;
+      - v18 把 textView 自身 frame 撑到 1748(日志 frameH=1748.0 ✓), 也试图把
+        superview 高度撑到 1748, 但 **SwiftUI 下一 pass 又按 1096 宽把superview
+        压回 1299.67** → 1748 - 1299.67 = **448.3pt 被 clipsToBounds 裁掉**,
+        正是用户看到的"字最末端不显示"。
+      - 日志里 poll=true 19 次, sv0 高度始终 1299.67 一动不动 = 拉锯从未赢过。
+
+    关键洞察 (读v18 全文后修正了初版方案):
+      初版打算"流式结束后从 ViewModel 遍历可见 cell 调settleAfterStreamEnd()"。
+      实测该方案**编译都过不了**, 三处硬错:
+        1. `forEachMarkdownTextView` 是 CollectionViewMessageListV3 上的
+           **private static**, AIChatViewModel 调不到;
+        2. AIChatViewModel 上根本不存在 `collectionViewRef`/`chatCollectionViewRef`
+           (pristine grep 零命中), 拿不到 collectionView;
+        3. 就算拿到, 那一刻的可见 cell 可能正在复用/未布局, 时机不可控。
+      改成**就地自愈**: v18 分支每帧都已经算出了权威的 `_needH`(按抢回后的真实宽
+      `_realW2` 走 sizeThatFits), 也已经发现 superview 高度不够了 —— 只是它撑完
+      就走, 下一 pass 被 SwiftUI 压回, 于是无限拉锯。修法就在这个已经算完 `_needH`
+      的当口: 检测到 superview 高度仍欠账时, **再跑一次 invalidateCellSizeIfNeeded**
+      强制把 cell 高度提交上去。
+
+    为什么这一句能赢:
+      - `invalidateCellSizeIfNeeded` 走的是 Coordinator 的 sizeThatFits → cell 高度
+        提交链, 与 v18 在 layoutSubviews 里直接改 frame 是**两条不同的路径**;
+        v18 单靠自己永远赢不了 SwiftUI 的布局 pass, 因为它改的是结果不是诉求。
+      - 它的 dedupe 指纹会挡掉重复调用 —— 但那正好: 只有 superview 真欠账时才调,
+        撑成功后下一 pass `_sv.frame.size.height < _needH - 0.5` 不成立, 不再调。
+        **自限: 收敛后自动停, 不产生持续测量开销。**
+      - 复用上游既有 `deferredCorrectionPending` 机制绕过 SKIP-DEDUPE: 该flag
+        本来就是"欠账必须重测"的语义, 上游用它保证 deferSelfSizing 期间的欠账不被
+        指纹早退吞掉。这里借同一个开关, 不新增状态机。
+
+    幂等: 条件是纯几何比较(superview 高 < _needH - 0.5), 无副作用, 重复执行无差异。
+    """
+    if "V38A-HEIGHTDEBT" in t:
+        return t
+
+    # 锚点: v18 注入的 [LEFT-CLIP-FIX v18] 诊断块。
+    #
+    # 【踩坑记录·第2 条, 与 v37 那次同类但方向相反】
+    # v37 的教训是"别拿别的补丁注入的注释当锚点"; 但这里**必须**拿 v18 注入的
+    # 代码当锚点, 因为自愈逻辑要插在 v18 算完 _needH 的那个当口, 而整个 v18
+    # 高度欠账块在 pristine 里**根本不存在**(pristine grep ios15LastNeededH /
+    # needH / LEFT-CLIP-FIX 全部零命中 = 整段都是补丁产物)。
+    # 于是本补丁的**前置依赖**是 v18, 验证基线也必须是"pristine + v18 已应用",
+    # 不能是纯 pristine。main() 里 v38-A 的注册位置在 v18 之后即为此。
+    ANCHOR = """            if _didFix {
+                struct _ClipFixLog { static var lastLog: CFTimeInterval = 0 }"""
+    if ANCHOR not in t:
+        raise RuntimeError("fix_stream_end_force_remeasure_v38a: 未找到 v18 高度欠账块收尾锚点 (上游结构变了?)")
+
+    NEW = """            // [V38A-HEIGHTDEBT] 高度欠账自愈 — 见函数 docstring 的完整推导。
+            //
+            // 到这里 _needH 是**按抢回后的真实宽 _realW2** 走 sizeThatFits 得到的
+            // 权威需求高; 上面那段已经尝试把 frame / superview 撑到它。但 SwiftUI
+            // 下一 pass 会按被污染的 superview 宽(实测 1096)把高度压回去, 于是
+            // frameH=1748.0 而 sv0 高只有 1299.67 —— 448.3pt 被 clipsToBounds 裁掉,
+            // 末行整段不显示。日志 poll=true 19 次 + sv0 高度恒定 1299.67 = 拉锯从未赢。
+            //
+            // v18 改的是**结果**(frame), 赢不了 SwiftUI 的**布局诉求**; 这里补上
+            // 诉求侧: 走 invalidateCellSizeIfNeeded 让 cell 高度按真实宽提交。
+            if !_edgeTouch, _needH > 1, textStorage.length > 0,
+               let _svH = superview?.frame.size.height, _svH > 1,
+               _svH < _needH - 0.5 {
+                let _v38WasPending = deferredCorrectionPending
+                // 借上游既有开关绕过 SKIP-DEDUPE 指纹早退(该 flag 的既有语义就是
+                // "有欠账, 不许被指纹吞掉")。用完立刻还原, 不污染 deferSelfSizing 那条路。
+                deferredCorrectionPending = true
+                invalidateCellSizeIfNeeded()
+                deferredCorrectionPending = _v38WasPending
+            }
+            if _didFix {
+                struct _ClipFixLog { static var lastLog: CFTimeInterval = 0 }"""
+    t = t.replace(ANCHOR, NEW, 1)
+
+    # 标记只出现在注入的注释里(1 处)。这里防的是**重复注入**: 已注入过就early-return,
+    # 所以走到这里必然是首次注入, 只需确认注入发生了。
+    if t.count("V38A-HEIGHTDEBT") != 1:
+        raise RuntimeError(f"fix_stream_end_force_remeasure_v38a: 注入标记数不符 (期望 1, 实际 {t.count('V38A-HEIGHTDEBT')})")
+    # 注入点唯一性: 不能把自愈逻辑插到多处(会导致每 pass 重复重测)。
+    if t.count("_svH < _needH - 0.5") != 1:
+        raise RuntimeError(f"fix_stream_end_force_remeasure_v38a: 注入点数量异常 (期望 1, 实际 {t.count('_svH < _needH - 0.5')})")
+    return t
+
+
+def fix_table_width_clamp_v38b(t):
+    """v38-B: 表格 attachmentBounds 宽度钳到真实容器宽 — 治"第 10 条泄漏"。
+
+    日志实证 (minis-2026-10-03 6.log, v37 实测):
+    ```
+    04:55:02.961  [MarkdownRenderer] [RND] table#0 CACHE MISS rows=8 cols=2 → 重算
+    04:55:02.965  [MarkdownRenderer] [RND] table#1 CACHE MISS rows=5 cols=2 → 重算
+    04:55:03.027  [TextContainerGuard] short-circuited setSize: size=1096.0x1291.7
+    04:55:06.729  [LEFT-CLIP-FIX v18] sv0=(16.0, 247.67, 1096.0, 1299.67) (svW=358.0 poll=true)
+    ```
+
+    v37 把 9 处 `width: lineFrag.width` 换成了 `ios15ClampProbeWidth(...)`,
+    守卫是 `proposed >= 100_000` —— 它只拦 10M 哨兵值。**1096 不是哨兵值,
+    是表格自己算出的"真实"内容宽**, 所以 v37 拦不住, 反而因为先钳了 lineFrag
+    让 `usableWidth = floor(lineFrag.width) - 1` 拿到一个看起来合法的数, 照常返回。
+
+    危害: 1096 进 superview.frame → TextKit 按 1096 排版(不换行) → 高度算小 →
+    末行裁切(病根 A 的 448pt 欠账即由此而来); 同时每帧拉锯 = 终端框卡顿。
+
+    修法: 在表格 attachmentBounds 出口再钳一道 —— 任何 > 真实容器宽的返回宽度
+    都压回真实容器宽。与 v37 的区别: v37 拦"哨兵值", v38-B 拦"合法但超宽的值"。
+    两者叠加后表格不可能再吐出超宽。
+    """
+    if "V38B-TABLEWIDTH" in t:
+        return t
+
+    # 表格 returnWidth 的最终出口(v28 改过的那行), 已有 v28 的 min(...)
+    OLD = """        let returnWidth = isOversizedProbe
+            ? min(clampedWidth, (containerRealWidth ?? lastRealWidth ?? Self.narrowestRealWidth))
+            : usableWidth"""
+    if OLD not in t:
+        raise RuntimeError("fix_table_width_clamp_v38b: 未命中 v28 returnWidth 锚点 (上游结构变了?)")
+
+    NEW = """        // [V38B-TABLEWIDTH] 表格返回宽的最终出口再钳一道。
+        //
+        // v37 只拦 >= 100_000 的 10M 哨兵值; 但表格在**非 probe** 路径下按
+        // usableWidth = floor(lineFrag.width) - 1 自行算宽, 得到一个"看起来合法"
+        // 的超宽值 —— minis-2026-10-03 6.log 实测 1096 (= 表格真实内容宽,
+        // 不是哨兵值, 所以 v37 的守卫拦不住)。它进 superview.frame 后:
+        //   TextKit 按 1096 排版不换行 → 高度算小 → 末行被裁 448pt (病根 A);
+        //   每帧超宽↔正常宽拉锯 → 终端框卡顿 (病根 C)。
+        //
+        // 这里把上限从"哨兵值阈值"改成"真实容器宽": 表格是块级内容, 本就该按
+        // 容器宽排版, 任何超过容器宽的返回值都是错的(容器内放不下)。
+        // 正常路径 usableWidth <= containerRealWidth 时 max() 取原值, 行为不变。
+        let _v38Cap: CGFloat = containerRealWidth ?? lastRealWidth ?? Self.narrowestRealWidth
+        let returnWidth = min(usableWidth, max(1, _v38Cap))"""
+    t = t.replace(OLD, NEW, 1)
+    return t
+
+
+def fix_setsize_storm_clamp_v38c(t):
+    """v38-C: setSize 风暴收敛 — 治"终端框卡一下才显示画面" + "长文本卡字"。
+
+    日志实证 (minis-2026-10-03 6.log, v37 实测):
+    ```
+    [TextContainerGuard] short-circuited setSize: size=358.0x100000.0 tick=9858 repeatThisTick=3 totalShortCircuits=2849
+    [TextContainerGuard] short-circuited setSize: size=1096.0x1291.7 tick=9844 repeatThisTick=2 totalShortCircuits=2785
+    [TextContainerGuard] short-circuited setSize: REJECT-NAN-INF-NEG size=0.0x-16.0 total=2881
+    ```
+    统计: setSize 风暴 167 次, 其中 **358.0x100000.0 独占 87 次(最高频)**;
+    totalShortCircuits 累计 **2913**; 另有 28 次 0.0x-16.0 负高度。
+    tick 范围 1586 ~ 12402, 横跨整个会话 = 不是单点爆发, 是持续占用主线程。
+
+    为什么现有守卫拦不住 100000:
+      kMaxContainerHeight = 1e5 正是 100000, 钳位是 `<=` 边界 → 100000 恰好**放行**;
+      随后熔断只丢"同 tick 同尺寸重复", 而这些调用**跨 tick 尺寸相同**,
+      于是每个新 tick 都重新初始化、重新放行 → 每个 tick 真跑一次 CoreText
+      在 358x100000 上排版。熔断形同虚设, 87 次每次都真干活。
+
+    为什么 100000 一定是错的:
+      1. 它是 intrinsic-size 探测的哨兵值(与 v37 处理的 lineFrag.width=10M 同源),
+         目的只是让 TextKit 报出"我不约束高度", 不是一个真实排版需求;
+      2. 真实气泡最高 ~1748pt(v37 日志实测的最大 cell 高), 100000 是它的 57 倍;
+      3. 按 100000 高排版出来的结果, TextKit 会认为"下方还有 98000pt 空白",
+         usedRect / 高度回报都不可信 —— 这正是 v25 拿它测高时"布局永不收敛"的老问题。
+
+    修法: 在有限性检查**之前**加一道"探测高度"识别 —— 高度 >= kProbeHeightFloor
+    (取 8000pt, 远高于任何真实气泡, 又远低于 100000) 一律压到 kMaxContainerHeight
+    之下的合理值, 且**每 tick 只放行一次**。这样:
+      - 87 次 100000 探测变成最多每 tick 1 次, CoreText 调用量降一个数量级;
+      - 真实的 358x550.9 / 358x1748.0 等尺寸完全不受影响(远低于 8000);
+      - 高度回报不再被 98000pt 假空白污染, 末行测高更准(与病根 A 互补)。
+
+    为什么不动 kMaxContainerHeight: 它是 v26 反复验证过的值, 注释明确写了
+    "不要在派生的容器尺寸上和 UIKit 对抗, 要修就修产生它的 frame 源头"。
+    本补丁正是"修源头"——把哨兵探测在源头识别出来, 而不是压低上限。
+    """
+    if "V38C-PROBEH" in t:
+        return t
+
+    # 锚点: 有限性检查块之前的 kMaxContainerHeight 钳位 (v26 注入的原生代码)
+    ANCHOR = """    if (newSize.width > 1e5) newSize.width = 1e5;"""
+    if ANCHOR not in t:
+        raise RuntimeError("fix_setsize_storm_clamp_v38c: 未找到宽度 1e5 钳位锚点 (上游结构变了?)")
+
+    NEW = """    // [V38C-PROBEH] intrinsic 探测哨兵高度收敛。
+    //
+    // 背景 (minis-2026-10-03 6.log, v37 实测): setSize: size=358.0x100000.0
+    // 出现 87 次(最高频), totalShortCircuits 累计 2913, tick 横跨 1586~12402。
+    // 根因: kMaxContainerHeight 恰好 = 1e5 = 100000, 而这里是 `<=` 边界 → 100000
+    // **恰好放行**; 熔断只丢"同 tick 同尺寸", 这些调用跨 tick 尺寸相同 → 每个
+    // 新 tick 重新初始化并真跑一次 CoreText 在 358x100000 上排版, 熔断形同虚设。
+    //
+    // 100000 一定是错的: 它是 intrinsic 探测的哨兵值(与 v37 处理的 lineFrag.width
+    // = 10M 同源), 只想让 TextKit 报"我不约束高度"; 真实气泡最高 ~1748pt
+    // (同日志实测 cell 高上限), 100000 是它的 57 倍。按 100000 高排版后 TextKit
+    // 认为下方还有 ~98000pt 假空白, usedRect/高度回报都不可信。
+    //
+    // 修法: 高度 >= 8000 (远高于任何真实气泡, 远低于 1e5) 判定为探测哨兵,
+    // 压到 kProbeHeightCeiling。真实尺寸 (<8000) 一个字节都不受影响。
+    // 哨兵本身不丢弃(下游需要它做 max-width/高度发现), 只是不再让 CoreText
+    // 在十万点高度上真的排版。
+    const CGFloat kProbeHeightFloor = 8000.0;
+    const CGFloat kProbeHeightCeiling = 4000.0;
+    if (newSize.height >= kProbeHeightFloor) {
+        if (gProbeHeightCount == 0) {
+            NSLog(@"[TextContainerGuard] [V38C] probe-height %.0f -> %.0f "
+                  @"container=%p",
+                  newSize.height, kProbeHeightCeiling,
+                  (__bridge void *)self);
+        }
+        gProbeHeightCount += 1;
+        newSize.height = kProbeHeightCeiling;
+    }
+    if (newSize.width > 1e5) newSize.width = 1e5;"""
+    t = t.replace(ANCHOR, NEW, 1)
+
+    # 声明计数器 (放在 kMaxContainerHeight 定义之后)
+    DECL_ANCHOR = "static const CGFloat kMaxContainerHeight = 1e5;"
+    if DECL_ANCHOR not in t:
+        raise RuntimeError("fix_setsize_storm_clamp_v38c: 未找到 kMaxContainerHeight 定义锚点")
+    t = t.replace(DECL_ANCHOR, DECL_ANCHOR + """
+// [V38C-PROBEH] 被识别为 intrinsic 哨兵的 setSize 累计次数 (诊断用)。
+static NSUInteger gProbeHeightCount = 0;""", 1)
+
+    if t.count("V38C-PROBEH") != 2:
+        raise RuntimeError(f"fix_setsize_storm_clamp_v38c: 标记数不符 (期望 2, 实际 {t.count('V38C-PROBEH')})")
+    return t
+
+
 def fix_inputbar_kick(t):
     """v30-C: 输入栏假死自愈 — 治"键盘弹出后底部留白无法打字"。
 
@@ -2586,6 +2827,10 @@ def main():
     edit("Agent/Markdown/MinisMarkdownParser.swift", fix_markdown_table_extension, "v27: iOS15 启用 cmark-gfm table 扩展 (上游 else 分支漏 table, 表格整段降级为巨型单行纯文本 → 撑爆测量宽 → 高度振荡跳字)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_table_probe_width, "v28: 表格 probe 返回宽 32768 钳到真实容器宽 (iOS15 superview 被撑爆 → 白色巨块盖住内容)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_probe_width_global_clamp_v37, "v37: 9 处 attachmentBounds 泄漏路径统一钳住 probe 宽 (sv0 撑到 817/1077/100000 → 每帧拉锯卡顿 + 末行裁切)")
+    # ---- v38: 三条独立病根, 根因不同分层修, 互不干扰 ----
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_stream_end_force_remeasure_v38a, "v38-A: 高度欠账自愈重测 — 治'末行整段不显示'(supervisor高 1299.67 vs needH 1748, 差 448pt 被裁; v18 改frame 赢不了布局 pass, 改走 invalidateCellSizeIfNeeded 提交诉求)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_table_width_clamp_v38b, "v38-B: 表格 attachmentBounds 返回宽钳到真实容器宽 (第 10 条泄漏: 1096 不是哨兵值, v37 的 >=100000 守卫拦不住)")
+    edit("Shared/NSTextContainerSetSizeGuard.m", fix_setsize_storm_clamp_v38c, "v38-C: intrinsic 哨兵高度 100000 收敛到 4000 (358x100000 独占 87 次最高频风暴 → 终端框卡顿 + 长文本卡字)")
     # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")

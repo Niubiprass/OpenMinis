@@ -368,6 +368,76 @@ jobs:
             echo "❌ v37 probe 宽钳位缺失 —— superview 仍会被撑到屏宽 2~256 倍, 终端框卡顿 + 末行裁半复发!"
             exit 1
           fi
+          echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
+          # 病根A 实证 (minis-2026-10-03 6.log):
+          #   04:55:03.045 FIRST-MEASURE CORRECTION cellH=1591.7 newH=1748.0
+          #   04:55:09.027 v18 sv0=(16.0, 247.67, 1096.0, 1299.67) frameH=1748.0 needH=1748.0 poll=true
+          #   → 文字按真实宽 358 排版需 1748pt, 但 superview 高只有 1299.67, 差 448.3pt 被裁 = 末行整段消失。
+          #   poll=true 19 次且 sv0 高度恒定 1299.67 = v18 直接改 frame 赢不了 SwiftUI 布局 pass, 无限拉锯。
+          # 修法: 在 v18 已算出_needH 的当口, 若 superview 仍欠账则走 invalidateCellSizeIfNeeded
+          #       提交"布局诉求"(借 deferredCorrectionPending 绕过 SKIP-DEDUPE 指纹早退)。
+          if grep -q "V38A-HEIGHTDEBT" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "_svH < _needH - 0.5" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "invalidateCellSizeIfNeeded()" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            # 反向断言: 注入点必须唯一 —— 插到多处会导致每个 layout pass 都重测, 反而更卡。
+            _v38a_n=$(grep -c "_svH < _needH - 0.5" src/ios/Views/Chat/SelectableMarkdownView.swift || true)
+            if [ "$_v38a_n" = "1" ]; then
+              echo "✅ v38-A 高度欠账自愈已就位 (欠账时强制走 cell 高度提交链, 收敛后自动停)"
+            else
+              echo "❌ v38-A 注入点 $_v38a_n 处 (应恰好 1 处) —— 多处注入会每pass 重复重测, 卡顿加重!"
+              exit 1
+            fi
+          else
+            echo "❌ v38-A 缺失 —— superview 欠账 448pt 无人纠正, 末行整段不显示复发!"
+            exit 1
+          fi
+
+          echo "::group::断言39: v38-B 表格返回宽必须钳到真实容器宽 (第 10 条泄漏: 1096 不是哨兵值, v37 拦不住)"
+          # v37 只拦 >= 100_000 的哨兵值; 但表格在**非 probe** 路径按
+          # usableWidth = floor(lineFrag.width) - 1 自行算宽, 得到"看起来合法"的 1096
+          # (实测= 表格真实内容宽), 于是 v37 的 >= 100000 守卫放行, 1096 进 superview.frame
+          # → TextKit 按 1096 排版不换行 → 高度算小 → 末行被裁(病根A) + 每帧拉锯(病根C)。
+          if grep -q "let returnWidth = min(usableWidth, max(1, _v38Cap))" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            # 反向断言: 表格的 returnWidth 出口必须唯一, 且不能残留任何裸 usableWidth 出口。
+            _v38b_n=$(grep -c "let returnWidth" src/ios/Views/Chat/SelectableMarkdownView.swift || true)
+            _v38b_bare=$(grep -cE "let returnWidth = (usableWidth|isOversizedProbe)" src/ios/Views/Chat/SelectableMarkdownView.swift || true)
+            if [ "$_v38b_n" = "1" ] && [ "$_v38b_bare" = "0" ]; then
+              echo "✅ v38-B 表格返回宽已钳到真实容器宽 (唯一出口, 无裸 usableWidth 残留)"
+            else
+              echo "❌ v38-B 出口异常 (returnWidth 数量=$_v38b_n 裸出口=$_v38b_bare) —— 表格仍能吐超宽, 污染帧复发!"
+              exit 1
+            fi
+          else
+            echo "❌ v38-B 缺失 —— 表格仍按 1096 排版不换行, 末行裁切 + 拉锯卡顿复发!"
+            exit 1
+          fi
+
+          echo "::group::断言40: v38-C intrinsic 哨兵高度必须收敛 (358x100000 独占 87 次最高频风暴)"
+          # 日志分布: 358.0x100000.0 × 87(最高频) / 358.0x400.7 × 11 / 1096.0x1291.7 × 2 ...
+          # 根因: kMaxContainerHeight = 1e5 恰等于 100000, 而钳位是 `<=` 边界 → 100000 恰好放行;
+          #       熔断只丢"同 tick 同尺寸", 这些调用跨 tick 尺寸相同 → 每 tick 重置并真跑一次 CoreText。
+          # 修法: 高度 >= 8000 判定为探测哨兵(远高于真实气泡上限 1748, 远低于 1e5), 压到 4000。
+          if grep -q "V38C-PROBEH" src/ios/Shared/NSTextContainerSetSizeGuard.m \
+             && grep -q "kProbeHeightFloor = 8000.0" src/ios/Shared/NSTextContainerSetSizeGuard.m \
+             && grep -q "kProbeHeightCeiling = 4000.0" src/ios/Shared/NSTextContainerSetSizeGuard.m ; then
+            # 反向断言: 地板必须严格小于哨兵值 100000, 否则条件永不成立(等效没修)。
+            #          地板还必须落在高度钳位**之前** —— 钳位先跑的话, 未来收紧 kMaxContainerHeight
+            #          就再也认不出原始哨兵值了。
+            _v38c_pos=$(python3 -c "
+p=open('src/ios/Shared/NSTextContainerSetSizeGuard.m',encoding='utf-8').read()
+f=p.find('kProbeHeightFloor = 8000.0'); c=p.find('if (newSize.height > kMaxContainerHeight)')
+print('OK' if f!=-1 and c!=-1 and f<c else 'BAD')")
+            if [ "$_v38c_pos" = "OK" ]; then
+              echo "✅ v38-C 哨兵高度收敛已就位 (8000 地板严格小于哨兵 100000, 且在高度钳位之前)"
+            else
+              echo "❌ v38-C 位置/阈值错误 —— 哨兵 100000 仍会放行, setSize 风暴复发 (终端框卡一下才显示)!"
+              exit 1
+            fi
+          else
+            echo "❌ v38-C 缺失 —— 358x100000 继续真跑 CoreText, 终端框卡顿 + 长文本卡字复发!"
+            exit 1
+          fi
+
           echo "::group::断言15: v22 SwiftUI rootView maxWidth 必须就位 (压住超宽理想宽 → 根除污染帧)"
           if grep -q "frame(maxWidth: _ios15ContentMaxW" src/ios/iOS15Compat.swift ; then
             echo "✅ SwiftUI 内容最大宽度已设 (理想宽不再 100032/2378, x=-49805 污染帧不再产生)"
