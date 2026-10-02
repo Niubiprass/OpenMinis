@@ -130,20 +130,29 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
 
     GuardState *s = &holder->state;
 
-    // [IOS15-FIX-STORM] 风暴熔断: 本 tick 已经触发过熔断, 直接跳过转发、保留
-    // 上次已提交几何。这样 re-entrant 的 setSize 链在到达阈值后立刻断掉, 不再
-    // 驱动 CoreText fillLayoutHole 自旋 (实测 11918ms 主线程卡死的根因)。
+    // [IOS15-FIX-STORM] 风暴熔断: 本 tick 已经触发过熔断后, 只丢弃"同尺寸重复"
+    // (自旋源); 不同尺寸的调用仍有限放行 —— v9 实证: 无差别丢弃会把正确的宽度
+    // 修正 (358x550.9) 连坐丢掉, 容器宽停在旧值 → 文字不换行 → 横向裁切。
     if (s->initialized && s->lastTick == gRunloopTick && s->stormed) {
-        gShortCircuitCount += 1;
-        if ((gShortCircuitCount & 0xF) == 1) {
-            NSLog(@"[TextContainerGuard] [WARN] storm-breaker SKIP "
-                  @"size=%.1fx%.1f tick=%llu total=%llu container=%p",
-                  newSize.width, newSize.height,
-                  (unsigned long long)gRunloopTick,
-                  (unsigned long long)gShortCircuitCount,
-                  (__bridge void *)self);
+        if (CGSizeEqualToSize(s->lastSize, newSize)) {
+            gShortCircuitCount += 1;
+            if ((gShortCircuitCount & 0xF) == 1) {
+                NSLog(@"[TextContainerGuard] [WARN] storm-breaker SKIP "
+                      @"size=%.1fx%.1f tick=%llu total=%llu container=%p",
+                      newSize.width, newSize.height,
+                      (unsigned long long)gRunloopTick,
+                      (unsigned long long)gShortCircuitCount,
+                      (__bridge void *)self);
+            }
+            return;
         }
-        return;
+        if (s->commitCount > kStormForwardLimit * 4) {
+            // [v26] 不同尺寸但本 tick 已转发过多 (390<->358 交替拉锯): 也丢弃,
+            // 防止交替对每次走 else 重置把熔断永久绕过。
+            gShortCircuitCount += 1;
+            return;
+        }
+        // 不同尺寸且未超硬上限: 放行, 正确修正不再被连坐。
     }
 
     if (s->initialized && s->lastTick == gRunloopTick &&
@@ -170,11 +179,13 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     } else {
         // Different tick or different size — reset bookkeeping.
         s->lastSize = newSize;
-        s->lastTick = gRunloopTick;
         s->repeatCount = 1;
-        s->commitCount = 0;   // [IOS15-FIX-STORM] 重置本 tick 转发计数
-        s->stormed = NO;      // [IOS15-FIX-STORM] 重置熔断标志
         s->initialized = YES;
+        // [v26] 仅新 tick 才清零转发计数/熔断标志; 同 tick 内不同尺寸的放行
+        // 调用继续累计 commitCount, 保证 4x 硬上限对交替拉锯 (390<->358) 有效。
+        BOOL _newTick = (s->lastTick != gRunloopTick);
+        if (_newTick) { s->commitCount = 0; s->stormed = NO; }
+        s->lastTick = gRunloopTick;
     }
 
     // [IOS15-FIX-STORM] 累加本 tick 转发次数; 超过阈值即置熔断标志,

@@ -7493,27 +7493,18 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // 更高 → 最后一行被拦腰裁断 (截图实证)。这里排版后按 usedRect 撑高自身与气泡;
             // ios15LastNeededH 记住需求高度, SwiftUI 重排把 frame 高拉回去时也能检出并重撑。
             // 刻意**不调用 setNeedsLayout** —— 那是 v12/v13 闪字的元凶。
-            // [v25] 高度死锁修复 (末行半截字 / 整条不显示)。
-            // 旧逻辑用 usedRect 直接读高度, 但 textContainer.size.height 跟随 frame.height
-            // (UITextView 内部维护), 当 frame 初值为小值时反向截断 usedRect → 算出的需求
-            // 高度永远 ≤ 小值 → 撑高不触发 → 内容溢出底部被裁 (日志实证 frameH=252 而真实
-            // 需 ~260, 旧 usedRect 永远停在 243)。这里临时把容器高放开到充足值, 强制
-            // invalidateLayout+ensureLayout, 让 usedRect 反映完整内容高度, 再据此撑高自身与
-            // superview, 最后把容器高还原交由 UITextView 自行管理。
-            // 无条件执行: 旧判定依赖"frame<needH"触发, 但 needH 本身也来自受限 usedRect,
-            // 会陷入"frame 小→usedRect 小→needH 小→不撑高"的死锁, 每帧用放开后的容器高
-            // 重算才能稳定得到真实需求高度 (稳态后 frame==needH, 无需再改, 不会空转)。
+            // [v26] 高度死锁修复 (末行半截字 / 整条不显示)。
+            // v25 用"临时把容器高放开到 100000 + invalidate/ensureLayout"拿真实需求高,
+            // 但排版期间 TextKit 对巨高容器的连环 setSize: 直接耗光守卫每 tick 40 次转发
+            // 预算 (v9 日志实证: size=358x100000 被熔断 116 次, 正确的 358x550.9 被连坐
+            // 丢弃 48 次) → 宽度修正进不来 → 容器宽停在旧值 → 文字不换行 → 横向裁切。
+            // v26 改用 UITextView.sizeThatFits 标准 API 测量: 不改变 textContainer 状态、
+            // 不触发重排风暴, 同样能拿到不受当前容器高限制的真实需求高度。
             let _realW2 = max(200.0, _cvW - 32)
             if abs(textContainer.size.width - _realW2) > 0.5 {
                 textContainer.size.width = _realW2
             }
-            let _savedTH = textContainer.size.height
-            textContainer.size.height = 100000
-            layoutManager.invalidateLayout(forCharacterRange: NSMakeRange(0, textStorage.length), actualCharacterRange: nil)
-            layoutManager.ensureLayout(for: textContainer)
-            let _usedH = layoutManager.usedRect(for: textContainer).height
-            textContainer.size.height = _savedTH
-            let _needH = _usedH + textContainerInset.top + textContainerInset.bottom
+            let _needH = sizeThatFits(CGSize(width: _realW2, height: .greatestFiniteMagnitude)).height
             ios15LastNeededH = _needH
             if textStorage.length > 0, _needH > 1 {
                 if frame.size.height < _needH - 0.5 {
