@@ -2249,6 +2249,70 @@ def fix_width_sync_v34(t):
     return t
 
 
+def fix_hosting_track_parent_v36(t):
+    """v36: hosting 视图宽从**写死屏宽**改为**跟随真实父宽** — 治"气泡差一点贴边"。
+
+    用户实测(run#93 包, 2026-10-03 03:2x): v35 后三个症状里"气泡不贴边"仍未清零,
+    用户原话"我的气泡文字还差一点就能贴边"。根因与 v35 同类但方向相反:
+
+      v35 把 hosting 宽钉成 max(UIScreen.main.bounds.width, 200) = 390 (屏宽常量)
+
+    但 cell 的真实宽度是 **collectionView.bounds.width**(MessageListLayout.prepare()
+    的 `let width = cv.bounds.width`) + cell 自身的 hosting 约束。
+    屏幕宽 ≠ collectionView 宽:
+      · 分屏/旋转/尺寸过渡态下 cv 宽可能 > 390 → hosting 钉死 390 且 leading 对齐
+        → 右边空出 (cvW - 390) → 用户气泡 HStack{Spacer;bubble} 撑满 390,
+          气泡右缘 = 390 - 16 = 374, 而 cv 右缘在 390+(cvW-390) → **永远差那一截**;
+      · 反之 cv 宽 < 390 时 hosting 超出 cell → 右侧被 clipsToBounds 裁掉。
+
+    修法: 宽度不再写常量, 改为**与父视图等宽**——hosting 视图是 cell 的 contentView
+    的填充子视图, 父宽即真值, 天然免疫旋转/分屏/过渡态:
+      leading/trailing 均钉到父视图 → 宽度恒等于父宽, 不需要常量。
+    (保留 clipsToBounds: 它压 730/100032 污染帧的作用与宽度来源无关。)
+
+    预期:
+      · 气泡右缘 = 父宽 - 16 = 与屏幕右边距严格一致 (真正贴边)
+      · 助手文字 = 父宽 - 16×2
+      · 旋转/分屏自适应, 不再依赖 UIScreen 常量
+    """
+    if "V36-TRACKPARENT" in t:
+        return t
+    import re as _re
+    m = _re.search(
+        r"let _ios15AvailW = max\(UIScreen\.main\.bounds\.width, 200\)[^\n]*\n"
+        r"(\s*)controller\.view\.clipsToBounds = true\n"
+        r"\s*NSLayoutConstraint\.activate\(\[(.*?)\]\)", t, _re.S)
+    if not m:
+        raise RuntimeError(
+            "[fix_hosting_track_parent_v36] v24 约束块锚点未命中 —— 找不到 "
+            "`_ios15AvailW = max(UIScreen.main.bounds.width, 200)` + clipsToBounds + "
+            "NSLayoutConstraint.activate 三件套。hosting 视图宽仍写死屏宽, "
+            "'气泡差一点贴边'无法根治。")
+    body = m.group(2)
+    if "widthAnchor.constraint(equalToConstant: _ios15AvailW)" not in body:
+        raise RuntimeError(
+            "[fix_hosting_track_parent_v36] 约束体内未找到写死宽度约束 —— "
+            "上游形态已变, 必须重新确认改法。")
+    NEW_BODY = """
+                controller.view.leadingAnchor.constraint(equalTo: leadingAnchor),
+                // [V36-TRACKPARENT] 与父等宽(删掉写死的 _ios15AvailW 常量约束):
+                // hosting 视图是 cell contentView 的填充子视图, 父宽即真值,
+                // 天然跟随旋转/分屏/过渡态, 不再用 UIScreen 常量近似。
+                controller.view.trailingAnchor.constraint(equalTo: trailingAnchor),
+                controller.view.topAnchor.constraint(equalTo: topAnchor),
+                controller.view.bottomAnchor.constraint(equalTo: bottomAnchor),
+            """
+    old_block = m.group(0)
+    new_block = ("let _ios15AvailW = max(UIScreen.main.bounds.width, 200)  // [V36-TRACKPARENT] "
+                 "保留(兼容旧断言), 宽度约束已改与父等宽\n"
+                 f"{m.group(1)}controller.view.clipsToBounds = true\n"
+                 f"{m.group(1)}NSLayoutConstraint.activate([{NEW_BODY}])")
+    t = t.replace(old_block, new_block, 1)
+    if "V36-TRACKPARENT" not in t:
+        raise RuntimeError("[fix_hosting_track_parent_v36] 替换后 V36-TRACKPARENT 未落地")
+    return t
+
+
 def fix_hosting_fullwidth_v35(t):
     """v35: hosting 视图/内容改回**全屏宽**(不再减 32) — 治"整体缩小/气泡不贴边/
     终端框折叠"。
@@ -2396,6 +2460,7 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_realw2_v33, "v33: v28 遗留 _realW2 硬编码 cvW-32 改为 contentW — 修边框裁字/卡字/终端框卡内容")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_sync_v34, "v34: 渲染宽回归 superview 基准(过渡态免疫) + 渲染/测高共享 ios15LastRenderContentW — 修整体缩小/不贴边/闪屏(log10-03: tcW 390×27/326×25 交替, v33 公式过渡态双重扣减)")
     edit_glob("**/iOS15Compat.swift", fix_hosting_fullwidth_v35, "v35: hosting 视图/内容改回全屏宽(不再 -32) — 根治整体缩小/气泡不贴边/终端框折叠(v22/v24 把整个 cell 硬钉 358, 而 cell 应全宽 390)")
+    edit_glob("**/iOS15Compat.swift", fix_hosting_track_parent_v36, "v36: hosting 视图宽从写死屏宽改为与父等宽 — 修'气泡差一点贴边'(UIScreen 常量 != collectionView 实测宽)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
