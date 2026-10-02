@@ -5622,6 +5622,9 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
     /// watchdog diagnostics. If this fires many times per second we know the
     /// loop is hot even if we successfully short-circuit it.
     private var reentryGuardHits: Int = 0
+    // [V30-THROTTLE] 流式测高节流: 上次完整 sizeThatFits 时刻 + 补测排队标志
+    private var ios15LastFullMeasureAt: CFTimeInterval = 0
+    private var ios15ThrottleRearmScheduled = false
 
     /// Set when `refreshAttachmentViews` was dropped because the view was
     /// detached from window (`window == nil`). Replayed from
@@ -7870,6 +7873,23 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
            lastComputedHeight > 0 {
             cellSizeLogger.info("[invalidateCell][SKIP-DEDUPE] storageLen=\(textStorage.length) measureW=\(String(format: "%.0f", measureWidth)) tcW=\(String(format: "%.0f", textContainer.size.width)) lastH=\(String(format: "%.1f", lastComputedHeight)) tableGen=\(tableGenSum) — fingerprint match, skipping sizeThatFits")
             return
+        }
+        // [V30-THROTTLE] 120ms 内的重复完整测高合并为一次延后补测
+        // (log13: 流式期间每 token 一次全量 TextKit 排版, 主线程被占满)。
+        if !deferredCorrectionPending {
+            let _v30Now = CACurrentMediaTime()
+            if _v30Now - ios15LastFullMeasureAt < 0.12 {
+                if !ios15ThrottleRearmScheduled {
+                    ios15ThrottleRearmScheduled = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.13) { [weak self] in
+                        guard let self else { return }
+                        self.ios15ThrottleRearmScheduled = false
+                        self.invalidateCellSizeIfNeeded()
+                    }
+                }
+                return
+            }
+            ios15LastFullMeasureAt = _v30Now
         }
         isInvalidatingCellSize = true
         defer { isInvalidatingCellSize = false }

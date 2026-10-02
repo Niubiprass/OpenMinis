@@ -346,6 +346,8 @@ struct AIChatView: View {
     @State private var inputBarGeometryTick: Int = 0
     @State private var inputBarLastGeometryAt: CFAbsoluteTime?
     @State private var inputBarHealthProbe: Task<Void, Never>?
+    // [V30-INPUTBAR-KICK] STALLED 自愈: bump 此值重建 composer 子树身份
+    @State private var composerRebuildTick: Int = 0
     /// [T-voice-inputbar-stale-height] False until the FIRST non-zero
     /// inputBarHeight lands. The first write (session open / initial composer
     /// layout) is applied IMMEDIATELY (leading edge) so the message list computes
@@ -3829,6 +3831,9 @@ _ios15Seg7
             // floating-bar site). Fires with the initial value too, so the
             // old onAppear seeding AND its diagnostic log are preserved as
             // a single unified line.
+            // [V30-INPUTBAR-KICK] composer 死亡自愈的重建开关: tick 变化
+            // 即换 identity → SwiftUI 重建 hosting 视图 (等价退出重进会话)。
+            .id(composerRebuildTick)
             .onGeometryChange15(for: CGRect.self) { proxy in
                 proxy.frame(in: .global)
             } action: { frame in
@@ -6991,6 +6996,14 @@ private extension AIChatView {
                     } else {
                         let _stallMsg = "[InputBarHealth] STALLED — no geometry callback 900ms after foreground. committed=\(inputBarHeight) latest=\(latestInputBarFrameH) lastReport=\(String(format: "%.1f", age))s ago voice=\(voiceInputActive) editing=\(voiceVM.isEditingTranscript) seeded=\(didSeedInputBarHeight). The composer host is not laying out; expect a blank bottom area. Leaving and re-entering the session rebuilds it."
                     AppLogger(category: "InputBarLayout").error(_stallMsg)
+                    // [V30-INPUTBAR-KICK] 不再只报错等待用户退出重进 — 就地重建:
+                    // 重置种子 + bump .id, composer host 复活后 geometry 回调
+                    // 恢复, 种子重新落地。草稿在 vm.inputText, 重建不丢。
+                    if !voiceInputActive && !voiceVM.isEditingTranscript {
+                        didSeedInputBarHeight = false
+                        composerRebuildTick &+= 1
+                        AppLogger(category: "InputBarLayout").error("[InputBarHealth][V30-KICK] rebuilding composer host (tick=\(composerRebuildTick)) — draft preserved in vm.inputText")
+                    }
                     }
                 }
                 // [T-voice-bg-fg-gap] Foreground reseal: if we return to a

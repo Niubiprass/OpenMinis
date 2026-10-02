@@ -474,8 +474,31 @@ final class MessageListLayout: UICollectionViewLayout {
                 Self.invLastFlush = now
             }
         }
+        // [V30-FLIPBLOCK] 双引擎测高反振荡 (log13 实证 est=1176↔850 每帧翻转)
+        if shouldInvalidate, preferred < original - 100 {
+            let _v30Now = CACurrentMediaTime()
+            if let _v30GrowAt = Self.v30FlipLastGrowAt[index], _v30Now - _v30GrowAt < 2.0 {
+                if let _v30Strike = Self.v30FlipShrinkStrikes[index],
+                   abs(_v30Strike.value - preferred) < 1, _v30Strike.count >= 1 {
+                    // 同一缩回值连续第 2 次 → 真实塌缩, 放行
+                    AppLogger(category: "CellSizing").info("[CellSizing][V30-FLIPBLOCK] idx=\(index) shrink repeated → allowed (real collapse)")
+                } else {
+                    Self.v30FlipShrinkStrikes[index] = (value: preferred, count: 1)
+                    AppLogger(category: "CellSizing").info("[CellSizing][V30-FLIPBLOCK] idx=\(index) shrink \(String(format: "%.0f", original))→\(String(format: "%.0f", preferred)) blocked (1st) — suspected ping-pong")
+                    return false
+                }
+            } else {
+                Self.v30FlipShrinkStrikes[index] = nil
+            }
+        }
+        if shouldInvalidate, preferred > original + 100 {
+            Self.v30FlipLastGrowAt[index] = CACurrentMediaTime()
+        }
         return shouldInvalidate
     }
+    // [V30-FLIPBLOCK] 状态: idx → 最近 >100pt 增高 invalidate 时间 / 最近被拦缩回值+计数
+    private static var v30FlipLastGrowAt: [Int: CFTimeInterval] = [:]
+    private static var v30FlipShrinkStrikes: [Int: (value: CGFloat, count: Int)] = [:]
     private static var invIdxCounts: [Int: Int] = [:]
     private static var invLastFlush: CFTimeInterval = 0
 
