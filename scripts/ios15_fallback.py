@@ -1604,12 +1604,19 @@ def fix_clip_v3_property(t):
 
     @objc static func ios15FrameFixTick() {
         var need = false
+        var alive = false
         for tv in _ios15FixViews.allObjects {
             if tv.window == nil { continue }
+            alive = true
             if tv.ios15ApplyFrameFix() { need = true }
         }
-        // SwiftUI 不再写污染帧时自动停机, 不常驻耗电
-        if !need {
+        // [IOS15-FIX-DISPLAYLINK v29] 旧停机逻辑: 只要一帧无污染就 invalidate 并
+        // 清空全部注册视图。但 SwiftUI 改 superview.frame 走 CALayer 事务路径
+        // (KVO 观察不到), subview frame 未变时 layoutSubviews 也不触发 — 停机后
+        // 污染帧再无人拦截 → 白块/裁字直接上屏 (log12 实证: 表格消息 sv0 宽
+        // 100000 每帧 16 次全部污染)。改为: 仅当注册表里所有视图都已离开窗口
+        // (weak 表清空) 才停机; 只要还有活视图就常驻抢帧, 开销纳秒级。
+        if !alive {
             _ios15FixLink?.invalidate()
             _ios15FixLink = nil
             _ios15FixViews.removeAllObjects()
@@ -1621,8 +1628,12 @@ def fix_clip_v3_property(t):
     /// 返回 true = 本帧仍有污染 (需继续监控)。
     func ios15ApplyFrameFix() -> Bool {
         guard !isScrollEnabled else { return false }
-        guard let sv = superview, let cv = findCollectionView(), cv.bounds.width > 1 else { return false }
-        let cvW = cv.bounds.width
+        // [IOS15-FIX-DISPLAYLINK v29] findCollectionView() 在 SwiftUI hosting 层级
+        // 未就绪/遍历失败时返回 nil, 旧逻辑直接放弃修正 → 白块从死角漏上屏。
+        // 改用屏宽兜底 (气泡恒为 屏宽-32@16), 任何时候都不放弃抢帧。
+        let _cvW0 = findCollectionView()?.bounds.width ?? 0
+        let cvW = _cvW0 > 1 ? _cvW0 : UIScreen.main.bounds.width
+        guard let sv = superview, cvW > 1 else { return false }
         let f = sv.frame
         let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
         if !polluted {
@@ -1668,7 +1679,10 @@ def fix_clip_v3_property(t):
         ios15KvoToken = sv.observe(\\.frame, options: [.new]) { [weak self] obj, _ in
             guard let self = self, !self.ios15KvoFixing else { return }
             let f = obj.frame
-            let cvW = self.findCollectionView()?.bounds.width ?? 0
+            // [IOS15-FIX-DISPLAYLINK v29] findCollectionView 死角兜底
+            // (同 ios15ApplyFrameFix): 遍历失败时用屏宽, 不放弃同栈抢帧。
+            let _cvW0 = self.findCollectionView()?.bounds.width ?? 0
+            let cvW = _cvW0 > 1 ? _cvW0 : UIScreen.main.bounds.width
             guard cvW > 1 else { return }
             let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
             if !polluted {

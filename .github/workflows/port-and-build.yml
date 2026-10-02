@@ -398,6 +398,18 @@ jobs:
             echo "❌ v28 强制重排缺失 —— poll 打回 390 后旧行碎片仍按 390 排版, 行尾裁字复发!"; exit 1
           fi
           echo "::endgroup::"
+          echo "::group::断言22: v29 CADisplayLink 停机 bug 修复 + findCollectionView 死角兜底 (log12 实证: superview 宽 100000 每帧污染 16 次, 旧逻辑一帧无污染即停机清表 → 污染帧无人拦截, 白块/裁字上屏)"
+          if grep -q "IOS15-FIX-DISPLAYLINK v29" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "if !alive {" src/ios/Views/Chat/SelectableMarkdownView.swift && ! grep -q "if !need {" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v29 停机修复已注入 (仅全视图离窗才停机, 活视图常驻抢帧)"
+          else
+            echo "❌ v29 停机修复缺失 —— CADisplayLink 仍会一帧无污染即永久停机, 白块/裁字复发!"; exit 1
+          fi
+          if [ "$(grep -c 'UIScreen.main.bounds.width' src/ios/Views/Chat/SelectableMarkdownView.swift)" -ge 2 ]; then
+            echo "✅ v29 findCollectionView 死角屏宽兜底已注入 (ApplyFrameFix + KVO 两处)"
+          else
+            echo "❌ v29 屏宽兜底缺失 —— hosting 层级遍历失败时抢帧被放弃, 白块死角仍在!"; exit 1
+          fi
+          echo "::endgroup::"
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
           if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ KVO 抢帧已注入"
