@@ -5402,6 +5402,52 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         let cvW = _cvW0 > 1 ? _cvW0 : UIScreen.main.bounds.width
         guard let sv = superview, cvW > 1 else { return false }
         let f = sv.frame
+        // [V40-HEIGHT-UNCOND] 高度补齐**无条件**执行 — 见函数 docstring 的完整推导。
+        //
+        // v39 实测(log8): v39 把这段写在了 `var fix = f` 之后, 而它上面就是
+        // `if !polluted { ... return false }` 早退。而 polluted 判据只看宽度:
+        //   superview宽=100000/1844.7/651.7 → polluted=true  → 高度被补 ✅
+        //   superview宽=358.0(已正常)      → polluted=false → 早退, 高度一行没跑 ❌
+        // 而 log8 统计显示 4 组宽度里 3 组仍超宽, 但**修复后大部分帧会落到 358**,
+        // 正好落进早退分支 —— 「宽度修好了, 高度被宽度修好挡住了」。
+        //
+        // 高度与宽度是**两个独立的污染维度**, 不该共用一个 polluted 门禁:
+        // 宽度脏 → 修 origin.x + size.width; 高度欠 → 只修 size.height。
+        // 所以提到 polluted 判据之前, 两段独立生效, 不再互相吃掉。
+        //
+        // v39 实测欠账 (52/52 零例外): svH=1331.0 vs needH=1807.0 欠 476.0pt(26.3%)
+        var _fixH40 = f
+        if let _needH40 = Optional(ios15LastNeededH), _needH40 > 1,
+           _fixH40.size.height + 0.5 < _needH40 {
+            _fixH40.size.height = _needH40
+            sv.frame = _fixH40
+        }
+        // [V40-HEIGHTCHAIN] 高度链诊断 — 见函数 docstring 的「为什么加这个」。
+        //
+        // v39 教训: 连续两版都在猜"高度该写在哪一层", 因为日志只暴露了
+        // sv0 和 frameH/needH 两个点, 中间**cell 高度、祖先链、clipsToBounds**
+        // 全是黑的。本段把这三层打出来, 下一版不必再靠量化猜。
+        // 代价: 每帧一次, 但只在 height 确实欠账时打, 且节流到 0.5s 一次。
+        // 【注意】判定必须用**补齐之前**的 f.size.height。若用 _fixH40.size.height,
+        // 上一段刚把它补到 needH, 条件恒为 false —— 诊断会永远打不出来。
+        if f.size.height + 0.5 < (ios15LastNeededH > 1 ? ios15LastNeededH : 0) {
+            struct _HChainLog { static var last: CFTimeInterval = 0 }
+            let _now = CACurrentMediaTime()
+            if _now - _HChainLog.last > 0.5 {
+                _HChainLog.last = _now
+                var _anc: [String] = []
+                var _p: UIView? = sv
+                var _d = 0
+                while let _c = _p, _d < 5 {
+                    _anc.append("\(type(of: _c))(y=\(_c.frame.origin.y) h=\(_c.frame.size.height) clip=\(_c.clipsToBounds))")
+                    _p = _c.superview; _d += 1
+                }
+                NSLog("[V40-HCHAIN] svH=%.1f needH=%.1f debt=%.1f cvW=%.1f cell=%@ chain=%@",
+                      f.size.height, ios15LastNeededH,
+                      ios15LastNeededH - f.size.height, cvW,
+                      String(describing: type(of: sv.superview)), _anc.joined(separator: " <- "))
+            }
+        }
         let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
         if !polluted {
             if f.size.width > 200, f.origin.x > 0.5, f.size.width < cvW - 0.5 {

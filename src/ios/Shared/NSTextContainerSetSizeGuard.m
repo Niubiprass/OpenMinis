@@ -132,6 +132,15 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // 2000 也有 2.2× 余量。既保持"真实尺寸零影响", 又能把哨兵排版成本再降一半。
     // 哨兵本身不丢弃(下游需要它做 max-width/高度发现), 只是不再让 CoreText
     // 在十万点高度上真的排版。
+    //
+    // 【v40 实测: 阈值维持 3000/2000 不动, 不能收紧】
+    // log8 看似"2000 成了最高频 x221"支持收紧, 但 FIRST-MEASURE 的 newH 实证
+    // **真实气泡最高 2002.3pt**, 且 setSize 里真实尺寸已出现 1994.3 / 1863.0 / 1799.0
+    // —— 它们紧贴 2000。若收到 1200/800, 这些**真实排版会被误判成哨兵并压掉**,
+    // 直接制造一轮新的裁字(比现在更隐蔽, 因为只在长文本出现)。
+    // 结论: 2000 不是"新风暴源"而是"真实上限", 221 次命中恰恰说明真实内容这么高。
+    // 风暴的真正解法是消掉哨兵**探测行为**, 而不是压低哨兵值的上限 ——
+    // 那属于 v25/v26 测高链的职责, 不在哨兵钳位这一层。
     const CGFloat kProbeHeightFloor = 3000.0;
     const CGFloat kProbeHeightCeiling = 2000.0;
     if (newSize.height >= kProbeHeightFloor) {
