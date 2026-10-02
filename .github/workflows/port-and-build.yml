@@ -368,6 +368,12 @@ jobs:
           else
             echo "❌ v24 硬钉宽度缺失 —— 气泡仍会被表格/代码块撑到 730/100000, 字不显示/空白/闪字复发!"; exit 1
           fi
+          echo "::group::断言25: v35 hosting 视图/内容必须全屏宽(不再 -32) (log10-03 实证: v22/v24 把整个 cell 硬钉 358 → 用户气泡右空 48pt 不贴边 / 助手文字压到 326 整体缩小 / 终端框折叠)"
+          if grep -q "V35-FULLWIDTH" src/ios/iOS15Compat.swift && ! grep -q "bounds.width - 32" src/ios/iOS15Compat.swift ; then
+            echo "✅ hosting 视图/内容已改回全屏宽(bounds.width, 不再 -32), cell 不再被压窄 32pt"
+          else
+            echo "❌ v35 全屏宽修复缺失 —— hosting 视图仍被硬钉 358, 气泡不贴边/整体缩小/终端框折叠复发!"; exit 1
+          fi
           echo "::group::断言18: v25 高度死锁修复必须就位 (textContainer 高放开重算 usedRect → 根除末行半截字/整条不显示)"
           # v34 起 _realW2 不再独立计算, 直接 `let _realW2 = _realW` 复用渲染宽
           # (v28 独立算 cvW-32 撑爆气泡 / v33 独立算 contentW 过渡态分歧, 都已废弃)。

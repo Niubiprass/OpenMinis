@@ -2249,6 +2249,54 @@ def fix_width_sync_v34(t):
     return t
 
 
+def fix_hosting_fullwidth_v35(t):
+    """v35: hosting 视图/内容改回**全屏宽**(不再减 32) — 治"整体缩小/气泡不贴边/
+    终端框折叠"。
+
+    log(2026-10-03 01:55, run#92 包) 三值实证 + 用户录屏三症状, 根因不在 textContainer
+    宽(326/358/390 三值只是表象), 而在 **v22/v24 把整个消息 cell 的 hosting 视图
+    硬钉成 358 宽**:
+
+      v22: config.content.frame(maxWidth: 屏宽-32=358, alignment:.leading)
+      v24: controller.view.widthAnchor = 屏宽-32=358 + clipsToBounds
+
+    358 这个值错在"可用宽 = 屏宽 - 32"。可 hosting 视图是**整个 cell**, 本就该全宽 390;
+    边距由内容自己处理 (userRow/assistantRow 内部都有 .padding(.horizontal,16))。
+    硬钉 358 的后果(录屏三症状逐一对应):
+      1. 用户气泡 HStack{Spacer;气泡} 撑满 358 → 气泡右缘=358-16=342, 屏幕右空 48pt
+         → "输入的指令永远没有贴边";
+      2. 助手消息再减 padding 16×2 → 文字区 358-32=326 → "气泡宽度不行/整体缩小";
+      3. 工具/终端卡片挤在 358 容器里再缩 → "终端框折叠"。
+    而 tcW 的 358/326/390 三值, 正是修正链在不同阶段(全宽390 → 358容器 → 326文字)
+    各自写入 textContainer 的结果, 每变一次重排一次 → "滑动闪屏"。
+
+    修法: maxWidth/width 约束改为 屏宽(390)。390 与 358 一样能压住 100032/730 这类
+    污染帧(都 < 它们), 但 390 是 cell 的真实全宽, 不再额外压窄正常内容:
+      · 助手文字 = 390 - 16×2 = 358 (恢复正确宽度)
+      · 用户气泡右缘 = 390 - 16 = 374 (恢复贴边)
+      · 终端卡片 = 390 - 16×2 = 358 (恢复展开)
+    """
+    if "V35-FULLWIDTH" in t:
+        return t
+    V22_OLD = "let _ios15ContentMaxW = max(UIScreen.main.bounds.width - 32, 200)"
+    V22_NEW = "let _ios15ContentMaxW = max(UIScreen.main.bounds.width, 200)  // [V35-FULLWIDTH] 全屏宽, 不再 -32"
+    V24_OLD = "let _ios15AvailW = max(UIScreen.main.bounds.width - 32, 200)"
+    V24_NEW = "let _ios15AvailW = max(UIScreen.main.bounds.width, 200)  // [V35-FULLWIDTH] 全屏宽, 不再 -32"
+    if V22_OLD not in t:
+        raise RuntimeError(
+            "[fix_hosting_fullwidth_v35] v22 锚点未命中 —— 找不到 `_ios15ContentMaxW = "
+            "max(UIScreen.main.bounds.width - 32, 200)`。hosting 内容宽仍被压 32pt, "
+            "气泡不贴边/整体缩小无法根治。")
+    t = t.replace(V22_OLD, V22_NEW, 1)
+    if V24_OLD not in t:
+        raise RuntimeError(
+            "[fix_hosting_fullwidth_v35] v24 锚点未命中 —— 找不到 `_ios15AvailW = "
+            "max(UIScreen.main.bounds.width - 32, 200)`。hosting 视图宽仍被硬钉 358, "
+            "整个 cell 缩窄 32pt。")
+    t = t.replace(V24_OLD, V24_NEW, 1)
+    return t
+
+
 def fix_inputbar_kick(t):
     """v30-C: 输入栏假死自愈 — 治"键盘弹出后底部留白无法打字"。
 
@@ -2347,6 +2395,7 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_stabilize_v32, "v32: 渲染宽+测高宽统一 per-cell contentW(视图宽-内边距) — 消除测宽分歧与溢出裁字")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_realw2_v33, "v33: v28 遗留 _realW2 硬编码 cvW-32 改为 contentW — 修边框裁字/卡字/终端框卡内容")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_sync_v34, "v34: 渲染宽回归 superview 基准(过渡态免疫) + 渲染/测高共享 ios15LastRenderContentW — 修整体缩小/不贴边/闪屏(log10-03: tcW 390×27/326×25 交替, v33 公式过渡态双重扣减)")
+    edit_glob("**/iOS15Compat.swift", fix_hosting_fullwidth_v35, "v35: hosting 视图/内容改回全屏宽(不再 -32) — 根治整体缩小/气泡不贴边/终端框折叠(v22/v24 把整个 cell 硬钉 358, 而 cell 应全宽 390)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
