@@ -468,7 +468,7 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         // = 拉锯闪字, 布局高度随之错乱 = 上下空白 / 输出衔接不上。
         // 设 maxWidth 后内容理想宽被压到可用宽, 污染帧从根本上不再产生。
         // maxWidth 只是上限: 内容更窄时按内容宽排布, 右对齐的用户气泡不受影响。
-        let _ios15ContentMaxW = max(UIScreen.main.bounds.width - 32, 200)
+        let _ios15ContentMaxW = max(UIScreen.main.bounds.width, 200)  // [V35-FULLWIDTH] 全屏宽, 不再 -32
         let controller = UIHostingController(rootView: AnyView(config.content.frame(maxWidth: _ios15ContentMaxW, alignment: .leading)))
         controller.view.backgroundColor = .clear
         controller.view.translatesAutoresizingMaskIntoConstraints = false
@@ -479,7 +479,7 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         // 改成硬钉宽度=可用宽(max(屏宽-32,200)): view 帧恒为 358, SwiftUI 据此向 root
         // 提议 358 → 所有子节点按 358 排布, 超宽帧从根上不再产生; clipsToBounds 把
         // 任何内部溢出(超宽表格)裁在 358 内 → 气泡恒等于可用宽。
-        let _ios15AvailW = max(UIScreen.main.bounds.width - 32, 200)
+        let _ios15AvailW = max(UIScreen.main.bounds.width, 200)  // [V35-FULLWIDTH] 全屏宽, 不再 -32
         controller.view.clipsToBounds = true
         NSLayoutConstraint.activate([
             controller.view.leadingAnchor.constraint(equalTo: leadingAnchor),
