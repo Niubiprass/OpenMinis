@@ -334,13 +334,13 @@ jobs:
             echo "❌ ios15FittingSize v17 钳制缺失 —— cell 高度仍按污染宽(494)算, 末行裁半/空白复发!"
             exit 1
           fi
-          # v32 起测高宽改用与渲染端完全相同的 contentW 式子(视图宽 - 内边距),
-          # 不再有 measCapW(=cvContentWidth-32)这个变量; 但要求"测高宽被钳到真实可用
-          # 宽度"这个语义仍在: contentW 式子必须带 cvContentWidth/bounds 上界与 200 下界。
-          if grep -q "capW15UAV" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "max(200.0, min(bounds.width, cvContentWidth) - textContainerInset.left - textContainerInset.right)" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "✅ attachment 测量宽钳制 + 测高宽 contentW 式子已就位"
+          # v34 起测高宽优先复用渲染端写入的 ios15LastRenderContentW(严格 measure==render),
+          # 不再有独立 contentW 式; 但要求"测高宽被钳到真实可用宽度"的语义仍在:
+          # 回退分支必须带 superview 基准与 200 下界。
+          if grep -q "capW15UAV" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "if let _lastW = ios15LastRenderContentW, _lastW > 200 { return _lastW }" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ attachment 测量宽钳制 + 测高宽复用渲染端 contentW 已就位"
           else
-            echo "❌ 测量宽钳制缺失 —— 测高宽未取真实 contentW, 高度对不上渲染宽!"; exit 1
+            echo "❌ 测量宽钳制缺失 —— 测高宽未与渲染宽共享同一值, 高度对不上!"; exit 1
           fi
           echo "::group::断言14: v21 intrinsicContentSize 理想宽钳制必须就位 (堵住 1e5 泄露 → 污染帧 x=-49805)"
           if grep -q "override var intrinsicContentSize" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "cvW > 33 ? cvW - 32 : sz.width" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
@@ -369,9 +369,9 @@ jobs:
             echo "❌ v24 硬钉宽度缺失 —— 气泡仍会被表格/代码块撑到 730/100000, 字不显示/空白/闪字复发!"; exit 1
           fi
           echo "::group::断言18: v25 高度死锁修复必须就位 (textContainer 高放开重算 usedRect → 根除末行半截字/整条不显示)"
-          # v33 起 _realW2 已从 cvW-32 硬编码改为 per-cell contentW 式子(见断言24),
-          # 故这里校验"存在 _realW2 赋值"而非"等于 cvW-32"。
-          if grep -q "ios15LastGoodFitH" src/ios/iOS15Compat.swift && grep -qE "let _realW2 = max\(200\.0," src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+          # v34 起 _realW2 不再独立计算, 直接 `let _realW2 = _realW` 复用渲染宽
+          # (v28 独立算 cvW-32 撑爆气泡 / v33 独立算 contentW 过渡态分歧, 都已废弃)。
+          if grep -q "ios15LastGoodFitH" src/ios/iOS15Compat.swift && grep -qE "let _realW2 = " src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ v25 已注入: 测量 0 高度回退 + 渲染端放开容器高重算 usedRect, 半截字/不显示根除"
           else
             echo "❌ v25 高度修复缺失 —— usedRect 仍被 textContainer 高度死锁, 末行半截字/整条不显示复发!"; exit 1
@@ -432,17 +432,21 @@ jobs:
             echo "❌ v30-C 输入栏自愈缺失 —— STALLED 只能退出重进会话!"; exit 1
           fi
           echo "::endgroup::"
-          echo "::group::断言24: v32+v33 渲染宽/测高宽/_realW2 三处统一 per-cell contentW (log17 实证: 气泡型 cell 实为 326@16, v28 遗留 _realW2=cvW-32=358 把 326 的框撑爆 → 边框裁字/卡字/终端框卡内容; 测高 358≠渲染 326 → 溢出)"
+          echo "::group::断言24: v34 宽度单一写入点 + 渲染/测高共享 contentW (log10-03 实证: v33 的 contentW 式在过渡态双重扣减, tcW 390×27/326×25 交替 → 整体缩小/不贴边/闪屏; superview 基准对此免疫)"
           # 注意: 只 grep 注释标记会被"补丁写了注释但赋值没换"骗过 (v32 就这样蒙混
           # 过了 —— 锚点与真实源码不符, 替换全部 no-op, 但 V32-WIDTH 注释确实存在)。
-          # 故此处校验三处**真实赋值语句**。
-          if [ "$(grep -cE 'let _realW = max\(200\.0, min\(bounds\.width, _cvW\) - textContainerInset\.left - textContainerInset\.right\)' src/ios/Views/Chat/SelectableMarkdownView.swift)" -eq 1 ] \
-             && [ "$(grep -cE 'let _realW2 = max\(200\.0, min\(bounds\.width, _cvW\) - textContainerInset\.left - textContainerInset\.right\)' src/ios/Views/Chat/SelectableMarkdownView.swift)" -eq 1 ] \
-             && [ "$(grep -cE 'let measureWidth: CGFloat = max\(200\.0, min\(bounds\.width, cvContentWidth\) - textContainerInset\.left - textContainerInset\.right\)' src/ios/Views/Chat/SelectableMarkdownView.swift)" -eq 1 ] \
-             && ! grep -qE 'let _realW2 = max\(200\.0, _cvW - 32\)' src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "✅ v32+v33 宽度三处统一 contentW(渲染/测高/_realW2)三条赋值均已落地"
+          # 故此处校验 v34 的**真实行为链**: 共享属性声明 + 渲染端写入 + _realW2 复用
+          # + 测高端读取, 并断言 v32/v33 的独立 contentW 式与 v28 的 cvW-32 均无残留。
+          if [ "$(grep -c 'var ios15LastRenderContentW: CGFloat?' src/ios/Views/Chat/SelectableMarkdownView.swift)" -eq 1 ] \
+             && [ "$(grep -c 'ios15LastRenderContentW = _realW' src/ios/Views/Chat/SelectableMarkdownView.swift)" -eq 1 ] \
+             && [ "$(grep -cE 'let _realW2 = _realW$' src/ios/Views/Chat/SelectableMarkdownView.swift)" -eq 1 ] \
+             && [ "$(grep -c 'if let _lastW = ios15LastRenderContentW, _lastW > 200 { return _lastW }' src/ios/Views/Chat/SelectableMarkdownView.swift)" -eq 1 ] \
+             && ! grep -qE 'let _realW2 = max\(200\.0, _cvW - 32\)' src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && ! grep -qE 'let _realW2 = max\(200\.0, min\(bounds\.width, _cvW\)' src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && ! grep -qE 'let _realW = max\(200\.0, min\(bounds\.width, _cvW\)' src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v34 宽度单一写入点(_realW) + 渲染/测高共享 contentW 已落地, 旧独立式零残留"
           else
-            echo "❌ v32/v33 宽度统一缺失或只落了注释 —— 测宽≠渲染宽 → 溢出裁字/卡字复发!"; exit 1
+            echo "❌ v34 宽度同步缺失或残留旧式 —— 渲染/测高宽分歧 → 整体缩小/不贴边/闪屏复发!"; exit 1
           fi
           echo "::endgroup::"
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"

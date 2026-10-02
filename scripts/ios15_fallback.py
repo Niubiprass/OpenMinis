@@ -2149,6 +2149,106 @@ def fix_realw2_v33(t):
     return t.replace(OLD, NEW, 1)
 
 
+def fix_width_sync_v34(t):
+    """v34: 渲染宽回归 superview 基准 + 渲染/测高共享同一 contentW —
+    治"整体缩小了/边框字体不贴边/上下闪屏字体"。
+
+    log(2026-10-03 01:20, run#90 包) 实证 v33 的 contentW 公式存在过渡态双重扣减:
+      tcW=390 ×27  (视图390 + inset0 → 390-0=390, 超框 32 → 字贴边/溢出)
+      tcW=326 ×25  (视图358 + inset16 → 358-32=326, 窄 32 → "整体缩小")
+    两种坏态交替 re-wrap → "上下闪屏字体"。
+
+    根因: min(bounds.width, cvW) - insets 隐含假设"视图宽与内边距配套"。但 inset
+    是 v14 机制按**上一帧**的 edgeTouch 状态设的, bounds.width 是**本帧** SwiftUI
+    给的 —— 过渡态两者不同步, 就双重扣减(326)或零扣减(390)。
+    旧逻辑(_svW 基准 + edgeTouch 减 32)对此免疫: superview 宽 = 气泡真实宽,
+    不随 SwiftUI 的全宽/内缩两种布局态摆动; 贴边 390-32=358, 气泡 358-0=358, 恒定。
+
+    修法(三层):
+      1. 渲染宽恢复 superview 基准式, 算出后写入 ios15LastRenderContentW;
+      2. _realW2 直接等于 _realW(同作用域), 彻底消除"最后一道赋值覆盖"(v28 教训)
+         与"两处独立计算分歧"(v33 教训);
+      3. 测高宽优先读 ios15LastRenderContentW(渲染端最近一次的真实值),
+         保证 measure==render; 无有效值时退回与渲染同构的 superview 基准式。
+    """
+    if "V34-WIDTH" in t:
+        return t
+    # ---- ① 共享存储属性(挂在 ios15LastNeededH 旁) ----
+    PROP_OLD = "    var ios15LastNeededH: CGFloat = 0"
+    PROP_NEW = """    var ios15LastNeededH: CGFloat = 0
+    /// [V34-WIDTH] 渲染端最近一次算出的文字内容宽。测高端(invalidateCellSizeIfNeeded)
+    /// 优先复用它, 保证测高与渲染严格同宽 —— 两端各自独立计算会在 SwiftUI 的
+    /// 全宽(390)/内缩(358)布局态之间产生 390/358/326 三值分歧(log10-03 实证)。
+    var ios15LastRenderContentW: CGFloat?"""
+    if PROP_OLD not in t:
+        raise RuntimeError(
+            "[fix_width_sync_v34] 属性锚点未命中 —— 找不到 `var ios15LastNeededH: CGFloat = 0`。"
+            "渲染/测高共享 contentW 的存储无处安放, 必须更新 PROP_OLD。")
+    t = t.replace(PROP_OLD, PROP_NEW, 1)
+
+    # ---- ② 渲染宽: v32 注入的 contentW 式 → superview 基准 + 记录 ----
+    RENDER_OLD = """            let _svW = superview?.bounds.width ?? 0
+            // [V32-WIDTH] 渲染宽 = 本 cell 真实内容宽 (视图宽 - 内边距), 不再硬编码 cvW-32。
+            // log17 反转假设: 气泡型 cell 的 superview 实为 326@16 (非 358), v28 遗留的
+            // _realW2=cvW-32=358 会把文字容器撑到 358 塞进 326 框 → 右侧溢出被裁(边框裁字)。
+            // 贴边型(390-16×2=358)与气泡型(326-0=326)各取自己的真实宽, 渲染/测高同式 → 永不溢出。
+            let _realW = max(200.0, min(bounds.width, _cvW) - textContainerInset.left - textContainerInset.right)"""
+    RENDER_NEW = """            let _svW = superview?.bounds.width ?? 0
+            // [V34-WIDTH] 渲染宽回归 superview 基准 —— 对过渡态免疫。
+            // v33 的 min(bounds.width,cvW)-insets 隐含"视图宽与内边距配套", 但 inset 是
+            // v14 按上一帧状态设的、bounds 是本帧 SwiftUI 给的, 过渡态不同步时双重扣减:
+            //   视图390+inset0 → 390(超框32, 字贴边/溢出); 视图358+inset16 → 326(窄32, 整体缩小)。
+            //   log(10-03) tcW=390 ×27 / tcW=326 ×25 交替 → re-wrap 闪屏("上下闪屏字体")。
+            // superview 宽 = 气泡真实宽, 不随两种布局态摆动: 贴边 390-32=358, 气泡 358-0=358。
+            // 算出后写入 ios15LastRenderContentW, 测高端直接复用 → measure==render。
+            var _realW = _svW > 1 ? min(_svW, _cvW) : _cvW
+            if _edgeTouch {
+                _realW = max(_realW - 32, 100)
+            }
+            ios15LastRenderContentW = _realW"""
+    if RENDER_OLD not in t:
+        raise RuntimeError(
+            "[fix_width_sync_v34] 渲染宽锚点未命中 —— v32 注入的 contentW 式不在源码里。"
+            "要么上游变了, 要么补丁顺序被破坏。必须更新 RENDER_OLD。")
+    t = t.replace(RENDER_OLD, RENDER_NEW, 1)
+
+    # ---- ③ _realW2: v33 注入的独立 contentW 式 → 直接复用 _realW ----
+    RW2_OLD = """            // [V33-WIDTH2] 与 _realW/测高宽 同一式子(视图宽 - 内边距): 气泡型 326、贴边型 358
+            // 各取真实宽, 绝不把 326 的框撑到 358 (那会右侧溢出裁字)。不再硬编码 cvW-32。
+            let _realW2 = max(200.0, min(bounds.width, _cvW) - textContainerInset.left - textContainerInset.right)"""
+    RW2_NEW = """            // [V34-WIDTH2] 直接复用渲染宽 _realW(同作用域), 一处计算处处一致。
+            // v28 教训: 这里独立算 cvW-32=358 会把 326 气泡撑爆; v33 教训: 独立算
+            // contentW 又会在过渡态与 _realW 分歧(390/326 交替)。复用即根治。
+            let _realW2 = _realW"""
+    if RW2_OLD not in t:
+        raise RuntimeError(
+            "[fix_width_sync_v34] _realW2 锚点未命中 —— v33 注入的 contentW 式不在源码里。"
+            "必须更新 RW2_OLD。")
+    t = t.replace(RW2_OLD, RW2_NEW, 1)
+
+    # ---- ④ 测高宽: v32 注入的独立 contentW 式 → 优先复用渲染值 ----
+    MEASURE_OLD = """        // [V32-WIDTH] 测高宽 = 与渲染完全相同的式子(视图宽 - 内边距), 严格 measure==render。
+        // 气泡型 cell 宽 326、贴边型 358 各自正确; 不再用 cvW-32 硬编码(会把 326 的框撑爆)。
+        let measureWidth: CGFloat = max(200.0, min(bounds.width, cvContentWidth) - textContainerInset.left - textContainerInset.right)"""
+    MEASURE_NEW = """        // [V34-WIDTH] 测高宽优先用渲染端最近一次算出的真实 contentW, 严格 measure==render,
+        // 且不受本函数里 bounds/inset 过渡态影响。无有效值时退回与渲染同构的 superview
+        // 基准式。v32/v33 的独立式会在过渡态算出 390/326, 与渲染宽(358)分歧 → 双引擎
+        // 高度忽大忽小 → "上下闪屏字体"。
+        let measureWidth: CGFloat = {
+            if let _lastW = ios15LastRenderContentW, _lastW > 200 { return _lastW }
+            let _svWm = superview?.bounds.width ?? 0
+            var _w = _svWm > 1 ? min(_svWm, cvContentWidth) : cvContentWidth
+            if _svWm >= cvContentWidth - 1 { _w = max(_w - 32, 100) }  // 贴边: 视图占满, 文字区 = cvW-32
+            return max(200.0, _w)
+        }()"""
+    if MEASURE_OLD not in t:
+        raise RuntimeError(
+            "[fix_width_sync_v34] 测高宽锚点未命中 —— v32 注入的 measureWidth contentW 式"
+            "不在源码里。必须更新 MEASURE_OLD。")
+    t = t.replace(MEASURE_OLD, MEASURE_NEW, 1)
+    return t
+
+
 def fix_inputbar_kick(t):
     """v30-C: 输入栏假死自愈 — 治"键盘弹出后底部留白无法打字"。
 
@@ -2246,6 +2346,7 @@ def main():
     edit("Views/Chat/AIChatView.swift", fix_inputbar_kick, "v30-C: 输入栏假死自愈 — STALLED 时就地重建 composer host (草稿保留)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_stabilize_v32, "v32: 渲染宽+测高宽统一 per-cell contentW(视图宽-内边距) — 消除测宽分歧与溢出裁字")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_realw2_v33, "v33: v28 遗留 _realW2 硬编码 cvW-32 改为 contentW — 修边框裁字/卡字/终端框卡内容")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_width_sync_v34, "v34: 渲染宽回归 superview 基准(过渡态免疫) + 渲染/测高共享 ios15LastRenderContentW — 修整体缩小/不贴边/闪屏(log10-03: tcW 390×27/326×25 交替, v33 公式过渡态双重扣减)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
