@@ -368,6 +368,36 @@ jobs:
             echo "❌ v37 probe 宽钳位缺失 —— superview 仍会被撑到屏宽 2~256 倍, 终端框卡顿 + 末行裁半复发!"
             exit 1
           fi
+          echo "::group::断言41: v39 帧同步必须补上高度 (v38 实测: 帧同步只修宽度, 每帧把 v18 撑好的高度改回去)"
+          # v38 实测 (minis-2026-10-03 7.log) 的结论: v38-A 的**诊断对了, 修法错了**。
+          # 量化: svH 恒定落在 needH 的 0.50~0.74, 37/37 无一例外, 且 svH 恒等于 frameH。
+          #   svW= 829.3 svH= 313.3 needH= 480.3  欠账=167.0 ×12
+          #   svW=100000  svH= 669.0 needH= 901.3  欠账=232.3 ×8
+          #   svW=1226.3  svH= 377.7 needH= 758.7  欠账=381.0 ×4
+          # 根因: 两条修复路径各修一半 ——
+          #   v18 layoutSubviews  修宽度 + 修高度(中间写, 会被下一帧覆盖)
+          #   v23 帧同步          只修宽度(函数体内 height 字样 = 0 命中, 是最后一写)
+          # 而末行裁切是**高度**不足造成的, 只修宽度永远治不好。
+          # 修法: 在帧同步(最后一写)里一并把高度撑到 ios15LastNeededH。
+          if grep -q "V39-FIXHEIGHT" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "_needH39 > 1" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "fix.size.height = _needH39" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            # 反向断言 1: 注入点必须唯一 —— 帧同步每帧对每个注册视图跑一次,
+            #多处注入 = 每帧多次写 frame, 反而更卡。
+            _v39_n=$(grep -c "_needH39 > 1" src/ios/Views/Chat/SelectableMarkdownView.swift || true)
+            # 反向断言 2: 必须落在 sv.frame = fix **之前** —— 写在之后就永远不生效。
+            _v39_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); m=t.index('V39-FIXHEIGHT'); f=t.index('ios15ApplyFrameFix'); w=t.index('sv.frame = fix', m); print('OK' if f<m<w else 'BAD')")
+            if [ "$_v39_n" = "1" ] && [ "$_v39_pos" = "OK" ]; then
+              echo "✅ v39 帧同步高度补齐已就位 (在 ios15ApplyFrameFix 内、sv.frame=fix 之前, 注入点唯一)"
+            else
+              echo "❌ v39 位置/数量异常 (注入点=$_v39_n 位置=$_v39_pos) —— 高度仍会被帧同步改回去, 末行裁字复发!"
+              exit 1
+            fi
+          else
+            echo "❌ v39 缺失 —— 帧同步每帧只改宽度不改高度, svH 恒为 needH 的 0.5~0.74, 排版必然不对!"
+            exit 1
+          fi
+
           echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
           # 病根A 实证 (minis-2026-10-03 6.log):
           #   04:55:03.045 FIRST-MEASURE CORRECTION cellH=1591.7 newH=1748.0
@@ -412,22 +442,22 @@ jobs:
             exit 1
           fi
 
-          echo "::group::断言40: v38-C intrinsic 哨兵高度必须收敛 (358x100000 独占 87 次最高频风暴)"
+          echo "::group::断言40: v38-C intrinsic 哨兵高度必须收敛 (阈值 v39 实测收紧为 3000/2000)"
           # 日志分布: 358.0x100000.0 × 87(最高频) / 358.0x400.7 × 11 / 1096.0x1291.7 × 2 ...
           # 根因: kMaxContainerHeight = 1e5 恰等于 100000, 而钳位是 `<=` 边界 → 100000 恰好放行;
           #       熔断只丢"同 tick 同尺寸", 这些调用跨 tick 尺寸相同 → 每 tick 重置并真跑一次 CoreText。
           # 修法: 高度 >= 8000 判定为探测哨兵(远高于真实气泡上限 1748, 远低于 1e5), 压到 4000。
           if grep -q "V38C-PROBEH" src/ios/Shared/NSTextContainerSetSizeGuard.m \
-             && grep -q "kProbeHeightFloor = 8000.0" src/ios/Shared/NSTextContainerSetSizeGuard.m \
-             && grep -q "kProbeHeightCeiling = 4000.0" src/ios/Shared/NSTextContainerSetSizeGuard.m ; then
+             && grep -q "kProbeHeightFloor = 3000.0" src/ios/Shared/NSTextContainerSetSizeGuard.m \
+             && grep -q "kProbeHeightCeiling = 2000.0" src/ios/Shared/NSTextContainerSetSizeGuard.m ; then
             # 反向断言: 地板必须严格小于哨兵值 100000, 否则条件永不成立(等效没修)。
             #          地板还必须落在高度钳位**之前** —— 钳位先跑的话, 未来收紧 kMaxContainerHeight
             #          就再也认不出原始哨兵值了。
             # 【坑】不能用多行 python3 -c "...":裸换行会破坏 YAML 的折叠标量,
             # workflow 直接解析失败(run#97 就是这么挂的, 连编译都没到)。全部写成单行。
-            _v38c_pos=$(python3 -c "p=open('src/ios/Shared/NSTextContainerSetSizeGuard.m',encoding='utf-8').read(); f=p.find('kProbeHeightFloor = 8000.0'); c=p.find('if (newSize.height > kMaxContainerHeight)'); print('OK' if f!=-1 and c!=-1 and f<c else 'BAD')")
+            _v38c_pos=$(python3 -c "p=open('src/ios/Shared/NSTextContainerSetSizeGuard.m',encoding='utf-8').read(); f=p.find('kProbeHeightFloor = 3000.0'); c=p.find('if (newSize.height > kMaxContainerHeight)'); print('OK' if f!=-1 and c!=-1 and f<c else 'BAD')")
             if [ "$_v38c_pos" = "OK" ]; then
-              echo "✅ v38-C 哨兵高度收敛已就位 (8000 地板严格小于哨兵 100000, 且在高度钳位之前)"
+              echo "✅ v38-C 哨兵高度收敛已就位 (3000 地板 / 2000 顶, 远高于实测真实气泡上限 901.3)"
             else
               echo "❌ v38-C 位置/阈值错误 —— 哨兵 100000 仍会放行, setSize 风暴复发 (终端框卡一下才显示)!"
               exit 1
