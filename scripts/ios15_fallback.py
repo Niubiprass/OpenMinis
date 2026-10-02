@@ -1950,6 +1950,158 @@ def fix_markdown_table_extension(t):
     return t.replace(OLD, NEW)
 
 
+def fix_flip_block(t):
+    """v30-A: 双引擎测高反振荡 — 治"列表高度瞬间跳跃/剧烈抖动"。
+
+    log13 实证 (minis-2026-10-02 13.log 18:31:25-18:31:52): 含 8 行表格的消息
+    (idx=8, storageLen=950) 的 cell 高度在 1176.3 与 850 之间每 ~350ms 翻转一次:
+      INVALIDATE idx=8 delta=326 est=1176 → pref=850
+      INVALIDATE idx=8 delta=326 est=850  → pref=1176   (无限往复)
+    根因: 同一条富文本被两套测高引擎各测一次 — TextKit 纠偏路径
+    (invalidateCellSizeIfNeeded → UITextView.sizeThatFits) 给 1176.3, SwiftUI
+    cell 自排版路径 (preferredLayoutAttributesFitting → ios15FittingSize →
+    host.sizeThatFits) 给 850。两者经 shouldInvalidateLayout 互相翻转 → 每次翻
+    转都是一次 326pt 的可见跳动; 同时持续喂 DeferDebt OWED/CONSUME 循环与
+    setSize 风暴 (totalShortCircuits=3217), 主线程被打满 → InputBar STALLED、
+    停止按钮迟钝。
+
+    修法 (在布局层斩断回路, 不赌哪个引擎"正确"):
+      1) 记录每个 idx 最近一次 >100pt "增高" invalidate 的时间;
+      2) 2s 内到来越过 100pt 的"缩回"投票视为疑似回弹 — 仅当同一目标值连续
+         第 2 次出现才放行。真实塌缩(工具卡折叠/内容移除)会连续重复同一值,
+         最多延迟一个布局周期; 而振荡两个缩回之间必夹一次增高(计数值不同),
+         永远凑不齐两连 → 回路死锁在 TextKit 值, 跳动停止。
+    """
+    OLD = """        return shouldInvalidate
+    }
+    private static var invIdxCounts: [Int: Int] = [:]"""
+    NEW = """        // [V30-FLIPBLOCK] 双引擎测高反振荡 (log13 实证 est=1176↔850 每帧翻转)
+        if shouldInvalidate, preferred < original - 100 {
+            let _v30Now = CACurrentMediaTime()
+            if let _v30GrowAt = Self.v30FlipLastGrowAt[index], _v30Now - _v30GrowAt < 2.0 {
+                if let _v30Strike = Self.v30FlipShrinkStrikes[index],
+                   abs(_v30Strike.value - preferred) < 1, _v30Strike.count >= 1 {
+                    // 同一缩回值连续第 2 次 → 真实塌缩, 放行
+                    AppLogger(category: "CellSizing").info("[CellSizing][V30-FLIPBLOCK] idx=\\(index) shrink repeated → allowed (real collapse)")
+                } else {
+                    Self.v30FlipShrinkStrikes[index] = (value: preferred, count: 1)
+                    AppLogger(category: "CellSizing").info("[CellSizing][V30-FLIPBLOCK] idx=\\(index) shrink \\(String(format: "%.0f", original))→\\(String(format: "%.0f", preferred)) blocked (1st) — suspected ping-pong")
+                    return false
+                }
+            } else {
+                Self.v30FlipShrinkStrikes[index] = nil
+            }
+        }
+        if shouldInvalidate, preferred > original + 100 {
+            Self.v30FlipLastGrowAt[index] = CACurrentMediaTime()
+        }
+        return shouldInvalidate
+    }
+    // [V30-FLIPBLOCK] 状态: idx → 最近 >100pt 增高 invalidate 时间 / 最近被拦缩回值+计数
+    private static var v30FlipLastGrowAt: [Int: CFTimeInterval] = [:]
+    private static var v30FlipShrinkStrikes: [Int: (value: CGFloat, count: Int)] = [:]
+    private static var invIdxCounts: [Int: Int] = [:]"""
+    if "V30-FLIPBLOCK" in t:
+        return t
+    if OLD not in t:
+        print("   [fix_flip_block] 锚点未命中, 跳过")
+        return t
+    return t.replace(OLD, NEW)
+
+
+def fix_measure_throttle(t):
+    """v30-B: 流式测高节流 — 治"主线程被测高打满"(卡顿/输入框假死/停止迟钝)。
+
+    log13 实证: 一次会话 [TextContainerGuard] totalShortCircuits=3217、
+    tick=13616; 流式每个 token 都变更 textStorage.length → 击穿 (storageLen,
+    width) 指纹去重 → 触发一次完整 sizeThatFits(TextKit 全量排版, 长文本
+    2-10ms/次)。shell_execute 工具卡进度刷新还会反复重建 markdown 视图
+    (FIRST-MEASURE previousHeight=0 反复出现), 雪上加霜。主线程被测高占满
+    → 列表抖动 + [InputBarHealth] STALLED + 停止按钮响应迟钝。
+
+    修法: 完整测高合并到至多 ~8 次/秒 — 120ms 窗口内的重复请求只排一次延后
+    补测(0.13s 后); 补测时内容已稳定则指纹去重廉价退出。欠账纠偏
+    (deferredCorrectionPending)不节流, 保证滚动结束的纠偏即时落地。
+    """
+    if "V30-THROTTLE" in t:
+        return t
+    OLD_VAR = "    private var reentryGuardHits: Int = 0"
+    NEW_VAR = """    private var reentryGuardHits: Int = 0
+    // [V30-THROTTLE] 流式测高节流: 上次完整 sizeThatFits 时刻 + 补测排队标志
+    private var ios15LastFullMeasureAt: CFTimeInterval = 0
+    private var ios15ThrottleRearmScheduled = false"""
+    OLD = """        isInvalidatingCellSize = true
+        defer { isInvalidatingCellSize = false }"""
+    NEW = """        // [V30-THROTTLE] 120ms 内的重复完整测高合并为一次延后补测
+        // (log13: 流式期间每 token 一次全量 TextKit 排版, 主线程被占满)。
+        if !deferredCorrectionPending {
+            let _v30Now = CACurrentMediaTime()
+            if _v30Now - ios15LastFullMeasureAt < 0.12 {
+                if !ios15ThrottleRearmScheduled {
+                    ios15ThrottleRearmScheduled = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.13) { [weak self] in
+                        guard let self else { return }
+                        self.ios15ThrottleRearmScheduled = false
+                        self.invalidateCellSizeIfNeeded()
+                    }
+                }
+                return
+            }
+            ios15LastFullMeasureAt = _v30Now
+        }
+        isInvalidatingCellSize = true
+        defer { isInvalidatingCellSize = false }"""
+    if OLD_VAR not in t or OLD not in t:
+        print("   [fix_measure_throttle] 锚点未命中, 跳过")
+        return t
+    t = t.replace(OLD_VAR, NEW_VAR, 1)
+    return t.replace(OLD, NEW, 1)
+
+
+def fix_inputbar_kick(t):
+    """v30-C: 输入栏假死自愈 — 治"键盘弹出后底部留白无法打字"。
+
+    log13 实证: [InputBarHealth] STALLED 两次 (18:30:26 / 18:30:30), 直到
+    18:32:25 才自愈 — 2 分钟无法打字。上游自己注释承认唯一疗法是"退出会话
+    重进"(重建 composer host), 探针却只打日志不行动。
+
+    修法: 探针确认 900ms 无 geometry 回调后, 就地执行用户的手动疗法 —
+    重置种子 (didSeedInputBarHeight=false) + bump composer 子树的 .id 身份
+    → SwiftUI 重建全新 hosting 视图 → onGeometryChange 恢复回调 → 输入栏
+    复活。草稿文本存于 vm.inputText (ViewModel), 重建不丢草稿。
+    仅在非语音、非编辑态触发, 避免打断语音转写。
+    """
+    if "V30-INPUTBAR-KICK" in t:
+        return t
+    OLD_STATE = "    @State private var inputBarHealthProbe: Task<Void, Never>?"
+    NEW_STATE = """    @State private var inputBarHealthProbe: Task<Void, Never>?
+    // [V30-INPUTBAR-KICK] STALLED 自愈: bump 此值重建 composer 子树身份
+    @State private var composerRebuildTick: Int = 0"""
+    OLD_ID = """            .onGeometryChange15(for: CGRect.self) { proxy in
+                proxy.frame(in: .global)"""
+    NEW_ID = """            // [V30-INPUTBAR-KICK] composer 死亡自愈的重建开关: tick 变化
+            // 即换 identity → SwiftUI 重建 hosting 视图 (等价退出重进会话)。
+            .id(composerRebuildTick)
+            .onGeometryChange15(for: CGRect.self) { proxy in
+                proxy.frame(in: .global)"""
+    OLD_STALL = """                    AppLogger(category: "InputBarLayout").error(_stallMsg)"""
+    NEW_STALL = """                    AppLogger(category: "InputBarLayout").error(_stallMsg)
+                    // [V30-INPUTBAR-KICK] 不再只报错等待用户退出重进 — 就地重建:
+                    // 重置种子 + bump .id, composer host 复活后 geometry 回调
+                    // 恢复, 种子重新落地。草稿在 vm.inputText, 重建不丢。
+                    if !voiceInputActive && !voiceVM.isEditingTranscript {
+                        didSeedInputBarHeight = false
+                        composerRebuildTick &+= 1
+                        AppLogger(category: "InputBarLayout").error("[InputBarHealth][V30-KICK] rebuilding composer host (tick=\\(composerRebuildTick)) — draft preserved in vm.inputText")
+                    }"""
+    if OLD_STATE not in t or OLD_ID not in t or OLD_STALL not in t:
+        print("   [fix_inputbar_kick] 锚点未命中, 跳过")
+        return t
+    t = t.replace(OLD_STATE, NEW_STATE, 1)
+    t = t.replace(OLD_ID, NEW_ID, 1)
+    return t.replace(OLD_STALL, NEW_STALL, 1)
+
+
 def main():
     print("== iOS 15 兜底修复 v2 (ROOT=%s) ==" % ROOT)
     print("-- 文件指纹/结构自检 --")
@@ -1997,6 +2149,10 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_defer_large_shrink, "v5: 大幅收缩(-100pt)修正立即生效, 消回复后大片空白 (控制台输出折叠卡片欠账数秒)")
     edit("Agent/Markdown/MinisMarkdownParser.swift", fix_markdown_table_extension, "v27: iOS15 启用 cmark-gfm table 扩展 (上游 else 分支漏 table, 表格整段降级为巨型单行纯文本 → 撑爆测量宽 → 高度振荡跳字)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_table_probe_width, "v28: 表格 probe 返回宽 32768 钳到真实容器宽 (iOS15 superview 被撑爆 → 白色巨块盖住内容)")
+    # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
+    edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")
+    edit("Views/Chat/AIChatView.swift", fix_inputbar_kick, "v30-C: 输入栏假死自愈 — STALLED 时就地重建 composer host (草稿保留)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")

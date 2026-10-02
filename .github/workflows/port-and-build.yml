@@ -410,6 +410,23 @@ jobs:
             echo "❌ v29 屏宽兜底缺失 —— hosting 层级遍历失败时抢帧被放弃, 白块死角仍在!"; exit 1
           fi
           echo "::endgroup::"
+          echo "::group::断言23: v30 双引擎测高反振荡 + 流式测高节流 + 输入栏假死自愈 (log13 实证: est=1176↔850 每帧翻转 326pt 跳动, totalShortCircuits=3217 主线程打满 → STALLED/停止迟钝)"
+          if grep -q "V30-FLIPBLOCK" src/ios/Agent/MessageList/MessageListLayout.swift && grep -q "v30FlipLastGrowAt" src/ios/Agent/MessageList/MessageListLayout.swift ; then
+            echo "✅ v30-A 双引擎测高反振荡已注入"
+          else
+            echo "❌ v30-A 反振荡缺失 —— 1176↔850 ping-pong 复发, 列表高度瞬间跳动!"; exit 1
+          fi
+          if grep -q "V30-THROTTLE" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "ios15LastFullMeasureAt" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v30-B 流式测高节流已注入 (~8次/秒)"
+          else
+            echo "❌ v30-B 测高节流缺失 —— 主线程仍被每 token 全量 TextKit 排版占满!"; exit 1
+          fi
+          if grep -q "composerRebuildTick" src/ios/Views/Chat/AIChatView.swift && grep -q "V30-KICK" src/ios/Views/Chat/AIChatView.swift ; then
+            echo "✅ v30-C 输入栏假死自愈已注入 (STALLED 就地重建 composer)"
+          else
+            echo "❌ v30-C 输入栏自愈缺失 —— STALLED 只能退出重进会话!"; exit 1
+          fi
+          echo "::endgroup::"
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
           if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ KVO 抢帧已注入"
