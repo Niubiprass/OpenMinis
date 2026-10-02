@@ -1996,12 +1996,20 @@ def fix_flip_block(t):
     private static var invIdxCounts: [Int: Int] = [:]"""
     if "V31-FLIPLOCK" in t:
         return t
-    # 幂等: 若残留 v30-A 块先剥离, 回到 fresh 锚点再注入 v31
-    V30_MARK = "    // [V30-FLIPBLOCK]"
-    if V30_MARK in t:
-        _v31s = t.index(V30_MARK)
-        _v31e = t.index("private static var invIdxCounts", _v31s)
-        t = t[:_v31s] + t[_v31e:]
+    # 幂等: 若残留 v30-A 块, 精确剥离回 fresh 锚点再注入 v31。
+    # 必须分两步且保留 `return shouldInvalidate` 与 `}` —— 不能整段删到 invIdxCounts,
+    # 否则会连 return/} 一起删掉导致源码语法错误。
+    if "V30-FLIPBLOCK" in t:
+        # 1) 删 v30 代码块: 8 空格注释 → `return shouldInvalidate` 之前(不含)
+        c_start = t.find("        // [V30-FLIPBLOCK] 双引擎测高反振荡")
+        c_end = t.find("        return shouldInvalidate", c_start)
+        if c_start != -1 and c_end != -1 and c_end > c_start:
+            t = t[:c_start] + t[c_end:]
+        # 2) 删 v30 状态变量: 4 空格 `// [V30-FLIPBLOCK] 状态` → invIdxCounts 之前(不含)
+        s_start = t.find("    // [V30-FLIPBLOCK] 状态")
+        s_end = t.find("    private static var invIdxCounts", s_start)
+        if s_start != -1 and s_end != -1 and s_end > s_start:
+            t = t[:s_start] + t[s_end:]
     if OLD not in t:
         print("   [fix_flip_block] 锚点未命中, 跳过")
         return t
@@ -2055,6 +2063,57 @@ def fix_measure_throttle(t):
         return t
     t = t.replace(OLD_VAR, NEW_VAR, 1)
     return t.replace(OLD, NEW, 1)
+
+
+def fix_width_stabilize_v32(t):
+    """v32: 渲染宽 + 测高宽统一钉死 cvW-32 — 治"字不贴边/滑动忽隐忽现/双引擎高度振荡"。
+
+    log15 实证: 文字容器宽 tcW 在 326(×132) 与 358(×115) 之间反复翻转, 而 cvW 恒 390。
+    根因: 渲染端 (LEFT-CLIP 区域) 按 SwiftUI 抖动的 superview.bounds 再减一次 32 → 326;
+    测高端 (invalidateCellSizeIfNeeded) 跟随同样抖动的 bounds.width → 有时 326 有时 358。
+    三个症状同一根因:
+      1) 宽度翻转 → 文字每帧按不同宽 re-wrap → 滑动时字忽隐忽现 + 边距忽宽忽窄(不贴边);
+      2) 渲染 358 / 测高 326(或反之) → TextKit 与 SwiftUI 两引擎测不同宽 → 高度分歧
+         (log15 idx=13: 1477↔1305/1313/1319) → 列表振荡 + 末行裁切(字不显示)。
+    修法: 贴边模式(全宽390+16 inset)与气泡模式(358@16+0 inset)的文字可用宽度恒为
+    cvW-32=358, 326 纯属多减一次的多余产物。故渲染宽与测高宽都统一为 cvW-32, 且两者
+    严格相等 —— 一次性消除翻转、重排闪烁与双引擎分歧。
+    """
+    RENDER_OLD = """            let _svW = superview?.bounds.width ?? 0
+            var _realW = _svW > 1 ? min(_svW, _cvW) : _cvW
+            if _edgeTouch {
+                _realW = max(_realW - 32, 100)
+            }"""
+    RENDER_NEW = """            let _svW = superview?.bounds.width ?? 0
+            // [V32-WIDTH] 渲染宽统一 = cvW-32。贴边(全宽390+16 inset)与气泡(358@16+0 inset)
+            // 的文字可用宽都恒为 358; 旧逻辑按抖动的 bounds 再 -32 → 326/358 翻转 (log15 tcW
+            // 326×132/358×115) → re-wrap 闪烁(字忽隐忽现)+边距不稳(不贴边)+双引擎测宽分歧。
+            let _realW = max(_cvW - 32, 100)"""
+    MEASURE_OLD = """        let measCapW = cvContentWidth > 33 ? cvContentWidth - 32 : cvContentWidth
+        let measureWidth: CGFloat
+        if proposedMeasureW > 1, proposedMeasureW < 100_000,
+           proposedMeasureW <= measCapW + 1 {
+            measureWidth = proposedMeasureW
+        } else if measCapW > 1 {
+            measureWidth = measCapW
+        } else {
+            measureWidth = textContainer.size.width
+        }"""
+    MEASURE_NEW = """        // [V32-WIDTH] 测高宽统一 = cvW-32, 与渲染宽严格一致; 不再跟随 SwiftUI 抖动的
+        // bounds.width(在 326/358 摆动) → 两引擎测不同宽 → 高度分歧振荡 + 末行裁切。
+        let measCapW = cvContentWidth > 33 ? cvContentWidth - 32 : cvContentWidth
+        let measureWidth: CGFloat = (measCapW > 1) ? measCapW : max(textContainer.size.width, 200)"""
+    if "V32-WIDTH" in t:
+        return t
+    if RENDER_OLD not in t:
+        print("   [fix_width_stabilize_v32] 渲染宽锚点未命中, 跳过渲染部分")
+    else:
+        t = t.replace(RENDER_OLD, RENDER_NEW, 1)
+    if MEASURE_OLD not in t:
+        print("   [fix_width_stabilize_v32] 测高宽锚点未命中, 跳过测高部分")
+        return t
+    t = t.replace(MEASURE_OLD, MEASURE_NEW, 1)
+    return t
 
 
 def fix_inputbar_kick(t):
@@ -2152,6 +2211,7 @@ def main():
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")
     edit("Views/Chat/AIChatView.swift", fix_inputbar_kick, "v30-C: 输入栏假死自愈 — STALLED 时就地重建 composer host (草稿保留)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_width_stabilize_v32, "v32: 渲染宽+测高宽统一钉死 cvW-32 — 消除 326↔358 翻转 (字不贴边/滑动忽隐忽现/双引擎高度振荡)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")

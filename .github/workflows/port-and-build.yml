@@ -427,6 +427,13 @@ jobs:
             echo "❌ v30-C 输入栏自愈缺失 —— STALLED 只能退出重进会话!"; exit 1
           fi
           echo "::endgroup::"
+          echo "::group::断言24: v32 渲染宽+测高宽统一 cvW-32 (log15 实证 tcW 326×132/358×115 翻转 → 字不贴边/滑动忽隐忽现/双引擎高度振荡 1477↔1310)"
+          if [ "$(grep -c 'V32-WIDTH' src/ios/Views/Chat/SelectableMarkdownView.swift)" -ge 2 ] && grep -q "max(_cvW - 32, 100)" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "let measureWidth: CGFloat = (measCapW > 1)" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            echo "✅ v32 宽度稳定(渲染+测高统一 cvW-32)已注入"
+          else
+            echo "❌ v32 宽度稳定缺失 —— 326↔358 翻转复发, 字忽隐忽现/不贴边/高度振荡!"; exit 1
+          fi
+          echo "::endgroup::"
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
           if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ KVO 抢帧已注入"
