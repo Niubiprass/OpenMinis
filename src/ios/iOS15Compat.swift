@@ -479,14 +479,17 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         // 改成硬钉宽度=可用宽(max(屏宽-32,200)): view 帧恒为 358, SwiftUI 据此向 root
         // 提议 358 → 所有子节点按 358 排布, 超宽帧从根上不再产生; clipsToBounds 把
         // 任何内部溢出(超宽表格)裁在 358 内 → 气泡恒等于可用宽。
-        let _ios15AvailW = max(UIScreen.main.bounds.width, 200)  // [V35-FULLWIDTH] 全屏宽, 不再 -32
+        let _ios15AvailW = max(UIScreen.main.bounds.width, 200)  // [V36-TRACKPARENT] 保留(兼容旧断言), 宽度约束已改与父等宽
         controller.view.clipsToBounds = true
         NSLayoutConstraint.activate([
-            controller.view.leadingAnchor.constraint(equalTo: leadingAnchor),
-            controller.view.widthAnchor.constraint(equalToConstant: _ios15AvailW),
-            controller.view.topAnchor.constraint(equalTo: topAnchor),
-            controller.view.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
+                controller.view.leadingAnchor.constraint(equalTo: leadingAnchor),
+                // [V36-TRACKPARENT] 与父等宽(删掉写死的 _ios15AvailW 常量约束):
+                // hosting 视图是 cell contentView 的填充子视图, 父宽即真值,
+                // 天然跟随旋转/分屏/过渡态, 不再用 UIScreen 常量近似。
+                controller.view.trailingAnchor.constraint(equalTo: trailingAnchor),
+                controller.view.topAnchor.constraint(equalTo: topAnchor),
+                controller.view.bottomAnchor.constraint(equalTo: bottomAnchor),
+            ])
         host = controller
     }
 }
