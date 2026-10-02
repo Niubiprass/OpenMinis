@@ -886,7 +886,11 @@ extension UnsafeNode {
         if #available(iOS 16.0, macOS 13.0, tvOS 16.0, watchOS 9.0, *) {
             extensionNames = ["autolink", "strikethrough", "tagfilter", "tasklist", "table"]
         } else {
-            extensionNames = ["autolink", "strikethrough", "tagfilter", "tasklist"]
+            // [IOS15-FIX-TABLE] iOS 15.5 也启用 table 扩展: 表格渲染路径
+            // (TableAttachment/TableCellTextView/TableLayout) 是纯 UIKit, 无
+            // iOS16-only API。缺 table 扩展时表格整段降级为无换行纯文本
+            // (巨型单行, 自然宽 ~1022) → 撑爆测量宽 → cell 高振荡 → 跳字/半截字。
+            extensionNames = ["autolink", "strikethrough", "tagfilter", "tasklist", "table"]
         }
 
         for extensionName in extensionNames {
