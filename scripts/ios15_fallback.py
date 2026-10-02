@@ -1056,6 +1056,55 @@ def fix_hosting_content_maxwidth(t):
     return t
 
 
+def fix_hosting_view_width(t):
+    """v24: 钉死 UIHostingController 的 *视图* 宽度 = 可用宽 + 裁切溢出。
+
+    v22 的 frame(maxWidth:) 把 SwiftUI 内容的"理想宽"压到了 358 (日志实证 idealW
+    全为 358), 但表格 / 代码块等节点用 .fixedSize() 或自带横向滚动, 不理 maxWidth 上限
+    → 这些节点的真实布局宽仍是 730 / 100000。上游 UIHostingController 据此把自身 view
+    撑成 730/100000, 而原约束是四边钉死 (leading/trailing/top/bottom 全 = superview),
+    于是 hosting view 跟随已被污染的父宽 → 气泡宽 730, 在 390pt 屏幕里居中后:
+       · 左右双侧裁字 (字不显示)
+       · 358 宽文字在 730 气泡里左对齐 → 右侧大片空白
+       · SwiftUI 每帧把超宽帧写回、渲染端抢回 → 拉锯闪字
+    v23 的 CADisplayLink 只在绘制前抢 frame, 治标不治本 (SwiftUI 仍在写超宽帧)。
+
+    根治: 不再四边钉死, 改成【硬钉宽度 = 可用宽(max(屏宽-32,200)) + 左对齐 + clipsToBounds】。
+    这样 UIHostingController 的 view 帧永远是 358, SwiftUI 据此向 root 提议 358 → 所有
+    子节点(含表格/代码块)都按 358 排布, 730/100000 帧从根上不再产生, 且内部任何溢出
+    (超宽表格)被 clipsToBounds 裁在 358 内 → 气泡恒等于可用宽, 不裁字、不空白、不闪。
+    """
+    OLD = '''        controller.view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(controller.view)
+        NSLayoutConstraint.activate([
+            controller.view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            controller.view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            controller.view.topAnchor.constraint(equalTo: topAnchor),
+            controller.view.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])'''
+    if "ios15AvailW" in t:
+        return t
+    if OLD not in t:
+        return t
+    NEW = '''        controller.view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(controller.view)
+        // [IOS15-FIX-CLIP v24] 硬钉 hosting 视图宽度 = 可用宽, 左对齐 + 裁切溢出。
+        // 病根: 四边钉死让 hosting view 跟随已被污染的父宽(表格/代码块不理 maxWidth,
+        // 理想宽 730/100000), 气泡超宽 → 双侧裁字 + 右侧空白 + SwiftUI 抢帧闪字。
+        // 改成硬钉宽度=可用宽(max(屏宽-32,200)): view 帧恒为 358, SwiftUI 据此向 root
+        // 提议 358 → 所有子节点按 358 排布, 超宽帧从根上不再产生; clipsToBounds 把
+        // 任何内部溢出(超宽表格)裁在 358 内 → 气泡恒等于可用宽。
+        let _ios15AvailW = max(UIScreen.main.bounds.width - 32, 200)
+        controller.view.clipsToBounds = true
+        NSLayoutConstraint.activate([
+            controller.view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            controller.view.widthAnchor.constraint(equalToConstant: _ios15AvailW),
+            controller.view.topAnchor.constraint(equalTo: topAnchor),
+            controller.view.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])'''
+    return t.replace(OLD, NEW)
+
+
 def fix_widget_activitykit(t):
     """AgentWidgetExtension 在 iOS 15.5 上根本没有 ActivityKit / AppIntents 框架,
     但源码顶层的 `import ActivityKit` / `import AppIntents` (Agent/Intents/*.swift
@@ -1808,6 +1857,7 @@ def main():
     edit_glob("**/iOS15Compat.swift", inject_geom_backport, "注入 onGeometryChange 回填实现")
     edit_glob("**/iOS15Compat.swift", fix_hosting_config_shim, "UIHostingConfiguration 替身补系统LayoutSizeFitting (自排版)")
     edit_glob("**/iOS15Compat.swift", fix_hosting_content_maxwidth, "v22: SwiftUI rootView 设 maxWidth (压住超宽理想宽 → 根除污染帧/闪字/空白)")
+    edit_glob("**/iOS15Compat.swift", fix_hosting_view_width, "v24: hosting 视图硬钉宽度=可用宽+裁切溢出, 根除 730/100000 超宽气泡(字不显示/空白/闪字)")
     edit("ShareExtension/ShareViewController.swift", fix_share_extension_timeout, "分享扩展加 8s 超时兜底 (防永久挂住)")
     edit("Shared/SharedContainerStore.swift", fix_share_store, "PendingShare 双通道存储 (UserDefaults + 共享容器文件)")
     edit("Agent/MessageList/MessageListLayout.swift", fix_message_list_defer, "iOS15: 大幅缩小(>50pt)修正立即生效, 消黑块虚高")

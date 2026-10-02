@@ -359,6 +359,12 @@ jobs:
           else
             echo "❌ v23 帧同步修正缺失 —— 污染帧仍会被渲染出去一帧, 闪字复发!"; exit 1
           fi
+          echo "::group::断言17: v24 hosting 视图硬钉宽度必须就位 (根除 730/100000 超宽气泡 → 字不显示/空白/闪字)"
+          if grep -q "ios15AvailW" src/ios/iOS15Compat.swift ; then
+            echo "✅ hosting 视图宽度已硬钉 (=可用宽+裁切溢出), 表格/代码块节点不再撑爆气泡, 字不显示/空白/闪字根除"
+          else
+            echo "❌ v24 硬钉宽度缺失 —— 气泡仍会被表格/代码块撑到 730/100000, 字不显示/空白/闪字复发!"; exit 1
+          fi
           echo "::group::断言13: v18 KVO 抢帧必须就位 (污染帧在渲染前被改回, 消抢帧拉锯闪烁)"
           if grep -q "ios15InstallKVO" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "NSKeyValueObservation" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             echo "✅ KVO 抢帧已注入"
