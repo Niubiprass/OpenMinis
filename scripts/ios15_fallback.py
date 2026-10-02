@@ -1811,7 +1811,7 @@ def fix_left_clip_diag_superview(t):
             }
             let _savedTH = textContainer.size.height
             textContainer.size.height = 100000
-            layoutManager.invalidateLayout()
+            layoutManager.invalidateLayout(forCharacterRange: NSMakeRange(0, textStorage.length), actualCharacterRange: nil)
             layoutManager.ensureLayout(for: textContainer)
             let _usedH = layoutManager.usedRect(for: textContainer).height
             textContainer.size.height = _savedTH
