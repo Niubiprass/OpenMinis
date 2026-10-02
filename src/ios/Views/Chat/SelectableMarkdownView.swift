@@ -5389,6 +5389,10 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
     // 老会话 cell 高度欠账 (如 286 字符只给 252pt) → 半截字; SwiftUI 把 frame 高
     // 拉回欠账值时, 用它检出并重撑。
     var ios15LastNeededH: CGFloat = 0
+    /// [V34-WIDTH] 渲染端最近一次算出的文字内容宽。测高端(invalidateCellSizeIfNeeded)
+    /// 优先复用它, 保证测高与渲染严格同宽 —— 两端各自独立计算会在 SwiftUI 的
+    /// 全宽(390)/内缩(358)布局态之间产生 390/358/326 三值分歧(log10-03 实证)。
+    var ios15LastRenderContentW: CGFloat?
     // [IOS15-FIX-CLIP v18] KVO 抢帧: SwiftUI 在自己的布局 tick 里把 superview 写成
     // 污染帧, 等 layoutSubviews 再修就来不及 —— 污染帧已经渲染出去一帧 = 闪字。
     // 这里 block-KVO superview.frame, 在它被写坏的同一调用栈内立刻改回 (CA 提交前),
@@ -7487,11 +7491,18 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // 容器/宽度钳制。贴边模式: 容器被 inset 自动收窄到 cvW-32, frame 保持 SwiftUI
             // 给的全宽 (不动它); 污染/正常模式: 按修正后的 superview 宽钳。
             let _svW = superview?.bounds.width ?? 0
-            // [V32-WIDTH] 渲染宽 = 本 cell 真实内容宽 (视图宽 - 内边距), 不再硬编码 cvW-32。
-            // log17 反转假设: 气泡型 cell 的 superview 实为 326@16 (非 358), v28 遗留的
-            // _realW2=cvW-32=358 会把文字容器撑到 358 塞进 326 框 → 右侧溢出被裁(边框裁字)。
-            // 贴边型(390-16×2=358)与气泡型(326-0=326)各取自己的真实宽, 渲染/测高同式 → 永不溢出。
-            let _realW = max(200.0, min(bounds.width, _cvW) - textContainerInset.left - textContainerInset.right)
+            // [V34-WIDTH] 渲染宽回归 superview 基准 —— 对过渡态免疫。
+            // v33 的 min(bounds.width,cvW)-insets 隐含"视图宽与内边距配套", 但 inset 是
+            // v14 按上一帧状态设的、bounds 是本帧 SwiftUI 给的, 过渡态不同步时双重扣减:
+            //   视图390+inset0 → 390(超框32, 字贴边/溢出); 视图358+inset16 → 326(窄32, 整体缩小)。
+            //   log(10-03) tcW=390 ×27 / tcW=326 ×25 交替 → re-wrap 闪屏("上下闪屏字体")。
+            // superview 宽 = 气泡真实宽, 不随两种布局态摆动: 贴边 390-32=358, 气泡 358-0=358。
+            // 算出后写入 ios15LastRenderContentW, 测高端直接复用 → measure==render。
+            var _realW = _svW > 1 ? min(_svW, _cvW) : _cvW
+            if _edgeTouch {
+                _realW = max(_realW - 32, 100)
+            }
+            ios15LastRenderContentW = _realW
             let _tcOldW = textContainer.size.width
             if textContainer.size.width > _realW + 1 {
                 textContainer.size.width = _realW
@@ -7523,9 +7534,10 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // 丢弃 48 次) → 宽度修正进不来 → 容器宽停在旧值 → 文字不换行 → 横向裁切。
             // v26 改用 UITextView.sizeThatFits 标准 API 测量: 不改变 textContainer 状态、
             // 不触发重排风暴, 同样能拿到不受当前容器高限制的真实需求高度。
-            // [V33-WIDTH2] 与 _realW/测高宽 同一式子(视图宽 - 内边距): 气泡型 326、贴边型 358
-            // 各取真实宽, 绝不把 326 的框撑到 358 (那会右侧溢出裁字)。不再硬编码 cvW-32。
-            let _realW2 = max(200.0, min(bounds.width, _cvW) - textContainerInset.left - textContainerInset.right)
+            // [V34-WIDTH2] 直接复用渲染宽 _realW(同作用域), 一处计算处处一致。
+            // v28 教训: 这里独立算 cvW-32=358 会把 326 气泡撑爆; v33 教训: 独立算
+            // contentW 又会在过渡态与 _realW 分歧(390/326 交替)。复用即根治。
+            let _realW2 = _realW
             var _ios15WRegrabbed = false
             if abs(textContainer.size.width - _realW2) > 0.5 {
                 textContainer.size.width = _realW2
@@ -7835,9 +7847,17 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         // cvW-32 (=358, 16pt 双边距) 排版, 测量若用更宽的 cvW(390) 或污染宽
         // (494/895) 算出的 cell 高度偏小 → 末行被拦腰裁断 ("上下一半一半");
         // 卡住的 252 正是按 494 污染宽排出的高度。统一钳到 cvW-32。
-        // [V32-WIDTH] 测高宽 = 与渲染完全相同的式子(视图宽 - 内边距), 严格 measure==render。
-        // 气泡型 cell 宽 326、贴边型 358 各自正确; 不再用 cvW-32 硬编码(会把 326 的框撑爆)。
-        let measureWidth: CGFloat = max(200.0, min(bounds.width, cvContentWidth) - textContainerInset.left - textContainerInset.right)
+        // [V34-WIDTH] 测高宽优先用渲染端最近一次算出的真实 contentW, 严格 measure==render,
+        // 且不受本函数里 bounds/inset 过渡态影响。无有效值时退回与渲染同构的 superview
+        // 基准式。v32/v33 的独立式会在过渡态算出 390/326, 与渲染宽(358)分歧 → 双引擎
+        // 高度忽大忽小 → "上下闪屏字体"。
+        let measureWidth: CGFloat = {
+            if let _lastW = ios15LastRenderContentW, _lastW > 200 { return _lastW }
+            let _svWm = superview?.bounds.width ?? 0
+            var _w = _svWm > 1 ? min(_svWm, cvContentWidth) : cvContentWidth
+            if _svWm >= cvContentWidth - 1 { _w = max(_w - 32, 100) }  // 贴边: 视图占满, 文字区 = cvW-32
+            return max(200.0, _w)
+        }()
         // [IOS15-FIX] 宽度兜底消毒: 若上面三分支仍落到离谱瞬态宽度
         // (1e7 / 2273 / 1382 等, 来自 SwiftUI 递归排版或 widthTracksTextView
         // 把 textContainer 设到 greatestFiniteMagnitude 再经 Guard 钳到 1e7),
