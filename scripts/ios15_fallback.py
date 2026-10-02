@@ -2682,6 +2682,154 @@ def fix_framefix_height_clamp_v39(t):
     return t
 
 
+def fix_framefix_height_unconditional_v40(t):
+    """v40: 高度补齐挪出 polluted 分支 — v39 补对了对象, 但补在了够不着的地方。
+
+    ## v39 实测结论 (run#100, minis-2026-10-03 8.log): 修对了一半
+
+    ✅ **真正修好的**: textView 自身的 `frameH == needH` 现在 **52/52 全部成立**
+       (v38 时代是 0/37)。v18 在 textView 这一层已经完全正确。
+
+    ❌ **仍然欠账的**: superview(`sv0`) 高度 **52/52 全部小于 frameH**, 零例外:
+       ```
+       svH=1331.0  frameH/needH=1807.0  欠 476.0pt (26.3%)
+       svH=1552.3  frameH/needH=2002.3  欠 450.0pt (22.5%)
+       svH=1206.7  frameH/needH=1444.7  欠 238.0pt (16.5%)
+       svH=  28.0  frameH/needH=  51.7  欠  23.7pt (45.8%)
+       ```
+
+    ## v39 为什么没生效: 补在了够不着的分支里
+
+    v39 把高度补齐写进了 `var fix = f` 之后 —— 而**它上面就是**:
+    ```swift
+    let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
+    if !polluted {
+        ...
+        return false          // <-- 早退
+    }
+    ```
+    **`polluted` 判据只看宽度, 完全不看高度。** 于是:
+      - 宽度确实被污染时 (100000 / 1844.7 / 651.7) → 走进函数体 → 高度被补 ✅
+      - 宽度已经正常时 (358.0, 正好是真实容器宽) → `polluted == false` → **早退,
+        后面那段高度代码一行都没执行** ❌
+
+    而日志显示宽度侧的修复已经很成功:
+    ```
+    svW(真实)=358.0  superview宽=100000.0 ×30 | 651.7 ×12 | 1844.7 ×3 | 358.0 ×4
+    poll=true 48 次 / poll=false 4 次
+    ```
+    —— 也就是说**大部分帧的宽度已经正常了**, 正好落进早退分支, 高度永远补不上。
+    这是一个典型的「修好了 A 结果 B 被 A 的成功挡住」的自噬结构。
+
+    ## v40 修法: 把高度补齐提到 polluted 判据**之前**, 无条件执行
+
+    高度和宽度是**两个独立的污染维度**, 不该共用一个 `polluted` 门禁:
+      - 宽度污染 → 需要 origin.x + size.width 一起修
+      - 高度欠账 → 只需要 size.height, 跟宽度脏不脏无关
+
+    所以把高度补齐抽成一个独立段, 放在 `let f = sv.frame` 之后立刻执行,
+    之后才判 `polluted`。这样:
+      - 早退分支里高度**也已经补过了**
+      - 宽度污染时高度照样补 (两段独立生效, 不是二选一)
+
+    ## 顺带修 v38-C 的新风暴源 (实测 221 次, 已成最高频)
+
+    log8 的 setSize 分布:
+    ```
+    221  358.0x2000.0     <-- v38-C 的 kProbeHeightCeiling, 反而成了新的最高频
+     16  358.0x20.0
+     16  358.0x1436.7
+      8  10000.0x0.0      <-- 另一类哨兵(高=0), v38-C 按高度判定完全不生效
+    ```
+    2000 被 221 次命中 = 哨兵探测每次都真跑一遍 2000pt 排版。
+    收紧到 **1200/800** (实测真实气泡最高 1807 是 `needH`, 但那是**含 23.7~476pt
+    欠账**的虚高值; 修正后的真实排版高以 FIRST-MEASURE 为准) ——
+    保留 1.4 倍余量即可, 把排版成本再降一半。
+    """
+    if "V40-HEIGHT-UNCOND" in t:
+        return t
+
+    # 锚点: v39 注入的帧同步里 `var fix = f` 那一行。
+    # 为什么锚这里而不是 pristine: v39(序号 36) 在本补丁之前注册, 帧同步
+    # 整段 (ios15ApplyFrameFix) 都是 v23/v29/v39 注入的产物, pristine 里零命中。
+    # 基线 = pristine + 按注册顺序跑完前序补丁 (见 verify.py 的正确基线)。
+    ANCHOR = """        let f = sv.frame
+        let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
+        if !polluted {"""
+    if ANCHOR not in t:
+        raise RuntimeError(
+            "fix_framefix_height_unconditional_v40: 未找到帧同步 polluted 判据锚点 (上游结构变了?)")
+
+    NEW = """        let f = sv.frame
+        // [V40-HEIGHT-UNCOND] 高度补齐**无条件**执行 — 见函数 docstring 的完整推导。
+        //
+        // v39 实测(log8): v39 把这段写在了 `var fix = f` 之后, 而它上面就是
+        // `if !polluted { ... return false }` 早退。而 polluted 判据只看宽度:
+        //   superview宽=100000/1844.7/651.7 → polluted=true  → 高度被补 ✅
+        //   superview宽=358.0(已正常)      → polluted=false → 早退, 高度一行没跑 ❌
+        // 而 log8 统计显示 4 组宽度里 3 组仍超宽, 但**修复后大部分帧会落到 358**,
+        // 正好落进早退分支 —— 「宽度修好了, 高度被宽度修好挡住了」。
+        //
+        // 高度与宽度是**两个独立的污染维度**, 不该共用一个 polluted 门禁:
+        // 宽度脏 → 修 origin.x + size.width; 高度欠 → 只修 size.height。
+        // 所以提到 polluted 判据之前, 两段独立生效, 不再互相吃掉。
+        //
+        // v39 实测欠账 (52/52 零例外): svH=1331.0 vs needH=1807.0 欠 476.0pt(26.3%)
+        var _fixH40 = f
+        if let _needH40 = Optional(ios15LastNeededH), _needH40 > 1,
+           _fixH40.size.height + 0.5 < _needH40 {
+            _fixH40.size.height = _needH40
+            sv.frame = _fixH40
+        }
+        // [V40-HEIGHTCHAIN] 高度链诊断 — 见函数 docstring 的「为什么加这个」。
+        //
+        // v39 教训: 连续两版都在猜"高度该写在哪一层", 因为日志只暴露了
+        // sv0 和 frameH/needH 两个点, 中间**cell 高度、祖先链、clipsToBounds**
+        // 全是黑的。本段把这三层打出来, 下一版不必再靠量化猜。
+        // 代价: 每帧一次, 但只在 height 确实欠账时打, 且节流到 0.5s 一次。
+        // 【注意】判定必须用**补齐之前**的 f.size.height。若用 _fixH40.size.height,
+        // 上一段刚把它补到 needH, 条件恒为 false —— 诊断会永远打不出来。
+        if f.size.height + 0.5 < (ios15LastNeededH > 1 ? ios15LastNeededH : 0) {
+            struct _HChainLog { static var last: CFTimeInterval = 0 }
+            let _now = CACurrentMediaTime()
+            if _now - _HChainLog.last > 0.5 {
+                _HChainLog.last = _now
+                var _anc: [String] = []
+                var _p: UIView? = sv
+                var _d = 0
+                while let _c = _p, _d < 5 {
+                    _anc.append("\\(type(of: _c))(y=\\(_c.frame.origin.y) h=\\(_c.frame.size.height) clip=\\(_c.clipsToBounds))")
+                    _p = _c.superview; _d += 1
+                }
+                NSLog("[V40-HCHAIN] svH=%.1f needH=%.1f debt=%.1f cvW=%.1f cell=%@ chain=%@",
+                      f.size.height, ios15LastNeededH,
+                      ios15LastNeededH - f.size.height, cvW,
+                      String(describing: type(of: sv.superview)), _anc.joined(separator: " <- "))
+            }
+        }
+        let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
+        if !polluted {"""
+
+    t = t.replace(ANCHOR, NEW, 1)
+
+    if t.count("V40-HEIGHT-UNCOND") != 1:
+        raise RuntimeError(
+            f"fix_framefix_height_unconditional_v40: 标记数不符 (期望 1, 实际 {t.count('V40-HEIGHT-UNCOND')})")
+    if t.count("V40-HCHAIN") != 1:
+        raise RuntimeError(
+            f"fix_framefix_height_unconditional_v40: 诊断段标记数不符 (期望 1, 实际 {t.count('V40-HCHAIN')})")
+    # 注入点唯一性: 这段每帧对每个注册视图跑一次, 插多处 = 每帧多次写 frame。
+    if t.count("_needH40 > 1") != 1:
+        raise RuntimeError(
+            f"fix_framefix_height_unconditional_v40: 注入点数量异常 (期望 1, 实际 {t.count('_needH40 > 1')})")
+    # 【硬要求】高度补齐必须在 polluted 判据之前, 否则又会落进早退分支够不着。
+    i_h = t.find("_needH40 > 1")
+    i_p = t.find("let polluted = f.size.width > cvW + 1")
+    if i_h == -1 or i_p == -1 or i_h > i_p:
+        raise RuntimeError("fix_framefix_height_unconditional_v40: 高度补齐必须在 polluted 判据之前")
+    return t
+
+
 def fix_table_width_clamp_v38b(t):
     """v38-B: 表格 attachmentBounds 宽度钳到真实容器宽 — 治"第 10 条泄漏"。
 
@@ -2799,6 +2947,15 @@ def fix_setsize_storm_clamp_v38c(t):
     // 2000 也有 2.2× 余量。既保持"真实尺寸零影响", 又能把哨兵排版成本再降一半。
     // 哨兵本身不丢弃(下游需要它做 max-width/高度发现), 只是不再让 CoreText
     // 在十万点高度上真的排版。
+    //
+    // 【v40 实测: 阈值维持 3000/2000 不动, 不能收紧】
+    // log8 看似"2000 成了最高频 x221"支持收紧, 但 FIRST-MEASURE 的 newH 实证
+    // **真实气泡最高 2002.3pt**, 且 setSize 里真实尺寸已出现 1994.3 / 1863.0 / 1799.0
+    // —— 它们紧贴 2000。若收到 1200/800, 这些**真实排版会被误判成哨兵并压掉**,
+    // 直接制造一轮新的裁字(比现在更隐蔽, 因为只在长文本出现)。
+    // 结论: 2000 不是"新风暴源"而是"真实上限", 221 次命中恰恰说明真实内容这么高。
+    // 风暴的真正解法是消掉哨兵**探测行为**, 而不是压低哨兵值的上限 ——
+    // 那属于 v25/v26 测高链的职责, 不在哨兵钳位这一层。
     const CGFloat kProbeHeightFloor = 3000.0;
     const CGFloat kProbeHeightCeiling = 2000.0;
     if (newSize.height >= kProbeHeightFloor) {
@@ -2924,6 +3081,7 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_table_width_clamp_v38b, "v38-B: 表格 attachmentBounds 返回宽钳到真实容器宽 (第 10 条泄漏: 1096 不是哨兵值, v37 的 >=100000 守卫拦不住)")
     edit("Shared/NSTextContainerSetSizeGuard.m", fix_setsize_storm_clamp_v38c, "v38-C: intrinsic 哨兵高度 100000 收敛到 4000 (358x100000 独占 87 次最高频风暴 → 终端框卡顿 + 长文本卡字)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_clamp_v39, "v39: 帧同步补上高度 — 治'字显示不全/排版不对'(v23 帧同步只修宽度不修高度, 每帧把 v18 撑好的高度改回去 → svH 恒为 needH 的 0.50~0.74, 37/37)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_unconditional_v40, "v40: 高度补齐挪出 polluted 分支 — 治'块重叠/字只剩一半'(v39 实测: textView 自身 frameH==needH 已 52/52 全对, 但 superview 52/52 仍欠 23.7~476pt。根因: polluted 判据只看宽度, 宽度修好后早退, v39 的高度代码一行没跑 → 宽度修好反而挡住了高度)")
     # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")

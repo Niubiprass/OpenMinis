@@ -382,6 +382,7 @@ jobs:
           if grep -q "V39-FIXHEIGHT" src/ios/Views/Chat/SelectableMarkdownView.swift \
              && grep -q "_needH39 > 1" src/ios/Views/Chat/SelectableMarkdownView.swift \
              && grep -q "fix.size.height = _needH39" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+
             # 反向断言 1: 注入点必须唯一 —— 帧同步每帧对每个注册视图跑一次,
             #多处注入 = 每帧多次写 frame, 反而更卡。
             _v39_n=$(grep -c "_needH39 > 1" src/ios/Views/Chat/SelectableMarkdownView.swift || true)
@@ -393,6 +394,36 @@ jobs:
               echo "❌ v39 位置/数量异常 (注入点=$_v39_n 位置=$_v39_pos) —— 高度仍会被帧同步改回去, 末行裁字复发!"
               exit 1
             fi
+          echo "::group::断言42: v40 高度补齐必须在 polluted 判据**之前** (v39 实测: 宽度修好后早退, 高度代码一行没跑)"
+          # v39 实测 (minis-2026-10-03 8.log, run#100) 的结论: **v39 修对了一半, 但补在了够不着的地方**。
+          #   已修好: textView 自身 frameH == needH 现在 52/52 全对 (v38 时代 0/37) -> v18 那一层已正确。
+          #   仍欠账: superview(sv0) 高度 52/52 全部小于 frameH, 欠 23.7~476pt, 零例外。
+          # 根因: v39 把高度补齐写在了 `var fix = f` 之后, 而它**上面就是** `if !polluted { ... return false }`。
+          # 而 polluted 判据只看宽度不看高度:
+          #   superview宽=100000/1844.7/651.7 -> polluted=true  -> 高度被补OK
+          #   superview宽=358.0(已正常)      -> polluted=false -> 早退, 高度一行没跑NG
+          # 典型的「修好了 A, 结果 B 被 A 的成功挡住」的自噬结构。
+          # 修法: 高度补齐提到 polluted 判据之前, 两段独立生效, 不再互相吃掉。
+          if grep -q "V40-HEIGHT-UNCOND" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "_needH40 > 1" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "V40-HCHAIN" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            _v40_n=$(grep -c "_needH40 > 1" src/ios/Views/Chat/SelectableMarkdownView.swift || true)
+            # 硬要求: 高度补齐必须落在 polluted 判据与 !polluted 早退**之前**, 否则等于没修。
+            _v40_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); h=t.index('_needH40 > 1'); p=t.index('let polluted = f.size.width > cvW + 1'); u=t.index('if !polluted {', p); e=t.index('return false', p); print('OK' if h<p<u<e else 'BAD')")
+            # 反向断言: 诊断段必须用**补齐之前**的 f.size.height。若用补齐后的值,
+            # 条件恒为 false, 诊断永远打不出来(等于埋了个哑巴)。
+            _v40_diag=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); print('OK' if 'f.size.height + 0.5 < (ios15LastNeededH > 1' in t else 'BAD')")
+            if [ "$_v40_n" = "1" ] && [ "$_v40_pos" = "OK" ] && [ "$_v40_diag" = "OK" ]; then
+              echo "✅ v40 高度补齐已挪出 polluted 分支 (无条件执行 + 高度链诊断就位)"
+            else
+              echo "❌ v40 位置/数量异常 (注入点=$_v40_n 位置=$_v40_pos 诊断=$_v40_diag) —— 宽度修好后高度仍被早退跳过, 块重叠/半截字复发!"
+              exit 1
+            fi
+          else
+            echo "❌ v40 高度补齐缺失 —— superview 高度欠账 23.7~476pt 不修, 块与块重叠 + 文字只剩一半必然复发!"
+            exit 1
+          fi
+          echo "::endgroup::"
           else
             echo "❌ v39 缺失 —— 帧同步每帧只改宽度不改高度, svH 恒为 needH 的 0.5~0.74, 排版必然不对!"
             exit 1
