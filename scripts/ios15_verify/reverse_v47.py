@@ -134,6 +134,29 @@ def run(name, mutated, expect_kw=None):
     print("  ❌ %s: 漏放!" % name)
 
 
+def assert_replaced(src, old, new, name):
+    """做一次**会自检**的替换: 锚点没命中就直接炸, 不许静默返回原文。
+
+    ★为什么必须有这个函数(本轮实踩):
+      `str.replace(old, new, 1)` 在 old 不存在时**静默返回原串**。于是
+      锚点一旦因上游改动而失效(比如缩进从 16 变 12), sabotage 就变成
+      no-op —— 产物没被破坏, 判据自然全绿 ⇒ 输出"★漏放"。
+      而真相是"这条 sabotage 根本没构造出来"。
+      两者输出都是"漏放", 但修法完全相反: 前者要改判据, 后者要改锚点。
+      ⇒ 纪律: **锚点失效必须自己报错**, 不能伪装成漏放。
+    """
+    if old not in src:
+        raise SystemExit(
+            "★锚点失效: %s 的替换目标不在产物里\n  目标: %r\n"
+            "  ⇒ sabotage 根本没构造出来(不是判据漏放)。\n"
+            "  多半是上游把该行缩进或上下文改了 —— 缩进必须**从产物数出来**。"
+            % (name, old[:90]))
+    out = src.replace(old, new, 1)
+    if out == src:
+        raise SystemExit("★锚点失效: %s 替换后产物未变" % name)
+    return out
+
+
 print()
 print("=== A 类: 判据被摘掉(等于白改) ===")
 run("A1 删掉重排判据整块",
@@ -187,10 +210,17 @@ run("B2 v47 段内新增宽度写入点(v13/v34 老路)",
     "宽度写入")
 
 run("B3 回写处偷写高度",
-    INJECTED.replace(
-        "                self.ios15LastLaidOutW = _realW2",
-        "                self.ios15LastLaidOutW = _realW2\n"
-        "                self.ios15LastNeededH = 9999", 1),
+    # ★缩进 12 而不是 16 —— v50-C 把回写提出了 `if _ios15WRegrabbed`,
+    #   缩进从 16 变 12。锚点若还写 16, `replace` 静默不命中 ⇒
+    #   sabotage 变成 no-op ⇒ 报"漏放", 而真相是"锚点失效"。
+    #   ⇒ 纪律: **锚点缩进必须从产物数出来**, 且锚点失效要能自己报错
+    #     (见下面 assert_replaced)。
+    assert_replaced(
+        INJECTED,
+        "            self.ios15LastLaidOutW = _realW2",
+        "            self.ios15LastLaidOutW = _realW2\n"
+        "            self.ios15LastNeededH = 9999",
+        "B3"),
     "高度写入")
 
 run("B4 v47 段内塞局部计数器(诊断体混入修法)",

@@ -128,13 +128,50 @@ def main():
     else:
         pure = "BAD 段不可用"
 
-    # ---- 3. idem: 回写与 ensureLayout 同块 + 加法保留 + 标记计数 ----
+    # ---- 3. idem: 回写**紧跟** ensureLayout 之后 + 加法保留 + 标记计数 ----
+    #
+    # ★v50 起这条判据的立意改了(本轮唯一一处"改判据语义"而不是"改边界"):
+    #   原判据查的是 `s > e and cl > s`, 即"回写与 ensureLayout **同块**"。
+    #   而 v50-C 那个修复的全部内容就是**把回写提出那个 if** ——
+    #   v49 实测 laidW=-1 出现 138/143 次, 因为 `_ios15WRegrabbed` 只表示
+    #   "容器宽此刻偏离目标宽", 而滑动时容器宽**恰好已经是**目标宽。
+    #   ⇒ 判据原来断言的那个形态, 正是导致 138/143 空记忆的那个形态。
+    #
+    #   改后的红线(更贴合本条判据本来的立意"记忆与重排同处一段"):
+    #     ① 回写必须在 ensureLayout **之后**(顺序不能倒);
+    #     ② 回写与 ensureLayout 之间的**距离**有界(仍在同一段里, 不是散到别处);
+    #     ③ ensureLayout 可以关在 `if _ios15WRegrabbed` 里(那是 C1 要求保留的),
+    #        但**回写必须比它更浅或同级** —— 即不得被那个 if 一起吞掉。
+    #   ①②③ 合起来正好表达"紧随其后, 且不再被 if 吞掉"。
+    #
+    #   ★③ 为什么不能写"两者必须同层"(本轮第一版就是这么写的, 当场报错):
+    #     ensureLayout **本来就在 if 里**(C1 要求它留在那), 所以它的缩进
+    #     必然比函数体深一层。要求"同层"等于要求把 ensureLayout 提出来 ——
+    #     那正是 C1 明令禁止的。⇒ 判据把两版红线写成了互相矛盾的形式。
+    #     这与"红线在代码里存在 ≠ 被真正执行"同源: **判据本身写错,
+    #     表现得却像被测代码违规**。
+    #
+    #   ★为什么这次可以改判据语义, 而前几次"边界误伤"不许改判据:
+    #     边界误伤 = 新代码落进旧判据区间, 旧判据本身**仍然正确**;
+    #     本例     = 旧判据断言的那个**形态本身**已被实测证明是病根
+    #                (138/143 次记忆为空), 继续保留它就是保留 bug。
+    #     ⇒ 判据与产物冲突时先问: 这条红线当初**为了防什么**?
+    #       防得住病根的留, 防的恰好是病根的必须改。
     if core == "OK":
         c = t.index(CHK)
         s = t.index(SET)
         e = t.find("layoutManager.ensureLayout(for: textContainer)", c)
-        cl = t.find(chr(10) + "            }", e) if e > 0 else -1
-        same = (e > 0 and s > e and (cl < 0 or cl > s))
+        after = (e > 0 and s > e)
+        # 两者之间不许隔超过 2000 字符(注释可以长, 但不该长到它们脱节;
+        #   实测 v50 产物为 982 —— 判据里的界必须**从产物数出来**)
+        near = after and (s - e) < 2000
+        # 回写不得比 ensureLayout 更深(否则又被 if 吞了)
+        _ls = t.rfind("\n", 0, s) + 1
+        _le = t.rfind("\n", 0, e) + 1
+        ind_s = len(t[_ls:s]) - len(t[_ls:s].lstrip())
+        ind_e = len(t[_le:e]) - len(t[_le:e].lstrip())
+        not_nested = ind_s <= ind_e
+        same = after and near and not_nested
         q = chr(34)
         keep = all(("NSLog(" + q + g) in t for g in
                    ("[V44-TEXTFRAME]", "[V45-TVHFIX]", "[V46-ATTACH]"))
@@ -144,7 +181,8 @@ def main():
         if same and keep and marks:
             idem = "OK"
         else:
-            idem = "BAD 同块=%s 保留=%s 标记=%s" % (same, keep, marks)
+            idem = ("BAD 紧随=%s 距离=%s 未被吞=%s 保留=%s 标记=%s"
+                    % (after, (s - e) if after else "-", not_nested, keep, marks))
             fails.append("idem " + idem)
     else:
         idem = "BAD 段不可用"

@@ -109,10 +109,52 @@ WRITE = "textContainer.size.width = _realW2"
 _up = t.rfind(WRITE, 0, i_v18) if i_v18 > 0 else -1
 ck("探针上游最近的 _realW2 写入存在", _up >= 0, "@%d" % _up)
 if _up >= 0:
-    _c = re.sub(r"\s+", "", code_of(t[_up:i_v18]))
-    _e = re.sub(r"\s+", "", WRITE + "}")
-    ck("钉宽行与探针之间只有闭合花括号", _c == _e,
-       "得到 %r" % _c[:56])
+    # ★判据从"字面只允许闭合花括号"改为"**不许出现容器宽/高的另一处写入**"
+    #   —— 因为前者是**实现细节**, 后者才是这条红线要防的东西。
+    #   这条判据的立意(v49 注释原话): 探针必须"紧邻 v48 钉宽之后",
+    #   这样它读到的 tcW 才是**钉宽后**的值, 归因才有意义。
+    #   ⇒ 真正会破坏归因的, 是"钉宽与探针之间又有人改了容器宽";
+    #     纯诊断日志、静态标量赋值都不影响 tcW, 不该拦。
+    #
+    #   【v50 实踩】v50 要在钉宽**同一处同一帧**把目标净宽交给 attachment 链,
+    #     于是钉宽行与探针之间多了:
+    #         TableAttachment.ios15PinnedW = _realW2   (静态标量, 不碰 tcW)
+    #         do { ... NSLog("[V50-PINW] ...") }      (纯诊断)
+    #     而原判据要求两者之间**只有** `}` —— 当场报错:
+    #       ❌ 钉宽行与探针之间只有闭合花括号
+    #          得到 'textContainer.size.width=_realW2}TableAttachment.ios15Pi'
+    #   注意这里报错**不代表 v50 有错**, 也不代表探针被破坏:
+    #     探针仍在钉宽之后, 且它读的 tcW 未被 v50 改变(实测 tcW 钉宽后
+    #     已由 v48 写成 _realW2, v50 只多写一个 CGFloat 静态通道)。
+    #   ⇒ 这是"判据把红线写成了比红线本身更严的形式"的第三次翻版。
+    _mid = code_of(t[_up + len(WRITE):i_v18])
+    _bad = re.findall(r"textContainer\.size\.(?:width|height)\s*=", _mid)
+    ck("钉宽行与探针之间无另一处容器宽写入", not _bad,
+       "找到 %d 处 %s" % (len(_bad), _bad[:2]))
+    # 探针仍须在钉宽**之后**(不能被提到钉宽前面)。
+    ck("钉宽行早于探针", _up < i_v18, "pin@%d probe@%d" % (_up, i_v18))
+    #
+    # ★"会不会把探针跳过"要看**层级**, 不是看有没有 if。
+    #   实测缩进(v50 产物, 从产物数出来而不是猜):
+    #       12 `}`            ← v48 钉宽 if 的闭合
+    #       12 `do {`         ← v50 诊断块起
+    #       16 `if ...`       ← 诊断自己的 0.5s 节流, 在 do 内部
+    #       16 `}`            ← 节流闭合
+    #       12 `}`            ← do 闭合
+    #   探针标记也在 12 层。⇒ **12 层的 if 才会跳过探针, 16 层不会**
+    #   (它在自己的 do 里, 且那个 do 无条件执行)。
+    #   本轮前两版分别栽在: ①只查"有没有 if"→ 把 16 层的节流算进去;
+    #   ②想按 do 块排除 → 判据里开始出现硬编码字面量, 反而更脆。
+    #   ⇒ 正确判据: **与探针同层(缩进 ≤ 探针所在层)的控制流**才算违规。
+    _i_pr = t.rfind("\n", 0, i_v18) + 1
+    _ind_probe = i_v18 - _i_pr
+    _flow = []
+    for _ln in _mid.split("\n"):
+        _m = re.match(r"^([ ]*)(?:if|for|while|guard|switch)\b", _ln)
+        if _m and len(_m.group(1)) <= _ind_probe:
+            _flow.append(_ln.strip()[:40])
+    ck("钉宽与探针之间无同层控制流语句", not _flow,
+       "探针层缩进=%d, 找到 %d 处 %s" % (_ind_probe, len(_flow), _flow[:2]))
 
 print("=== 3. 探针状态声明 ===")
 for k in ("var ios15V18W: CGFloat = -1",

@@ -45,13 +45,34 @@ PIN = "// [V48-PIN]"
 END = "// [IOS15-FIX-RELC v28]"
 GUARD = "if _ios15WRegrabbed, abs(textContainer.size.width - _realW2) > 0.5 {"
 WRITE = "textContainer.size.width = _realW2"
-# ★v48 段的**真右界**: v49 探针的起点。
-#   · 切掉 v49 探针 —— 那是 v49 的事, 由 v49 判据管
+# ★v48 段的**真右界** = V48-PIN 之后**第一个版本号 > 48 的标记**, 现场正则扫。
+#   · 切掉 v49/v50/v51… 的任何注入 —— 那些是它们自己的事, 由各自判据管
 #   · 保留 v48 if 之后的空间 —— 反向测试 B11 要在那里追加一行合法读取,
 #     验证"判据不误伤"。收得太紧(比如收到 if 的闭合花括号)会把那条
 #     误判成破坏, 于是 v48 反向测试出现假漏放(本轮实踩)。
-#   v49 未注入时回退到 v28 标记(兼容 v49 之前的历史产物)。
-V49_HEAD = "// [V49-WWRITER-V18]"
+#   纯 v48 产物(无更高版本标记)时回退到 v28 标记。
+#
+# ★★ 这里曾硬编码 `V49_HEAD = "// [V49-WWRITER-V18]"`, 而那是同一个错误
+#   的重演: 每来一个新版本就得改一次判据。v50 把
+#   `TableAttachment.ios15PinnedW = _realW2` 插在 V48-PIN 与 V49 探针之间
+#   (那正是"钉宽同一处同一帧"的位置), 本判据当场报
+#       pure=BAD 赋值3处 违规=['TableAttachment.ios15PinnedW = _realW2', ...]
+#   而 v50 完全合规。⇒ 硬编码版本号 = 每次加版必漏一次。
+#   ⚠️ 本函数、`reverse_v48.py`、`ios15_fallback.verify_width_pin_v48`
+#     三处必须与此一致 —— 改一处就是"判据被复制多份"那次的翻版。
+_V48_END_RE = re.compile(r"//\s*\[V(?:49|[5-9]\d|\d{3,})[ \-\]]")
+
+
+def _v48_end(t, i_pin):
+    """v48 段的右界位置(不含)。三处副本必须与此一致。"""
+    m = _V48_END_RE.search(t, i_pin + len(PIN))
+    if m:
+        return m.start()
+    j = t.find(END, i_pin)
+    if j < 0:
+        raise SystemExit("BAD 未找到 v48 段右界(既无 V49+ 标记也无 %s)" % END)
+    return j
+
 
 # 禁几何/高度 —— v13/v34 的"整体缩小"与 v45 的 tvH 成果都在这条线上
 FORBID = ("height", "Height", "h", "needH", "newHeight", "lastComputedHeight",
@@ -62,19 +83,6 @@ FORBID = ("height", "Height", "h", "needH", "newHeight", "lastComputedHeight",
 def strip_comments(s):
     s = re.sub(r"/\*.*?\*/", "", s, flags=re.S)
     return re.sub(r"//[^\n]*", "", s)
-
-
-def _v48_end(t, i_pin):
-    """v48 段的右界位置(不含)。三处副本必须与此一致。"""
-    j = t.find(V49_HEAD, i_pin)
-    if j > i_pin:
-        return j
-    j = t.find(END, i_pin)
-    if j < 0:
-        # 与 ios15_fallback.verify_width_pin_v48 抛同样的错, 便于定位
-        raise SystemExit("BAD 未找到 v48 段右界(既无 %s 也无 %s)"
-                         % (V49_HEAD, END))
-    return j
 
 
 def _v48_block(t):

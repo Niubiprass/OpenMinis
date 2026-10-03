@@ -847,13 +847,22 @@ jobs:
           # 任何别的写入(含 frame/bounds/origin/高度、以及 setSize 这种
           # **函数式旁路**)都算违规。
           if grep -q "fix_width_pin_v48" "$SCRIPT_DIR/ios15_fallback.py" ; then
-            # ★段右边界在 run#37137912522 改过一次(第四次翻版):
-            #   原先用下游的 v28 标记, 但 v49 探针正好插在钉宽 if 与 v28 标记
-            #   之间 ⇒ v49 的三行记忆位写入被算进 v48 的白名单 ⇒ 判出
-            #   `pure=BAD 赋值4处`, 而 v49 本身完全合规。
-            #   现在右界 = **v49 探针起点**(v49 未注入时回退 v28 标记)。
-            #   ⚠️ 同一右界在**三处**都有副本(ci_assert_v48.py /
-            #   ios15_fallback.verify_width_pin_v48 / 其反向测试的基线),
+            # ★段右边界改过两次, 两次都是同一个错误:
+            #   ① run#37137912522(第四次翻版): 原先用下游的 v28 标记, 而 v49
+            #      探针正好插在钉宽 if 与 v28 标记之间 ⇒ v49 的记忆位写入被
+            #      算进 v48 的白名单 ⇒ `pure=BAD 赋值4处`, 而 v49 完全合规。
+            #      那次改成"v49 探针起点" —— **但那仍是同一个错误的重演**:
+            #      把右界硬编码到一个**具体版本**的标记上, 于是每来一个新
+            #      版本就得改一次判据, 改一次就漏一次。
+            #   ② v50(第五次翻版): v50 要在钉宽**同一处同一帧**把目标净宽交给
+            #      attachment 链(`TableAttachment.ios15PinnedW = _realW2`),
+            #      位置正好在 V48-PIN 与 v49 探针之间 ⇒ 又报
+            #      `pure=BAD 赋值3处 违规=['TableAttachment.ios15PinnedW = ...']`。
+            #
+            # ⇒ 现右界 = **V48-PIN 之后第一个版本号 > 48 的标记**(正则现场扫,
+            #   不写死任何版本号)。v49/v50/v51… 无论插在哪一处都会被自动切掉。
+            # ⚠️ 同一右界在**三处**都有副本(ci_assert_v48.py /
+            #   ios15_fallback.verify_width_pin_v48 / reverse_v48.py 的基线),
             #   改一处就够不到其余 —— "判据被复制多份"已翻版三次
             #   (run#37133557819 / 37133885324 / 37137912522), 改务必三处同改。
             #
@@ -865,10 +874,10 @@ jobs:
             # re.sub(r'//[^\n]*', ...) 会被截断成两行而报 ParserError
             # (本文件既有教训, 断言 49 踩过一次)。
             if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v48.py" . ; then
-              echo "✅ v48 就位 (碎片与目标宽不一致时把容器宽钉回 _realW2; ★白名单: 段内唯一赋值且值恰为 _realW2, 零 frame/bounds/origin/高度; 禁 setSize 函数式旁路; 幂等门 abs(tcW-_realW2)>0.5 保证纠偏而非竞争; v47/v45/v44/v46 保留)"
+              echo "✅ v48 就位 (碎片与目标宽不一致时把容器宽钉回 _realW2; ★白名单: 段内唯一赋值且值恰为 _realW2, 零 frame/bounds/origin/高度; 禁 setSize 函数式旁路; 幂等门 abs(tcW-_realW2)>0.5 保证纠偏而非竞争; 段右界=V48-PIN 后第一个 V49+ 标记(现场扫, 不写死版本号); v47/v45/v44/v46 保留)"
             else
               echo "❌ v48 异常 (核心=$_v48_core 白名单=$_v48_pure 幂等=$_v48_idem)"
-              echo "   —— 核心 BAD:锚点失配/顺序错(v48 必须排在 v47 之后, 段右界是 v49 探针起点)"
+              echo "   —— 核心 BAD:锚点失配/顺序错(v48 必须排在 v47 之后, 段右界是 V48-PIN 后第一个 V49+ 标记)"
               echo "   —— ★白名单 BAD: v48 段内出现白名单外的写入或 setSize 旁路。"
               echo "      抢宽翻车几乎都源于'多写了几样'(v13/v34), 本版只许写一处size.width"
               echo "   —— 幂等 BAD: 写入若不被 abs(tcW-_realW2)>0.5 包住, 就是每帧无条件"
@@ -908,7 +917,7 @@ jobs:
           #
           # ★本断言查**四层**, 因为 v48 就是只有结构判据的那一版 ——
           #   判据全绿、CI 全绿、装机后 tcW=390 的帧仍有 49 条:
-          #   1. struct —— 注入在位/段边界/日志字段/段内零赋值(verify_v49.py, 70 条)
+          #   1. struct —— 注入在位/段边界/日志字段/段内零赋值(verify_v49.py, 71 条)
           #   2. scope  —— ★本轮连踩两个**编译级**错误而结构判据全程放行:
           #      S1 struct _V49W 声明在函数体内 → KVO 侧跨函数引用不到 → 编译失败
           #      S2 KVO 侧读 self.attV46CachedWidth → 那是 TableAttachment 的
@@ -923,6 +932,10 @@ jobs:
           #   4. sab    —— 判据自身能拦住本轮真实踩过的坑(否则是废判据)
           #
           # 【为什么四份判据分开成文件而不是内联】
+          # ★描述文案里的条数必须**当场从判据输出里取**, 不许手写:
+          #   本轮文案写 "struct 70 条", 判据实际已是 71 条 —— 差一条就
+          #   让人以为某条判据不存在(run#120 那条 "请改用 lineFragmentWidth"
+          #   是同类: 提示文案会主动塑造后来人的修法)。
           #   ① 内联判据没有语法检查、没有 IDE 跳转, 跑一次要 7 分钟 ——
           #      run#37133557819 就是死在「内联判据与 verify_v47.py 两份副本
           #      只改了一份」。同一类判据只能有一处实现。
@@ -932,7 +945,7 @@ jobs:
           #      上一版照抄了那条教训里的原文, 自己就把 YAML 写崩了(本轮实踩)。
           if grep -q "fix_width_writer_diag_v49" "$SCRIPT_DIR/ios15_fallback.py" ; then
             if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v49.py" . ; then
-              echo "✅ v49 就位 (纯诊断, 不改任何行为; 两处探针构成同帧差分: v18 段末尾(v48 钉宽后)记 v18W + v41 KVO 抢帧器记 kvoW 与来源指纹 cvW/laidW/tcH(boundW 族已删: NSTextContainer 既无 bounds 也无 lineFragmentWidth)。同 tick 内读到不同值 ⇒ 中间有人写过; 跨 tick ⇒ SwiftUI pass 之间写的。★四层判据: struct 70 条 + scope(编译级, 5 层 A~E) + heavy(重文本 9 条, 含 usedRect 节流与探针路径可达性) + sab(判据自证 12 条, 含 TextKit 成员存在性 6 条); 段内零赋值零 invalidate*; 0.5s 节流与 V44/V45/V46/V41 同周期; v44~v48 全保留)"
+              echo "✅ v49 就位 (纯诊断, 不改任何行为; 两处探针构成同帧差分: v18 段末尾(v48 钉宽后)记 v18W + v41 KVO 抢帧器记 kvoW 与来源指纹 cvW/laidW/tcH(boundW 族已删: NSTextContainer 既无 bounds 也无 lineFragmentWidth)。同 tick 内读到不同值 ⇒ 中间有人写过; 跨 tick ⇒ SwiftUI pass 之间写的。★四层判据: struct 71 条 + scope(编译级, 5 层 A~E) + heavy(重文本 9 条, 含 usedRect 节流与探针路径可达性) + sab(判据自证 12 条, 含 TextKit 成员存在性 6 条); 段内零赋值零 invalidate*; 0.5s 节流与 V44/V45/V46/V41 同周期; v44~v48 全保留)"
             else
               echo "❌ v49 探针异常 (见上方 ci_assert_v49.py 的 struct/scope/heavy/sab 四行)"
               echo "   —— struct BAD: 探针段/END 标记/日志字段缺失, 或段内出现赋值或"
@@ -967,7 +980,67 @@ jobs:
           #   回归打出「✅ v49 判据(四层) v49=SKIP(...)」这种**假绿** ——
           #   "没检查"和"检查通过"在输出上无法区分。现在 SKIP 一律归到
           #   3, 由本脚本显式报为跳过, 不再冒充通过。
-          echo "::group::断言52: 全版本判据回归 (v41~v49 判据 + v47/v48 反向 + v49 重文本/作用域 sabotage)"
+          echo "::group::断言53: v50 就位 (A' 宽度同源 + C 滑动重排记忆; 治滑动时卡字/字在动)"
+          # 【v49 实测归因 —— 用户报告"字会消失/还是闪/滑动时所有字都在动"】
+          # 三条铁证(完整推导见 v49-归因报告-实测结果.md):
+          #  ① v48 钉宽**没错**: v18W=358 零例外 143/143, KVO 侧 sv 宽也 358
+          #     ⇒ `_realW = min(358, 390) = 358` 一直是对的
+          #  ② 真凶是 v46 附件测量链: cachedW=389 → tcW=390 占 78/86
+          #     而 attachmentBounds 里 `usableWidth = floor(lineFrag.width) - 1`
+          #     精确对上: floor(390)-1 = 389 / floor(358)-1 = 357, 两个值全中
+          #  ③ 测高链每帧都对(v43 的 netW 358 占 147/147), 排版链每帧拿脏宽
+          # 逐毫秒(02:24:20): .088 钉宽 tcW=358 → .090 已被改回 390 → .091
+          #  附件链读到 lineFrag.width=390 ⇒ 1ms 内被推回
+          #
+          # 【自我强化的环】textContainer.size.width=390(SwiftUI 写) →
+          #   attachmentBounds 收到 390 → cachedLayout.width=389 → 行碎片按
+          #   389 排而 needH 按 358 算 → gap 75pt 空壳 → tcW 被回写成 390。
+          #   lineFrag.width 由 UIKit 合成、读的是**当前**容器宽, 而 v18 钉宽
+          #   写在 layoutSubviews 内、**时序上晚于** UIKit 问宽度。
+          #
+          # 【A' 怎么修】只换"谁来提供 w", **不动 floor(w)-1 那个约定本身**
+          #   —— 那个 -1 是 UIKit 防 _fillLayoutHole 的既有约定(v37 曾因
+          #   删掉它卡死 11918ms)。v18 算出 _realW2 后在**同一处同一帧**把
+          #   目标净宽写进 TableAttachment.ios15PinnedW, attachmentBounds
+          #   优先取它。早一帧拿到的是还没钉的 390, 晚一帧本帧已排完。
+          #
+          # 【C 怎么修】v49 实测 laidW=-1 出现 138/143 次 —— 那条记忆被关在
+          #   `if _ios15WRegrabbed` 里, 而它只表示"容器宽此刻偏离目标宽";
+          #   滑动时容器宽**恰好已是**目标宽 ⇒ 条件不成立 ⇒ 永不写入
+          #   ⇒ 判据与执行互相拆台。修法: 记忆**无条件**更新, 而
+          #   ensureLayout 仍留在 if 里(它是排版开销, 每帧调就是 v13/v34)。
+          #   这也是**唯一一处改判据语义**: v47 的 idem 原先断言"回写与
+          #   ensureLayout 同块", 而那个形态**正是** 138/143 空记忆的成因。
+          #
+          # ★描述文案里的条数当场从判据输出取(sab 16 条已实测), 不许手写。
+          if grep -q "fix_width_source_unify_v50" "$SCRIPT_DIR/ios15_fallback.py" \
+             && grep -q "fix_slide_relayout_v50" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v50.py" . ; then
+              echo "✅ v50 就位 (A' 排版宽与测高宽同源: v18 钉宽同处同帧写入 TableAttachment.ios15PinnedW, attachmentBounds 优先取它 —— v49 实测 cachedW=389 对 tcW=390 占 78/86, 源头就是 floor(lineFrag.width)-1 读到了脏宽; floor(w)-1 那个 -1 是 UIKit 防 _fillLayoutHole 的既有约定, 原样保留。★C 滑动重排记忆: laidW=-1 曾占 138/143, 因记忆被关在 if _ios15WRegrabbed 里而滑动时容器宽恰好已是目标宽 —— 现改为无条件写, ensureLayout 仍留在 if 内。★三层判据: core(A' 三条红线 + probe 路径数据流检查 / C 缩进层级判定) + scope(编译级 4 层: A API存在性 / B 跨类限定 / C 段内零危险写 / D do 块完整) + sab(判据自证 16 条, 含 S5 声明被删 / S15 哨兵不一致 / S16 use-before-declaration 三条本轮真实漏网); probe 路径(100_000 哨兵)完全不走钉宽净宽, 末行被裁修复不回退)"
+            else
+              echo "❌ v50 异常 (见上方 ci_assert_v50.py 的 core/scope/sab 三行)"
+              echo "   —— ★core A' BAD: 三条红线之一被破。R1 probe 路径误用钉宽净宽"
+              echo "      (末行被裁修复回退); R2 floor(w)-1 的 -1 被删(重演 v37 的"
+              echo "      fillLayoutHole 11918ms 卡死); R3 新增了容器宽写入点"
+              echo "   —— ★core C BAD: 记忆赋值仍关在 if _ios15WRegrabbed 里"
+              echo "      (滑动时永不写入, C 等于没修), 或 ensureLayout 被提出守卫"
+              echo "   —— ★scope BAD: **编译会失败**。API 拼错(v49 两次踩过"
+              echo "      textContainer.bounds / lineFragmentWidth); 跨类写入漏"
+              echo "      TableAttachment. 限定; 诊断 NSLog 裸露成 trailing closure"
+              echo "   —— sab BAD: 判据自身拦不住本轮真实踩过的坑 ⇒ 判据是废的"
+              exit 1
+            fi
+          else
+            echo "❌ v50 缺失 —— v49 已实测真凶是 floor(lineFrag.width)-1 读到脏宽"
+            echo "   (cachedW=389 对 tcW=390 占 78/86), 滑动卡字的环不会自己消失"
+            echo "   laidW=-1 占 138/143 ⇒ 滑动重排记忆从未写入, C 缺失则每帧"
+            echo "   都判该重排却在 if 里跳过"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
+          echo "::group::断言52: 全版本判据回归 (v41~v50 判据 + v47/v48 反向 + v49/v50 sabotage)"
           set +e
           python3 "$SCRIPT_DIR/ios15_verify/regress_all_v.py" . 2>&1 | tee /tmp/regress_all_v.out
           _rc=${PIPESTATUS[0]}
@@ -980,11 +1053,19 @@ jobs:
             exit 1
           else
             echo "❌ 全版本判据回归失败 —— 失败项见上方列表"
-            echo "   ★ 若失败的是**历史版本**判据, 多半是本版把新代码插进了那一版"
-            echo "     的判据区间。v48 就是这么被 v49 误伤的: 它的段右边界原是下游"
-            echo "     的 v28 标记, 而 v49 探针正好插在钉宽 if 与该标记之间。"
-            echo "     修法: 那一版判据的右界改到本版探针起点; 同一右界若有多个"
-            echo "     副本(fallback 内 + 独立 ci_assert 文件), 必须一次全改。"
+            echo "   ★ 若失败的是**历史版本**判据, 先分辨是哪一类:"
+            echo "     (a) 新代码落进了那一版的判据区间 —— 改**边界**;"
+            echo "         v48 已被 v49、又被 v50 各误伤一次, 而根因是同一个:"
+            echo "         边界被硬编码到某个具体版本的标记上, 每加一版就漏一次。"
+            echo "         现已改为「V48-PIN 后第一个版本号 > 48 的标记」现场扫。"
+            echo "     (b) 那一版判据断言的**形态本身**已被证明是病根 —— 改**语义**;"
+            echo "         v47 的 idem 原先要求回写与 ensureLayout 同块, 而那正是"
+            echo "         v49 实测 laidW=-1 占 138/143 的成因。"
+            echo "     判据与产物冲突时先问: 这条红线当初**为了防什么**? 防得住"
+            echo "     病根的留, 防的恰好是病根的必须改。"
+            echo "   ⚠️ 同一判据若有**多份副本**(fallback 内 + 独立 ci_assert + "
+            echo "     反向测试基线), 改务必一次全改 —— 该坑已翻版三次"
+            echo "     (run#37133557819 / 37133885324 / 37137912522)。"
             exit 1
           fi
           echo "::endgroup::"

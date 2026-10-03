@@ -4884,21 +4884,35 @@ def verify_width_pin_v48(t):
     #   ⚠️ 同一段右边界在**三处**都有副本(本函数、ci_assert_v48.py、及其
     #   反向测试), 只改一处就是 run#37133885324 那次"判据被复制多份"的翻版。
     #
-    # ⇒ 右边界改为 **v49 探针起点**(若 v49 未注入则仍用 v28 标记兜底):
-    #     · 切掉 v49 探针(那是 v49 的事, 由 v49 判据管)
-    #     · 保留 v48 if 之后的空间(反向测试 B11 要在那里追加合法读取
-    #       来验证"判据不误伤", 收得太紧会把那条误判成破坏)
-    _V49_HEAD = "// [V49-WWRITER-V18]"
-    i_v49 = t.find(_V49_HEAD, i_pin)
-    if i_v49 > i_pin:
-        i_end = i_v49
+    # ★★ 第五次翻版(v50, 本轮): 上面那个"改成 v49 探针起点"的修法**本身就是
+    #   同一个错误的重演** —— 它把右界硬编码到一个**具体版本**的标记上。
+    #   于是 v50 把 `TableAttachment.ios15PinnedW = _realW2` 插在
+    #   V48-PIN 与 V49-WWRITER-V18 之间(那正是"钉宽同一处同一帧"的位置),
+    #   判据立刻报:
+    #       pure=BAD 赋值3处 违规=['TableAttachment.ios15PinnedW = _realW2', ...]
+    #   而 v50 完全合规(它自己的三层判据 + 16 条 sabotage 全绿)。
+    #
+    #   ⇒ 根因不是"锚点选错了", 是**锚点选法错了**:
+    #     每来一个新版本就得改一次判据, 改一次就漏一次
+    #     —— v48→v49 一次、v49→v50 一次, 而 v47 判据那次甚至改了四处副本。
+    #
+    #   ⇒ 正确做法: 右界 = **V48-PIN 之后第一个版本号 > 48 的标记**,
+    #     用正则现场扫, 不写死任何版本号。这样 v49/v50/v51… 无论插在
+    #     钉宽 if 与 v28 标记之间的哪一处, 都会被自动切掉。
+    #
+    #   保留 v48 if 之后的空间仍然必要(反向测试 B11 要在那里追加合法读取
+    #   来验证"判据不误伤", 收得太紧会把那条误判成破坏)。
+    _m_next = re.search(r"//\s*\[V(?:49|[5-9]\d|\d{3,})[ \-\]]", t[i_pin + 10:])
+    if _m_next:
+        i_end = i_pin + 10 + _m_next.start()
     else:
+        # 没有更高版本的标记(纯 v48 产物)⇒ 退回 v28 标记
         i_end = t.find("// [IOS15-FIX-RELC v28]", i_pin)
         if i_end < 0:
             raise RuntimeError(
-                "verify_width_pin_v48: 未找到段尾锚点(既没有 %s 也没有"
+                "verify_width_pin_v48: 未找到段尾锚点(既没有 V49+ 标记也没有"
                 " // [IOS15-FIX-RELC v28]) —— v18 抢宽段结构变了, "
-                "判据范围必须重新确定" % _V49_HEAD)
+                "判据范围必须重新确定")
     blk = t[i_pin:i_end]
 
     # ---- 2. 剥注释后做纯语义检查 ----
@@ -5489,6 +5503,695 @@ def verify_width_writer_v49(t):
 
     return True
 
+
+# ============================================================================
+# v50: 排版宽与测高宽同源 —— 治「滑动时字卡住/字在动」
+# ============================================================================
+
+
+MSG_V50_A = (
+    "v50-A': 排版宽与测高宽同源 — 治「滑动时字卡住/字在动」。"
+    "v49 探针归因(minis-2026-10-04 2.log, 143 条 V49-WWRITER): "
+    "**v48 的钉宽没有错** —— v18W=358 **143/143 零例外**, "
+    "kvoW=390 138/143 且 sameTick=0/dtick=1(下一 tick 就被推翻); "
+    "V41-KVOPRE 的 sv 宽 **358 零例外** ⇒ _realW=min(358,390)=358 算得完全正确。"
+    "真凶是**排版链与测高链宽度源不同**: V43-WIDTH 的 netW=**358(147/147 零例外)** "
+    "而 dirtyW=390(131) ⇒ 测高链每帧都对、排版链每帧拿到脏宽。"
+    "389 的来源精确到算式(SelectableMarkdownView.swift:2232 "
+    "usableWidth = floor(lineFrag.width) - 1 = floor(390)-1), "
+    "逐毫秒证据 .090 tcW=358 → .091 V46-ATTACH cachedW=389 tcW=390 —— "
+    "**1 毫秒内被推翻**。机制是自我强化的环: lineFrag.width 由 UIKit 合成, "
+    "读的是**当前** textContainer 宽, 而 v18 钉宽写在 layoutSubviews 内、"
+    "**时序上晚于** UIKit 问宽度 ⇒ attachment 每次拿到的都是没钉的 390 ⇒ "
+    "按 389 排版并 persist ⇒ 碎片按 389 而 needH 按 358 ⇒ gap 75pt 空壳"
+    "(tcW=358 时 gap 仅 8.2) ⇒ tcW 被重排回 390 ⇒ 回到起点。"
+    "**v46 当年把 D2「探针宽度不同源」排除掉了**(理由: cachedW 与 tcW 恒差 1.0, "
+    "不像陈旧值)—— 那是误判: 恒定 1.0 差不是无害的舍入噪声, 那个 -1 是 UIKit 防 "
+    "_fillLayoutHole 的**既有约定**(必须保留), 而 w 本身是脏宽; "
+    "差 1.0 恰恰掩盖了「整个宽度口径都是错的」这个事实。"
+    "⇒ 纪律: 排除候选根因时,「看起来无害的特征」恰恰最可能是伪装。"
+    "修法: v18 段算出 _realW2 后**在同一处同一帧**把净宽写进 "
+    "TableAttachment.ios15PinnedW(进程级 nonisolated(unsafe) static, "
+    "与既有 narrowestRealWidth 同构 —— 那是本类里跨实例共享宽度口径的既有先例), "
+    "attachmentBounds 的 usableWidth 优先取它。"
+    "★只换「谁来提供 w」, **不动 floor(w)-1 那个约定本身**。"
+    "三条红线: "
+    "R1 probe 路径(lineFrag>=100_000)完全不走新口径(否则 "
+    "[ios_session_open_last_cell_occluded] 的末行被裁修复回退) —— "
+    "且判据查的是**数据流**(读通道那一行必须被 probe 条件夹住): "
+    "第一版只查「probe 判定在下游」, 结果**真的漏了一次** —— 首版写 "
+    "`let _v50Pinned = Self.ios15PinnedW` 直接读, probe 也会用钉宽净宽而判据全绿。"
+    "⇒ 纪律: 「红线在代码里存在」与「红线被真正执行」是两件事, "
+    "后者只能查数据流。"
+    "R2 钉宽写入点必须紧邻 v48 那一行(早一帧拿到脏宽, 晚一帧本帧已排完)。"
+    "R3 全文 textContainer 宽度写入点数仍是 4(codeTextView 1 + v18 3, "
+    "**实测基线** —— 第一版凭推算写成 3, 判据当场报「实为 4」⇒ "
+    "纪律: 判据里的计数必须**从产物数出来**, 不能从脑子里数出来)。"
+    "R3 的存在让 v50 把「纠偏」变成「免疫」: 即使 SwiftUI 每帧把容器宽写回 390, "
+    "排版用的仍是 358"
+)
+
+MSG_V50_C = (
+    "v50-C: 滑动时也记住「碎片已按目标宽重排」 — 修 laidW 永远空着。"
+    "v49 探针的 laidW(读 v47 注入的 ios15LastLaidOutW)实测 **-1 出现 138/143 次**, "
+    "查注入代码才看清病因: `self.ios15LastLaidOutW = _realW2` 被关在 "
+    "`if _ios15WRegrabbed` 里, 而 _ios15WRegrabbed 只表示"
+    "「容器宽此刻偏离目标宽」—— **滑动时容器宽恰好已是目标宽** ⇒ "
+    "abs(tcW-_realW2)>0.5 不成立 ⇒ regrabbed=false ⇒ ensureLayout 不跑、laidW 不赋值。"
+    "⇒ 这是纯粹的逻辑耦合错误: v47 自己的注释写着「前者不代表后者」, "
+    "代码里却恰恰用前者去守后者。更糟的是**判据与执行互相拆台**: laidW 空 ⇒ "
+    "下次 abs(laidW-_realW2)>0.5 恒成立 ⇒ 每帧都判「该重排」, 却在 if 里"
+    "跳过实际重排 —— 而滑动正是最需要重排的时刻(行碎片最容易被脏宽带走)。"
+    "★顺带修正一处 v49 归因的误判: 我原以为「v47/v48 的重排块在 "
+    "!isScrollEnabled 那道门之后, 所以滑动时不跑」。查产物才发现那道门只管 "
+    "ios15LastNeededH, 重排与钉宽都在 v18 段内、**不在门后** —— "
+    "真正的原因就是上面那个耦合错误。⇒ 纪律: 归因要落到**具体那一行**的守卫条件上, "
+    "不能停在「某个门好像挡住了」这种似是而非的层面。"
+    "修法(最小改动): 记忆赋值从 if 里**提出来**, 只留 ensureLayout 在里面。"
+    "★记忆可以无条件写而 ensureLayout 不能: 记忆的语义是"
+    "「本视图最近一次拿到的目标宽是多少」, 与本帧是否真重排无关"
+    "(_realW2 每帧由 superview 宽算出, 实测 147/147 都是 358); 而 ensureLayout 是"
+    "**排版开销**, v30 的流式节流就是为它设的, 每帧无条件调就是 v13/v34 抢宽翻车。"
+    "⇒ 本版只多写一个 CGFloat(零开销、幂等), 不新增任何排版调用。"
+    "三条红线: C1 不许新增 ensureLayout/invalidateLayout(判据硬查 ensureLayout "
+    "仍被 if 守卫); C2 不许动 height(v45 的 tvH 补高已实测有效 debt 全 0); "
+    "C3 记忆赋值必须在 ensureLayout **之外** —— 靠缩进层级判定"
+    "(往上找最近一个同级或更浅的 `if _ios15WRegrabbed`)。"
+    "★这条判据本轮写完后自己踩了一次: 段边界原用固定 900 字符窗口, "
+    "结果把诊断的 `regrabbed=` 切掉, 报「缺字段」而字段其实就在同段 ⇒ "
+    "段边界一律用**下游稳定锚点**切, 不用固定字符数。"
+    "★登记必须排在 v49 之后"
+)
+
+def fix_width_source_unify_v50(t):
+    """v50-A': attachmentBounds 与测高链读同一个宽度源 —— 治滑动时卡字。
+
+    ── v49 归因(minis-2026-10-04 2.log, 143 条 V49-WWRITER / 86 条 V46-ATTACH)──
+
+    v49 探针把"谁把 textContainer.size.width 推回 390"钉死了, 结论是
+    **v48 的钉宽没有错**:
+
+      · v18W = 358.0  **143/143 零例外** ⇒ v48 每次都成功钉宽
+      · kvoW = 390.0   138/143, sameTick=0, dtick=1 ⇒ 下一 tick 就被推翻
+      · V41-KVOPRE: sv=(16.0, ..., **358.0**, ...) cvW=390.0  147/147
+        ⇒ _realW = min(358, 390) = 358, v18 算得完全正确
+
+    真凶是**排版链与测高链的宽度源不同**, 逐毫秒证据(02:24:20):
+
+      .088 [V43-WIDTH]  dirtyW=390.0 → **netW=358.0**      ← 测高链算对了
+      .090 [V42-MISS]   tcW=358.0                          ← 钉宽生效
+      .090 [V49-WWRITER] v18W=358.0 kvoW=390.0 dtick=1     ← 已被改
+      .091 [V45-TVHFIX] tvW=390.0                          ← UITextView 宽也变
+      .091 [V46-ATTACH] cachedW=**389.0** tcW=390.0        ← 推手在这 1ms
+
+    而 389 的来源精确到算式(源码 :2232 `TableAttachment.attachmentBounds`):
+
+        let usableWidth = floor(lineFrag.width) - 1    // 390 - 1 = 389
+
+    `V43-WIDTH` 147 条: netW=**358(147/147 零例外)**, dirtyW=390(131) ——
+    **测高链每一帧都算对, 排版链每一帧都拿到脏宽。**
+
+    ── 为什么 `lineFrag.width` 拿到的是脏宽 ──
+
+    `lineFrag.width` 由 UIKit 合成, 读的是"当前"的 textContainer 宽。
+    v18 段钉宽写在 layoutSubviews 内, **时序上晚于** UIKit 问宽度 ⇒
+    每次 attachmentBounds 被调用时, 拿到的都是还没被钉的 390。
+    于是形成**自我强化的环**:
+
+        SwiftUI 写 390 → attachmentBounds 问得 390 → 按 389 排版并 persist
+        → 碎片按 389, needH 按 358 → gap 75pt 空壳 → tcW 被重排回 390
+        → 回到第一步
+
+    ★**v46 当年把 D2「探针宽度不同源」排除掉了**, 理由是
+      "cachedW 与 tcW 恒差 1.0, 不像陈旧值"。**那是误判** ——
+      恒定 1.0 差不是无害的舍入噪声: 那个 `-1` 是 UIKit 防
+      `_fillLayoutHole` 的**既有约定**(必须保留), 而 `w` 本身是脏宽。
+      差 1.0 恰恰掩盖了"整个宽度口径都是错的"这个事实。
+
+    ── 修法: 让 attachment 链能读到"钉宽后的净宽" ──
+
+    沿用 `TableAttachment.narrowestRealWidth` 的既有形态(进程级
+    `nonisolated(unsafe) static var`), 新增一个**只写不读**的宽度通道:
+
+      1. v18 段算出 `_realW2` 之后, 把它写进 `TableAttachment.ios15PinnedW`
+         —— 与 `textContainer.size.width = _realW2` **同一处、同一帧**。
+      2. `attachmentBounds` 的 `usableWidth` 优先取 `ios15PinnedW - 1`,
+         拿不到才回退 `lineFrag.width`。
+
+    ★**只换"谁来提供 w", 不动 `floor(w)-1` 那个约定本身** ——
+      那个 `-1` 是防 fillLayoutHole 的, 动它会重演 v37 的翻车。
+
+    ── 三条红线(v50 判据逐条硬查)──
+
+      R1 **只在非 probe 路径生效**。`isOversizedProbe`(lineFrag >= 100_000)
+         必须仍走原口径, 否则 `[ios_session_open_last_cell_occluded]`
+         那个"末行被裁"修复会回退。
+      R2 **钉宽写入点必须紧邻 v48 那一行**, 不能是"另一处新增的宽度写入"
+         —— v13/v34 翻车都是因为在布局 pass 外无条件抢宽。
+      R3 **不许任何新的 textContainer 宽度写入点**。v50 只加一个静态标量,
+         真正的容器宽写入仍然只有 v18 那两处 + v48 那一处。
+
+    ── 为什么不一次性把 SwiftUI 的写入也堵住 ──
+
+    `dirtyW=390` 131/147 说明 SwiftUI 每帧都写 390, v48 只是每次纠回来 ——
+    那是"纠偏"不是"根治"。但**堵 SwiftUI 的写入是抢 pass**, 正是
+    v13/v34 闪屏/整体缩小那条老路。本版让排版链**不再依赖那个脏宽**,
+    相当于把"纠偏"变成"免疫": 即使容器宽被写回 390, 排版用的仍是 358。
+    """
+    if "ios15PinnedW" in t:
+        return t
+
+    # ---- 1. TableAttachment: 新增进程级钉宽通道(只写) ----
+    ANCHOR_W = """    nonisolated(unsafe) static var narrowestRealWidth: CGFloat = 380
+"""
+    if ANCHOR_W not in t:
+        raise RuntimeError(
+            "fix_width_source_unify_v50: 未找到 narrowestRealWidth 锚点 "
+            "(TableAttachment 结构变了?)")
+    if t.count(ANCHOR_W) != 1:
+        raise RuntimeError(
+            "fix_width_source_unify_v50: narrowestRealWidth 锚点不唯一 "
+            "(命中 %d 处)" % t.count(ANCHOR_W))
+    NEW_W = ANCHOR_W + """
+    /// [V50-PINW] v18 段钉宽后的**目标净宽**(0 = 从未钉过)。
+    ///
+    /// 【为什么需要它】v49 归因(minis-2026-10-04 2.log): 钉宽 143/143 生效,
+    /// 但下一 tick 就被 attachment 链按 `lineFrag.width`(= 脏宽 390) 推回。
+    /// `lineFrag.width` 由 UIKit 合成, 读的是**当前** textContainer 宽 ——
+    /// 而 v18 的钉宽写在 layoutSubviews 内, **时序上晚于** UIKit 问宽度,
+    /// 于是 attachment 每次拿到的都是没被钉的 390(实测 usableWidth=389)。
+    /// 测高链走 netW=358(147/147 零例外), 排版链走 389 ⇒ 两条链不同源,
+    /// 行碎片按 389 排而 needH 按 358 算, 差出 75pt 空壳(用户看到的卡字)。
+    ///
+    /// 【形态与 narrowestRealWidth 同构】刻意沿用既有的
+    /// `nonisolated(unsafe) static var` 形态 —— 它是本类里"跨实例共享
+    /// 宽度口径"的既有先例(见其上方的 [ios_session_open_last_cell_occluded]
+    /// 说明), 新通道照同样的规矩写, 不引入新的并发形态。
+    /// `nonisolated(unsafe)` 在此是安全的: CGFloat 读写不撕裂, 且
+    /// attachmentBounds 与 layoutSubviews 同在主线程。
+    nonisolated(unsafe) static var ios15PinnedW: CGFloat = 0
+"""
+    t = t.replace(ANCHOR_W, NEW_W, 1)
+
+    # ---- 2. v18 段: 钉宽的**同一处、同一帧**写入通道 ----
+    #   锚点是 v48 注入的钉宽 if(它是 v48 判据锁定的唯一合法写入形态)。
+    ANCHOR_PIN = """            if _ios15WRegrabbed, abs(textContainer.size.width - _realW2) > 0.5 {
+                textContainer.size.width = _realW2
+            }"""
+    if ANCHOR_PIN not in t:
+        raise RuntimeError(
+            "fix_width_source_unify_v50: 未找到 v48 钉宽 if 锚点"
+            "(v48 没注入? 登记顺序错了?)")
+    if t.count(ANCHOR_PIN) != 1:
+        raise RuntimeError(
+            "fix_width_source_unify_v50: v48 钉宽 if 锚点不唯一(命中 %d 处)"
+            % t.count(ANCHOR_PIN))
+    NEW_PIN = ANCHOR_PIN + """
+            // [V50-PINW-WRITE] 把钉宽后的目标净宽交给 attachment 链 ——
+            // 见函数 docstring 的归因与三条红线。**与上面那行同一处、
+            // 同一帧**: 早一帧则拿到的是还没钉的 390, 晚一帧则本帧
+            // 的行碎片已经按脏宽排完了。
+            TableAttachment.ios15PinnedW = _realW2
+            // [V50-PINW-DIAG] 纯诊断: 记"钉宽帧"看到的两个宽, 装机后
+            // 用来确认 attachment 链真的读到了新值(R2 的实机证据)。
+            do {
+                struct _PinDiag { static var last: CFTimeInterval = 0 }
+                let _pn = CACurrentMediaTime()
+                if _pn - _PinDiag.last > 0.5 {
+                    _PinDiag.last = _pn
+                    NSLog("[V50-PINW] pinnedW=%.1f tcW=%.1f len=%d",
+                          _realW2, self.textContainer.size.width,
+                          self.textStorage.length)
+                }
+            }"""
+    t = t.replace(ANCHOR_PIN, NEW_PIN, 1)
+
+    # ---- 3. attachmentBounds: 优先用钉宽净宽, probe 路径不动 ----
+    ANCHOR_ATT = """        let usableWidth = floor(lineFrag.width) - 1
+"""
+    if ANCHOR_ATT not in t:
+        raise RuntimeError(
+            "fix_width_source_unify_v50: 未找到 usableWidth 锚点"
+            "(TableAttachment 结构变了?)")
+    if t.count(ANCHOR_ATT) != 1:
+        raise RuntimeError(
+            "fix_width_source_unify_v50: usableWidth 锚点不唯一(命中 %d 处)"
+            % t.count(ANCHOR_ATT))
+    NEW_ATT = """        // [V50-UNIFY] 宽度同源: 优先用 v18 钉好的净宽, 而不是 UIKit 合成��
+        // `lineFrag.width`(它在钉宽之前就被问, 实测恒为脏宽 390)。
+        //
+        // ★三条红线:
+        //   R1 **probe 路径完全不走这里** —— `isOversizedProbe` 判定仍在下方
+        //      原位, 100_000 哨兵与 32_768 钳位都没动 ⇒
+        //      [ios_session_open_last_cell_occluded] 的"末行被裁"修复不回退。
+        //   R2 只读 `ios15PinnedW`, **不改 `lineFrag.width` 的用法** ——
+        //      那个 `floor(w)-1` 是 UIKit 防 `_fillLayoutHole` 的既有约定,
+        //      动它会重演 v37 的 fillLayoutHole 11918ms 卡死。
+        //   R3 回落必须干净: 钉宽通道为 0(从未钉过, 如 v49 之前的老路径)
+        //      就原样用 `lineFrag.width`, 行为与本版之前完全一致。
+        //
+        // 为什么减 1: 保持与原式 `floor(w)-1` 同构 —— 那个 -1 是 UIKit
+        // 约定的安全余量, 换成钉宽后仍要减, 否则表格会宽到触发 fillLayoutHole。
+        // ★probe 判定必须**先于**本段求值(否则下面诊断读不到它, 且
+        //   probe 路径会误用钉宽净宽 = R1 被破)。原判定保持在下方
+        //   `isOversizedProbe` 那一行, 这里只做一次**不改变语义**的提前取值:
+        //   表达式与下方逐字相同(>= 100_000), 不是新增判定。
+        let _v50IsProbe = lineFrag.width >= 100_000
+        let _v50Pinned = _v50IsProbe ? 0 : Self.ios15PinnedW
+        let usableWidth: CGFloat = _v50Pinned > 1
+            ? floor(_v50Pinned) - 1
+            : floor(lineFrag.width) - 1
+        if _v50Pinned > 1 {
+            do {
+                struct _UniDiag { static var last: CFTimeInterval = 0 }
+                let _un = CACurrentMediaTime()
+                if _un - _UniDiag.last > 0.5 {
+                    _UniDiag.last = _un
+                    NSLog("[V50-UNIFY] used=%.1f (pinned=%.1f) lineFrag=%.1f",
+                          usableWidth, _v50Pinned, lineFrag.width)
+                }
+            }
+        }
+"""
+    t = t.replace(ANCHOR_ATT, NEW_ATT, 1)
+
+    return t
+
+
+def verify_width_source_unify_v50(t):
+    """校验 v50 —— 独立成函数, 不只服务于注入。
+
+    判据按"红线优先"排序: 先查三条红线有没有被破, 再查功能在位。
+    顺序理由同 v47: 结构性违例比"少了个日志字段"严重得多。
+    """
+    # ---- 加法违例: v48 及之前的成果必须全在 ----
+    for tag, want in (("// [V48-PIN]", 1), ("// [V47-REWRAP]", 2),
+                      ("/// [V47-WSTATE]", 1), ("/// [V50-PINW]", 1),
+                      ("// [V50-PINW-WRITE]", 1), ("// [V50-UNIFY]", 1),
+                      ("[V44-TEXTFRAME]", 2), ("[V45-TVHFIX]", 2),
+                      ("[V46-ATTACH]", 4), ("[V49-WWRITER-V18]", 1),
+                      ("[V49-WWRITER-KVO]", 1), ("[V49-WWRITER-KVO-END]", 1)):
+        if t.count(tag) != want:
+            raise RuntimeError(
+                "verify_width_source_unify_v50: 标记 %s 计数应为 %d, 实为 %d"
+                % (tag, want, t.count(tag)))
+
+    # ---- R1: probe 判定必须仍在 usableWidth 之后、且未被改写 ----
+    i_unify = t.find("// [V50-UNIFY]")
+    if i_unify < 0:
+        raise RuntimeError("verify_width_source_unify_v50: [V50-UNIFY] 段缺失")
+    i_probe = t.find("let isOversizedProbe = lineFrag.width >= 100_000")
+    if i_probe < 0:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: isOversizedProbe 判定缺失 —— "
+            "100_000 哨兵是 probe 路径的唯一依据, 丢了它 probe 会走真实宽 "
+            "把表格按 32768 排(末行被裁的老问题会回来)")
+    if i_probe < i_unify:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ★isOversizedProbe(%d) 被挪到 "
+            "[V50-UNIFY](%d) **之前** 了 —— 新代码在它之前就用了宽度, "
+            "于是 probe 路径也会走钉宽净宽, R1 被破(末行被裁修复回退)"
+            % (i_probe, i_unify))
+
+    # ---- R1b: 钉宽通道的用法必须被 probe 显式排除 ----
+    #   ★本判据第一版只查"probe 判定在下游", 结果**真的漏了一次**:
+    #   首版写 `let _v50Pinned = Self.ios15PinnedW` 直接读, 于是 probe
+    #   路径(32768)也会走钉宽净宽 —— R1 实际被破, 而判据全绿。
+    #   教训: "红线在代码里存在" 与 "红线被真正执行" 是两件事,
+    #   后者只能查**数据流** —— 钉宽通道的取值必须被 probe 条件夹住。
+    seg = t[i_unify:i_unify + 1800]
+    if "_v50Pinned > 1" not in seg:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ★[V50-UNIFY] 段内找不到 "
+            "_v50Pinned > 1 守卫 —— 意味着钉宽净宽可能无条件生效, "
+            "没钉过(0)时也会用上")
+    if "lineFrag.width" not in seg:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ★[V50-UNIFY] 段内不再出现 "
+            "lineFrag.width —— 回退路径被删了。钉宽通道为 0 时(老路径)会拿到 "
+            "width 0, 表格全部塌成 minRowHeight")
+    # ★数据流检查: 读通道那一行必须带 probe 条件。
+    #   允许两种正确写法:
+    #     · `let _v50Pinned = _v50IsProbe ? 0 : Self.ios15PinnedW`
+    #     · `if !isOversizedProbe { ... }` 之类把读取包起来
+    #   判据只认第一种(本版实现), 因为它能被一条正则钉死;
+    #   将来若换写法, 判据会报红并要求同步更新 —— 这是刻意的不灵活。
+    if "Self.ios15PinnedW" not in seg:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: [V50-UNIFY] 段内不再读 "
+            "ios15PinnedW —— 钉宽通道没被消费, 整段成了死代码")
+    _readline = re.search(r"^.*Self\.ios15PinnedW.*$", seg, re.M)
+    if not _readline or "_v50IsProbe" not in _readline.group(0):
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ★读 ios15PinnedW 的那一行没有 "
+            "probe 条件: %r —— probe 路径(lineFrag >= 100_000)会误用钉宽净宽, "
+            "R1 被破([ios_session_open_last_cell_occluded] 的末行被裁修复回退)"
+            % (_readline.group(0).strip()[:100] if _readline else None))
+
+    # ---- R1c: 提前取值必须**逐字等价**于下方原判定, 且真的声明了 ----
+    #   ★这条是被 S5 逼出来的: 反向测试删掉 `let _v50IsProbe = ...` 整行,
+    #   R1b 仍绿(读它那行照样含 "_v50IsProbe" 字样), 但产物**根本编译不过**
+    #   —— 未声明标识符。也就是说 R1b 只钉住了"引用", 没钉住"声明"。
+    #   ⇒ 纪律: 查数据流时要连**声明**一起查, 否则数据流是断的。
+    #
+    #   同时钉住哨兵一致: 注释里声称"表达式与下方逐字相同", 但那句话
+    #   此前**没有任何判据在守**。若有人把提前取值改成 `>= 200_000`,
+    #   100_000~200_000 的 probe 会静默走进钉宽净宽路径 —— 编译得过、
+    #   判据全绿、末行被裁悄悄回来。
+    # ★用命名分组而不是位置分组: 本判据第一版把单捕获组的正则写成
+    #   group(2), 当场抛 "no such group"。位置编号也是**数出来的**,
+    #   跟"判据里的计数必须从产物数出来"是同一条纪律。
+    m_pre = re.search(r"let (?P<pre>_v50IsProbe)\s*=\s*"
+                      r"lineFrag\.width\s*>=\s*(?P<pre_s>[\d_]+)", seg)
+    if not m_pre:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ★[V50-UNIFY] 段内找不到 "
+            "`let _v50IsProbe = lineFrag.width >= <哨兵>` 的**声明** —— "
+            "读它的那行还引用着它, 产物会编译不过(Swift 未声明标识符)。"
+            "R1b 只查引用不查声明, 是本判据的漏网形态")
+    m_org = re.search(r"let isOversizedProbe\s*=\s*"
+                      r"lineFrag\.width\s*>=\s*(?P<org_s>[\d_]+)", t)
+    if not m_org:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: isOversizedProbe 原判定缺失 —— "
+            "无法核对提前取值的哨兵")
+    if m_pre.group("pre_s") != m_org.group("org_s"):
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ★提前取值的哨兵 %s 与下方原判定 %s "
+            "不一致 —— 落在两者之间的 probe 会静默走进钉宽净宽路径, "
+            "编译得过、判据全绿、末行被裁修复悄悄回退"
+            % (m_pre.group("pre_s"), m_org.group("org_s")))
+    # 声明必须早于读通道那一行(Swift 同作用域 use-before-declaration)
+    if m_pre.start() > _readline.start():
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ★_v50IsProbe 的声明(%d)晚于读 "
+            "ios15PinnedW 的那一行(%d) —— Swift 报 use before declaration"
+            % (m_pre.start(), _readline.start()))
+
+    # ---- R2: floor(w)-1 约定必须未被改动 ----
+    #   原式 `floor(lineFrag.width) - 1` 必须**原样还在**(回退路径),
+    #   且新式也必须带那个 -1。
+    if "floor(lineFrag.width) - 1" not in seg:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ★原式 floor(lineFrag.width) - 1 "
+            "不在段内 —— R2 被破。那个 -1 是 UIKit 防 _fillLayoutHole 的"
+            "既有约定, 删掉会重演 11918ms 卡死")
+    if "floor(_v50Pinned) - 1" not in seg:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ★新式 floor(_v50Pinned) - 1 "
+            "不在段内 —— 换成钉宽后漏了那个 -1 余量, 表格会宽到触发 "
+            "_fillLayoutHole")
+
+    # ---- R3: 不许新增 textContainer 宽度写入点 ----
+    #   全文对 `textContainer.size.width =` 的写入必须仍是 4 处:
+    #     · codeTextView 那处 —— 与本链无关的独立视图(终端块)
+    #     · v18 段 `= _realW`  (v34 起的常规钳宽)
+    #     · v18 段 `= _realW2` (v26 测高前的抢回)
+    #     · v48 段 `= _realW2` (碎片与目标宽不一致时钉回)
+    #   ★这个 4 是**实测基线**(v49 产物 L1641/L8119/L8154/L8198),
+    #     不是推算值 —— 第一版这里写成 3, 判据当场报"实为 4"。
+    #     ⇒ 纪律: 判据里的计数必须**从产物数出来**, 不能从脑子里数出来。
+    _w = re.findall(r"textContainer\.size\.width\s*=", t)
+    if len(_w) != 4:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ★textContainer 宽度写入点数应为 4"
+            "(codeTextView 1 + v18 3), 实为 %d —— v50 只允许新增一个静态标量, "
+            "**任何新的容器宽写入都是 v13/v34 抢宽翻车的形态**" % len(_w))
+
+    # ---- 功能在位: 写入点紧邻 v48 钉宽 ----
+    i_w = t.find("// [V50-PINW-WRITE]")
+    i_pin = t.rfind("textContainer.size.width = _realW2", 0, i_w)
+    if i_pin < 0:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: [V50-PINW-WRITE] 上游找不到 "
+            "v48 钉宽行 —— 通道写入点必须与钉宽**同一处**, 否则它记的是"
+            "另一个宽度(早一帧拿到脏宽, 晚一帧本帧已排完)")
+    if i_pin - i_w > 260:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ★钉宽行距 [V50-PINW-WRITE] %d 字符"
+            " —— 太远, 不再是'同一处同一帧'(R2)" % (i_pin - i_w))
+
+    # ---- 通道声明形态: 必须与 narrowestRealWidth 同构 ----
+    if "nonisolated(unsafe) static var ios15PinnedW: CGFloat = 0" not in t:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: ios15PinnedW 声明形态不符 —— "
+            "必须是 nonisolated(unsafe) static var, 与既有的 "
+            "narrowestRealWidth 同构")
+
+    return True
+
+
+def fix_slide_relayout_v50(t):
+    """v50-C: 滑动时也记住"碎片已按目标宽重排" —— 修 `laidW` 永远空着。
+
+    ── 为什么需要(v49 实测, minis-2026-10-04 2.log)──
+
+    v49 探针的 `laidW` 字段(读 v47 注入的 `ios15LastLaidOutW`)实测
+    **-1 出现 138/143 次** —— 也就是"碎片已按目标宽重排"这个记忆
+    **几乎从未被写下**。查注入代码才看清病因:
+
+        if _ios15WRegrabbed {
+            layoutManager.ensureLayout(for: textContainer)
+            // [V47-REWRAP] 行碎片已按 _realW2 定型, 记下来供下次比对。
+            self.ios15LastLaidOutW = _realW2      // ★被关在这个 if 里
+        }
+
+    而 `_ios15WRegrabbed` 来自 v18 段更早的一行:
+
+        if abs(textContainer.size.width - _realW2) > 0.5 { ... regrabbed = true }
+
+    **滑动时容器宽恰好已经是目标宽**(实测 tcW=358 就在位, 或者
+    v50-A' 生效后 tcW 与 _realW2 一致) ⇒ `abs(...)>0.5` 不成立
+    ⇒ `_ios15WRegrabbed = false` ⇒ `ensureLayout` 不跑、`laidW` 不赋值。
+
+    ⇒ **这是一个纯粹的逻辑耦合错误**: "容器宽此刻对不对" 与
+      "碎片有没有按目标宽重排过" 是**两件事**。v47 自己的注释就写着
+      前者不代表后者, 但代码里恰恰用前者去守后者。
+
+    为什么这会致卡: `laidW` 空 ⇒ 下次比对 `abs(-1 - _realW2) > 0.5`
+    恒成立 ⇒ 每帧都判定"需要重排" ⇒ 却在 `if _ios15WRegrabbed` 里
+    跳过实际重排 ⇒ **判据与执行互相拆台**。滑动时正是最需要重排的时刻
+    (行碎片最容易被脏宽带走), 记忆却是空的。
+
+    ── 修法(最小改动)──
+
+    把 `laidW` 的赋值从 `if _ios15WRegrabbed` 里**提出来**, 只留
+    `ensureLayout` 在里面:
+
+        if _ios15WRegrabbed {
+            layoutManager.ensureLayout(for: textContainer)
+        }
+        // [V50-LAIDW] 记忆**无条件**更新
+        self.ios15LastLaidOutW = _realW2
+
+    ★**为什么记忆可以无条件写, 而 ensureLayout 不能**:
+      记忆的语义是"本视图最近一次拿到的目标宽是多少", 与本帧有没有
+      真的触发重排无关 —— 每帧的 `_realW2` 都是权威值(它由
+      superview 宽算出, 实测 147/147 都是 358)。
+      而 `ensureLayout` 是**排版开销**, v30 的流式节流就是为它设的,
+      绝不能每帧无条件调 —— 那是 v13/v34"抢宽"翻车的形态。
+
+    ⇒ 本版只多写一个 CGFloat 属性(零开销、幂等), 不新增任何排版调用。
+
+    ── 三条红线 ──
+
+      C1 **不许新增 ensureLayout / invalidateLayout 调用**。v49 判据
+         (对 v47 段)硬禁这件事, v50 判据继承同一纪律。
+      C2 **不许动 height**。v45 的 tvH 补高是已实测成果(debt 全 0)。
+      C3 记忆赋值必须在 `ensureLayout` **之外** —— 若仍留在 if 内,
+         滑动时依旧不写, 等于没修。
+    """
+    if "[V50-LAIDW]" in t:
+        return t
+
+    ANCHOR = """            if _ios15WRegrabbed {
+                layoutManager.ensureLayout(for: textContainer)
+                // [V47-REWRAP] 行碎片已按 _realW2 定型, 记下来供下次比对。
+                self.ios15LastLaidOutW = _realW2
+            }"""
+    if ANCHOR not in t:
+        raise RuntimeError(
+            "fix_slide_relayout_v50: 未找到 v47 记忆块锚点(v47 没注入? "
+            "登记顺序错了?)")
+    if t.count(ANCHOR) != 1:
+        raise RuntimeError(
+            "fix_slide_relayout_v50: v47 记忆块锚点不唯一(命中 %d 处)"
+            % t.count(ANCHOR))
+    NEW = """            if _ios15WRegrabbed {
+                layoutManager.ensureLayout(for: textContainer)
+            }
+            // [V50-LAIDW] "碎片已按目标宽定型"的记忆, **无条件**更新。
+            //
+            // 【为什么必须提出来 —— v49 实测 laidW=-1 出现 138/143 次】
+            // 原先它被关在 `if _ios15WRegrabbed` 里, 而 `_ios15WRegrabbed`
+            // 只表示"容器宽此刻偏离目标宽": 滑动时容器宽**恰好已经**是目标宽
+            // ⇒ 条件不成立 ⇒ 记忆永不写入。
+            // ⇒ 判据与执行互相拆台: `laidW` 空 ⇒ 下次
+            // `abs(laidW - _realW2) > 0.5` 恒成立 ⇒ 每帧都判"该重排",
+            //   却在 if 里跳过实际重排。而滑动正是最需要重排的时刻。
+            //
+            // 【为什么无条件写是安全的】
+            //   记忆的语义 = "本视图最近一次拿到的目标宽是多少", 与本帧
+            //   是否真的重排无关 —— `_realW2` 每帧都由 superview 宽算出,
+            //   实测 147/147 都是 358, 是权威值。
+            //   ★而 `ensureLayout` 绝不能无条件调: 它是排版开销,
+            //     v30 的流式节流就是为它设的; 每帧调就是 v13/v34 抢宽翻车。
+            //   ⇒ 本版只多写一个 CGFloat(零开销、幂等), 不新增排版调用。
+            //
+            // 【v47-REWRAP 标记保留在下方, 判据的 find 仍能定位到本段】
+            // [V47-REWRAP] 行碎片已按 _realW2 定型, 记下来供下次比对。
+            self.ios15LastLaidOutW = _realW2"""
+    # ---- 诊断块单独挪到 v47 纯度段**之外** ----
+    # ★为什么不能放在记忆赋值后面(本轮实踩, regress_all_v 报 v47 pure=BAD):
+    #   v47 判据有一条 "纯度" 红线 —— 它的第一块(V47-REWRAP#1 到
+    #   `if _ios15WRegrabbed, textStorage.length > 0 {` 之间)**不许出现任何
+    #   NSLog**(日志归 v46 及更早的判据管)。而记忆赋值点正落在这块里,
+    #   诊断跟在它后面 ⇒ 一起进判据区间 ⇒ v47 pure 报 BAD 日志=True。
+    #   ⇒ 这不是 v47 判据太严, 是我插错了位置: 诊断是纯观测,
+    #     放在 v47 段外即可, 语义完全不变(同一帧、同一批值)。
+    #   纪律: **后版往共享段里插代码时, 先看前版的"纯度判据"覆盖到哪里。**
+    ANCHOR2 = """            ios15LastNeededH = _needH"""
+    NEW2 = ANCHOR2 + """
+            // [V50-LAIDW-DIAG] 纯诊断: 确认记忆这次真的写进去了
+            // (v49 实测 138/143 是 -1, 装机后这里应恒为 358)。
+            // ★故意放在 `ios15LastNeededH` 之后 —— v47 判据的纯度段到
+            //   `sizeThatFits` 那行为止, 这里已在它之外。
+            do {
+                struct _LwDiag { static var last: CFTimeInterval = 0 }
+                let _lw = CACurrentMediaTime()
+                if _lw - _LwDiag.last > 0.5 {
+                    _LwDiag.last = _lw
+                    NSLog("[V50-LAIDW] laidW=%.1f regrabbed=%d len=%d",
+                          self.ios15LastLaidOutW,
+                          _ios15WRegrabbed ? 1 : 0, self.textStorage.length)
+                }
+            }"""
+    if ANCHOR2 not in t:
+        raise RuntimeError(
+            "fix_slide_relayout_v50: 未找到 `ios15LastNeededH = _needH` 锚点 —— "
+            "诊断块需要落在 v47 纯度段之外, 而那个位置是唯一稳定的落点")
+    if t.count(ANCHOR2) != 1:
+        raise RuntimeError(
+            "fix_slide_relayout_v50: `ios15LastNeededH = _needH` 不唯一(命中 %d 处)"
+            % t.count(ANCHOR2))
+    t = t.replace(ANCHOR, NEW, 1)
+    t = t.replace(ANCHOR2, NEW2, 1)
+    return t
+
+
+def verify_slide_relayout_v50(t):
+    """校验 v50-C —— 独立成函数。"""
+    # ---- 加法违例: A' 必须在(C 依赖 v48/v47 的成果) ----
+    for tag, want in (("// [V50-PINW-WRITE]", 1), ("// [V50-UNIFY]", 1),
+                      ("/// [V50-PINW]", 1), ("// [V50-LAIDW]", 1),
+                      ("// [V50-LAIDW-DIAG]", 1), ("// [V47-REWRAP]", 2),
+                      ("// [V48-PIN]", 1)):
+        if t.count(tag) != want:
+            raise RuntimeError(
+                "verify_slide_relayout_v50: 标记 %s 计数应为 %d, 实为 %d"
+                % (tag, want, t.count(tag)))
+
+    i = t.find("// [V50-LAIDW]")
+    if i < 0:
+        raise RuntimeError("verify_slide_relayout_v50: [V50-LAIDW] 段缺失")
+    # ★段边界一律用**下游稳定锚点**, 从不用固定字符数(本轮踩过两次):
+    #   ① 固定 900 字符时诊断的 `regrabbed=` 落在窗口外, 判据报"缺字段" ——
+    #      而字段其实就在同段里, 只是被窗口切掉了;
+    #   ② 诊断块挪到 `ios15LastNeededH` 之后(为了不落进 v47 纯度段)后,
+    #      两个标记之间**夹着 v47 的既有高度写入** `ios15LastNeededH = _needH`
+    #      —— 若把两标记并成一段, C2 的高度正则会当场误报。
+    # ⇒ 拆成两段: seg_main 管记忆赋值本体, seg_diag 管诊断块。
+    #   C2(禁高度)只查 seg_main —— 诊断块是纯观测, 且它前面那行高度写入
+    #   是 v47 的既有成果, 不属于本版。
+    _i_v47 = t.find("// [V47-REWRAP]", i)
+    if _i_v47 < 0:
+        raise RuntimeError(
+            "verify_slide_relayout_v50: [V50-LAIDW] 之后找不到 [V47-REWRAP] "
+            "标记 —— 记忆赋值本体的段边界没了")
+    _i_needh = t.find("ios15LastNeededH = _needH", _i_v47)
+    if _i_needh < 0:
+        raise RuntimeError(
+            "verify_slide_relayout_v50: 找不到 `ios15LastNeededH = _needH` —— "
+            "v47 测高成果不在位, 或本版插错了位置")
+    _i_diag = t.find("// [V50-LAIDW-DIAG]", _i_needh)
+    if _i_diag < 0:
+        raise RuntimeError(
+            "verify_slide_relayout_v50: [V50-LAIDW-DIAG] 段缺失(装机靠它确认"
+            "laidW 真的写进去了)")
+    # 主体段: 从 V50-LAIDW 标记前的 ensureLayout if 起, 到 v47 高度写入之前
+    _i_ens = t.rfind("if _ios15WRegrabbed {", max(0, i - 400), i)
+    seg_main = t[_i_ens if _i_ens > 0 else max(0, i - 400):_i_needh]
+    # 诊断段: 从诊断标记到下一个稳定锚点(V42 闩锁)
+    _i_latch = t.find("// [V42-LATCH-SET]", _i_diag)
+    if _i_latch < 0:
+        raise RuntimeError(
+            "verify_slide_relayout_v50: 诊断段未闭合(找不到 // [V42-LATCH-SET])")
+    seg_diag = t[_i_diag:_i_latch]
+
+    # ---- C3(核心): 记忆赋值必须已从 if 内提出来 ----
+    #   判据: `ios15LastLaidOutW = _realW2` 所在行**之前**,
+    #   在同一缩进层上不能还挂着 `if _ios15WRegrabbed {`。
+    _asm = re.search(r"^([ ]*)self\.ios15LastLaidOutW = _realW2\s*$",
+                     t, re.M)
+    if not _asm:
+        raise RuntimeError(
+            "verify_slide_relayout_v50: 找不到 ios15LastLaidOutW = _realW2 赋值")
+    indent = len(_asm.group(1))
+    # 从该行往上找最近一个"同级或更浅"的 if, 若它是 regrabbed 就说明还关着
+    # ★上界用**标记**切而不是固定字符数(本轮踩过): 记忆赋值上方那段
+    #   注释被 v50 加长到 400 字符以上, 固定窗口会**切不到** ensureLayout
+    #   那个 if —— 于是"赋值其实还在 if 里"这种破法反而全绿。
+    #   取 [V50-LAIDW] 标记(它就在 ensureLayout 之后)往前那一段即可。
+    _i_mark = t.rfind("// [V50-LAIDW]", 0, _asm.start())
+    if _i_mark < 0:
+        raise RuntimeError(
+            "verify_slide_relayout_v50: 记忆赋值上方找不到 [V50-LAIDW] 标记 —— "
+            "无法确定 C3 的检查上界")
+    _head = t[_i_mark:_asm.start()]
+    for m in re.finditer(r"^([ ]*)if _ios15WRegrabbed \{\s*$",
+                         _head, re.M):
+        if len(m.group(1)) < indent:
+            raise RuntimeError(
+                "verify_slide_relayout_v50: ★记忆赋值仍关在 "
+                "`if _ios15WRegrabbed` 里(缩进 %d <= %d) —— 滑动时容器宽"
+                "恰好已是目标宽, 条件不成立 ⇒ 记忆永不写入, C 等于没修"
+                % (len(m.group(1)), indent))
+    # ensureLayout 仍必须在 regrabbed 里(C1: 不许把它提出来)
+    if not re.search(r"if _ios15WRegrabbed \{\s*\n\s*layoutManager\.ensureLayout",
+                     t):
+        raise RuntimeError(
+            "verify_slide_relayout_v50: ★ensureLayout 不再由 "
+            "`if _ios15WRegrabbed` 守卫 —— C1 被破。v30 的流式节流就是为它设的, "
+            "每帧无条件调就是 v13/v34 抢宽翻车的形态")
+
+    # ---- C2: 记忆赋值本体不得写任何高度 ----
+    #   ★只查 seg_main, 不查 seg_diag —— 见上面拆段的理由。
+    _h = re.findall(r"^\s*(?:self\.)?[A-Za-z_]*[Hh]eight[A-Za-z_]*\s*=|"
+                    r"frame\.size\.height\s*=|bounds\.height\s*=",
+                    seg_main, re.M)
+    if _h:
+        raise RuntimeError(
+            "verify_slide_relayout_v50: ★[V50-LAIDW] 段内出现高度写入 %d 处 "
+            "—— v45 的 tvH 补高已实测有效(debt 全 0), C2 不许破" % len(_h))
+    # 记忆赋值本体只许写那一个 CGFloat
+    _w = re.findall(r"^\s*(?:self\.)?(\w+)\s*=[^=]", seg_main, re.M)
+    _allow = ("_ios15WRegrabbed", "ios15LastLaidOutW", "_lw", "_PinDiag",
+              "_LwDiag", "_needH")
+    for lhs in _w:
+        if lhs in ("_ios15WRegrabbed", "ios15LastLaidOutW", "_lw", "_last"):
+            continue
+        raise RuntimeError(
+            "verify_slide_relayout_v50: ★[V50-LAIDW] 段内出现计划外赋值 "
+            "`%s` —— C 只允许多写一个 CGFloat 记忆位" % lhs)
+    del _w, _allow
+
+    # ---- 诊断字段齐全(装机靠它确认) ----
+    for f in ("laidW=", "regrabbed=", "len="):
+        if f not in seg_diag:
+            raise RuntimeError(
+                "verify_slide_relayout_v50: 诊断缺字段 %r —— v49 实测 laidW "
+                "138/143 是 -1, 装机后必须能从日志确认这次真的写进去了" % f)
+    return True
 
 # [V47-FORBIDDEN] v47 段内禁写的标识集合 —— 精确匹配, 不用子串。
 #   用子串会踩坑: 既有变量 `_ios15WRegrabbed` 里含 "eight"(r-EIGHT-grabbed)。
@@ -6290,7 +6993,10 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_reflow_v47, "v47: 统一测宽源 — 治'终端框盖住上面的字/定时任务字一下有一下没有'(v46 纯诊断归因, log16 45 条: **D1/D2/D3 三个候选全排除** —— `attWant==attCached` 45/45 缓存新鲜, `cachedW` 与 `tcW` 恒差 1.0 不是陈旧值, `attNVI=1` 0/45 失效信号从未置位。真凶是**排版宽与测高宽不同源**: `tcH-needH=-8.0` 恒定证明容器高度没问题, `V43-WIDTH dirtyW=390 netW=358 dh=0.0` 证明测高用的净宽 358 也没问题, 但 `tcW` 实测恒为 390 且 `tcH-usedH` 在异常组达 44~67pt —— **同一段文字在 390/358 两个宽度下排出的行数不同**, 行碎片停在旧宽而 needH 恒按新宽算, 差出的就是空壳(终端框于是画在空壳上)。根因是 `_ios15WRegrabbed` 由 `abs(tcW-_realW2)>0.5` 决定, 它只表示'有没有改过容器宽'而不表示'碎片有没有按目标宽重排过' —— 而 `invalidateLayout` 才是让碎片重排的那一步。修法: 新增 `ios15LastLaidOutW` 记住上次排版宽, 与目标宽不等就补一次 invalidateLayout。**不新增任何宽度写入点**(仍只有 v18 那两处)、**不碰高度**(v45 成果保护), 稳态下零额外开销且幂等。v13/v34 曾因抢宽引起闪屏与整体缩小, 那是改钳宽翻的车, 本版只加同宽重排。★登记必须排在 v46 之后")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_pin_v48, "v48: 排版宽钉回目标宽 — 收口 log17 实测的「v47 只治了一半」。log17 对比 log16: tcW=390 的帧 69→48(v47 的重排确实触发了), 但仍有 48/56 帧 tcW 是 390 —— 因为 v47 只调 invalidateLayout **不写 textContainer.size.width**, TextKit 的 ensureLayout 只在当前容器宽下重排, 容器还是 390 时重排出来的仍是 390 宽的行数, 与按 358 算的 _needH 依旧不同源。**log17 里 tcW 与 gap 完全同构、零例外**: tcW=358.0 → tvH-usedH 恒 8.0~8.3(= textContainerInset 上下之和, 正常态), tcW=390.0 → gap 为 30.5(len=229)/117.5(len=839, 连续 26 条一模一样)。len=229 那组最直接: 同一段文字, 358 宽 gap=8.1, 390 宽 gap=30.5, 差值就是 390 宽排不下的那几行。tvH-needH 全部 56 条为 0.0, v45 补高依然完美, 问题**只在宽度不在高度**。修法: 碎片与目标宽不一致时, **连容器宽一起钉回 _realW2**, 两者合起来才是完整条件(容器宽==目标宽 且 碎片按目标宽重排过); v47 的 ios15LastLaidOutW 判据保留不动, 两个判据正交。**这不是新的抢宽时机**: 写在 v18 段内, 复用 v18 已算好的 _realW2(与 sizeThatFits 测高同一个值), 不引入第三方宽度; 判据 abs(tcW-_realW2)>0.5 保证幂等(已在 358 不写不重排, 稳态零开销; 被推回 390 才纠偏一次, 是**纠偏**不是**竞争**)。v13/v34 翻车是因为在布局 pass外无条件抢宽、与 SwiftUI 竞争, 本版恰好相反; 只写 size.width, **不碰 frame/bounds/origin/高度**, 不会引起「整体缩小」那类几何漂移, 也不推翻 v45。**不做常驻钳宽**: 每帧无条件写 358 正是 v13/v34 的翻车形态。校验用**白名单**(只许 textContainer.size.width = _realW2, 精确等值)而非黑名单 —— 多写一个 frame.origin 就足以让整棵 cell 重新布局。★登记必须排在 v47 之后(锚点是 v47 注入的判据块)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_writer_diag_v49, "v49: 【纯诊断, 不改任何行为】V49-WWRITER — 钉死「谁把 textContainer.size.width 推回 390」。log18 首次打破 log17 的「tcW 与 gap 完全同构」: tcW=390 组里出现 18 帧 gap=8.2(**正常**) —— len=122 在 390 宽下排版正确, 前两版从未有过 ⇒ **v48 钉宽确实生效, 但只治好轻文本**。重文本 len=1013(含 1 个表格)仍残缺: n=9 cachedW=357→tcW=358→usedH=1727.6 gap=8.1 ✅ / n=10 cachedW=389→tcW=390→usedH=1638.1 gap=97.6 ❌ —— **cachedW 与 tcW 完全同构(35/36)**。逐毫秒读 00:07:42: .678 [V42-MISS] tcW=358 usedH=1727.6(对) → .679 [V46-ATTACH] tcW=390 usedH=1638.1, **1 毫秒内被推回**; 而 v48 的钉宽写在 v18 段(缩进 12, layoutSubviews 内), **早于**表格附件测量链跑完 ⇒ 纠偏追不上。**为什么纯诊断不盲修**: 候选写入者至少三个(V46 attachmentBounds 测量链 / v37 probe 钳位链 / SwiftUI 布局 pass), 修法互相冲突 —— 放宽 V46 动表格渲染, 动 probe 钳位动 v37 那套 9 处泄漏防护, 抢 SwiftUI pass 是 v13/v34 翻车老路; 而 D4(TextContainerGuard 熔断 219 次, 358x2000 被熔 109 次)那条路是治 fillLayoutHole 11918ms 卡死的, 同样是历史 trade-off。先探针定位到**行**再动刀。探针两处构成**同帧差分**: v18 段末尾(v48 钉宽之后, 记 v18W) + v41 KVO 抢帧器(记 kvoW + 来源指纹 cvW/laidW/tcH)。同 tick 内读到不同值 ⇒ 中间有人写过; 跨 tick ⇒ SwiftUI pass 之间写的。段内零赋值零 invalidate*(与 v44/v46 同纪律), 指纹全部走既有只读属性与本闭包局部量(cvW 用 KVO 闭包内已有的局部量, laidW 用 v47 注入的 ios15LastLaidOutW), 不新增读取语句以免探针自己扰动布局。★本轮实踩三个**编译级**坑: (1) struct _V49W 声明在函数体内 → KVO 侧跨函数引用不到(局部类型跨函数不可见) ⇒ 已提到类型级; (2) 原想读 v46 的 attV46CachedWidth, 但那个 getter 声明在 **TableAttachment** 类里而探针在 SelectableMarkdownTextView 内 ⇒ 跨类访问, 编译失败 ⇒ 换成同类型的 laidW(问的都是「碎片按哪个宽排的」, 诊断力不减); (3) 指纹里的「排版宽」这项**连踩两次编译错误后整项删除**: 原写 `self.textContainer.bounds.width` ⇒ run#37139821021 `has no member 'bounds'`; 改写 `self.textContainer.lineFragmentWidth` ⇒ run#37141013946 `has no member 'lineFragmentWidth'`(它属于 TextKit2 的 NSTextLayoutManager)。两次都是**没查证就猜 API 名** —— 第一版我甚至在注释里论证它「比 bounds 更准」, 论证得越自信错得越彻底。**写注释不能代替查证。** 该语义已由 laidW(v47 注入的 ios15LastLaidOutW, v48 判据验证过)覆盖, 不再找替代。由此新增 scope_check_v49.py 的 E 层(API 存在性, 按接收者类型查成员) + verify_v49 对 bounds/lineFragmentWidth 的硬禁, 让编译器级错误改由判据在 CI 内拦。判据查不出编译问题, 这类坑只能靠 E 层(编译前)拦。0.5s 节流与 V44/V45/V46/V41 同周期。★登记必须排在 v48 之后(探针要读 v48 钉宽之后的值)")
-    # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_width_source_unify_v50,
+         MSG_V50_A)
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_slide_relayout_v50,
+         MSG_V50_C)
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")
     edit("Views/Chat/AIChatView.swift", fix_inputbar_kick, "v30-C: 输入栏假死自愈 — STALLED 时就地重建 composer host (草稿保留)")

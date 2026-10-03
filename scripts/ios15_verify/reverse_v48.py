@@ -201,8 +201,17 @@ print("=" * 60)
 print("D 类: 破坏 v47 / 前版(加法保护)")
 print("=" * 60)
 
+# ★缩进 12 而不是 16 —— v50-C 把回写提出了 `if _ios15WRegrabbed`。
+#   锚点若还写 16, replace 静默不命中 ⇒ sabotage 成了 no-op ⇒
+#   报"漏放", 而真相是"锚点失效"。这里显式自检。
+_D1_OLD = "            self.ios15LastLaidOutW = _realW2"
+if _D1_OLD not in INJECTED:
+    raise SystemExit(
+        "★D1 锚点失效: 回写行不在产物里(缩进变了?) ⇒ sabotage 根本没构造出来, "
+        "不是判据漏放。目标: %r" % _D1_OLD)
+
 run("D1 删 v47 的 ios15LastLaidOutW 回写",
-    INJECTED.replace("                self.ios15LastLaidOutW = _realW2", "// removed", 1),
+    INJECTED.replace(_D1_OLD, "// removed", 1),
     "碎片记忆失效 -> 判据每帧成立 -> 持续重排 = 闪屏源头")
 
 # D2/D3 破坏的是 **v47**, 不在 v48 段的判据范围内 —— v48 的段判据理应
