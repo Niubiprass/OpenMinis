@@ -5493,6 +5493,32 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
     /// 优先复用它, 保证测高与渲染严格同宽 —— 两端各自独立计算会在 SwiftUI 的
     /// 全宽(390)/内缩(358)布局态之间产生 390/358/326 三值分歧(log10-03 实证)。
     var ios15LastRenderContentW: CGFloat?
+    /// [V42-LATCH] 需求高度闩锁(带键精确缓存) —— 见函数 docstring 的完整推导。
+    ///
+    /// v41 实测(log10): KVO 抢帧器 94 次触发里**77 次(82%)读到的 needH 是 0**,
+    /// 于是补齐条件 `needH > 1` 直接跳过, superview 卡在 1123.7 / 1006.0 等值上
+    /// 恒定不变(多次采样同值), 末行持续被裁 → 用户症状「最后一段字卡住」。
+    ///
+    /// 根因: `ios15LastNeededH` 的唯一赋值点在 layoutSubviews 的
+    /// `if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1`
+    /// 内部。三道门任一不满足就永远是初始值 0; 而 KVO 抢帧器**不在这三道门里**,
+    /// 于是"抢帧器正常工作, 测量链没跟上"。
+    ///
+    /// 【为什么不取 max —— 这是个会造假空白的坑】
+    /// "流式输出下文本只增不减, 所以历史最大值就是当前需求高度" 这个假设**不成立**:
+    /// UITextView 会被复用去展示**更短的新内容**(滚动复用 / 消息切换 / 折叠展开)。
+    /// 那样旧长文本的 max(比如 2000.3)会把新短文本(真实需求 400)撑到 2000.3,
+    /// 凭空多出 1600pt 大片空白 —— 正是 v40 用户报过的症状。不能为了治卡字引入它。
+    ///
+    /// 所以闩锁是**带键的精确缓存**: 键 = (文本长度, textContainer 宽, 内容 hash)。
+    ///   键命中  -> 复用缓存高度, 不重新排版(零开销)
+    ///   键不符  -> 缓存对当前内容无效, 走 KVO 兜底自测重算并刷新键
+    ///   测量成功 -> **直接覆盖**(不是取 max), 因为每次成功测量都是权威值
+    /// 于是"只增不减"这个脆弱前提不再需要: 变长/变短/变宽/复用都被键覆盖。
+    var ios15LatchedNeedH: CGFloat = 0
+    var ios15LatchLen: Int = 0
+    var ios15LatchW: CGFloat = -1
+    var ios15LatchHash: Int = 0
     // [IOS15-FIX-CLIP v18] KVO 抢帧: SwiftUI 在自己的布局 tick 里把 superview 写成
     // 污染帧, 等 layoutSubviews 再修就来不及 —— 污染帧已经渲染出去一帧 = 闪字。
     // 这里 block-KVO superview.frame, 在它被写坏的同一调用栈内立刻改回 (CA 提交前),
@@ -5540,9 +5566,96 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // 屏幕渲染的是欠账高度, 末行被裁 → "字只剩一半/终端框不接结果"。
             //
             // 幂等 + 重入安全: 下面写 frame 时有 ios15KvoFixing 保护。
-            if self.ios15LastNeededH > 1, f.size.height + 0.5 < self.ios15LastNeededH {
+            // [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测 —— 见函数 docstring 的完整推导。
+            //
+            // v41 实测: KVO 94 次触发里 77 次(82%) needH=0, 补齐被跳过,
+            // superview 卡在 1123.7/1006.0 恒定不变。这里两件事:
+            //   1. 键命中 -> 直接用闩锁缓存高度(零排版开销)
+            //   2. 键不符 -> **KVO 自己测一次** —— 这条路径不经过
+            //      `!isScrollEnabled / findCollectionView / cvW>1` 那三道门,
+            //      所以测量链没跟上时也能拿到高度。宽度用 textContainer.size.width,
+            //      与排版实际用的宽严格一致, 保证测高与渲染同宽。
+            //
+            // 【为什么不用 max】闩锁若取历史最大值, 视图复用展示更短的新文本时
+            // 会把新文本撑到旧高度, 凭空造出大片空白(见声明处注释)。
+            //
+            // 【为什么要键】键命中才复用; 文本长度/宽度/内容任一变化都判定缓存
+            // 无效并重算。条件用逗号列表 = Swift 短路求值, 长度或宽度不符时
+            // 不会去算 hash, 省掉每帧的字符串哈希开销。
+            //
+            // 【为什么还要节流】键再精确, 流式输出下 len 也每帧都变, 必然次次
+            // 不命中 -> 次次 sizeThatFits。测量链本来就在排版, 叠加会翻倍,
+            // 正好加重"终端卡一下"。所以自测本身再限频 120ms。
+            let _v42Len = self.textStorage.length
+            let _v42TCW = self.textContainer.size.width
+            let _v42Now = CACurrentMediaTime()
+            // _v42SelfLast: 上次**自测**时刻(节流基准), 声明在 KVO 闭包体顶部
+            // 的局部变量区, 不进实例属性 —— KVO 闭包每帧新建, 但这个值需要跨帧,
+            // 所以放在闭包捕获不到的层级不行; 实际上 Swift 每次调用 observe 闭包
+            // 都是同一个 block 上下文, 局部 static 才是跨帧的稳定存储。
+            // 这里直接用 block 内的 static 结构体托管(见下), 避免误用局部变量。
+            struct _SelfLast { static var t: CFTimeInterval = 0 }
+            let _v42SelfLast = _SelfLast.t
+            var _v42Need = CGFloat(0)
+            if self.ios15LatchedNeedH > 1,
+               self.ios15LatchLen == _v42Len,
+               abs(self.ios15LatchW - _v42TCW) < 0.5,
+               self.ios15LatchHash == self.textStorage.mutableString.hash {
+                // [V42-LATCH] 缓存命中: 键与当前内容一致, 复用上次测出的高度。
+                _v42Need = self.ios15LatchedNeedH
+                struct _LatchLog { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                if _v42Now - _LatchLog.last > 0.5 {
+                    _LatchLog.last = _v42Now
+                    _LatchLog.n &+= 1
+                    NSLog("[V42-LATCH] hit needH=%.1f len=%d tcW=%.1f n=%u",
+                          _v42Need, _v42Len, _v42TCW, _LatchLog.n)
+                }
+            } else if _v42TCW > 1, _v42Len > 0, self.ios15LatchedNeedH > 1,
+                      _v42Now - _v42SelfLast < 0.12 {
+                // [V42-THROTTLE] 自测节流: 键不符但距上次自测不足 120ms。
+                //
+                // 【为什么必须节流】流式输出下 textStorage.length 每次都变, 键必然
+                // 不命中 -> 每次 KVO 触发都要 sizeThatFits 一次。而测量链
+                // (layoutSubviews) 本来就在做同样的排版, 不节流等于排版开销翻倍,
+                // **会正好加重用户报的"终端卡一下才显示"**。
+                //
+                // 宁可短暂用一个略旧的高度(流式增长下差异极小, 末行仍被补齐),
+                // 也不能每帧重排。布局收尾阶段键会重新命中, 精确值照常回来。
+                _v42Need = self.ios15LatchedNeedH
+                struct _ThrLog { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                if _v42Now - _ThrLog.last > 0.5 {
+                    _ThrLog.last = _v42Now
+                    _ThrLog.n &+= 1
+                    NSLog("[V42-THROTTLE] reuse needH=%.1f len=%d sinceSelf=%.3f n=%u",
+                          _v42Need, _v42Len, _v42Now - _v42SelfLast, _ThrLog.n)
+                }
+            } else if _v42TCW > 1, _v42Len > 0 {
+                // [V42-MISS] 缓存键不命中 -> 兜底自测。绕过三道门, 测量链
+                // 没跟上时也能拿到需求高度, 并顺手刷新键与缓存值。
+                let _fh = self.sizeThatFits(
+                    CGSize(width: _v42TCW, height: .greatestFiniteMagnitude)).height
+                if _fh > 1 {
+                    _v42Need = _fh
+                    self.ios15LatchedNeedH = _fh
+                    self.ios15LatchLen = _v42Len
+                    self.ios15LatchW = _v42TCW
+                    self.ios15LatchHash = self.textStorage.mutableString.hash
+                    _SelfLast.t = _v42Now
+                    struct _FbLog { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                    if _v42Now - _FbLog.last > 0.5 {
+                        _FbLog.last = _v42Now
+                        _FbLog.n &+= 1
+                        NSLog("[V42-MISS] selfMeasured needH=%.1f len=%d tcW=%.1f n=%u",
+                              _fh, _v42Len, _v42TCW, _FbLog.n)
+                    }
+                }
+            }
+            if _v42Need > 1 {
+                self.ios15LastNeededH = _v42Need
+            }
+            if _v42Need > 1, f.size.height + 0.5 < _v42Need {
                 var _hFix = f
-                _hFix.size.height = self.ios15LastNeededH
+                _hFix.size.height = _v42Need
                 self.ios15KvoFixing = true
                 obj.frame = _hFix
                 self.ios15KvoFixing = false
@@ -5555,26 +5668,26 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                     _KvoHit.last = _kh
                     _KvoHit.n &+= 1
                     NSLog("[V41-KVOHEIGHT] fixed svH=%.1f -> needH=%.1f debt=%.1f svW=%.1f n=%u",
-                          f.size.height, self.ios15LastNeededH,
-                          self.ios15LastNeededH - f.size.height, f.size.width, _KvoHit.n)
+                          f.size.height, _v42Need,
+                          _v42Need - f.size.height, f.size.width, _KvoHit.n)
                 }
                 // 补完立刻交棒: 下面的宽度修正必须基于新高度继续, 不能return。
                 f = _hFix
             }
             // [V41-KVOPOST] 即将提交的值(应为 358 x needH)。见 docstring「诊断」。
-            if self.ios15LastNeededH > 1, f.size.height + 0.5 >= self.ios15LastNeededH {
+            if _v42Need > 1, f.size.height + 0.5 >= _v42Need {
                 struct _KvoPost { static var last: CFTimeInterval = 0 }
                 let _kpo = CACurrentMediaTime()
                 if _kpo - _KvoPost.last > 0.5 {
                     _KvoPost.last = _kpo
                     NSLog("[V41-KVOPOST] sv=(%.1f,%.1f,%.1f,%.1f) needH=%.1f",
                           f.origin.x, f.origin.y, f.size.width, f.size.height,
-                          self.ios15LastNeededH)
+                          _v42Need)
                 }
             }
             // [V41-POLLED] polluted 判据增加**高度维度**: 宽度正常但高度欠账的帧
             // 也必须进修正分支, 不能被 `if !polluted { return }` 放过。
-            let _hDebt = self.ios15LastNeededH > 1 && f.size.height + 0.5 < self.ios15LastNeededH
+            let _hDebt = _v42Need > 1 && f.size.height + 0.5 < _v42Need
             let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt
             if !polluted {
                 if f.size.width > 200, f.origin.x > 0.5, f.size.width < cvW - 0.5 {
@@ -5596,7 +5709,7 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // polluted 之前补过一次, 这里是幂等重复, 防的是"宽度修正路径里
             // 顺带把高度带回去"。留着是因为这段是**真正写 frame** 的地方,
             // 任何绕过前面那段高度的路径都在这里被拦住。
-            if self.ios15LastNeededH > 1, fix.size.height + 0.5 < self.ios15LastNeededH {
+            if _v42Need > 1, fix.size.height + 0.5 < _v42Need {
                 // [V41-KVOFIXH-HIT] 兜底命中: 说明有路径绕过了前面的 V41-KVOHEIGHT,
                 // 或宽度修正把高度带回去了。节流 0.5s, 正常情况下不该频繁出现。
                 struct _FixH { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
@@ -5605,10 +5718,10 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                     _FixH.last = _fh
                     _FixH.n &+= 1
                     NSLog("[V41-KVOFIXH] rescue fixH=%.1f -> needH=%.1f debt=%.1f n=%u",
-                          fix.size.height, self.ios15LastNeededH,
-                          self.ios15LastNeededH - fix.size.height, _FixH.n)
+                          fix.size.height, _v42Need,
+                          _v42Need - fix.size.height, _FixH.n)
                 }
-                fix.size.height = self.ios15LastNeededH
+                fix.size.height = _v42Need
             }
             self.ios15KvoFixing = true
             obj.frame = fix
@@ -7615,6 +7728,34 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
 
         // [IOS15-FIX-CLIP] 老会话双边裁字修复: 容器/自身宽度钳回 + 强制重排。
         // 仅限不可滚动视图 (可滚动的代码块视图自管宽度/偏移, 不动)。
+            // [V42-GATE] 测量入口三道门的实际取值 — 见函数 docstring「诊断」。
+            //
+            // 【为什么必须打在这里】要区分"三道门哪一道没通", 就必须打在三道门
+            // **之前**。挂在里面的诊断在门关着时是哑的 —— v39/v40/v41 连续三次
+            // 把诊断挂错层, 连续三次误判成"代码没跑"。这条铁律不能再犯。
+            //
+            // 【Swift 编译坑·v42 实测踩到】这一段**不能**写成裸 `{ ... }`。
+            // 它的上一行是 v18 补丁的注释 + 一个已结束的语句, Swift 会把 `{`
+            // 解析成那个表达式的 **trailing closure**, 于是块内所有裸引用都被
+            // 要求显式 `self.`, 并且报 "closure expression is unused"。
+            // v42 第一次推送就是这样编译失败的(8 个 error, 全部集中在这段)。
+            // 修法两条同时上: (1) 全部引用加 `self.` 前缀; (2) 用 `do { }` 而不是
+            // 裸 `{ }` —— `do` 块是独立语句, 不可能被吸成 trailing closure。
+            do {
+                struct _GateLog { static var last: CFTimeInterval = 0 }
+                let _gn = CACurrentMediaTime()
+                if _gn - _GateLog.last > 1.0 {
+                    _GateLog.last = _gn
+                    let _gCV = self.findCollectionView()
+                    NSLog("[V42-GATE] scrollOff=%d cvNil=%d cvW=%.1f latched=%.1f latchLen=%d latchW=%.1f raw=%.1f storageLen=%lu",
+                          self.isScrollEnabled ? 0 : 1,
+                          _gCV == nil ? 1 : 0,
+                          _gCV?.bounds.width ?? -1,
+                          self.ios15LatchedNeedH, self.ios15LatchLen, self.ios15LatchW,
+                          self.ios15LastNeededH,
+                          UInt(self.textStorage.length))
+                }
+            }
             if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {
             // [IOS15-FIX-CLIP v14] 状态判定 + 修复。
             // 污染 (太宽 > cvW+1 或 x < -0.5): 气泡被 SwiftUI 居中推出屏幕 → 行首裁字,
@@ -7734,6 +7875,16 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 layoutManager.ensureLayout(for: textContainer)
             }
             ios15LastNeededH = _needH
+            // [V42-LATCH-SET] 刷新闩锁的键与值。**直接覆盖, 不是取 max** ——
+            // 每次成功测量都是当前内容的权威值; 取 max 会在视图复用时留下
+            // 旧长文本的高度, 把新短文本撑出大片空白。详见 ios15LatchedNeedH 声明处。
+            //
+            // 【Swift 编译坑】这里同样可能落在 trailing closure 语境里, 所以
+            // 属性引用一律写 `self.`, 与上面的 V42-GATE 保持同一防御口径。
+            self.ios15LatchedNeedH = _needH
+            self.ios15LatchLen = self.textStorage.length
+            self.ios15LatchW = self.textContainer.size.width
+            self.ios15LatchHash = self.textStorage.mutableString.hash
             if textStorage.length > 0, _needH > 1 {
                 if frame.size.height < _needH - 0.5 {
                     var _hf = frame
