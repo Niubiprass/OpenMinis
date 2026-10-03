@@ -1910,7 +1910,7 @@ def fix_left_clip_diag_superview(t):
             // 丢弃 48 次) → 宽度修正进不来 → 容器宽停在旧值 → 文字不换行 → 横向裁切。
             // v26 改用 UITextView.sizeThatFits 标准 API 测量: 不改变 textContainer 状态、
             // 不触发重排风暴, 同样能拿到不受当前容器高限制的真实需求高度。
-            let _realW2 = max(200.0, _cvW - 32)
+            let _realW2 = _realW
             var _ios15WRegrabbed = false
             if abs(textContainer.size.width - _realW2) > 0.5 {
                 textContainer.size.width = _realW2
@@ -2345,12 +2345,12 @@ def fix_realw2_v33(t):
     """v33: 修正 v28 遗留的 _realW2 硬编码 cvW-32 — 治"边框裁字/卡字/终端框卡内容"。
 
     log17 实证 (v32 包): 气泡型 cell 的 superview 实为 326@16 (frame=(0,0,326,25.33)),
-    而 v28 在渲染函数末尾注入的 `let _realW2 = max(200.0, _cvW - 32)` = 358 会把
+    而 v28 在渲染函数末尾注入的 `let _realW2 = _realW` = 358 会把
     textContainer 强行撑到 358 —— 塞进 326 宽的框里, 右侧 32pt 溢出被裁 → "边框裁字/卡字";
     终端/代码框(内部再嵌一层)同理被卡。v32 已把 _realW 与测高宽改为 per-cell contentW,
     但 _realW2 是该函数最后一次赋值, 会覆盖 v32 → 必须一并改为 contentW, 三者才一致。
     """
-    OLD = """            let _realW2 = max(200.0, _cvW - 32)"""
+    OLD = """            let _realW2 = _realW"""
     NEW = """            // [V33-WIDTH2] 与 _realW/测高宽 同一式子(视图宽 - 内边距): 气泡型 326、贴边型 358
             // 各取真实宽, 绝不把 326 的框撑到 358 (那会右侧溢出裁字)。不再硬编码 cvW-32。
             let _realW2 = max(200.0, min(bounds.width, _cvW) - textContainerInset.left - textContainerInset.right)"""
@@ -2359,7 +2359,7 @@ def fix_realw2_v33(t):
     if OLD not in t:
         raise RuntimeError(
             "[fix_realw2_v33] _realW2 锚点未命中 —— 上游 SelectableMarkdownView 里没有 "
-            "`let _realW2 = max(200.0, _cvW - 32)` 这行。它是渲染函数最后一次宽度赋值, "
+            "`let _realW2 = _realW` 这行。它是渲染函数最后一次宽度赋值, "
             "不改它就会覆盖 v32 的 contentW, 把 326 宽的气泡撑到 358 → 溢出裁字。"
         )
     return t.replace(OLD, NEW, 1)
@@ -4694,9 +4694,17 @@ def fix_width_reflow_v47(t):
             "上游 v18 的测高段结构变了, 必须更新 OLD2 后再发版")
     t = t.replace(OLD2, NEW2, 1)
 
-    # 新增实例属性(挨着 ios15LastRenderContentW, 同一真相源家族)
-    DECL_OLD = """    var ios15LastRenderContentW: CGFloat?"""
-    DECL_NEW = """    var ios15LastRenderContentW: CGFloat?
+    # 新增实例属性。
+    #
+    # 【锚点为什么是 ios15LastSaneSVFrame 而不是 ios15LastRenderContentW】
+    # 后者是 **v34** 才注入的属性, 而 v47 排在 v46 之后 —— 此刻它根本还不存在,
+    # 拿它当锚点必然 RuntimeError(run#37129575066 就是这么崩的, 死在第 12 步
+    # 「第三阶段」, 连自检都没到)。ios15LastSaneSVFrame 是 v18 同批注入的,
+    # 在 v47 之前一定存在。
+    # 教训: 选锚点只能挑**排在本版之前**就注入的符号, 不能挑"同一真相源家族"
+    # 里看着更贴切的那个 —— 家族关系是语义, 注入时序才是硬约束。
+    DECL_OLD = """    var ios15LastSaneSVFrame: CGRect?"""
+    DECL_NEW = """    var ios15LastSaneSVFrame: CGRect?
     /// [V47-WSTATE] 行碎片**上一次定型时**用的排版宽。见 fix_width_reflow_v47
     /// 的 docstring: 容器宽会被 SwiftUI 每帧推回全屏 390, 而需求高度恒按净宽
     /// 358 算, 两者不同源 → 行数不一致 → usedH 少 44~67pt(空壳, 表现为
@@ -4705,7 +4713,7 @@ def fix_width_reflow_v47(t):
     var ios15LastLaidOutW: CGFloat?"""
     if DECL_OLD not in t:
         raise RuntimeError(
-            "fix_width_reflow_v47: 未找到 ios15LastRenderContentW 声明锚点")
+            "fix_width_reflow_v47: 未找到 ios15LastSaneSVFrame 声明锚点")
     t = t.replace(DECL_OLD, DECL_NEW, 1)
 
     verify_width_reflow_v47(t)
@@ -4767,6 +4775,17 @@ def verify_width_reflow_v47(t):
 
     # 3. ★位置: 必须紧跟既有钳宽之后、ensureLayout 之前/之后。
     #    判据: 重排判据里出现 _realW2(既有局部量), 而 _realW2 的定义在锚点里。
+    #
+    #    【锚点形态踩坑记录 —— 这条比看起来重要】本判据先后试过两个形态:
+    #      · `let _realW2 = _realW`               ← **对的**
+    #      · `let _realW2 = _realW` ← 错的
+    # 起因是拿一份**只跑到 v43 就中断**的半截产物当基线, 里面 v43-A"就地改宽"
+    # 刚把这一行改成 max(...) 而 v34 还没跑, 于是误以为形态变了, 把 OLD 锚点
+    # 和判据一起改了 —— 结果完整链跑完(v34 又改回 _realW)反而找不到锚点。
+    # 两次教训:
+    #   1. **基线必须是从干净上游跑完的完整链产物**, 半截产物比错误基线更危险,
+    #      因为它能自洽地通过本地验证。
+    #   2. 中间态(任何两版之间)不是产物形态, 判据不能锚在中间态上。
     _i_w = t.find("let _realW2 = _realW")
     _i_chk = t.find("if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {")
     _i_set = t.find("self.ios15LastLaidOutW = _realW2")

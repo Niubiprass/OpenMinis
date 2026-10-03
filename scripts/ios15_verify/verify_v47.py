@@ -122,6 +122,25 @@ ck("V47-WSTATE 文档标记唯一",
    t.count("/// [V47-WSTATE]") == 1)
 
 # ---- 3. 位置: _realW2 定义 < 重排判据 < 回写 ----
+# 【锚点形态踩坑记录 —— run#37129575066 之死, 两次翻版】
+#   本判据的 find 串在 `_realW` 与 `max(200.0, _cvW - 32)` 之间来回改了两轮,
+#   两次都是被**错误的基线**骗的 —— 教训比结论重要:
+#
+#   第一轮: 基线是"旧 v46 产物 + 追加 v47", 锚点恰好对得上 → 本地 28/28 全绿,
+#           而 CI 从干净上游重跑时崩在 RuntimeError(锚点失配)。
+#   第二轮: 复现时链只跑到 v43 就被我掐了, 拿这份**半截产物**看形态, 见到
+#           `max(200.0, _cvW - 32)`(v43-A 刚就地改宽、v34 还没改回去),
+#           于是反向把 OLD 锚点也改成 max(...) —— 结果完整链跑完又找不到锚点。
+#           **半截产物比错误基线更危险: 它能自洽地通过本地验证, 因为
+#           "半截"这件事本身不写在文件里。**
+#
+#   正确形态是 `let _realW2 = _realW`: v34 又把它从 max(...) 改回了 _realW
+#   (见 ios15_fallback.py 里 fix_width_sync_v34 的 NEW)。
+#
+#   纪律: (1) 基线必须是从干净上游跑完的**完整链**产物;
+#         (2) 中间态(任何两版之间)不是产物形态, 判据不能锚在中间态上;
+#         (3) 判据锚点要与注入函数的 OLD 锚点**逐字一致** —— 两处不同步就会
+#             出现"本地全绿、CI 崩"这种最难查的组合。
 _i_w = t.find("let _realW2 = _realW")
 _i_chk = t.find("if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {")
 _i_set = t.find("self.ios15LastLaidOutW = _realW2")
@@ -217,7 +236,7 @@ for _n, _cond in (
     ("layoutManager 存在(重排调用接收者)", "layoutManager" in t),
     ("ensureLayout(for:) 存在", "ensureLayout(for:" in t),
     ("CGFloat 可用", "CGFloat" in t),
-    ("_realW 是同作用域局部量", "let _realW2 = _realW" in t),
+    ("_realW2 复用渲染宽 v34 的改写形态", "let _realW2 = _realW" in t),
 ):
     ck(_n, _cond)
 
