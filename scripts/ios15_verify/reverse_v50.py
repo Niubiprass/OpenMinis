@@ -166,6 +166,29 @@ def s14(x):
     return x.replace("laidW=%.1f regrabbed=%d len=%d", "w=%.1f len=%d", 1)
 
 
+def s17(x):
+    """E: NSLog 变参实参传 Optional —— run#37146140252 的**真实**死因。
+
+    ★这条不是假想: run#123 就红在"编译 App", 唯一原因是
+        NSLog("[V50-LAIDW] laidW=%.1f ...", self.ios15LastLaidOutW, ...)
+      而 ios15LastLaidOutW 是 `CGFloat?` ⇒ C 变参无法桥接 Optional。
+      它能一路走到 CI 才红, 正是因为所有既有判据都只查"字段齐不齐"、
+      "API 存不存在", 没人查**实参类型**。⇒ scope 新增 E 组。"""
+    old = ("NSLog(\"[V50-LAIDW] laidW=%.1f regrabbed=%d len=%d\",\n"
+           "                          self.ios15LastLaidOutW ?? -1,")
+    if old not in x:
+        raise RuntimeError("S17 锚点找不到(诊断块的解包已被改动?)")
+    return x.replace(old, old.replace("?? -1", ""), 1)
+
+
+def s18(x):
+    """E: 把三元表达式换成 Optional 参与变参(同族, 换一种写法藏同一个错)。"""
+    old = "_ios15WRegrabbed ? 1 : 0, self.textStorage.length)"
+    if old not in x:
+        raise RuntimeError("S18 锚点找不到")
+    return x.replace(old, "self.ios15LastLaidOutW, self.textStorage.length)", 1)
+
+
 CASES = [
     ("S1  probe 路径也用钉宽净宽(R1 首次真漏)", s1, "probe"),
     ("S2  钉宽宽漏 -1 余量", s2, "-1"),
@@ -183,6 +206,8 @@ CASES = [
     ("S14 诊断字段被删", s14, "缺诊断字段"),
     ("S15 提前取值哨兵改成 200_000", s15, "哨兵"),
     ("S16 提前取值声明挪到使用之后", s16, "use before declaration"),
+    ("S17 NSLog 变参传 Optional(run#123 真实死因)", s17, "Variadic function"),
+    ("S18 三元表达式换成 Optional(同族藏法)", s18, "Variadic function"),
 ]
 
 

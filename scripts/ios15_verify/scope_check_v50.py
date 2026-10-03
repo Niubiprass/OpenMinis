@@ -186,6 +186,104 @@ def main():
             fail("%s 段花括号不配平(左 %d 右 %d)"
                  % (name, code.count("{"), code.count("}")))
 
+    # ---- E. NSLog 变参实参类型(本层最有价值的一条, 被编译错误逼出来)----
+    # ★★ run#37146140252 红在"编译 App", 唯一原因是:
+    #     NSLog("[V50-LAIDW] laidW=%.1f ...", self.ios15LastLaidOutW, ...)
+    #   ^ `ios15LastLaidOutW` 声明是 `CGFloat?`, 而 **NSLog 是 C 变参函数**,
+    #     Swift 不能把 Optional 桥接进变参:
+    #         error: 'NSLog' is unavailable: Variadic function is unavailable
+    #         warning: provide a default value to avoid this warning   (×3)
+    #
+    #   ★为什么 D 组没拦住: D 只查 "NSLog 有没有被 do 包住",
+    #     A 组只查 "API 名字存不存在" —— 两者都不看**实参类型**;
+    #     "字段齐全"那组查的是字符串里有 `laidW=`, 那个当然有。
+    #     ⇒ 判据查的是"字段齐不齐", 编译要的是"类型对不对"。
+    #     本机没有 swiftc, 这类问题本地一律看不见 —— scope 这层的
+    #     存在意义就是把编译期风险挪到本地判据上。
+    #
+    # 查法(逐实参, 不按格式串配对):
+    #   ★第一版按"占位符数 vs 实参数"配对, 结果 **0 处命中** ——
+    #     因为实参里带三元表达式与函数调用, 顶层逗号切分后数量对不上,
+    #     全部被 `continue` 跳过, 判据却输出"0 处"看着像通过。
+    #     那是**第三次**"看起来在跑、实际没钉住"(R1 引用/声明、
+    #     R3 计数凭推算, 这次是配对逻辑)。
+    #   ⇒ 改为: 把每个实参里的标识符逐个拿去查声明表, **不要求配平**。
+    #     实参个数对不上时宁可多查, 不可漏查。
+    _decls = {}
+    for _m in re.finditer(
+            r"^\s*(?:(?:public|private|internal|fileprivate)\s+)?"
+            r"(?:static\s+)?(?:var|let)\s+(\w+)\s*:\s*([^=\n]+?)\s*(?:=[^=]|$)",
+            t, re.M):
+        _decls[_m.group(1)] = _m.group(2).strip()
+    _checked = 0
+    for _cm in re.finditer(r"NSLog\(", t):
+        # 括号配平扫出调用体(不能用正则 `.*?\)` —— 实参里有嵌套括号)
+        _s, _d, _i, _instr = _cm.end(), 1, _cm.end(), False
+        while _i < len(t) and _d > 0:
+            _c = t[_i]
+            if _instr:
+                if _c == "\\":
+                    _i += 2
+                    continue
+                if _c == '"':
+                    _instr = False
+            else:
+                if _c == '"':
+                    _instr = True
+                elif _c == "(":
+                    _d += 1
+                elif _c == ")":
+                    _d -= 1
+            _i += 1
+        if _d != 0:
+            continue
+        _body = t[_s:_i - 1]
+        _fm = re.match(r'\s*"([^"]*)"\s*(.*)$', _body, re.S)
+        if not _fm:
+            continue
+        _rest = _fm.group(2).strip()
+        if not _rest.startswith(","):
+            continue
+        _args = _rest[1:]
+        # 顶层逗号切分(跳字符串与嵌套括号)
+        _parts, _pd, _cur, _si = [], 0, "", False
+        for _ch in _args:
+            if _si:
+                _cur += _ch
+                if _ch == '"':
+                    _si = False
+                continue
+            if _ch == '"':
+                _si = True
+                _cur += _ch
+                continue
+            if _ch in "([{":
+                _pd += 1
+            elif _ch in ")]}":
+                _pd -= 1
+            if _ch == "," and _pd == 0:
+                _parts.append(_cur.strip())
+                _cur = ""
+            else:
+                _cur += _ch
+        if _cur.strip():
+            _parts.append(_cur.strip())
+        for _a in _parts:
+            _checked += 1
+            # ★`?? -1` / `!` 是在**解包**, 那是合法写法(本版自己的修法)。
+            #   判据必须认得它 —— 否则修好了反而报红。
+            _unwrapped = "??" in _a or "!" == _a.strip()[-1:]
+            if _unwrapped:
+                continue
+            for _id in re.findall(r"\b([A-Za-z_]\w*)\b", _a):
+                _ty = _decls.get(_id)
+                if _ty and _ty.endswith("?"):
+                    fail("NSLog 变参实参含可选类型 `%s: %s`(在 %r) —— C 变参"
+                         "函数无法桥接 Optional, 编译会报 'NSLog is "
+                         "unavailable: Variadic function is unavailable'。"
+                         "修法: 实参处解包(`%s ?? -1`)" % (_id, _ty, _a[:40], _id))
+                    break
+
     # ---- 诊断字段(装机靠它确认) ----
     # ★这里**必须查原 seg 而不是 strip_comments 后的**: 字段名(如 `laidW=`)
     #   就住在 NSLog 的字符串字面量里, 而 strip_comments 会把字面量替换成 `""`
@@ -202,7 +300,8 @@ def main():
         print("  scope BAD(%d 条)" % len(FAILS))
         return 1
     print("  scope OK ✅ v50 编译级检查通过 (A API存在性 / B 跨类限定 / "
-          "C 段内零危险写 / D do 块完整)")
+          "C 段内零危险写 / D do 块完整 / E NSLog 变参可选类型 %d 个实参)"
+          % _checked)
     return 0
 
 

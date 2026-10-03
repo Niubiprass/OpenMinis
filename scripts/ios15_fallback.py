@@ -6051,6 +6051,21 @@ def fix_slide_relayout_v50(t):
     #     放在 v47 段外即可, 语义完全不变(同一帧、同一批值)。
     #   纪律: **后版往共享段里插代码时, 先看前版的"纯度判据"覆盖到哪里。**
     ANCHOR2 = """            ios15LastNeededH = _needH"""
+    # ★★ `self.ios15LastLaidOutW` 必须**解包**后再传给 %.1f ——
+    #   它的声明是 `var ios15LastLaidOutW: CGFloat?`(**可选**), 而
+    #   NSLog 是 C 变参函数, Swift 不能把 Optional 桥接进变参 ⇒ 编译失败:
+    #       error: 'NSLog' is unavailable: Variadic function is unavailable
+    #       warning: provide a default value to avoid this warning  (×3)
+    #   这就是 run#37146140252 红在"编译 App"的**唯一**原因。
+    #
+    #   ★判据为什么没拦住(本轮第三次"看起来在跑、实际没钉住"):
+    #     判据查的是"诊断字段齐全"(`laidW=` / `regrabbed=` / `len=`),
+    #     字段在字符串里, 齐全 ⇒ 绿。而**类型对不对**是编译期的事,
+    #     判据完全没查 —— 本机没有 swiftc(scope 那层只能查 API 存在性)。
+    #   ⇒ 纪律: **判据查字段齐全, 不等于查类型正确**; 凡"字符串里有的",
+    #     都要再问一句"那个占位符要的类型对不对"。
+    #   `?? -1` 而不是 `!`: 诊断绝不能因为解包失败而崩, 且 -1 恰好就是
+    #   v49 实测的那个坏值, 装机后一眼能认出来。
     NEW2 = ANCHOR2 + """
             // [V50-LAIDW-DIAG] 纯诊断: 确认记忆这次真的写进去了
             // (v49 实测 138/143 是 -1, 装机后这里应恒为 358)。
@@ -6062,7 +6077,7 @@ def fix_slide_relayout_v50(t):
                 if _lw - _LwDiag.last > 0.5 {
                     _LwDiag.last = _lw
                     NSLog("[V50-LAIDW] laidW=%.1f regrabbed=%d len=%d",
-                          self.ios15LastLaidOutW,
+                          self.ios15LastLaidOutW ?? -1,
                           _ios15WRegrabbed ? 1 : 0, self.textStorage.length)
                 }
             }"""

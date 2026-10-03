@@ -1016,7 +1016,7 @@ jobs:
           if grep -q "fix_width_source_unify_v50" "$SCRIPT_DIR/ios15_fallback.py" \
              && grep -q "fix_slide_relayout_v50" "$SCRIPT_DIR/ios15_fallback.py" ; then
             if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v50.py" . ; then
-              echo "✅ v50 就位 (A' 排版宽与测高宽同源: v18 钉宽同处同帧写入 TableAttachment.ios15PinnedW, attachmentBounds 优先取它 —— v49 实测 cachedW=389 对 tcW=390 占 78/86, 源头就是 floor(lineFrag.width)-1 读到了脏宽; floor(w)-1 那个 -1 是 UIKit 防 _fillLayoutHole 的既有约定, 原样保留。★C 滑动重排记忆: laidW=-1 曾占 138/143, 因记忆被关在 if _ios15WRegrabbed 里而滑动时容器宽恰好已是目标宽 —— 现改为无条件写, ensureLayout 仍留在 if 内。★三层判据: core(A' 三条红线 + probe 路径数据流检查 / C 缩进层级判定) + scope(编译级 4 层: A API存在性 / B 跨类限定 / C 段内零危险写 / D do 块完整) + sab(判据自证 16 条, 含 S5 声明被删 / S15 哨兵不一致 / S16 use-before-declaration 三条本轮真实漏网); probe 路径(100_000 哨兵)完全不走钉宽净宽, 末行被裁修复不回退)"
+              echo "✅ v50 就位 (A' 排版宽与测高宽同源: v18 钉宽同处同帧写入 TableAttachment.ios15PinnedW, attachmentBounds 优先取它 —— v49 实测 cachedW=389 对 tcW=390 占 78/86, 源头就是 floor(lineFrag.width)-1 读到了脏宽; floor(w)-1 那个 -1 是 UIKit 防 _fillLayoutHole 的既有约定, 原样保留。★C 滑动重排记忆: laidW=-1 曾占 138/143, 因记忆被关在 if _ios15WRegrabbed 里而滑动时容器宽恰好已是目标宽 —— 现改为无条件写, ensureLayout 仍留在 if 内。★三层判据: core(A' 三条红线 + probe 路径数据流检查 / C 缩进层级判定) + scope(编译级 5 层: A API存在性 / B 跨类限定 / C 段内零危险写 / D do 块完整 / E NSLog 变参可选类型 109 实参) + sab(判据自证 18 条, 含 S5 声明被删 / S15 哨兵不一致 / S16 use-before-declaration / S17+S18 NSLog 变参传可选类型(run#123 真实死因)); probe 路径(100_000 哨兵)完全不走钉宽净宽, 末行被裁修复不回退)"
             else
               echo "❌ v50 异常 (见上方 ci_assert_v50.py 的 core/scope/sab 三行)"
               echo "   —— ★core A' BAD: 三条红线之一被破。R1 probe 路径误用钉宽净宽"
