@@ -18,6 +18,13 @@ t.index(...) 抛 ValueError, ios15_fallback 整个崩在第三阶段:
 
 ⇒ 往后凡是"注入锚点依赖前序补丁产物"的, 登记顺序本身就是一条判据:
   必须在一个**只含 v41、不含 v42** 的中间产物上验一次 v44 会不会崩。
+
+【本地该用哪个基线 —— 这是本测试最实用的一条】
+仓库里的 `src/ios` 存的是**干净未打补丁的上游源码**（不含 V41-KVOHEIGHT /
+V42-LATCH / V43-NETW 任何标记）。把它整个复制到临时目录, 塞进
+scripts/ios15_fallback.py, 按 main() 顺序跑一遍, 才是 CI 的真实条件。
+`/tmp/ci_v4x` 那些上一版流水线产物**不能用**: 它们已经打过 v41/v42/v43,
+任何登记顺序都找得到锚点, 恰好精确掩盖顺序依赖这一类 bug。
 """
 import os
 import sys
@@ -27,6 +34,10 @@ ROOT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/ci_v44_pre"
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       "..", "ios15_fallback.py")
 SCRIPT = os.path.normpath(SCRIPT)
+# 干净上游源码的SelectableMarkdownView（未打任何补丁）
+CLEAN_MD = os.path.join(os.path.dirname(SCRIPT), "..", "src", "ios",
+                        "Views", "Chat", "SelectableMarkdownView.swift")
+CLEAN_MD = os.path.normpath(CLEAN_MD)
 
 ok = 0
 bad = []
@@ -85,34 +96,56 @@ ck("KVOPOST 锚点缺失时给出可读错误",
 ck("V41-KVOHEIGHT 锚点缺失时给出可读错误",
    "找不到 V41-KVOHEIGHT 补高日志" in vsrc)
 
-# ---- 3. 在"只含 v41、不含 v42"的中间产物上跑一次 ----
-# 构造法: 从干净上游拿 SelectableMarkdownView, 只打 v41, 然后直接调 v44。
-# 若登记顺序有依赖, 这里就会以 ValueError/RuntimeError 崩掉。
-MD = os.path.join(ROOT, "src/ios/Views/Chat/SelectableMarkdownView.swift")
-if os.path.exists(MD):
+# ---- 3. 在**干净上游源码**上按 main() 顺序真跑一遍 ----
+# 这才是 CI 的真实条件。run#37118226923 之前所有本地验证都用的旧产物,
+# v42 早被打过, 于是无论登记顺序都找得到锚点 —— 顺序依赖被完整掩盖。
+# 这里换成干净源码: 先打 v41, 再打 v42, 最后打 v44, 三步必须全部成功。
+if os.path.exists(CLEAN_MD):
     import importlib.util
-    spec = importlib.util.spec_from_file_location("fb_order", SCRIPT)
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
-    t = open(MD, encoding="utf-8").read()
-    # 剥掉 v42 留下的痕迹, 模拟"v42 还没注入"的中间态
-    stripped = t.replace("self.ios15LastNeededH = _v42Need", "self.ios15LastNeededH = _vXXNeed")
-    if stripped == t:
-        # 该产物本来就没有 v42 痕迹(干净上游), 直接可用
-        stripped = t
+    import tempfile
+    import shutil
+    spec = importlib.util.spec_from_file_location("fb_order2", SCRIPT)
+    m2 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m2)
+    clean = open(CLEAN_MD, encoding="utf-8").read()
+    # 前置: 干净源码里不该有**v42 特有的**痕迹, 否则基线选错了。
+    # 【别查错字段】ios15LastNeededH 是**上游自带**的(上游 v18 就用它在记needH,
+    #   声明在 5391 行 `var ios15LastNeededH: CGFloat = 0`), 不是我们补丁引入的。
+    #   真正的判据是 v42 注入的那个**带 self. 的 KVO 内赋值点**:
+    #   `self.ios15LastNeededH = _v42Need` —— 上游是 `ios15LastNeededH = _needH`(无 self.)。
+    ck("基线是干净上游(不含 V41-KVOHEIGHT)", "V41-KVOHEIGHT" not in clean,
+       "这个文件已经打过补丁了, 不能当顺序回归的基线")
+    ck("基线是干净上游(不含 v42 的 KVO 赋值点)",
+       "self.ios15LastNeededH = _v42Need" not in clean,
+       "v42 已经打过, 顺序回归会失去意义")
+
+    steps = []
+    t = clean
     try:
-        m.fix_diag_textframe_v44(stripped)
-        ck("在'缺 v42 赋值点'的产物上, v44 给出可读错误而非裸 ValueError", False,
-           "竟然注入成功了 —— 说明 v44 不依赖 v42, 顺序判据过严?")
-    except RuntimeError as e:
-        msg = str(e)
-        ck("缺 v42 赋值点时抛 RuntimeError(不是裸 ValueError)", True)
-        ck("错误消息点明是登记顺序问题", "登记排在了 v42" in msg, msg[:90])
-    except ValueError as e:
-        ck("缺 v42 赋值点时抛 RuntimeError(不是裸 ValueError)", False,
-           "仍是裸 ValueError: %s" % e)
+        t = m2.fix_kvo_height_clamp_v41(t)
+        steps.append("v41")
+        t = m2.fix_needh_latch_v42(t)
+        steps.append("v42")
+        t = m2.fix_diag_textframe_v44(t)
+        steps.append("v44")
+        ck("干净源码上按 v41→v42→v44 顺序注入成功", True)
+    except Exception as e:  # noqa: BLE001
+        ck("干净源码上按 v41→v42→v44 顺序注入成功", False,
+           "卡在 %s: %s: %s" % (steps[-1] if steps else "起点",
+                                type(e).__name__, str(e)[:120]))
+    if len(steps) == 3:
+        # 位置必须正确: v42赋值 < v41补高日志 < v44诊断 < KVOPOST
+        a = t.find("self.ios15LastNeededH = _v42Need")
+        b = t.find('NSLog("[V41-KVOHEIGHT]')
+        c = t.find("// [V44-TEXTFRAME] 见函数 docstring")
+        d = t.find("// [V41-KVOPOST]")
+        ck("干净源码上位置正确 v42 < v41 < v44 < KVOPOST",
+           -1 not in (a, b, c, d) and a < b < c < d,
+           "a=%d b=%d c=%d d=%d" % (a, b, c, d))
+        ck("干净源码上诊断块只有一段",
+           t.count('NSLog("[V44-TEXTFRAME]') == 1)
 else:
-    ck("产物存在(跳过顺序实测)", False, MD)
+    ck("干净上游源码存在(跳过实测)", False, CLEAN_MD)
 
 print("顺序回归检查: %d/%d 通过" % (ok, ok + len(bad)))
 if bad:
@@ -120,4 +153,4 @@ if bad:
     for b in bad:
         print("  ✗ " + b)
     sys.exit(1)
-print("✅ v44 登记顺序正确, 且缺锚点时报可读错误")
+print("✅ v44 登记顺序正确, 干净源码上可完整注入")
