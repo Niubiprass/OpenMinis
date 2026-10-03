@@ -5492,6 +5492,12 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
     }
 
     var ios15LastSaneSVFrame: CGRect?
+    /// [V47-WSTATE] 行碎片**上一次定型时**用的排版宽。见 fix_width_reflow_v47
+    /// 的 docstring: 容器宽会被 SwiftUI 每帧推回全屏 390, 而需求高度恒按净宽
+    /// 358 算, 两者不同源 → 行数不一致 → usedH 少 44~67pt(空壳, 表现为
+    /// "终端框盖住上面的字")。本属性让 v18 能察觉"排版宽 ≠ 目标宽"并补一次
+    /// 重排。稳态下恒等于 _realW2, 不触发任何额外开销。
+    var ios15LastLaidOutW: CGFloat?
     // [IOS15-FIX-CLIP v14] 渲染端算出的实际需求高度 (usedRect + 上下 inset)。
     // 老会话 cell 高度欠账 (如 286 字符只给 252pt) → 半截字; SwiftUI 把 frame 高
     // 拉回欠账值时, 用它检出并重撑。
@@ -8041,6 +8047,28 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 textContainer.size.width = _realW2
                 _ios15WRegrabbed = true
             }
+            // [V47-REWRAP] log16 归因: 行碎片"按 390 排、需求高度按 358 算"。
+            // 容器被 SwiftUI 每帧推回全屏 390, 于是同一段文字在两个宽度下
+            // 排出的**行数不同**: 390 宽行少、358 宽行多。usedH 追不上 needH,
+            // 差出的 44~67pt 是**空壳**(实测 tcH-needH 恒 -8.0 说明容器本身
+            // 没问题), 下一个视图就画在空壳上 —— 用户看到的"终端框盖住上面的字"。
+            //
+            // 原来的 `_ios15WRegrabbed` 只表示"**有没有改过容器宽**", 不表示
+            // "**行碎片有没有按目标宽重排过**"。`invalidateLayout` 才是让碎片
+            // 按新宽重排的那一步; 而 SwiftUI 每帧把容器宽推回全屏 390(实测
+            // tcW 恒为 390), 当某帧没有再走 v18 时, 碎片就停在旧宽上,
+            // 而 `_needH` 恒按 358 算 —— **两个数不同源**。
+            //
+            // 修法: 把重排判据从"tcW 此刻是否偏了"换成"**上次排版用的宽是否
+            // 等于目标宽**"。只在两者不等时多排一次, 稳态下零额外开销; 排完
+            // 立刻记下, 下帧相等则不进 if → 幂等, 不会每帧重排。
+            //
+            // **不新增任何宽度写入点**(仍只有上面那两处) —— v13/v34 反复因
+            // 抢宽引起闪屏与整体缩小, 那是改钳宽翻的车, 这里只加同宽重排。
+            // **不碰高度** —— v45 的 tvH 补高已实测有效(debt 全 0)。
+            if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {
+                _ios15WRegrabbed = true
+            }
             // [IOS15-FIX-RELC v28] 抢回宽度后必须强制重排。log11 实证: SwiftUI poll 每帧把
             // 容器宽打回 390 (cvW=390), TextKit 行碎片按 ~374pt 排版; v18 抢回 358 时仅改
             // textContainer.size 而不 invalidate, 旧行碎片不会被重排 → 358 视口裁掉行尾
@@ -8053,6 +8081,8 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             let _needH = sizeThatFits(CGSize(width: _realW2, height: .greatestFiniteMagnitude)).height
             if _ios15WRegrabbed {
                 layoutManager.ensureLayout(for: textContainer)
+                // [V47-REWRAP] 行碎片已按 _realW2 定型, 记下来供下次比对。
+                self.ios15LastLaidOutW = _realW2
             }
             ios15LastNeededH = _needH
             // [V42-LATCH-SET] 刷新闩锁的键与值。**直接覆盖, 不是取 max** ——
