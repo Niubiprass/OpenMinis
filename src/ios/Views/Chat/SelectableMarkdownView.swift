@@ -1983,6 +1983,24 @@ final class TableAttachment: NSTextAttachment {
     /// [ios_session_open_last_cell_occluded]
     nonisolated(unsafe) static var narrowestRealWidth: CGFloat = 380
 
+    /// [V50-PINW] v18 段钉宽后的**目标净宽**(0 = 从未钉过)。
+    ///
+    /// 【为什么需要它】v49 归因(minis-2026-10-04 2.log): 钉宽 143/143 生效,
+    /// 但下一 tick 就被 attachment 链按 `lineFrag.width`(= 脏宽 390) 推回。
+    /// `lineFrag.width` 由 UIKit 合成, 读的是**当前** textContainer 宽 ——
+    /// 而 v18 的钉宽写在 layoutSubviews 内, **时序上晚于** UIKit 问宽度,
+    /// 于是 attachment 每次拿到的都是没被钉的 390(实测 usableWidth=389)。
+    /// 测高链走 netW=358(147/147 零例外), 排版链走 389 ⇒ 两条链不同源,
+    /// 行碎片按 389 排而 needH 按 358 算, 差出 75pt 空壳(用户看到的卡字)。
+    ///
+    /// 【形态与 narrowestRealWidth 同构】刻意沿用既有的
+    /// `nonisolated(unsafe) static var` 形态 —— 它是本类里"跨实例共享
+    /// 宽度口径"的既有先例(见其上方的 [ios_session_open_last_cell_occluded]
+    /// 说明), 新通道照同样的规矩写, 不引入新的并发形态。
+    /// `nonisolated(unsafe)` 在此是安全的: CGFloat 读写不撕裂, 且
+    /// attachmentBounds 与 layoutSubviews 同在主线程。
+    nonisolated(unsafe) static var ios15PinnedW: CGFloat = 0
+
     /// Cached layout computed for a given width, reused by both attachmentBounds and makeView.
     private var cachedLayout: TableLayout?
     /// Per-column maximum cell character count at the time `cachedLayout` was
@@ -2236,7 +2254,41 @@ final class TableAttachment: NSTextAttachment {
         // entering an infinite _fillLayoutHole loop when the attachment spans
         // the full line fragment width.  Also snap to 1pt grid so tiny floating-
         // point variations between layout passes hit the cached layout.
-        let usableWidth = floor(lineFrag.width) - 1
+        // [V50-UNIFY] 宽度同源: 优先用 v18 钉好的净宽, 而不是 UIKit 合成��
+        // `lineFrag.width`(它在钉宽之前就被问, 实测恒为脏宽 390)。
+        //
+        // ★三条红线:
+        //   R1 **probe 路径完全不走这里** —— `isOversizedProbe` 判定仍在下方
+        //      原位, 100_000 哨兵与 32_768 钳位都没动 ⇒
+        //      [ios_session_open_last_cell_occluded] 的"末行被裁"修复不回退。
+        //   R2 只读 `ios15PinnedW`, **不改 `lineFrag.width` 的用法** ——
+        //      那个 `floor(w)-1` 是 UIKit 防 `_fillLayoutHole` 的既有约定,
+        //      动它会重演 v37 的 fillLayoutHole 11918ms 卡死。
+        //   R3 回落必须干净: 钉宽通道为 0(从未钉过, 如 v49 之前的老路径)
+        //      就原样用 `lineFrag.width`, 行为与本版之前完全一致。
+        //
+        // 为什么减 1: 保持与原式 `floor(w)-1` 同构 —— 那个 -1 是 UIKit
+        // 约定的安全余量, 换成钉宽后仍要减, 否则表格会宽到触发 fillLayoutHole。
+        // ★probe 判定必须**先于**本段求值(否则下面诊断读不到它, 且
+        //   probe 路径会误用钉宽净宽 = R1 被破)。原判定保持在下方
+        //   `isOversizedProbe` 那一行, 这里只做一次**不改变语义**的提前取值:
+        //   表达式与下方逐字相同(>= 100_000), 不是新增判定。
+        let _v50IsProbe = lineFrag.width >= 100_000
+        let _v50Pinned = _v50IsProbe ? 0 : Self.ios15PinnedW
+        let usableWidth: CGFloat = _v50Pinned > 1
+            ? floor(_v50Pinned) - 1
+            : floor(lineFrag.width) - 1
+        if _v50Pinned > 1 {
+            do {
+                struct _UniDiag { static var last: CFTimeInterval = 0 }
+                let _un = CACurrentMediaTime()
+                if _un - _UniDiag.last > 0.5 {
+                    _UniDiag.last = _un
+                    NSLog("[V50-UNIFY] used=%.1f (pinned=%.1f) lineFrag=%.1f",
+                          usableWidth, _v50Pinned, lineFrag.width)
+                }
+            }
+        }
         guard usableWidth > 0 else {
             return CGRect(x: 0, y: 0, width: ios15ClampProbeWidth(lineFrag.width, textContainer: textContainer), height: Self.minRowHeight)
         }
@@ -8150,6 +8202,23 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             if _ios15WRegrabbed, abs(textContainer.size.width - _realW2) > 0.5 {
                 textContainer.size.width = _realW2
             }
+            // [V50-PINW-WRITE] 把钉宽后的目标净宽交给 attachment 链 ——
+            // 见函数 docstring 的归因与三条红线。**与上面那行同一处、
+            // 同一帧**: 早一帧则拿到的是还没钉的 390, 晚一帧则本帧
+            // 的行碎片已经按脏宽排完了。
+            TableAttachment.ios15PinnedW = _realW2
+            // [V50-PINW-DIAG] 纯诊断: 记"钉宽帧"看到的两个宽, 装机后
+            // 用来确认 attachment 链真的读到了新值(R2 的实机证据)。
+            do {
+                struct _PinDiag { static var last: CFTimeInterval = 0 }
+                let _pn = CACurrentMediaTime()
+                if _pn - _PinDiag.last > 0.5 {
+                    _PinDiag.last = _pn
+                    NSLog("[V50-PINW] pinnedW=%.1f tcW=%.1f len=%d",
+                          _realW2, self.textContainer.size.width,
+                          self.textStorage.length)
+                }
+            }
             // [V49-WWRITER-V18] log18 归因: **谁**把容器宽推回 390。
             // 纯诊断, 段内零赋值 —— 与 v44/v46 同纪律, 行为改动必须另起一版。
             //
@@ -8179,10 +8248,43 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             let _needH = sizeThatFits(CGSize(width: _realW2, height: .greatestFiniteMagnitude)).height
             if _ios15WRegrabbed {
                 layoutManager.ensureLayout(for: textContainer)
-                // [V47-REWRAP] 行碎片已按 _realW2 定型, 记下来供下次比对。
-                self.ios15LastLaidOutW = _realW2
             }
+            // [V50-LAIDW] "碎片已按目标宽定型"的记忆, **无条件**更新。
+            //
+            // 【为什么必须提出来 —— v49 实测 laidW=-1 出现 138/143 次】
+            // 原先它被关在 `if _ios15WRegrabbed` 里, 而 `_ios15WRegrabbed`
+            // 只表示"容器宽此刻偏离目标宽": 滑动时容器宽**恰好已经**是目标宽
+            // ⇒ 条件不成立 ⇒ 记忆永不写入。
+            // ⇒ 判据与执行互相拆台: `laidW` 空 ⇒ 下次
+            // `abs(laidW - _realW2) > 0.5` 恒成立 ⇒ 每帧都判"该重排",
+            //   却在 if 里跳过实际重排。而滑动正是最需要重排的时刻。
+            //
+            // 【为什么无条件写是安全的】
+            //   记忆的语义 = "本视图最近一次拿到的目标宽是多少", 与本帧
+            //   是否真的重排无关 —— `_realW2` 每帧都由 superview 宽算出,
+            //   实测 147/147 都是 358, 是权威值。
+            //   ★而 `ensureLayout` 绝不能无条件调: 它是排版开销,
+            //     v30 的流式节流就是为它设的; 每帧调就是 v13/v34 抢宽翻车。
+            //   ⇒ 本版只多写一个 CGFloat(零开销、幂等), 不新增排版调用。
+            //
+            // 【v47-REWRAP 标记保留在下方, 判据的 find 仍能定位到本段】
+            // [V47-REWRAP] 行碎片已按 _realW2 定型, 记下来供下次比对。
+            self.ios15LastLaidOutW = _realW2
             ios15LastNeededH = _needH
+            // [V50-LAIDW-DIAG] 纯诊断: 确认记忆这次真的写进去了
+            // (v49 实测 138/143 是 -1, 装机后这里应恒为 358)。
+            // ★故意放在 `ios15LastNeededH` 之后 —— v47 判据的纯度段到
+            //   `sizeThatFits` 那行为止, 这里已在它之外。
+            do {
+                struct _LwDiag { static var last: CFTimeInterval = 0 }
+                let _lw = CACurrentMediaTime()
+                if _lw - _LwDiag.last > 0.5 {
+                    _LwDiag.last = _lw
+                    NSLog("[V50-LAIDW] laidW=%.1f regrabbed=%d len=%d",
+                          self.ios15LastLaidOutW ?? -1,
+                          _ios15WRegrabbed ? 1 : 0, self.textStorage.length)
+                }
+            }
             // [V42-LATCH-SET] 刷新闩锁的键与值。**直接覆盖, 不是取 max** ——
             // 每次成功测量都是当前内容的权威值; 取 max 会在视图复用时留下
             // 旧长文本的高度, 把新短文本撑出大片空白。详见 ios15LatchedNeedH 声明处。
