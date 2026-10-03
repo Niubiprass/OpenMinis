@@ -1040,7 +1040,7 @@ jobs:
 
           echo "::endgroup::"
 
-          echo "::group::断言52: 全版本判据回归 (v41~v52 判据 + v47/v48 反向 + v49/v50/v51/v52 sabotage)"
+          echo "::group::断言52: 全版本判据回归 (v41~v53 判据 + v47/v48 反向 + v49~v53 sabotage)"
           set +e
           python3 "$SCRIPT_DIR/ios15_verify/regress_all_v.py" . 2>&1 | tee /tmp/regress_all_v.out
           _rc=${PIPESTATUS[0]}
@@ -1191,6 +1191,105 @@ jobs:
             echo "❌ v52 缺失 —— 375.7 这类瞬时污染宽仍被当成净宽, 排成 1 行而 cell 按 2 行记高,"
             echo "   差 22.3pt ≈ 一行半被裁 =「一段话最后一段被裁」; 且 v38-A 仍是死代码,"
             echo "   首段定型后再无任何纠正机会 =「新的会话第一段就卡」"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          # ============================================================
+          # 断言 56: v53 就位 —— 治 cell 高度欠账永久凝固(C-2 头号病)
+          # ============================================================
+          # 【v52 装机后的症状, 用户原话三条】
+          #   「每次重新开始新的对话第一段总是卡字」
+          #   「所有卡字都会在滑动的时候卡一下显示」
+          #   「滑动的时候一下卡字一下不卡字」
+          #
+          # 【① 归因转向: 「卡字」是纵向整行缺失, 不是横向裁切 —— v51 判断错了】
+          #   录屏 116.6s 抽帧(ffmpeg + numpy 帧差 + 行投影):
+          #     · c_001 特写: 「常用工具」标题被上一 cell 压掉一半、「网络」行仅剩上半
+          #     · c_032~c_046 连续 5 帧 halfBands(半行裁切指纹) = 2/5/4/2/4
+          #     · c_048 之后连续 **17 帧 halfBands=0** —— 滚动一停就恢复
+          #     · f_010: 第一段第二行只剩上半, 而**同一屏第二段三行完整**
+          #   ⇒ 同一宽度下有的 cell 裁有的不裁 ⇒ 宽度不是主因, **高度**才是。
+          #   ⇒ v51-A 的 tvW=390/fvW=358 逐帧交替(tvW=390 占 89/95)确实存在,
+          #     但它只影响横向, 降级为次要。
+          #
+          # 【② C-2(真凶): cell 高度欠账永久凝固 —— 同一 tick 两个探针读数打架】
+          #     [06:11:56.634] V44-TEXTFRAME tvH=1272.3 svAfter=1272.3 needH=1272.3
+          #     [06:11:56.661] V52-DEBT    preSVH=1004.0 needH=1272.3 debt=268.3 hits=65
+          #   视图侧 svAfter 51/51 次都是 1272.3(**永远正确**),
+          #   容器侧 preSVH 全程只有 1003.7/1004.0 两个值(**从头到尾没动过**)。
+          #   欠 268.3pt ≈ 8 行字。
+          #
+          #   空转链条: E 判据见欠账 → 置 flag → invalidateCellSizeIfNeeded()
+          #   → 走 `abs(newHeight - previousHeight) <= 1` 分支(视图自己的高
+          #   确实没变)→ 打印 `deferred debt CONSUMED`(宣告纠正完成)→ 清 flag。
+          #   而真正的纠正动作 applyCellCorrection() 只做 clearCachedHeight()
+          #   + invalidateLayout(), **返回 true 只证明调用成功, 不证明高度真改了**。
+          #
+          #   ★关键证据: `deferred debt CONSUMED` 打印了 **105 次**, 而 preSVH
+          #   纹丝不动 —— 这个「宣告成功但实际未落地」的谎言就是 C-2 的核心。
+          #   根因再往下: preferredLayoutAttributesFitting 里有**三条**高度短路,
+          #   A(dedup) 在**所有其它短路之前**无条件生效 ⇒ 真实测量永远走不到。
+          #
+          # 【③ 「一下卡字一下不卡」的机制 = B 路短路的开关效应, 不是宽度拉锯】
+          #   滚动开始 → deferSelfSizing=true → B 路返回缓存 1004 → 尾部裁掉;
+          #   滚动停止 → B 路失效 → 真实测量 → 高度修对 → 文字完整。
+          #   ⇒ 用户的观感就是来回闪。
+          #
+          # 【④ C-1: v52-A 存在记忆位初始化死锁(装机日志三条零命中/全命中)】
+          #   sane=1 **0/96**、picked=358.0 96/96、edge=0 96/96。
+          #   死锁: 记忆位只在 sane!=0(闸门放行)时写, 而 358 要被认定放行必须先
+          #   与记忆位比对, 记忆位初始 nil ⇒ 358 永比对失败 ⇒ 每帧回落 cvW-32
+          #   ⇒ sane 恒 0 ⇒ 记忆位**永远得不到第一次写入**。
+          #   ⇒ 375.7 归零靠的是「无条件回落」这个硬编码, 不是记忆位;
+          #     闸门退化成**常量 358 强制器**, 气泡型 cell(真实净宽 326)
+          #     会被误伤成 358 而超框。
+          #
+          # 【⑤ 首段为什么「总是」卡】
+          #   len=56(新会话第一段)从**第 1 帧到第 168 帧** preSVH=61.3 needH=83.3
+          #   debt=22.0 **恒定不变** —— 22pt ≈ 半行, 正是 f_010 里第二行只剩上半
+          #   的原因。而 consumeDeferredCorrectionIfNeeded 原本第一行就是
+          #   `guard deferredCorrectionPending else { return }`, v52 的 CONSUMED
+          #   判据只验「调用成功」就提前清了 flag ⇒ settle 时刻被挡在门外。
+          #
+          # 【v53 三处修法, 与判据一一对应】
+          #   P     : 三条短路各埋 [V53-SHORT] 探针, 判读「哪一路在挡真实测量」
+          #   C1    : `_v53memW` + `guard _v52ok` 打破记忆位死锁, 且拒绝污染宽度
+          #           (375.7 的 dev=14.3 落在 [1, cvW*0.5=195] 区间内, 纯区间
+          #           判据拦不住 —— 这是我在写判据时才发现并当场补上的约束)
+          #   C2    : 三条短路各加 `!v53DebtIsRipe` 守卫; CONSUMED 判据改成
+          #           「cell 实际高达标」才算还清, 否则保持 pending 并打 [V53-HOLD]
+          #   FIRST : settle 入口从 flag-only 改成 `flag || 仍欠账`
+          echo "::group::断言56: v53 就位 (C-2 治高度欠账凝固 + C-1 破记忆位死锁 + 首段专项 + 短路三来源探针)"
+          if grep -q "fix_shortcircuit_probe_v53" "$SCRIPT_DIR/ios15_fallback.py" \
+             && grep -q "fix_memgate_deadlock_v53" "$SCRIPT_DIR/ios15_fallback.py" \
+             && grep -q "fix_debtgate_verifiable_v53" "$SCRIPT_DIR/ios15_fallback.py" \
+             && grep -q "fix_first_para_settle_v53" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v53.py" . ; then
+              echo "✅ v53 就位 (★v52 把 cell 侧欠账量出来了却治不了: `deferred debt CONSUMED` 打印 **105 次** 而同一 tick 的 `preSVH` 恒为 1004.0(欠 268.3pt ≈ 8 行)—— 因为 `applyCellCorrection()` 返回 true 只证明 clearCachedHeight()+invalidateLayout() **调用成功**, 不证明高度真改了。而 `preferredLayoutAttributesFitting` 里有**三条**高度短路, A(dedup) 在所有其它短路之前无条件生效 ⇒ invalidate 之后立刻把同一个欠账值又返回回来, 自锁。P 探针回答「1004 从哪条短路回来的」: [V53-SHORT] 四计数 dedup/window/seeded/live, 若 dedup 远大于 window+seeded ⇒ A 吞掉全部。C2 修法: 三条短路各加 `!v53DebtIsRipe` 守卫(欠账 > 1pt 且**已持续一帧以上**才放行, 首帧仍走短路以免每个 cell 立刻重测造成滑动卡顿), 欠账由 E 判据处 `_v53ReportDebtToCell(needH - preSVH)` 上报 —— 那是**唯一知道差值的地方**, 不送出去三条短路永远无从判断; CONSUMED 判据改成「cell 实际高达标(误差 1pt 内)」才算还清, 达不到保持 pending 交给下一 pass(那时计数已 >=2, 短路已放行)。★C1 修 v52 的记忆位死锁: sane=1 **0/96**、edge=0 **96/96** 证明闸门从未放行过、贴边分支一次没进过 —— 记忆位只在 sane!=0 时写, 而 358 要被认定放行必须先与记忆位比对, 记忆位初始 nil ⇒ 358 永比对失败 ⇒ 每帧回落 cvW-32 ⇒ sane 恒 0 ⇒ 记忆位永远得不到第一次写入。**375.7 归零靠的是「无条件回落」这个硬编码, 不是记忆位** ⇒ 闸门退化成常量 358 强制器, 气泡型 cell(真实净宽 326)会被误伤成 358 而超框。修法: `_v53memW` 独立判据 + `guard _v52ok` 拒绝污染宽度(375.7 的 dev=14.3 落在 [1, cvW*0.5] 区间内, 光靠区间判据会被当成真实布局宽写进记忆位 ⇒ 下一帧回落目标变 375.7 ⇒ 污染复活; 这条约束是写判据时才发现并当场补上的)。★FIRST 修「每次新对话第一段总是卡」: len=56 那条从第 1 帧到第 168 帧 preSVH=61.3 needH=83.3 debt=22.0 **恒定不变**(22pt ≈ 半行 = 录屏 f_010 里第二行只剩上半)。根因是 settle 入口 `guard deferredCorrectionPending` 与 v52 的 CONSUMED 判据互杀 —— 后者提前清了 flag, 前者就把视图挡在门外。改法: 判据源换成「**cell 是否真的欠账**」(当场 sizeThatFits 测出来), flag 只作或项。代价可控: 只在「settle 时刻 + 确实欠账 > 1pt」时做一次真实测量。★三层判据: core(P 三来源探针 + C1/C2 放行与判据 + FIRST 入口) + scope(编译级 5 组: 跨文件可见性/NSLog 变参可选类型/占位符配平/段内零几何写/字段作用域) + sab(**14 条, 本轮把 S13/S14 两条漏网修掉了** —— S13 探针改 `copy.size.height` 右值只抓 return 关键字抓不到, 改为锁死赋值右值; S14 把多行 if 条件的 `,` 换成 `{` 后 `!v53DebtIsRipe` 文本仍在计数仍是 3, 改为查「守卫前一行(剥注释后)必须以 `,` 结尾」)")
+            else
+              echo "❌ v53 异常 (见上方 ci_assert_v53.py 的 core×3/scope/sab 四行)"
+              echo "   —— ★core P BAD: 三条短路没各埋一次探针, 或探针**改动了返回值** ——"
+              echo "      P 是只读诊断, 一旦它改了 copy.size.height, 装机日志的三来源"
+              echo "      计数就不可信了(短路的高度被探针自己改了)"
+              echo "   —— ★core C1/C2 BAD: 三条短路里有一条没加 `!v53DebtIsRipe` ⇒ 那一路"
+              echo "      仍能把欠账高度返回回去, preSVH 继续卡在 1004.0; 或守卫被写成"
+              echo "      独立语句(多行 if 提前闭合)⇒ 文本在、语义不在; 或 `_v53memW`"
+              echo "      没用 `guard _v52ok` 拒污染 ⇒ 375.7 进记忆位, v52 归零的污染复活; 或"
+              echo "      CONSUMED 判据没改成「cell 实际高达标」⇒ 又一次宣告没落地的纠正"
+              echo "   —— ★core FIRST BAD: settle 入口仍是 flag-only ⇒ 已空转耗尽的那批"
+              echo "      视图永远等不到纠正 = 「每次新对话第一段总是卡字」"
+              echo "   —— ★scope BAD: **编译会失败**。v53NotePendingDebt 等跨文件 API 若"
+              echo "      声明成 private 则 markdown 侧调不到; NSLog 变参里塞 Optional"
+              echo "      在 iOS 15 上是 UB"
+              echo "   —— sab BAD: 判据自身拦不住本轮真实踩过的坑 ⇒ 判据是废的"
+              exit 1
+            fi
+          else
+            echo "❌ v53 缺失 —— cell 高度欠账仍永久凝固(preSVH 恒 1004.0, 欠 268.3pt"
+            echo "   ≈ 8 行被裁), 滑动时仍一下卡字一下不卡(B 路短路开关效应),"
+            echo "   记忆位仍是死锁(闸门 = 常量 358 强制器, 气泡型 326 会被误伤超框),"
+            echo "   且每个新会话第一段仍立刻欠账 22pt 且永不退出"
             exit 1
           fi
           echo "::endgroup::"

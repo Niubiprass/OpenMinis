@@ -101,6 +101,95 @@ class SelfSizingCell: UICollectionViewCell {
     private var seededHeight: CGFloat?
     private var seededWidth: CGFloat?
 
+    // [V53-PROBE] 滑动期高度短路三来源诊断 —— 见 MSG_V53_P。
+    //
+    // 装机铁证（v52 日志 06:11:56）：
+    //   V44-TEXTFRAME   tvH=1272.3 svAfter=1272.3   ← 文本视图侧永远正确
+    //   V52-DEBT        preSVH=1004.0 needH=1272.3  ← cell 高度全程没动过
+    // 而 `clearCachedHeight()` + `invalidateLayout()` 明明每帧都在调，却毫无作用。
+    // 本探针回答唯一的问题：**1004 到底从哪一条短路原路返回的？**
+    //
+    // 三条短路按执行先后：
+    //   A. dedup 短路 —— 条件最宽松，**在所有其它短路之前**
+    //   B. 滑动/流式期 cached 短路
+    //   C. seededHeight 短路
+    // ★**不写行号**: 注入位置一变行号就漂, 注释里的行号会变成
+    //   骗人的假坐标(本版第一版就写了 `第 ~202 行`, 注入后完全对不上)。
+    // 若 A 恒命中，B/C 永远轮不到执行 —— 那就是 v53-C2 的病根。
+    private enum _V53ShortSrc: Int {
+        case none = 0, dedup = 1, windowCached = 2, seeded = 3
+    }
+    private static var _v53DedupHit: UInt = 0
+    private static var _v53WindowHit: UInt = 0
+    private static var _v53SeededHit: UInt = 0
+    private static var _v53LiveMeasure: UInt = 0
+    private static var _v53ProbeLast: CFTimeInterval = 0
+
+    /// [V53-PROBE] 记一次短路命中并每 0.5s 汇总一行。
+    /// `pendingDebt` = 调用方（SelectableMarkdownView 的 E 判据）已知的欠账，
+    /// 用来验证「有欠账的 cell 是不是被短路挡回去了」。
+    @inline(__always)
+    private static func _v53Note(_ src: _V53ShortSrc, height: CGFloat, width: CGFloat, pendingDebt: CGFloat) {
+        switch src {
+        case .dedup: _v53DedupHit &+= 1
+        case .windowCached: _v53WindowHit &+= 1
+        case .seeded: _v53SeededHit &+= 1
+        case .none: _v53LiveMeasure &+= 1
+        }
+        let now = CACurrentMediaTime()
+        guard now - _v53ProbeLast > 0.5 else { return }
+        _v53ProbeLast = now
+        NSLog("[V53-SHORT] dedup=%llu window=%llu seeded=%llu live=%llu | last src=%d h=%.1f w=%.1f debt=%.1f",
+              UInt64(_v53DedupHit), UInt64(_v53WindowHit), UInt64(_v53SeededHit),
+              UInt64(_v53LiveMeasure), src.rawValue, Double(height), Double(width),
+              Double(pendingDebt))
+    }
+
+    /// [V53-DEBT] 本 cell 当前**已知的**高度欠账。由
+    /// `SelectableMarkdownView` 的 E 判据在检测到 `preSVH < needH` 时写入。
+    /// 短路返回时带上它，就能看出「明知欠账还短路」的比例。
+    var v53PendingHeightDebt: CGFloat = 0
+
+    /// [V53-C2] 这个 cell 的欠账是否已经「熟」到可以绕过滑动期短路。
+    ///
+    /// 装机铁证（v52，06:11:56，len=785 那条）：
+    /// ```
+    /// V44-TEXTFRAME   tvH=1272.3 svAfter=1272.3   ← 视图侧正确
+    /// V52-DEBT        preSVH=1004.0 needH=1272.3  ← cell 侧欠 268.3pt
+    /// ```
+    /// `preSVH` 全程只有 `1003.7` / `1004.0` 两个值 —— cell 高度**从头到尾没动过**，
+    /// 而 `clearCachedHeight()` + `invalidateLayout()` 每帧都在调。原因是 A 路 dedup
+    /// 短路在**所有其它短路之前**无条件生效：它只看 `lastComputedHeight`
+    /// 存在且宽度匹配，完全不知道这个高度已经欠账。于是「清缓存 →
+    /// invalidate → 重新问 → 缓存已被别处填回旧值 → 返回旧值」自锁，
+    /// 尾部 268pt（≈8 行）永远裁掉。
+    ///
+    /// 判据：欠账 > 1pt（真的少了字）且**已经持续一个 pass 以上**。
+    /// 首帧仍然走短路（避免每个 cell 都立刻重测造成滑动卡顿——那正是
+    /// `[ScrollDecel][cell-measure]` 想压的成本），从第二帧起放行走真实测量。
+    /// 这样既打破自锁，又把重测限制在「确实欠账」的 cell 上，
+    /// 正常 cell 依旧享受短路的 2.5–3.8ms 节省。
+    private var v53DebtSeenCount: Int = 0
+
+    /// [V53-C2] 欠账是否已「熟」（连续观测到两帧以上）。
+    /// 三处短路统一读它，避免各自重复计数导致不同步。
+    var v53DebtIsRipe: Bool { v53DebtSeenCount >= 2 }
+
+    /// [V53-C2] 记录一次欠账观测，返回是否应当绕过滑动期短路。
+    @inline(__always)
+    @discardableResult
+    func v53NotePendingDebt(_ debt: CGFloat) -> Bool {
+        // 欠账被清掉（<=1pt）时立刻复位，下一次真欠账重新计两拍。
+        if debt <= 1 {
+            v53DebtSeenCount = 0
+            v53PendingHeightDebt = 0
+            return false
+        }
+        v53PendingHeightDebt = debt
+        v53DebtSeenCount += 1
+        return v53DebtSeenCount >= 2
+    }
+
     /// [T-ios-scroll-decel-height-drift] Stable content key for the item this
     /// cell currently hosts, set by configureCell. Used to memoize the real
     /// measured height under a position-independent key — robust against the
@@ -201,10 +290,17 @@ class SelfSizingCell: UICollectionViewCell {
         // if a height-staleness case this reasoning missed ever shows up.
         if let cached = lastComputedHeight,
            let cachedW = lastComputedWidth,
-           abs(layoutAttributes.size.width - cachedW) < 1 {
+           abs(layoutAttributes.size.width - cachedW) < 1,
+           // [V53-C2] 已知欠账且已持续一帧以上 ⇒ 不得返回这个欠账高度。
+           // 见 `v53NotePendingDebt` 的 docstring：不清这一条，`preSVH` 会永远
+           // 停在首次提交时的欠账值上（实测 1004.0，欠 268.3pt ≈ 8 行）。
+           !v53DebtIsRipe {
             let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
             copy.size.width = cachedW
             copy.size.height = cached
+            // [V53-PROBE] A 路：dedup 短路命中。
+            Self._v53Note(.dedup, height: cached, width: cachedW,
+                           pendingDebt: v53PendingHeightDebt)
             // [ScrollStall] Count short-window cache hits; flush summary 1Hz.
             Self.dedupHits &+= 1
             let now = CACurrentMediaTime()
@@ -286,10 +382,18 @@ class SelfSizingCell: UICollectionViewCell {
             if layout.deferSelfSizing || streamingActive,
                !isStreamingItem,
                let cached = lastComputedHeight, let cachedW = lastComputedWidth,
-               abs(layoutAttributes.size.width - cachedW) < 1 {
+               abs(layoutAttributes.size.width - cachedW) < 1,
+               // [V53-C2] 同 A 路：欠账已熟时不许拿缓存高度挡住真实测量。
+               // 这条短路是滑动期「一下卡字一下不卡字」的直接开关 ——
+               // 滚动中它返回 1004（尾部裁掉），滚动停止它失效、真实测量
+               // 把高度修对，文字又完整。用户的观感就是来回闪。
+               !v53DebtIsRipe {
                 let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
                 copy.size.width = cachedW
                 copy.size.height = cached
+                // [V53-PROBE] B 路：滑动/流式期 cached 短路命中。
+                Self._v53Note(.windowCached, height: cached, width: cachedW,
+                               pendingDebt: v53PendingHeightDebt)
                 return copy
             }
             if isStreamingItem,
@@ -319,7 +423,11 @@ class SelfSizingCell: UICollectionViewCell {
         // override the height.
         if let sh = seededHeight, let sw = seededWidth,
            let cv = superview as? UICollectionView,
-           abs(cv.bounds.width - sw) < 1 {
+           abs(cv.bounds.width - sw) < 1,
+           // [V53-C2] 同 A/B 路：种子高度若是欠账的那个值，不能再种回去。
+           // 实测这条是「清缓存后旧高又回来了」的第二个来源 ——
+           // configureCell 会把 memo 里的 1004 再写一次 seededHeight。
+           !v53DebtIsRipe {
             seededHeight = nil
             seededWidth = nil
             lastComputedHeight = sh
@@ -327,6 +435,9 @@ class SelfSizingCell: UICollectionViewCell {
             lastMeasureMediaTime = CACurrentMediaTime()
             let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
             copy.size.height = sh
+            // [V53-PROBE] C 路：seededHeight 短路命中。
+            Self._v53Note(.seeded, height: sh, width: sw,
+                           pendingDebt: v53PendingHeightDebt)
             return copy
         }
 

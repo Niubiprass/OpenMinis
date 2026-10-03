@@ -138,8 +138,18 @@ def _cases(t):
     cases.append(("S4 删记忆位对照判据", s4))
 
     def s5(x):
-        old = "var _v52ok = abs(_v52w - _cvW) <= 2"
-        return assert_replaced(x, old, "var _v52ok = true", "S5")
+        # ★v53 起锚点改了形态: v52 原本是「声明即判据」
+        #     var _v52ok = abs(_v52w - _cvW) <= 2
+        # v53-C1 为了把判别结论暴露给记忆位写入, 拆成了
+        #     var _v52ok = true            ← 声明
+        #     _v52ok = abs(_v52w - _cvW) <= 2  ← 判据(仍要打头, 少一次判定)
+        # ⇒ 锚点必须跟着换成**赋值**形式, 否则 sabotage 报「锚点失效」——
+        #   而锚点失效是假绿: 它只说明串变了, 不代表被测代码变好了。
+        # ⇒ 纪律: **跨版共存的老 sabotage, 锚点要选语义锚(那一行判据),
+        #   不要锚整块声明**; 声明形态会随版本拆/合, 判据行不会消失。
+        old = "                _v52ok = abs(_v52w - _cvW) <= 2"
+        new = "                _v52ok = true"
+        return assert_replaced(x, old, new, "S5")
     cases.append(("S5 删全宽白名单判据", s5))
 
     # ---------- A3: 记忆位只记放行过的值 ----------
@@ -206,12 +216,28 @@ def _cases(t):
 
     # ---------- G: 借用 flag 的机制必须保留 ----------
     def s15(x):
-        old = """                deferredCorrectionPending = true
-                invalidateCellSizeIfNeeded()
-                deferredCorrectionPending = _v38WasPending"""
-        new = """                deferredCorrectionPending = true
-                deferredCorrectionPending = _v38WasPending"""
-        return assert_replaced(x, old, new, "S15")
+        # ★v53-C2 在这两行之间插了 3 行欠账上报注释, 原三行连锚失效。
+        #   改成**锚两处单行**: 只要求「置 flag」与「恢复 flag」都还在,
+        #   中间夹什么(注释、诊断、上报)都不断言 —— 那不是本条要测的东西。
+        #   本条测的是「自愈动作 `invalidateCellSizeIfNeeded()` 不能消失」。
+        # ⇒ 纪律: **sabotage 锚点只锚被测语义的那几行**;
+        #   把相邻的注释/新逻辑一起锚进去, 下一次加版本就会假报失效。
+        o1 = "                deferredCorrectionPending = true\n"
+        o2 = "                deferredCorrectionPending = _v38WasPending"
+        if o1 not in x or o2 not in x:
+            raise AssertionError("★锚点失效: S15 置/复 flag 两行不在产物里")
+        n1 = "                deferredCorrectionPending = true\n"
+        # 从 o1 起到 o2 之间, 删掉第一次出现的 invalidateCellSizeIfNeeded()
+        i = x.find(o1)
+        j = x.find(o2, i)
+        mid = x[i + len(n1):j]
+        if "invalidateCellSizeIfNeeded()" not in mid:
+            raise AssertionError("★锚点失效: S15 两行之间没有 invalidateCellSizeIfNeeded()")
+        mid2 = mid.replace("invalidateCellSizeIfNeeded()", "", 1)
+        y = x[:i + len(n1)] + mid2 + x[j:]
+        if y == x:
+            raise AssertionError("★S15 破坏后文本没变")
+        return y
     cases.append(("S15 删掉 invalidateCellSizeIfNeeded(自愈退化成空动作)", s15))
 
     return cases

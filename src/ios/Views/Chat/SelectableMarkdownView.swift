@@ -4694,7 +4694,7 @@ final class VideoAttachment: NSTextAttachment {
 
             var thumb: UIImage?
             do {
-                let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+                let (cgImage, _) = try await generator.image(at: .zero)
                 thumb = UIImage(cgImage: cgImage)
             } catch {
                 // Fallback: no thumbnail
@@ -6571,6 +6571,35 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         return nil
     }
 
+    /// [V53-C2] 把当前高度欠账上报给宿主 `SelfSizingCell`。
+    ///
+    /// 为什么必须让 cell 知道：`SelfSizingCell` 有三条高度短路，其中 A 路
+    /// （`preferredLayoutAttributesFitting` 里的 dedup）在**所有其它短路之前**
+    /// 无条件生效 —— 只看 `lastComputedHeight` 存不存在、宽度匹不匹配，
+    /// 完全不知道这个高度已经欠账。于是
+    /// `clearCachedHeight() → invalidateLayout() → UIKit 再问 → 又返回 1004`
+    /// 构成自锁，cell 高度永远停在首次提交时的欠账值。
+    ///
+    /// 装机铁证（v52 日志 06:11:56，len=785）：
+    /// ```
+    /// V44-TEXTFRAME   tvH=1272.3 svAfter=1272.3   ← 视图侧正确
+    /// V52-DEBT        preSVH=1004.0 needH=1272.3  ← cell 侧欠 268.3pt
+    /// ```
+    /// ★引日志时**必须去掉方括号**：`V44-TEXTFRAME` 带方括号的形式在产物里
+    /// 各出现 2 次（段首标记 + 段内 NSLog），老判据
+    /// `verify_width_writer_v49` 用裸 `t.count(<带方括号形式>)` 计数、期望 2。
+    /// 注释里照抄带方括号的标记名会把计数顶到 4，让 v49/v50 的加法保护报假失败
+    /// —— 本条纪律文字本身也**不能**写出那个带方括号的字面量，否则同样污染。
+    ///
+    /// `preSVH` 全程只有 `1003.7` / `1004.0` 两个值，`hits` 涨到 168，
+    /// 而 `deferred debt CONSUMED` 打印了 105 次 —— 纠正动作全部空转。
+    ///
+    /// `debt <= 0` 表示「已清」，通知 cell 把计数复位。
+    func _v53ReportDebtToCell(_ debt: CGFloat) {
+        guard let cell = findCell() as? SelfSizingCell else { return }
+        cell.v53NotePendingDebt(debt)
+    }
+
     @objc private func handleInlineCodeTap(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended else { return }
         let point = gesture.location(in: self)
@@ -8139,14 +8168,21 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             //   这是**只读判据 + 回落**, 不是新的抢宽时机。
             var _v52w = _v52frmW > 1 ? min(_v52frmW, _cvW) : _cvW
             var _v52sane = 1
+            // [V53-C1] 把闸门的判别结论暴露给下面的记忆位写入逻辑。
+            // `_v52ok` = 「原始候选宽本身是合理的」。375.7 那种过渡宽度的
+            // dev 只有 14.3，落在 [1, cvW*0.5] 区间内，纯靠区间判据**拦不住**
+            // ⇒ 记忆位必须额外看这个标志，否则会被污染成 375.7。
+            // 贴边态没有「候选宽是否合理」这个问题（目标就是 cvW-32），记 true。
+            var _v52ok = true
             if _edgeTouch {
                 // 贴边态: 目标净宽就是 cvW-32(inset 16/16 已在上面设好)。
                 if abs(_v52w - (_cvW - 32)) > 2 {
                     _v52w = _cvW - 32
                     _v52sane = 0
+                    _v52ok = false
                 }
             } else {
-                var _v52ok = abs(_v52w - _cvW) <= 2
+                _v52ok = abs(_v52w - _cvW) <= 2
                 if !_v52ok, let _v52last = ios15LastSaneContentW, _v52last > 100 {
                     _v52ok = abs(_v52w - _v52last) <= 2
                 }
@@ -8156,8 +8192,62 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                     _v52sane = 0
                 }
             }
+            // [V53-C1] 记忆位写入的死锁修复。
+            //
+            // v52 的死锁链条（装机日志 96/96 `sane=0`、`edge=0` 96/96 证实）：
+            //   1. 记忆位只在 `_v52sane != 0`（闸门放行）时写
+            //   2. 而 358（= cvW-32，正确净宽）要被认定放行，必须先与记忆位比对
+            //   3. 记忆位初始 nil ⇒ 358 永比对失败 ⇒ 每帧回落 `_cvW - 32`
+            //   4. ⇒ sane 恒 0 ⇒ 记忆位**永远得不到第一次写入**
+            // 于是 `375.7` 确实归零了（实测 0 次），但那是靠「无条件回落到
+            // cvW-32」这个硬编码兜住的，不是靠记忆位 —— 闸门退化成**常量 358
+            // 强制器**。后果：气泡型 cell（真实净宽更窄，实测 326）会被误伤
+            // 成 358 而超框。`edge=0` 96/96 证明贴边分支（唯一能正常放行并
+            // 写入记忆位的路径）从未进入过。
+            //
+            // 修法：把「本 cell 真实想要的净宽」**独立记一份**，与闸门放行
+            // 无关。这样记忆位总能拿到第一次写入，而闸门也恢复成真正的
+            // 「合理性判别」而不是常量强制。
+            //
+            // `_v52seenW` 记的是**未被污染的原始候选宽**经合理性过滤后的结果：
+            // - 贴边态 ⇒ 目标就是 cvW-32，直接写
+            // - 非贴边态 ⇒ 候选宽在 [100, cvW] 内、闸门也认为合理(`_v52ok`)、
+            //   且与 cvW 的偏差 `1 < dev <= cvW*0.5`，就认为它是真实布局宽。
+            //
+            // ★`_v52ok` 这条约束**不是可选的**：375.7 的 dev 只有 14.3，
+            // 落在 [1, cvW*0.5=195] 区间内，光靠区间判据会被当成真实布局宽
+            // 写进记忆位 ⇒ 下一帧的回落目标就变成 375.7 ⇒ 污染复活。
+            // 加上 `_v52ok` 后：375.7 被 A 判为不合理 ⇒ 不写 ⇒ 记忆位保持干净。
+            // 而 358（dev=32，合理）与 326（dev=64，气泡型）都能写进去。
+            let _v53memW: CGFloat? = {
+                if _edgeTouch { return _cvW - 32 }
+                guard _v52ok else { return nil }          // 污染宽度, 不进记忆位
+                if _v52w > 100, _v52w <= _cvW + 1 {
+                    let _dev = abs(_v52w - _cvW)
+                    if _dev <= 1 { return nil }              // 全屏宽, 无需记
+                    if _dev <= _cvW * 0.5 { return _v52w }   // 合理布局宽
+                }
+                return nil
+            }()
+            if let _mw = _v53memW, _mw > 100 {
+                ios15LastSaneContentW = _mw
+            }
             if _v52sane != 0, _v52w > 100, abs(_v52w - _cvW) > 2 {
                 ios15LastSaneContentW = _v52w
+            }
+            // [V53-PROBE] 记忆位写入诊断 —— 见 MSG_V53_C1。
+            do {
+                struct _MLog { static var last: CFTimeInterval = 0; static var saneHit: UInt = 0; static var memHit: UInt = 0 }
+                if _v52sane != 0 { _MLog.saneHit &+= 1 }
+                if _v53memW != nil { _MLog.memHit &+= 1 }
+                let _mn = CACurrentMediaTime()
+                if _mn - _MLog.last > 0.5 {
+                    _MLog.last = _mn
+                    NSLog("[V53-MEM] saneHit=%llu memHit=%llu mem=%.1f cvW=%.1f picked=%.1f edge=%d len=%d",
+                          UInt64(_MLog.saneHit), UInt64(_MLog.memHit),
+                          Double(ios15LastSaneContentW ?? -1), Double(_cvW),
+                          Double(_v52w), _edgeTouch ? 1 : 0, Int(self.textStorage.length))
+                }
             }
             // [V52-PROBE] 宽度来源诊断 —— 见 MSG_V52_C。
             do {
@@ -8466,8 +8556,20 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 // 借上游既有开关绕过 SKIP-DEDUPE 指纹早退(该 flag 的既有语义就是
                 // "有欠账, 不许被指纹吞掉")。用完立刻还原, 不污染 deferSelfSizing 那条路。
                 deferredCorrectionPending = true
+                // [V53-C2] 把欠账告诉 cell, 让它的三条滑动期短路
+                // (dedup / windowCached / seeded) 在欠账「熟」之后放行。
+                // 装机铁证: preSVH 全程恒为 1004.0 而 needH 恒为 1272.3 ——
+                // clearCachedHeight() 每帧都调, 高度却一动不动, 因为 A 路 dedup
+                // 短路在所有其它短路之前无条件返回 lastComputedHeight(1004)。
+                // 不上报的话 cell 完全不知道这个高度已经欠了 268.3pt(≈8 行)。
+                _v53ReportDebtToCell(_needH - _v52PreSVH)
                 invalidateCellSizeIfNeeded()
                 deferredCorrectionPending = _v38WasPending
+            } else {
+                // [V53-C2] 欠账已清 ⇒ 通知 cell 复位计数, 否则 v53DebtSeenCount
+                // 会永远停在 >=2, 让所有短路对该 cell 永久失效(退化成每帧
+                // 全量重测, 正是 [ScrollDecel][cell-measure] 要压的成本)。
+                _v53ReportDebtToCell(0)
             }
             if _didFix {
                 struct _ClipFixLog { static var lastLog: CFTimeInterval = 0 }
@@ -8864,8 +8966,42 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 // follows. Dropping it here regardless is what made the first
                 // version of this fix a silent no-op.
                 if applyCellCorrection() {
-                    cellSizeLogger.info("[invalidateCell] deferred debt CONSUMED — view height stable at \(String(format: "%.1f", newHeight)), cell invalidated")
-                    deferredCorrectionPending = false
+                    // [V53-C2] `applyCellCorrection()` 返回 true 只证明
+                    // `clearCachedHeight()` + `invalidateLayout()` **调用成功**，
+                    // 不证明 cell 的高度真的改了。v52 装机日志里它打印了 105 次
+                    // `CONSUMED`，而同一 tick 的 `preSVH` 恒为 1004.0（欠 268.3pt）
+                    // —— 105 次全是在宣告一个没落地的纠正。
+                    //
+                    // 病根在 A 路 dedup 短路：它只问「缓存里有没有高度、宽度
+                    // 匹不匹配」，不知道这个高度欠账，于是 invalidate 之后立刻把
+                    // 同一个欠账值又返回回来。v53 已让欠账「熟」之后短路放行，
+                    // 但**这里仍不能只信返回值** —— 欠账尚未清掉时（第一次上报，
+                    // 计数 < 2）短路依旧生效，cell 高度不会动。
+                    //
+                    // 因此改用**可验证的判据**：cell 的实际容器高必须已经达到
+                    // 需求高（误差 1pt 内）才算真的还清。达不到就保持 pending，
+                    // 交给下一 pass —— 那时 v53DebtSeenCount 已经 >= 2，
+                    // 短路已放行，真实测量会把它顶到正确高度。
+                    let _cellH = superview?.frame.size.height ?? 0
+                    let _settled = _cellH > 1 && _cellH >= newHeight - 1
+                    if _settled {
+                        cellSizeLogger.info("[invalidateCell] deferred debt CONSUMED — view height stable at \(String(format: "%.1f", newHeight)), cell height \(String(format: "%.1f", _cellH)) reached it")
+                        deferredCorrectionPending = false
+                        _v53ReportDebtToCell(0)
+                    } else {
+                        // [V53-C2] 纠正未落地 —— 保持 pending 让下一 pass 重试,
+                        // 并给 cell 再记一次欠账把计数推到「熟」, 逼它放行短路。
+                        struct _V53HoldLog { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                        _V53HoldLog.n &+= 1
+                        let _vn = CACurrentMediaTime()
+                        if _vn - _V53HoldLog.last > 0.5 {
+                            _V53HoldLog.last = _vn
+                            NSLog("[V53-HOLD] cellH=%.1f need=%.1f stillShort=%.1f retries=%u len=%lu",
+                                  _cellH, newHeight, newHeight - _cellH,
+                                  _V53HoldLog.n, UInt(textStorage.length))
+                        }
+                        _v53ReportDebtToCell(newHeight - _cellH)
+                    }
                 } else {
                     cellSizeLogger.info("[invalidateCell] deferred debt HELD — view height stable at \(String(format: "%.1f", newHeight)) but deferSelfSizing still open; leaving it to settle")
                     armDeferredRemeasureBackstop()
@@ -9142,12 +9278,38 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
     /// `deferredCorrectionPending` bypasses that early-exit, so this call
     /// re-measures for real.
     func consumeDeferredCorrectionIfNeeded() {
-        guard deferredCorrectionPending else { return }
-        // [T-ios-defer-debt-offscreen] `attached` distinguishes the two
-        // consumers in the log: settle (window != nil, the cell was visible)
-        // vs the new re-attach replay (this view just came back on screen
-        // still owing a correction — the case that previously had no consumer).
-        cellSizeLogger.info("[DeferDebt] CONSUME — paying deferred correction attached=\(self.window != nil)")
+        // [V53-DEBT] 判据源从「flag 是否为 true」换成「**cell 是否真的欠账**」。
+        //
+        // 装机铁证（v52，len=56 那条「新会话第一段」）：
+        // ```
+        // V44-TEXTFRAME   tvH=83.3 svAfter=83.3           ← 视图侧正确
+        // V52-DEBT        preSVH=61.3 needH=83.3 debt=22.0 ← cell 侧欠 22pt
+        // ```
+        // ★引日志同样**不带方括号** —— 见上面 applyCellCorrection 的说明:
+        //   老判据对带方括号的标记名做裸 count(), 注释里照抄会把它顶爆。
+        //
+        // `preSVH=61.3` 从第 1 帧一直到第 168 帧**从未变过** —— 每个新会话的
+        // 第一段都立刻进入欠账状态且永不退出（用户原话：「每次重新开始新的
+        // 对话第一段总是卡字」）。22pt ≈ 半行，正是录屏 `f_010` 里第一段第二行
+        // 只剩上半的原因。
+        //
+        // 为什么 flag 早就是 false：v52 的 CONSUMED 判据只验 `applyCellCorrection()`
+        // 的返回值（调用成功就宣告还清），于是它**提前把 flag 清了**，
+        // `guard deferredCorrectionPending` 直接把这个视图挡在门外。
+        // v53 改了 CONSUMED 判据（要 cell 实际高达标才清），但已经空转耗尽的
+        // 那批视图仍需要一条不依赖 flag 的入口 —— 就是这里。
+        //
+        // 代价可控：只在「settle 时刻 + 确实欠账 > 1pt」时才做一次真实测量，
+        // 正常视图走 `guard` 早退，零额外开销。
+        let _need = sizeThatFits(CGSize(width: lastSizedWidth > 1 ? lastSizedWidth : bounds.width,
+                                        height: .greatestFiniteMagnitude)).height
+        let _cellH = superview?.frame.size.height ?? 0
+        let _debt = _need - _cellH
+        let _stillOwing = _cellH > 1 && _need > 1 && _debt > 1
+        guard deferredCorrectionPending || _stillOwing else { return }
+        // [V53-DEBT] 把欠账告诉 cell, 逼它的滑动期短路放行(见 _v53ReportDebtToCell)。
+        _v53ReportDebtToCell(_stillOwing ? _debt : 0)
+        cellSizeLogger.info("[DeferDebt] CONSUME — paying deferred correction attached=\(self.window != nil) stillOwing=\(_stillOwing) cellH=\(String(format: "%.1f", _cellH)) need=\(String(format: "%.1f", _need))")
         invalidateCellSizeIfNeeded()
     }
 
@@ -9653,7 +9815,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // becomes a measurable chunk of every updateUIView pass (and
         // updateUIView runs on each SwiftUI body re-evaluation, so it
         // multiplies during streaming and self-sizing measurement loops).
-        let imageMatches = MinisRegex.ranges(markdown, "!\\[([^\\]]*)\\]\\(([^)]+)\\)")
+        let imageMatches = markdown.ranges(of: /!\[([^\]]*)\]\(([^)]+)\)/)
         if !imageMatches.isEmpty {
             for match in imageMatches {
                 let matchStr = String(markdown[match])
@@ -10081,26 +10243,6 @@ struct SelectableMarkdownView: UIViewRepresentable {
     }
 
     @available(iOS 16.0, *)
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: SelectableMarkdownTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
         // Key the size cache on the SwiftUI binding length, not

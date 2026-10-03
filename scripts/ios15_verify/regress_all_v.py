@@ -44,6 +44,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 MD_REL = "src/ios/Views/Chat/SelectableMarkdownView.swift"
 MLL_REL = "src/ios/Agent/MessageList/MessageListLayout.swift"
+# v53 起判据跨**两个** swift 文件: C2 的三条高度短路在 infra 里,
+# 而 C1/CONSUMED/FIRST 在 markdown view 里。少这个文件时必须 SKIP 并
+# 显式报出, 不能让判据在缺料的情况下「碰巧全绿」。
+INFRA_REL = "src/ios/Agent/MessageList/MessageListInfrastructure.swift"
 
 # (显示名, 脚本名, 传参约定, 额外需要的产物文件)
 CHECKS = [
@@ -63,16 +67,21 @@ CHECKS = [
     ("v50 判据(三层)+18 sab", "ci_assert_v50.py",  "root",  []),
     ("v51 判据(三层)+12 sab", "ci_assert_v51.py",  "root",  []),
     ("v52 判据(三层)+15 sab", "ci_assert_v52.py",  "root",  []),
+    ("v53 判据(三层)+14 sab", "ci_assert_v53.py",  "root",  [INFRA_REL]),
 ]
 
-# 最近四代(v47/v48/v49/v50)的判据与反向测试是当前承重墙, 必须全绿。
+# 最近四代(v50/v51/v52/v53)的判据与反向测试是当前承重墙, 必须全绿。
 # v41~v46 同样在 CI 里跑, 但它们跨代演进(判据 needle 有兼容层),
 # 且部分依赖两文件产物, 缺失时以 SKIP 形式显式报出。
+# ★v52 也要进 MANDATORY: v53 是在 v52 产物上继续改的, 而 v53 的 C1/C2
+#   直接改写了 v52-A 闸门与 v52-E 判据所在的代码路径 —— v52 判据一旦
+#   失效, v53 的「基线无误伤」就没有意义了(它跑在同一份产物上)。
 MANDATORY = {
-    "v47 判据", "v48 判据", "v49 判据(四层)", "v50 判据(三层)+18 sab",
-    "v51 判据(三层)+12 sab",
+    "v50 判据(三层)+18 sab", "v51 判据(三层)+12 sab",
+    "v52 判据(三层)+15 sab", "v53 判据(三层)+14 sab",
     "v47 反向", "v48 反向(20 条)",
     "v49 重文本+8 sab", "v49 作用域+12 sab",
+    "v47 判据", "v48 判据", "v49 判据(四层)",
 }
 
 

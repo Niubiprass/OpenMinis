@@ -146,3 +146,8 @@ deps/lame-3.100/**/.deps/
 # not a vendored binary — same treatment as the iOS Rclone.xcframework it is
 # built alongside (deps/build_rclone_ios.sh).
 src/android/app/libs/rclone.aar
+
+# Python (v53: verification scripts import ios15_fallback, which makes
+# CPython write __pycache__/ next to it; those .pyc were committed once)
+__pycache__/
+*.pyc

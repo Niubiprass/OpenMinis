@@ -5637,6 +5637,118 @@ MSG_V51_C = (
 )
 
 
+MSG_V53_P = (
+    "v53-P: 滑动期高度短路三来源诊断探针 —— 回答「1004 从哪条短路回来的」。"
+    "★为什么必须再加一条探针: v52 把 cell 侧欠账量出来了(`preSVH=1004.0 "
+    "needH=1272.3 debt=268.3`), 也每帧调 `clearCachedHeight()` + "
+    "`invalidateLayout()`, 但 `preSVH` **全程只有 1003.7/1004.0 两个值** —— "
+    "纠正 100% 空转。此时「知道欠了多少」已经不够, 必须知道**「清掉的缓存是谁"
+    "又填回去的」**, 否则只能猜。 "
+    "`SelfSizingCell.preferredLayoutAttributesFitting` 里有**三条**高度短路, "
+    "按执行先后: A=dedup(条件最宽松, 在所有其它短路之前) / "
+    "B=deferSelfSizing||streamingActive 期 cached / C=seededHeight。"
+    "本探针在**每条短路的返回点**各打一次, 字段: dedup/window/seeded/live 四个"
+    "累计计数 + 本次命中的 src/h/w/debt。 "
+    "★判读: 若 `dedup` 计数远大于 `window`+`seeded` 之和 ⇒ A 路吞掉了全部, "
+    "B/C 从未执行 ⇒ 病根就是「A 太宽松」。若 `debt>1` 的命中占多数 ⇒ "
+    "「明知欠账还短路」的比例高, 佐证 C2。 "
+    "★零行为改动: 只读不写, 不新增任何几何赋值, 不改任何 return 值。"
+)
+
+
+MSG_V53_C1 = (
+    "v53-C1: 打破 v52-A 的记忆位初始化死锁 —— 让闸门恢复成真判别器。"
+    "【v52 装机的硬证据】`[V52-GATE]` 96 条: `sane=0` **96/96**、"
+    "`picked=358.0` **96/96**、`edge=0` **96/96** ⇒ "
+    "① 闸门**从未**放行过任何一帧; ② 358 是**回落兜出来的**, 不是它认出来的; "
+    "③ 贴边分支(唯一能正常放行并写入记忆位的路径)**一次都没进过**。 "
+    "【死锁链条】记忆位只在 `_v52sane != 0`(闸门放行)时写; 而 358(=cvW-32, "
+    "正确净宽)要被认定放行, 必须**先与记忆位比对**; 记忆位初始 nil ⇒ 358 永比对"
+    "失败 ⇒ 每帧回落 `_cvW-32` ⇒ sane 恒 0 ⇒ 记忆位**永远得不到第一次写入**。 "
+    "⇒ `375.7` 确实归零了(实测 0 次), 但那是靠「无条件回落到 cvW-32」这个"
+    "**硬编码**兜住的, 不是靠记忆位。**闸门退化成常量 358 强制器** —— "
+    "后果: 气泡型 cell(实测真实净宽 326)会被误伤成 358 而**超框**。 "
+    "【修法: 把「本 cell 真实想要的净宽」独立记一份, 与闸门放行无关】"
+    "新增 `_v53memW`: 贴边态 ⇒ 就是 cvW-32 直接写; 非贴边态 ⇒ 候选宽在 "
+    "[100, cvW] 内、且与 cvW 的偏差 `1 < dev <= cvW*0.5` 就认为它是**真实布局宽**"
+    "并写入记忆位。 ⇒ 358 能写进去(打破死锁, sane 通道恢复), "
+    "**326 也能写进去**(不再被误伤), 而 375.7 那种过渡宽度 dev=14.3 < 0.5*390=195 "
+    "…… ★**这里必须诚实**: 375.7 的 dev 只有 14.3, 落在 [1,195] 区间内, "
+    "**会被这个判据当成真实布局宽写进记忆位**。v52 的闸门仍会拦它(那是 A 的职责, "
+    "A 未改动), 但记忆位会被污染成 375.7, 影响**下一帧**的回落目标。 "
+    "⇒ 因此 `_v53memW` 额外要求 `!_v52polluted`: 候选宽必须同时是**闸门认为"
+    "合理**的(沿用 A 的 `_v52ok` 结论)才允许写入。375.7 被 A 判为不合理 ⇒ "
+    "不写 ⇒ 记忆位保持干净。这条约束是本修法能同时满足「打破死锁」与"
+    "「不污染记忆位」的关键。 "
+    "★新探针 `[V53-MEM]`: saneHit(闸门放行次数) / memHit(记忆位写入次数) / "
+    "mem(当前记忆位值) / cvW / picked / edge / len。 "
+    "★装机判据: `saneHit` 与 `memHit` 都必须 **> 0**。若 memHit 仍为 0 ⇒ "
+    "死锁没打破; 若 saneHit 仍为 0 ⇒ A 还在无条件回落。"
+)
+
+
+MSG_V53_C2 = (
+    "v53-C2: 治 cell 高度欠账永久凝固 —— 「滑动时一下卡字一下不卡字」的真凶。"
+    "【v52 装机的决定性证据】同一个 tick, 两个探针读数打架: "
+    "`[V44-TEXTFRAME] tvH=1272.3 svAfter=1272.3`(视图侧**永远正确**) vs "
+    "`[V52-DEBT] preSVH=1004.0 needH=1272.3 debt=268.3`(容器侧欠 **268.3pt "
+    "≈ 8 行**)。`svAfter` 分布 `1272.3`×51 / `333.0`×33 零例外; 而 `preSVH` "
+    "全程只有 `1003.7`/`1004.0` 两个值 ⇒ **cell 高度从头到尾没动过**。"
+    "同时 `deferred debt CONSUMED` 打印了 **105 次** —— 105 次全在宣告一个"
+    "没落地的纠正。 "
+    "【根因: 三条短路里 A 路(dedup)条件最宽松, 且排在最前面】"
+    "A 路只问「`lastComputedHeight` 存不存在、宽度匹不匹配」, **完全不知道这个"
+    "高度已经欠账**。于是 `clearCachedHeight()` → `invalidateLayout()` → UIKit "
+    "再问 → A 路又把同一个欠账值 1004 返回回来 ⇒ **自锁**。"
+    "B 路(deferSelfSizing 期 cached)还把「滑动中/停止」变成了这个自锁的**开关**: "
+    "滚动停止 ⇒ 短路失效 ⇒ 走真实测量 ⇒ 高度修对 ⇒ 文字完整; "
+    "滚动一开始 ⇒ 短路重新生效 ⇒ 1004 回来 ⇒ 尾部又被裁。"
+    "⇒ **用户看到的交替闪烁 = 短路开关的开关效应, 不是宽度拉锯。** "
+    "★这一条同时**修正了 v51 的结论**: v51-A 那个 `tvW=390`/`fvW=358` 逐帧交替"
+    "(89/95) 确实存在, 但它**不是**本症状主因 —— 宽度钉成 390 只影响横向裁切, "
+    "而用户的「卡字」是**纵向整行缺失**(录屏 halfBands 指纹: 滚动中连续 5 帧 "
+    "2/5/4/2/4, 滚动停止后连续 **17 帧 0**)。宽度问题降级为次要。 "
+    "【修法 1: 让欠账的 cell 不被短路挡回去】"
+    "新增 `v53NotePendingDebt(_:)` / `v53DebtIsRipe`, A/B/C **三条**短路各加一个 "
+    "`!v53DebtIsRipe` 条件。**两拍设计**是刻意的: 首帧仍走短路(否则每个 cell "
+    "都立刻重测, 正是 `[ScrollDecel][cell-measure]` 想压的 2.5–3.8ms 成本), "
+    "从第二帧起放行走真实测量。欠账清掉(debt<=1)立刻复位计数, 否则短路对该 cell "
+    "永久失效(退化成每帧全量重测)。"
+    "【修法 2: `CONSUMED` 判据从「调用成功」改成「可验证」】"
+    "`applyCellCorrection()` 返回 true 只证明 `clearCachedHeight()` + "
+    "`invalidateLayout()` **调用成功**, 不证明 cell 高度真的改了 —— v52 打印了 "
+    "105 次 CONSUMED 而 preSVH 纹丝不动, 就是这个谎言的证据。改后要求 "
+    "**cell 实际容器高达到需求高(误差 1pt 内)** 才算还清; 达不到就保持 "
+    "`deferredCorrectionPending` 并打新探针 `[V53-HOLD] cellH/need/stillShort/"
+    "retries`, 交给下一 pass(那时计数已 >=2, 短路已放行)。"
+    "★装机判据: ① `[V53-HOLD]` 必须出现(证明旧判据确实在空转被拦下); "
+    "② `preSVH` 必须**出现与 needH 相等的样本**(高度真被清掉); "
+    "③ `[V53-SHORT]` 的 `debt` 字段应能看到欠账值被记下来。"
+)
+
+
+MSG_V53_FIRST = (
+    "v53-FIRST: 首段专项 —— 治「每次新对话第一段总是卡字」。"
+    "【v52 装机证据】`len=56` 那条(新会话第一段): `preSVH=61.3` 从**第 1 帧一直"
+    "到第 168 帧从未变过**(`needH=83.3` debt=22.0) ⇒ 每个新会话的第一段都立刻"
+    "进入欠账状态且**永不退出**。22pt ≈ 半行, 正是录屏里第一段第二行只剩上半"
+    "的原因(同一屏第二段三行完整)。 "
+    "【为什么 flag 挡不住】`consumeDeferredCorrectionIfNeeded()` 原本第一行就是 "
+    "`guard deferredCorrectionPending else { return }`, 而 v52 的 CONSUMED 判据"
+    "只验 `applyCellCorrection()` 的返回值(调用成功就宣告还清)⇒ **提前把 flag "
+    "清了** ⇒ settle 时刻这个视图被 guard 挡在门外, 永远等不到纠正。"
+    "C2 改了 CONSUMED 判据(要 cell 实际高达标才清), 但**已经空转耗尽的那批"
+    "视图**仍需要一条不依赖 flag 的入口。 "
+    "【修法】判据源从「flag 是否为 true」换成「**cell 是否真的还欠账**」: "
+    "settle 时刻做一次 `sizeThatFits` 拿需求高, 与 cell 实际容器高比, "
+    "欠 > 1pt 就重估(并把欠账上报给 cell 逼它放行短路)。"
+    "★代价可控: 只在「settle 时刻 + 确实欠账」时才做一次真实测量, "
+    "正常视图走同一个 guard 早退, **零额外开销**。 "
+    "★装机判据: 日志里应出现 `[DeferDebt] CONSUME ... stillOwing=1`(带新字段); "
+    "首段的 `preSVH` 应出现上升到 `needH` 的样本。"
+)
+
+
 MSG_V52_AB = (
     "v52-A+B: 宽度合理性闸门 + _svW 改读 frame —— 治「一段话最后一行被裁」。"
     "★先说结论: **v51-A 生效了, 但它不是根因**。"
@@ -5678,6 +5790,332 @@ MSG_V52_AB = (
     "闸门就会放行一个它本该拦的值。 "
     "★登记必须排在 v51 之后(锚点是 v51 钉 frame 那行)"
 )
+
+
+# ★v53-C1 注入块 —— 与产物**逐字节一致**(用产物反向生成, 避免
+#   「脚本里的文案」与「产物里的文案」两处各写一遍然后漂移)。
+#   改这个常量时必须同步改产物, 并用本函数跑一次复现验证。
+BLOCK_V53_C1 = """            var _v52w = _v52frmW > 1 ? min(_v52frmW, _cvW) : _cvW
+            var _v52sane = 1
+            // [V53-C1] 把闸门的判别结论暴露给下面的记忆位写入逻辑。
+            // `_v52ok` = 「原始候选宽本身是合理的」。375.7 那种过渡宽度的
+            // dev 只有 14.3，落在 [1, cvW*0.5] 区间内，纯靠区间判据**拦不住**
+            // ⇒ 记忆位必须额外看这个标志，否则会被污染成 375.7。
+            // 贴边态没有「候选宽是否合理」这个问题（目标就是 cvW-32），记 true。
+            var _v52ok = true
+            if _edgeTouch {
+                // 贴边态: 目标净宽就是 cvW-32(inset 16/16 已在上面设好)。
+                if abs(_v52w - (_cvW - 32)) > 2 {
+                    _v52w = _cvW - 32
+                    _v52sane = 0
+                    _v52ok = false
+                }
+            } else {
+                _v52ok = abs(_v52w - _cvW) <= 2
+                if !_v52ok, let _v52last = ios15LastSaneContentW, _v52last > 100 {
+                    _v52ok = abs(_v52w - _v52last) <= 2
+                }
+                if !_v52ok {
+                    // 回落: 上一次排版正确时用过的宽度。都没有就用全屏宽减内边距。
+                    _v52w = ios15LastSaneContentW ?? (_cvW - 32)
+                    _v52sane = 0
+                }
+            }
+            // [V53-C1] 记忆位写入的死锁修复。
+            //
+            // v52 的死锁链条（装机日志 96/96 `sane=0`、`edge=0` 96/96 证实）：
+            //   1. 记忆位只在 `_v52sane != 0`（闸门放行）时写
+            //   2. 而 358（= cvW-32，正确净宽）要被认定放行，必须先与记忆位比对
+            //   3. 记忆位初始 nil ⇒ 358 永比对失败 ⇒ 每帧回落 `_cvW - 32`
+            //   4. ⇒ sane 恒 0 ⇒ 记忆位**永远得不到第一次写入**
+            // 于是 `375.7` 确实归零了（实测 0 次），但那是靠「无条件回落到
+            // cvW-32」这个硬编码兜住的，不是靠记忆位 —— 闸门退化成**常量 358
+            // 强制器**。后果：气泡型 cell（真实净宽更窄，实测 326）会被误伤
+            // 成 358 而超框。`edge=0` 96/96 证明贴边分支（唯一能正常放行并
+            // 写入记忆位的路径）从未进入过。
+            //
+            // 修法：把「本 cell 真实想要的净宽」**独立记一份**，与闸门放行
+            // 无关。这样记忆位总能拿到第一次写入，而闸门也恢复成真正的
+            // 「合理性判别」而不是常量强制。
+            //
+            // `_v52seenW` 记的是**未被污染的原始候选宽**经合理性过滤后的结果：
+            // - 贴边态 ⇒ 目标就是 cvW-32，直接写
+            // - 非贴边态 ⇒ 候选宽在 [100, cvW] 内、闸门也认为合理(`_v52ok`)、
+            //   且与 cvW 的偏差 `1 < dev <= cvW*0.5`，就认为它是真实布局宽。
+            //
+            // ★`_v52ok` 这条约束**不是可选的**：375.7 的 dev 只有 14.3，
+            // 落在 [1, cvW*0.5=195] 区间内，光靠区间判据会被当成真实布局宽
+            // 写进记忆位 ⇒ 下一帧的回落目标就变成 375.7 ⇒ 污染复活。
+            // 加上 `_v52ok` 后：375.7 被 A 判为不合理 ⇒ 不写 ⇒ 记忆位保持干净。
+            // 而 358（dev=32，合理）与 326（dev=64，气泡型）都能写进去。
+            let _v53memW: CGFloat? = {
+                if _edgeTouch { return _cvW - 32 }
+                guard _v52ok else { return nil }          // 污染宽度, 不进记忆位
+                if _v52w > 100, _v52w <= _cvW + 1 {
+                    let _dev = abs(_v52w - _cvW)
+                    if _dev <= 1 { return nil }              // 全屏宽, 无需记
+                    if _dev <= _cvW * 0.5 { return _v52w }   // 合理布局宽
+                }
+                return nil
+            }()
+            if let _mw = _v53memW, _mw > 100 {
+                ios15LastSaneContentW = _mw
+            }
+            if _v52sane != 0, _v52w > 100, abs(_v52w - _cvW) > 2 {
+                ios15LastSaneContentW = _v52w
+            }
+            // [V53-PROBE] 记忆位写入诊断 —— 见 MSG_V53_C1。
+            do {
+                struct _MLog { static var last: CFTimeInterval = 0; static var saneHit: UInt = 0; static var memHit: UInt = 0 }
+                if _v52sane != 0 { _MLog.saneHit &+= 1 }
+                if _v53memW != nil { _MLog.memHit &+= 1 }
+                let _mn = CACurrentMediaTime()
+                if _mn - _MLog.last > 0.5 {
+                    _MLog.last = _mn
+                    NSLog("[V53-MEM] saneHit=%llu memHit=%llu mem=%.1f cvW=%.1f picked=%.1f edge=%d len=%d",
+                          UInt64(_MLog.saneHit), UInt64(_MLog.memHit),
+                          Double(ios15LastSaneContentW ?? -1), Double(_cvW),
+                          Double(_v52w), _edgeTouch ? 1 : 0, Int(self.textStorage.length))
+                }
+            }
+"""
+# ★BLOCK_V53_C2_REPORT —— 与产物**逐字节一致**(用产物反向生成)。
+#   理由同 BLOCK_V53_C1: 注释文案在「脚本」与「产物」两处各写一遍时
+#   必然漂移, 而复现验证(reinject == 产物)会当场把它揭出来。
+BLOCK_V53_C2_REPORT = """    /// [V53-C2] 把当前高度欠账上报给宿主 `SelfSizingCell`。
+    ///
+    /// 为什么必须让 cell 知道：`SelfSizingCell` 有三条高度短路，其中 A 路
+    /// （`preferredLayoutAttributesFitting` 里的 dedup）在**所有其它短路之前**
+    /// 无条件生效 —— 只看 `lastComputedHeight` 存不存在、宽度匹不匹配，
+    /// 完全不知道这个高度已经欠账。于是
+    /// `clearCachedHeight() → invalidateLayout() → UIKit 再问 → 又返回 1004`
+    /// 构成自锁，cell 高度永远停在首次提交时的欠账值。
+    ///
+    /// 装机铁证（v52 日志 06:11:56，len=785）：
+    /// ```
+    /// V44-TEXTFRAME   tvH=1272.3 svAfter=1272.3   ← 视图侧正确
+    /// V52-DEBT        preSVH=1004.0 needH=1272.3  ← cell 侧欠 268.3pt
+    /// ```
+    /// ★引日志时**必须去掉方括号**：`V44-TEXTFRAME` 带方括号的形式在产物里
+    /// 各出现 2 次（段首标记 + 段内 NSLog），老判据
+    /// `verify_width_writer_v49` 用裸 `t.count(<带方括号形式>)` 计数、期望 2。
+    /// 注释里照抄带方括号的标记名会把计数顶到 4，让 v49/v50 的加法保护报假失败
+    /// —— 本条纪律文字本身也**不能**写出那个带方括号的字面量，否则同样污染。
+    ///
+    /// `preSVH` 全程只有 `1003.7` / `1004.0` 两个值，`hits` 涨到 168，
+    /// 而 `deferred debt CONSUMED` 打印了 105 次 —— 纠正动作全部空转。
+    ///
+    /// `debt <= 0` 表示「已清」，通知 cell 把计数复位。
+    func _v53ReportDebtToCell(_ debt: CGFloat) {
+        guard let cell = findCell() as? SelfSizingCell else { return }
+        cell.v53NotePendingDebt(debt)
+    }
+"""
+
+
+# ★BLOCK_V53_C2_E —— 与产物**逐字节一致**(用产物反向生成)。
+#   理由同 BLOCK_V53_C1: 注释文案在「脚本」与「产物」两处各写一遍时
+#   必然漂移, 而复现验证(reinject == 产物)会当场把它揭出来。
+BLOCK_V53_C2_E = """                // [V53-C2] 把欠账告诉 cell, 让它的三条滑动期短路
+                // (dedup / windowCached / seeded) 在欠账「熟」之后放行。
+                // 装机铁证: preSVH 全程恒为 1004.0 而 needH 恒为 1272.3 ——
+                // clearCachedHeight() 每帧都调, 高度却一动不动, 因为 A 路 dedup
+                // 短路在所有其它短路之前无条件返回 lastComputedHeight(1004)。
+                // 不上报的话 cell 完全不知道这个高度已经欠了 268.3pt(≈8 行)。
+                _v53ReportDebtToCell(_needH - _v52PreSVH)
+"""
+
+
+# ★BLOCK_V53_C2_CLR —— 与产物**逐字节一致**(用产物反向生成)。
+#   理由同 BLOCK_V53_C1: 注释文案在「脚本」与「产物」两处各写一遍时
+#   必然漂移, 而复现验证(reinject == 产物)会当场把它揭出来。
+BLOCK_V53_C2_CLR = """                // [V53-C2] 欠账已清 ⇒ 通知 cell 复位计数, 否则 v53DebtSeenCount
+                // 会永远停在 >=2, 让所有短路对该 cell 永久失效(退化成每帧
+                // 全量重测, 正是 [ScrollDecel][cell-measure] 要压的成本)。
+                _v53ReportDebtToCell(0)
+"""
+
+
+# ★BLOCK_V53_C2_CONSUMED —— 与产物**逐字节一致**(用产物反向生成)。
+#   理由同 BLOCK_V53_C1: 注释文案在「脚本」与「产物」两处各写一遍时
+#   必然漂移, 而复现验证(reinject == 产物)会当场把它揭出来。
+BLOCK_V53_C2_CONSUMED = """                if applyCellCorrection() {
+                    // [V53-C2] `applyCellCorrection()` 返回 true 只证明
+                    // `clearCachedHeight()` + `invalidateLayout()` **调用成功**，
+                    // 不证明 cell 的高度真的改了。v52 装机日志里它打印了 105 次
+                    // `CONSUMED`，而同一 tick 的 `preSVH` 恒为 1004.0（欠 268.3pt）
+                    // —— 105 次全是在宣告一个没落地的纠正。
+                    //
+                    // 病根在 A 路 dedup 短路：它只问「缓存里有没有高度、宽度
+                    // 匹不匹配」，不知道这个高度欠账，于是 invalidate 之后立刻把
+                    // 同一个欠账值又返回回来。v53 已让欠账「熟」之后短路放行，
+                    // 但**这里仍不能只信返回值** —— 欠账尚未清掉时（第一次上报，
+                    // 计数 < 2）短路依旧生效，cell 高度不会动。
+                    //
+                    // 因此改用**可验证的判据**：cell 的实际容器高必须已经达到
+                    // 需求高（误差 1pt 内）才算真的还清。达不到就保持 pending，
+                    // 交给下一 pass —— 那时 v53DebtSeenCount 已经 >= 2，
+                    // 短路已放行，真实测量会把它顶到正确高度。
+                    let _cellH = superview?.frame.size.height ?? 0
+                    let _settled = _cellH > 1 && _cellH >= newHeight - 1
+                    if _settled {
+                        cellSizeLogger.info("[invalidateCell] deferred debt CONSUMED — view height stable at \\(String(format: "%.1f", newHeight)), cell height \\(String(format: "%.1f", _cellH)) reached it")
+                        deferredCorrectionPending = false
+                        _v53ReportDebtToCell(0)
+                    } else {
+                        // [V53-C2] 纠正未落地 —— 保持 pending 让下一 pass 重试,
+                        // 并给 cell 再记一次欠账把计数推到「熟」, 逼它放行短路。
+                        struct _V53HoldLog { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                        _V53HoldLog.n &+= 1
+                        let _vn = CACurrentMediaTime()
+                        if _vn - _V53HoldLog.last > 0.5 {
+                            _V53HoldLog.last = _vn
+                            NSLog("[V53-HOLD] cellH=%.1f need=%.1f stillShort=%.1f retries=%u len=%lu",
+                                  _cellH, newHeight, newHeight - _cellH,
+                                  _V53HoldLog.n, UInt(textStorage.length))
+                        }
+                        _v53ReportDebtToCell(newHeight - _cellH)
+                    }
+                } else {
+"""
+
+
+# ★BLOCK_V53_FIRST —— 与产物**逐字节一致**(用产物反向生成)。
+#   理由同 BLOCK_V53_C1: 注释文案在「脚本」与「产物」两处各写一遍时
+#   必然漂移, 而复现验证(reinject == 产物)会当场把它揭出来。
+BLOCK_V53_FIRST = """        // [V53-DEBT] 判据源从「flag 是否为 true」换成「**cell 是否真的欠账**」。
+        //
+        // 装机铁证（v52，len=56 那条「新会话第一段」）：
+        // ```
+        // V44-TEXTFRAME   tvH=83.3 svAfter=83.3           ← 视图侧正确
+        // V52-DEBT        preSVH=61.3 needH=83.3 debt=22.0 ← cell 侧欠 22pt
+        // ```
+        // ★引日志同样**不带方括号** —— 见上面 applyCellCorrection 的说明:
+        //   老判据对带方括号的标记名做裸 count(), 注释里照抄会把它顶爆。
+        //
+        // `preSVH=61.3` 从第 1 帧一直到第 168 帧**从未变过** —— 每个新会话的
+        // 第一段都立刻进入欠账状态且永不退出（用户原话：「每次重新开始新的
+        // 对话第一段总是卡字」）。22pt ≈ 半行，正是录屏 `f_010` 里第一段第二行
+        // 只剩上半的原因。
+        //
+        // 为什么 flag 早就是 false：v52 的 CONSUMED 判据只验 `applyCellCorrection()`
+        // 的返回值（调用成功就宣告还清），于是它**提前把 flag 清了**，
+        // `guard deferredCorrectionPending` 直接把这个视图挡在门外。
+        // v53 改了 CONSUMED 判据（要 cell 实际高达标才清），但已经空转耗尽的
+        // 那批视图仍需要一条不依赖 flag 的入口 —— 就是这里。
+        //
+        // 代价可控：只在「settle 时刻 + 确实欠账 > 1pt」时才做一次真实测量，
+        // 正常视图走 `guard` 早退，零额外开销。
+        let _need = sizeThatFits(CGSize(width: lastSizedWidth > 1 ? lastSizedWidth : bounds.width,
+                                        height: .greatestFiniteMagnitude)).height
+        let _cellH = superview?.frame.size.height ?? 0
+        let _debt = _need - _cellH
+        let _stillOwing = _cellH > 1 && _need > 1 && _debt > 1
+        guard deferredCorrectionPending || _stillOwing else { return }
+        // [V53-DEBT] 把欠账告诉 cell, 逼它的滑动期短路放行(见 _v53ReportDebtToCell)。
+        _v53ReportDebtToCell(_stillOwing ? _debt : 0)
+        cellSizeLogger.info("[DeferDebt] CONSUME — paying deferred correction attached=\\(self.window != nil) stillOwing=\\(_stillOwing) cellH=\\(String(format: "%.1f", _cellH)) need=\\(String(format: "%.1f", _need))")
+        invalidateCellSizeIfNeeded()
+"""
+
+
+
+
+# ★v53-P 真正注入的**代码块**(不是文案)。文案在 MSG_V53_P。
+#   拆成两个常量是因为: 消息常量是给人读的 docstring, 注入块是给
+#   `t.replace(ANCHOR, NEW, 1)` 用的字面量 —— 两者混在一起会诱导
+#   「从 MSG_ 里切代码出来」这种脆弱写法(v53 第一版就那么写了,
+#   靠 `MSG[MSG.index("\n")+1:]` 切, 一旦文案里加个换行就静默错位)。
+MSG_V53_P_BLOCK = """
+    // [V53-PROBE] 滑动期高度短路三来源诊断 —— 见 MSG_V53_P。
+    //
+    // 装机铁证（v52 日志 06:11:56）：
+    //   V44-TEXTFRAME   tvH=1272.3 svAfter=1272.3   ← 文本视图侧永远正确
+    //   V52-DEBT        preSVH=1004.0 needH=1272.3  ← cell 高度全程没动过
+    // 而 `clearCachedHeight()` + `invalidateLayout()` 明明每帧都在调，却毫无作用。
+    // 本探针回答唯一的问题：**1004 到底从哪一条短路原路返回的？**
+    //
+    // 三条短路按执行先后：
+    //   A. dedup 短路 —— 条件最宽松，**在所有其它短路之前**
+    //   B. 滑动/流式期 cached 短路
+    //   C. seededHeight 短路
+    // ★**不写行号**: 注入位置一变行号就漂, 注释里的行号会变成
+    //   骗人的假坐标(本版第一版就写了 `第 ~202 行`, 注入后完全对不上)。
+    // 若 A 恒命中，B/C 永远轮不到执行 —— 那就是 v53-C2 的病根。
+    private enum _V53ShortSrc: Int {
+        case none = 0, dedup = 1, windowCached = 2, seeded = 3
+    }
+    private static var _v53DedupHit: UInt = 0
+    private static var _v53WindowHit: UInt = 0
+    private static var _v53SeededHit: UInt = 0
+    private static var _v53LiveMeasure: UInt = 0
+    private static var _v53ProbeLast: CFTimeInterval = 0
+
+    /// [V53-PROBE] 记一次短路命中并每 0.5s 汇总一行。
+    /// `pendingDebt` = 调用方（SelectableMarkdownView 的 E 判据）已知的欠账，
+    /// 用来验证「有欠账的 cell 是不是被短路挡回去了」。
+    @inline(__always)
+    private static func _v53Note(_ src: _V53ShortSrc, height: CGFloat, width: CGFloat, pendingDebt: CGFloat) {
+        switch src {
+        case .dedup: _v53DedupHit &+= 1
+        case .windowCached: _v53WindowHit &+= 1
+        case .seeded: _v53SeededHit &+= 1
+        case .none: _v53LiveMeasure &+= 1
+        }
+        let now = CACurrentMediaTime()
+        guard now - _v53ProbeLast > 0.5 else { return }
+        _v53ProbeLast = now
+        NSLog("[V53-SHORT] dedup=%llu window=%llu seeded=%llu live=%llu | last src=%d h=%.1f w=%.1f debt=%.1f",
+              UInt64(_v53DedupHit), UInt64(_v53WindowHit), UInt64(_v53SeededHit),
+              UInt64(_v53LiveMeasure), src.rawValue, Double(height), Double(width),
+              Double(pendingDebt))
+    }
+
+    /// [V53-DEBT] 本 cell 当前**已知的**高度欠账。由
+    /// `SelectableMarkdownView` 的 E 判据在检测到 `preSVH < needH` 时写入。
+    /// 短路返回时带上它，就能看出「明知欠账还短路」的比例。
+    var v53PendingHeightDebt: CGFloat = 0
+
+    /// [V53-C2] 这个 cell 的欠账是否已经「熟」到可以绕过滑动期短路。
+    ///
+    /// 装机铁证（v52，06:11:56，len=785 那条）：
+    /// ```
+    /// V44-TEXTFRAME   tvH=1272.3 svAfter=1272.3   ← 视图侧正确
+    /// V52-DEBT        preSVH=1004.0 needH=1272.3  ← cell 侧欠 268.3pt
+    /// ```
+    /// `preSVH` 全程只有 `1003.7` / `1004.0` 两个值 —— cell 高度**从头到尾没动过**，
+    /// 而 `clearCachedHeight()` + `invalidateLayout()` 每帧都在调。原因是 A 路 dedup
+    /// 短路在**所有其它短路之前**无条件生效：它只看 `lastComputedHeight`
+    /// 存在且宽度匹配，完全不知道这个高度已经欠账。于是「清缓存 →
+    /// invalidate → 重新问 → 缓存已被别处填回旧值 → 返回旧值」自锁，
+    /// 尾部 268pt（≈8 行）永远裁掉。
+    ///
+    /// 判据：欠账 > 1pt（真的少了字）且**已经持续一个 pass 以上**。
+    /// 首帧仍然走短路（避免每个 cell 都立刻重测造成滑动卡顿——那正是
+    /// `[ScrollDecel][cell-measure]` 想压的成本），从第二帧起放行走真实测量。
+    /// 这样既打破自锁，又把重测限制在「确实欠账」的 cell 上，
+    /// 正常 cell 依旧享受短路的 2.5–3.8ms 节省。
+    private var v53DebtSeenCount: Int = 0
+
+    /// [V53-C2] 欠账是否已「熟」（连续观测到两帧以上）。
+    /// 三处短路统一读它，避免各自重复计数导致不同步。
+    var v53DebtIsRipe: Bool { v53DebtSeenCount >= 2 }
+
+    /// [V53-C2] 记录一次欠账观测，返回是否应当绕过滑动期短路。
+    @inline(__always)
+    @discardableResult
+    func v53NotePendingDebt(_ debt: CGFloat) -> Bool {
+        // 欠账被清掉（<=1pt）时立刻复位，下一次真欠账重新计两拍。
+        if debt <= 1 {
+            v53DebtSeenCount = 0
+            v53PendingHeightDebt = 0
+            return false
+        }
+        v53PendingHeightDebt = debt
+        v53DebtSeenCount += 1
+        return v53DebtSeenCount >= 2
+    }
+"""
 
 
 MSG_V52_C = (
@@ -5915,11 +6353,40 @@ def verify_width_sane_gate_v52(t):
     #   于是「段内零几何写」判据报出 textContainer 宽高(第一版真报出来了)。
     #   **判据的段边界必须紧贴被测代码**, 宁可窄不可宽: 段开大了会把
     #   上游合法写入算成自己的罪, 段开小了才会漏判(漏判可由 A2 补齐)。
-    i_end = t.find("var _realW = _svW > 1 ? min(_svW, _cvW) : _cvW", i)
+    # ★v53 起: 右界改回 `let _svW = _v52w`, 并在计数时**剔除 v53 探针**。
+    #
+    # 【这一条改了三轮才改对, 值得完整记下来】
+    #   v53 的 C1 块(记忆位写入修复)物理上插在 v52 探针**之前** ——
+    #   产物行号: [V52-B] 8144 → [V53-MEM] 8240 → [V52-PROBE] 8246
+    #   → [V52-GATE] NSLog 8252 → `let _svW = _v52w` 8257。
+    #   于是 v52 段区间里天然含着 v53 的那条 NSLog:
+    #     ① 收窄到 `[V53-C1]`(v53 在闸门内部也有一个同名标记, 8218 行)
+    #        ⇒ 闸门段被切成两半, 三个判据全报「不见了」。
+    #     ② 改用代码锚点 `let _v53memW`(8216) ⇒ 又把 v52 自己的记忆位
+    #        写入守卫(8229)切到段外, 报「守卫的 if 头不见了」。
+    #     ③ 改用 `// [V53-MEM]` ⇒ 产物里该标记在**字符串内**
+    #        (`NSLog("[V53-MEM] ...`), 注释形式永远匹配不到,
+    #        find 返回 -1 ⇒ 段一路开到文件末尾, NSLog 计数爆 8。
+    #     ④ 收窄到字符串锚点 `'[V53-MEM]'` ⇒ 把 v52 自己的
+    #        `[V52-GATE]` 探针(8252, 在 8240 **之后**)切掉,
+    #        报「诊断缺字段 rawW=」。
+    #   ⇒ 纪律: **段右界要选在「自己这版最后一个标记」之后**
+    #     (`let _svW = _v52w` 正好在 v52 探针之后), 而不是「下一版第一个
+    #     标记之前」—— 后者在新版把自己的探针插到旧版探针**之前**时,
+    #     必然切掉旧版探针。
+    #   ⇒ 纪律: **跨版共存的计数类判据要按标记剔除, 不靠区间** ——
+    #     v53 的探针合法地落在 v52 的区间内, 那是两个版本的判据范围重叠,
+    #     不是任何一方写错了位置。
+    #   ⇒ 纪律: **锚点先在产物里 grep 一遍确认逐字存在**(连注释/字符串
+    #     的归属一起确认), 再写进判据。
+    i_end = t.find("let _svW = _v52w", i)
+    if i_end < 0:
+        # 无 v53(老产物)时回落到原锚点, 保持向后兼容。
+        i_end = t.find("var _realW = _svW > 1 ? min(_svW, _cvW) : _cvW", i)
     if i_end < 0:
         raise RuntimeError(
-            "verify_width_sane_gate_v52: 段未闭合(找不到 v18 的 `var _realW =` "
-            "收尾行) —— v52 块与后续代码的衔接断了")
+            "verify_width_sane_gate_v52: 段未闭合(找不到 `[V53-MEM]` 或 v18 的 "
+            "`var _realW =` 收尾行) —— v52 块与后续代码的衔接断了")
     seg = t[i:i_end]
     code = _strip_swift_noise(seg)
 
@@ -6006,10 +6473,37 @@ def verify_width_sane_gate_v52(t):
             raise RuntimeError(
                 "verify_width_sane_gate_v52: ★诊断实参里没有 %s —— 格式符还在, "
                 "但那个读数已经被删了, 装机日志会错位(varargs UB)" % why)
-    if seg.count("NSLog(") != 1:
+    # ★计数要**排除 v53 的探针**: v53 的 C1 块物理上落在本段区间内
+    #   (它插在 v52 探针之前), 所以 `seg.count("NSLog(")` 会把
+    #   `[V53-MEM]` 那条一起数进去, 报 2 条。按标记文本精确剔除,
+    #   不靠位置猜 —— 位置在新版插代码后会漂移, 标记不会。
+    # ★v53 补 S10 的漏: 上面那个循环查的是 `code`/`seg`(剥过字符串字面量),
+    #   所以 `sane=` / `picked=` 这些**格式串文本**根本不在 `code` 里 ——
+    #   它命中的是实参侧的同名字样(碰巧而已)。S9 删实参被它抓住,
+    #   S10 删**格式串里的 `sane=%d` 占位符**则一路绿灯放行。
+    #   而占位符一少, 后面所有实参就**整体左移错位**:
+    #   `picked=%.1f` 会拿 CGFloat 去读本该给整型的槽位, 按 varargs UB
+    #   处理 —— 装机日志直接是乱码, 失去判读价值。
+    # ⇒ 纪律: **探针判据要分两层查**: 格式串层查 `seg`(未剥噪声的原始段),
+    #   实参层查 `code`(剥噪声的段)。v53 第一版把两层混在一处, 结果
+    #   S9 绿、S10 漏 —— 典型的「以为查了其实没查到」。
+    #   ★两层用**不同的变量**是必须的: 一旦拿同一个 `seg` 去查两层,
+    #   改对一处就必然改错另一处。
+    for f in ("sane=%d", "picked=%.1f", "edge=%d", "rawW=%.1f",
+              "frmW=%.1f", "cvW=%.1f", "len=%d"):
+        if f not in seg:
+            raise RuntimeError(
+                "verify_width_sane_gate_v52: ★诊断**格式串**里没有 %r —— "
+                "占位符一少, 后面实参整体左移错位(varargs UB), "
+                "装机日志是乱码; 格式串在 ≠ 那个读数还在, 两者都要查" % f)
+    _n_v52_nslog = code.count("NSLog(")
+    for _pk in ("[V53-MEM]", "[V53-HOLD]"):
+        if 'NSLog("%s' % _pk in seg:
+            _n_v52_nslog -= 1
+    if _n_v52_nslog != 1:
         raise RuntimeError(
-            "verify_width_sane_gate_v52: [V52-PROBE] 段内应恰好 1 条 NSLog, "
-            "实为 %d 条" % seg.count("NSLog("))
+            "verify_width_sane_gate_v52: [V52-PROBE] 段内应恰好 1 条 NSLog"
+            "(不计 v53 探针), 实为 %d 条" % _n_v52_nslog)
     return t
 
 
@@ -6141,6 +6635,134 @@ def fix_debtguard_snapshot_v52(t):
     return t
 
 
+# ====================================================================
+# v53 —— 治 cell 高度欠账永久凝固(C-2) + 记忆位初始化死锁(C-1) + 首段专项
+#
+# ★本版归因见 MSG_V53_C2 的长篇 docstring; 一句话版本:
+#   `deferred debt CONSUMED` 打印了 105 次, 而同一 tick 的 `preSVH`
+#   恒为 1004.0(欠 268.3pt) —— 「宣告成功但实际未落地」的谎言就是病根。
+# ====================================================================
+
+
+def fix_shortcircuit_probe_v53(t):
+    """v53-P + v53-C2(infra 侧): 三条滑动期高度短路各埋探针, 并在欠账「熟」后放行。
+
+    幂等: 已注入过则原样返回。
+    """
+    if "// [V53-PROBE] 滑动期高度短路三来源诊断" in t:
+        return t
+
+    # ---- 1. 字段 + 探针函数插进类体 ----
+    ANCHOR_F = """    private var seededHeight: CGFloat?
+    private var seededWidth: CGFloat?
+"""
+    if ANCHOR_F not in t:
+        raise RuntimeError(
+            "fix_shortcircuit_probe_v53: ★找不到字段锚点 "
+            "`private var seededWidth: CGFloat?` —— 类体结构变了, "
+            "必须更新本函数后再发版(否则 v53 的三条短路会引用不存在的字段, "
+            "编译期才炸, 装机前发现不了)")
+    NEW_F = ANCHOR_F + MSG_V53_P_BLOCK
+    t = t.replace(ANCHOR_F, NEW_F, 1)
+
+    # ---- 2. A 路(dedup): 加守卫 + 埋探针 ----
+    A_OLD = """        if let cached = lastComputedHeight,
+           let cachedW = lastComputedWidth,
+           abs(layoutAttributes.size.width - cachedW) < 1 {
+            let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
+            copy.size.width = cachedW
+            copy.size.height = cached
+"""
+    if A_OLD not in t:
+        raise RuntimeError(
+            "fix_shortcircuit_probe_v53: ★找不到 A 路(dedup)锚点 —— "
+            "三条短路里最短的那条变了形态, 必须更新本函数")
+    A_NEW = A_OLD.replace(
+        "           abs(layoutAttributes.size.width - cachedW) < 1 {",
+        "           abs(layoutAttributes.size.width - cachedW) < 1,\n"
+        "           // [V53-C2] 已知欠账且已持续一帧以上 ⇒ 不得返回这个欠账高度。\n"
+        "           // 见 `v53NotePendingDebt` 的 docstring：不清这一条，`preSVH` 会永远\n"
+        "           // 停在首次提交时的欠账值上（实测 1004.0，欠 268.3pt ≈ 8 行）。\n"
+        "           !v53DebtIsRipe {") + """            // [V53-PROBE] A 路：dedup 短路命中。
+            Self._v53Note(.dedup, height: cached, width: cachedW,
+                           pendingDebt: v53PendingHeightDebt)
+"""
+    t = t.replace(A_OLD, A_NEW, 1)
+
+    # ---- 3. B 路(滑动期 cached): 加守卫 + 埋探针 ----
+    B_OLD = """            if layout.deferSelfSizing || streamingActive,
+               !isStreamingItem,
+               let cached = lastComputedHeight, let cachedW = lastComputedWidth,
+               abs(layoutAttributes.size.width - cachedW) < 1 {
+                let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
+                copy.size.width = cachedW
+                copy.size.height = cached
+"""
+    if B_OLD not in t:
+        raise RuntimeError(
+            "fix_shortcircuit_probe_v53: ★找不到 B 路(滑动期 cached)锚点 —— "
+            "这条短路是「一下卡字一下不卡字」的直接开关, 形态变了必须更新")
+    B_NEW = B_OLD.replace(
+        "               abs(layoutAttributes.size.width - cachedW) < 1 {",
+        "               abs(layoutAttributes.size.width - cachedW) < 1,\n"
+        "               // [V53-C2] 同 A 路：欠账已熟时不许拿缓存高度挡住真实测量。\n"
+        "               // 这条短路是滑动期「一下卡字一下不卡字」的直接开关 ——\n"
+        "               // 滚动中它返回 1004（尾部裁掉），滚动停止它失效、真实测量\n"
+        "               // 把高度修对，文字又完整。用户的观感就是来回闪。\n"
+        "               !v53DebtIsRipe {") + """                // [V53-PROBE] B 路：滑动/流式期 cached 短路命中。
+                Self._v53Note(.windowCached, height: cached, width: cachedW,
+                               pendingDebt: v53PendingHeightDebt)
+"""
+    t = t.replace(B_OLD, B_NEW, 1)
+
+    # ---- 4. C 路(seededHeight): 加守卫 + 埋探针 ----
+    # ★C_OLD 必须**一路包到 `copy.size.height = sh`** ——
+    #   探针要插在赋值**之后**(记的是即将 return 的那组值),
+    #   锚点范围不够就够不着那一行。第一版只锚到 if 头就收尾,
+    #   结果派生的 C_NEW 里根本没有赋值行, 探针无处可插。
+    # ⇒ 纪律: **探针的锚点范围要覆盖「探针要插的那一行」**,
+    #   别以为「先改 if 头, 探针另找地方插」—— 两步合成一处替换时,
+    #   锚点必须一次给全, 否则中途就断了。
+    C_OLD = """        if let sh = seededHeight, let sw = seededWidth,
+           let cv = superview as? UICollectionView,
+           abs(cv.bounds.width - sw) < 1 {
+            seededHeight = nil
+            seededWidth = nil
+            lastComputedHeight = sh
+            lastComputedWidth = layoutAttributes.size.width
+            lastMeasureMediaTime = CACurrentMediaTime()
+            let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
+            copy.size.height = sh
+"""
+    if C_OLD not in t:
+        raise RuntimeError(
+            "fix_shortcircuit_probe_v53: ★找不到 C 路(seededHeight)锚点 —— "
+            "这是「清缓存后旧高又回来了」的第二个来源, 形态变了必须更新")
+    C_NEW = C_OLD.replace(
+        "           abs(cv.bounds.width - sw) < 1 {",
+        "           abs(cv.bounds.width - sw) < 1,\n"
+        "           // [V53-C2] 同 A/B 路：种子高度若是欠账的那个值，不能再种回去。\n"
+        "           // 实测这条是「清缓存后旧高又回来了」的第二个来源 ——\n"
+        "           // configureCell 会把 memo 里的 1004 再写一次 seededHeight。\n"
+        "           !v53DebtIsRipe {")
+    # ★探针必须紧跟 `copy.size.height = sh`(即**赋值之后**), 不能跟在 if 头后 ——
+    #   跟在 if 头后会落在 `seededHeight = nil` 之前, 记的是**还没播种**的
+    #   那一刻, 装机日志的 src/w/h 三个读数全部对不上实际返回的那一份。
+    #   ⇒ 纪律: 探针的位置语义是「**即将 return 的那组值**」,
+    #     插在赋值之前就变成了「即将开始改的那组值」, 两者不是一回事。
+    C_PROBE = "            let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes\n            copy.size.height = sh\n"
+    if C_PROBE not in C_NEW:
+        raise RuntimeError(
+            "fix_shortcircuit_probe_v53: ★C 路探针锚点(赋值后)不在形态内 —— "
+            "C 路改了赋值位置, 必须先确认探针该插在哪一行")
+    C_NEW = C_NEW.replace(C_PROBE, C_PROBE + """            // [V53-PROBE] C 路：seededHeight 短路命中。
+            Self._v53Note(.seeded, height: sh, width: sw,
+                           pendingDebt: v53PendingHeightDebt)
+""", 1)
+    t = t.replace(C_OLD, C_NEW, 1)
+    return t
+
+
 def verify_debtguard_snapshot_v52(t):
     """校验 v52-E —— 独立成函数。"""
     if t.count("// [V52-DEBT-PRE]") != 2:
@@ -6225,6 +6847,502 @@ def verify_debtguard_snapshot_v52(t):
         raise RuntimeError(
             "verify_debtguard_snapshot_v52: 判据段应恰好 1 条 NSLog, "
             "实为 %d 条" % seg.count("NSLog("))
+    return t
+
+
+def fix_memgate_deadlock_v53(t):
+    """v53-C1: 打破 v52-A 的记忆位初始化死锁, 并拒绝污染宽度进记忆位。
+
+    幂等: 已注入过则原样返回。
+
+    ★本函数只做**一处**替换, 从 `var _v52sane = 1` 后一直换到 v52 记忆位
+      写入那行结束 —— 因为 `_v52ok` 的暴露(声明上移 + 贴边分支置 false +
+      else 分支去声明化)与 `_v53memW` 的插入是**同一段连续文本**,
+      拆成两次替换必然出现「第二次的锚点已被第一次吃掉」。
+      ⇒ 纪律: **同一段文本上的多处改动合成一次替换**;
+        分多次替换时, 后一次的锚点必须落在前一次**没碰过**的区间里,
+        且要显式验证这一点(本版第一版就漏了, 报「锚点失效」)。
+    """
+    if "// [V53-C1] 把闸门的判别结论暴露给下面的记忆位写入逻辑。" in t:
+        return t
+
+    # ★锚点右界是 `// [V52-PROBE]` 那一行**之前** —— 不能多吃也不能少吃:
+    #   多吃会把 v52 自己的探针一起换掉(它的段右界依赖 v52 判据);
+    #   少吃会漏掉 v53 的 [V53-MEM] 探针。
+    ANCHOR = """            var _v52w = _v52frmW > 1 ? min(_v52frmW, _cvW) : _cvW
+            var _v52sane = 1
+            if _edgeTouch {
+                // 贴边态: 目标净宽就是 cvW-32(inset 16/16 已在上面设好)。
+                if abs(_v52w - (_cvW - 32)) > 2 {
+                    _v52w = _cvW - 32
+                    _v52sane = 0
+                }
+            } else {
+                var _v52ok = abs(_v52w - _cvW) <= 2
+                if !_v52ok, let _v52last = ios15LastSaneContentW, _v52last > 100 {
+                    _v52ok = abs(_v52w - _v52last) <= 2
+                }
+                if !_v52ok {
+                    // 回落: 上一次排版正确时用过的宽度。都没有就用全屏宽减内边距。
+                    _v52w = ios15LastSaneContentW ?? (_cvW - 32)
+                    _v52sane = 0
+                }
+            }
+            if _v52sane != 0, _v52w > 100, abs(_v52w - _cvW) > 2 {
+                ios15LastSaneContentW = _v52w
+            }
+"""
+    if ANCHOR not in t:
+        raise RuntimeError(
+            "fix_memgate_deadlock_v53: ★找不到 v52 闸门段锚点 —— "
+            "v52-A 的形态变了(可能已被本版之外的改动碰过), 必须更新本函数。"
+            "注意: 只改判据文本不改形态时, 锚点仍应命中; 命中不了说明"
+            "**形态**变了, 别去改判据文本")
+    t = t.replace(ANCHOR, BLOCK_V53_C1, 1)
+    return t
+
+
+def fix_debtgate_verifiable_v53(t):
+    """v53-C2(markdown view 侧): 上报欠账给 cell + CONSUMED 判据改成可验证。
+
+    幂等: 已注入过则原样返回。
+    """
+    if "func _v53ReportDebtToCell(" in t:
+        return t
+
+    # ---- 1. 上报入口, 紧跟 findCell() ----
+    F_OLD = """    private func findCell() -> UICollectionViewCell? {
+        var view: UIView? = superview
+        while let v = view {
+            if let cell = v as? UICollectionViewCell { return cell }
+            view = v.superview
+        }
+        return nil
+    }
+"""
+    if F_OLD not in t:
+        raise RuntimeError(
+            "fix_debtgate_verifiable_v53: ★找不到 findCell 锚点 —— "
+            "它在别的文件或已改形态, 上报入口没有落脚点")
+    t = t.replace(F_OLD, F_OLD + "\n" + BLOCK_V53_C2_REPORT, 1)
+
+    # ---- 2. E 判据处: 上报欠账 / 清账时复位 ----
+    #
+    # ★右界必须是 `deferredCorrectionPending = _v38WasPending` 那一行 ——
+    #   它是 v52 借 flag 机制的**末尾标记**, 左界是 `let _v38WasPending`。
+    #   这两行夹起来的整块就是 v52-E 的全部动作, 我们只在 `invalidateCellSizeIfNeeded()`
+    #   前后加东西, 不改它。
+    E_OLD = """                let _v38WasPending = deferredCorrectionPending
+                // 借上游既有开关绕过 SKIP-DEDUPE 指纹早退(该 flag 的既有语义就是
+                // "有欠账, 不许被指纹吞掉")。用完立刻还原, 不污染 deferSelfSizing 那条路。
+                deferredCorrectionPending = true
+                invalidateCellSizeIfNeeded()
+                deferredCorrectionPending = _v38WasPending
+            }
+"""
+    if E_OLD not in t:
+        raise RuntimeError(
+            "fix_debtgate_verifiable_v53: ★找不到 E 判据锚点 —— "
+            "欠账上报必须紧贴 `invalidateCellSizeIfNeeded()` 之前, "
+            "位置变了要先确认上报还拿不拿得到差值")
+    # ★E_OLD 尾部那行 `deferredCorrectionPending = _v38WasPending` 之后紧跟
+    #   一个 `}`(收束整个 if/else), 所以 E_NEW 必须把它**连同那个 } 一起**
+    #   重写 —— 只在 `invalidateCellSizeIfNeeded()` 前后插东西的话,
+    #   新加的 `} else {` 会多出一层, 恢复行也会出现两次。
+    E_NEW = E_OLD.replace(
+        "                invalidateCellSizeIfNeeded()\n"
+        "                deferredCorrectionPending = _v38WasPending\n"
+        "            }\n",
+        BLOCK_V53_C2_E + "                invalidateCellSizeIfNeeded()\n"
+        "                deferredCorrectionPending = _v38WasPending\n"
+        "            } else {\n" + BLOCK_V53_C2_CLR + "            }\n")
+    t = t.replace(E_OLD, E_NEW, 1)
+
+    # ---- 3. CONSUMED 判据: 改成「cell 实际高达标」才算还清 ----
+    C_OLD = """                if applyCellCorrection() {
+                    cellSizeLogger.info("[invalidateCell] deferred debt CONSUMED — view height stable at \\(String(format: "%.1f", newHeight)), cell invalidated")
+                    deferredCorrectionPending = false
+                } else {
+"""
+    if C_OLD not in t:
+        raise RuntimeError(
+            "fix_debtgate_verifiable_v53: ★找不到 CONSUMED 判据锚点 —— "
+            "这一段是 v53-C2 的核心, 形态变了必须重新确认判据")
+    t = t.replace(C_OLD, BLOCK_V53_C2_CONSUMED, 1)
+    return t
+
+
+def fix_first_para_settle_v53(t):
+    """v53-FIRST: settle 入口不再依赖已被空转清掉的 flag。
+
+    幂等: 已注入过则原样返回。
+    """
+    if "// [V53-DEBT] 判据源从「flag 是否为 true」换成" in t:
+        return t
+
+    S_OLD = """    func consumeDeferredCorrectionIfNeeded() {
+        guard deferredCorrectionPending else { return }
+        // [T-ios-defer-debt-offscreen] `attached` distinguishes the two
+        // consumers in the log: settle (window != nil, the cell was visible)
+        // vs the new re-attach replay (this view just came back on screen
+        // still owing a correction — the case that previously had no consumer).
+        cellSizeLogger.info("[DeferDebt] CONSUME — paying deferred correction attached=\\(self.window != nil)")
+        invalidateCellSizeIfNeeded()
+    }
+"""
+    if S_OLD not in t:
+        raise RuntimeError(
+            "fix_first_para_settle_v53: ★找不到 settle 入口锚点 —— "
+            "首段专项依赖在此改判据源, 形态变了必须重新确认")
+    t = t.replace(S_OLD, "    func consumeDeferredCorrectionIfNeeded() {\n"
+                  + BLOCK_V53_FIRST + "    }\n", 1)
+    return t
+
+
+def verify_shortcircuit_probe_v53(t, infra):
+    """校验 v53-P —— 滑动期高度短路三来源探针(infra = MessageListInfrastructure.swift)。"""
+    F = "verify_shortcircuit_probe_v53"
+
+    # ---- 枚举与计数器必须存在 ----
+    for pat, why in (
+            ("case none = 0, dedup = 1, windowCached = 2, seeded = 3",
+             "四值枚举是探针的判读基础(装机日志靠 src 数字区分来源)"),
+            ("private static var _v53DedupHit: UInt = 0",
+             "A 路累计计数缺失 ⇒ 无法证明 A 是否吞掉了全部"),
+            ("private static var _v53WindowHit: UInt = 0",
+             "B 路累计计数缺失 ⇒ 无法区分 A/B 各自贡献"),
+            ("private static var _v53SeededHit: UInt = 0",
+             "C 路累计计数缺失 ⇒ seeded 是否又把旧高塞回来无法判读"),
+            ("private static var _v53LiveMeasure: UInt = 0",
+             "真实测量计数缺失 ⇒ 无法确认短路是否真被绕过(必须有 live > 0)")):
+        if pat not in infra:
+            raise RuntimeError("%s: ★%s —— %s" % (F, pat, why))
+
+    # ---- 探针函数 ----
+    if "private static func _v53Note(" not in infra:
+        raise RuntimeError("%s: ★探针函数 `_v53Note` 缺失" % F)
+    for f in ("dedup=", "window=", "seeded=", "live=",
+              "src=", "h=%.1f", "w=%.1f", "debt=%.1f"):
+        if f not in infra:
+            raise RuntimeError(
+                "%s: 探针缺字段 %r —— 装机判据要靠它区分三来源并核对欠账"
+                % (F, f))
+
+    # ---- 三条短路各埋一次, 且恰好一次 ----
+    for tag, src in (("// [V53-PROBE] A 路", ".dedup"),
+                     ("// [V53-PROBE] B 路", ".windowCached"),
+                     ("// [V53-PROBE] C 路", ".seeded")):
+        if infra.count(tag) != 1:
+            raise RuntimeError(
+                "%s: 标记 %s 计数应为 1, 实为 %d —— 三条短路必须各埋一次, "
+                "少埋则该路径的命中数永远为 0, 装机无法判读"
+                % (F, tag, infra.count(tag)))
+        i = infra.find(tag)
+        j = infra.find("Self._v53Note(%s" % src, i)
+        if j < 0 or j - i > 400:
+            raise RuntimeError(
+                "%s: 标记 %s 之后 400 字符内未见对应的 _v53Note(%s —— "
+                "探针与它标注的短路不是同一处, 装机日志会把来源标错"
+                % (F, tag, src))
+
+    # ---- 零行为改动: 探针不得改变任何 return ----
+    for tag in ("// [V53-PROBE] A 路", "// [V53-PROBE] B 路",
+                "// [V53-PROBE] C 路"):
+        i = infra.find(tag)
+        seg = _strip_swift_noise(infra[i:i + 420])
+        if "return" in seg.replace("return copy", ""):
+            raise RuntimeError(
+                "%s: 探针段内出现 return —— P 是**只读诊断**, "
+                "改动返回值会让「探针影响被测对象」, 判据失去意义" % F)
+
+    # ★S13 补漏: 只抓 `return` 关键字**不够**。
+    #   sabotage 把 `copy.size.height = cached` 改成 `cached * 1.5` ——
+    #   `return copy` 一个字都没动, 「零 return 改动」检查完全放行,
+    #   但短路已经变成「返回 1.5 倍缓存高度」, 探针成了干扰源。
+    #   ⇒ 必须把**高度赋值的右值**也锁死: 每条短路只能原样返回它自己
+    #   宣称要返回的那个值(A/B = lastComputedHeight, C = seededHeight)。
+    #
+    # ★段右界必须用「**本路探针标记之后**的第一个 return copy」,
+    #   不能用「if 头之后 N 字符内」—— 后者的 N 会被路上那 20 多行
+    #   解释性注释顶破, 而注释长度是随版本漂移的, 边界迟早误抓。
+    #   v53 第二版就栽在这: 先取 900 字符, S13 破坏后右界刚好多 6 个字符
+    #   就越界, 报了个假理由(段右界抓错)把 sabotage 拦住 ——
+    #   拦住它的不是我们要的右值检查, 判据等于没测到点子上。
+    #   改成「探针之后第一个 return copy」后, 边界只取决于代码结构本身。
+    #   字符上限仅作「段没飞出去」的兜底: 实测 A/B/C 分别是 570/198/170,
+    #   取 800 留足余量。真正的正确性保障是下一条**语义**校验。
+    for head_anchor, tag, allowed, why in (
+            ("if let cached = lastComputedHeight,",
+             "// [V53-PROBE] A 路", "cached",
+             "A(dedup) 必须原样返回 lastComputedHeight"),
+            ("if layout.deferSelfSizing || streamingActive,",
+             "// [V53-PROBE] B 路", "cached",
+             "B(滑动期 cached) 必须原样返回 lastComputedHeight"),
+            ("if let sh = seededHeight, let sw = seededWidth,",
+             "// [V53-PROBE] C 路", "sh",
+             "C(seeded) 必须原样返回 seededHeight")):
+        i = infra.find(head_anchor)
+        if i < 0:
+            raise RuntimeError(
+                "%s: ★找不到短路 if 头 %r —— 判据已对不上产物结构" % (F, head_anchor))
+        tp = infra.find(tag, i)
+        if tp < 0 or tp - i > 800:
+            raise RuntimeError(
+                "%s: ★短路 %s 的 if 头之后 800 字符内没有探针标记 %r —— "
+                "探针与短路不是同一处" % (F, head_anchor, tag))
+        j = infra.find("return copy", tp)
+        if j < 0 or j - tp > 800:
+            raise RuntimeError(
+                "%s: ★%s 探针之后 800 字符内没有 `return copy` —— "
+                "段右界抓错, 判据读的不是这条短路" % (F, head_anchor))
+        seg = _strip_swift_noise(infra[i:j])
+        # ★语义校验才是正确性保障: 段里必须**恰好一处**高度赋值,
+        #   且右值就是本路宣称要返回的缓存/种子高度。多于一处说明段
+        #   越界吃到了别的短路; 一处都没有说明段截在了赋值之前。
+        seen = re.findall(r"copy\.size\.height\s*=\s*([^;\n]+)", seg)
+        if len(seen) != 1:
+            raise RuntimeError(
+                "%s: ★短路 %s 段内 `copy.size.height` 赋值有 %d 处(期望恰好 1) —— "
+                "0 处=段截在赋值之前, 多处=段越界吃到了别的短路"
+                % (F, head_anchor, len(seen)))
+        if seen[0].strip() != allowed:
+            raise RuntimeError(
+                "%s: ★%s 段内 `copy.size.height` 被赋成 `%s`, 期望 `%s` —— "
+                "P 是**只读诊断**, 改高度就变成了新的抢高时机, "
+                "探针污染了被测对象, 装机日志的三来源计数不再可信"
+                % (F, why, seen[0].strip()[:40], allowed))
+    return t
+
+
+def verify_debtgate_release_v53(t, infra):
+    """校验 v53-C1/C2 —— 记忆位死锁打破 + 欠账放行 + CONSUMED 判据可验证。"""
+    F = "verify_debtgate_release_v53"
+
+    # ================= C1: 记忆位死锁 =================
+    if "// [V53-C1]" not in t:
+        raise RuntimeError("%s: 缺 [V53-C1] 标记" % F)
+    if "let _v53memW: CGFloat? = {" not in t:
+        raise RuntimeError(
+            "%s: ★缺 `_v53memW` —— 记忆位的第一次写入只能来自它; "
+            "没有它就仍是 v52 那个「sane 恒 0 ⇒ 永不入记忆位」的死锁"
+            % F)
+    # ★核心: 必须用闸门判别结论挡污染宽度。375.7 的 dev=14.3 落在
+    #   [1, cvW*0.5] 区间内, 光靠区间判据会被当成真实布局宽写进记忆位
+    #   ⇒ 下一帧回落目标变 375.7 ⇒ v52 归零的污染复活。
+    i = t.find("let _v53memW: CGFloat? = {")
+    seg = _strip_swift_noise(t[i:t.find("}()", i) + 3])
+    if "guard _v52ok else { return nil }" not in seg:
+        raise RuntimeError(
+            "%s: ★`_v53memW` 没有用 `guard _v52ok` 拒绝污染宽度 —— "
+            "375.7(dev=14.3) 落在 [1, cvW*0.5] 区间内会被写进记忆位, "
+            "下一帧回落目标变 375.7, v52 归零的污染会复活" % F)
+    for pat in ("if _edgeTouch { return _cvW - 32 }",
+                "if _dev <= 1 { return nil }",
+                "if _dev <= _cvW * 0.5 { return _v52w }"):
+        if pat not in seg:
+            raise RuntimeError(
+                "%s: `_v53memW` 缺分支 %r —— 贴边/全屏/真实布局宽三种情形"
+                "必须各有判据, 少一条就有一类 cell 记不进记忆位" % (F, pat))
+    # 记忆位写入必须真的发生
+    if "ios15LastSaneContentW = _mw" not in t:
+        raise RuntimeError(
+            "%s: ★记忆位没有写入 `_mw` —— 死锁没打破" % F)
+    # 污染标志必须来自闸门本身
+    if "var _v52ok = true" not in t:
+        raise RuntimeError(
+            "%s: ★闸门判别结论 `_v52ok` 没有暴露到闸门外 —— "
+            "C1 依赖它区分「真实布局宽」与「污染过渡宽」" % F)
+    # 新探针
+    if "[V53-MEM]" not in t:
+        raise RuntimeError("%s: 缺 [V53-MEM] 探针" % F)
+    for f in ("saneHit=", "memHit=", "mem=", "picked="):
+        if f not in t:
+            raise RuntimeError(
+                "%s: [V53-MEM] 缺字段 %r —— saneHit/memHit 必须能分别"
+                "证明「闸门放行过」与「记忆位写入过」" % (F, f))
+
+    # ================= C2: 三条短路放行 =================
+    if "// [V53-C2]" not in infra:
+        raise RuntimeError("%s: 缺 [V53-C2] 标记" % F)
+    for pat, why in (
+            ("func v53NotePendingDebt(", "欠账上报入口缺失"),
+            ("var v53DebtIsRipe: Bool { v53DebtSeenCount >= 2 }",
+             "欠账「熟」的判据缺失 —— 必须两拍, 首帧仍走短路"),
+            ("var v53PendingHeightDebt: CGFloat = 0",
+             "cell 侧不知道欠账 ⇒ 短路无从判断")):
+        if pat not in infra:
+            raise RuntimeError("%s: ★%s —— %s" % (F, pat, why))
+
+    # 三条短路各加一个 !v53DebtIsRipe —— 少加一条就有一路仍能挡住真实测量
+    n_guard = infra.count("!v53DebtIsRipe {")
+    if n_guard != 3:
+        raise RuntimeError(
+            "%s: ★`!v53DebtIsRipe` 守卫应出现 **3** 次(A/B/C 三条短路各一), "
+            "实为 %d —— 少一条则该路仍能把欠账高度返回回去, "
+            "preSVH 会继续卡在首次提交的值上(实测 1004.0, 欠 268.3pt)"
+            % (F, n_guard))
+
+    # ★S14 补漏: 光数「`!v53DebtIsRipe {` 出现 3 次」是不够的。
+    #   破坏方式是把多行 if 条件里的**逗号**换成**花括号**:
+    #       abs(cv.bounds.width - sw) < 1,     ← 正常: 仍在条件链里
+    #       abs(cv.bounds.width - sw) < 1 {    ← 破坏: if 体提前闭合,
+    #   后面那行 `!v53DebtIsRipe {` 就变成了**另一条独立语句**。
+    #   守卫文本仍在(计数照样是 3), 但它已经不再约束这条短路 ——
+    #   判据看起来全绿, 装机后 C 路照样卡死。
+    #   ⇒ 必须逐条验证: 守卫之前那行必须是**逗号结尾**的条件延续行。
+    for head_anchor, why in (
+            ("if let cached = lastComputedHeight,",
+             "A(dedup)"),
+            ("if layout.deferSelfSizing || streamingActive,",
+             "B(滑动期 cached)"),
+            ("if let sh = seededHeight, let sw = seededWidth,",
+             "C(seeded)")):
+        i = infra.find(head_anchor)
+        if i < 0:
+            raise RuntimeError(
+                "%s: ★找不到短路 if 头 %r —— 判据已对不上产物结构"
+                % (F, head_anchor))
+        k = infra.find("!v53DebtIsRipe {", i)
+        if k < 0 or k - i > 900:
+            raise RuntimeError(
+                "%s: ★短路 %s 的 if 头之后 900 字符内没有 `!v53DebtIsRipe` —— "
+                "守卫没挂在这条短路上, 或段右界抓错" % (F, why))
+        # ★必须先剥注释再取上一行 —— 产物里守卫前面压着 2~3 行解释性注释,
+        #   直接看原始文本的上一行永远是 `// 停在首次提交时的欠账值上…`,
+        #   会把**正确实现**判成破坏(v53 第一版就栽在这, 报了个假失败)。
+        #   ⇒ 纪律: **查语法结构必须先剥注释**, 同 §FIRST 的「两层分开用」。
+        code = _strip_swift_noise(infra[i:k]).rstrip()
+        prev = code.rsplit("\n", 1)[-1].strip()
+        if not prev.endswith(","):
+            raise RuntimeError(
+                "%s: ★%s 的 `!v53DebtIsRipe` 前面一行(剥注释后)是 `%s`, "
+                "不是以 `,` 结尾的条件延续行 —— 说明 if 体在这行提前闭合, "
+                "守卫已经变成**另一条独立语句**, 不再约束这条短路; "
+                "C 路会继续拿 1004 挡住真实测量" % (F, why, prev[-40:]))
+
+
+    # 欠账清掉必须复位, 否则短路对该 cell 永久失效
+    i = infra.find("func v53NotePendingDebt(")
+    seg = _strip_swift_noise(infra[i:infra.find("\n    }", i) + 6])
+    if "debt <= 1" not in seg:
+        raise RuntimeError(
+            "%s: ★欠账清掉(debt<=1)时必须复位计数 —— 否则 v53DebtSeenCount "
+            "永远停在 >=2, 三条短路对该 cell 永久失效, 退化成每帧全量重测"
+            % F)
+    if "v53DebtSeenCount = 0" not in seg:
+        raise RuntimeError(
+            "%s: ★复位语句 `v53DebtSeenCount = 0` 缺失" % F)
+
+    # ================= C2: CONSUMED 判据可验证 =================
+    if "_cellH >= newHeight - 1" not in t:
+        raise RuntimeError(
+            "%s: ★CONSUMED 判据没有改成「cell 实际高达标」 —— "
+            "v52 只验 `applyCellCorrection()` 的返回值(调用成功), "
+            "而它打印了 105 次 CONSUMED 时 preSVH 纹丝不动(恒 1004.0)" % F)
+    if "[V53-HOLD]" not in t:
+        raise RuntimeError(
+            "%s: 缺 [V53-HOLD] 探针 —— 装机后要靠它确认旧判据确实在空转" % F)
+    for f in ("cellH=", "need=", "stillShort=", "retries="):
+        if f not in t:
+            raise RuntimeError("%s: [V53-HOLD] 缺字段 %r" % (F, f))
+    # 未达标时必须保持 pending, 而不是清标志
+    i = t.find("let _cellH = superview?.frame.size.height ?? 0", t.find("[V53-HOLD]") - 2000)
+    if i < 0:
+        raise RuntimeError("%s: 找不到 CONSUMED 判据的 `_cellH` 取样" % F)
+    seg = _strip_swift_noise(t[i:t.find("[V53-HOLD]", i) + 1200])
+    if "deferredCorrectionPending = false" not in seg:
+        raise RuntimeError(
+            "%s: 未达标分支里必须有 `deferredCorrectionPending = false` "
+            "(只出现在**达标**分支) —— 若未达标也清标志, 欠账会被永久丢弃, "
+            "这正是 v52 提前清 flag 导致首段永远等不到纠正的机制" % F)
+    if "_v53ReportDebtToCell(newHeight - _cellH)" not in seg:
+        raise RuntimeError(
+            "%s: 未达标分支必须再报一次欠账(把计数推到「熟」逼短路放行) —— "
+            "缺了它会停在第一帧, 短路永远不放行, 纠正永远不落地" % F)
+
+    # ================= 上报链路完整性 =================
+    if "func _v53ReportDebtToCell(" not in t:
+        raise RuntimeError("%s: 缺 `_v53ReportDebtToCell` 上报入口" % F)
+    if "cell.v53NotePendingDebt(debt)" not in t:
+        raise RuntimeError(
+            "%s: 上报函数没有真正调 cell 的入口 —— 欠账送不到 cell, "
+            "三条短路无从判断" % F)
+    # E 判据处必须上报(唯一能拿到 needH-preSVH 的地方)
+    if "_v53ReportDebtToCell(_needH - _v52PreSVH)" not in t:
+        raise RuntimeError(
+            "%s: ★E 判据处没有上报欠账 —— 那是唯一知道差值的地方, "
+            "不上报则 cell 永远不知道欠账, 三条短路全部照旧短路" % F)
+    # 清账时必须复位
+    if t.count("_v53ReportDebtToCell(0)") < 1:
+        raise RuntimeError(
+            "%s: 欠账清掉时必须 `_v53ReportDebtToCell(0)` 复位 —— "
+            "否则计数卡在 >=2, 短路永久失效" % F)
+    return t
+
+
+def verify_first_para_settle_v53(t):
+    """校验 v53-FIRST —— 首段专项: settle 入口不依赖已空转的 flag。"""
+    F = "verify_first_para_settle_v53"
+    i = t.find("func consumeDeferredCorrectionIfNeeded()")
+    if i < 0:
+        raise RuntimeError("%s: 找不到 consumeDeferredCorrectionIfNeeded" % F)
+    # ★段右界必须用**行首的函数尾括号**, 不能用 `\n    }` —— 函数体里
+    #   嵌套的闭包/if 也会以 `    }` 结束(缩进相同), 抓到的是内层。
+    #   v53 第一版就栽在这: 段被截在内层 guard 之前, 于是判据读到的
+    #   是注释里的 `guard deferredCorrectionPending` 字样, 报了个假失败。
+    #   ⇒ 纪律: **段边界紧贴被测代码, 且用能唯一定位的锚点**。
+    k = t.find("invalidateCellSizeIfNeeded()", i)
+    j = t.find("\n    }", k)
+    raw = t[i:j + 6]
+    seg = _strip_swift_noise(raw)
+    # ★诊断字段要在**原始文本**里查, 不能在剥注释后的段里查 ——
+    #   `stillOwing=\(_stillOwing)` 这种插值在 _strip_swift_noise 里
+    #   会被当字符串字面量剥掉。第一版查错层, 报了个假失败。
+    #   ⇒ 纪律: **代码语义查剥注释段, 诊断字符串查原始段**, 两层分开用。
+    raw_seg = raw
+    if "guard deferredCorrectionPending" not in seg and "_stillOwing" not in seg:
+        raise RuntimeError(
+            "%s: 段边界抓错 —— 取到的段里既没有 guard 也没有 _stillOwing, "
+            "说明右界截到了函数体内部(嵌套闭包的 `    }`)。"
+            "判据读的不是被测代码, 结论无效" % F)
+
+    # ★原 guard 是 flag 单条件 —— 正是它把首段挡在门外
+    if re.search(r"guard\s+deferredCorrectionPending\s+else\s*\{\s*return\s*\}",
+                 seg):
+        raise RuntimeError(
+            "%s: ★`guard deferredCorrectionPending` 仍是唯一入口 —— "
+            "v52 的 CONSUMED 判据会**提前清掉** flag, 于是 settle 时刻"
+            "这个视图被挡在门外, 首段永远等不到纠正(实测 preSVH 恒 61.3)" % F)
+    # 必须改成「flag 或 真欠账」
+    if "_stillOwing" not in seg:
+        raise RuntimeError(
+            "%s: 缺 `_stillOwing` —— 入口必须换成「flag **或** cell 真的还欠账」"
+            % F)
+    if not re.search(r"guard\s+deferredCorrectionPending\s*\|\|\s*_stillOwing", seg):
+        raise RuntimeError(
+            "%s: ★guard 没有改成 `deferredCorrectionPending || _stillOwing` —— "
+            "只留 flag 等于没修(已被提前清空), 只留 stillOwing 则丢掉 settle 语义"
+            % F)
+    # 欠账必须由真实测量得出, 且阈值 >1pt
+    for pat, why in (
+            ("let _debt = _need - _cellH", "欠账必须由需求高减实际高得出"),
+            ("_debt > 1", "欠账阈值应为 1pt —— 1pt 内属亚像素噪声, 不算欠账"),
+            ("let _cellH = superview?.frame.size.height ?? 0",
+             "必须读 cell 的**实际容器高**, 不是视图自己的高(v52 就是"
+             "拿视图高判欠账才空转的)")):
+        if pat not in seg:
+            raise RuntimeError("%s: ★%s —— %s" % (F, pat, why))
+    # 诊断字段(在原始段里查, 见 raw_seg 处的说明)
+    for f in ("stillOwing=", "cellH=", "need="):
+        if f not in raw_seg:
+            raise RuntimeError(
+                "%s: 诊断缺字段 %r —— 装机要靠 stillOwing=1 确认首段走了新入口"
+                % (F, f))
+    # 欠账要上报给 cell, 否则首段同样被短路挡住
+    if "_v53ReportDebtToCell(_stillOwing ? _debt : 0)" not in seg:
+        raise RuntimeError(
+            "%s: 首段欠账必须上报给 cell —— 否则 C2 的三条短路仍会挡住它, "
+            "新入口等于空转" % F)
     return t
 
 
@@ -8157,6 +9275,23 @@ def main():
          MSG_V52_AB)
     edit("Views/Chat/SelectableMarkdownView.swift", fix_debtguard_snapshot_v52,
          MSG_V52_E)
+    # ---- v53: 治 cell 高度欠账永久凝固(C-2) + 记忆位死锁(C-1) + 首段专项 ----
+    # ★必须排在 v52 之后, 而且** infra 的注入要排在 markdown view 之前**:
+    #   v53-C2 的 markdown 侧要 `as? SelfSizingCell` 调 `v53NotePendingDebt`,
+    #   而那个方法由 infra 侧的注入定义。顺序反了的话 markdown 侧会引用
+    #   一个还不存在的 API —— 而 `edit()` 是**逐个文件**落盘的,
+    #   中途失败会留下半成品树。
+    # ⇒ 纪律: **跨文件的新增 API, 定义方必须先注入**;
+    #   本地单文件判据全绿也证明不了这一点(它们只看文本, 不做类型检查),
+    #   真正的把关在 CI 的 xcodebuild。
+    edit("Agent/MessageList/MessageListInfrastructure.swift",
+         fix_shortcircuit_probe_v53, MSG_V53_P)
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_memgate_deadlock_v53,
+         MSG_V53_C1)
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_debtgate_verifiable_v53,
+         MSG_V53_C2)
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_first_para_settle_v53,
+         MSG_V53_FIRST)
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
