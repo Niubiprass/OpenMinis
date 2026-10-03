@@ -4719,6 +4719,283 @@ def fix_width_reflow_v47(t):
     verify_width_reflow_v47(t)
     return t
 
+def fix_width_pin_v48(t):
+    """v48: 排版宽钉回目标宽 —— log17 归因「v47 只治了一半」后的收口。
+
+    ── log17 实测: v47 起了一半作用但没根治 ──
+
+    对比两版装机日志的 `V44-TEXTFRAME`:
+
+                     tcW=390   tcW=358   gap最小  gap最大   gap<1 的条数
+      log16 (v46)      69         8       8.1     75.2          0
+      log17 (v47)      48         8       8.0    117.5          0
+
+    两点关键:
+
+    1) `tcW` 与 `tvH - usedH` **完全同构, 零例外**:
+         tcW=358.0 → gap 恒为 8.0~8.3   (= textContainerInset 上下之和, 正常态)
+         tcW=390.0 → gap 为 30.5 / 117.5  (空壳)
+       len=229 那组最有说服力: 同一段文字, tcW=358 时 gap=8.1,
+       tcW=390 时 gap=30.5 —— 差值就是 390 宽排不下的那几行。
+
+    2) tcW=390 的帧从 69 降到 48, 说明 **v47 的重排确实触发了**,
+       但没根治: 碎片在 358 排完, SwiftUI 下一帧又把容器推回 390,
+       于是"重排→被推回→再重排"无限摆动。`tvH-needH` 全部 56 条为 0.0
+       (v45 的补高依然完美), 所以问题**只在宽度**, 不在高度。
+
+    ── 为什么 v47 必然治不好 ──
+
+    v47 只调`invalidateLayout`, **不写`textContainer.size.width`** ——
+    那是当时为了"不碰 v13/v34 抢宽雷区"刻意留的约束。但 TextKit 的
+    `ensureLayout` 只在**当前容器宽**下重排; 容器宽还是 390 时, 重排出来的
+    仍是 390 宽的行数, 一点用都没有。log17 的 tcW 分布直接证实了这一点:
+    v47 跑完之后仍有 48/56 帧的 tcW 是 390。
+
+    所以必须**同时把容器宽钉回 _realW2**, 让"排版用的宽"与"测高用的宽"
+    真正同源。这是一次新的抢宽, 因此本版把 v13/v34 的教训当成硬约束:
+
+    ── 防闪屏: 为什么这次抢宽不会重演 v13/v34 ──
+
+    v13/v34 翻车的原因是**在 SwiftUI 的布局 pass 之外无条件抢宽**, 且
+    抢到的宽与父视图语义宽不一致, 导致 SwiftUI 认为尺寸又变了、整棵
+    cell 重新走一遍 layout。本版与它们的差别是**有界且幂等**:
+
+      · **有界**: 目标宽 `_realW2` 不是新算的, 就是 v18 已经算好并写进
+        `textContainer` 的那个值(与 `sizeThatFits` 测高用的是同一个),
+        所以"排版宽 == 测高宽 == v18 认可的宽", 不引入第三方宽度。
+      · **幂等**: 判据是 `abs(tcW - _realW2) > 0.5`。已经在 358 时
+        不写、不重排, 稳态下**零额外开销**; 被 SwiftUI 推回 390 时才
+        拉回一次 —— 这是**纠偏**不是**竞争**。
+      · **不碰高度**: 一个高度写入都不加, v45 的 tvH 补高成果不受影响。
+      · **不碰 origin/bounds**: 只写 `textContainer.size.width`,
+        不动 `frame`/`bounds`, 所以不会触发"整体缩小"那类几何漂移。
+      · **在 v18 段内**: 复用 v18 已经算好的 `_realW2` 与它自己的
+        `if _ios15WRegrabbed` 块, 不新增独立的抢宽时机 ——
+        v13/v34 的事故都源于"另起一个时机去改别人算好的宽"。
+
+    ── 与 v47 的关系 ──
+
+    v47 的 `ios15LastLaidOutW` 判据**保留不动**: 它判的是"碎片有没有按
+    目标宽重排过", 与"容器宽有没有被钉住"是两个正交的问题。v48 只在
+    v47 判据成立的同一处, 补一次宽度写入 —— 两个判据合起来才是完整条件:
+
+        容器宽 == 目标宽  且  碎片按目标宽重排过
+
+    ── 为什么不能更激进(常驻钳宽) ──
+
+    "每帧无条件写 358"看着更彻底, 但那正是 v13/v34 翻车的形态: 与
+    SwiftUI 的布局 pass 正面竞争。本版只在 v47 判据(碎片与目标宽不
+    一致)时纠偏, 而碎片一致本身就说明布局已经稳定, 不需要再抢。
+
+    ★登记必须排在 v47 之后(锚点是 v47 注入的 `ios15LastLaidOutW` 回写)。
+    """
+    OLD = """            if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {
+                _ios15WRegrabbed = true
+            }"""
+    NEW = """            if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {
+                _ios15WRegrabbed = true
+            }
+            // [V48-PIN] log17 归因: v47 只治了一半 —— 重排触发了(tcW=390 的帧
+            // 69→48), 但 `textContainer.size.width` 仍是 390, 于是
+            // `ensureLayout` 照着 390 重排, 与按 358 算出的 `_needH` 依旧
+            // 不同源。log17 里 tcW 与 gap 完全同构、零例外:
+            //     tcW=358.0 → tvH-usedH 恒 8.0~8.3  (textContainerInset, 正常)
+            //     tcW=390.0 → tvH-usedH 为 30.5/117.5(空壳)
+            // len=229 那组最直接: 同一段文字, 358 宽 gap=8.1, 390 宽 gap=30.5。
+            //
+            // 修法: 碎片与目标宽不一致时, **连容器宽一起钉回** _realW2。
+            // 两者合起来才是完整条件 —— 容器宽==目标宽, 且碎片按目标宽重排过。
+            //
+            // **这不是新的抢宽时机**: 写在 v18 段内, 复用 v18 已算好的
+            // _realW2(与 sizeThatFits 测高用的是同一个值), 不引入第三方宽度。
+            // 判据 `abs(tcW-_realW2)>0.5` 保证幂等 —— 已在 358 时不写不重排,
+            // 稳态零开销; 被推回 390 才纠偏一次, 是**纠偏**不是**竞争**。
+            // v13/v34 翻车是因为在布局 pass 外无条件抢宽、与 SwiftUI 竞争,
+            // 本版恰好相反。只写 size.width, **不碰 frame/bounds/origin/高度**,
+            // 所以不会引起"整体缩小"那类几何漂移, 也不推翻 v45 的 tvH 补高。
+            if _ios15WRegrabbed, abs(textContainer.size.width - _realW2) > 0.5 {
+                textContainer.size.width = _realW2
+            }"""
+    if OLD not in t:
+        raise RuntimeError(
+            "fix_width_pin_v48: 未找到 v47 的重排判据锚点 —— "
+            "上游或 v47 结构变了, 必须更新 OLD 后再发版")
+    t = t.replace(OLD, NEW, 1)
+
+    verify_width_pin_v48(t)
+    return t
+
+
+# [V48-FORBIDDEN] v48 段内禁写的标识集合 —— 精确匹配。
+#   与 v47 的区别: v47 禁一切高度写入(它压根不该碰宽度), 而 v48 **要写宽度**,
+#   所以这里只禁高度与几何(origin/bounds/frame), 宽度不在禁用集合里。
+#   用子串会踩坑: `_ios15WRegrabbed` 里含 "eight"(r-EIGHT-grabbed)。
+_V48_FORBIDDEN_LHS = frozenset((
+    "height", "Height", "h", "needH", "newHeight", "lastComputedHeight",
+    "ios15LastNeededH", "ios15LastNeededH", "frame", "bounds", "origin",
+    "_hf", "_needH", "_needH39", "sizeToFit", "ios15LastSaneSVFrame",
+))
+
+# v48 允许的唯一写入 —— 精确等值, 任何变体都算违规。
+#   理由: 抢宽翻车几乎都源于"多写了几样"。白名单比黑名单可靠:
+#   多写一个 frame.origin 就足以让整棵 cell 重新布局(v13/v34 的教训)。
+_V48_ALLOWED_WRITE = "textContainer.size.width = _realW2"
+
+
+# v48 段判据的编译期兜底基线 —— 上游 SelectableMarkdownView 自身的花括号
+# 净差(剥注释后)。不是 0: 该文件含 `\(expr)` 插值与 #if 预处理器块, 简单计数
+# 本来就不配平。判据只看"净差有没有被本版改动", 不看绝对值。
+_V48_BASELINE_BRACE = -1
+
+
+def verify_width_pin_v48(t):
+    """校验 v48 —— 独立成函数, 不只服务于注入。
+
+    ★判据范围必须精确到 v48 新增块(与 v47 同教训): 既有代码不是本版的
+    产物, 判据不能碰它。范围 = `// [V48-PIN]` 到该段末尾的 `}`。
+    """
+    # ---- 1. 注入点存在 ----
+    i_pin = t.find("// [V48-PIN]")
+    if i_pin < 0:
+        raise RuntimeError("verify_width_pin_v48: 未找到 V48-PIN 注入点")
+
+    # v48 段 = 从 V48-PIN 标记起, 到本段块闭合(行首 12 空格的 } 为界)。
+    # 段尾锚点必须在注入点下游 —— 用固定字符数回退等于没有边界(v47 教训)。
+    # 段 = V48-PIN 标记起, 到**下游稳定锚点** `// [IOS15-FIX-RELC v28]` 之前
+    # (那是 v18 抢宽段末尾的既有标记, sabotage 不会碰它)。
+    #
+    # 【踩坑记录 —— 这条判据曾经形同虚设, 15/20 条 sabotage 全漏放】
+    # 第一版用 `t.find("\n            }", i_pin)` 当段右边界。但 v48 的 if 块
+    # **只有一层**, 那个闭合花括号恰好紧跟在唯一的写入行之后 —— 于是段切片
+    # 在写入行处就截断了, 反向测试往写入行后面追加的 `frame.size.width =` /
+    # `bounds.size.width =` / 高度写入**全部落在段外**, 一条都扫不到。
+    # 于是"写入白名单"和"禁高度/几何"两组判据同时失效, 却看起来全绿。
+    #
+    # 教训比修法重要: **段右边界锚点必须选在 sabotage 改不到的地方**。
+    # 锚点选在被测代码自己的闭合花括号上, 等于把判据的视野关在被测对象里 ——
+    # 判据只能证明"第一行没问题", 证明不了"后面几行没问题"。
+    # 这与 v47 的"二次切割"是同一个根源: 都在用**代码自身结构**当边界。
+    i_end = t.find("// [IOS15-FIX-RELC v28]", i_pin)
+    if i_end < 0:
+        raise RuntimeError(
+            "verify_width_pin_v48: 未找到段尾锚点 // [IOS15-FIX-RELC v28] —— "
+            "v18 抢宽段结构变了, 判据范围必须重新确定")
+    blk = t[i_pin:i_end]
+
+    # ---- 2. 剥注释后做纯语义检查 ----
+    import re as _re
+    code = _re.sub(r"//[^\n]*", "",
+                   _re.sub(r"/\*.*?\*/", "", blk, flags=_re.S))
+
+    def _lhs(line):
+        m = _re.match(r"\s*([\w.]+)\s*(?:=|\+=|-=|\*=|/=)(?!=)", line)
+        return m.group(1) if m else None
+
+    writes = []
+    for line in code.split("\n"):
+        tgt = _lhs(line)
+        if tgt:
+            writes.append((tgt, line.strip()))
+
+    # ---- 3. ★白名单: 只许写 textContainer.size.width, 且只写 _realW2 ----
+    for tgt, line in writes:
+        # 完整点号链 + 末段双重命中。
+        #   只看末段不够: 别的接收者(textView.size.width)也会末段相同。
+        #   只看整链不够: 变量名恰好叫 size.width 的情况会漏。
+        if tgt != "textContainer.size.width" and tgt.split(".")[-1] != "size.width":
+            raise RuntimeError(
+                "verify_width_pin_v48: v48 段内出现非白名单写入 `%s`(行: %s)"
+                % (tgt, line))
+        if tgt != "textContainer.size.width":
+            raise RuntimeError(
+                "verify_width_pin_v48: 宽度写入换了接收者 `%s`(行: %s) —— "
+                "只准写 textContainer.size.width" % (tgt, line))
+        # 右侧必须是 _realW2, 不能是别的宽
+        m_val = _re.search(r"=\s*([^=].*?)\s*$", line)
+        if not m_val or m_val.group(1).strip() != "_realW2":
+            raise RuntimeError(
+                "verify_width_pin_v48: 宽度写入的值不是 _realW2(行: %s) —— "
+                "换宽度来源等于引入第三方宽度, v13/v34 的闪屏就是这么来的"
+                % line)
+
+    # ---- 4. ★禁高度/几何(防"整体缩小"与推翻 v45) ----
+    for tgt, line in writes:
+        if tgt in _V48_FORBIDDEN_LHS or tgt.split(".")[-1] in _V48_FORBIDDEN_LHS:
+            raise RuntimeError(
+                "verify_width_pin_v48: v48 段内写了高度/几何 `%s`(行: %s) —— "
+                "本版只许写 textContainer.size.width" % (tgt, line))
+
+    # ---- 5. 必须复用 v47 的判据(不得另起抢宽时机) ----
+    if "_ios15WRegrabbed" not in blk:
+        raise RuntimeError(
+            "verify_width_pin_v48: 未复用 _ios15WRegrabbed —— "
+            "另起抢宽时机就是 v13/v34 闪屏事故的形态")
+    if "abs(textContainer.size.width - _realW2) > 0.5" not in blk:
+        raise RuntimeError(
+            "verify_width_pin_v48: 写入前必须用 abs(tcW-_realW2)>0.5 把门 —— "
+            "无条件写回 358 是与SwiftUI 竞争, 等于 v13/v34 翻车")
+
+    # ---- 5b. ★禁TextKit 的函数式旁路(判据曾被 setSize 绕过) ----
+    # 【踩坑 —— 这是判据的实质漏洞, 不是形式问题】
+    # 反向测试 A3 把写入换成
+    #     textContainer.setSize(CGSize(width: _realW2, height: ...))
+    # 结果段内识别到的赋值变成 **0 处** —— 因为上面所有判据都只认
+    # `目标 = 值` 这种正则形态, 而 setSize 是**函数调用**。
+    # 于是"写入白名单"和"禁高度/几何"两组判据同时失效, 却全绿。
+    # 语义上 setSize 与 size 赋值**等价**, 都是改容器宽, 必须一并禁掉 ——
+    # 校验只认自己写的形态, 等于给旁路留了门。
+    for _banned in ("setSize(", "setSize:", ".setSize"):
+        if _banned in code:
+            raise RuntimeError(
+                "verify_width_pin_v48: v48 段内出现 TextKit 函数式旁路 `%s` —— "
+                "setSize 与 size 赋值语义等价, 同样是抢宽, 必须一并禁掉"
+                % _banned)
+    # 段内除白名单那一处外, 不得出现任何函数调用形式的写操作
+    if _re.search(r"\btextContainer\s*\.\s*(?:set[A-Z]|[a-z]+\s*\()", code):
+        raise RuntimeError(
+            "verify_width_pin_v48: v48 段内出现 textContainer 上的其他写操作 —— "
+            "只准 textContainer.size.width = _realW2")
+
+    # ---- 6. 幂等: 回写 ios15LastLaidOutW 仍在(由 v47 保证, 这里查未被破坏) ----
+    if "self.ios15LastLaidOutW = _realW2" not in t:
+        raise RuntimeError(
+            "verify_width_pin_v48: v47 的 ios15LastLaidOutW 回写不见了")
+
+    # ---- 6b. ★编译期兜底: 全文件花括号**增量**配平 ----
+    # E1 类 sabotage(在文件末尾插未闭合函数)落在 v48 段范围之外, 段判据
+    # 按分层职责理应放行 —— 但未闭合函数编译期就炸, 必须拦住, 所以加第二道网。
+    #
+    # 【为什么必须判"增量"而不是绝对值】这个文件的花括号**本来就不配平**:
+    # 剥注释后净差是 -1, 去掉字符串字面量后是 +3 —— 因为 Swift 的
+    # `\(expr)` 字符串插值、`#if` 预处理器块、以及跨行字符串都会打乱简单计数。
+    # 所以绝对值判据必然误报(实测B11「加一行合法读取」就被误伤)。
+    # 正确做法: 只判 sabotage 有没有让净差**发生变化** —— 基线自身的偏差
+    # 是上游/历史遗留的常数, 与本版无关; 变的是 sabotage 带来的。
+    _all = _re.sub(r"//[^\n]*", "",
+                   _re.sub(r"/\*.*?\*/", "", t, flags=_re.S))
+    _bal = _all.count("{") - _all.count("}")
+    if _bal != _V48_BASELINE_BRACE:
+        raise RuntimeError(
+            "verify_width_pin_v48: 全文件花括号净差从基线 %d 变成 %d —— "
+            "段判据看不到段外的破坏, 这条是第二道网(净差变化说明有人动过结构)"
+            % (_V48_BASELINE_BRACE, _bal))
+
+    # ---- 7. 加法保留: v47 / v45 / v44 / v46 标记仍在 ----
+    # V48-PIN / V47-WSTATE 各1 处; V47-REWRAP 天然是 2 处(v47 有两个注入点:
+    # 判据处 + ensureLayout 回写处), 写死1 会把v48 的校验变成废判据。
+    for tag, want in (("// [V48-PIN]", 1), ("// [V47-REWRAP]", 2),
+                      ("/// [V47-WSTATE]", 1)):
+        if t.count(tag) != want:
+            raise RuntimeError(
+                "verify_width_pin_v48: 标记 %s 计数应为 %d, 实为 %d"
+                % (tag, want, t.count(tag)))
+    for tag in ("[V44-TEXTFRAME]", "[V45-TVHFIX]", "[V46-ATTACH]"):
+        if ('NSLog("' + tag) not in t:
+            raise RuntimeError(
+                "verify_width_pin_v48: v48 吃掉了 %s 的诊断日志" % tag)
+
+    return True
+
 
 # [V47-FORBIDDEN] v47 段内禁写的标识集合 —— 精确匹配, 不用子串。
 #   用子串会踩坑: 既有变量 `_ios15WRegrabbed` 里含 "eight"(r-EIGHT-grabbed)。
@@ -5486,6 +5763,7 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_diag_attachment_v46, "v46: 【纯诊断, 不改任何行为】V46-ATTACH — 治'终端框盖住上面的字/定时任务字一下有一下没有'。log15 硬证据: needH=304.3 而 usedH=114.3(差 190pt), 表格 7x2 附件占的高度完全不在 usedRect 里; 111 条 V44 里 71 条 needH-usedH>8.5(中位 55.6 最大 190.0), 另 40 条 <=8.5(纯文字, 差额就是 textContainerInset 的 8.1~8.3) —— **差额与'有没有附件'完全同构**, 这是 v44 假设 C 的首次真实命中。len=49 那组更直白: 唯一一组 usedH 恒为 99.9 而 needH 在 182<->236 之间跳的样本, 附件高度反复切换 = 文字忽隐忽现。链路上四个候选根因一次性打完: D1 缓存未失效(computeLayout 开头 cachedLayout 命中即返回, update() 的 structureChanged||contentGrew 若为 false 就留着旧 rowHeights) / D2 探针宽度(isOversizedProbe 时高度按 containerRealWidth 算但返回宽度是 clampedWidth) / D3 失效信号未消费(needsLayoutInvalidation 置位但 invalidate 路径没跑到) / D4 容器被 TextContainerGuard 短路(log15 累计 3617 次, 高度出现 2000.0/1057.3/18.7 等与真实需求无关的值)。**为什么不盲修**: D1 要放宽缓存失效判据, 而那正是 HangFix 2026-05-14 治'流式每 token 全量重测致主线程卡死数秒'故意保留的; D4 要放宽 guard, 而 guard 是治 fillLayoutHole 11918ms 卡死的 —— 两处都是拿性能换正确性的历史 trade-off, 盲修任一处都可能把卡死放回来。校验函数硬禁段内一切赋值与 invalidate*/computeLayout 调用(用剥注释去字符串后的语义级赋值识别, 不靠逐行白名单), 并硬禁访问器带 setter; 另注入 TableAttachment.attV46CachedTotalH/attV46CachedWidth 两个**只读 getter**(cachedLayout 是 private, 不加就读不到, D1 就无法验证)。0.5s 节流与 V41-KVOPRE/V44-TEXTFRAME/V45-TVHFIX 同周期。★登记必须排在 v45 之后(同一闭包同帧, 三者并列对照)")
     # ---- v47: 统一测宽源(排版宽与目标宽同步) ----
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_reflow_v47, "v47: 统一测宽源 — 治'终端框盖住上面的字/定时任务字一下有一下没有'(v46 纯诊断归因, log16 45 条: **D1/D2/D3 三个候选全排除** —— `attWant==attCached` 45/45 缓存新鲜, `cachedW` 与 `tcW` 恒差 1.0 不是陈旧值, `attNVI=1` 0/45 失效信号从未置位。真凶是**排版宽与测高宽不同源**: `tcH-needH=-8.0` 恒定证明容器高度没问题, `V43-WIDTH dirtyW=390 netW=358 dh=0.0` 证明测高用的净宽 358 也没问题, 但 `tcW` 实测恒为 390 且 `tcH-usedH` 在异常组达 44~67pt —— **同一段文字在 390/358 两个宽度下排出的行数不同**, 行碎片停在旧宽而 needH 恒按新宽算, 差出的就是空壳(终端框于是画在空壳上)。根因是 `_ios15WRegrabbed` 由 `abs(tcW-_realW2)>0.5` 决定, 它只表示'有没有改过容器宽'而不表示'碎片有没有按目标宽重排过' —— 而 `invalidateLayout` 才是让碎片重排的那一步。修法: 新增 `ios15LastLaidOutW` 记住上次排版宽, 与目标宽不等就补一次 invalidateLayout。**不新增任何宽度写入点**(仍只有 v18 那两处)、**不碰高度**(v45 成果保护), 稳态下零额外开销且幂等。v13/v34 曾因抢宽引起闪屏与整体缩小, 那是改钳宽翻的车, 本版只加同宽重排。★登记必须排在 v46 之后")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_width_pin_v48, "v48: 排版宽钉回目标宽 — 收口 log17 实测的「v47 只治了一半」。log17 对比 log16: tcW=390 的帧 69→48(v47 的重排确实触发了), 但仍有 48/56 帧 tcW 是 390 —— 因为 v47 只调 invalidateLayout **不写 textContainer.size.width**, TextKit 的 ensureLayout 只在当前容器宽下重排, 容器还是 390 时重排出来的仍是 390 宽的行数, 与按 358 算的 _needH 依旧不同源。**log17 里 tcW 与 gap 完全同构、零例外**: tcW=358.0 → tvH-usedH 恒 8.0~8.3(= textContainerInset 上下之和, 正常态), tcW=390.0 → gap 为 30.5(len=229)/117.5(len=839, 连续 26 条一模一样)。len=229 那组最直接: 同一段文字, 358 宽 gap=8.1, 390 宽 gap=30.5, 差值就是 390 宽排不下的那几行。tvH-needH 全部 56 条为 0.0, v45 补高依然完美, 问题**只在宽度不在高度**。修法: 碎片与目标宽不一致时, **连容器宽一起钉回 _realW2**, 两者合起来才是完整条件(容器宽==目标宽 且 碎片按目标宽重排过); v47 的 ios15LastLaidOutW 判据保留不动, 两个判据正交。**这不是新的抢宽时机**: 写在 v18 段内, 复用 v18 已算好的 _realW2(与 sizeThatFits 测高同一个值), 不引入第三方宽度; 判据 abs(tcW-_realW2)>0.5 保证幂等(已在 358 不写不重排, 稳态零开销; 被推回 390 才纠偏一次, 是**纠偏**不是**竞争**)。v13/v34 翻车是因为在布局 pass外无条件抢宽、与 SwiftUI 竞争, 本版恰好相反; 只写 size.width, **不碰 frame/bounds/origin/高度**, 不会引起「整体缩小」那类几何漂移, 也不推翻 v45。**不做常驻钳宽**: 每帧无条件写 358 正是 v13/v34 的翻车形态。校验用**白名单**(只许 textContainer.size.width = _realW2, 精确等值)而非黑名单 —— 多写一个 frame.origin 就足以让整棵 cell 重新布局。★登记必须排在 v47 之后(锚点是 v47 注入的判据块)")
     # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")

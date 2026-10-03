@@ -195,10 +195,10 @@ jobs:
           set -e
           # 单行 python, 不带换行/引号转义 —— YAML 缩进 + shell + python 三层
           # 嵌套时, 多行 -c 里的缩进会被 YAML 原样带进去从而 SyntaxError。
-          _pre=$(python3 -c 'import sys;t=open(sys.argv[1],encoding="utf-8").read();b=t[t.index("def main()"):];a=b.find("fix_kvo_height_clamp_v41");v=b.find("fix_needh_latch_v42");c=b.find("fix_diag_textframe_v44");d=b.find("fix_tvh_debt_v45");e=b.find("fix_diag_attachment_v46");f=b.find("fix_width_reflow_v47");print("OK" if (a>=0 and v>=0 and c>=0 and d>=0 and e>=0 and f>=0 and a<v<c<d<e<f) else ("BAD v41@%d v42@%d v44@%d v45@%d v46@%d v47@%d"%(a,v,c,d,e,f)))' "$SCRIPT_DIR/ios15_fallback.py")
+          _pre=$(python3 -c 'import sys;t=open(sys.argv[1],encoding="utf-8").read();b=t[t.index("def main()"):];a=b.find("fix_kvo_height_clamp_v41");v=b.find("fix_needh_latch_v42");c=b.find("fix_diag_textframe_v44");d=b.find("fix_tvh_debt_v45");e=b.find("fix_diag_attachment_v46");f=b.find("fix_width_reflow_v47");g=b.find("fix_width_pin_v48");print("OK" if (a>=0 and v>=0 and c>=0 and d>=0 and e>=0 and f>=0 and g>=0 and a<v<c<d<e<f<g) else ("BAD v41@%d v42@%d v44@%d v45@%d v46@%d v47@%d v48@%d"%(a,v,c,d,e,f,g)))' "$SCRIPT_DIR/ios15_fallback.py")
           echo "编辑顺序: $_pre"
           case "$_pre" in
-            OK) echo "✅ 注入顺序正确 v41 → v42 → v44 → v45 → v46 → v47 (v44 锚点依赖 v42 注入的赋值点; v46 锚点依赖 v45 已插入 V44 段前)" ;;
+            OK) echo "✅ 注入顺序正确 v41 → v42 → v44 → v45 → v46 → v47 → v48 (v44 锚点依赖 v42 注入的赋值点; v46 锚点依赖 v45 已插入 V44 段前; v48 锚点是 v47 注入的判据块)" ;;
             *)  echo "❌ 注入顺序错误: $_pre"
                 echo "   v44 的注入锚点与位置判据依赖 v42 注入的 self.ios15LastNeededH = _v42Need。"
                 echo "   排在 v42 之前 → 干净上游基线上锚点不存在 → fallback 崩在本步骤，"
@@ -823,6 +823,46 @@ jobs:
             echo "   差出的 44~67pt 空壳就是'终端框盖住上面的字'。没有 v47, 文字会一直被裁"
             exit 1
           fi
+          echo "::endgroup::"
+
+          # ---- 断言 50: v48 排版宽钉回目标宽 ----
+          # log17 归因: v47 只治了一半 —— tcW=390 的帧 69→48(重排确实触发了),
+          # 但仍有 48/56 帧 tcW 是 390。因为 v47 只调 invalidateLayout
+          # **不写 textContainer.size.width**, 而 TextKit 的 ensureLayout
+          # 只在当前容器宽下重排 —— 容器还是 390 时重排出来的仍是 390 宽的行数。
+          # log17 里 tcW 与 gap 完全同构、零例外:
+          #     tcW=358.0 → tvH-usedH 恒8.0~8.3(= textContainerInset, 正常态)
+          #     tcW=390.0 → gap 30.5(len=229) / 117.5(len=839, 连续 26 条)
+          # v48 在 v47 判据成立时**连容器宽一起钉回** _realW2。
+          #
+          # v13/v34 曾因抢宽引起闪屏与整体缩小, 所以这里用**白名单**而不是
+          # 黑名单: 只许 textContainer.size.width = _realW2 这**唯一一处**,
+          # 任何别的写入(含 frame/bounds/origin/高度、以及 setSize 这种
+          # **函数式旁路**)都算违规。
+          if grep -q "fix_width_pin_v48" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            # 段右边界用下游的 v28 标记, 不用被测代码自己的闭合花括号 ——
+            # 后者会把追加在写入行之后的破坏切到段外(判据曾因此15/20 漏放)。
+            # 三条判据实现在 scripts/ios15_verify/ci_assert_v48.py —— 不写在
+            # 这里是因为 YAML 双引号标量会把 `\n` **真的转成换行**,
+            # re.sub(r'//[^\n]*', ...) 会被截断成两行而报 ParserError
+            # (本文件既有教训, 断言 49 踩过一次)。
+            if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v48.py" . ; then
+              echo "✅ v48 就位 (碎片与目标宽不一致时把容器宽钉回 _realW2; ★白名单: 段内唯一赋值且值恰为 _realW2, 零 frame/bounds/origin/高度; 禁 setSize 函数式旁路; 幂等门 abs(tcW-_realW2)>0.5 保证纠偏而非竞争; v47/v45/v44/v46 保留)"
+            else
+              echo "❌ v48 异常 (核心=$_v48_core 白名单=$_v48_pure 幂等=$_v48_idem)"
+              echo "   —— 核心 BAD:锚点失配/顺序错(v48 必须排在 v47 之后, 段尾锚点是 v28 标记)"
+              echo "   —— ★白名单 BAD: v48 段内出现白名单外的写入或 setSize 旁路。"
+              echo "      抢宽翻车几乎都源于'多写了几样'(v13/v34), 本版只许写一处size.width"
+              echo "   —— 幂等 BAD: 写入若不被 abs(tcW-_realW2)>0.5 包住, 就是每帧无条件"
+              echo "      抢宽 = 与 SwiftUI 竞争 = 闪屏; 或 v47 的碎片记忆被破坏"
+              exit 1
+            fi
+          else
+            echo "❌ v48 缺失 —— log17 已证明 v47 只重排不写宽, 于是 ensureLayout 照着"
+            echo "   390 重排, tcW=390 的帧 gap 高达 30.5~117.5(空壳), 终端框继续盖字"
+            exit 1
+          fi
+
           echo "::endgroup::"
 
           echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
