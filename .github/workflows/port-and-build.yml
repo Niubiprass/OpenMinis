@@ -799,23 +799,25 @@ jobs:
           # 判据只用**单行 python3 -c**: YAML + shell + python 三层嵌套时,
           # 多行 -c 的缩进会被 YAML 原样带进去导致 SyntaxError(本文件既有教训)。
           if grep -q "fix_width_reflow_v47" "$SCRIPT_DIR/ios15_fallback.py" ; then
-            _v47_core=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); need=('if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {','self.ios15LastLaidOutW = _realW2','var ios15LastLaidOutW: CGFloat?'); miss=[w for w in need if w not in t]; w=t.find('let _realW2 = _realW'); c=t.find(need[0]); s=t.find(need[1]); print('OK' if (not miss and min(w,c,s)>=0 and w<c<s) else ('BAD 缺:'+'|'.join(miss) if miss else 'BAD 顺序'))")
-            #   L=lambda 把"取赋值目标"收成一处(前四版把同一个 re.match 写了
-            #   三遍, 既长又容易在改一处漏两处); 末段与整链双重命中, 挡住
-            #   "textView.size.height" 这类别的接收者(首个 \w+ 只是 textView)。
-            #   (?![=]) 排除 == 比较运算, 否则 _ios15WRegrabbed 那种比较会被
-            #   当成赋值而误伤(与 v45 反向测试 F1 同一个教训)。
-            _v47_pure=$(python3 -c "import re;t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read();M='// [V47-REWRAP]';i=t.index(M);j=t.index(M,i+1);b=t[i:t.index('if _ios15WRegrabbed, textStorage.length > 0 {',i)]+t[j:t.index('ios15LastNeededH = _needH',j)];c=re.sub(r'//[^\n]*','',re.sub(r'/\*.*?\*/','',b,flags=re.S));F=('height','Height','h','needH','newHeight','lastComputedHeight','ios15LastNeededH','frame','_hf','_needH','_needH39','size');W=('textContainer.size.width =','textContainer.size =','frame.size.width =','bounds.size =');L=lambda s:(re.match(r'\s*([\w.]+)\s*(?:=|\+=|-=|\*=|/=)(?!=)',s)or[None,None])[1];H=[s.strip()[:40] for s in c.split(chr(10)) if L(s) and (L(s) in F or L(s).split('.')[-1] in F or any(w in s for w in W) or re.match(r'\s*_v47\w*\s*=',s))];print('OK' if not H else ('BAD '+'|'.join(H)))")
-            _v47_idem=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); c=t.find('if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {'); s=t.find('self.ios15LastLaidOutW = _realW2'); e=t.find('layoutManager.ensureLayout(for: textContainer)',c); cl=t.find(chr(10)+'            }',e); q=chr(34); keep=all(('NSLog('+q+tag) in t for tag in ('[V44-TEXTFRAME]','[V45-TVHFIX]','[V46-ATTACH]')); marks=(t.count('// [V47-REWRAP]')==2 and t.count('/// [V47-WSTATE]')==1); print('OK' if (c>0 and s>e and (cl<0 or cl>s) and keep and marks) else ('BAD 同块=%s 保留=%s 标记=%s'%((cl<0 or cl>s),keep,marks)))")
-            if [ "$_v47_core" = "OK" ] && [ "$_v47_pure" = "OK" ] \
-               && [ "$_v47_idem" = "OK" ]; then
-              echo "✅ v47 就位 (ios15LastLaidOutW 记上次排版宽, 与目标宽不等就补一次 invalidateLayout; 位置 _realW2<判据<回写; ★新增行内零宽度零高度写入; 回写在 ensureLayout 同块内保证稳态幂等; v44/v45/v46 保留)"
+            # ★三条判据实现在 scripts/ios15_verify/ci_assert_v47.py, CI 只调它。
+            #
+            # 【run#37133557819 的真实死因 —— 别再犯】
+            # 这三条以前是内联在下面的单行 python3 -c, 而 verify_v47.py 里另有一份
+            # 几乎相同的实现。v48 恰好在 v47 判据那一处补写容器宽, 我在本地修了
+            # verify_v47.py 的段右边界(收到 V48-PIN), **忘了 YAML 里那份副本** ——
+            # 本地 28/28 全绿, CI 却死在 `纯宽度=BAD textContainer.size.width = _realW2`。
+            #
+            # 教训: **一份判据只能有一处实现**。内联判据没有语法检查、没有 IDE
+            # 跳转、跑一次要 7 分钟, 于是"本地过了"根本不能证明"CI 会过"。
+            if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v47.py" . ; then
+              echo "✅ v47 就位 (ios15LastLaidOutW 记上次排版宽, 与目标宽不等就补一次 invalidateLayout; 位置 _realW2<判据<回写; ★新增行内零宽度零高度写入(段右边界止于 V48-PIN, v48 的写入不算 v47 的); 回写在 ensureLayout 同块内保证稳态幂等; v44/v45/v46 保留)"
             else
-              echo "❌ v47 异常 (核心=$_v47_core 纯宽度=$_v47_pure 幂等=$_v47_idem)"
-              echo "   —— 核心 BAD: 锚点失配或顺序错(v47 必须排在 v46 之后)"
-              echo "   —— ★纯宽度 BAD: v47 新增行里混进了宽度或高度写入。前者回退到 v13/v34"
-              echo "      抢宽老路(闪屏/整体缩小), 后者推翻 v45 的 tvH 补高成果(debt 已全 0)"
-              echo "   —— 幂等 BAD: 回写若落在 ensureLayout 块外, 每帧都会重排 → 主线程卡死"
+              echo "❌ v47 异常 —— 判据输出见上方 ci_assert_v47.py 的 core/pure/idem 三行"
+              echo "   —— core BAD: 锚点失配或顺序错。_realW2 的形态必须是 _realW(不是 max(...)),"
+              echo "      否则就是 run#37129575066 那个坑; 顺序必须是 _realW2 < 判据 < 回写"
+              echo "   —— ★pure BAD: v47 新增行里混进了宽度或高度写入。宽度是回退到 v13/v34"
+              echo "      抢宽老路(闪屏/整体缩小), 高度是推翻 v45 的 tvH 补高成果(debt 已全 0)"
+              echo "   —— idem BAD: 回写若落在 ensureLayout 块外, 每帧都会重排 → 主线程卡死"
               exit 1
             fi
           else
