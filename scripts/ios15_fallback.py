@@ -4526,6 +4526,343 @@ def verify_attachment_v46(t):
         raise RuntimeError("verify_attachment_v46: 访问器不得带 setter")
 
 
+def fix_width_reflow_v47(t):
+    """v47: 统一测宽源 —— 治'终端框盖住上面的字 / 定时任务字一下有一下没有'。
+
+    ── log16 归因(v46 纯诊断装机实测, 45 条 V46-ATTACH / 77 条 V44-TEXTFRAME)──
+
+    v46 的四个候选根因, 实测**三个全部排除**:
+
+      D1 缓存未失效      → 排除: `attWant == attCached` **45/45**。缓存新鲜,
+                             attachmentBounds 返回的高度就是对的。
+      D2 探针宽度不同源    → 排除: `cachedW` 与 `tcW` 恒差 1.0(389 vs 390),
+                             不是"别的宽度下留下的陈旧值"。
+      D3 失效信号未消费    → 排除: `attNVI=1` **0/45**, 信号从未置位。
+      D4 容器被 guard 短路 → **真凶, 但机制与预想不同**(见下)。
+
+    ── 决定性证据: 按 len 聚合 V46 ──
+
+        len    n   attWant   usedH    needH      tcH    gap
+         26    1      74.0    151.5    159.7    151.7    8.2   ← 正常
+        266    1     182.0    623.4    631.7    623.7    8.3   ← 正常
+        538    1     182.0    814.5    822.7    814.7    8.2   ← 正常
+        591    7     182.0    826.5    901.7    893.7   75.2   ← 异常
+        680    1     326.0   1192.1   1245.0   1237.0   52.9   ← 异常
+        775   33     326.0   1301.5   1354.3   1346.3   52.8   ← 异常
+
+      1. `tcH - needH = -8.0` **恒定在全部 7 组** —— 容器高度恰好等于需求高度
+         减一个 textContainerInset。**容器本身没问题, v45 补高完全正确。**
+      2. `tcH - usedH` 正常组是 **0.2~0.3**(容器与 TextKit 占用完全吻合),
+         异常组是 **67.2 / 44.9 / 44.8** —— 差的这几十 pt 就是"空壳"。
+      3. `attWant` 与 gap **不成比例**(182→75.2, 326→52.8) → 不是"附件整体
+         没进排版", 而是**行数不一致**。
+
+    ── 真凶: 测宽与渲染宽不同源, 行碎片按 390 排、需求高度按 358 算 ──
+
+    源码既有链条(v34 已建"一处计算处处一致"的单一真相源):
+
+        渲染端 v18 (layoutSubviews, 7752 起):
+            var _realW = _svW > 1 ? min(_svW, _cvW) : _cvW
+            if _edgeTouch { _realW = max(_realW - 32, 100) }   → 358
+            ios15LastRenderContentW = _realW                  ← 真相源
+            if textContainer.size.width > _realW + 1 { textContainer.size.width = _realW }
+            ...
+            let _realW2 = _realW
+            var _ios15WRegrabbed = false
+            if abs(textContainer.size.width - _realW2) > 0.5 {
+                textContainer.size.width = _realW2
+                _ios15WRegrabbed = true                       ← ★仅"当帧偏了"才为真
+            }
+            if _ios15WRegrabbed, textStorage.length > 0 {
+                layoutManager.invalidateLayout(...)            ← ★条件性重排
+            }
+            let _needH = sizeThatFits(CGSize(width: _realW2, ...)).height   ← 按 358 算
+
+        测高端 invalidateCellSizeIfNeeded (8339 起):
+            measureWidth = ios15LastRenderContentW ?? ...                    ← 也按 358
+
+    **`_ios15WRegrabbed` 是条件量, 这是 v47 的靶心。**
+
+    先把"哪些数是对的"钉清楚(log16 实测, 不是推理):
+      · `tcH - needH = -8.0` 恒定 → **容器高度是对的**
+      · `V43-WIDTH dirtyW=390.0 netW=358.0 dh=0.0` → **测高用的是净宽 358, 也对**
+      · 但 `tcW` 实测恒为 390, 且 `tcH - usedH` 在异常组是 44~67pt → **排版宽度错了**
+
+    所以是"**测高对、排版错**"。要修的是让**排版**也稳定在 358, 而不是改测高
+    去迁就 390。
+
+    错在哪: `_ios15WRegrabbed` 由 `abs(tcW - _realW2) > 0.5` 决定, 它只是
+    "**有没有改过容器宽**"的标志, 不是"**行碎片有没有按目标宽重排过**"的标志。
+    v18 在 7752 的 layoutSubviews 里抢回 358 后, 行碎片才按 358 重排; 但
+    `ensureLayout` 之外还有别处会触发布局, 且 SwiftUI 每帧把容器宽推回全屏
+    390(codeload 的 v43 注释实证: "SwiftUI poll 每帧把容器宽打回 390")。当
+    SwiftUI 写回 390 后**没有再走 v18**(例如 KVO 抢帧器先跑、或本次 pass 早退),
+    行碎片就停在 390 上, 而 `_needH` 恒按 358 算 —— **两个数不同源**。
+
+    ★关键区分: `invalidateLayout` 才是让行碎片按新宽重排的那一步, 而
+    `textContainer.size.width = ` 只改容器不重排既有碎片。原来的判据把两者
+    混为一谈, 于是"容器宽碰巧已经对了"的那些帧就**跳过重排** —— 碎片留在
+    旧宽, 高度按新宽算, 差出来的就是那 44~67pt 空壳。
+
+    v47 不去追"tcW 为什么是 390"(那是 SwiftUI 的正常行为, 改它就是 v13/v34
+    翻过的车), 只补上"**行碎片是否与目标宽同步**"这个本该有的判据。
+
+    ── 为什么不能改测高端 ──
+
+    注释里已论证(留在源码里, 不重复): "为什么不能'两链都改用 tcW': v18 必须
+    用净宽, 因为渲染排版最终是按 358 做的…用 390 量出来的高度对应一个
+    **不存在的排版**"。v13/v34 都因抢宽引起过闪屏与整体缩小, 那是**改渲染端
+    钳宽**翻的车; 本版只加**同宽重排**, 不新增任何宽度写入点。
+
+    ── 修法(只改一处, 最小面) ──
+
+    把 `_ios15WRegrabbed` 从"本帧宽度确实变了"改成"**本帧渲染宽与上次排版
+    时用的宽不同**"。新增实例属性 `ios15LastLaidOutW`, 在 `ensureLayout` 之后
+    记下本次实际用于排版的宽; 下次进来若与 `_realW2` 不同(哪怕此刻 tcW 恰好
+    已被 SwiftUI 改成 358), 也强制 invalidateLayout 一次。
+
+    这样:
+      · 不新增宽度写入点(仍只有 v18 那两处) → 不碰 v13/v34 的雷区
+      · 不改测高端 → measureWidth 继续读 ios15LastRenderContentW
+      · 只在"排版宽与目标宽不一致"时多排一次, 稳态下 **零额外开销**
+      · 幂等: 排完即记, 下帧相等则不进 if → 不反复重排
+
+    ── 为什么这样能治'盖住'与'闪' ──
+
+      · 盖住: 行碎片按 358 排 → usedH 追上 needH → 空壳消失 → 终端框不再
+        画在空壳上
+      · 闪: usedH 与 needH 不再随 SwiftUI 帧摆动 → 高度不再在两个值间跳 →
+        "定时任务那几个字一下有一下没有"消失
+
+    ★只碰宽度与重排, **不碰高度逻辑** —— v45 的 tvH 补高已实测有效(debt 全 0),
+    一旦在这里动高度就会把 v45 的成果推翻。校验函数硬禁任何 height 写入。
+    """
+    OLD = """            let _realW2 = _realW
+            var _ios15WRegrabbed = false
+            if abs(textContainer.size.width - _realW2) > 0.5 {
+                textContainer.size.width = _realW2
+                _ios15WRegrabbed = true
+            }"""
+    NEW = """            let _realW2 = _realW
+            var _ios15WRegrabbed = false
+            if abs(textContainer.size.width - _realW2) > 0.5 {
+                textContainer.size.width = _realW2
+                _ios15WRegrabbed = true
+            }
+            // [V47-REWRAP] log16 归因: 行碎片"按 390 排、需求高度按 358 算"。
+            // 容器被 SwiftUI 每帧推回全屏 390, 于是同一段文字在两个宽度下
+            // 排出的**行数不同**: 390 宽行少、358 宽行多。usedH 追不上 needH,
+            // 差出的 44~67pt 是**空壳**(实测 tcH-needH 恒 -8.0 说明容器本身
+            // 没问题), 下一个视图就画在空壳上 —— 用户看到的"终端框盖住上面的字"。
+            //
+            // 原来的 `_ios15WRegrabbed` 只表示"**有没有改过容器宽**", 不表示
+            // "**行碎片有没有按目标宽重排过**"。`invalidateLayout` 才是让碎片
+            // 按新宽重排的那一步; 而 SwiftUI 每帧把容器宽推回全屏 390(实测
+            // tcW 恒为 390), 当某帧没有再走 v18 时, 碎片就停在旧宽上,
+            // 而 `_needH` 恒按 358 算 —— **两个数不同源**。
+            //
+            // 修法: 把重排判据从"tcW 此刻是否偏了"换成"**上次排版用的宽是否
+            // 等于目标宽**"。只在两者不等时多排一次, 稳态下零额外开销; 排完
+            // 立刻记下, 下帧相等则不进 if → 幂等, 不会每帧重排。
+            //
+            // **不新增任何宽度写入点**(仍只有上面那两处) —— v13/v34 反复因
+            // 抢宽引起闪屏与整体缩小, 那是改钳宽翻的车, 这里只加同宽重排。
+            // **不碰高度** —— v45 的 tvH 补高已实测有效(debt 全 0)。
+            if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {
+                _ios15WRegrabbed = true
+            }"""
+    if OLD not in t:
+        raise RuntimeError(
+            "fix_width_reflow_v47: 未找到 _realW2/_ios15WRegrabbed 锚点 —— "
+            "上游 SelectableMarkdownView 的 v18 抢宽段结构变了, 必须更新 OLD 后再发版")
+    t = t.replace(OLD, NEW, 1)
+
+    # 记下本次实际用于排版的宽(紧跟 ensureLayout 之后, 那才是行碎片真正定型的地方)
+    OLD2 = """            let _needH = sizeThatFits(CGSize(width: _realW2, height: .greatestFiniteMagnitude)).height
+            if _ios15WRegrabbed {
+                layoutManager.ensureLayout(for: textContainer)
+            }"""
+    NEW2 = """            let _needH = sizeThatFits(CGSize(width: _realW2, height: .greatestFiniteMagnitude)).height
+            if _ios15WRegrabbed {
+                layoutManager.ensureLayout(for: textContainer)
+                // [V47-REWRAP] 行碎片已按 _realW2 定型, 记下来供下次比对。
+                self.ios15LastLaidOutW = _realW2
+            }"""
+    if OLD2 not in t:
+        raise RuntimeError(
+            "fix_width_reflow_v47: 未找到 ensureLayout 锚点 —— "
+            "上游 v18 的测高段结构变了, 必须更新 OLD2 后再发版")
+    t = t.replace(OLD2, NEW2, 1)
+
+    # 新增实例属性(挨着 ios15LastRenderContentW, 同一真相源家族)
+    DECL_OLD = """    var ios15LastRenderContentW: CGFloat?"""
+    DECL_NEW = """    var ios15LastRenderContentW: CGFloat?
+    /// [V47-WSTATE] 行碎片**上一次定型时**用的排版宽。见 fix_width_reflow_v47
+    /// 的 docstring: 容器宽会被 SwiftUI 每帧推回全屏 390, 而需求高度恒按净宽
+    /// 358 算, 两者不同源 → 行数不一致 → usedH 少 44~67pt(空壳, 表现为
+    /// "终端框盖住上面的字")。本属性让 v18 能察觉"排版宽 ≠ 目标宽"并补一次
+    /// 重排。稳态下恒等于 _realW2, 不触发任何额外开销。
+    var ios15LastLaidOutW: CGFloat?"""
+    if DECL_OLD not in t:
+        raise RuntimeError(
+            "fix_width_reflow_v47: 未找到 ios15LastRenderContentW 声明锚点")
+    t = t.replace(DECL_OLD, DECL_NEW, 1)
+
+    verify_width_reflow_v47(t)
+    return t
+
+
+# [V47-FORBIDDEN] v47 段内禁写的标识集合 —— 精确匹配, 不用子串。
+#   用子串会踩坑: 既有变量 `_ios15WRegrabbed` 里含 "eight"(r-EIGHT-grabbed)。
+#   这里只列**真正与高度有关**的名字, 且区分大小写形态。
+_V47_FORBIDDEN_LHS = frozenset((
+    "height", "Height", "h", "needH", "newHeight", "lastComputedHeight",
+    "ios15LastNeededH", "frame", "_hf", "_needH", "_needH39", "size",
+))
+
+
+def verify_width_reflow_v47(t):
+    """校验 v47 —— 独立成函数, 不只服务于注入。
+
+    ★两条纪律:
+
+      1. **只准碰宽度与重排, 不准碰高度。** v45 的 tvH 补高已实测有效
+         (log15 109 条 V45-TVHFIX debt 全为 0.0), 任何 height 写入都会把
+         那个成果推翻。所以本判据硬禁 v47 新增段里的一切高度赋值。
+      2. **不准新增宽度写入点。** v13/v34 反复因抢宽引起闪屏与整体缩小,
+         那是改钳宽翻的车。v47 只能在既有钳宽之后**加重排**; 若有人在 v47
+         段里新增 `textContainer.size.width =` 就是回退到那条老路。
+
+    判据顺序: 具体 → 宽泛, 标记计数放最后当总兜底(与 v44/v45/v46 同纪律)。
+    """
+    # ★两个标记必须分开(本轮实踩): 属性声明在文件前部(~281k), 代码注入段在
+    #   ~420k。若都用 "// [V47-REWRAP]", find() 抓到的是**声明**而不是注入段,
+    #   于是段切片从文件中部开始 → 把 v45 的赋值圈进来 → 误判"v47 写高度"。
+    #   所以声明用 [V47-WSTATE], 代码段用 [V47-REWRAP], 各自唯一。
+    MARK = "// [V47-REWRAP]"
+    DECL_MARK = "/// [V47-WSTATE]"
+    if t.count(MARK) < 1:
+        raise RuntimeError("verify_width_reflow_v47: 未找到 V47-REWRAP 标记")
+    if t.count('NSLog("[V47-REWRAP]') != 0:
+        # v47 是修法不是诊断, 不该有日志; 万一有人加了日志说明想走诊断路线
+        raise RuntimeError(
+            "verify_width_reflow_v47: v47 是修法, 不得含诊断日志 —— "
+            "归因已完成(log16), 纯诊断留给后续版本")
+
+    # 1. 两处注入点都在
+    if "if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {" not in t:
+        raise RuntimeError(
+            "verify_width_reflow_v47: 未找到重排判据(ios15LastLaidOutW 比对) —— "
+            "v47 的核心是把重排条件从'此刻 tcW 是否偏了'换成'上次排版宽是否等于目标宽'")
+    if "self.ios15LastLaidOutW = _realW2" not in t:
+        raise RuntimeError(
+            "verify_width_reflow_v47: 未找到排版宽回写 —— "
+            "重排后必须记下本次宽度, 否则每帧都会重排(v13 卡死的老路)")
+
+    # 2. 属性声明存在且是可选 CGFloat(初值 nil = 从未排版过)
+    if "var ios15LastLaidOutW: CGFloat?" not in t:
+        raise RuntimeError(
+            "verify_width_reflow_v47: 未找到 ios15LastLaidOutW 声明 —— "
+            "必须是 CGFloat? 而不是 CGFloat, 初值 nil 才表示'还没排过版'")
+
+    # 3. ★位置: 必须紧跟既有钳宽之后、ensureLayout 之前/之后。
+    #    判据: 重排判据里出现 _realW2(既有局部量), 而 _realW2 的定义在锚点里。
+    _i_w = t.find("let _realW2 = _realW")
+    _i_chk = t.find("if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {")
+    _i_set = t.find("self.ios15LastLaidOutW = _realW2")
+    if min(_i_w, _i_chk, _i_set) < 0:
+        raise RuntimeError("verify_width_reflow_v47: 注入点缺失")
+    if not (_i_w < _i_chk < _i_set):
+        raise RuntimeError(
+            "verify_width_reflow_v47: 注入顺序错 —— 应为 _realW2 定义 -> 重排判据 -> "
+            "排版宽回写(实际 %d/%d/%d)" % (_i_w, _i_chk, _i_set))
+
+    # 4. ★硬禁: v47 **自己新增的行**里不得有高度写入(v45 成果保护)。
+    #    ★判据范围必须精确到 v47 新增块, 不能整段扫 ——
+    #    【踩坑记录(本轮实跑三轮)】前两版把 [V47 注入点, V42-LATCH-SET) 整段
+    #    当作"v47 段", 结果连续误伤**源码既有**的合法代码:
+    #      · `ios15LastNeededH = _needH`(v18 自己的, 不是 v45 的)
+    #      · `textContainer.size.width = _realW2`(v18 既有钳宽)
+    #    第一版还因 `"eight" in _lhs` 子串匹配误伤 `_ios15WRegrabbed`
+    #    (r-EIGHT-grabbed)。教训: **既有代码不是本版的产物, 判据不能碰它**。
+    #    这里改成: 只取 v47 两个标记之间的代码(标记是 v47 独有的)。
+    _i_a = t.find(MARK)                       # 重排判据处的标记
+    _i_b = t.find(MARK, _i_a + 1)             # 回写处的标记
+    if _i_a < 0 or _i_b < 0:
+        raise RuntimeError("verify_width_reflow_v47: V47 标记缺失")
+    # 第一块: 判据标记之后到既有 invalidateLayout 之前(v47 只加了判据)
+    _blk1 = t[_i_a:t.find("if _ios15WRegrabbed, textStorage.length > 0 {", _i_a)]
+    # 第二块: 回写标记之后到 ios15LastNeededH 之前(v47 只加了回写)
+    _i_end2 = t.find("ios15LastNeededH = _needH", _i_b)
+    if _i_end2 < 0:
+        _i_end2 = _i_b + 300
+    _blk2 = t[_i_b:_i_end2]
+    _code = _strip_swift_noise(_blk1) + "\n" + _strip_swift_noise(_blk2)
+    # ★必须同时匹配**带点的赋值目标**(反向测试 B1 逼出来的漏放):
+    #   `frame.size.height = 9999` 的赋值目标是 "frame.size.height", 正则若只取
+    #   第一个 \w+ 会得到 "frame" —— 而 frame 在禁用集合里, 恰好也能拦住;
+    #   但 `textView.size.height = 9999` 的第一个 \w+ 是 "textView"(不在集合),
+    #   就会漏放。所以这里同时取**整条点号链**与**末段**, 任一命中即拦。
+    for _ln in _code.split("\n"):
+        _m = re.match(r"\s*([\w.]+)\s*(?:=|\+=|-=|\*=|/=)(?!=)\s*", _ln)
+        if not _m:
+            continue
+        _target = _m.group(1)
+        _lhs = _target.split(".")[-1]
+        # ★必须用**精确的高度标识集合**, 不能用 "eight" 子串匹配 ——
+        #   既有变量 `_ios15WRegrabbed` 里就含 eight(r-EIGHT-grabbed),
+        #   子串匹配会把这个合法赋值误判成高度写入(本轮实踩)。
+        if _lhs in _V47_FORBIDDEN_LHS or _target in _V47_FORBIDDEN_LHS:
+            raise RuntimeError(
+                "verify_width_reflow_v47: ★v47 新增行内出现高度写入 %r: %r "
+                "—— v45 的 tvH 补高已实测有效(debt 全 0), v47 只碰宽度与重排"
+                % (_lhs, _ln.strip()[:70]))
+        if _lhs.startswith("_v47"):
+            raise RuntimeError(
+                "verify_width_reflow_v47: v47 新增行内出现局部赋值 %r —— "
+                "v47 是修法, 局部计数器不属于本版职责" % (_lhs))
+
+    # 5. ★硬禁: v47 新增行内不得再写宽度(回退到 v13/v34 的老路)
+    #    同样只看 _code(v47 自己新增的两块), 不看既有钳宽。
+    for _bad in ("textContainer.size.width =", "textContainer.size =",
+                 "frame.size.width =", "bounds.size ="):
+        if _bad in _code:
+            raise RuntimeError(
+                f"verify_width_reflow_v47: 段内出现宽度写入 {_bad!r} —— "
+                "v47 只能在既有钳宽之后加重排; 新增宽度写入点是 v13/v34 "
+                "闪屏与整体缩小事故的根因, 不得重犯")
+
+    # 6. 重排调用签名必须与源码既有写法一致(v25-fix2 编译验证过的合法形式)
+    if "layoutManager.invalidateLayout(forCharacterRange: NSMakeRange(0, textStorage.length), actualCharacterRange: nil)" not in t:
+        raise RuntimeError(
+            "verify_width_reflow_v47: invalidateLayout 签名与源码既有写法不一致 —— "
+            "必须用 v25-fix2 编译验证过的 "
+            "invalidateLayout(forCharacterRange:actualCharacterRange:)")
+
+    # 7. 必须保留 v44/v45/v46(加法, 不是替换)
+    for _keep in ('NSLog("[V44-TEXTFRAME]', 'NSLog("[V45-TVHFIX]',
+                  'NSLog("[V46-ATTACH]'):
+        if _keep not in t:
+            raise RuntimeError(f"verify_width_reflow_v47: 必须保留 {_keep} —— v47 是加法")
+
+    # 8. 全文花括号平衡(总兜底)
+    _depth, _low = _brace_balance(t)
+    if _depth != 0:
+        raise RuntimeError(f"verify_width_reflow_v47: 花括号不平衡(净 {_depth:+d} 处)")
+    if _low < 0:
+        raise RuntimeError(f"verify_width_reflow_v47: 花括号中途变负(最深 {_low})")
+
+    # 9. 标记计数放最后
+    if t.count(MARK) != 2:
+        raise RuntimeError(
+            "verify_width_reflow_v47: V47-REWRAP 标记必须恰好 2 处(判据 + 回写), "
+            "实际 %d 处" % t.count(MARK))
+    if t.count(DECL_MARK) != 1:
+        raise RuntimeError(
+            "verify_width_reflow_v47: V47-WSTATE 声明标记必须恰好 1 处, "
+            "实际 %d 处" % t.count(DECL_MARK))
+
+
 def verify_textframe_v44(t):
     """校验 v44 诊断段 —— 独立成函数, 不只服务于注入。
 
@@ -5128,6 +5465,8 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_tvh_debt_v45, "v45: 补高**补到画字的那个视图上** — 治'下面一小片空白 + 字卡一半'(v44 纯诊断归因, log13 53 条零例外: 假设 A 命中 44/53, 假设 B 彻底排除 —— svAfter == needH 53/53 全成立, 补高从来没被挡掉过。真凶是**补错了对象**: v41~v44 一路补 superview 的 sv.frame, 而画字的是 UITextView 自己的 self.frame。实测 tvH=912.7 而 svAfter=needH=1136.3 —— 外层补到位了, 内层矮 223.6pt, 多出来的是空壳(所以有空白), 有字的地方被自己的 bounds 裁断(所以卡一半)。44 条样本的 usedH-tvH 恒为负(-8.0~-44.7 均值 -34.5) 从不转正, 证明不是随机拉锯而是两个来源各写一次高度。修法: 在 KVO 补高路径里把 needH 同时写进 self.frame。**只动 size.height, 绝不碰 origin/width** —— 宽度由 v18/v34 经 ios15LastSaneSVFrame 维护, 在这里碰它等于绕过那套状态机(v13/v34 都因抢宽引起过闪屏/整体缩小), 校验函数硬禁非高度改动。needH 是本闭包按抢回后净宽算出的权威需求高, 补到它即同时覆盖 v44 假设 C 的虚高差额(30~268pt), C 无需单独代码; 连续多帧时 tvH >= needH 让条件自然转 false, 幂等不反复写。★登记必须排在 v42 与 v44 之后")
     # ---- v46: 表格附件排版链归因(纯诊断, 一行几何都不碰) ----
     edit("Views/Chat/SelectableMarkdownView.swift", fix_diag_attachment_v46, "v46: 【纯诊断, 不改任何行为】V46-ATTACH — 治'终端框盖住上面的字/定时任务字一下有一下没有'。log15 硬证据: needH=304.3 而 usedH=114.3(差 190pt), 表格 7x2 附件占的高度完全不在 usedRect 里; 111 条 V44 里 71 条 needH-usedH>8.5(中位 55.6 最大 190.0), 另 40 条 <=8.5(纯文字, 差额就是 textContainerInset 的 8.1~8.3) —— **差额与'有没有附件'完全同构**, 这是 v44 假设 C 的首次真实命中。len=49 那组更直白: 唯一一组 usedH 恒为 99.9 而 needH 在 182<->236 之间跳的样本, 附件高度反复切换 = 文字忽隐忽现。链路上四个候选根因一次性打完: D1 缓存未失效(computeLayout 开头 cachedLayout 命中即返回, update() 的 structureChanged||contentGrew 若为 false 就留着旧 rowHeights) / D2 探针宽度(isOversizedProbe 时高度按 containerRealWidth 算但返回宽度是 clampedWidth) / D3 失效信号未消费(needsLayoutInvalidation 置位但 invalidate 路径没跑到) / D4 容器被 TextContainerGuard 短路(log15 累计 3617 次, 高度出现 2000.0/1057.3/18.7 等与真实需求无关的值)。**为什么不盲修**: D1 要放宽缓存失效判据, 而那正是 HangFix 2026-05-14 治'流式每 token 全量重测致主线程卡死数秒'故意保留的; D4 要放宽 guard, 而 guard 是治 fillLayoutHole 11918ms 卡死的 —— 两处都是拿性能换正确性的历史 trade-off, 盲修任一处都可能把卡死放回来。校验函数硬禁段内一切赋值与 invalidate*/computeLayout 调用(用剥注释去字符串后的语义级赋值识别, 不靠逐行白名单), 并硬禁访问器带 setter; 另注入 TableAttachment.attV46CachedTotalH/attV46CachedWidth 两个**只读 getter**(cachedLayout 是 private, 不加就读不到, D1 就无法验证)。0.5s 节流与 V41-KVOPRE/V44-TEXTFRAME/V45-TVHFIX 同周期。★登记必须排在 v45 之后(同一闭包同帧, 三者并列对照)")
+    # ---- v47: 统一测宽源(排版宽与目标宽同步) ----
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_width_reflow_v47, "v47: 统一测宽源 — 治'终端框盖住上面的字/定时任务字一下有一下没有'(v46 纯诊断归因, log16 45 条: **D1/D2/D3 三个候选全排除** —— `attWant==attCached` 45/45 缓存新鲜, `cachedW` 与 `tcW` 恒差 1.0 不是陈旧值, `attNVI=1` 0/45 失效信号从未置位。真凶是**排版宽与测高宽不同源**: `tcH-needH=-8.0` 恒定证明容器高度没问题, `V43-WIDTH dirtyW=390 netW=358 dh=0.0` 证明测高用的净宽 358 也没问题, 但 `tcW` 实测恒为 390 且 `tcH-usedH` 在异常组达 44~67pt —— **同一段文字在 390/358 两个宽度下排出的行数不同**, 行碎片停在旧宽而 needH 恒按新宽算, 差出的就是空壳(终端框于是画在空壳上)。根因是 `_ios15WRegrabbed` 由 `abs(tcW-_realW2)>0.5` 决定, 它只表示'有没有改过容器宽'而不表示'碎片有没有按目标宽重排过' —— 而 `invalidateLayout` 才是让碎片重排的那一步。修法: 新增 `ios15LastLaidOutW` 记住上次排版宽, 与目标宽不等就补一次 invalidateLayout。**不新增任何宽度写入点**(仍只有 v18 那两处)、**不碰高度**(v45 成果保护), 稳态下零额外开销且幂等。v13/v34 曾因抢宽引起闪屏与整体缩小, 那是改钳宽翻的车, 本版只加同宽重排。★登记必须排在 v46 之后")
     # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")

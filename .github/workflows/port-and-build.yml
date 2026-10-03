@@ -195,10 +195,10 @@ jobs:
           set -e
           # 单行 python, 不带换行/引号转义 —— YAML 缩进 + shell + python 三层
           # 嵌套时, 多行 -c 里的缩进会被 YAML 原样带进去从而 SyntaxError。
-          _pre=$(python3 -c 'import sys;t=open(sys.argv[1],encoding="utf-8").read();b=t[t.index("def main()"):];a=b.find("fix_kvo_height_clamp_v41");v=b.find("fix_needh_latch_v42");c=b.find("fix_diag_textframe_v44");d=b.find("fix_tvh_debt_v45");e=b.find("fix_diag_attachment_v46");print("OK" if (a>=0 and v>=0 and c>=0 and d>=0 and e>=0 and a<v<c<d<e) else ("BAD v41@%d v42@%d v44@%d v45@%d v46@%d"%(a,v,c,d,e)))' "$SCRIPT_DIR/ios15_fallback.py")
+          _pre=$(python3 -c 'import sys;t=open(sys.argv[1],encoding="utf-8").read();b=t[t.index("def main()"):];a=b.find("fix_kvo_height_clamp_v41");v=b.find("fix_needh_latch_v42");c=b.find("fix_diag_textframe_v44");d=b.find("fix_tvh_debt_v45");e=b.find("fix_diag_attachment_v46");f=b.find("fix_width_reflow_v47");print("OK" if (a>=0 and v>=0 and c>=0 and d>=0 and e>=0 and f>=0 and a<v<c<d<e<f) else ("BAD v41@%d v42@%d v44@%d v45@%d v46@%d v47@%d"%(a,v,c,d,e,f)))' "$SCRIPT_DIR/ios15_fallback.py")
           echo "编辑顺序: $_pre"
           case "$_pre" in
-            OK) echo "✅ 注入顺序正确 v41 → v42 → v44 → v45 → v46 (v44 锚点依赖 v42 注入的赋值点; v46 锚点依赖 v45 已插入 V44 段前)" ;;
+            OK) echo "✅ 注入顺序正确 v41 → v42 → v44 → v45 → v46 → v47 (v44 锚点依赖 v42 注入的赋值点; v46 锚点依赖 v45 已插入 V44 段前)" ;;
             *)  echo "❌ 注入顺序错误: $_pre"
                 echo "   v44 的注入锚点与位置判据依赖 v42 注入的 self.ios15LastNeededH = _v42Need。"
                 echo "   排在 v42 之前 → 干净上游基线上锚点不存在 → fallback 崩在本步骤，"
@@ -784,6 +784,43 @@ jobs:
           else
             echo "❌ v46 缺失 —— log15 已证明表格附件高度没进排版(usedH 114.3 vs needH 304.3, 差 190pt), 没有 v46 无法区分 D1/D2/D3/D4 四个候选根因, 只能盲修"
             echo "   而 D1/D4 都是治主线程卡死的历史 trade-off, 盲修任一处都可能把卡死放回来"
+            exit 1
+          fi
+
+          # ---- 断言 49: v47 统一测宽源 ----
+          # log16 已把根因钉死: v46 打的 D1/D2/D3 三个候选**实测全排除**
+          # (attWant==attCached 45/45 缓存新鲜 / cachedW 与 tcW 恒差 1.0 /
+          #  attNVI=1 共 0 条), 真凶是**排版宽与测高宽不同源** ——
+          #  tcH-needH=-8.0 恒定(容器没问题), 但 tcH-usedH 在异常组达 44~67pt,
+          #  同一段文字在 390/358 两个宽度下**行数不同**, 碎片停在旧宽而 needH
+          #  恒按新宽算, 差出的就是空壳(终端框画在空壳上= 盖住字)。
+          # v47 把重排判据从"tcW 此刻偏没偏"换成"上次排版宽是否等于目标宽"。
+          #
+          # 判据只用**单行 python3 -c**: YAML + shell + python 三层嵌套时,
+          # 多行 -c 的缩进会被 YAML 原样带进去导致 SyntaxError(本文件既有教训)。
+          if grep -q "fix_width_reflow_v47" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            _v47_core=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); need=('if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {','self.ios15LastLaidOutW = _realW2','var ios15LastLaidOutW: CGFloat?'); miss=[w for w in need if w not in t]; w=t.find('let _realW2 = _realW'); c=t.find(need[0]); s=t.find(need[1]); print('OK' if (not miss and min(w,c,s)>=0 and w<c<s) else ('BAD 缺:'+'|'.join(miss) if miss else 'BAD 顺序'))")
+            #   L=lambda 把"取赋值目标"收成一处(前四版把同一个 re.match 写了
+            #   三遍, 既长又容易在改一处漏两处); 末段与整链双重命中, 挡住
+            #   "textView.size.height" 这类别的接收者(首个 \w+ 只是 textView)。
+            #   (?![=]) 排除 == 比较运算, 否则 _ios15WRegrabbed 那种比较会被
+            #   当成赋值而误伤(与 v45 反向测试 F1 同一个教训)。
+            _v47_pure=$(python3 -c "import re;t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read();M='// [V47-REWRAP]';i=t.index(M);j=t.index(M,i+1);b=t[i:t.index('if _ios15WRegrabbed, textStorage.length > 0 {',i)]+t[j:t.index('ios15LastNeededH = _needH',j)];c=re.sub(r'//[^\n]*','',re.sub(r'/\*.*?\*/','',b,flags=re.S));F=('height','Height','h','needH','newHeight','lastComputedHeight','ios15LastNeededH','frame','_hf','_needH','_needH39','size');W=('textContainer.size.width =','textContainer.size =','frame.size.width =','bounds.size =');L=lambda s:(re.match(r'\s*([\w.]+)\s*(?:=|\+=|-=|\*=|/=)(?!=)',s)or[None,None])[1];H=[s.strip()[:40] for s in c.split(chr(10)) if L(s) and (L(s) in F or L(s).split('.')[-1] in F or any(w in s for w in W) or re.match(r'\s*_v47\w*\s*=',s))];print('OK' if not H else ('BAD '+'|'.join(H)))")
+            _v47_idem=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); c=t.find('if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {'); s=t.find('self.ios15LastLaidOutW = _realW2'); e=t.find('layoutManager.ensureLayout(for: textContainer)',c); cl=t.find(chr(10)+'            }',e); q=chr(34); keep=all(('NSLog('+q+tag) in t for tag in ('[V44-TEXTFRAME]','[V45-TVHFIX]','[V46-ATTACH]')); marks=(t.count('// [V47-REWRAP]')==2 and t.count('/// [V47-WSTATE]')==1); print('OK' if (c>0 and s>e and (cl<0 or cl>s) and keep and marks) else ('BAD 同块=%s 保留=%s 标记=%s'%((cl<0 or cl>s),keep,marks)))")
+            if [ "$_v47_core" = "OK" ] && [ "$_v47_pure" = "OK" ] \
+               && [ "$_v47_idem" = "OK" ]; then
+              echo "✅ v47 就位 (ios15LastLaidOutW 记上次排版宽, 与目标宽不等就补一次 invalidateLayout; 位置 _realW2<判据<回写; ★新增行内零宽度零高度写入; 回写在 ensureLayout 同块内保证稳态幂等; v44/v45/v46 保留)"
+            else
+              echo "❌ v47 异常 (核心=$_v47_core 纯宽度=$_v47_pure 幂等=$_v47_idem)"
+              echo "   —— 核心 BAD: 锚点失配或顺序错(v47 必须排在 v46 之后)"
+              echo "   —— ★纯宽度 BAD: v47 新增行里混进了宽度或高度写入。前者回退到 v13/v34"
+              echo "      抢宽老路(闪屏/整体缩小), 后者推翻 v45 的 tvH 补高成果(debt 已全 0)"
+              echo "   —— 幂等 BAD: 回写若落在 ensureLayout 块外, 每帧都会重排 → 主线程卡死"
+              exit 1
+            fi
+          else
+            echo "❌ v47 缺失 —— log16 已证明排版宽(390)与测高宽(358)不同源导致行数不一致,"
+            echo "   差出的 44~67pt 空壳就是'终端框盖住上面的字'。没有 v47, 文字会一直被裁"
             exit 1
           fi
           echo "::endgroup::"
