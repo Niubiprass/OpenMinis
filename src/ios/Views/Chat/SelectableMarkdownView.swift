@@ -5721,6 +5721,31 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 // 补完立刻交棒: 下面的宽度修正必须基于新高度继续, 不能return。
                 f = _hFix
             }
+            // [V44-TEXTFRAME] 见函数 docstring: v41/v42/v43 三轮都在猜"高度够不够",
+            // 这一条把三个候选根因一次打完, 不改任何行为。
+            //
+            // tvH     —— **渲染文字的 UITextView 自己**有多高。superview 补到
+            //            needH 而 tvH 仍矮, 那欠账根本不在 superview 上(假设 A)。
+            // svAfter —— 补高**立刻回读**。v41 补完从不回读, 所以"补上了没有"
+            //            至今无日志可答(假设 B: 被 ios15KvoFixing 重入挡掉)。
+            // usedH   —— TextKit 眼里真正占用的行高。表格/代码块是 attachment,
+            //            若其 bounds 没进排版, needH 会虚高(假设 C)。
+            do {
+                struct _TfdLog { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                let _tfdNow = CACurrentMediaTime()
+                if _tfdNow - _TfdLog.last > 0.5 {
+                    _TfdLog.last = _tfdNow
+                    _TfdLog.n &+= 1
+                    let _tfdTvH = self.frame.height
+                    let _tfdSvAfter = obj.frame.height
+                    let _tfdUsed = self.layoutManager.usedRect(
+                        for: self.textContainer).height
+                    NSLog("[V44-TEXTFRAME] tvH=%.1f svAfter=%.1f usedH=%.1f needH=%.1f tvW=%.1f svW=%.1f tcW=%.1f len=%d n=%u",
+                          _tfdTvH, _tfdSvAfter, _tfdUsed, _v42Need,
+                          self.frame.size.width, obj.frame.size.width,
+                          self.textContainer.size.width, _v42Len, _TfdLog.n)
+                }
+            }
             // [V41-KVOPOST] 即将提交的值(应为 358 x needH)。见 docstring「诊断」。
             if _v42Need > 1, f.size.height + 0.5 >= _v42Need {
                 struct _KvoPost { static var last: CFTimeInterval = 0 }
