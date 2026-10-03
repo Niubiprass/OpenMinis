@@ -5086,8 +5086,23 @@ def verify_width_reflow_v47(t):
     _i_b = t.find(MARK, _i_a + 1)             # 回写处的标记
     if _i_a < 0 or _i_b < 0:
         raise RuntimeError("verify_width_reflow_v47: V47 标记缺失")
-    # 第一块: 判据标记之后到既有 invalidateLayout 之前(v47 只加了判据)
-    _blk1 = t[_i_a:t.find("if _ios15WRegrabbed, textStorage.length > 0 {", _i_a)]
+    # 【v48 起必须收这个边界 —— 否则本函数会 RuntimeError】
+    #   v48 恰恰**就是**在 v47 判据这一处补写容器宽(log17 实测: v47 只调
+    #   invalidateLayout 而不写 textContainer.size.width, 于是 ensureLayout
+    #   照着 390 重排, 治不了 117pt 空壳)。下面第 5 条硬禁段内出现
+    #   `textContainer.size.width =`, 而段右边界原本止于
+    #   `if _ios15WRegrabbed, textStorage.length > 0 {` —— v48-PIN 在那之前,
+    #   于是 v48 的写入被算成 v47 的, 注入到 v48 时直接抛异常。
+    #
+    #   ★这是同一个病根的**第三份副本**: CI 断言 49(YAML 内联)、
+    #   verify_v47.py、本函数。三处曾各写各的, 结果 run#37133557819 里
+    #   前者被 CI 抓到, 后两者靠"CI 先在断言处失败"而侥幸没暴露。
+    #   纪律: **一份判据只能有一处实现**; 后版扩展同一段代码时,
+    #   前版的"纯度判据"要跟着收边界, 而不是删掉判据。
+    _blk1_end = t.find("if _ios15WRegrabbed, textStorage.length > 0 {", _i_a)
+    if "// [V48-PIN]" in t[_i_a:]:
+        _blk1_end = min(_blk1_end, t.index("// [V48-PIN]", _i_a))
+    _blk1 = t[_i_a:_blk1_end]
     # 第二块: 回写标记之后到 ios15LastNeededH 之前(v47 只加了回写)
     _i_end2 = t.find("ios15LastNeededH = _needH", _i_b)
     if _i_end2 < 0:
