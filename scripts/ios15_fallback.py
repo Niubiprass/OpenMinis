@@ -5583,6 +5583,60 @@ MSG_V50_C = (
     "★登记必须排在 v49 之后"
 )
 
+MSG_V51_A = (
+    "v51-A: 把 textView **自身 frame 宽**也钉到 _realW2 — 治「字卡住不显示完整」。"
+    "★这是 v50 装机后推翻疗效判断的那条硬证据(minis-2026-10-04 3.log): "
+    "v50-A' 与 v50-C 的判据**全部达标**(V50-UNIFY 36/36 used=357、"
+    "V50-PINW 62/62 tcW=358、V50-LAIDW 62/62 laidW=358), "
+    "而三个症状一字未改 ⇒ 证明 v50 修的不是根因。"
+    "**根因在 v18 段的覆盖面之外**: V44-TEXTFRAME 实测 svW=**358(153/153 零例外)** "
+    "而 tvW=**390(50/59)**, tcW 与 tvW 完全同构(164 条 358 / 81 条 390)。"
+    "★v18 段一路(v32→v48)只钉 `textContainer.size.width`, "
+    "**从来没碰过 `self.frame.size.width`** —— 而画字的是 UITextView 自己, "
+    "它的 bounds 是 390 而父容器只有 358 ⇒ 右侧 32pt 恒被自己的 bounds 裁掉。"
+    "量化: V43-WIDTH 的 dh(脏宽测高-净宽测高)=**22.3 出现 18 次**"
+    "(hDirty=1297.0 vs hNet=1319.3), 正是这笔被裁的账。"
+    "**为什么第 8128 行那道钳制没生效**: 它带 `!_edgeTouch` 前缀 —— "
+    "贴边态(x<=0.5 && w>=cvW-1)下整段跳过, textView 保持 SwiftUI 给的全屏 390。"
+    "长文本把父容器推过阈值, _edgeTouch 在两态间翻转, 于是 len=392 那组 "
+    "tvW 在 390(n=3/5/6/7)与 358(n=4)之间**逐帧交替** = 拉锯指纹, "
+    "每个交替帧 TextKit 全量重排 ⇒ 「滑动整体动卡闪」。"
+    "修法: 在 v18 段钉 textContainer.size.width 的**同一处、同一帧**"
+    "(V48-PIN 那行之下、V50-PINW-WRITE 之前), 把 self.frame.size.width "
+    "也钉到 _realW2。★判据 `> _realW2 + 1` 单调纠偏: 只在**偏大**时写, "
+    "绝不缩不放 —— v13/v34 两次翻车正是「与 SwiftUI 竞争 frame」引起闪屏与整体缩小, "
+    "本版是**纠偏不是竞争**(已在 358 就不碰), 且不碰 origin/height/bounds。"
+    "★为什么这次碰 frame 而 v45 明令「绝不碰 width」: v45 碰的是 KVO 抢帧器"
+    "(**布局 pass 之外**, 与 SwiftUI 同栈竞争); 本版在 layoutSubviews 的 v18 段内, "
+    "与 v48 钉 textContainer 同一处同一帧 —— 时序完全不同。"
+    "三条红线: A1 只写 `frame.size.width`, 禁 origin/height/bounds/size 整体; "
+    "A2 判据必须单调(> _realW2+1), 不许写成 < 或无条件; "
+    "A3 与 [V48-PIN] 的钉宽行**同一段内、且在其之后**(同一帧的前提)。"
+    "★登记必须排在 v50 之后(锚点是 v50 注入的钉宽通道写入行)"
+)
+
+MSG_V51_C = (
+    "v51-C: 把 V49-WWRITER 探针挪出补高 if — 消除 laidW=-1 与 laidW=358 的假矛盾。"
+    "★本轮实踩: minis-2026-10-04 3.log 里 V49-WWRITER 的 laidW 有两个值"
+    "(358 五条 / -1 五十一条), 而 V50-LAIDW 恒为 358 —— "
+    "初判是「探针读的是上一 pass 的旧值」, 逐行查代码才发现**两个探针"
+    "根本不在同一个函数里**: V49-WWRITER 在 `ios15ApplyFrameFix()` 的"
+    "KVO 抢帧闭包内(且关在 `if _v42Need > 1, f.size.height + 0.5 < _v42Need` 里, "
+    "**补高真的执行才打**), V50-LAIDW 在 `layoutSubviews()` 的 v18 段内。"
+    "⇒ laidW=-1 不是数据异常, 是**探针的触发条件**与另一个不同: "
+    "KVO 闭包里读到的 `ios15LastLaidOutW` 在补高那一刻可能确实还没写过。"
+    "★真正的坑是: kvoW=390 ⇔ laidW=-1 **完全同构(51/51)** —— "
+    "这个「完美相关」极具误导性, 让人以为是因果, 实际两者由同一个 if 门控制。"
+    "⇒ 纪律: **看到两个读数完美相关时, 先确认它们不是被同一个条件门控的**; "
+    "探针挂在有守卫的分支里, 它的读数分布首先反映的是守卫条件。"
+    "修法: 把 V49 探针的读数与打印**移出补高 if**, 挂到闭包的无条件位置, "
+    "让它与 V50-LAIDW 在同一 tick 都打 ⇒ 装机后才是真正的同 tick 对照。"
+    "★本版只挪探针位置, **不改任何行为**(仍是零赋值零 invalidate*, "
+    "kvoW/cvW 三个来源指纹的写法原样保留)。"
+    "★登记必须排在 v49 之后"
+)
+
+
 def fix_width_source_unify_v50(t):
     """v50-A': attachmentBounds 与测高链读同一个宽度源 —— 治滑动时卡字。
 
@@ -6206,6 +6260,482 @@ def verify_slide_relayout_v50(t):
             raise RuntimeError(
                 "verify_slide_relayout_v50: 诊断缺字段 %r —— v49 实测 laidW "
                 "138/143 是 -1, 装机后必须能从日志确认这次真的写进去了" % f)
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════════
+# v51 — 装机实测推翻 v50 疗效判断后的根因修正
+# ══════════════════════════════════════════════════════════════════════
+
+def fix_view_frame_pin_v51(t):
+    """v51-A: 把 UITextView **自身**的 frame 宽也钉到 _realW2。
+
+    ── 归因(minis-2026-10-04 3.log, v50 装机实测)──────────────────────────
+
+    v50 的两条判据在装机后**全部达标**, 而用户的三个症状一字未改:
+        V50-UNIFY  36 条  used=357.0 (pinned=358.0)   ← A' 生效
+        V50-PINW   62 条  pinnedW=358.0 tcW=358.0    ← 钉宽每帧成功
+        V50-LAIDW  62 条  laidW=358.0                 ← C 生效
+    ⇒ v50 修的不是根因。本版去找 v18 段**没覆盖到**的那部分。
+
+    硬证据(V44-TEXTFRAME, 59 条):
+        svW (父容器宽)  = 358.0   **153/153 零例外**
+        tvW (textView 自己) = 390.0  占 50 条, 358.0 占 9 条
+        tcW 与 tvW 完全同构(全局 164 条 358 / 81 条 390)
+
+    v18 段从 v32 到 v48 一路钉的全是 `textContainer.size.width`,
+    **从来没有一处写 `self.frame.size.width`**。而画字的是 UITextView 自己 ——
+    它的 bounds 是 390, 父容器只有 358 ⇒ 右侧 32pt 恒被自己的 bounds 裁掉。
+    这就是「字卡住不显示完全内容」。
+
+    量化(V43-WIDTH 的 dh = 脏宽测高 - 净宽测高):
+        dh=22.3 出现 18 次(典型 hDirty=1297.0 vs hNet=1319.3)
+    按 390 排版比按 358 排版矮 22.3pt, 那 22.3pt 就是排不下的那几行。
+
+    为什么第 8128 行那道钳制没救回来:
+        if !_edgeTouch, bounds.width > _realW + 1 || frame.size.width > _realW + 1 {
+            var _rf = frame; _rf.size.width = _realW; frame = _rf
+        }
+    它带 `!_edgeTouch` 前缀。贴边态(x<=0.5 && w>=cvW-1)下整段跳过,
+    textView 保持 SwiftUI 给的全屏 390。长文本把父容器推过阈值,
+    _edgeTouch 在两态之间翻转 —— 于是 len=392 那组 tvW 在
+    390(n=3/5/6/7) 与 358(n=4) 之间**逐帧交替**: 那就是拉锯的指纹,
+    每个交替帧都要 TextKit 全量重排 ⇒ 用户说的「滑动整体动卡闪」。
+
+    ── 修法与三条红线 ────────────────────────────────────────────────
+
+    写在 v18 段内、V48-PIN 钉 textContainer 那一行的**下方**、
+    V50-PINW-WRITE 的**上方** —— 同一处、同一帧、复用同一个 _realW2。
+    同一帧是硬要求: 早一帧则本帧的行碎片已按脏宽排完, 晚一帧则渲染已提交。
+
+    A1 **只写 `frame.size.width`**, 不碰 origin / height / bounds /
+       整个 size。写 frame.origin 就足以让整棵 cell 重新布局(v34 翻车)。
+    A2 判据**单调**: 只在 `frame.size.width > _realW2 + 1`(偏大)时写,
+       绝不缩、绝不在已达标时写。这是**纠偏**不是**竞争** ——
+       v13/v34 翻车正是因为在布局 pass 外无条件抢宽、与 SwiftUI 争 frame。
+       贴边态下父容器本来就是 358@0, 那个 `!_edgeTouch` 前缀是 v14 为了
+       「不与 SwiftUI 争布局」才加的; 本版不动它, 只在 v18 段内补一刀。
+    A3 必须在 [V48-PIN] 钉宽行**之后**同一段内 —— 判据查行序。
+
+    为什么不违反 v45 的「绝不碰 width」: v45 碰的是 KVO 抢帧器, 那是
+    **布局 pass 之外**、与 SwiftUI 同一调用栈的竞争; 本版在
+    layoutSubviews 的 v18 段内, 与 v48 钉 textContainer 同一处同一帧,
+    时序性质完全不同。
+    """
+    if "// [V51-FRAMEPIN]" in t:
+        return t
+
+    # ---- 落点: v49 的 v18 侧探针段**结束标记之后** ----
+    # ★★ 落点换过一次(本轮第五次栽在"插共享段", 这次是**反过来**):
+    #   第一落点选在 v50 的通道写入行 `TableAttachment.ios15PinnedW = _realW2`
+    #   之上 —— 而那是 v50 scope 判据 seg_w 的**内部**
+    #   (begin=`// [V50-PINW-WRITE]`, end=`// [V49-WWRITER-V18]`),
+    #   于是 v50 scope 报「V50-PINW-WRITE 段内出现 frame.size ——
+    #   v50 只允许写一个 CGFloat/静态标量」。
+    #   ⇒ 纪律(补 v48 那条): **后版往共享段插代码前, 先把前版判据的
+    #     区间按 begin/end 锚点画出来; 落在区间里就换落点, 别改前版判据。**
+    #   现落点 = `// [V49-WWRITER-V18-END]` 之后:
+    #     · v49 判据查的是**钉宽行到探针之间**那段, 不含本标记之后;
+    #     · v50 seg_w 的右界是 `// [V49-WWRITER-V18]` 标记(更靠前), 也不含。
+    #   ★仍在 v18 段内(缩进 12, layoutSubviews 内), 与 v48 钉 textContainer
+    #   宽**同一帧** ⇒ A3 成立, 中间只隔 v49 的三行纯读数。
+    ANCHOR = """            // [V49-WWRITER-V18-END] 段结束标记 —— 见 v49 判据第 3 组。
+"""
+    if ANCHOR not in t:
+        raise RuntimeError(
+            "fix_view_frame_pin_v51: 未找到 v49 v18 侧段结束标记 —— "
+            "v49 没注入? 登记顺序错了?")
+    if t.count(ANCHOR) != 1:
+        raise RuntimeError(
+            "fix_view_frame_pin_v51: v49 段结束标记不唯一(命中 %d 处)"
+            % t.count(ANCHOR))
+    # 段右界取 END 标记**所在行的行尾**, 落点插在它**之后** ——
+    # ★v49 判据硬查 `// [V49-WWRITER-V18-END]` 计数为 1, 而 `NEW = ANCHOR + ...`
+    #   这种写法会把锚点行**留在原位又复制一份** ⇒ 计数 2, v49 struct 直接 BAD。
+    #   ⇒ 锚点只用来**定位**, 不进 NEW。
+    _nl0 = t.rfind("\n", 0, t.find(ANCHOR.strip())) + 1
+    _nl1 = t.find("\n", t.find(ANCHOR.strip()))
+    if _nl1 < 0:
+        _nl1 = len(t)
+    else:
+        _nl1 += 1
+    NEW = """            // [V51-FRAMEPIN] 把**画字的那个视图自己**的 frame 宽也钉到 _realW2
+            // —— 见函数 docstring 的归因与三条红线。
+            //
+            // v18 段从 v32 到 v48 一路钉的全是 `textContainer.size.width`,
+            // 从来没碰过 `self.frame.size.width`。而 UITextView 才是画字的视图,
+            // 它的 bounds 宽 390 而父容器只有 358(log19: svW 358 零例外 / tvW 390
+            // 占 50/59)⇒ 右侧 32pt 恒被自己的 bounds 裁掉, 用户看到的就是
+            // 「字卡住不显示完全」。V43-WIDTH 的 dh=22.3(18 次)就是这笔账。
+            //
+            // 第 8128 行那道钳制救不回来: 它带 `!_edgeTouch` 前缀, 贴边态
+            // (x<=0.5 && w>=cvW-1)整段跳过 ⇒ tvW 在 390/358 之间**逐帧交替**,
+            // 交替帧 TextKit 全量重排 ⇒ 「滑动整体动卡闪」。
+            //
+            // 【A1】只写 size.width —— 不碰 origin/height/bounds/整个 size。
+            //   写 frame.origin 就足以让整棵 cell 重新布局(v34 翻车)。
+            // 【A2】判据单调: 只在**偏大**时写, 绝不缩、绝不在已达标时写。
+            //   这是纠偏不是竞争 —— v13/v34 翻车正是无条件抢宽与 SwiftUI 争 frame。
+            //   稳态下 tvW 已是 358, 条件恒 false, 零写入零开销。
+            // 【A3】必须与本段内 v48 钉 textContainer 宽**同一帧** ——
+            //   早一帧则行碎片已按脏宽排完, 晚一帧则渲染已提交。
+            //   落点选在 v49 探针段之后正是为此: 仍在 layoutSubviews 的
+            //   同一次调用内, 与钉 textContainer 之间只隔 v49 的三行纯读数。
+            //
+            // ★不违反 v45 的「绝不碰 width」: v45 碰的是 KVO 抢帧器
+            //   (布局 pass **之外**, 与 SwiftUI 同栈竞争); 本版在
+            //   layoutSubviews 的 v18 段内、与 v48 钉 textContainer 同一帧,
+            //   时序性质完全不同。
+            if frame.size.width > _realW2 + 1 {
+                var _v51f = frame
+                _v51f.size.width = _realW2
+                frame = _v51f
+            }
+            // [V51-FRAMEPIN-DIAG] 纯诊断: 记钉 frame 宽那一刻的三个宽。
+            // 装机判据: fvW 应与 tcW 同时为 358; 若 fvW 仍 390 说明
+            // 写进去的 frame 宽度又被 SwiftUI 在下一 pass 推回。
+            do {
+                struct _V51FLog { static var last: CFTimeInterval = 0 }
+                let _v51n = CACurrentMediaTime()
+                if _v51n - _V51FLog.last > 0.5 {
+                    _V51FLog.last = _v51n
+                    NSLog("[V51-FRAMEPIN] fvW=%.1f tcW=%.1f svW=%.1f len=%d",
+                          self.frame.size.width, self.textContainer.size.width,
+                          superview?.frame.size.width ?? -1, self.textStorage.length)
+                }
+            }
+"""
+    t = t[:_nl1] + NEW + t[_nl1:]
+    return t
+
+
+def verify_view_frame_pin_v51(t):
+    """校验 v51-A —— 独立成函数。"""
+    for tag, want in (("// [V51-FRAMEPIN]", 1),
+                      ("// [V51-FRAMEPIN-DIAG]", 1),
+                      ("// [V50-PINW-WRITE]", 1),
+                      ("// [V48-PIN]", 1)):
+        if t.count(tag) != want:
+            raise RuntimeError(
+                "verify_view_frame_pin_v51: 标记 %s 计数应为 %d, 实为 %d"
+                % (tag, want, t.count(tag)))
+
+    i_pin = t.find("// [V51-FRAMEPIN]")
+    if i_pin < 0:
+        raise RuntimeError("verify_view_frame_pin_v51: [V51-FRAMEPIN] 段缺失")
+    # 段右界用**下游稳定锚点**, 不用固定字符数。落点是 v49 探针段结束标记
+    # 之后, 下游最近的稳定锚点是 v28 的重排注释 `// [IOS15-FIX-RELC v28]`。
+    i_end = t.find("// [IOS15-FIX-RELC v28]", i_pin)
+    if i_end < 0:
+        raise RuntimeError(
+            "verify_view_frame_pin_v51: 段未闭合(找不到下游的 "
+            "`// [IOS15-FIX-RELC v28]`)")
+    seg = t[i_pin:i_end]
+    code = _strip_swift_noise(seg)
+
+    # ---- A3: 必须与 V48-PIN 的钉宽行**同一段内、且在其之后** ----
+    i_v48 = t.rfind("// [V48-PIN]", 0, i_pin)
+    if i_v48 < 0:
+        raise RuntimeError(
+            "verify_view_frame_pin_v51: [V51-FRAMEPIN] 上游找不到 [V48-PIN] —— "
+            "A3(同一帧)的检查上界没了")
+    i_tc = t.find("textContainer.size.width = _realW2", i_v48)
+    if i_tc < 0 or i_tc > i_pin:
+        raise RuntimeError(
+            "verify_view_frame_pin_v51: ★[V51-FRAMEPIN] 不在 v48 钉 textContainer "
+            "那一行之后(i_tc=%d, i_pin=%d) —— 破坏了 A3「同一处同一帧」"
+            % (i_tc, i_pin))
+
+    # ---- A2: 判据必须单调(只在偏大时写) ----
+    m_asm = re.search(r"if frame\.size\.width > _realW2 \+ 1 \{", code)
+    if not m_asm:
+        got = re.findall(r"if frame\.size\.width [^\n{]*\{", code)
+        raise RuntimeError(
+            "verify_view_frame_pin_v51: ★判据不是单调的 `> _realW2 + 1`, 实为 %r —— "
+            "A2 要求只在偏大时写(纠偏不竞争), 写成 < 或无条件就是 v13/v34 老路"
+            % (got or "无"))
+    # 反向: 段内不许出现 `<` 或无条件(无判据)的 frame 宽写入
+    if re.search(r"if frame\.size\.width <", code):
+        raise RuntimeError(
+            "verify_view_frame_pin_v51: ★段内出现 `frame.size.width <` 判据 —— "
+            "本版只纠偏不缩放, 缩小会让整棵 cell 重新布局")
+
+    # ---- A1: 段内只许写 size.width, 禁 origin/height/bounds/整体 size ----
+    _m = re.search(r"frame\s*=\s*_v51f", code)
+    if not _m:
+        raise RuntimeError(
+            "verify_view_frame_pin_v51: 找不到 `frame = _v51f` 赋值 —— "
+            "注入形态变了?(判据与产物必须同步)")
+    _i_w = code.find("_v51f.size.width = _realW2")
+    if _i_w < 0:
+        raise RuntimeError(
+            "verify_view_frame_pin_v51: 找不到 `_v51f.size.width = _realW2` 写入")
+    _bad = []
+    for pat, why in (
+            (r"\.origin\s*=", "origin"),
+            (r"\.size\s*=\s*_v51f", "整个 size"),
+            (r"\.size\.height\s*=", "height"),
+            (r"\bbounds\s*=", "bounds"),
+            (r"\.size\.width\s*=\s*(?!_realW2)", "非 _realW2 的宽度目标"),
+    ):
+        # 诊断块里的读取(self.frame.size.width 等)不算写入, 只查左侧是赋值的
+        for mm in re.finditer(pat, code):
+            line = code[code.rfind("\n", 0, mm.start()) + 1:
+                        code.find("\n", mm.end())]
+            if "=" in line and line.index("=") < len(line) and \
+                    not re.match(r"\s*(?://|.*NSLog)", line):
+                # 右侧紧跟 = 的是比较运算符时不是赋值
+                _after = code[mm.end():mm.end() + 1]
+                if _after == "=":
+                    _bad.append("%s @ %r" % (why, line.strip()[:70]))
+    if _bad:
+        raise RuntimeError(
+            "verify_view_frame_pin_v51: ★段内出现 A1 禁止的几何写入 %d 处: %s"
+            % (len(_bad), "; ".join(_bad[:4])))
+
+    # ---- 诊断字段齐全(装机靠它确认 fvW 真被钉住了) ----
+    for f in ("fvW=", "tcW=", "svW=", "len="):
+        if f not in seg:
+            raise RuntimeError(
+                "verify_view_frame_pin_v51: 诊断缺字段 %r —— log19 实测 tvW=390 "
+                "占 50/59, 装机后必须能从日志确认 frame 宽钉住了" % f)
+    return True
+
+
+def fix_probe_unhook_v51(t):
+    """v51-C: 把 V49-WWRITER 探针移出补高 if, 挂到闭包的无条件位置。
+
+    ── 本轮实踩(判读日志时被自己的探针骗了)─────────────────────────────
+
+    minis-2026-10-04 3.log 里 V49-WWRITER 的 laidW 出现两个值:
+        358.0  × 5
+        -1.0   × 51
+    而同一份日志里 V50-LAIDW 恒为 358(v50-C 已达标)。初判是
+    「探针读到的是上一 pass 的旧值」, 并据此推出「KVO 侧看到 390 是
+    上一 pass 末的状态, 钉宽本身没失败」。
+
+    逐行查代码才发现**两个探针根本不在同一个函数里**:
+        V49-WWRITER  在 `ios15ApplyFrameFix()` 的 KVO 抢帧闭包内,
+                      且关在 `if _v42Need > 1, f.size.height + 0.5 < _v42Need` 里
+                      —— **补高真的执行才打这一条**;
+        V50-LAIDW    在 `layoutSubviews()` 的 v18 段内, 无条件(0.5s 节流)。
+
+    ⇒ laidW=-1 不是数据异常, 是**探针的触发条件**与另一个不同。
+
+    ★真正的坑: `kvoW=390 ⇔ laidW=-1` **完全同构(51/51)**。
+    这个「完美相关」极具误导性 —— 看起来像因果, 实际两者是被**同一个
+    if 门**一起控住的。⇒ 纪律: **看到两个读数完美相关时, 先确认它们
+    不是被同一个条件门控的**; 探针挂在有守卫的分支里时, 它的读数分布
+    首先反映的是守卫条件, 而不是被测对象。
+
+    修法: 探针的读数与打印移到闭包的**无条件位置**(补高 if 之后、
+    闭包末尾), 让它与 V50-LAIDW 在同一 tick 都打 ⇒ 装机后才是真正的
+    同 tick 对照。
+
+    ★本版只挪探针位置, **不改任何行为**: 零赋值(除 v49 本来就有的
+    `self.ios15V41CvW` / `self.ios15V46LaidOutW` 两个指纹字段, 那是
+    v49 的既有成果)、零 invalidate*、零 ensureLayout。
+    """
+    if "// [V51-PROBE]" in t:
+        return t
+
+    # ---- 切出**整段**: 从起点标记所在行的行首, 到 END 标记那一行的行尾 ----
+    #
+    # ★★ 本轮在段边界上翻了第四次车, 根因值得写下来:
+    #   v49 判据 / v50 判据 / scope_check_v49 三层都按**精确字符串**找
+    #   `// [V49-WWRITER-KVO]` 与 `// [V49-WWRITER-KVO-END]` 这一**对**标记,
+    #   且约定「起点在前、END 在后」。我前两版分别试过:
+    #     ① 连 END 一起删      ⇒ 三层报「段未闭合」(标记没了);
+    #     ② END 原地留、只搬探针体 ⇒ 三层报「找不到 END」(顺序倒了)。
+    #   ⇒ **正确做法只有一个: 整段(两个标记 + 探针体)作为一个整体搬走**,
+    #     原位不留任何残迹, 新位置两个标记的**相对顺序不变**。
+    #   ⇒ 纪律: **判据把某段代码夹在一对标记之间时, 那对标记与段是一体的;
+    #     要挪就整段挪, 标记留在原位等于把契约撕了。**
+    #
+    # 落点 = KVO 闭包补高 if **之后**(if 已闭合)、与 `f = _hFix` 同缩进的
+    # 位置 —— 仍在同一闭包作用域内(cvW / f / _v42Need 全部可见),
+    # 不需要新增任何读取, 且探针变成**无条件**执行(这正是本版的目的)。
+    START = " " * 24 + "// [V49-WWRITER-KVO]"
+    if START not in t:
+        raise RuntimeError(
+            "fix_probe_unhook_v51: 未找到 v49 探针起点(24 空格缩进) —— "
+            "锚点缩进变了?(v49 那轮已踩过静默 no-op 的坑)")
+    if t.count(START) != 1:
+        raise RuntimeError(
+            "fix_probe_unhook_v51: v49 探针起点不唯一(命中 %d 处)" % t.count(START))
+    i0 = t.find(START)
+    i0_line = t.rfind("\n", 0, i0) + 1          # 起点标记所在行的行首
+    if t[i0_line:i0 + len(" " * 24)] != " " * 24:
+        raise RuntimeError(
+            "fix_probe_unhook_v51: 起点标记前导缩进不是 24, 实为 %r —— "
+            "v49 判据按精确字符串找它, 缩进变了全线报段未闭合"
+            % t[i0_line:i0 + 24])
+    # 段右界 = END 标记所在行的**行尾**(含换行)
+    i_end = t.find("// [V49-WWRITER-KVO-END]", i0)
+    if i_end < 0:
+        raise RuntimeError(
+            "fix_probe_unhook_v51: 找不到 // [V49-WWRITER-KVO-END] —— "
+            "v49 探针段未闭合")
+    i_end_line = t.find("\n", i_end)
+    if i_end_line < 0:
+        i_end_line = len(t)
+    else:
+        i_end_line += 1
+    seg_old = t[i0_line:i_end_line]
+    if "[V49-WWRITER]" not in seg_old:
+        raise RuntimeError(
+            "fix_probe_unhook_v51: 切出的段里没有 [V49-WWRITER] 日志行 —— "
+            "段右界选错, 会切掉真正的探针")
+    if seg_old.rstrip("\n").split("\n")[-1].find(
+            "// [V49-WWRITER-KVO-END]") < 0:
+        raise RuntimeError(
+            "fix_probe_unhook_v51: ★切出的段最后一行不是 END 标记 —— "
+            "切点算错了(拿到 %r)"
+            % seg_old.rstrip("\n").split("\n")[-1].strip()[:60])
+
+    # ---- 重建: 整段去缩进 8 格后(24 -> 16), 原样搬到新落点 ----
+    lines = []
+    for ln in seg_old.split("\n"):
+        if not ln.strip():
+            continue
+        if ln.startswith(" " * 8):
+            ln = ln[8:]
+        lines.append(ln)
+    seg_new = (
+        "                // [V51-PROBE] 从补高 if 里挪出来的 v49 探针 ——\n"
+        "                // 见函数 docstring。**只挪位置, 零行为改动**:\n"
+        "                // 读数/指纹/字段/格式串与 v49 逐字相同, 整段缩进 24 -> 16,\n"
+        "                // 两个段边界标记**跟着整段一起搬**(判据靠它们切段)。\n"
+        "                // 旧位置关在 `if _v42Need > 1, f.size.height + 0.5 < _v42Need`\n"
+        "                // 里(补高真执行才打), 那让 laidW=-1 与 kvoW=390 看起来\n"
+        "                // 「完全同构(51/51)」—— 实为同一个 if 门控住的假相关。\n"
+        "                // 现在挂在闭包无条件位置, 与 V50-LAIDW 同 tick 都打。\n"
+        + "\n".join(lines) + "\n"
+    )
+    # 探针仍在补高 if 内? 那样本版白做了 —— 查新段的缩进层级
+    if "\n " * 24 + "_V49W.tick" in seg_new:
+        raise RuntimeError(
+            "fix_probe_unhook_v51: ★重建后探针仍缩进 24 —— 说明它还在某个 "
+            "同层 if 内(补高 if 未闭合), 本版目的落空")
+
+    ANCHOR_END = """                f = _hFix
+            }
+"""
+    i_anchor = t.find(ANCHOR_END, i_end_line)
+    if i_anchor < 0:
+        raise RuntimeError(
+            "fix_probe_unhook_v51: 补高 if 之后的 `f = _hFix` 落点找不到 —— "
+            "KVO 闭包结构变了?")
+    # 先摘整段(避免落点索引失效), 再插
+    t = t[:i0_line] + t[i_end_line:]
+    i_anchor = t.find(ANCHOR_END, i0_line)
+    if i_anchor < 0:
+        raise RuntimeError("fix_probe_unhook_v51: 摘除整段后落点找不到")
+    t = (t[:i_anchor + len(ANCHOR_END)] + seg_new
+         + t[i_anchor + len(ANCHOR_END):])
+    return t
+
+
+def verify_probe_unhook_v51(t):
+    """校验 v51-C —— 独立成函数。"""
+    # ★★ 只查 [V51-PROBE] 计数, **不查** [V49-WWRITER-KVO] / [-END] 的计数 ——
+    #   这两个标记是 **v49 判据 / v50 判据 / scope_check_v49 三层的公共段边界**,
+    #   本版初稿把 [-END] 一起删了, 三层全线报"段未闭��"(本轮第四次段边界翻版)。
+    #   ⇒ 纪律: **只挪探针的代码, 不动别人的段边界标记。**
+    #   本版把它们**原位保留**在补高 if 之后(探针新位置之前), 语义是
+    #   "v49 探针区的结束边界" —— 判据切段依然成立。
+    if t.count("// [V51-PROBE]") != 1:
+        raise RuntimeError(
+            "verify_probe_unhook_v51: 标记 // [V51-PROBE] 计数应为 1, 实为 %d"
+            % t.count("// [V51-PROBE]"))
+    for tag in ("// [V49-WWRITER-KVO]", "// [V49-WWRITER-KVO-END]"):
+        if t.count(tag) != 1:
+            raise RuntimeError(
+                "verify_probe_unhook_v51: ★段边界标记 %s 计数应为 1, 实为 %d —— "
+                "它被 v49/v50/scope 三层当切段契约用, 本版只挪探针不改标记"
+                % (tag, t.count(tag)))
+    # ★数的是 **NSLog 的格式串**, 不是 `// [V49-WWRITER]` ——
+    #   本轮判据第一版数后者, 而产物里根本没有裸的 `// [V49-WWRITER]`
+    #   (段标记是 `// [V49-WWRITER-KVO]` / `-V18` / `-END` 三种), 于是
+    #   计数 0 ≠ 1 ⇒ 判据自己报错, 而产物完全正常。
+    #   ⇒ 纪律: **判据要数的那个字符串, 先确认它真的存在于产物里**;
+    #     "找不到" 与 "数量不对" 是两回事。
+    if t.count('NSLog("[V49-WWRITER]') != 1:
+        raise RuntimeError(
+            "verify_probe_unhook_v51: [V49-WWRITER] 的 NSLog 行应为 1 条, "
+            "实为 %d 条(挪位置不删探针)" % t.count('NSLog("[V49-WWRITER]'))
+
+    i = t.find("// [V51-PROBE]")
+    if i < 0:
+        raise RuntimeError("verify_probe_unhook_v51: [V51-PROBE] 段缺失")
+    # 段右界 = 补高 if 之后的落点(V45-TVHFIX 标记, 稳定锚点)
+    i_end = t.find("// [V45-TVHFIX]", i)
+    if i_end < 0:
+        raise RuntimeError(
+            "verify_probe_unhook_v51: 段未闭合(找不到 // [V45-TVHFIX])")
+    seg = t[i:i_end]
+    code = _strip_swift_noise(seg)
+
+    # ---- 核心: 探针不得再关在补高 if 里 ----
+    # 判据用**缩进层级**而不是"有没有那个 if 字样": 探针必须与
+    # `f = _hFix` 同缩进(16), 那个 if 在 16 ⇒ 探针若被吞进去就是 20。
+    m_f = re.search(r"^([ ]*)f = _hFix\s*$", t, re.M)
+    if not m_f:
+        raise RuntimeError("verify_probe_unhook_v51: 找不到 `f = _hFix` 落点")
+    ind_f = len(m_f.group(1))
+    # ★必须在**未剥噪的 seg** 上找 NSLog: `_strip_swift_noise` 会把字符串
+    #   字面量替换成 `""`, 于是 `NSLog("[V49-WWRITER]...")` 变成 `NSLog("")`,
+    #   在 code 上 search 必然找不到 —— 本轮判据第一版就栽在这, 报
+    #   "找不到 V49-WWRITER 的 NSLog", 而产物完全正常。
+    #   ⇒ 纪律: **判据的字符层级要分清** —— 找文本 token 用原文,
+    #     查语义(赋值/调用)才用剥噪后的 code。
+    # ★查**探针入口行** `_V49W.tick`, 不查 NSLog ——
+    #   本轮判据第一版查 NSLog, 而 NSLog 在**节流 if 内部**(缩进 20),
+    #   落点 `f = _hFix` 是闭包层(16) ⇒ 判据必然报"缩进更深"。
+    #   那个节流 if 是 v49 既有的怠速设计(0.5s 节流), 不是"被吞进分支";
+    #   本版真正要查的是**探针的读数与登记**(可以从不被跳过)。
+    #   ⇒ 纪律: 判缩进层级时, 先想清楚**哪一层的执行条件**才是这条红线
+    #     要管的 —— 节流闸门天天 of course 存在, 它不是红灯。
+    m_log = re.search(r"^([ ]*)_V49W\.tick", seg, re.M)
+    if not m_log:
+        raise RuntimeError(
+            "verify_probe_unhook_v51: 找不到探针入口 `_V49W.tick` —— "
+            "注入形态变了?")
+    ind_log = len(m_log.group(1))
+    if ind_log > ind_f:
+        raise RuntimeError(
+            "verify_probe_unhook_v51: ★探针缩进 %d 比落点 %d 更深 —— 仍关在"
+            "某个 if 里(补高 if 已闭合), 装机后还是只打一部分帧"
+            % (ind_log, ind_f))
+
+    # ---- 仍须零行为改动: 段内禁排版调用与新的几何写入 ----
+    for pat, why in ((r"\.invalidateLayout\s*\(", "invalidateLayout"),
+                     (r"\.ensureLayout\s*\(", "ensureLayout"),
+                     (r"textContainer\.size\.\w+\s*=", "textContainer 宽高写入"),
+                     (r"\.frame\s*=\s*[^=]", "frame 写入"),
+                     (r"\.bounds\s*=\s*[^=]", "bounds 写入")):
+        if re.search(pat, code):
+            raise RuntimeError(
+                "verify_probe_unhook_v51: ★段内出现 %s —— 本版只挪探针位置, "
+                "零行为改动" % why)
+
+    # ---- 三个来源指纹与全部字段仍在(诊断力不许因为挪位置而丢) ----
+    for f in ("v18W=", "kvoW=", "cvW=", "laidW=", "tcH=", "sameTick=",
+              "dtick=", "usedH=", "needH=", "len="):
+        if f not in seg:
+            raise RuntimeError(
+                "verify_probe_unhook_v51: 探针缺字段 %r —— 挪位置不该丢诊断力"
+                % f)
+    # ★清单只列 **KVO 侧**的三个来源指纹 —— 本版挪的就是 KVO 侧探针,
+    #   `_V49W.v18W` 属于 v18 侧(另一个探针, 本版没动), 列进来必然报缺失。
+    #   ⇒ 纪律: 判据检查的清单要与**本版改动范围**对齐, 多列一项就制造
+    #     一条假失败。
+    for f in ("_V49W.tick", "_V49W.kvoW = ", "_V49W.kvoTick = ",
+              "self.ios15V41CvW = ", "self.ios15V46LaidOutW = "):
+        if f not in code:
+            raise RuntimeError(
+                "verify_probe_unhook_v51: 探针缺来源指纹 %r —— 挪位置不该丢"
+                "诊断力" % f)
     return True
 
 # [V47-FORBIDDEN] v47 段内禁写的标识集合 —— 精确匹配, 不用子串。
@@ -7012,6 +7542,10 @@ def main():
          MSG_V50_A)
     edit("Views/Chat/SelectableMarkdownView.swift", fix_slide_relayout_v50,
          MSG_V50_C)
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_view_frame_pin_v51,
+         MSG_V51_A)
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_probe_unhook_v51,
+         MSG_V51_C)
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")
     edit("Views/Chat/AIChatView.swift", fix_inputbar_kick, "v30-C: 输入栏假死自愈 — STALLED 时就地重建 composer host (草稿保留)")

@@ -1040,7 +1040,7 @@ jobs:
 
           echo "::endgroup::"
 
-          echo "::group::断言52: 全版本判据回归 (v41~v50 判据 + v47/v48 反向 + v49/v50 sabotage)"
+          echo "::group::断言52: 全版本判据回归 (v41~v51 判据 + v47/v48 反向 + v49/v50/v51 sabotage)"
           set +e
           python3 "$SCRIPT_DIR/ios15_verify/regress_all_v.py" . 2>&1 | tee /tmp/regress_all_v.out
           _rc=${PIPESTATUS[0]}
@@ -1066,6 +1066,63 @@ jobs:
             echo "   ⚠️ 同一判据若有**多份副本**(fallback 内 + 独立 ci_assert + "
             echo "     反向测试基线), 改务必一次全改 —— 该坑已翻版三次"
             echo "     (run#37133557819 / 37133885324 / 37137912522)。"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          # ---- 断言 54: v51 就位 (A 钉 textView 自身 frame 宽 + C 探针挪出补高 if)----
+          # 【这事为什么还轮得到 v51 —— minis-2026-10-04 3.log 的硬反面据】
+          #   v50 的三层判据**全部达标**: V50-UNIFY 36/36 used=357、
+          #   V50-PINW 62/62 tcW=358、V50-LAIDW 62/62 laidW=358。
+          #   而用户报告的三个症状一字未改 ⇒ **v50 修的不是这个症状的根因**。
+          # 根因落在 v18 段**覆盖面之外**:
+          #   V44-TEXTFRAME: svW=**358(153/153 零例外)** 而 tvW=**390(50/59)**,
+          #   tcW 与 tvW 完全同构(164 条 358 / 81 条 390)。
+          #   ⇒ 父容器一直是对的, 偏的是**画字的那个视图自己**, 宽 32pt。
+          #   v18 段从 v32 到 v48 一路钉的都是 `textContainer.size.width`,
+          #   **从没碰过 `self.frame.size.width`**; UITextView 的 bounds 是 390
+          #   而父容器 358 ⇒ 右侧 32pt 恒被自己的 bounds 裁掉 = 「字卡住不显示完整」。
+          #   量化: V43-WIDTH 的 dh=**22.3 出现 18 次**(hDirty=1297.0 vs hNet=1319.3)。
+          # ★v32 第 8128 行那道钳制救不回来: 它带 `!_edgeTouch` 前缀, 贴边态
+          #   (x<=0.5 && w>=cvW-1)整段跳过 ⇒ len=392 那组 tvW 在 390(n=3/5/6/7)
+          #   与 358(n=4)之间**逐帧交替** = 拉锯指纹 = 「滑动整体动卡闪」;
+          #   高度差 22.3pt 要延迟一帧才补上 = 「终端框卡一下才显示」。
+          # ★为什么这次能动 frame 而 v45 明令「绝不碰 width」: v45 约束的是 KVO
+          #   抢帧器(**布局 pass 之外**, 与 SwiftUI 同栈竞争 frame); 本版写在
+          #   layoutSubviews 的 v18 段内, 与 v48 钉 textContainer **同一处同一帧**。
+          # ★判据 `> _realW2 + 1` 单调纠偏: 只在**偏大**时写, 绝不缩不放 ——
+          #   v13/v34 的闪屏与整体缩小都源于「与 SwiftUI 竞争 frame」, 本版是纠偏不是竞争。
+          # ★C 修的是**假相关**: laidW=-1(51 条)与 kvoW=390(51 条)完全同构, 看着
+          #   像因果, 实际两者被同一个 `if _v42Need > 1, f.size.height + 0.5 < _v42Need`
+          #   门控 —— V49-WWRITER 关在补高 if 里(补高真执行才打), V50-LAIDW 无条件。
+          #   探针挪到闭包的无条件位置 ⇒ 装机后才是真正的同 tick 对照。
+          #   ⇒ 纪律: 看到两个读数完美相关, 先确认它们不是被同一个条件门控的。
+          echo "::group::断言54: v51 就位 (A: tvW=390 vs svW=358 钉 textView 自身 frame 宽; C: 探针挪出补高 if)"
+          if grep -q "fix_view_frame_pin_v51" "$SCRIPT_DIR/ios15_fallback.py" \
+             && grep -q "fix_probe_unhook_v51" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v51.py" . ; then
+              echo "✅ v51 就位 (★A 在 v18 段钉 textContainer.size.width 的同一处同一帧, 把 self.frame.size.width 也钉到 _realW2 —— V44-TEXTFRAME 实测父容器 svW=358 零例外(153/153) 而 textView 自身 tvW=390(50/59), 32pt 恒被自己的 bounds 裁掉即「字卡住不显示完整」, V43-WIDTH 的 dh=22.3 出现 18 次正是这笔账。三条红线: A1 只写 frame.size.width(禁 origin/height/bounds/size 整体); A2 判据 > _realW2+1 单调纠偏, 只在偏大写、绝不缩不放 —— v13/v34 的闪屏源于与 SwiftUI 竞争 frame, 本版是纠偏不是竞争; A3 与 [V48-PIN] 钉宽行同一段内且在其之后, 这是「同一帧」的前提。★落点两次返工: 先插 V50-PINW-WRITE 之上 → 落进 v50 scope 的 seg_w 区间, 被判「段内出现 frame.size」; 又因 ANCHOR 复用导致 v49 END 标记计数变 2。最终落点 = [V49-WWRITER-V18-END] 之后、[IOS15-FIX-RELC v28] 之前。★C 把 V49-WWRITER 探针连同一对 KVO 段标记**整段**从补高 if 内(缩进 24)搬到闭包层(16) —— 曾试图删掉探针体留标记、结果 [V49-WWRITER-KVO-END] 跑到起点前面, 被三层判「段未闭合」; 教训是「判据用一对标记夹住的那段, 标记与段是一体的, 要挪就整段挪」。搬迁只改位置不改行为: 零赋值零 invalidate*, kvoW/cvW 三个来源指纹原样保留。★三层判据: core(A 三条红线 + C 探针缩进层级/段边界计数/来源指纹) + scope(编译级 5 组: A API 白名单 / B NSLog 变参可选类型 / C 段内零危险写 / D _realW2 局部量可达性 / E 占位符配平) + sab(判据自证 12 条, S1~S8 破 A 的三条红线、S9~S12 破 C 与段边界契约)。★装机判据: 抓 [V51-FRAMEPIN] fvW=/tcW=/svW=, fvW 应与 tcW 同时落到 358; 若 fvW 仍 390, 说明写进去的 frame 宽被 SwiftUI 下一 pass 推回, 那时才需要 v52)"
+            else
+              echo "❌ v51 异常 (见上方 ci_assert_v51.py 的 core A/core C/scope/sab 四行)"
+              echo "   —— ★core A BAD: 三条红线之一被破。A1 段内写了 origin/height/bounds"
+              echo "      或整个 size; A2 判据写成 < 或无条件(变成与 SwiftUI 竞争 frame,"
+              echo "      v13/v34 的闪屏与整体缩小就是这么来的); A3 落点跑到 v48 钉宽行"
+              echo "      之前或跨出了 v18 段 ⇒ 不再同一帧, 等于没修"
+              echo "   —— ★core C BAD: 探针缩进比落点 f = _hFix 更深(又被包回某个分支里,"
+              echo "      laidW=-1 的假相关复现); 或 KVO 段边界标记计数不为 1 —— 那对标记"
+              echo "      被 v49/v50/scope 三层当切段契约用, 多一份少一份全链崩"
+              echo "   —— ★scope BAD: **编译会失败**。含 ?. 的实参未 ?? 解包就进 NSLog 变参"
+              echo "      (本轮 S7 实测真能漏过按标识符查声明的判据); _realW2 是局部量,"
+              echo "      落点与声明之间跨 func 就不可见"
+              echo "   —— sab BAD: 判据自身拦不住本轮真实踩过的坑 ⇒ 判据是废的"
+              echo "   ⚠️ 报错在 core 层时先分清字符层级: 找文本 token 用**原文**, 查语义才用"
+              echo "      剥噪后的 code —— 在剥噪结果上找 NSLog 格式串必然找不到"
+              exit 1
+            fi
+          else
+            echo "❌ v51 缺失 —— V44-TEXTFRAME 实测 tvW=390 而 svW=358, textView 自身"
+            echo "   宽出的 32pt 每帧都在裁自己的字; 缺 A 则「字卡住不显示完整」不会自愈,"
+            echo "   _edgeTouch 两态翻转引起的逐帧 390/358 交替也不停 = 「滑动整体动卡闪」"
             exit 1
           fi
           echo "::endgroup::"

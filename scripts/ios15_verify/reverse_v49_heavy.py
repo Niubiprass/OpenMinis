@@ -186,24 +186,49 @@ def heavy_checks(t):
 def _sab_cases(t):
     cases = []
 
+    # ★★ v51 把 KVO 侧探针整段从「补高 if 内(24 空格)」挪到「闭包层(16 空格)」,
+    #   H1/H2 的锚点原本写死 24 空格 ⇒ 两条 sabotage 自身就失败
+    #   (输出与"未被拦截"同形, 但真相是"锚点失效")。
+    #   ⇒ 纪律(第五次同型): **锚点的缩进要从产物数出来, 不许写死**;
+    #     且锚点失效必须**自己报错**(assert), 不能与"漏放"共用一个输出。
+    #
+    # ★★ 而且锚点里的 Swift 运算符**必须转义**: `&+=` 直接进正则时,
+    #   `&+` 被解析成「一个或多个 &」⇒ 匹配到的可能不是同一行。
+    #   本轮为此debug 了很久: 手工写 `&=\+` 竟然也不匹配, 最后才想到
+    #   **`\&` 根本不是合法转义**(`&` 本来就非元字符, Python re 3.12+ 会报错),
+    #   正确做法是交给 `re.escape`。
+    #   ⇒ 纪律: **把源码片段当正则用时一律走 `re.escape`**, 不许手写转义 ——
+    #     手写转义的两个坑: 该转义的漏了(匹配不到)、不该转义的转了(报错)。
+    TICK_TXT = "_V49W.tick &+= 1"
+    m_ind = re.search(r"^([ ]+)" + re.escape(TICK_TXT) + r"$", t, re.M)
+    assert m_ind, "探针行 `_V49W.tick &+= 1` 在产物里找不到 —— 注入形态变了?"
+    IND = m_ind.group(1)
+    PAD = " " * len(IND)
+    # 锚点行本体(转义后的 `&` 用于正则, 未转义的用于 str.replace)
+    TICK_LIT = PAD + TICK_TXT
+    NOW_LIT = PAD + "let _v49Now = CACurrentMediaTime()"
+    GATE_LIT = PAD + "if _v49Now - _V49W.last > 0.5 {"
+    # 闸门必须紧跟在 _v49Now 之后(节流闸门的定义), 否则 usedRect 就不在闸门内
+    assert (NOW_LIT + "\n" + GATE_LIT) in t, (
+        "H1 锚点失效: 找不到 `_v49Now` 紧跟节流闸门那一对(缩进 %d 空格, "
+        "从产物实测)" % len(IND))
+
     def h1(x):
         # ★最关键: usedRect 提到节流闸门外 → 重文本(len=1013)每帧触发排版
-        old = ("                        let _v49Now = CACurrentMediaTime()\n"
-               "                        if _v49Now - _V49W.last > 0.5 {")
-        new = ("                        let _v49Now = CACurrentMediaTime()\n"
-               "                        let _v49ProbeUR = self.layoutManager"
+        old = NOW_LIT + "\n" + GATE_LIT
+        new = (NOW_LIT + "\n"
+               + PAD + "let _v49ProbeUR = self.layoutManager"
                ".usedRect(for: self.textContainer).height\n"
-               "                        if _v49Now - _V49W.last > 0.5 {")
-        assert old in x, "H1 锚点失效"
+               + GATE_LIT)
+        assert old in x, "H1 锚点失效(缩进 %d 空格, 从产物实测)" % len(IND)
         return x.replace(old, new, 1)
     cases.append(("H1 usedRect 提到节流闸门外(重文本每帧重排)", h1))
 
     def h2(x):
-        old = "                        _V49W.tick &+= 1"
-        new = ("                        _V49W.tick &+= 1\n"
-               "                        self.layoutManager.invalidateLayout("
+        old = TICK_LIT
+        new = (old + "\n" + PAD + "self.layoutManager.invalidateLayout("
                "forCharacterRange: NSMakeRange(0, 0), actualCharacterRange: nil)")
-        assert old in x, "H2 锚点失效"
+        assert old in x, "H2 锚点失效(缩进 %d 空格, 从产物实测)" % len(IND)
         return x.replace(old, new, 1)
     cases.append(("H2 探针内触发 invalidateLayout", h2))
 
