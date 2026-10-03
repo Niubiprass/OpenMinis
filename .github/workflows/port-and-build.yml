@@ -449,7 +449,13 @@ jobs:
              && grep -q "V41-DEBT" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             # 【加固·重要】位置判据必须锚**真正执行的赋值语句**, 不能锚注释标记。
             # 反向证伪(10/10)已证明: 锚注释时把注释挪走就骗过检查, 判据形同虚设。
-            _v41_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); a=t.index('_hFix.size.height = self.ios15LastNeededH'); h=t.index(chr(10)+'                f = _hFix'); p=t.index('let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt'); r=t.index(chr(10)+'                fix.size.height = self.ios15LastNeededH'); w=t.index(chr(10)+'            obj.frame = fix', r); print('OK' if a<h<p<r<w else 'BAD')")
+            # 【v42 兼容】需求高度来源两代写法: v41 世代读 self.ios15LastNeededH,
+            # v42 世代改读局部 _v42Need(闩锁缓存/KVO 自测)。v41 的**语义**必须继续
+            # 被守住, 只是"从哪读"换了写法 —— 所以按产物实际写法选needle, 而不是
+            # 因为v42 改了写法就删掉 v41 断言(那会让高度补齐彻底无人看守)。
+            _v41_needle=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); print('_v42Need' if '_hFix.size.height = _v42Need' in t else 'self.ios15LastNeededH')")
+            echo "v41 判据 needle = $_v41_needle"
+            _v41_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); n='_v42Need' if '_hFix.size.height = _v42Need' in t else 'self.ios15LastNeededH'; a=t.index('_hFix.size.height = '+n); h=t.index(chr(10)+'                f = _hFix'); p=t.index('let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt'); r=t.index(chr(10)+'                fix.size.height = '+n); w=t.index(chr(10)+'            obj.frame = fix', r); print('OK' if a<h<p<r<w else 'BAD')")
             # 判据必须含高度维度, 否则"宽度正常+高度欠账"仍被 !polluted 放过。
             _v41_dim=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); p=t.index('let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt'); print('OK' if '_hDebt' in t[p:p+120] else 'BAD')")
             # 编译正确性: KVO 闭包内必须 var f(v41 要f = _hFix 重新赋值), 且三元表达式
@@ -461,7 +467,7 @@ jobs:
             # 【为什么单独断言】反向证伪 9 项里它曾漏掉 —— 位置判据锚的是赋值语句,
             # 把整个 if 体换成 `if false {` 后赋值语句仍在, 位置判据察觉不到。
             # 必须额外验"条件本身还在"。
-            _v41_resc=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); c='if self.ios15LastNeededH > 1, fix.size.height + 0.5 < self.ios15LastNeededH {'; print('OK' if c in t else 'BAD')")
+            _v41_resc=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); n='_v42Need' if '_hFix.size.height = _v42Need' in t else 'self.ios15LastNeededH'; print('OK' if ('if '+n+' > 1, fix.size.height + 0.5 < '+n+' {') in t else 'BAD')")
             # 反向断言: 重入保护必须两处都在。补高度会二次触发 KVO, 没有它会无限递归。
             # 【为什么单独断言】同上, 改成 false 后赋值语句仍在, 位置判据漏。
             _v41_guard=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('ios15KvoToken = sv.observe'); e=t.index('private var attachmentViews', s); g=t[s:e]; print('OK' if g.count('ios15KvoFixing = true')==2 and g.count('ios15KvoFixing = false')==2 else 'BAD')")
@@ -475,6 +481,52 @@ jobs:
             fi
           else
             echo "❌ v41 KVO 补高度缺失 —— 抢帧器只修宽度, '宽度正常+高度欠账'的帧被 !polluted 放过, 字只剩一半/终端框不接结果必然复发!"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::断言44: v42 需求高度闩锁(带键缓存) + KVO 兜底自测 + 120ms 节流 (治'最后一段字卡住')"
+          # v41 实测(log10)读数: KVO 抢帧器 94 次触发里 **77 次(82%) needH=0**,
+          # 补齐条件 `needH > 1` 直接跳过, superview 卡在 1123.7/1006.0 恒定不变
+          # (25 次同值采样), 末行持续被裁 → 用户症状「助手输出最后一段字卡住」。
+          #
+          # 根因: ios15LastNeededH 的唯一赋值点在 layoutSubviews 的
+          # `if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1`
+          # 内部, 三道门任一不满足就永远是 0; 而 KVO 抢帧器**不在这三道门里**,
+          # 于是"抢帧器正常工作, 测量链没跟上"。
+          if grep -q "V42-GATE" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "V42-LATCH" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "V42-MISS" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            # 位置判据锚**真正执行的赋值/条件语句**, 不锚注释(反向证伪31/31 已验证)。
+            _v42_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('ios15LastNeededH = _needH'); a=t.index(chr(10)+'            ios15LatchedNeedH = _needH', s); b=t.index(chr(10)+'            ios15LatchLen = textStorage.length', s); c=t.index(chr(10)+'            ios15LatchW = textContainer.size.width', s); d=t.index(chr(10)+'            ios15LatchHash = textStorage.mutableString.hash', s); g=t.index('NSLog('+chr(34)+'[V42-GATE]'); f=t.index('if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {'); print('OK' if s<a<b<c<d and g<f else 'BAD')")
+            # 反向断言: 闩锁**禁止取 max**。max 在视图复用展示更短的新文本时会把新文本
+            # 撑到旧高度, 凭空造出 1600pt 大片空白 —— 正是 v40 用户报过的症状。
+            # 为了治卡字而引入空白是净亏, 必须硬性拦住。
+            _v42_nomax=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); print('OK' if 'if _needH > ios15LatchedNeedH' not in t and (chr(10)+'            ios15LatchedNeedH = _needH') in t else 'BAD')")
+            # 反向断言: 三个键必须都在 KVO 命中判定里。少任一个, 缓存就会跨内容误命中
+            # (比如只比长度, 等长替换内容时会拿旧高度去撑新文本)。
+            _v42_key=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:s+4000]; a='self.ios15LatchLen == _v42Len' in g; b='abs(self.ios15LatchW - _v42TCW) < 0.5' in g; c='self.ios15LatchHash == self.textStorage.mutableString.hash' in g; print('OK' if a and b and c else 'BAD')")
+            # 反向断言: 自测必须限频 120ms。键再精确, 流式输出下 length 也每帧都变,
+            # 必然次次不命中 -> 次次 sizeThatFits; 测量链本来就在排版, 叠加等于开销
+            # 翻倍, **正好加重用户报的"终端卡一下才显示"**。为了治卡字引入卡顿是净亏。
+            _v42_thr=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:s+4000]; a='_v42Now - _v42SelfLast < 0.12' in g; b='struct _SelfLast { static var t: CFTimeInterval = 0 }' in g; c='let _v42SelfLast = _SelfLast.t' in g; d='_SelfLast.t = _v42Now' in g; print('OK' if a and b and c and d else 'BAD')")
+            # 节流分支必须**沿用旧高度**而不是放弃补齐 —— 放弃等于末行又被裁。
+            _v42_thruse=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:s+4000]; print('OK' if g.count('_v42Need = self.ios15LatchedNeedH')==2 else 'BAD')")
+            # 编译正确性: _v42Need 必须是 CGFloat(0)(写 0 会与 CGFloat 冲突编译失败),
+            # 键里的 abs() 两侧必须都是 CGFloat。
+            _v42_swift=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:s+4000]; a='var _v42Need = CGFloat(0)' in g; b='var _v42Need = 0' not in g; c='let _v42TCW = self.textContainer.size.width' in g; d='abs(self.ios15LatchW - _v42TCW) < 0.5' in g; print('OK' if a and b and c and d else 'BAD')")
+            # 四条诊断必须都在 NSLog 里(锚 NSLog 字符串, 不锚注释)。
+            _v42_diag=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); ms=['V42-GATE','V42-LATCH','V42-THROTTLE','V42-MISS']; q=chr(34); print('OK' if all(t.count('NSLog('+q+'['+m+']')==1 for m in ms) else 'BAD')")
+            if [ "$_v42_pos" = "OK" ] && [ "$_v42_nomax" = "OK" ] && [ "$_v42_key" = "OK" ] \
+               && [ "$_v42_thr" = "OK" ] && [ "$_v42_thruse" = "OK" ] \
+               && [ "$_v42_swift" = "OK" ] && [ "$_v42_diag" = "OK" ]; then
+              echo "✅ v42 闩锁就位 (带键缓存不用max + 三键齐判 + KVO兜底自测 + 120ms节流 + 4 条诊断)"
+            else
+              echo "❌ v42 异常 (位置=$_v42_pos 不用max=$_v42_nomax 三键=$_v42_key 节流=$_v42_thr 节流沿用=$_v42_thruse Swift=$_v42_swift 诊断=$_v42_diag) —— needH=0 时补齐仍被跳过, 最后一两个字会继续卡住不显示!"
+              exit 1
+            fi
+          else
+            echo "❌ v42 闩锁缺失 —— 82% 的 KVO 触发里 needH=0, 补齐被跳过, superview 高度恒定, 最后一两个字必然继续卡住!"
             exit 1
           fi
           echo "::endgroup::"
