@@ -932,7 +932,7 @@ jobs:
           #      上一版照抄了那条教训里的原文, 自己就把 YAML 写崩了(本轮实踩)。
           if grep -q "fix_width_writer_diag_v49" "$SCRIPT_DIR/ios15_fallback.py" ; then
             if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v49.py" . ; then
-              echo "✅ v49 就位 (纯诊断, 不改任何行为; 两处探针构成同帧差分: v18 段末尾(v48 钉宽后)记 v18W + v41 KVO 抢帧器记 kvoW 与来源指纹 cvW/laidW/boundW/tcH。同 tick 内读到不同值 ⇒ 中间有人写过; 跨 tick ⇒ SwiftUI pass 之间写的。★四层判据: struct 70 条 + scope(编译级, 5 层 A~E) + heavy(重文本 9 条, 含 usedRect 节流与探针路径可达性) + sab(判据自证 11 条, 含 TextKit 成员存在性 5 条); 段内零赋值零 invalidate*; 0.5s 节流与 V44/V45/V46/V41 同周期; v44~v48 全保留)"
+              echo "✅ v49 就位 (纯诊断, 不改任何行为; 两处探针构成同帧差分: v18 段末尾(v48 钉宽后)记 v18W + v41 KVO 抢帧器记 kvoW 与来源指纹 cvW/laidW/tcH(boundW 族已删: NSTextContainer 既无 bounds 也无 lineFragmentWidth)。同 tick 内读到不同值 ⇒ 中间有人写过; 跨 tick ⇒ SwiftUI pass 之间写的。★四层判据: struct 70 条 + scope(编译级, 5 层 A~E) + heavy(重文本 9 条, 含 usedRect 节流与探针路径可达性) + sab(判据自证 12 条, 含 TextKit 成员存在性 6 条); 段内零赋值零 invalidate*; 0.5s 节流与 V44/V45/V46/V41 同周期; v44~v48 全保留)"
             else
               echo "❌ v49 探针异常 (见上方 ci_assert_v49.py 的 struct/scope/heavy/sab 四行)"
               echo "   —— struct BAD: 探针段/END 标记/日志字段缺失, 或段内出现赋值或"
