@@ -2031,6 +2031,13 @@ final class TableAttachment: NSTextAttachment {
         return h.finalize()
     }
 
+    /// [V46-ATTACH] 只读访问器: 把 private 的 cachedLayout 的总高暴露给诊断段。
+    /// 纯诊断用, **没有 setter** —— 结构上不可能从这里改缓存。
+    var attV46CachedTotalH: CGFloat { cachedLayout?.totalHeight ?? -1 }
+    /// [V46-ATTACH] 缓存自算宽度(0 = 从未算过)。用于判断缓存是不是在别的
+    /// 宽度下留下的陈旧值(D1 的另一半)。
+    var attV46CachedWidth: CGFloat { cachedLayout?.width ?? 0 }
+
     /// Discard the cached layout so the next `computeLayout` / `attachmentBounds`
     /// recomputes column widths and row heights for whatever width is current.
     /// Called from `layoutSubviews` when the textContainer width changes
@@ -5753,6 +5760,72 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                               f.size.height, _v42Need, _v42Need - f.size.height,
                               self.frame.size.width, obj.frame.size.height,
                               _v42Len, _TvhLog.n)
+                    }
+                }
+            }
+            // [V46-ATTACH] 表格附件高度**没进排版**的归因 — 见函数 docstring。
+            //
+            // log15 硬证据: needH=304.3 而 usedH=114.3(差 190pt), 表格 7x2
+            // 附件占的高度完全不在 usedRect 里; 111 条里 71 条 needH-usedH>8.5,
+            // 差额与"有没有附件"完全同构。这是 v44 假设 C 的首次真实命中。
+            //
+            // **纯诊断, 一行几何都不碰。** 链路上有四个可疑点(D1 缓存未失效 /
+            // D2 探针宽度 / D3 失效信号未消费 / D4 容器被 guard 短路), 修法
+            // 互相冲突 —— D1/D4 都是拿性能换正确性的历史 trade-off, 盲修任一
+            // 处都可能把主线程卡死放回来。先量, 再动。
+            do {
+                var _v46AttN = 0
+                var _v46AttWant = CGFloat(0)
+                var _v46AttCached = CGFloat(-1)
+                var _v46AttCachedW = CGFloat(-1)
+                var _v46AttGen = UInt64(0)
+                var _v46AttNVI = false
+                // 【踩坑记录(run#37124793234)】第一版写的是
+                // `self.textStorage?.enumerateAttributes(...)` —— **API 名错了**。
+                // NSAttributedString 只有 `enumerateAttribute(_:in:options:using:)`
+                // (单数), 没有复数形式, 于是 run#37124793234 在"编译 App"这一步
+                // 失败 —— 注入与断言全绿(断言只看子串存在性, 抓不到 API 名错误),
+                // 编译期才炸。修法: 照源码既有写法(traitCollectionDidChange /
+                // needsAttachmentRecovery 两处都是这个形式)改成
+                // `textStorage as? NSTextStorage` + `enumerateAttribute`。
+                if let _v46St = textStorage as? NSTextStorage {
+                    _v46St.enumerateAttribute(
+                        .attachment,
+                        in: NSRange(location: 0, length: _v46St.length),
+                        options: []) { _v, _, _ in
+                        guard let _a = _v as? NSTextAttachment else { return }
+                        _v46AttN += 1
+                        if let _t = _a as? TableAttachment {
+                            _v46AttGen &+= _t.contentGeneration
+                            if _v46AttNVI == false, _t.needsLayoutInvalidation { _v46AttNVI = true }
+                            // D1: 缓存里扣了多少高度
+                            if _v46AttCached < 0 { _v46AttCached = 0 }
+                            // D1/D2: attachmentBounds 现在**会**返回多高 —— 用当前
+                            // tcW 构造 lineFrag, 与 usedH/needH 并列对照。
+                            let _v46W = self.textContainer.size.width
+                            let _v46Frag = CGRect(x: 0, y: 0, width: _v46W, height: .greatestFiniteMagnitude)
+                            let _v46R = _t.attachmentBounds(
+                                for: self.textContainer, proposedLineFragment: _v46Frag,
+                                glyphPosition: .zero, characterIndex: 0)
+                            _v46AttWant += _v46R.height
+                            _v46AttCached = _t.attV46CachedTotalH
+                            if _v46AttCachedW < 0 { _v46AttCachedW = _t.attV46CachedWidth }
+                        }
+                    }
+                }
+                if _v46AttN > 0 {
+                    struct _V46Log { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                    let _v46Now = CACurrentMediaTime()
+                    if _v46Now - _V46Log.last > 0.5 {
+                        _V46Log.last = _v46Now
+                        _V46Log.n &+= 1
+                        let _v46Lm = self.layoutManager
+                        let _v46Used = _v46Lm.usedRect(for: self.textContainer).height
+                        NSLog("[V46-ATTACH] attN=%d attWant=%.1f attCached=%.1f cachedW=%.1f attGen=%llu attNVI=%d usedH=%.1f needH=%.1f tcW=%.1f tcH=%.1f nGlyph=%d len=%d n=%u",
+                              _v46AttN, _v46AttWant, _v46AttCached, _v46AttCachedW, _v46AttGen,
+                              _v46AttNVI ? 1 : 0, _v46Used, _v42Need,
+                              self.textContainer.size.width, self.textContainer.size.height,
+                              _v46Lm.numberOfGlyphs, _v42Len, _V46Log.n)
                     }
                 }
             }
