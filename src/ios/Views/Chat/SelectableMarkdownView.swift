@@ -5802,50 +5802,58 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                           _v42Need - f.size.height, f.size.width, _KvoHit.n)
                 }
                 // 补完立刻交棒: 下面的宽度修正必须基于新高度继续, 不能return。
-                        // [V49-WWRITER-KVO] KVO 侧读数(与 v18 侧同帧比对)
-                        _V49W.tick &+= 1
-                        _V49W.kvoW = self.textContainer.size.width
-                        _V49W.kvoTick = _V49W.tick
-                        // ★来源指纹三个都必须是**真实读数**, 声明了不赋值等于白打:
-                        //   cvW   = collectionView 自身脏宽(log18 里恒 390,
-                        //           而 svW 是 358 —— 两者之差 32 就是嫌疑)
-                        //   laidW = v47 注入的 ios15LastLaidOutW, 即行碎片**上一次
-                        //           定型时用的排版宽**。装机后判据:
-                        //             laidW=358 而 kvoW=390 ⇒ 碎片按 358 排过,
-                        //             容器宽却被推回 390 —— 排版与视口脱钩,
-                        //             gap 就是 97.6 那种空壳;
-                        //             laidW=390 ⇒ 连排版都按脏宽定型了(v47 判据
-                        //             压根没触发), 修法完全不同。
-                        // ★cvW 直接用本 KVO 闭包已有的局部量 cvW(作用域内, 零新增读取)。
-                        // ★laidW 走 v47 注入的类型级属性(同在
-                        //   SelectableMarkdownTextView 内, 可读)。
-                        //   —— 本轮实踩: 原先想用 v46 的只读 getter
-                        //   `attV46CachedWidth`(log18 里 cachedW=389 ↔ tcW=390
-                        //   完全同构 35/36, 是最直接的嫌疑), 但那个 getter 声明在
-                        //   **TableAttachment 类**里(@2039), 而本探针在
-                        //   **SelectableMarkdownTextView** 内 —— **跨类访问不到,
-                        //   编译直接失败**。换成同类型的 laidW, 诊断力不减:
-                        //   两者问的都是"碎片按哪个宽排的"。
-                        // ★不新加读取语句, 免得探针自己引入新的布局读取扰动。
-                        self.ios15V41CvW = cvW
-                        self.ios15V46LaidOutW = self.ios15LastLaidOutW ?? -1
-                        let _v49Now = CACurrentMediaTime()
-                        if _v49Now - _V49W.last > 0.5 {
-                            _V49W.last = _v49Now
-                            _V49W.n &+= 1
-                            let _v49SameTick = _V49W.v18Tick == _V49W.kvoTick
-                            NSLog("[V49-WWRITER] v18W=%.1f kvoW=%.1f cvW=%.1f laidW=%.1f tcH=%.1f sameTick=%d dtick=%d usedH=%.1f needH=%.1f len=%d n=%u",
-                                  _V49W.v18W, _V49W.kvoW,
-                                  self.ios15V41CvW, self.ios15V46LaidOutW,
-                                  self.textContainer.size.height,
-                                  _v49SameTick ? 1 : 0,
-                                  Int(_V49W.kvoTick &- _V49W.v18Tick),
-                                  self.layoutManager.usedRect(for: self.textContainer).height,
-                                  self.ios15LastNeededH, self.textStorage.length, _V49W.n)
-                        }
-                        // [V49-WWRITER-KVO-END] 段结束标记 —— 见 v49 判据第 3 组。
                 f = _hFix
             }
+                // [V51-PROBE] 从补高 if 里挪出来的 v49 探针 ——
+                // 见函数 docstring。**只挪位置, 零行为改动**:
+                // 读数/指纹/字段/格式串与 v49 逐字相同, 整段缩进 24 -> 16,
+                // 两个段边界标记**跟着整段一起搬**(判据靠它们切段)。
+                // 旧位置关在 `if _v42Need > 1, f.size.height + 0.5 < _v42Need`
+                // 里(补高真执行才打), 那让 laidW=-1 与 kvoW=390 看起来
+                // 「完全同构(51/51)」—— 实为同一个 if 门控住的假相关。
+                // 现在挂在闭包无条件位置, 与 V50-LAIDW 同 tick 都打。
+                // [V49-WWRITER-KVO] KVO 侧读数(与 v18 侧同帧比对)
+                _V49W.tick &+= 1
+                _V49W.kvoW = self.textContainer.size.width
+                _V49W.kvoTick = _V49W.tick
+                // ★来源指纹三个都必须是**真实读数**, 声明了不赋值等于白打:
+                //   cvW   = collectionView 自身脏宽(log18 里恒 390,
+                //           而 svW 是 358 —— 两者之差 32 就是嫌疑)
+                //   laidW = v47 注入的 ios15LastLaidOutW, 即行碎片**上一次
+                //           定型时用的排版宽**。装机后判据:
+                //             laidW=358 而 kvoW=390 ⇒ 碎片按 358 排过,
+                //             容器宽却被推回 390 —— 排版与视口脱钩,
+                //             gap 就是 97.6 那种空壳;
+                //             laidW=390 ⇒ 连排版都按脏宽定型了(v47 判据
+                //             压根没触发), 修法完全不同。
+                // ★cvW 直接用本 KVO 闭包已有的局部量 cvW(作用域内, 零新增读取)。
+                // ★laidW 走 v47 注入的类型级属性(同在
+                //   SelectableMarkdownTextView 内, 可读)。
+                //   —— 本轮实踩: 原先想用 v46 的只读 getter
+                //   `attV46CachedWidth`(log18 里 cachedW=389 ↔ tcW=390
+                //   完全同构 35/36, 是最直接的嫌疑), 但那个 getter 声明在
+                //   **TableAttachment 类**里(@2039), 而本探针在
+                //   **SelectableMarkdownTextView** 内 —— **跨类访问不到,
+                //   编译直接失败**。换成同类型的 laidW, 诊断力不减:
+                //   两者问的都是"碎片按哪个宽排的"。
+                // ★不新加读取语句, 免得探针自己引入新的布局读取扰动。
+                self.ios15V41CvW = cvW
+                self.ios15V46LaidOutW = self.ios15LastLaidOutW ?? -1
+                let _v49Now = CACurrentMediaTime()
+                if _v49Now - _V49W.last > 0.5 {
+                    _V49W.last = _v49Now
+                    _V49W.n &+= 1
+                    let _v49SameTick = _V49W.v18Tick == _V49W.kvoTick
+                    NSLog("[V49-WWRITER] v18W=%.1f kvoW=%.1f cvW=%.1f laidW=%.1f tcH=%.1f sameTick=%d dtick=%d usedH=%.1f needH=%.1f len=%d n=%u",
+                          _V49W.v18W, _V49W.kvoW,
+                          self.ios15V41CvW, self.ios15V46LaidOutW,
+                          self.textContainer.size.height,
+                          _v49SameTick ? 1 : 0,
+                          Int(_V49W.kvoTick &- _V49W.v18Tick),
+                          self.layoutManager.usedRect(for: self.textContainer).height,
+                          self.ios15LastNeededH, self.textStorage.length, _V49W.n)
+                }
+                // [V49-WWRITER-KVO-END] 段结束标记 —— 见 v49 判据第 3 组。
             // [V45-TVHFIX] 补高**补到画字的那个视图上** — 见函数 docstring。
             //
             // v44 归因(log13, 53 条零例外): 假设 A 命中 44/53, 假设 B 被彻底
@@ -8236,6 +8244,51 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             _V49W.v18W = textContainer.size.width
             _V49W.v18Tick = _V49W.tick
             // [V49-WWRITER-V18-END] 段结束标记 —— 见 v49 判据第 3 组。
+            // [V51-FRAMEPIN] 把**画字的那个视图自己**的 frame 宽也钉到 _realW2
+            // —— 见函数 docstring 的归因与三条红线。
+            //
+            // v18 段从 v32 到 v48 一路钉的全是 `textContainer.size.width`,
+            // 从来没碰过 `self.frame.size.width`。而 UITextView 才是画字的视图,
+            // 它的 bounds 宽 390 而父容器只有 358(log19: svW 358 零例外 / tvW 390
+            // 占 50/59)⇒ 右侧 32pt 恒被自己的 bounds 裁掉, 用户看到的就是
+            // 「字卡住不显示完全」。V43-WIDTH 的 dh=22.3(18 次)就是这笔账。
+            //
+            // 第 8128 行那道钳制救不回来: 它带 `!_edgeTouch` 前缀, 贴边态
+            // (x<=0.5 && w>=cvW-1)整段跳过 ⇒ tvW 在 390/358 之间**逐帧交替**,
+            // 交替帧 TextKit 全量重排 ⇒ 「滑动整体动卡闪」。
+            //
+            // 【A1】只写 size.width —— 不碰 origin/height/bounds/整个 size。
+            //   写 frame.origin 就足以让整棵 cell 重新布局(v34 翻车)。
+            // 【A2】判据单调: 只在**偏大**时写, 绝不缩、绝不在已达标时写。
+            //   这是纠偏不是竞争 —— v13/v34 翻车正是无条件抢宽与 SwiftUI 争 frame。
+            //   稳态下 tvW 已是 358, 条件恒 false, 零写入零开销。
+            // 【A3】必须与本段内 v48 钉 textContainer 宽**同一帧** ——
+            //   早一帧则行碎片已按脏宽排完, 晚一帧则渲染已提交。
+            //   落点选在 v49 探针段之后正是为此: 仍在 layoutSubviews 的
+            //   同一次调用内, 与钉 textContainer 之间只隔 v49 的三行纯读数。
+            //
+            // ★不违反 v45 的「绝不碰 width」: v45 碰的是 KVO 抢帧器
+            //   (布局 pass **之外**, 与 SwiftUI 同栈竞争); 本版在
+            //   layoutSubviews 的 v18 段内、与 v48 钉 textContainer 同一帧,
+            //   时序性质完全不同。
+            if frame.size.width > _realW2 + 1 {
+                var _v51f = frame
+                _v51f.size.width = _realW2
+                frame = _v51f
+            }
+            // [V51-FRAMEPIN-DIAG] 纯诊断: 记钉 frame 宽那一刻的三个宽。
+            // 装机判据: fvW 应与 tcW 同时为 358; 若 fvW 仍 390 说明
+            // 写进去的 frame 宽度又被 SwiftUI 在下一 pass 推回。
+            do {
+                struct _V51FLog { static var last: CFTimeInterval = 0 }
+                let _v51n = CACurrentMediaTime()
+                if _v51n - _V51FLog.last > 0.5 {
+                    _V51FLog.last = _v51n
+                    NSLog("[V51-FRAMEPIN] fvW=%.1f tcW=%.1f svW=%.1f len=%d",
+                          self.frame.size.width, self.textContainer.size.width,
+                          superview?.frame.size.width ?? -1, self.textStorage.length)
+                }
+            }
             // [IOS15-FIX-RELC v28] 抢回宽度后必须强制重排。log11 实证: SwiftUI poll 每帧把
             // 容器宽打回 390 (cvW=390), TextKit 行碎片按 ~374pt 排版; v18 抢回 358 时仅改
             // textContainer.size 而不 invalidate, 旧行碎片不会被重排 → 358 视口裁掉行尾
