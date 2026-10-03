@@ -5560,6 +5560,10 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         static var tick: UInt = 0
     }
     var ios15V18W: CGFloat = -1
+    /// [V52-SANEW] 上一次**通过宽度合理性闸门**的排版净宽。v52 遇到
+    /// 脏几何帧(实测 375.7)时回落到它, 而不是回落到全屏宽 390。
+    /// 只有闸门放行的值才允许写入 ⇒ 记忆位本身永远干净。
+    var ios15LastSaneContentW: CGFloat?
     var ios15V41CvW: CGFloat = -1
     var ios15V46LaidOutW: CGFloat = -1
     /// [V47-WSTATE] 行碎片**上一次定型时**用的排版宽。见 fix_width_reflow_v47
@@ -8114,7 +8118,59 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             }
             // 容器/宽度钳制。贴边模式: 容器被 inset 自动收窄到 cvW-32, frame 保持 SwiftUI
             // 给的全宽 (不动它); 污染/正常模式: 按修正后的 superview 宽钳。
-            let _svW = superview?.bounds.width ?? 0
+            // [V52-B] 宽度改读 **frame** 而非 bounds。
+            // ★与同段上面的 `_svf0`(supview?.frame)同源 —— 闸门判据与污染修复
+            //   读同一个字段, 不会同帧不同值。
+            // ★本轮修正一条自己的错判: 装机前我以为"bounds 偶发 375.7 而 frame
+            //   恒 358", 但 V41-DEBT 读的正是 frame.size.width, 它也报 375.7
+            //   ⇒ frame 同样被污染, 单改这里无效。真正的价值是**同源**。
+            let _v52frmW = superview?.frame.size.width ?? 0
+            // [V52-GATE] 宽度合理性闸门 —— 见函数 docstring 的三条排除法。
+            //
+            // 背景: 装机日志里 `_cvW` 恒 390, 而 v18 的 `min(_svW, _cvW)` 会把
+            // 任何 < 390 的候选值**原样当成净宽**。SwiftUI 递归排版的某一瞬
+            // 给过 375.7 这个过渡宽度, 于是 textContainer 与 frame 全被钉到
+            // 375.7, 文字排成 1 行(tcH=18.7), 而按 358 排需要 2 行(49.0)
+            // ⇒ superview 只给 26.7 高 ⇒ 末行被裁 22.3pt。
+            //
+            // 规则: 候选宽必须「接近上一次已知良好宽度」或「接近全屏宽」,
+            // 否则**回落到上一次已知良好的宽度**, 一个字节都不写进渲染链。
+            // ★健康帧上闸门恒真(358 就在白名单里), 稳态零行为变化 ——
+            //   这是**只读判据 + 回落**, 不是新的抢宽时机。
+            var _v52w = _v52frmW > 1 ? min(_v52frmW, _cvW) : _cvW
+            var _v52sane = 1
+            if _edgeTouch {
+                // 贴边态: 目标净宽就是 cvW-32(inset 16/16 已在上面设好)。
+                if abs(_v52w - (_cvW - 32)) > 2 {
+                    _v52w = _cvW - 32
+                    _v52sane = 0
+                }
+            } else {
+                var _v52ok = abs(_v52w - _cvW) <= 2
+                if !_v52ok, let _v52last = ios15LastSaneContentW, _v52last > 100 {
+                    _v52ok = abs(_v52w - _v52last) <= 2
+                }
+                if !_v52ok {
+                    // 回落: 上一次排版正确时用过的宽度。都没有就用全屏宽减内边距。
+                    _v52w = ios15LastSaneContentW ?? (_cvW - 32)
+                    _v52sane = 0
+                }
+            }
+            if _v52sane != 0, _v52w > 100, abs(_v52w - _cvW) > 2 {
+                ios15LastSaneContentW = _v52w
+            }
+            // [V52-PROBE] 宽度来源诊断 —— 见 MSG_V52_C。
+            do {
+                struct _GLog { static var last: CFTimeInterval = 0 }
+                let _gn = CACurrentMediaTime()
+                if _gn - _GLog.last > 0.5 {
+                    _GLog.last = _gn
+                    NSLog("[V52-GATE] rawW=%.1f frmW=%.1f cvW=%.1f edge=%d sane=%d picked=%.1f len=%d",
+                          superview?.bounds.width ?? -1, _v52frmW, _cvW,
+                          _edgeTouch ? 1 : 0, _v52sane, _v52w, self.textStorage.length)
+                }
+            }
+            let _svW = _v52w
             // [V34-WIDTH] 渲染宽回归 superview 基准 —— 对过渡态免疫。
             // v33 的 min(bounds.width,cvW)-insets 隐含"视图宽与内边距配套", 但 inset 是
             // v14 按上一帧状态设的、bounds 是本帧 SwiftUI 给的, 过渡态不同步时双重扣减:
@@ -8298,6 +8354,14 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             if _ios15WRegrabbed, textStorage.length > 0 {
                 layoutManager.invalidateLayout(forCharacterRange: NSMakeRange(0, textStorage.length), actualCharacterRange: nil)
             }
+            // [V52-DEBT-PRE] 自愈判据用的**进入时**容器高快照。
+            //
+            // ★为什么必须取在撑高之前: v18 段紧跟着就把容器高撑到 _needH,
+            //   所以下游任何「读当前容器高」的判据都看不到欠账状态 ——
+            //   v38-A 就是这么变成死代码的(见函数 docstring)。把快照提前到
+            //   这里, 撑高与自愈读的是**两个不同时刻的高度**, 于是不再互斥。
+            // 纯只读快照, 不改任何几何。
+            let _v52PreSVH = superview?.frame.size.height ?? 0
             let _needH = sizeThatFits(CGSize(width: _realW2, height: .greatestFiniteMagnitude)).height
             if _ios15WRegrabbed {
                 layoutManager.ensureLayout(for: textContainer)
@@ -8380,8 +8444,24 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // v18 改的是**结果**(frame), 赢不了 SwiftUI 的**布局诉求**; 这里补上
             // 诉求侧: 走 invalidateCellSizeIfNeeded 让 cell 高度按真实宽提交。
             if !_edgeTouch, _needH > 1, textStorage.length > 0,
-               let _svH = superview?.frame.size.height, _svH > 1,
-               _svH < _needH - 0.5 {
+               _v52PreSVH > 1,
+               _v52PreSVH < _needH - 0.5 {
+                // [V52-DEBT-PRE] 判据源从「当前容器高」换成「进入时快照」。
+                // 撑高已把容器改到 _needH, 读当前高度永远看不见欠账 ⇒ 这道
+                // 门自 v38-A 注入以来一次都没开过(装机日志 deferred debt
+                // CONSUMED / HELD / DeferDebt OWED 三项全 0 次)。
+                // 诊断: preSVH 是进入时的容器高, needH 是权威需求高, 二者之差
+                // 即被裁掉的末行高度(装机实测 26.7 vs 49.0 ⇒ 差 22.3 ≈ 一行半)。
+                // hits 若恒为 0 ⇒ 快照位置选错了(判据恒假), E 等于没做。
+                struct _V52Log { static var last: CFTimeInterval = 0; static var hits: UInt = 0 }
+                _V52Log.hits &+= 1
+                let _v52Now = CACurrentMediaTime()
+                if _v52Now - _V52Log.last > 0.5 {
+                    _V52Log.last = _v52Now
+                    NSLog("[V52-DEBT] preSVH=%.1f needH=%.1f debt=%.1f hits=%u len=%lu",
+                          _v52PreSVH, _needH, _needH - _v52PreSVH,
+                          _V52Log.hits, UInt(textStorage.length))
+                }
                 let _v38WasPending = deferredCorrectionPending
                 // 借上游既有开关绕过 SKIP-DEDUPE 指纹早退(该 flag 的既有语义就是
                 // "有欠账, 不许被指纹吞掉")。用完立刻还原, 不污染 deferSelfSizing 那条路。
