@@ -133,22 +133,33 @@ def main():
     #      里中间那一跳没查(它也是 TextKit 对象) ⇒ 三段链仍漏放。
     #   教训: **白名单检查必须沿链逐跳推进**, 且写完立刻反向证伪。
 
+    # ★锚点改成 `textContainer.size.height` —— 它在 KVO 探针段里**只出现
+    #   一次**, 且是编译器已验证存在的成员(整份文件 40+ 处在用)。
+    #   原锚点 lineFragmentWidth 已被删除(见 S12 的说明)。
     def s7(x):
-        return x.replace("self.textContainer.lineFragmentWidth",
-                         "self.textContainer.bounds.width", 1)
+        return x.replace("self.textContainer.size.height",
+                         "self.textContainer.bounds.height", 1)
 
-    cases.append(("S7 回退成 textContainer.bounds.width(run#119 真 bug)",
+    cases.append(("S7 回退成 textContainer.bounds(run#119/#120 真 bug)",
                   s7, "没有这个成员"))
 
     def s8(x):
-        return x.replace("self.textContainer.lineFragmentWidth",
+        return x.replace("self.textContainer.size.height",
                          "self.textContainer.attachedRange", 1)
 
     cases.append(("S8 textContainer 读不存在的成员", s8, "没有这个成员"))
 
     def s9(x):
-        return x.replace("self.layoutManager.usedRect(for: self.textContainer)",
-                         "self.layoutManager.estimatedGlyphCount", 1)
+        i = x.find("// [V49-WWRITER-KVO]")
+        j = x.find("// [V49-WWRITER-KVO-END]")
+        if i < 0 or j < i:
+            raise AssertionError("S9 定位不到 KVO 探针段")
+        seg = x[i:j]
+        _a = "self.layoutManager.usedRect(for: self.textContainer)"
+        if _a not in seg:
+            raise AssertionError("S9 探针段内没有 %s" % _a)
+        return x[:i] + seg.replace(
+            _a, "self.layoutManager.estimatedGlyphCount", 1) + x[j:]
 
     cases.append(("S9 layoutManager 读不存在的成员", s9, "没有这个成员"))
 
@@ -172,11 +183,30 @@ def main():
     cases.append(("S10 textStorage 读不存在的成员", s10, "没有这个成员"))
 
     def s11(x):
-        return x.replace(
-            "self.layoutManager.usedRect(for: self.textContainer)",
-            "self.textContainer.layoutManager.estimatedGlyphCount", 1)
+        i = x.find("// [V49-WWRITER-KVO]")
+        j = x.find("// [V49-WWRITER-KVO-END]")
+        if i < 0 or j < i:
+            raise AssertionError("S11 定位不到 KVO 探针段")
+        seg = x[i:j]
+        _a = "self.layoutManager.usedRect(for: self.textContainer)"
+        if _a not in seg:
+            raise AssertionError("S11 探针段内没有 %s" % _a)
+        return x[:i] + seg.replace(
+            _a, "self.textContainer.layoutManager.estimatedGlyphCount", 1) + x[j:]
 
     cases.append(("S11 三段链中间跳(TextKit 对象)也要查", s11, "没有这个成员"))
+
+    # ★★ S12: 本轮第二次编译失败的那个 API。写它进 E 层白名单时看着很
+    #   "合理"(它确实是排版行宽), 但 Apple 文档确认 NSTextContainer
+    #   **没有** lineFragmentWidth —— 它属于 TextKit2 的 NSTextLayoutManager。
+    #   这条 sabotage 的意义是: 任何人再把"看起来对"的 API 塞进白名单,
+    #   E 层会立刻指出它不在官方成员表里。
+    def s12(x):
+        return x.replace("self.textContainer.size.height",
+                         "self.textContainer.lineFragmentWidth", 1)
+
+    cases.append(("S12 再塞 lineFragmentWidth(run#120 真 bug)",
+                  s12, "没有这个成员"))
 
     fail = 0
     for name, fn, kw in cases:

@@ -5074,26 +5074,37 @@ def verify_width_pin_v48(t):
 #     · v18 读到的已是 358, KVO 读到 390 ⇒ 推宽发生在 v18 之后
 #   再叠加 `attV46CachedWidth`(cachedW)与 `cvW`, 三者构成完整指纹。
 #
-# ★ 为什么指纹里要记 `fragW`(textContainer.lineFragmentWidth):
-#   ★★【本轮实踩, 第三个编译级坑】原先这里记的是 `boundW`, 取值写成
-#     `self.textContainer.bounds.width` —— **`NSTextContainer` 没有
-#     `bounds`**, 那是 `NSView` 的 API。run#37139821021 编译直接失败:
-#       SelectableMarkdownView.swift:5786:78: error:
-#         value of type 'NSTextContainer' has no member 'bounds'
-#     讽刺的是: 同一行的 `textContainer.size.width`(v18W/kvoW)是合法的,
-#     整份文件里读容器宽也一律用 `.size.width` —— 只有我这一行想当然写了
-#     `.bounds.width`。**教训: 不熟悉的 API 不要凭"听起来对"就写。**
+# ★★★ 指纹里的"排版宽"这一项, 本轮**连踩两次编译错误**, 终于删掉了。
 #
-#   `lineFragmentWidth` 恰好就是原注释想说的那个东西, 而且更准:
-#     · 它是 TextKit **真正用来排版的行宽**, 由 NSLayoutManager 在
-#       排版时写入; `size` 是容器申报的尺寸, 两者可以不同步。
-#     · 判读价值: 若 fragW == 358 而 kvoW == 390, 就直接证明
-#       「碎片按 358 排好了, 但容器尺寸被写成 390」—— 推宽者只改了 size
-#       没同步排版宽, 这与 log18 里 usedH(1638)对不上 358 的排版完全吻合。
-#     · 它是惰性的(排版时才更新), 所以判据 T3b 要求它和 usedRect 一样
-#       只能在 0.5s 节流闸门内读。
-#   log18 里 `tcH=2000.0` 与 `358x2000.0` 被熔 109 次说明容器高常被放到
-#   2000(v25/v26 遗留), 此时排版宽是否已被 TextKit 换过就只能靠它分辨。
+#   【坑一】原打算记 `boundW`, 写成 `self.textContainer.bounds.width`
+#     —— `NSTextContainer` 没有 `bounds`(那是 NSView 的 API)。
+#     run#37139821021: error: value of type 'NSTextContainer'
+#     has no member 'bounds'
+#
+#   【坑二】改用 `self.textContainer.lineFragmentWidth` ——
+#     run#37141013946: error: value of type 'NSTextContainer'
+#     has no member 'lineFragmentWidth'
+#     ★ 我当时**没有查证就断言"它恰好就是那个东西"**。查 Apple 文档后:
+#       NSTextContainer 的属性只有 size / exclusionPaths / lineBreakMode /
+#       widthTracksTextView / heightTracksTextView / maximumNumberOfLines /
+#       lineFragmentPadding / isSimpleRectangularTextContainer / layoutManager
+#       —— **既没有 bounds, 也没有 lineFragmentWidth**。
+#       `lineFragmentWidth` 属于 TextKit2 的 NSTextLayoutManager 一族。
+#     ⇒ **两次都是同一类错误: 凭"听起来对"猜 API 名, 没查证。**
+#       第一版我甚至在注释里把它论证得"比 bounds 更准"—— 论证得越自信,
+#       错得越彻底。写注释不能代替查证。
+#
+#   【最终决定: 删掉这一项, 不再找替代】
+#     判据里原本想问的是"碎片按哪个宽排的" —— 而这个语义**已经有来源**:
+#     `laidW`(ios15LastLaidOutW, v47 注入并在 v48 判据里被验证过), 它记的
+#     正是"上次重排时用的目标宽"。再加一个我无法在本地验证的 API 只会
+#     继续骗人。log18 里 `tcH=2000.0` / `358x2000.0` 被熔 109 次那个疑问,
+#     留给 v50 用"排版宽 vs 申报宽"的差值去量, 不在纯诊断版里赌 API。
+#
+#   ⇒ **纪律: 判据/探针里只允许出现编译器已验证存在的 API。**
+#     本机没有 swiftc, 无法编译验证, 所以更要用"上游已在用的写法"或
+#     官方文档, 而不是记忆。同一份文件里读容器宽一律 `textContainer.size`
+#     —— 那是 40+ 处都在用的写法, 天然安全。
 
 # ★ v49 探针的静态状态声明为**类型级**(与 v44/v46 的诊断 struct 同法),
 #   不能留在函数内 —— 【本轮实踩, 编译级】原先把它放在 v18 段(layoutSubviews
@@ -5168,8 +5179,8 @@ _V49_KVO = """                        // [V49-WWRITER-KVO] KVO 侧读数(与 v18
                             _V49W.last = _v49Now
                             _V49W.n &+= 1
                             let _v49SameTick = _V49W.v18Tick == _V49W.kvoTick
-                            NSLog("[V49-WWRITER] v18W=%.1f kvoW=%.1f fragW=%.1f cvW=%.1f laidW=%.1f tcH=%.1f sameTick=%d dtick=%d usedH=%.1f needH=%.1f len=%d n=%u",
-                                  _V49W.v18W, _V49W.kvoW, self.textContainer.lineFragmentWidth,
+                            NSLog("[V49-WWRITER] v18W=%.1f kvoW=%.1f cvW=%.1f laidW=%.1f tcH=%.1f sameTick=%d dtick=%d usedH=%.1f needH=%.1f len=%d n=%u",
+                                  _V49W.v18W, _V49W.kvoW,
                                   self.ios15V41CvW, self.ios15V46LaidOutW,
                                   self.textContainer.size.height,
                                   _v49SameTick ? 1 : 0,
@@ -5443,7 +5454,7 @@ def verify_width_writer_v49(t):
                     "纯诊断不得触发任何布局或强制重排" % (name, bad))
 
     # ---- 5. 日志字段齐全(装机后靠这些字段定位) ----
-    _need = ("v18W=", "kvoW=", "fragW=", "cvW=", "laidW=", "tcH=",
+    _need = ("v18W=", "kvoW=", "cvW=", "laidW=", "tcH=",
              "sameTick=", "dtick=", "usedH=", "needH=", "len=")
     for k in _need:
         if k not in _seg2:
@@ -6278,7 +6289,7 @@ def main():
     # ---- v47: 统一测宽源(排版宽与目标宽同步) ----
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_reflow_v47, "v47: 统一测宽源 — 治'终端框盖住上面的字/定时任务字一下有一下没有'(v46 纯诊断归因, log16 45 条: **D1/D2/D3 三个候选全排除** —— `attWant==attCached` 45/45 缓存新鲜, `cachedW` 与 `tcW` 恒差 1.0 不是陈旧值, `attNVI=1` 0/45 失效信号从未置位。真凶是**排版宽与测高宽不同源**: `tcH-needH=-8.0` 恒定证明容器高度没问题, `V43-WIDTH dirtyW=390 netW=358 dh=0.0` 证明测高用的净宽 358 也没问题, 但 `tcW` 实测恒为 390 且 `tcH-usedH` 在异常组达 44~67pt —— **同一段文字在 390/358 两个宽度下排出的行数不同**, 行碎片停在旧宽而 needH 恒按新宽算, 差出的就是空壳(终端框于是画在空壳上)。根因是 `_ios15WRegrabbed` 由 `abs(tcW-_realW2)>0.5` 决定, 它只表示'有没有改过容器宽'而不表示'碎片有没有按目标宽重排过' —— 而 `invalidateLayout` 才是让碎片重排的那一步。修法: 新增 `ios15LastLaidOutW` 记住上次排版宽, 与目标宽不等就补一次 invalidateLayout。**不新增任何宽度写入点**(仍只有 v18 那两处)、**不碰高度**(v45 成果保护), 稳态下零额外开销且幂等。v13/v34 曾因抢宽引起闪屏与整体缩小, 那是改钳宽翻的车, 本版只加同宽重排。★登记必须排在 v46 之后")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_pin_v48, "v48: 排版宽钉回目标宽 — 收口 log17 实测的「v47 只治了一半」。log17 对比 log16: tcW=390 的帧 69→48(v47 的重排确实触发了), 但仍有 48/56 帧 tcW 是 390 —— 因为 v47 只调 invalidateLayout **不写 textContainer.size.width**, TextKit 的 ensureLayout 只在当前容器宽下重排, 容器还是 390 时重排出来的仍是 390 宽的行数, 与按 358 算的 _needH 依旧不同源。**log17 里 tcW 与 gap 完全同构、零例外**: tcW=358.0 → tvH-usedH 恒 8.0~8.3(= textContainerInset 上下之和, 正常态), tcW=390.0 → gap 为 30.5(len=229)/117.5(len=839, 连续 26 条一模一样)。len=229 那组最直接: 同一段文字, 358 宽 gap=8.1, 390 宽 gap=30.5, 差值就是 390 宽排不下的那几行。tvH-needH 全部 56 条为 0.0, v45 补高依然完美, 问题**只在宽度不在高度**。修法: 碎片与目标宽不一致时, **连容器宽一起钉回 _realW2**, 两者合起来才是完整条件(容器宽==目标宽 且 碎片按目标宽重排过); v47 的 ios15LastLaidOutW 判据保留不动, 两个判据正交。**这不是新的抢宽时机**: 写在 v18 段内, 复用 v18 已算好的 _realW2(与 sizeThatFits 测高同一个值), 不引入第三方宽度; 判据 abs(tcW-_realW2)>0.5 保证幂等(已在 358 不写不重排, 稳态零开销; 被推回 390 才纠偏一次, 是**纠偏**不是**竞争**)。v13/v34 翻车是因为在布局 pass外无条件抢宽、与 SwiftUI 竞争, 本版恰好相反; 只写 size.width, **不碰 frame/bounds/origin/高度**, 不会引起「整体缩小」那类几何漂移, 也不推翻 v45。**不做常驻钳宽**: 每帧无条件写 358 正是 v13/v34 的翻车形态。校验用**白名单**(只许 textContainer.size.width = _realW2, 精确等值)而非黑名单 —— 多写一个 frame.origin 就足以让整棵 cell 重新布局。★登记必须排在 v47 之后(锚点是 v47 注入的判据块)")
-    edit("Views/Chat/SelectableMarkdownView.swift", fix_width_writer_diag_v49, "v49: 【纯诊断, 不改任何行为】V49-WWRITER — 钉死「谁把 textContainer.size.width 推回 390」。log18 首次打破 log17 的「tcW 与 gap 完全同构」: tcW=390 组里出现 18 帧 gap=8.2(**正常**) —— len=122 在 390 宽下排版正确, 前两版从未有过 ⇒ **v48 钉宽确实生效, 但只治好轻文本**。重文本 len=1013(含 1 个表格)仍残缺: n=9 cachedW=357→tcW=358→usedH=1727.6 gap=8.1 ✅ / n=10 cachedW=389→tcW=390→usedH=1638.1 gap=97.6 ❌ —— **cachedW 与 tcW 完全同构(35/36)**。逐毫秒读 00:07:42: .678 [V42-MISS] tcW=358 usedH=1727.6(对) → .679 [V46-ATTACH] tcW=390 usedH=1638.1, **1 毫秒内被推回**; 而 v48 的钉宽写在 v18 段(缩进 12, layoutSubviews 内), **早于**表格附件测量链跑完 ⇒ 纠偏追不上。**为什么纯诊断不盲修**: 候选写入者至少三个(V46 attachmentBounds 测量链 / v37 probe 钳位链 / SwiftUI 布局 pass), 修法互相冲突 —— 放宽 V46 动表格渲染, 动 probe 钳位动 v37 那套 9 处泄漏防护, 抢 SwiftUI pass 是 v13/v34 翻车老路; 而 D4(TextContainerGuard 熔断 219 次, 358x2000 被熔 109 次)那条路是治 fillLayoutHole 11918ms 卡死的, 同样是历史 trade-off。先探针定位到**行**再动刀。探针两处构成**同帧差分**: v18 段末尾(v48 钉宽之后, 记 v18W) + v41 KVO 抢帧器(记 kvoW + 来源指纹 cvW/laidW/fragW(排版行宽)/tcH)。同 tick 内读到不同值 ⇒ 中间有人写过; 跨 tick ⇒ SwiftUI pass 之间写的。段内零赋值零 invalidate*(与 v44/v46 同纪律), 指纹全部走既有只读属性与本闭包局部量(cvW 用 KVO 闭包内已有的局部量, laidW 用 v47 注入的 ios15LastLaidOutW), 不新增读取语句以免探针自己扰动布局。★本轮实踩三个**编译级**坑: (1) struct _V49W 声明在函数体内 → KVO 侧跨函数引用不到(局部类型跨函数不可见) ⇒ 已提到类型级; (2) 原想读 v46 的 attV46CachedWidth, 但那个 getter 声明在 **TableAttachment** 类里而探针在 SelectableMarkdownTextView 内 ⇒ 跨类访问, 编译失败 ⇒ 换成同类型的 laidW(问的都是「碎片按哪个宽排的」, 诊断力不减); (3) 指纹里的 boundW 写成 `self.textContainer.bounds.width` —— **NSTextContainer 没有 bounds**(那是 NSView 的), run#37139821021 编译直接失败 `value of type 'NSTextContainer' has no member 'bounds'` ⇒ 改用 **lineFragmentWidth**(TextKit 真正用于排版的行宽, 比 bounds 更贴「排版路径」这个诊断意图, 判读力不减)。为此新增 scripts/ios15_verify/scope_check_v49.py 专查作用域(判据查不出编译问题)。0.5s 节流与 V44/V45/V46/V41 同周期。★登记必须排在 v48 之后(探针要读 v48 钉宽之后的值)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_width_writer_diag_v49, "v49: 【纯诊断, 不改任何行为】V49-WWRITER — 钉死「谁把 textContainer.size.width 推回 390」。log18 首次打破 log17 的「tcW 与 gap 完全同构」: tcW=390 组里出现 18 帧 gap=8.2(**正常**) —— len=122 在 390 宽下排版正确, 前两版从未有过 ⇒ **v48 钉宽确实生效, 但只治好轻文本**。重文本 len=1013(含 1 个表格)仍残缺: n=9 cachedW=357→tcW=358→usedH=1727.6 gap=8.1 ✅ / n=10 cachedW=389→tcW=390→usedH=1638.1 gap=97.6 ❌ —— **cachedW 与 tcW 完全同构(35/36)**。逐毫秒读 00:07:42: .678 [V42-MISS] tcW=358 usedH=1727.6(对) → .679 [V46-ATTACH] tcW=390 usedH=1638.1, **1 毫秒内被推回**; 而 v48 的钉宽写在 v18 段(缩进 12, layoutSubviews 内), **早于**表格附件测量链跑完 ⇒ 纠偏追不上。**为什么纯诊断不盲修**: 候选写入者至少三个(V46 attachmentBounds 测量链 / v37 probe 钳位链 / SwiftUI 布局 pass), 修法互相冲突 —— 放宽 V46 动表格渲染, 动 probe 钳位动 v37 那套 9 处泄漏防护, 抢 SwiftUI pass 是 v13/v34 翻车老路; 而 D4(TextContainerGuard 熔断 219 次, 358x2000 被熔 109 次)那条路是治 fillLayoutHole 11918ms 卡死的, 同样是历史 trade-off。先探针定位到**行**再动刀。探针两处构成**同帧差分**: v18 段末尾(v48 钉宽之后, 记 v18W) + v41 KVO 抢帧器(记 kvoW + 来源指纹 cvW/laidW/tcH)。同 tick 内读到不同值 ⇒ 中间有人写过; 跨 tick ⇒ SwiftUI pass 之间写的。段内零赋值零 invalidate*(与 v44/v46 同纪律), 指纹全部走既有只读属性与本闭包局部量(cvW 用 KVO 闭包内已有的局部量, laidW 用 v47 注入的 ios15LastLaidOutW), 不新增读取语句以免探针自己扰动布局。★本轮实踩三个**编译级**坑: (1) struct _V49W 声明在函数体内 → KVO 侧跨函数引用不到(局部类型跨函数不可见) ⇒ 已提到类型级; (2) 原想读 v46 的 attV46CachedWidth, 但那个 getter 声明在 **TableAttachment** 类里而探针在 SelectableMarkdownTextView 内 ⇒ 跨类访问, 编译失败 ⇒ 换成同类型的 laidW(问的都是「碎片按哪个宽排的」, 诊断力不减); (3) 指纹里的「排版宽」这项**连踩两次编译错误后整项删除**: 原写 `self.textContainer.bounds.width` ⇒ run#37139821021 `has no member 'bounds'`; 改写 `self.textContainer.lineFragmentWidth` ⇒ run#37141013946 `has no member 'lineFragmentWidth'`(它属于 TextKit2 的 NSTextLayoutManager)。两次都是**没查证就猜 API 名** —— 第一版我甚至在注释里论证它「比 bounds 更准」, 论证得越自信错得越彻底。**写注释不能代替查证。** 该语义已由 laidW(v47 注入的 ios15LastLaidOutW, v48 判据验证过)覆盖, 不再找替代。由此新增 scope_check_v49.py 的 E 层(API 存在性, 按接收者类型查成员) + verify_v49 对 bounds/lineFragmentWidth 的硬禁, 让编译器级错误改由判据在 CI 内拦。判据查不出编译问题, 这类坑只能靠 E 层(编译前)拦。0.5s 节流与 V44/V45/V46/V41 同周期。★登记必须排在 v48 之后(探针要读 v48 钉宽之后的值)")
     # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")

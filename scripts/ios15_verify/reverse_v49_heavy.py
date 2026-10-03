@@ -12,7 +12,7 @@
     T2 不触发重排          —— 重文本每帧重排 = 终端卡一下(v49 不能换新 bug)
     T3 usedRect 只在节流内  —— ★核心: usedRect 是**惰性**属性, 无条件读
                                每帧都可能触发排版, 重文本下必卡
-    T3b 其它惰性读取同理    —— size.height / lineFragmentWidth
+    T3b 其它惰性读取同理    —— size.height
     T4 v18 侧无条件执行     —— 纯读+记记忆位, 不该有行为分支
     T5 不碰 v37 钳位链      —— 那是 9 处泄漏防护的历史 trade-off
     T6 v48 钉宽写入点仍在   —— 钉宽失效 = v48 成果作废(加法纪律)
@@ -111,11 +111,11 @@ def heavy_checks(t):
 
     # ---- T3b 其它惰性读取同理 ----
     lazy_out = []
-    for s in ("textContainer.size.height", "textContainer.lineFragmentWidth"):
+    for s in ("textContainer.size.height",):
         for x in re.finditer(re.escape(s), c2):
             if x.start() < gate:
                 lazy_out.append(s)
-    res.append(("T3b 惰性读取(size.height/lineFragmentWidth)也在闸门内",
+    res.append(("T3b 惰性读取(size.height)也在闸门内",
                 not lazy_out,
                 "闸门外: %s" % sorted(set(lazy_out)) if lazy_out else "全在闸门内"))
 

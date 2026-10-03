@@ -27,11 +27,10 @@ v48 的写入白名单。
 
 【两种传参约定】历史判据的 argv 并不统一, 传错就会得到假失败:
   · arg=root : 收产物根目录, 内部自己拼 src/ios/... 路径
-               (v43 v44 v45 v46 v47 v48 v49 reverse_v48)
+               (v43 v44 v45 v46 v47 v48 v49 reverse_v47 reverse_v48)
   · arg=swift: 直接收 SelectableMarkdownView.swift 的文件路径
                (v41 v42 —— 它们 open(path) 直接读, 传目录会
                 IsADirectoryError, 这就是本文件最初 3 项失败的真因)
-  · arg=none : 不吃产物参数(reverse_v47 直接 import fallback 纯校验)
 
 用法: regress_all_v.py <产物根目录 或 SelectableMarkdownView.swift>
 """
@@ -55,10 +54,10 @@ CHECKS = [
     ("v47 判据",         "ci_assert_v47.py",      "root",  []),
     ("v48 判据",         "ci_assert_v48.py",      "root",  []),
     ("v49 判据(四层)",   "ci_assert_v49.py",      "root",  []),
-    ("v47 反向",         "reverse_v47.py",        "none",  []),
+    ("v47 反向",         "reverse_v47.py",        "root",  []),
     ("v48 反向(20 条)", "reverse_v48.py",        "root",  []),
     ("v49 重文本+8 sab", "reverse_v49_heavy.py",  "swift", []),
-    ("v49 作用域+6 sab", "reverse_v49_scope.py",  "swift", []),
+    ("v49 作用域+12 sab", "reverse_v49_scope.py",  "swift", []),
 ]
 
 # 最近三代(v47/v48/v49)的判据与反向测试是当前承重墙, 必须全绿。
@@ -67,7 +66,7 @@ CHECKS = [
 MANDATORY = {
     "v47 判据", "v48 判据", "v49 判据(四层)",
     "v47 反向", "v48 反向(20 条)",
-    "v49 重文本+8 sab", "v49 作用域+6 sab",
+    "v49 重文本+8 sab", "v49 作用域+12 sab",
 }
 
 

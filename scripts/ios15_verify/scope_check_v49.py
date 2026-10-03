@@ -305,8 +305,13 @@ def scope_check_v49(t):
     #   把 self 塞进来会让 `self.ios15V18W` 被判成"self 上没有这个成员"。
     KNOWN_MEMBERS = {
         "textContainer": {
-            "size", "lineFragmentWidth", "layoutManager", "textStorage",
+            # ★只列 Apple 文档确认存在的成员。lineFragmentWidth **不在其中**
+            #   (它属于 TextKit2 的 NSTextLayoutManager 一族) ——
+            #   run#37141013946 就死在把它写进白名单之后。
+            "size", "layoutManager", "textStorage", "textView",
             "maximumNumberOfLines", "lineBreakMode", "lineFragmentPadding",
+            "widthTracksTextView", "heightTracksTextView",
+            "exclusionPaths", "isSimpleRectangularTextContainer",
         },
         "layoutManager": {
             "usedRect", "usedRange", "textContainer", "textStorage",
@@ -349,11 +354,22 @@ def scope_check_v49(t):
                       "TextKit 对象的合法成员表见本函数 KNOWN_MEMBERS"
                       % (name, ".".join(chain[:idx + 1] + [nxt]), node))
 
-    # ★单点硬禁: 探针里出现 textContainer.bounds 即失败。
-    #   历史教训见上 —— 即使有人后来往白名单里补了 "bounds", 这条仍然拦。
-    if "textContainer.bounds" in _strip_comments(seg_v18 + seg_kvo):
-        _fail("★探针出现 textContainer.bounds —— NSTextContainer 没有 "
-              "bounds(那是 NSView 的)。请用 lineFragmentWidth(排版行宽)")
+    # ★单点硬禁: 探针里出现这两个不存在的 API 即失败。
+    #   历史教训见上 —— 即使有人后来往白名单里补了它们, 这条仍然拦。
+    #   ★提示文案**不能**再推荐 lineFragmentWidth: run#37141013946 就是
+    #     照着上一版"请改用 lineFragmentWidth"的建议改的, 结果它同样不存在。
+    #     ⇒ 一个把下一个人推向编译错误的提示, 比没有提示更坏。
+    for _bogus, _why in (
+        ("textContainer.bounds",
+         "bounds 是 NSView 的 API, NSTextContainer 不是 NSView 子类"),
+        ("textContainer.lineFragmentWidth",
+         "它属于 TextKit2 的 NSTextLayoutManager 一族, 不是 NSTextContainer 的成员"),
+    ):
+        if _bogus in _strip_comments(seg_v18 + seg_kvo):
+            _fail("★探针出现 %s —— %s。读容器宽一律用 "
+                  "self.textContainer.size.width(同一份文件里 40+ 处在用, "
+                  "编译器已验证); 排版来源问 ios15LastLaidOutW(v47 注入)"
+                  % (_bogus, _why))
 
     return True
 
