@@ -5510,13 +5510,72 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         ios15KvoTarget = sv
         ios15KvoToken = sv.observe(\.frame, options: [.new]) { [weak self] obj, _ in
             guard let self = self, !self.ios15KvoFixing else { return }
-            let f = obj.frame
+            // [V41-LETFIX] let -> var: v41 要在补齐高度后把新值交棒给后续宽度修正
+            // (`f = _hFix`), Swift 的 let 不可重新赋值, 保持 let 会编译失败。
+            var f = obj.frame
             // [IOS15-FIX-DISPLAYLINK v29] findCollectionView 死角兜底
             // (同 ios15ApplyFrameFix): 遍历失败时用屏宽, 不放弃同栈抢帧。
             let _cvW0 = self.findCollectionView()?.bounds.width ?? 0
             let cvW = _cvW0 > 1 ? _cvW0 : UIScreen.main.bounds.width
             guard cvW > 1 else { return }
-            let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
+            // [V41-KVOPRE] 抢帧器抓到的**原始**值(脏)。见函数 docstring「诊断打穿pass 内 vs pass 后」。
+            struct _KvoPre { static var last: CFTimeInterval = 0 }
+            let _kvoNow = CACurrentMediaTime()
+            if _kvoNow - _KvoPre.last > 0.5 {
+                _KvoPre.last = _kvoNow
+                NSLog("[V41-KVOPRE] sv=(%.1f,%.1f,%.1f,%.1f) needH=%.1f cvW=%.1f",
+                      f.origin.x, f.origin.y, f.size.width, f.size.height,
+                      self.ios15LastNeededH, cvW)
+            }
+            // [V41-KVOHEIGHT] 高度与宽度**两个独立维度** — 见函数 docstring 的完整推导。
+            //
+            // v39/v40 都误判为"补齐代码没执行"。log9 逐行交叉比对证明**恰恰相反**:
+            // 同一毫秒同一 layoutSubviews 内, DIAG2 读到的 superview 已经是
+            // 358 x needH(修好的), 说明 v18+v40 在 pass 内把几何修好了;
+            // 欠账是 **pass 结束后 SwiftUI 布局收尾又写回** 的。
+            //
+            // 漏水的最后一环是这个 KVO 抢帧器: 它只修 x/width, 高度从不写。
+            // 于是"宽度正常 + 高度欠账"这种帧(正是 SwiftUI 收尾写回的形态)
+            // 会被下面的 `if !polluted { return }` 直接放过 —— 高度永远补不上,
+            // 屏幕渲染的是欠账高度, 末行被裁 → "字只剩一半/终端框不接结果"。
+            //
+            // 幂等 + 重入安全: 下面写 frame 时有 ios15KvoFixing 保护。
+            if self.ios15LastNeededH > 1, f.size.height + 0.5 < self.ios15LastNeededH {
+                var _hFix = f
+                _hFix.size.height = self.ios15LastNeededH
+                self.ios15KvoFixing = true
+                obj.frame = _hFix
+                self.ios15KvoFixing = false
+                // [V41-KVOHEIGHT-HIT] 补齐真的执行了(节流 0.5s)。v39/v40 之所以
+                // 判"补齐没跑"是因为诊断挂在结果已修好的那一层; 这里挂在
+                // "即将写入欠账值"的那一刻, 只要欠账被补就必定打出来。
+                struct _KvoHit { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                let _kh = CACurrentMediaTime()
+                if _kh - _KvoHit.last > 0.5 {
+                    _KvoHit.last = _kh
+                    _KvoHit.n &+= 1
+                    NSLog("[V41-KVOHEIGHT] fixed svH=%.1f -> needH=%.1f debt=%.1f svW=%.1f n=%u",
+                          f.size.height, self.ios15LastNeededH,
+                          self.ios15LastNeededH - f.size.height, f.size.width, _KvoHit.n)
+                }
+                // 补完立刻交棒: 下面的宽度修正必须基于新高度继续, 不能return。
+                f = _hFix
+            }
+            // [V41-KVOPOST] 即将提交的值(应为 358 x needH)。见 docstring「诊断」。
+            if self.ios15LastNeededH > 1, f.size.height + 0.5 >= self.ios15LastNeededH {
+                struct _KvoPost { static var last: CFTimeInterval = 0 }
+                let _kpo = CACurrentMediaTime()
+                if _kpo - _KvoPost.last > 0.5 {
+                    _KvoPost.last = _kpo
+                    NSLog("[V41-KVOPOST] sv=(%.1f,%.1f,%.1f,%.1f) needH=%.1f",
+                          f.origin.x, f.origin.y, f.size.width, f.size.height,
+                          self.ios15LastNeededH)
+                }
+            }
+            // [V41-POLLED] polluted 判据增加**高度维度**: 宽度正常但高度欠账的帧
+            // 也必须进修正分支, 不能被 `if !polluted { return }` 放过。
+            let _hDebt = self.ios15LastNeededH > 1 && f.size.height + 0.5 < self.ios15LastNeededH
+            let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt
             if !polluted {
                 if f.size.width > 200, f.origin.x > 0.5, f.size.width < cvW - 0.5 {
                     self.ios15LastSaneSVFrame = f
@@ -5532,6 +5591,24 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             } else {
                 fix.origin.x = 16
                 fix.size.width = cvW - 32
+            }
+            // [V41-KVOFIXH] 提交前再兜一次高度。上面的 V41-KVOHEIGHT 已经在
+            // polluted 之前补过一次, 这里是幂等重复, 防的是"宽度修正路径里
+            // 顺带把高度带回去"。留着是因为这段是**真正写 frame** 的地方,
+            // 任何绕过前面那段高度的路径都在这里被拦住。
+            if self.ios15LastNeededH > 1, fix.size.height + 0.5 < self.ios15LastNeededH {
+                // [V41-KVOFIXH-HIT] 兜底命中: 说明有路径绕过了前面的 V41-KVOHEIGHT,
+                // 或宽度修正把高度带回去了。节流 0.5s, 正常情况下不该频繁出现。
+                struct _FixH { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                let _fh = CACurrentMediaTime()
+                if _fh - _FixH.last > 0.5 {
+                    _FixH.last = _fh
+                    _FixH.n &+= 1
+                    NSLog("[V41-KVOFIXH] rescue fixH=%.1f -> needH=%.1f debt=%.1f n=%u",
+                          fix.size.height, self.ios15LastNeededH,
+                          self.ios15LastNeededH - fix.size.height, _FixH.n)
+                }
+                fix.size.height = self.ios15LastNeededH
             }
             self.ios15KvoFixing = true
             obj.frame = fix
@@ -7704,6 +7781,30 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         // [LEFT-CLIP-DIAG v2] 旧 relX=frameX-svFrameX 跨坐标系相减没有意义
         // (文本框在 x=16 容器内从 0 起永远触发)。改为低频打印自身几何,
         // 供验证双边裁字是否根除。
+        // [V41-DEBT] pass 末尾回写侦测 — 见函数 docstring「诊断打穿 pass 内 vs pass 后」。
+        // 与下面的 LEFT-CLIP-DIAG2 同一时刻采样、同一节流周期, 可逐条对照:
+        //   DIAG2 高度 == needH  → 本pass 内修好了, 欠账是 SwiftUI 事后写回的
+        //   V41-DEBT 触发        → 证实"事后写回"确实发生, 且欠账幅度是多少
+        // 诊断挂在**一定执行**的位置(函数末尾无条件路径), 不像 v40 那样
+        // 挂在"结果已修好"的分支里导致永远打不出来。
+        if ios15LastNeededH > 1, (superview?.frame.size.height ?? 0) + 0.5 < ios15LastNeededH {
+            struct _DebtLog { static var last: CFTimeInterval = 0; static var hits: UInt = 0 }
+            struct _DebtSum { static var sum: CGFloat = 0; static var n: UInt = 0 }
+            _DebtLog.hits &+= 1
+            let _nowDebt = CACurrentMediaTime()
+            if _nowDebt - _DebtLog.last > 5.0 {
+                _DebtLog.last = _nowDebt
+                _DebtSum.sum += ios15LastNeededH - (superview?.frame.size.height ?? 0)
+                _DebtSum.n &+= 1
+                NSLog("[V41-DEBT] passEnd svH=%.1f needH=%.1f debt=%.1f svW=%.1f hits=%u avgDebt=%.1f storageLen=%lu",
+                      superview?.frame.size.height ?? 0, ios15LastNeededH,
+                      ios15LastNeededH - (superview?.frame.size.height ?? 0),
+                      superview?.frame.size.width ?? 0,
+                      _DebtLog.hits,
+                      _DebtSum.n > 0 ? _DebtSum.sum / CGFloat(_DebtSum.n) : CGFloat(0),
+                      UInt(textStorage.length))
+            }
+        }
         struct _ClipDiag2 { static var lastLog: CFTimeInterval = 0 }
         let _nowD = CACurrentMediaTime()
         if _nowD - _ClipDiag2.lastLog > 5.0 {
