@@ -185,7 +185,28 @@ jobs:
         run: python3 "$SCRIPT_DIR/ios15_runtime_fixes.py"
 
       - name: "源码移植到 iOS 15 (第三阶段: 真实 iOS16/17 依赖兜底)"
-        run: python3 "$SCRIPT_DIR/ios15_fallback.py" src/ios
+        # ---- 前置顺序自检 ----
+        # 【为什么必须放在 fallback 之前】run#37118226923 就是因为 v44 登记排在
+        # v42 前面而崩的: fallback 在第三阶段抛 ValueError 直接退出, 后面
+        # 编译依赖 / 编译 App / 打包 / 提交一步都跑不到, 排错时得先翻 40MB 日志
+        # 才能找到那两行 traceback。这里先用 0.1s 的静态检查把顺序钉死,
+        # 报错直接点名是哪两个 edit 谁先谁后。
+        run: |
+          set -e
+          # 单行 python, 不带换行/引号转义 —— YAML 缩进 + shell + python 三层
+          # 嵌套时, 多行 -c 里的缩进会被 YAML 原样带进去从而 SyntaxError。
+          _pre=$(python3 -c 'import sys;t=open(sys.argv[1],encoding="utf-8").read();b=t[t.index("def main()"):];a=b.find("fix_kvo_height_clamp_v41");v=b.find("fix_needh_latch_v42");c=b.find("fix_diag_textframe_v44");print("OK" if (a>=0 and v>=0 and c>=0 and a<v<c) else ("BAD v41@%d v42@%d v44@%d"%(a,v,c)))' "$SCRIPT_DIR/ios15_fallback.py")
+          echo "编辑顺序: $_pre"
+          case "$_pre" in
+            OK) echo "✅ 注入顺序正确 v41 → v42 → v44 (v44 的锚点依赖 v42 注入的赋值点)" ;;
+            *)  echo "❌ 注入顺序错误: $_pre"
+                echo "   v44 的注入锚点与位置判据依赖 v42 注入的 self.ios15LastNeededH = _v42Need。"
+                echo "   排在 v42 之前 → 干净上游基线上锚点不存在 → fallback 崩在本步骤，"
+                echo "   编译/依赖/打包/提交全部跑不到(run#37118226923 的真实死因)。"
+                echo "   修法: 把 main() 里的 fix_diag_textframe_v44 移到 fix_needh_latch_v42 之后。"
+                exit 1 ;;
+          esac
+          python3 "$SCRIPT_DIR/ios15_fallback.py" src/ios
 
       - name: "自检: 运行时补丁是否真的生效 (不通过则立即变红, 避免静默回归)"
         run: |
@@ -626,6 +647,16 @@ jobs:
           # 而 V41-KVOPRE 抓的 obj 是被观察的 **superview**, 画字的是 UITextView 自己 ——
           # 补 superview 完全可能补不到画字的那个。v44 一条日志同时测这三件事。
           if grep -q "V44-TEXTFRAME" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            # ★★★ 登记顺序判据 —— run#37118226923 的真实死因, 必须放在最前面。
+            # v44 的注入锚点依赖 v42 注入的 `self.ios15LastNeededH = _v42Need`。
+            # 第一版把 v44 登记在 v42 **前面**, CI 从干净上游跑, v44 先执行时那行
+            # 还不存在 -> verify 里 t.index 抛 ValueError -> ios15_fallback 崩在
+            # 第三阶段, 编译/依赖/打包/提交一步都没走到。
+            # 【为什么本地全绿】本地用的是上一版流水线产物, v42 早就被打过了,
+            # 所以任何登记顺序都找得到锚点 —— 用旧产物当基线恰好精确掩盖了
+            # "顺序依赖"这类只在干净基线上才暴露的 bug。
+            # ⇒ 登记顺序本身就是一条判据, 在这里静态钉死, 不靠运气。
+            _v44_order=$(python3 -c "t=open('scripts/ios15_fallback.py',encoding='utf-8').read(); b=t[t.index('def main()'):]; a=b.find('fix_needh_latch_v42'); c=b.find('fix_diag_textframe_v44'); d=b.find('fix_kvo_height_clamp_v41'); print('OK' if (a>=0 and c>a and d>=0 and c>d) else 'BAD')")
             _v44_fields=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); ks=['_tfdTvH = self.frame.height','_tfdSvAfter = obj.frame.height','_tfdUsed = self.layoutManager.usedRect(','self.textContainer).height']; miss=[k for k in ks if k not in t]; print('OK' if not miss else 'BAD:'+'|'.join(miss))")
             # ★必须用 do { } —— 裸块会被吸成 trailing closure, v42 首次推送就栽在这。
             _v44_doblock=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); n=chr(10); mk='// [V44-TEXTFRAME] 见函数 docstring'; c=t.index(mk) if mk in t else -1; k=t.index('// [V41-KVOPOST]') if '// [V41-KVOPOST]' in t else -1; print('OK' if (c>=0 and k>c and (n+'            do {') in t[c:k]) else 'BAD')")
@@ -640,10 +671,11 @@ jobs:
             _v44_throttle=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); q=chr(34); print('OK' if t.count('NSLog('+q+'[V44-TEXTFRAME]')==1 and '_tfdNow - _TfdLog.last > 0.5' in t else 'BAD')")
             if [ "$_v44_fields" = "OK" ] && [ "$_v44_doblock" = "OK" ] \
                && [ "$_v44_pos" = "OK" ] && [ "$_v44_pure" = "OK" ] \
-               && [ "$_v44_throttle" = "OK" ]; then
-              echo "✅ v44 就位 (纯诊断: tvH=UITextView自身高 / svAfter=补高后立刻回读 / usedH=TextKit真实占用, 三假设一次打完, 0.5s 节流, 块内零写操作)"
+               && [ "$_v44_throttle" = "OK" ] && [ "$_v44_order" = "OK" ]; then
+              echo "✅ v44 就位 (纯诊断: tvH=UITextView自身高 / svAfter=补高后立刻回读 / usedH=TextKit真实占用, 三假设一次打完, 0.5s 节流, 块内零写操作; 登记在 v41/v42 之后)"
             else
-              echo "❌ v44 异常 (判据字段=$_v44_fields do块=$_v44_doblock 位置=$_v44_pos 纯诊断=$_v44_pure 节流=$_v44_throttle)"
+              echo "❌ v44 异常 (登记顺序=$_v44_order 判据字段=$_v44_fields do块=$_v44_doblock 位置=$_v44_pos 纯诊断=$_v44_pure 节流=$_v44_throttle)"
+              echo "   —— 顺序 BAD 则 v44 跑在 v41/v42 之前, 锚点不存在, fallback 会在本阶段直接崩(compile 一步都跑不到, run#37118226923 就是这样挂的)"
               echo "   —— 缺字段则有一条假设永远无法验证; 纯诊断失败说明块内混进了写行为, 装机结果无法归因(行为改动必须另起一版)"
               exit 1
             fi
