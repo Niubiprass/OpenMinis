@@ -613,6 +613,46 @@ jobs:
           fi
           echo "::endgroup::"
 
+          echo "::group::断言46: v44 纯诊断 V44-TEXTFRAME 必须就位且**不含任何写行为** (v41/v42/v43 三轮全猜错, 这一版只测不改)"
+          # log12(minis-2026-10-03 12.log) 装机实测把 v43-A 的前提直接推翻:
+          #   143 条 V43-WIDTH 里 29 条 dh != 0, 且**会正负翻转** ——
+          #   18:06:12 hDirty=1960.7 hNet=1769.3 dh=-191.3(净宽反而更矮)
+          #   18:17:11 hDirty=1384.3 hNet=1474.0 dh=+89.7(净宽更高)
+          # 真的同源, dh 必然恒为 0。符号翻转说明还有第三条测量链, 而 v43 猜的是
+          # "两条链同源", 于是这一版不能再猜。
+          # 同时 V41 补高循环跑到 n=138 永不收敛(debt 恒 156.3 / 447.7):
+          #   18:17:11.252 V41-KVOHEIGHT fixed svH=1026.3 -> needH=1474.0 debt=447.7
+          #   18:17:12.075 V41-KVOPRE    sv=(16,247.3,358.0,1026.3) needH=0.0  <- 又被写回
+          # 而 V41-KVOPRE 抓的 obj 是被观察的 **superview**, 画字的是 UITextView 自己 ——
+          # 补 superview 完全可能补不到画字的那个。v44 一条日志同时测这三件事。
+          if grep -q "V44-TEXTFRAME" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            _v44_fields=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); ks=['_tfdTvH = self.frame.height','_tfdSvAfter = obj.frame.height','_tfdUsed = self.layoutManager.usedRect(','self.textContainer).height']; miss=[k for k in ks if k not in t]; print('OK' if not miss else 'BAD:'+'|'.join(miss))")
+            # ★必须用 do { } —— 裸块会被吸成 trailing closure, v42 首次推送就栽在这。
+            _v44_doblock=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); n=chr(10); mk='// [V44-TEXTFRAME] 见函数 docstring'; c=t.index(mk) if mk in t else -1; k=t.index('// [V41-KVOPOST]') if '// [V41-KVOPOST]' in t else -1; print('OK' if (c>=0 and k>c and (n+'            do {') in t[c:k]) else 'BAD')")
+            # ★位置必须在**补高之后**: 在补高前打, svAfter 与 svH 同值, 假设 B 永远无法证伪。
+            #   (v43-B 第一版就栽在"插在写入之前"上, 这里同一个坑不能再踩第二次。)
+            _v44_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); a=t.index('self.ios15LastNeededH = _v42Need') if 'self.ios15LastNeededH = _v42Need' in t else -1; b=t.index('NSLog('+chr(34)+'[V41-KVOHEIGHT]') if 'NSLog('+chr(34)+'[V41-KVOHEIGHT]' in t else -1; c=t.index('// [V44-TEXTFRAME] 见函数 docstring') if '// [V44-TEXTFRAME] 见函数 docstring' in t else -1; print('OK' if (a>=0 and b>a and c>b) else 'BAD')")
+            # ★★纯诊断判据(本断言存在的理由): 块内出现任何写行为, 这一版的结论就废了 ——
+            #   装机后无法区分"真修好了"和"看着好了", 行为改动会伪装成诊断。
+            #   所以宁可让 CI 拦下, 也不许顺手在这里补textView 高度。
+            _v44_pure=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); n=chr(10); mk='// [V44-TEXTFRAME] 见函数 docstring'; c=t.index(mk) if mk in t else -1; DO=n+'            do {'; k=t.index('// [V41-KVOPOST]', c) if c>=0 else -1; s=t.index(DO, c) if (c>=0 and DO in t[c:k]) else -1; e=t.index(n+'            }', s) if s>=0 else -1; seg=t[s:e] if (s>=0 and e>s) else t[c:k] if (c>=0 and k>c) else ''; bad=[w for w in ('self.frame =','self.ios15LastNeededH =','self.ios15LatchedNeedH =','obj.frame =','textContainer.size =') if w in seg]; print('OK' if seg and not bad else ('BAD:'+'|'.join(bad) if bad else 'BAD:seg'))")
+            # 节流必须与 V41-KVOPRE / V43-WIDTH 同为 0.5s, 三条日志才能并列对照。
+            _v44_throttle=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); q=chr(34); print('OK' if t.count('NSLog('+q+'[V44-TEXTFRAME]')==1 and '_tfdNow - _TfdLog.last > 0.5' in t else 'BAD')")
+            if [ "$_v44_fields" = "OK" ] && [ "$_v44_doblock" = "OK" ] \
+               && [ "$_v44_pos" = "OK" ] && [ "$_v44_pure" = "OK" ] \
+               && [ "$_v44_throttle" = "OK" ]; then
+              echo "✅ v44 就位 (纯诊断: tvH=UITextView自身高 / svAfter=补高后立刻回读 / usedH=TextKit真实占用, 三假设一次打完, 0.5s 节流, 块内零写操作)"
+            else
+              echo "❌ v44 异常 (判据字段=$_v44_fields do块=$_v44_doblock 位置=$_v44_pos 纯诊断=$_v44_pure 节流=$_v44_throttle)"
+              echo "   —— 缺字段则有一条假设永远无法验证; 纯诊断失败说明块内混进了写行为, 装机结果无法归因(行为改动必须另起一版)"
+              exit 1
+            fi
+          else
+            echo "❌ v44 缺失 —— v41/v42/v43 三轮都在猜'高度够不够'全部猜错, 没有这条诊断就只能继续盲修"
+            exit 1
+          fi
+          echo "::endgroup::"
+
           echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
           # 病根A 实证 (minis-2026-10-03 6.log):
           #   04:55:03.045 FIRST-MEASURE CORRECTION cellH=1591.7 newH=1748.0
