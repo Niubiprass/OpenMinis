@@ -5637,6 +5637,597 @@ MSG_V51_C = (
 )
 
 
+MSG_V52_AB = (
+    "v52-A+B: 宽度合理性闸门 + _svW 改读 frame —— 治「一段话最后一行被裁」。"
+    "★先说结论: **v51-A 生效了, 但它不是根因**。"
+    "装机硬证据(minis-2026-10-04.log, 6643 行, 146 条 V51-FRAMEPIN): "
+    "`fvW=tcW=svW=358` 占 **143/146 零例外** ⇒ 我钉的 frame 宽确实写进去了, "
+    "v50 那个「画字视图比父容器宽 32pt」彻底消失。**而症状一字未改**。"
+    "⇒ 病根在别处, 本版换靶。 "
+    "**新靶: 宽度 375.7** —— 它在 v50 日志里出现 **0 次**, 在 v51 日志里 **61 次**, "
+    "且全部集中在 `len=57` 这一个 cell(用户截图 05:03:41 被裁的那一段)。 "
+    "【为什么 375.7 是致命的】v18 段算净宽的公式是 `min(_svW, _cvW)`, "
+    "而 `_cvW` 恒 390 ⇒ `min(375.7, 390) = 375.7` ⇒ **v18 老老实实把这个"
+    "瞬时污染值当成了净宽**, v48 钉 textContainer、v51 钉 frame, 全钉到 375.7。"
+    "而这段文字在 375.7 下排 **1 行**(tcH=18.7), 按 358 排需要 **2 行**(needH=49.0): "
+    "`V41-DEBT passEnd svH=26.7 needH=49.0 debt=22.3 svW=375.7 hits=6` "
+    "—— 父容器按 375.7 的排版结果只给了 26.7 高(一行), 而 cell 高度缓存里记的是"
+    "按 358 算的 49.0, 差 **22.3pt ≈ 一行半** ⇒ 屏幕上就是「最后一行被裁」。"
+    "同源的旁证: `size=358.0x18.7` 在日志里出现 23 次(358 宽下容器被压到一行高)。 "
+    "**375.7 从哪来(三条排除法)**: ① `insetL` 全日志恒 0.0 ⇒ 不是内边距算出来的; "
+    "② `390-375.7=14.3`, 不是任何整数边距; ③ 首次出现前 5ms 恰有一条 "
+    "`REJECT-NAN-INF-NEG size=0.0x-8.0`(全日志 77 次) ⇒ 那一瞬 superview 的"
+    "几何是脏的。结论: **SwiftUI 递归排版某一瞬给的过渡宽度**, 被 v18 采信了。 "
+    "【A 怎么修】不碰 `min(_svW,_cvW)` 公式本身(v34 判据的语义边界钉在它上面), "
+    "在它**之前**加一道合理性闸门: 候选宽只有落在「上次已知良好宽度 ±2」或"
+    "「贴边全宽 ±2」内才允许采信, 其余(375.7 这种)一律**回落到上一次已知良好的"
+    "宽度**, 一个都不写。★这是**只读判据 + 回落**, 不是新的抢宽时机: "
+    "健康帧上闸门恒真(358 就在白名单里), 零行为变化。 "
+    "★为什么是「回落」而不是「直接用 cvW」: cvW=390 是全屏宽, 拿来当净宽 "
+    "等于回到 v13/v34 翻车过的「超框排版」。回落目标是**上一次排版正确时"
+    "用过的宽度**, 那才是真正的正确答案。 "
+    "【B 怎么修】`_svW` 从 `superview?.bounds.width` 改成 `superview?.frame.size.width`。"
+    "★**本轮修正一条我自己的错判**: 我最初给 B 的理由是「bounds 偶发 375.7 而 frame "
+    "恒 358」—— **装机日志核对后不成立**: `V41-DEBT` 读的正是 "
+    "`superview?.frame.size.width`, 它也报 375.7 ⇒ **frame 同样被污染**, "
+    "B 单独做无效。⇒ 纪律: **一个修法如果建立在某个读数差异上, 先确认那两个读数"
+    "来自不同字段**, 别想当然以为「一个是 bounds 一个是 frame」。 "
+    "B 合并后的**独立价值**: 与同段 `_svf0`(supview?.frame)**同源**, "
+    "于是闸门判据与污染修复读同一个字段, 不会出现「用 A 的判据筛 B 的读数」"
+    "这种跨字段不自洽 —— 若 A 读 frame 而 B 读 bounds, 两者可能同帧不同值, "
+    "闸门就会放行一个它本该拦的值。 "
+    "★登记必须排在 v51 之后(锚点是 v51 钉 frame 那行)"
+)
+
+
+MSG_V52_C = (
+    "v52-C: 宽度来源诊断探针 —— 把 375.7 的现场一次钉死。"
+    "★为什么必须再加一条探针: A 改的是**判据**, 而判据只能告诉我"
+    "「我拦没拦」, 告诉不了我「拦的是不是对的东西」。"
+    "B 的收益(读 frame 到底比读 bounds 强在哪)也只有并排两个读数才量得出来: "
+    "`rawW`(bounds) 与 `frmW`(frame) 相同 ⇒ B 无额外价值, 责任全在 A; "
+    "不同 ⇒ B 确实拦下了 A 拦不掉的那些帧。"
+    "本探针在 `_svW` 读出后**立刻**打, 字段: rawW / frmW / cvW / edge / "
+    "picked(最终采用的宽) / sane(闸门是否放行) / len。"
+    "★节流 0.5s, 与 V43-WIDTH / V44-TEXTFRAME / V49-WWRITER 同周期, 可逐条并列。"
+    "★零行为改动: 只读不写, 不新增任何几何赋值。"
+    "★登记必须排在 v52-A 之后"
+)
+
+
+MSG_V52_E = (
+    "v52-E: 把 v38-A 从死代码里救活 —— 兜底, 治「新会话第一段就卡」。"
+    "用户明确要求一并加兜底。 "
+    "【本轮头号发现: v38-A 是一次都没跑过的死代码】"
+    "装机日志三条零命中: `deferred debt CONSUMED` 0 次 / `deferred debt HELD` 0 次 / "
+    "`DeferDebt OWED` 0 次, 而 `v38A` 自身不打日志(它只是个 if), "
+    "所以「一次没跑」这件事在日志里是**静默**的。代码结构给出原因 —— "
+    "v18 段里两个 if 用的是**同一个判据**, 且**撑高在前、自愈在后**: "
+    "  撑高(v18 原有): `if let _sv = superview, _sv.frame.size.height < _needH - 0.5` "
+    "  自愈(v38-A):    `_svH = superview?.frame.size.height; _svH < _needH - 0.5` "
+    "⇒ 判据成立时高度**已经被撑到 _needH**, 自愈判据必然为假; "
+    "⇒ 判据不成立时自愈判据也必然为假。**两个分支都指向「永不执行」**, "
+    "而代码读起来完全正常, 注释还写着「已尝试把 frame/superview 撑到它」。 "
+    "★这就是为什么我之前把锅甩给 SKIP-DEDUPE 是错的: "
+    "  `storageLen=57 measureW=358 tcW=358 lastH=49.0` 那 11 条 SKIP-DEDUPE "
+    "  是**别的调用者**(流式增量/复用链)在打, 与 v38-A 无关 —— "
+    "  v38-A 根本没走到自己借 flag 的那一步, 没资格产生任何日志。 "
+    "【这一条同时解释了用户说的「大部分都是**新的会话第一段**就卡」】"
+    "首段定型之后, 唯一可能纠正欠账的那道自愈门**从来就没开过**, "
+    "于是此后每次 invalidateCell 都被指纹说「和上次一样」跳过。 "
+    "【修法: 让自愈判据在「撑高之前」取样, 与撑高判据错开】"
+    "在 v18 段进入测高循环**之前**先把 superview 高存成快照 `_v52PreSVH`, "
+    "自愈改用这个**进入时的旧高度**做判据。这样两种情形都能各走各的: "
+    "  · 撑高前就欠账(375.7 那个 cell: 旧 26.7 / 需 49.0) → 撑高执行, 自愈也执行 "
+    "  · 撑高前已经够高(v51 之后绝大多数帧) → 两者都不执行, **稳态零开销** "
+    "★判据用旧值不是新值, 是这段修法唯一的巧思所在: "
+    "  它让「撑高」与「自愈」在**逻辑上不再互斥**, 而两者合起来才完整 —— "
+    "  撑高改的是**结果**(superview.frame), 自愈走的是**诉求**(cell 高度提交链), "
+    "  v18 单靠自己赢不了 SwiftUI 的布局 pass, 缺的正是自愈那一半。 "
+    "★登记必须排在 v38-A 之后(锚点是 v38-A 的标记行)"
+)
+
+
+def fix_width_sane_gate_v52(t):
+    """v52-A+B+C: 宽度合理性闸门 + _svW 改读 frame + 来源诊断探针。
+
+    ── 归因(minis-2026-10-04.log, 装机 v51 后)────────────────────────
+
+    v51-A **生效了**但不是根因:
+
+      · V51-FRAMEPIN `fvW=tcW=svW=358` 占 143/146 零例外
+        ⇒ 钉 frame 宽确实写进去了, v50 的「画字视图比父容器宽 32pt」消失
+      · 而用户症状一字未改 ⇒ 换靶
+
+    新靶是宽度 **375.7**(v50 日志 0 次, v51 日志 61 次, 全集中在 len=57):
+
+      · v18 段 `min(_svW, _cvW)` 把 375.7 当净宽(因为 _cvW 恒 390)
+      · 该宽下排 1 行(tcH=18.7), 358 下需 2 行(needH=49.0)
+      · ⇒ `V41-DEBT svH=26.7 needH=49.0 debt=22.3 hits=6` 反复欠账
+      · ⇒ 屏幕上「最后一行被裁」
+
+    ── 三条排除法确认 375.7 是过渡态而非合法布局宽 ───────────────────
+
+      ① insetL 全日志恒 0.0 ⇒ 不是内边距算出来的
+      ② 390-375.7 = 14.3 ⇒ 不是任何整数边距
+      ③ 首次出现前 5ms 恰有 `REJECT-NAN-INF-NEG size=0.0x-8.0`(全日志 77 次)
+         ⇒ 那一瞬 superview 几何是脏的
+
+    ── A: 闸门(不动 min 公式)────────────────────────────────────────
+
+    落点在 `let _svW = ...` 那一行**之后**、`var _realW =` 之前。
+    不改 `min(_svW, _cvW)` 那条语句本身 —— v34 判据的语义边界钉在它上面。
+
+    闸门规则: 候选宽必须落在「上次已知良好宽度 ±2」或「全宽 ±2」内,
+    否则回落到 `ios15LastSaneContentW`(新记忆位, 只记被闸门放行过的值)。
+
+    ★为什么是「回落」而不是「直接用 cvW」: cvW=390 是全屏宽, 拿来当净宽
+      等于回到 v13/v34 翻车过的「超框排版」。回落目标是**上一次排版正确时
+      用过的宽度**, 那才是真正的正确答案。
+
+    ── B: _svW 改读 frame(与 _svf0 同源)───────────────────────────
+
+    ★本轮修正一条自己的错判: 最初以为「bounds 偶发 375.7 而 frame 恒 358」,
+    装机日志核对后**不成立** —— V41-DEBT 读的正是 frame.size.width, 也报 375.7。
+    ⇒ frame 同样被污染, B 单独做无效。
+    B 合并后的独立价值: 与 `_svf0` 同源, 闸门判据与污染修复同字段,
+    杜绝「A 读 frame / B 读 bounds」那种同帧不同值的跨字段不自洽。
+    """
+    if "// [V52-GATE]" in t:
+        return t
+
+    # ---- ① 记忆位声明(必须最先做: 下面的 Swift 代码已引用它) ----
+    #
+    # 【锚点为什么是 v49 的属性而不是 v47 的 ios15LastSaneSVFrame】
+    # v47 那一处(DECL_OLD)已经被 v49 的注入点消费过了 —— v49 把它当
+    # `DECL_ANCHOR` 插在 `/// [V47-WSTATE]` **之前**。再拿它当锚点虽然还能
+    # 命中(那段文本还在), 但会在 v49 插的那段之前插属性, 顺序乱掉。
+    # `var ios15V18W: CGFloat = -1` 是 v49 注入块的**首行**, 在 v52 之前
+    # 必然已存在, 且不会再被后续版本消费 —— 这才是硬约束下的安全锚点。
+    DECL_OLD = "    var ios15V18W: CGFloat = -1\n"
+    DECL_NEW = DECL_OLD + """    /// [V52-SANEW] 上一次**通过宽度合理性闸门**的排版净宽。v52 遇到
+    /// 脏几何帧(实测 375.7)时回落到它, 而不是回落到全屏宽 390。
+    /// 只有闸门放行的值才允许写入 ⇒ 记忆位本身永远干净。
+    var ios15LastSaneContentW: CGFloat?
+"""
+    if DECL_OLD not in t:
+        raise RuntimeError(
+            "fix_width_sane_gate_v52: 未找到 `var ios15V18W` 声明锚点 —— "
+            "v49 结构变了, 必须更新 DECL_OLD 后再发版。"
+            "★记忆位声明缺失会导致注入的 Swift 引用到未声明的标识符, "
+            "而编译报错指向 v52 那几行, 真正的原因在几百行之外")
+    t = t.replace(DECL_OLD, DECL_NEW, 1)
+
+    # ---- 落点: _svW 的读取行之后 ----
+    ANCHOR = """            let _svW = superview?.bounds.width ?? 0
+"""
+    if ANCHOR not in t:
+        raise RuntimeError(
+            "fix_width_sane_gate_v52: 未找到 `_svW` 读取行 —— "
+            "v18 段结构变了?(v34 起这一行就没动过)")
+    if t.count(ANCHOR) != 1:
+        raise RuntimeError(
+            "fix_width_sane_gate_v52: _svW 读取行不唯一(命中 %d 处) —— "
+            "盲改会改到别的视图上" % t.count(ANCHOR))
+
+    NEW = """            // [V52-B] 宽度改读 **frame** 而非 bounds。
+            // ★与同段上面的 `_svf0`(supview?.frame)同源 —— 闸门判据与污染修复
+            //   读同一个字段, 不会同帧不同值。
+            // ★本轮修正一条自己的错判: 装机前我以为"bounds 偶发 375.7 而 frame
+            //   恒 358", 但 V41-DEBT 读的正是 frame.size.width, 它也报 375.7
+            //   ⇒ frame 同样被污染, 单改这里无效。真正的价值是**同源**。
+            let _v52frmW = superview?.frame.size.width ?? 0
+            // [V52-GATE] 宽度合理性闸门 —— 见函数 docstring 的三条排除法。
+            //
+            // 背景: 装机日志里 `_cvW` 恒 390, 而 v18 的 `min(_svW, _cvW)` 会把
+            // 任何 < 390 的候选值**原样当成净宽**。SwiftUI 递归排版的某一瞬
+            // 给过 375.7 这个过渡宽度, 于是 textContainer 与 frame 全被钉到
+            // 375.7, 文字排成 1 行(tcH=18.7), 而按 358 排需要 2 行(49.0)
+            // ⇒ superview 只给 26.7 高 ⇒ 末行被裁 22.3pt。
+            //
+            // 规则: 候选宽必须「接近上一次已知良好宽度」或「接近全屏宽」,
+            // 否则**回落到上一次已知良好的宽度**, 一个字节都不写进渲染链。
+            // ★健康帧上闸门恒真(358 就在白名单里), 稳态零行为变化 ——
+            //   这是**只读判据 + 回落**, 不是新的抢宽时机。
+            var _v52w = _v52frmW > 1 ? min(_v52frmW, _cvW) : _cvW
+            var _v52sane = 1
+            if _edgeTouch {
+                // 贴边态: 目标净宽就是 cvW-32(inset 16/16 已在上面设好)。
+                if abs(_v52w - (_cvW - 32)) > 2 {
+                    _v52w = _cvW - 32
+                    _v52sane = 0
+                }
+            } else {
+                var _v52ok = abs(_v52w - _cvW) <= 2
+                if !_v52ok, let _v52last = ios15LastSaneContentW, _v52last > 100 {
+                    _v52ok = abs(_v52w - _v52last) <= 2
+                }
+                if !_v52ok {
+                    // 回落: 上一次排版正确时用过的宽度。都没有就用全屏宽减内边距。
+                    _v52w = ios15LastSaneContentW ?? (_cvW - 32)
+                    _v52sane = 0
+                }
+            }
+            if _v52sane != 0, _v52w > 100, abs(_v52w - _cvW) > 2 {
+                ios15LastSaneContentW = _v52w
+            }
+            // [V52-PROBE] 宽度来源诊断 —— 见 MSG_V52_C。
+            do {
+                struct _GLog { static var last: CFTimeInterval = 0 }
+                let _gn = CACurrentMediaTime()
+                if _gn - _GLog.last > 0.5 {
+                    _GLog.last = _gn
+                    NSLog("[V52-GATE] rawW=%.1f frmW=%.1f cvW=%.1f edge=%d sane=%d picked=%.1f len=%d",
+                          superview?.bounds.width ?? -1, _v52frmW, _cvW,
+                          _edgeTouch ? 1 : 0, _v52sane, _v52w, self.textStorage.length)
+                }
+            }
+            let _svW = _v52w
+"""
+    t = t.replace(ANCHOR, NEW, 1)
+    verify_width_sane_gate_v52(t)
+    return t
+
+
+def verify_width_sane_gate_v52(t):
+    """校验 v52-A/B/C —— 独立成函数。"""
+    # ---- 记忆位声明必须存在且是实例属性 ----
+    # ★必须是**实例属性**而不是 `nonisolated(unsafe) static var`:
+    #   净宽是**每个 textView 各自**的排版事实(同一屏可能有 358 和 326 两种
+    #   气泡宽度), 进程级单例会让并存的两种宽度互相污染记忆位。
+    if not re.search(r"^    var ios15LastSaneContentW: CGFloat\?$",
+                     t, re.M):
+        raise RuntimeError(
+            "verify_width_sane_gate_v52: ★记忆位 `ios15LastSaneContentW` "
+            "未声明 —— 注入的 Swift 会引用到不存在的标识符。"
+            "必须是**实例属性**(每 textView 一份), 不能是 static")
+    if "static var ios15LastSaneContentW" in t:
+        raise RuntimeError(
+            "verify_width_sane_gate_v52: 记忆位不能是 static —— "
+            "同屏并存的两种气泡宽度会互相污染")
+
+    for tag in ("// [V52-GATE]", "// [V52-B]", "// [V52-PROBE]"):
+        if t.count(tag) != 1:
+            raise RuntimeError(
+                "verify_width_sane_gate_v52: 标记 %s 计数应为 1, 实为 %d"
+                % (tag, t.count(tag)))
+
+    # ---- B: 原 bounds 读法必须已被替换, 且不得残留 ----
+    if "let _svW = superview?.bounds.width ?? 0" in t:
+        raise RuntimeError(
+            "verify_width_sane_gate_v52: ★`_svW` 仍在读 bounds —— B 没生效。"
+            "注意: 光把新行插在下面而没删旧行, Swift 会因重复声明 `_svW` "
+            "编译失败(而且这个失败信息不指向真正原因)")
+    if "let _svW = _v52w" not in t:
+        raise RuntimeError(
+            "verify_width_sane_gate_v52: ★找不到 `let _svW = _v52w` —— "
+            "新块与后续代码的衔接断了")
+
+    i = t.find("// [V52-B]")
+    if i < 0:
+        raise RuntimeError("verify_width_sane_gate_v52: [V52-B] 段缺失")
+    # 段右界: `let _svW = _v52w` 之后的第一条 v18 原生语句。
+    #
+    # ★不能用 `// [V48-PIN]` 当右界(第一版就是这么写的, 当场被自检拦下):
+    #   V48-PIN 在 v52 块**下方约 60 行**, 中间夹着 v18 原有的
+    #   `textContainer.size.width = _realW` / `frame = _rf` 等写入 ——
+    #   那些是 v18 的既有行为, 不是 v52 干的, 却被算进"闸门段",
+    #   于是「段内零几何写」判据报出 textContainer 宽高(第一版真报出来了)。
+    #   **判据的段边界必须紧贴被测代码**, 宁可窄不可宽: 段开大了会把
+    #   上游合法写入算成自己的罪, 段开小了才会漏判(漏判可由 A2 补齐)。
+    i_end = t.find("var _realW = _svW > 1 ? min(_svW, _cvW) : _cvW", i)
+    if i_end < 0:
+        raise RuntimeError(
+            "verify_width_sane_gate_v52: 段未闭合(找不到 v18 的 `var _realW =` "
+            "收尾行) —— v52 块与后续代码的衔接断了")
+    seg = t[i:i_end]
+    code = _strip_swift_noise(seg)
+
+    # ---- A2: 判据必须齐全, 且**接在 if 头上** ----
+    #
+    # ★本轮被 reverse_v52 的 S4 证伪过一次: 第一版只查这三行**文本存在**,
+    #   而 S4 把 `if !_v52ok, let _v52last = ..., _v52last > 100 {` 换成
+    #   `if !_v52ok {` —— 下面那行 `abs(_v52w - _v52last) <= 2` 纹丝不动,
+    #   判据全绿, 而闸门已经**不再与记忆位比对**了(任何宽度都算健康)。
+    #   ⇒ 纪律: **查「表达式存在」不等于查「判据生效」**, 必须查**数据流**:
+    #     变量得由那个 `if` 守卫, 才有资格参与判断。
+    for pat, why in (
+            ("abs(_v52w - (_cvW - 32)) > 2", "贴边分支的容差判据"),
+            ("abs(_v52w - _v52last) <= 2", "记忆位对照判据"),
+            ("abs(_v52w - _cvW) <= 2", "全宽白名单判据")):
+        if pat not in code:
+            raise RuntimeError(
+                "verify_width_sane_gate_v52: ★%s 不见了 —— 闸门必须在"
+                "三处都留判据, 少一处就会误回落健康帧" % why)
+    for head, why in (
+            ("if _edgeTouch {", "贴边分支"),
+            ("if !_v52ok, let _v52last = ios15LastSaneContentW, _v52last > 100 {",
+             "记忆位对照分支(S4 破坏点: 守卫被摘掉, 判据成死代码)"),
+            ("if !_v52ok {", "回落分支"),
+            ("if _v52sane != 0, _v52w > 100,", "记忆位写入守卫")):
+        if head not in code:
+            raise RuntimeError(
+                "verify_width_sane_gate_v52: ★%s 的 if 头不见了 —— "
+                "判据行还在但守卫没了, 等于**死代码**(与 v38-A 同一个病)"
+                % why)
+
+    # ---- A4: 回流量必须真用记忆位, 不能悄悄改成全屏宽 ----
+    #
+    # ★同样被 S7 证伪: A2 三处判据齐全时, 把 `_v52w = ios15LastSaneContentW
+    #   ?? (_cvW - 32)` 改成 `_v52w = _cvW` 也能过 A2 —— 因为三条判据都还在,
+    #   只是不再被**用**到。那样污染帧会回落到全屏宽 390, 正是 v13/v34
+    #   「超框排版」翻车的形态, 而判据全绿。
+    # ⇒ 纪律: 判据要覆盖**回流的取值来源**, 不只是判据本身在不在。
+    if not re.search(r"_v52w\s*=\s*ios15LastSaneContentW\s*\?\?", code):
+        raise RuntimeError(
+            "verify_width_sane_gate_v52: ★回落已不取记忆位(可能被改成 "
+            "`_v52w = _cvW`)—— 污染帧会回落到全屏宽 390, "
+            "那是 v13/v34 超框排版的翻车形态")
+
+    # ---- A1: 闸门段内只许写 _v52w / 记忆位 / 诊断, 禁碰任何真实几何 ----
+    for pat, why in (
+            (r"textContainer\.size(?:\.\w+)*\s*=", "textContainer 宽高"),
+            (r"\bframe(?:\.\w+)*\s*=\s*[^=]", "frame 写入"),
+            (r"\bbounds(?:\.\w+)*\s*=\s*[^=]", "bounds 写入"),
+            (r"\.origin(?:\.\w+)*\s*=", "origin 写入"),
+            (r"\.invalidateLayout\s*\(", "invalidateLayout"),
+            (r"\.ensureLayout\s*\(", "ensureLayout"),
+            (r"\.setNeedsLayout\s*\(", "setNeedsLayout")):
+        if re.search(pat, code):
+            raise RuntimeError(
+                "verify_width_sane_gate_v52: ★段内出现 %s —— "
+                "闸门是**只读判据 + 回落**, 不许自己动几何" % why)
+
+    # ---- A3: 记忆位只在「闸门放行」时写 ----
+    if not re.search(r"if _v52sane != 0, _v52w > 100,[^\n]*\n"
+                     r"\s*ios15LastSaneContentW = _v52w", code):
+        raise RuntimeError(
+            "verify_width_sane_gate_v52: ★记忆位写入必须以 `_v52sane != 0` 为前提 —— "
+            "否则被回落掉的污染值会污染记忆, 下一帧的对照基准就脏了")
+
+    # ---- C: 诊断字段齐全, 且实参里真的有那个变量 ----
+    #
+    # ★被 reverse_v52 的 S9 证伪: 第一版只查格式串里的 `sane=`, 而 S9 把
+    #   **实参**里的 `_v52sane, ` 删掉(格式符留着) —— 判据全绿, 而探针会
+    #   打出**错位的值**(sane 那个 %d 读到 picked 的浮点数, 按 varargs
+    #   UB 处理, iOS 15 上是乱码甚至崩), 装机日志直接失去判读价值。
+    # ⇒ 纪律: 探针判据必须查**实参**而不只是格式串 —— 格式串在, 不等于
+    #   那个读数还在。
+    for f in ("rawW=", "frmW=", "cvW=", "edge=", "sane=", "picked=", "len="):
+        if f not in seg:
+            raise RuntimeError(
+                "verify_width_sane_gate_v52: 诊断缺字段 %r" % f)
+    for var, why in (("_v52sane,", "sane(闸门是否放行)"),
+                     ("_v52w,", "picked(最终采用的宽)"),
+                     ("_v52frmW,", "frmW(frame 读数)"),
+                     ("_cvW,", "cvW(全屏宽)"),
+                     ("_edgeTouch ? 1 : 0,", "edge(贴边态)")):
+        if var not in seg:
+            raise RuntimeError(
+                "verify_width_sane_gate_v52: ★诊断实参里没有 %s —— 格式符还在, "
+                "但那个读数已经被删了, 装机日志会错位(varargs UB)" % why)
+    if seg.count("NSLog(") != 1:
+        raise RuntimeError(
+            "verify_width_sane_gate_v52: [V52-PROBE] 段内应恰好 1 条 NSLog, "
+            "实为 %d 条" % seg.count("NSLog("))
+    return t
+
+
+def fix_debtguard_snapshot_v52(t):
+    """v52-E: 把 v38-A 从死代码里救活 —— 兜底, 治「新会话第一段就卡」。
+
+    ── 本轮头号发现: v38-A 是一次都没执行过的死代码 ──────────────────
+
+    装机日志三条零命中:
+
+      deferred debt CONSUMED  0 次
+      deferred debt HELD      0 次
+      DeferDebt OWED          0 次
+
+    而 v38-A 自身不打日志(它只是个 `if` + 一次函数调用), 所以「一次没跑」
+    这件事在日志里是**完全静默**的 —— 只有代码结构能揭穿它。
+
+    v18 段里两个 `if` 用的是**同一个判据**, 而且**撑高在前、自愈在后**:
+
+      撑高(v18 原有, 产物 8008):
+        if let _sv = superview, _sv.frame.size.height < _needH - 0.5
+      自愈(v38-A, 产物 8029-8030):
+        let _svH = superview?.frame.size.height, _svH < _needH - 0.5
+
+    ⇒ 判据成立时, 高度**已经在上一行被撑到 `_needH`**, 自愈判据必然为假
+    ⇒ 判据不成立时, 自愈判据也必然为假
+    ⇒ **两个分支都指向「永不执行」**
+
+    代码读起来完全正常, 注释还写着「到这里 _needH 是权威需求高; 上面那段
+    已经尝试把 frame / superview 撑到它」—— 正是这句注释掩盖了问题:
+    撑过了, 所以自愈判据永远看不见「欠账」这个状态。
+
+    ★**我上一轮把锅甩给 SKIP-DEDUPE 是错的。** `storageLen=57 measureW=358
+    tcW=358 lastH=49.0` 那 11 条 SKIP-DEDUPE 是**别的调用者**(流式增量 /
+    复用链 / settle hook)在打, 与 v38-A 无关: v38-A 根本没走到自己借
+    `deferredCorrectionPending` 的那一步, 没资格产生任何日志。
+    **教训: 「某段代码看起来该被调用」不等于「它被调用过」, 判据要落到
+    它自己会产生的那条日志上。** 找不到那条日志, 就该怀疑它没跑,
+    而不是去查它下游的机制。
+
+    ★**这一条同时解释了用户说的「大部分都是新的会话第一段就卡」。**
+    首段定型之后, 唯一可能纠正欠账的那道自愈门**从来就没开过**,
+    于是此后每次 invalidateCell 都被指纹说「和上次一样」跳过。
+
+    ── 修法: 判据用「进入时的旧高度」, 与撑高判据错开 ───────────────
+
+    在测高循环**之前**把 superview 高快照成 `_v52PreSVH`,
+    v38-A 改用这个快照做判据:
+
+        · 撑高前就欠账(375.7 那个 cell: 旧 26.7 / 需 49.0) → 撑高 + 自愈都执行
+        · 撑高前已经够高(v51 之后绝大多数帧)            → 都不执行, 稳态零开销
+
+    ★「判据用旧值不用新值」是这段修法唯一的巧思所在: 它让撑高与自愈在
+      **逻辑上不再互斥**。两者合起来才完整 —— 撑高改的是**结果**
+      (superview.frame), 自愈走的是**诉求**(cell 高度提交链);
+      v18 单靠自己赢不了 SwiftUI 的布局 pass, 缺的正是自愈那一半。
+
+    ── 为什么不给自愈加节流 ───────────────────────────────────────────
+
+    稳态下判据恒假(撑高前就够高), 自然零开销; 欠账态下每次 pass 调一次
+    `invalidateCellSizeIfNeeded` 正是**它该做的事**(提交诉求),
+    而且这条链自带 `[V30-THROTTLE] 120ms` 与 `deferSelfSizing` 双重限流。
+    再叠一层节流只会让纠正更晚, 与本版目的相反。
+    """
+    if "// [V52-DEBT-PRE]" in t:
+        return t
+
+    # ---- 落点 1: 快照。必须在撑高之前, 所以钉在测高那一行之前 ----
+    #
+    # 【锚点为什么是 `let _needH = sizeThatFits(...)` 这一行】
+    # 它是 v18 段里「算需求高」的唯一入口, 语义边界明确, 且必然早于
+    # 8008 的撑高与 8029 的自愈(两者都依赖 _needH)。不能拿撑高那行当锚点:
+    # 那样快照会取到「已经被撑过」的高度, 恰好是本版要避开的东西。
+    SNAP_ANCHOR = """            let _needH = sizeThatFits(CGSize(width: _realW2, height: .greatestFiniteMagnitude)).height
+"""
+    if t.count(SNAP_ANCHOR) != 1:
+        raise RuntimeError(
+            "fix_debtguard_snapshot_v52: 测高行命中 %d 处(期望 1) —— "
+            "v18 段结构变了, 必须更新 SNAP_ANCHOR 后再发版"
+            % t.count(SNAP_ANCHOR))
+
+    SNAP_NEW = """            // [V52-DEBT-PRE] 自愈判据用的**进入时**容器高快照。
+            //
+            // ★为什么必须取在撑高之前: v18 段紧跟着就把容器高撑到 _needH,
+            //   所以下游任何「读当前容器高」的判据都看不到欠账状态 ——
+            //   v38-A 就是这么变成死代码的(见函数 docstring)。把快照提前到
+            //   这里, 撑高与自愈读的是**两个不同时刻的高度**, 于是不再互斥。
+            // 纯只读快照, 不改任何几何。
+            let _v52PreSVH = superview?.frame.size.height ?? 0
+""" + SNAP_ANCHOR
+    t = t.replace(SNAP_ANCHOR, SNAP_NEW, 1)
+
+    # ---- 落点 2: v38-A 判据改用快照 ----
+    #
+    # 只换**判据的数据源**(当前高度 → 进入时快照), 借用 flag 的机制、
+    # 调用时机、还原逻辑全部原样保留 —— 那是 v38-A 已经写对的 part。
+    DEBT_OLD = """            if !_edgeTouch, _needH > 1, textStorage.length > 0,
+               let _svH = superview?.frame.size.height, _svH > 1,
+               _svH < _needH - 0.5 {
+                let _v38WasPending = deferredCorrectionPending"""
+    DEBT_NEW = """            if !_edgeTouch, _needH > 1, textStorage.length > 0,
+               _v52PreSVH > 1,
+               _v52PreSVH < _needH - 0.5 {
+                // [V52-DEBT-PRE] 判据源从「当前容器高」换成「进入时快照」。
+                // 撑高已把容器改到 _needH, 读当前高度永远看不见欠账 ⇒ 这道
+                // 门自 v38-A 注入以来一次都没开过(装机日志 deferred debt
+                // CONSUMED / HELD / DeferDebt OWED 三项全 0 次)。
+                // 诊断: preSVH 是进入时的容器高, needH 是权威需求高, 二者之差
+                // 即被裁掉的末行高度(装机实测 26.7 vs 49.0 ⇒ 差 22.3 ≈ 一行半)。
+                // hits 若恒为 0 ⇒ 快照位置选错了(判据恒假), E 等于没做。
+                struct _V52Log { static var last: CFTimeInterval = 0; static var hits: UInt = 0 }
+                _V52Log.hits &+= 1
+                let _v52Now = CACurrentMediaTime()
+                if _v52Now - _V52Log.last > 0.5 {
+                    _V52Log.last = _v52Now
+                    NSLog("[V52-DEBT] preSVH=%.1f needH=%.1f debt=%.1f hits=%u len=%lu",
+                          _v52PreSVH, _needH, _needH - _v52PreSVH,
+                          _V52Log.hits, UInt(textStorage.length))
+                }
+                let _v38WasPending = deferredCorrectionPending"""
+    if t.count(DEBT_OLD) != 1:
+        raise RuntimeError(
+            "fix_debtguard_snapshot_v52: v38-A 判据块命中 %d 处(期望 1) —— "
+            "v38-A 结构变了, 必须更新 DEBT_OLD 后再发版"
+            % t.count(DEBT_OLD))
+    t = t.replace(DEBT_OLD, DEBT_NEW, 1)
+
+    verify_debtguard_snapshot_v52(t)
+    return t
+
+
+def verify_debtguard_snapshot_v52(t):
+    """校验 v52-E —— 独立成函数。"""
+    if t.count("// [V52-DEBT-PRE]") != 2:
+        raise RuntimeError(
+            "verify_debtguard_snapshot_v52: [V52-DEBT-PRE] 标记应为 2 处"
+            "(快照 + 判据), 实为 %d 处" % t.count("// [V52-DEBT-PRE]"))
+
+    # ---- 快照必须在测高之前, 且是只读 ----
+    i_snap = t.find("// [V52-DEBT-PRE]")
+    i_need = t.find("let _needH = sizeThatFits(CGSize(width: _realW2,", i_snap)
+    if i_need < 0:
+        raise RuntimeError(
+            "verify_debtguard_snapshot_v52: 快照之后找不到测高行 —— "
+            "快照必须早于测高, 否则拿到的已是撑过的高度")
+    seg_snap = t[i_snap:i_need]
+    if "let _v52PreSVH = superview?.frame.size.height ?? 0" not in seg_snap:
+        raise RuntimeError(
+            "verify_debtguard_snapshot_v52: 快照变量定义缺失或不在测高之前")
+    # 快照段内零几何写
+    for pat, why in (
+            (r"\bframe(?:\.\w+)*\s*=\s*[^=]", "frame 写入"),
+            (r"\bbounds(?:\.\w+)*\s*=\s*[^=]", "bounds 写入"),
+            (r"\.invalidateLayout\s*\(", "invalidateLayout"),
+            (r"\.setNeedsLayout\s*\(", "setNeedsLayout")):
+        if re.search(pat, seg_snap):
+            raise RuntimeError(
+                "verify_debtguard_snapshot_v52: ★快照段内出现 %s —— "
+                "快照必须是纯只读" % why)
+
+    # ---- 判据必须已改用快照, 且旧的「读当前高度」写法不得残留 ----
+    # 段起点: 条件行在第二个 [V52-DEBT-PRE] 标记**之前**(标记在 if 体内部),
+    # 所以必须往上回退到 `if !_edgeTouch` 那一行, 否则段切窄了会漏掉判据 ——
+    # 「段太宽会误伤上游代码」已由右界收紧解决, 「段太窄会漏判」只能靠起点回退。
+    i_debt = t.find("// [V52-DEBT-PRE]", i_need)
+    if i_debt < 0:
+        raise RuntimeError(
+            "verify_debtguard_snapshot_v52: 判据段缺失 —— "
+            "v38-A 块没被找到, 结构可能变了")
+    i_start = t.rfind("if !_edgeTouch, _needH > 1, textStorage.length > 0,",
+                      i_need, i_debt)
+    if i_start < 0:
+        raise RuntimeError(
+            "verify_debtguard_snapshot_v52: 判据段的 if 头没找到 —— "
+            "段起点比标记还早, 段切错了")
+    # 段右界用下游紧邻的稳定锚点, 不用 [V48-PIN](它在更下方, 会把 v18
+    # 原有代码算进本段 —— 同一个坑, verify_width_sane_gate_v52 第一版踩过)。
+    i_end = t.find("if _didFix {", i_debt)
+    if i_end < 0:
+        raise RuntimeError(
+            "verify_debtguard_snapshot_v52: 判据段未闭合(找不到 v18 的 "
+            "`if _didFix {` 收尾行) —— v38-A 块结构可能变了")
+    seg = t[i_start:i_end]
+
+    if "let _svH = superview?.frame.size.height" in seg:
+        raise RuntimeError(
+            "verify_debtguard_snapshot_v52: ★判据仍在读**当前**容器高 —— "
+            "撑高已把它改到 _needH, 这道门就还是死的(那正是 v38-A 失效的原因)")
+    if "_v52PreSVH < _needH - 0.5" not in seg:
+        raise RuntimeError(
+            "verify_debtguard_snapshot_v52: ★判据未改用快照 `_v52PreSVH` —— "
+            "E 没有生效")
+
+    # ---- 借用 flag 的机制必须原样保留(那是 v38-A 已写对的部分) ----
+    for pat, why in (
+            ("let _v38WasPending = deferredCorrectionPending",
+             "旧 pending 值的保存"),
+            ("deferredCorrectionPending = true", "置位以绕指纹早退"),
+            ("invalidateCellSizeIfNeeded()", "真正的诉求侧提交"),
+            ("deferredCorrectionPending = _v38WasPending", "用完还原")):
+        if pat not in seg:
+            raise RuntimeError(
+                "verify_debtguard_snapshot_v52: ★%s 不见了 —— "
+                "v38-A 的借用机制是已验证可用的部分, 只该换判据源, 不该动它"
+                % why)
+
+    # ---- 诊断字段 ----
+    for f in ("preSVH=", "needH=", "debt=", "hits=", "len="):
+        if f not in seg:
+            raise RuntimeError(
+                "verify_debtguard_snapshot_v52: 诊断缺字段 %r" % f)
+    if seg.count("NSLog(") != 1:
+        raise RuntimeError(
+            "verify_debtguard_snapshot_v52: 判据段应恰好 1 条 NSLog, "
+            "实为 %d 条" % seg.count("NSLog("))
+    return t
+
+
 def fix_width_source_unify_v50(t):
     """v50-A': attachmentBounds 与测高链读同一个宽度源 —— 治滑动时卡字。
 
@@ -7554,6 +8145,18 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_sync_v34, "v34: 渲染宽回归 superview 基准(过渡态免疫) + 渲染/测高共享 ios15LastRenderContentW — 修整体缩小/不贴边/闪屏(log10-03: tcW 390×27/326×25 交替, v33 公式过渡态双重扣减)")
     edit_glob("**/iOS15Compat.swift", fix_hosting_fullwidth_v35, "v35: hosting 视图/内容改回全屏宽(不再 -32) — 根治整体缩小/气泡不贴边/终端框折叠(v22/v24 把整个 cell 硬钉 358, 而 cell 应全宽 390)")
     edit_glob("**/iOS15Compat.swift", fix_hosting_track_parent_v36, "v36: hosting 视图宽从写死屏宽改为与父等宽 — 修'气泡差一点贴边'(UIScreen 常量 != collectionView 实测宽)")
+    # ★v52 必须排在 v32 之后。**踩坑记录**: 我第一版把 v52 插在 v51-C 之后
+    # (按版本号直觉), 结果 v32 的 `RENDER_OLD` 锚点
+    # `let _svW = superview?.bounds.width ?? 0` 命中 0 处直接炸。
+    # 原因: 注册顺序**不等于版本号顺序** —— v32 排在 main() 末尾(8095),
+    # 比 v47~v51 都晚。而 v52-B 要替换的正是 v32/v34 反复改写的**那同一行**。
+    # ⇒ 纪律: 锚点顺序按 **main() 里的实际行号**判, 不按版本号大小猜。
+    # 验证过 v51 跑完之后产物里 `let _svW`(8117) 与 `var _realW`(8125) 都在,
+    # 两处形态与 v52 的锚点一致。
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_width_sane_gate_v52,
+         MSG_V52_AB)
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_debtguard_snapshot_v52,
+         MSG_V52_E)
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")

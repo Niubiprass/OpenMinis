@@ -62,6 +62,7 @@ CHECKS = [
     ("v49 作用域+12 sab", "reverse_v49_scope.py",  "swift", []),
     ("v50 判据(三层)+18 sab", "ci_assert_v50.py",  "root",  []),
     ("v51 判据(三层)+12 sab", "ci_assert_v51.py",  "root",  []),
+    ("v52 判据(三层)+15 sab", "ci_assert_v52.py",  "root",  []),
 ]
 
 # 最近四代(v47/v48/v49/v50)的判据与反向测试是当前承重墙, 必须全绿。

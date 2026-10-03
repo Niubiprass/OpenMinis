@@ -1040,7 +1040,7 @@ jobs:
 
           echo "::endgroup::"
 
-          echo "::group::断言52: 全版本判据回归 (v41~v51 判据 + v47/v48 反向 + v49/v50/v51 sabotage)"
+          echo "::group::断言52: 全版本判据回归 (v41~v52 判据 + v47/v48 反向 + v49/v50/v51/v52 sabotage)"
           set +e
           python3 "$SCRIPT_DIR/ios15_verify/regress_all_v.py" . 2>&1 | tee /tmp/regress_all_v.out
           _rc=${PIPESTATUS[0]}
@@ -1127,6 +1127,74 @@ jobs:
           fi
           echo "::endgroup::"
 
+          # ---- 断言 55: v52 就位 (A+B 宽度合理性闸门 + C 宽度来源探针 + E 欠账自愈快照)----
+          # 【v51 装机的三次转折 —— 全部有日志铁证, 无一处靠猜】
+          #
+          # ① **v51-A 生效了, 但它不是根因。**
+          #    V51-FRAMEPIN `fvW=tcW=svW=358` 占 **143/146 零例外**
+          #    ⇒ v50 那个「画字视图比父容器宽 32pt」彻底消失
+          #    ⇒ 而用户症状**一字未改** ⇒ 换靶。
+          #
+          # ② **新靶是宽度 375.7。**
+          #    v50 日志 **0 次** / v51 日志 **61 次**, 全集中在 `len=57` 那一个 cell。
+          #    v18 段 `min(_svW, _cvW)`(_cvW 恒 390)把 375.7 **当成净宽**;
+          #    该宽下排 1 行(tcH=18.7), 按 358 排需 2 行(needH=49.0)
+          #    ⇒ `V41-DEBT svH=26.7 needH=49.0 debt=22.3 hits=6 svW=375.7` 反复欠账
+          #    ⇒ 屏幕上就是「一段话的最后一行被裁」(22.3pt ≈ 一行半)。
+          #    旁证: `size=358.0x18.7` 出现 23 次(358 宽下容器被压到一行高)。
+          #
+          #    三条排除法确认它是**过渡态**而非合法布局宽:
+          #      · `insetL` 全日志 **102 条恒 0.0** ⇒ 不是内边距算出来的
+          #      · `390 - 375.7 = 14.3` ⇒ 不是任何整数边距
+          #      · 首次出现前 5ms 恰有 `REJECT-NAN-INF-NEG size=0.0x-8.0`(全日志 77 次)
+          #        ⇒ 那一瞬 superview 几何是脏的
+          #
+          # ③ **v38-A 是一次都没跑过的死代码(本版头号发现)。**
+          #    装机日志三条零命中: `deferred debt CONSUMED` 0 / `deferred debt HELD` 0 /
+          #    `DeferDebt OWED` 0。而 v38-A 自己不打日志 ⇒ 「一次没跑」在日志里**完全静默**。
+          #    代码结构给出原因(详见下面断言 38 的注释)。
+          #    ★这一条同时解释了用户说的「大部分都是**新的会话第一段**就卡」:
+          #      首段定型之后, 唯一可能纠正欠账的那道自愈门**从来就没开过**。
+          #
+          # 【本轮两次自我纠正 —— 都留了痕, 因为都是"看起来很像因果"的假关系】
+          #   (1) **B 的理由是错的**: 我最初说「frame 恒 358 而 bounds 偶发 375.7」。
+          #       装机日志核对后不成立 —— V41-DEBT 读的正是 frame.size.width, 也报 375.7
+          #       ⇒ frame 同样被污染, B 单独做无效。
+          #       B 保留的价值是**同源**: 与 `_svf0`(superview?.frame)读同一字段。
+          #       ⇒ 纪律: 修法若建立在某个读数差异上, **先确认那两个读数来自不同字段**。
+          #   (2) **「v38-A 被 SKIP-DEDUPE 吞了」是错的**。
+          #       `storageLen=57 measureW=358 tcW=358 lastH=49.0` 那 11 条 SKIP-DEDUPE
+          #       是**别的调用者**(流式增量/复用链/settle hook)在打, 与 v38-A 无关。
+          #       ⇒ 纪律: **「某段代码看起来该被调用」不等于「它被调用过」**;
+          #         判据要落到**它自己会产生的那条日志**上; 找不到就去查它下游的机制
+          #         是错的找法。
+          echo "::group::断言55: v52 就位 (A+B: 拦 375.7 瞬时污染宽; C: 宽度来源探针; E: 把 v38-A 从死代码救活)"
+          if grep -q "fix_width_sane_gate_v52" "$SCRIPT_DIR/ios15_fallback.py" \
+             && grep -q "fix_debtguard_snapshot_v52" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v52.py" . ; then
+              echo "✅ v52 就位 (★v51-A 生效但非根因: fvW=tcW=svW=358 占 143/146 零例外, 而症状一字未改 ⇒ 换靶。新靶宽度 375.7: v50 日志 0 次 / v51 日志 61 次, 全在 len=57 一个 cell; v18 的 min(_svW,_cvW)(_cvW 恒 390)把它当成净宽 ⇒ 该宽排 1 行(tcH=18.7)、按 358 排需 2 行(49.0) ⇒ V41-DEBT svH=26.7 needH=49.0 debt=22.3 hits=6 = 「最后一行被裁」。三条排除法确认是过渡态: insetL 全日志 102 条恒 0.0(不是内边距)、390-375.7=14.3(不是整数边距)、首现前 5ms 恰有 REJECT-NAN-INF-NEG size=0.0x-8.0(全日志 77 次, 那一瞬几何是脏的)。A 闸门规则: 候选宽必须接近「上次已知良好宽」或「全屏宽」, 否则回落到 ios15LastSaneContentW(新记忆位, 只记放行过的值)—— 回落目标是**上一次排版正确时用过的宽**, 不是全屏宽 390(那是 v13/v34 超框翻车形态)。健康帧上闸门恒真(358 在白名单里), 稳态零行为变化。B 改读 frame 的独立价值是**与 _svf0 同源**(我原以为 frame 恒 358 而 bounds 偶发 375.7, 装机日志核对后不成立 —— V41-DEBT 读的就是 frame.size.width, 也报 375.7 ⇒ frame 同样被污染, B 单独做无效)。C 探针七字段 rawW/frmW/cvW/edge/sane/picked/len: rawW vs frmW 相同 ⇒ B 无额外价值责任全在 A; 不同 ⇒ B 确实拦下了 A 拦不掉的帧。★E 是本版头号发现: v38-A **一次都没跑过**(deferred debt CONSUMED 0 / HELD 0 / DeferDebt OWED 0), 而它自己不打日志 ⇒ 静默。原因是 v18 段两个 if 用**同一个判据**且撑高在前(产物 8008 的 _sv.frame.size.height < _needH - 0.5 vs 8029 的 _svH < _needH - 0.5)⇒ 判据成立时高度已被撑到 _needH, 自愈判据必然为假; 不成立时也必然为假 ⇒ 两个分支都指向永不执行。修法: 快照取在测高**之前**, 判据用旧高度 ⇒ 撑高与自愈读两个时刻, 逻辑上不再互斥; 撑高改的是**结果**(superview.frame), 自愈走的是**诉求**(cell 高度提交链), v18 单靠自己赢不了 SwiftUI 布局 pass, 缺的正是自愈那一半。★这一条同时解释了「大部分都是新的会话第一段就卡」。★三层判据: core(A 三处判据+守卫/回流量取记忆位/段内零几何写 + E 快照在测高前/判据用快照/借用 flag 机制保留) + scope(编译级 6 组) + sab(15 条)。★本轮判据被自己的 sabotage 证伪两次: S4 摘掉 if 守卫而判据行还在(死代码却全绿) ⇒ 判据改为查**数据流**; S9 删实参留格式符(打出来是错位 varargs) ⇒ 改为查实参。★装机判据: [V52-GATE] sane=0 的帧应 >0(恒 0 ⇒ 闸门没在工作, 或 375.7 已不再出现, 那要重找根因)、picked 应恒 358、[V52-DEBT] hits 应 >0(恒 0 ⇒ 快照位置选错, E 等于没做)、V41-DEBT 应零条)"
+            else
+              echo "❌ v52 异常 (见上方 ci_assert_v52.py 的 core/core/scope/sab 四行)"
+              echo "   —— ★core A BAD: 三处判据任一被摘(闸门会误回落健康帧); 记忆位写入失去"
+              echo "      sane 前提(污染值进记忆, 下一帧基准就脏); 回流量不再取记忆位"
+              echo "      (退化成全屏宽 390 = v13/v34 超框翻车); 或段内出现几何写"
+              echo "      (闸门是只读判据+回落, 自己动几何就是与 SwiftUI 争布局)"
+              echo "   —— ★core E BAD: 判据仍读**当前**容器高 ⇒ 撑高已把它改到 _needH,"
+              echo "      这道门又变回死代码(S12 就是这个破坏); 或快照不在测高之前;"
+              echo "      或借用 deferredCorrectionPending 的机制被删 —— 自愈退化成空动作"
+              echo "   —— ★scope BAD: **编译会失败**。含 ?. 的实参未 ?? 解包就进 NSLog 变参;"
+              echo "      记忆位声明成 static 会让同屏 358/326 两种气泡互相污染"
+              echo "   —— sab BAD: 判据自身拦不住本轮真实踩过的坑 ⇒ 判据是废的"
+              exit 1
+            fi
+          else
+            echo "❌ v52 缺失 —— 375.7 这类瞬时污染宽仍被当成净宽, 排成 1 行而 cell 按 2 行记高,"
+            echo "   差 22.3pt ≈ 一行半被裁 =「一段话最后一段被裁」; 且 v38-A 仍是死代码,"
+            echo "   首段定型后再无任何纠正机会 =「新的会话第一段就卡」"
+            exit 1
+          fi
+          echo "::endgroup::"
+
           echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
           # 病根A 实证 (minis-2026-10-03 6.log):
           #   04:55:03.045 FIRST-MEASURE CORRECTION cellH=1591.7 newH=1748.0
@@ -1135,15 +1203,27 @@ jobs:
           #   poll=true 19 次且 sv0 高度恒定 1299.67 = v18 直接改 frame 赢不了 SwiftUI 布局 pass, 无限拉锯。
           # 修法: 在 v18 已算出_needH 的当口, 若 superview 仍欠账则走 invalidateCellSizeIfNeeded
           #       提交"布局诉求"(借 deferredCorrectionPending 绕过 SKIP-DEDUPE 指纹早退)。
+          # ★v52 更新(20261004): 判据源从「读当前 superview 高」改成
+          #   「读进入时快照 _v52PreSVH」。**这不是降级, 是把死代码救活** ——
+          #   装机日志证明 v38-A 一次都没跑过: `deferred debt CONSUMED` 0 次、
+          #   `deferred debt HELD` 0 次、`DeferDebt OWED` 0 次。原因就在这两行:
+          #   撑高(v18 原有, 产物 8008)与自愈(v38-A, 产物 8029)用的是
+          #   **同一个判据** `_sv.frame.size.height < _needH - 0.5`, 且撑高在前
+          #   ⇒ 判据成立时高度已被撑到 _needH, 自愈判据必然为假;
+          #   判据不成立时自愈判据也必然为假。**两个分支都指向永不执行。**
+          #   快照取在测高之前 ⇒ 撑高与自愈读两个不同时刻的高度, 不再互斥。
+          # ⇒ 所以这里查 `_v52PreSVH < _needH - 0.5`, 而不再是 `_svH < ...`。
           if grep -q "V38A-HEIGHTDEBT" src/ios/Views/Chat/SelectableMarkdownView.swift \
-             && grep -q "_svH < _needH - 0.5" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "_v52PreSVH < _needH - 0.5" src/ios/Views/Chat/SelectableMarkdownView.swift \
              && grep -q "invalidateCellSizeIfNeeded()" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             # 反向断言: 注入点必须唯一 —— 插到多处会导致每个 layout pass 都重测, 反而更卡。
-            _v38a_n=$(grep -c "_svH < _needH - 0.5" src/ios/Views/Chat/SelectableMarkdownView.swift || true)
-            if [ "$_v38a_n" = "1" ]; then
-              echo "✅ v38-A 高度欠账自愈已就位 (欠账时强制走 cell 高度提交链, 收敛后自动停)"
+            _v38a_n=$(grep -c "_v52PreSVH < _needH - 0.5" src/ios/Views/Chat/SelectableMarkdownView.swift || true)
+            # 旧判据不许残留: 残留 = 判据换了一半, 两处会同时触发。
+            _v38a_old=$(grep -c "_svH < _needH - 0.5" src/ios/Views/Chat/SelectableMarkdownView.swift || true)
+            if [ "$_v38a_n" = "1" ] && [ "$_v38a_old" = "0" ]; then
+              echo "✅ v38-A 高度欠账自愈已就位 (判据用进入时快照, 与撑高判据不再互斥 —— 装机日志三项零命中证明它此前是死代码)"
             else
-              echo "❌ v38-A 注入点 $_v38a_n 处 (应恰好 1 处) —— 多处注入会每pass 重复重测, 卡顿加重!"
+              echo "❌ v38-A 注入点 $_v38a_n 处 / 旧判据残留 $_v38a_old 处 (应 1 / 0) —— 多处注入每pass 重复重测卡顿加重; 旧判据残留则两处同时触发"
               exit 1
             fi
           else
