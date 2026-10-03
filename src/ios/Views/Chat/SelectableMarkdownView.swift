@@ -5721,6 +5721,41 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 // 补完立刻交棒: 下面的宽度修正必须基于新高度继续, 不能return。
                 f = _hFix
             }
+            // [V45-TVHFIX] 补高**补到画字的那个视图上** — 见函数 docstring。
+            //
+            // v44 归因(log13, 53 条零例外): 假设 A 命中 44/53, 假设 B 被彻底
+            // 排除(svAfter == needH 全成立)。真凶是**补错了对象**:
+            // v41~v44 一路补的都是 superview(sv.frame), 而画字的是
+            // UITextView 自己(self.frame)。实测 tvH=912.7 而 svAfter=needH=
+            // 1136.3 —— 外层补到位了, 内层矮 223.6pt, 多出来的是空壳,
+            // 有字的地方被自己的 bounds 裁掉。这就是"下面一小片空白 + 字卡一半"。
+            //
+            // 【只动高度, 绝不碰 origin/width】宽度由 v18/v34 那一族经
+            // ios15LastSaneSVFrame 精心维护, 在这里碰它等于绕过那套状态机
+            // (v13/v34 都因抢宽引起过闪屏/整体缩小)。所以判据与写入都只涉
+            // size.height, 语义严格限定为"给这个视图更多竖直空间"。
+            //
+            // needH 是本闭包按抢回后净宽算出的权威需求高(v43-A 起
+            // _v42TCW = max(200, cvW-32)), 补到它即同时覆盖 v44 假设 C 的
+            // 虚高差额, C 无需单独代码。连续多帧时 tvH >= needH 让条件自然
+            // 转 false, 幂等不反复写。
+            do {
+                if _v42Need > 1, self.frame.size.height + 0.5 < _v42Need {
+                    var _tvf = self.frame
+                    _tvf.size.height = _v42Need
+                    self.frame = _tvf
+                    struct _TvhLog { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                    let _tvhNow = CACurrentMediaTime()
+                    if _tvhNow - _TvhLog.last > 0.5 {
+                        _TvhLog.last = _tvhNow
+                        _TvhLog.n &+= 1
+                        NSLog("[V45-TVHFIX] tvH %.1f -> needH %.1f debt %.1f tvW %.1f svH %.1f len %d n %u",
+                              f.size.height, _v42Need, _v42Need - f.size.height,
+                              self.frame.size.width, obj.frame.size.height,
+                              _v42Len, _TvhLog.n)
+                    }
+                }
+            }
             // [V44-TEXTFRAME] 见函数 docstring: v41/v42/v43 三轮都在猜"高度够不够",
             // 这一条把三个候选根因一次打完, 不改任何行为。
             //
