@@ -1260,22 +1260,43 @@ jobs:
           #   C2    : 三条短路各加 `!v53DebtIsRipe` 守卫; CONSUMED 判据改成
           #           「cell 实际高达标」才算还清, 否则保持 pending 并打 [V53-HOLD]
           #   FIRST : settle 入口从 flag-only 改成 `flag || 仍欠账`
+          # ★v53.1 修 run#127: 断言 56 的 echo 文案里用了 markdown 反引号,
+          #   bash 在双引号内会把它当**命令替换**执行, 于是
+          #   `applyCellCorrection()` 的括号闭合不了命令替换 ——
+          #   整个 step 在 line 1052 报 syntax error, exit 2, CI 红。
+          #   而 v52 同一位置 0 个反引号, 所以它一直没事。
+          # ⇒ 纪律: **判据「全绿」不等于脚本能跑**。判据是 python, 跑在
+          #   它前后的 shell 才是真正执行体; 这次红的原因不在任何判据里,
+          #   �� v52/v53 判据本地全绿也照样红。
+          # ⇒ 修法: (1) echo 文案一律用直角引号「」, 禁用反引号;
+          #        (2) 提交前必须 `bash -n` 过一遍每个 run 块。
+          if python3 "$SCRIPT_DIR/ios15_verify/bash_syntax_check.py" \
+               "$GITHUB_WORKSPACE/.github/workflows/port-and-build.yml" ; then
+            :
+          else
+            echo "❌ workflow 的 run 块有 bash 语法错—— 判据再全绿也没用:"
+            echo "   shell 解析不过, 根本执行不到判据(run#127 就是这么红的:"
+            echo "   断言 56 的 echo 文案里用了 markdown 反引号, bash 在双引号内"
+            echo "   把它当命令替换, `applyCellCorrection()` 的括号闭不上)"
+            echo "   ⇒ echo 文案一律用直角引号「」; 改完必须 bash -n 过一遍"
+            exit 1
+          fi
           echo "::group::断言56: v53 就位 (C-2 治高度欠账凝固 + C-1 破记忆位死锁 + 首段专项 + 短路三来源探针)"
           if grep -q "fix_shortcircuit_probe_v53" "$SCRIPT_DIR/ios15_fallback.py" \
              && grep -q "fix_memgate_deadlock_v53" "$SCRIPT_DIR/ios15_fallback.py" \
              && grep -q "fix_debtgate_verifiable_v53" "$SCRIPT_DIR/ios15_fallback.py" \
              && grep -q "fix_first_para_settle_v53" "$SCRIPT_DIR/ios15_fallback.py" ; then
             if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v53.py" . ; then
-              echo "✅ v53 就位 (★v52 把 cell 侧欠账量出来了却治不了: `deferred debt CONSUMED` 打印 **105 次** 而同一 tick 的 `preSVH` 恒为 1004.0(欠 268.3pt ≈ 8 行)—— 因为 `applyCellCorrection()` 返回 true 只证明 clearCachedHeight()+invalidateLayout() **调用成功**, 不证明高度真改了。而 `preferredLayoutAttributesFitting` 里有**三条**高度短路, A(dedup) 在所有其它短路之前无条件生效 ⇒ invalidate 之后立刻把同一个欠账值又返回回来, 自锁。P 探针回答「1004 从哪条短路回来的」: [V53-SHORT] 四计数 dedup/window/seeded/live, 若 dedup 远大于 window+seeded ⇒ A 吞掉全部。C2 修法: 三条短路各加 `!v53DebtIsRipe` 守卫(欠账 > 1pt 且**已持续一帧以上**才放行, 首帧仍走短路以免每个 cell 立刻重测造成滑动卡顿), 欠账由 E 判据处 `_v53ReportDebtToCell(needH - preSVH)` 上报 —— 那是**唯一知道差值的地方**, 不送出去三条短路永远无从判断; CONSUMED 判据改成「cell 实际高达标(误差 1pt 内)」才算还清, 达不到保持 pending 交给下一 pass(那时计数已 >=2, 短路已放行)。★C1 修 v52 的记忆位死锁: sane=1 **0/96**、edge=0 **96/96** 证明闸门从未放行过、贴边分支一次没进过 —— 记忆位只在 sane!=0 时写, 而 358 要被认定放行必须先与记忆位比对, 记忆位初始 nil ⇒ 358 永比对失败 ⇒ 每帧回落 cvW-32 ⇒ sane 恒 0 ⇒ 记忆位永远得不到第一次写入。**375.7 归零靠的是「无条件回落」这个硬编码, 不是记忆位** ⇒ 闸门退化成常量 358 强制器, 气泡型 cell(真实净宽 326)会被误伤成 358 而超框。修法: `_v53memW` 独立判据 + `guard _v52ok` 拒绝污染宽度(375.7 的 dev=14.3 落在 [1, cvW*0.5] 区间内, 光靠区间判据会被当成真实布局宽写进记忆位 ⇒ 下一帧回落目标变 375.7 ⇒ 污染复活; 这条约束是写判据时才发现并当场补上的)。★FIRST 修「每次新对话第一段总是卡」: len=56 那条从第 1 帧到第 168 帧 preSVH=61.3 needH=83.3 debt=22.0 **恒定不变**(22pt ≈ 半行 = 录屏 f_010 里第二行只剩上半)。根因是 settle 入口 `guard deferredCorrectionPending` 与 v52 的 CONSUMED 判据互杀 —— 后者提前清了 flag, 前者就把视图挡在门外。改法: 判据源换成「**cell 是否真的欠账**」(当场 sizeThatFits 测出来), flag 只作或项。代价可控: 只在「settle 时刻 + 确实欠账 > 1pt」时做一次真实测量。★三层判据: core(P 三来源探针 + C1/C2 放行与判据 + FIRST 入口) + scope(编译级 5 组: 跨文件可见性/NSLog 变参可选类型/占位符配平/段内零几何写/字段作用域) + sab(**14 条, 本轮把 S13/S14 两条漏网修掉了** —— S13 探针改 `copy.size.height` 右值只抓 return 关键字抓不到, 改为锁死赋值右值; S14 把多行 if 条件的 `,` 换成 `{` 后 `!v53DebtIsRipe` 文本仍在计数仍是 3, 改为查「守卫前一行(剥注释后)必须以 `,` 结尾」)")
+              echo "✅ v53 就位 (★v52 把 cell 侧欠账量出来了却治不了: 「deferred debt CONSUMED」 打印 **105 次** 而同一 tick 的 「preSVH」 恒为 1004.0(欠 268.3pt ≈ 8 行)—— 因为 「applyCellCorrection()」 返回 true 只证明 clearCachedHeight()+invalidateLayout() **调用成功**, 不证明高度真改了。而 「preferredLayoutAttributesFitting」 里有**三条**高度短路, A(dedup) 在所有其它短路之前无条件生效 ⇒ invalidate 之后立刻把同一个欠账值又返回回来, 自锁。P 探针回答「1004 从哪条短路回来的」: [V53-SHORT] 四计数 dedup/window/seeded/live, 若 dedup 远大于 window+seeded ⇒ A 吞掉全部。C2 修法: 三条短路各加 「!v53DebtIsRipe」 守卫(欠账 > 1pt 且**已持续一帧以上**才放行, 首帧仍走短路以免每个 cell 立刻重测造成滑动卡顿), 欠账由 E 判据处 「_v53ReportDebtToCell(needH - preSVH)」 上报 —— 那是**唯一知道差值的地方**, 不送出去三条短路永远无从判断; CONSUMED 判据改成「cell 实际高达标(误差 1pt 内)」才算还清, 达不到保持 pending 交给下一 pass(那时计数已 >=2, 短路已放行)。★C1 修 v52 的记忆位死锁: sane=1 **0/96**、edge=0 **96/96** 证明闸门从未放行过、贴边分支一次没进过 —— 记忆位只在 sane!=0 时写, 而 358 要被认定放行必须先与记忆位比对, 记忆位初始 nil ⇒ 358 永比对失败 ⇒ 每帧回落 cvW-32 ⇒ sane 恒 0 ⇒ 记忆位永远得不到第一次写入。**375.7 归零靠的是「无条件回落」这个硬编码, 不是记忆位** ⇒ 闸门退化成常量 358 强制器, 气泡型 cell(真实净宽 326)会被误伤成 358 而超框。修法: 「_v53memW」 独立判据 + 「guard _v52ok」 拒绝污染宽度(375.7 的 dev=14.3 落在 [1, cvW*0.5] 区间内, 光靠区间判据会被当成真实布局宽写进记忆位 ⇒ 下一帧回落目标变 375.7 ⇒ 污染复活; 这条约束是写判据时才发现并当场补上的)。★FIRST 修「每次新对话第一段总是卡」: len=56 那条从第 1 帧到第 168 帧 preSVH=61.3 needH=83.3 debt=22.0 **恒定不变**(22pt ≈ 半行 = 录屏 f_010 里第二行只剩上半)。根因是 settle 入口 「guard deferredCorrectionPending」 与 v52 的 CONSUMED 判据互杀 —— 后者提前清了 flag, 前者就把视图挡在门外。改法: 判据源换成「**cell 是否真的欠账**」(当场 sizeThatFits 测出来), flag 只作或项。代价可控: 只在「settle 时刻 + 确实欠账 > 1pt」时做一次真实测量。★三层判据: core(P 三来源探针 + C1/C2 放行与判据 + FIRST 入口) + scope(编译级 5 组: 跨文件可见性/NSLog 变参可选类型/占位符配平/段内零几何写/字段作用域) + sab(**14 条, 本轮把 S13/S14 两条漏网修掉了** —— S13 探针改 「copy.size.height」 右值只抓 return 关键字抓不到, 改为锁死赋值右值; S14 把多行 if 条件的 「,」 换成 「{」 后 「!v53DebtIsRipe」 文本仍在计数仍是 3, 改为查「守卫前一行(剥注释后)必须以 「,」 结尾」)"
             else
               echo "❌ v53 异常 (见上方 ci_assert_v53.py 的 core×3/scope/sab 四行)"
               echo "   —— ★core P BAD: 三条短路没各埋一次探针, 或探针**改动了返回值** ——"
               echo "      P 是只读诊断, 一旦它改了 copy.size.height, 装机日志的三来源"
               echo "      计数就不可信了(短路的高度被探针自己改了)"
-              echo "   —— ★core C1/C2 BAD: 三条短路里有一条没加 `!v53DebtIsRipe` ⇒ 那一路"
+              echo "   —— ★core C1/C2 BAD: 三条短路里有一条没加 「!v53DebtIsRipe」 ⇒ 那一路"
               echo "      仍能把欠账高度返回回去, preSVH 继续卡在 1004.0; 或守卫被写成"
-              echo "      独立语句(多行 if 提前闭合)⇒ 文本在、语义不在; 或 `_v53memW`"
-              echo "      没用 `guard _v52ok` 拒污染 ⇒ 375.7 进记忆位, v52 归零的污染复活; 或"
+              echo "      独立语句(多行 if 提前闭合)⇒ 文本在、语义不在; 或 「_v53memW」"
+              echo "      没用 「guard _v52ok」 拒污染 ⇒ 375.7 进记忆位, v52 归零的污染复活; 或"
               echo "      CONSUMED 判据没改成「cell 实际高达标」⇒ 又一次宣告没落地的纠正"
               echo "   —— ★core FIRST BAD: settle 入口仍是 flag-only ⇒ 已空转耗尽的那批"
               echo "      视图永远等不到纠正 = 「每次新对话第一段总是卡字」"
