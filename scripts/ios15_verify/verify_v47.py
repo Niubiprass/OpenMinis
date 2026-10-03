@@ -160,11 +160,41 @@ ck("回写在 ensureLayout 之后的同一 if 块内(碎片定型之后才记)",
 
 # ---- 4. ★纯宽度: 不得新增任何宽度写入点 ----
 #    v13/v34 曾因抢宽引起闪屏与整体缩小 —— 新增宽度写入点是那条老路。
+#
+# ★★ 计数必须先于 find(run#118 暴露, 与 ios15_fallback.verify_width_reflow_v47
+#    同款修正): _i47/_i47b 是 find() 抓的**前两个**标记。文件里一旦多出第三
+#    个 `// [V47-REWRAP]`(反向测试 C3 就干这个), "第二个"会变成那个多出来
+#    的, 于是下面的段切片横跨 v48 的钉宽写入, 报出一条与 sabotage 意图无关的
+#    "段内出现宽度写入"。判据照样拦住了(不是漏放), 但反向测试的措辞断言
+#    对不上, run#118 的断言 52 就被这条假"漏放"顶红。
+#    ⇒ 顺序纪律: 先用计数锁死标记集合, 再用 find 取位置。
+ck("V47-REWRAP 标记恰好 2 处(多出第 3 个会让下面的 find 抓错段)",
+   t.count("// [V47-REWRAP]") == 2,
+   "实际 %d 处" % t.count("// [V47-REWRAP]"))
 _i47 = t.find("// [V47-REWRAP]")
 _i47b = t.find("// [V47-REWRAP]", _i47 + 1)
 ck("两个 V47-REWRAP 代码标记都在", _i47 >= 0 and _i47b > _i47)
 if _i47 >= 0 and _i47b > _i47:
-    _blk1 = t[_i47:t.find("if _ios15WRegrabbed, textStorage.length > 0 {", _i47)]
+    # 【v48 起的变化】v48 恰恰**就是**在 v47 判据那一处补写容器宽
+    # (log17 实测: v47 只重排不写宽, 于是 ensureLayout 照着 390 重排,
+    #  治不了 117pt 空壳)。本判据的立意仍是"**v47 自己**不写宽度",
+    #  但段右边界必须止于 V48-PIN —— 否则会把 v48 的写入算成 v47 的。
+    # 纪律: 后版扩展了同一段代码时, 前版的"纯度判据"要跟着收边界,
+    #  而不是删掉判据(v48 有自己的白名单判据兜底)。
+    #
+    # ★★ 这条判据曾有**三份副本**(run#37133557819 前后各踩一次):
+    #   1) 本文件 verify_v47.py
+    #   2) .github/workflows/port-and-build.yml 断言 49 内联的 python3 -c
+    #   3) ios15_fallback.py 里 verify_width_reflow_v47 的内嵌校验
+    #   三处曾各写各的, 同一个错误要改三遍 —— 而漏掉的那两处是靠
+    #   "另一份判据先失败"才没被暴露, 那不是运气。
+    #   现在 1)/2) 已落成 scripts/ios15_verify/ci_assert_v47.py(CI 只调它),
+    #   3) 也已收边界。**一份判据只能有一处实现。**
+    _v48_at = t.find("// [V48-PIN]", _i47)
+    _blk1_end = t.find("if _ios15WRegrabbed, textStorage.length > 0 {", _i47)
+    if _v48_at > 0 and _blk1_end > 0:
+        _blk1_end = min(_blk1_end, _v48_at)
+    _blk1 = t[_i47:_blk1_end]
     _i_e = t.find("ios15LastNeededH = _needH", _i47b)
     _blk2 = t[_i47b:_i_e if _i_e > 0 else _i47b + 300]
     _code = strip_noise(_blk1) + "\n" + strip_noise(_blk2)

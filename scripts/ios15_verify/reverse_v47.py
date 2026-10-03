@@ -71,11 +71,37 @@ def strip_noise(src):
     return "".join(out)
 
 # ---- 造一份"已注入 v47"的合法产物当基线 ----
-BASE_MD = "/tmp/v47run/src/ios/Views/Chat/SelectableMarkdownView.swift"
-if not os.path.exists(BASE_MD):
-    print("❌ 找不到 v47 产物, 请先跑注入:", BASE_MD)
+# 【本轮修CI 失败(run#118)】原先这里写死 /tmp/v47run/... —— 那是本地
+# 调试目录, CI 上根本不存在, 于是断言 52 里的 v47 反向恒失败:
+#     ❌ 找不到 v47 产物, 请先跑注入: /tmp/v47run/src/ios/...
+# 而 run#116 是绿的 —— 因为那时还没有 regress_all_v.py 调用它, 没人
+# 发现这个反向测试**在 CI 上从来跑不起来**。
+# ⇒ 反向测试必须能吃 CI 上的真实产物: 收一个路径参数(root 或 swift),
+#    缺省退回仓库工作区 src/ios; /tmp/v47run 只作为历史兜底。
+_BASE_CANDIDATES = []
+if len(sys.argv) > 1:
+    _arg = sys.argv[1]
+    if os.path.isdir(_arg):
+        _BASE_CANDIDATES.append(os.path.join(
+            _arg, "src/ios/Views/Chat/SelectableMarkdownView.swift"))
+    else:
+        _BASE_CANDIDATES.append(_arg)
+_BASE_CANDIDATES += [
+    os.path.normpath(os.path.join(
+        HERE, "..", "..", "src", "ios", "Views", "Chat",
+        "SelectableMarkdownView.swift")),
+    "/tmp/v47run/src/ios/Views/Chat/SelectableMarkdownView.swift",
+]
+BASE_MD = next((p for p in _BASE_CANDIDATES if os.path.exists(p)), None)
+if not BASE_MD:
+    print("❌ 找不到已注入 v47 的基线产物, 试过:")
+    for p in _BASE_CANDIDATES:
+        print("     ", p)
     sys.exit(1)
 INJECTED = open(BASE_MD, encoding="utf-8").read()
+# 打字节数而不是 len(INJECTED) —— 后者是**字符数**, 中文注释占 3 字节,
+# 本文件里两者差 1.7 万, 看到 585636 会误以为拿错了产物。
+print("基线产物: %s (%d 字节)" % (BASE_MD, os.path.getsize(BASE_MD)))
 
 # 基线自检: 正向必须先通过, 否则下面的 sabotage 结果不可信
 try:
