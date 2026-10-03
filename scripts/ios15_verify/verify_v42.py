@@ -46,17 +46,17 @@ ck("闩锁键 Hash 声明唯一", t.count("var ios15LatchHash: Int = 0") == 1)
 # ---------- 3. 闩锁**禁止取 max**(会造大片空白) ----------
 ck("闩锁未取 max(无 _needH > ios15LatchedNeedH)",
    "if _needH > ios15LatchedNeedH" not in t)
-ck("闩锁是直接覆盖赋值",
-   N + "            ios15LatchedNeedH = _needH" in t)
+ck("闩锁是直接覆盖赋值(带 self. 前缀)",
+   N + "            self.ios15LatchedNeedH = _needH" in t)
 
 # ---------- 4. 赋值点: 闩锁刷新必须在 needH 赋值之后, 且三键齐刷 ----------
 i_set = t.index("ios15LastNeededH = _needH")
-i_latch = t.index(N + "            ios15LatchedNeedH = _needH")
+i_latch = t.index(N + "            self.ios15LatchedNeedH = _needH")
 ck("闩锁刷新在 needH 赋值之后", i_latch > i_set, f"{i_latch} vs {i_set}")
 
-i_len = t.index(N + "            ios15LatchLen = textStorage.length")
-i_w = t.index(N + "            ios15LatchW = textContainer.size.width")
-i_hash = t.index(N + "            ios15LatchHash = textStorage.mutableString.hash")
+i_len = t.index(N + "            self.ios15LatchLen = self.textStorage.length")
+i_w = t.index(N + "            self.ios15LatchW = self.textContainer.size.width")
+i_hash = t.index(N + "            self.ios15LatchHash = self.textStorage.mutableString.hash")
 ck("赋值点刷新 Len 键", i_len > i_set)
 ck("赋值点刷新 W 键", i_w > i_set)
 ck("赋值点刷新 Hash 键", i_hash > i_set)
@@ -66,8 +66,8 @@ i_g = t.index('NSLog("[V42-GATE]')
 i_if = t.index("if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {")
 ck("V42-GATE 在三道门入口之前", i_g < i_if, f"{i_g} vs {i_if}")
 # 且 GATE 必须真的调了 findCollectionView(否则 cvNil/cvW 是假值)
-i_gcv = t.index("let _gCV = findCollectionView()")
-ck("V42-GATE 自己调 findCollectionView", i_gcv < i_g)
+i_gcv = t.index("let _gCV = self.findCollectionView()")
+ck("V42-GATE 自己调 self.findCollectionView", i_gcv < i_g)
 
 # ---------- 6. KVO 键判定: 三个键必须都在命中条件里 ----------
 i_kvo = t.index("// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测")
@@ -131,6 +131,34 @@ n_false = t.count("self.ios15KvoFixing = false")
 ck("ios15KvoFixing 置位/复位成对(补齐段 + 兜底段各一组)",
    n_true == 2 and n_false == 2, f"true={n_true} false={n_false}")
 ck("KVO 开头仍有重入早退", "guard let self = self, !self.ios15KvoFixing else { return }" in t)
+
+# ---------- 12. Swift 编译防御: trailing closure 坑(v42 首次推送的真实失败原因) ----------
+# 【这条是补交的】v42 第一次推送时, V42-GATE 写成了裸 `{ ... }`, 被 Swift 吸成
+# 上一个表达式的 trailing closure, 8 个编译错误:
+#   - closure expression is unused
+#   - call to method 'findCollectionView' in closure requires explicit use of 'self'
+#   - reference to property 'xxx' in closure requires explicit use of 'self'
+# 花括号平衡检查查不出来(do{} 与 {} 都是配平的), 正向/反向验证也全绿 —— 只有
+# 真正的 swiftc 能抓到。所以判据必须直接盯源码形态。
+i_gc = t.index("// [V42-GATE] 测量入口三道门的实际取值")
+i_gif = t.index("if !isScrollEnabled, let rCv2 = findCollectionView()", i_gc)
+seg_gc = t[i_gc:i_gif]
+ck("V42-GATE 用 do { } 而非裸 { }", N + "            do {" in seg_gc)
+ck("V42-GATE 未用裸 { } 起头", N + "            {" not in seg_gc)
+ck("GATE 内用 self.findCollectionView()", "self.findCollectionView()" in seg_gc)
+ck("GATE 内 isScrollEnabled 带 self.",
+   "self.isScrollEnabled ? 0 : 1" in seg_gc)
+for k in ("ios15LatchedNeedH", "ios15LatchLen", "ios15LatchW", "ios15LastNeededH"):
+    ck(f"GATE 内 {k} 带 self. 前缀", "self." + k in seg_gc)
+
+# 赋值点同样必须带 self.(与 GATE 同一段落, 同一防御口径)
+i_ls = t.index("// [V42-LATCH-SET]")
+i_lseg = t[i_ls:t.index(chr(10) + "            }", i_ls) if False else i_ls + 700]
+for k in ("ios15LatchedNeedH = _needH",
+          "ios15LatchLen = self.textStorage.length",
+          "ios15LatchW = self.textContainer.size.width",
+          "ios15LatchHash = self.textStorage.mutableString.hash"):
+    ck(f"赋值点带 self.: {k}", ("self." + k) in i_lseg)
 
 # ---------- 输出 ----------
 ok = sum(1 for _, c, _ in CHECKS if c)

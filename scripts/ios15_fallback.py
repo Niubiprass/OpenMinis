@@ -3337,22 +3337,31 @@ def fix_needh_latch_v42(t):
     if ANCHOR_GATE not in t:
         raise RuntimeError("fix_needh_latch_v42: 未找到测量入口 if 锚点 (上游结构变了?)")
     NEW_GATE = """            // [V42-GATE] 测量入口三道门的实际取值 — 见函数 docstring「诊断」。
+            //
             // 【为什么必须打在这里】要区分"三道门哪一道没通", 就必须打在三道门
             // **之前**。挂在里面的诊断在门关着时是哑的 —— v39/v40/v41 连续三次
             // 把诊断挂错层, 连续三次误判成"代码没跑"。这条铁律不能再犯。
-            {
+            //
+            // 【Swift 编译坑·v42 实测踩到】这一段**不能**写成裸 `{ ... }`。
+            // 它的上一行是 v18 补丁的注释 + 一个已结束的语句, Swift 会把 `{`
+            // 解析成那个表达式的 **trailing closure**, 于是块内所有裸引用都被
+            // 要求显式 `self.`, 并且报 "closure expression is unused"。
+            // v42 第一次推送就是这样编译失败的(8 个 error, 全部集中在这段)。
+            // 修法两条同时上: (1) 全部引用加 `self.` 前缀; (2) 用 `do { }` 而不是
+            // 裸 `{ }` —— `do` 块是独立语句, 不可能被吸成 trailing closure。
+            do {
                 struct _GateLog { static var last: CFTimeInterval = 0 }
                 let _gn = CACurrentMediaTime()
                 if _gn - _GateLog.last > 1.0 {
                     _GateLog.last = _gn
-                    let _gCV = findCollectionView()
+                    let _gCV = self.findCollectionView()
                     NSLog("[V42-GATE] scrollOff=%d cvNil=%d cvW=%.1f latched=%.1f latchLen=%d latchW=%.1f raw=%.1f storageLen=%lu",
-                          isScrollEnabled ? 0 : 1,
+                          self.isScrollEnabled ? 0 : 1,
                           _gCV == nil ? 1 : 0,
                           _gCV?.bounds.width ?? -1,
-                          ios15LatchedNeedH, ios15LatchLen, ios15LatchW,
-                          ios15LastNeededH,
-                          UInt(textStorage.length))
+                          self.ios15LatchedNeedH, self.ios15LatchLen, self.ios15LatchW,
+                          self.ios15LastNeededH,
+                          UInt(self.textStorage.length))
                 }
             }
             if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {
@@ -3368,10 +3377,13 @@ def fix_needh_latch_v42(t):
             // [V42-LATCH-SET] 刷新闩锁的键与值。**直接覆盖, 不是取 max** ——
             // 每次成功测量都是当前内容的权威值; 取 max 会在视图复用时留下
             // 旧长文本的高度, 把新短文本撑出大片空白。详见 ios15LatchedNeedH 声明处。
-            ios15LatchedNeedH = _needH
-            ios15LatchLen = textStorage.length
-            ios15LatchW = textContainer.size.width
-            ios15LatchHash = textStorage.mutableString.hash"""
+            //
+            // 【Swift 编译坑】这里同样可能落在 trailing closure 语境里, 所以
+            // 属性引用一律写 `self.`, 与上面的 V42-GATE 保持同一防御口径。
+            self.ios15LatchedNeedH = _needH
+            self.ios15LatchLen = self.textStorage.length
+            self.ios15LatchW = self.textContainer.size.width
+            self.ios15LatchHash = self.textStorage.mutableString.hash"""
     t = t.replace(ANCHOR_SET, NEW_SET, 1)
 
     # ---- D. KVO 里: 闩锁 + 兜底自测 ----
@@ -3575,11 +3587,26 @@ def fix_needh_latch_v42(t):
     i_latch = t.index("ios15LatchedNeedH = _needH")
     if i_latch < i_set:
         raise RuntimeError("fix_needh_latch_v42: 闩锁刷新必须在 needH 赋值之后")
-    for k in ("ios15LatchLen = textStorage.length",
-              "ios15LatchW = textContainer.size.width",
-              "ios15LatchHash = textStorage.mutableString.hash"):
+    # 【必须带 self. 前缀】v42 第一次推送编译失败教训: 该赋值点与 V42-GATE 块
+    # 处在同一段落, Swift 可能把后面的 `{` 吸成 trailing closure, 于是裸引用
+    # 会被要求显式 self.。所以注入时就一律写 self.，断言也跟着锚 self. 版本。
+    for k in ("self.ios15LatchLen = self.textStorage.length",
+              "self.ios15LatchW = self.textContainer.size.width",
+              "self.ios15LatchHash = self.textStorage.mutableString.hash"):
         if k not in t:
             raise RuntimeError(f"fix_needh_latch_v42: 赋值点缺少键刷新 {k}")
+
+    # 【编译防御】V42-GATE 必须用 do { } 而不是裸 { }。裸块会被 Swift 吸成
+    # 上一个表达式的 trailing closure -> 8 个编译错误(closure expression is
+    # unused + 全量要求显式 self.)。这是 v42 首次推送的真实失败原因。
+    i_do = t.index("// [V42-GATE] 测量入口三道门的实际取值")
+    seg_gate = t[i_do:t.index("if !isScrollEnabled, let rCv2 = findCollectionView()", i_do)]
+    if chr(10) + "            do {" not in seg_gate:
+        raise RuntimeError(
+            "fix_needh_latch_v42: V42-GATE 块必须用 do { }(裸 { } 会被吸成 trailing closure 编译失败)")
+    if "self.findCollectionView()" not in seg_gate:
+        raise RuntimeError(
+            "fix_needh_latch_v42: V42-GATE 块内必须用 self.findCollectionView()(显式捕获)")
 
     # 硬要求 3: KVO 补齐必须用统一变量 _v42Need, 不能直接读 ios15LastNeededH
     i_kvo = t.index("// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测")

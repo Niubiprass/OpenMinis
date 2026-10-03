@@ -498,11 +498,11 @@ jobs:
              && grep -q "V42-LATCH" src/ios/Views/Chat/SelectableMarkdownView.swift \
              && grep -q "V42-MISS" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             # 位置判据锚**真正执行的赋值/条件语句**, 不锚注释(反向证伪31/31 已验证)。
-            _v42_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('ios15LastNeededH = _needH'); a=t.index(chr(10)+'            ios15LatchedNeedH = _needH', s); b=t.index(chr(10)+'            ios15LatchLen = textStorage.length', s); c=t.index(chr(10)+'            ios15LatchW = textContainer.size.width', s); d=t.index(chr(10)+'            ios15LatchHash = textStorage.mutableString.hash', s); g=t.index('NSLog('+chr(34)+'[V42-GATE]'); f=t.index('if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {'); print('OK' if s<a<b<c<d and g<f else 'BAD')")
+            _v42_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('ios15LastNeededH = _needH'); a=t.index(chr(10)+'            self.ios15LatchedNeedH = _needH', s); b=t.index(chr(10)+'            self.ios15LatchLen = self.textStorage.length', s); c=t.index(chr(10)+'            self.ios15LatchW = self.textContainer.size.width', s); d=t.index(chr(10)+'            self.ios15LatchHash = self.textStorage.mutableString.hash', s); g=t.index('NSLog('+chr(34)+'[V42-GATE]'); f=t.index('if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {'); print('OK' if s<a<b<c<d and g<f else 'BAD')")
             # 反向断言: 闩锁**禁止取 max**。max 在视图复用展示更短的新文本时会把新文本
             # 撑到旧高度, 凭空造出 1600pt 大片空白 —— 正是 v40 用户报过的症状。
             # 为了治卡字而引入空白是净亏, 必须硬性拦住。
-            _v42_nomax=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); print('OK' if 'if _needH > ios15LatchedNeedH' not in t and (chr(10)+'            ios15LatchedNeedH = _needH') in t else 'BAD')")
+            _v42_nomax=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); print('OK' if 'if _needH > self.ios15LatchedNeedH' not in t and (chr(10)+'            self.ios15LatchedNeedH = _needH') in t else 'BAD')")
             # 反向断言: 三个键必须都在 KVO 命中判定里。少任一个, 缓存就会跨内容误命中
             # (比如只比长度, 等长替换内容时会拿旧高度去撑新文本)。
             _v42_key=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:s+4000]; a='self.ios15LatchLen == _v42Len' in g; b='abs(self.ios15LatchW - _v42TCW) < 0.5' in g; c='self.ios15LatchHash == self.textStorage.mutableString.hash' in g; print('OK' if a and b and c else 'BAD')")
@@ -515,14 +515,25 @@ jobs:
             # 编译正确性: _v42Need 必须是 CGFloat(0)(写 0 会与 CGFloat 冲突编译失败),
             # 键里的 abs() 两侧必须都是 CGFloat。
             _v42_swift=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:s+4000]; a='var _v42Need = CGFloat(0)' in g; b='var _v42Need = 0' not in g; c='let _v42TCW = self.textContainer.size.width' in g; d='abs(self.ios15LatchW - _v42TCW) < 0.5' in g; print('OK' if a and b and c and d else 'BAD')")
+            # 【编译防御·v42 首次推送的真实失败原因】V42-GATE 原本写成裸 `{ ... }`,
+            # 被 Swift 吸成上一个表达式的 trailing closure, 8 个编译错误:
+            #   closure expression is unused
+            #   call to method 'findCollectionView' in closure requires explicit use of 'self'
+            #   reference to property 'xxx' in closure requires explicit use of 'self'
+            # 当时正向 45/45 全绿、反向 31/31 全抓、花括号平衡 depth=0 —— **所有静态
+            # 检查都漏了它, 只有 swiftc 抓得到**。所以判据必须直接盯源码形态:
+            #   (1) 必须用 do { }(独立语句, 不可能被吸成 trailing closure)
+            #   (2) 块内引用必须带 self. 前缀
+            _v42_compile=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); c=chr(34); a=t.index('// [V42-GATE] 测量入口三道门的实际取值'); g=t[a:t.index('if !isScrollEnabled, let rCv2 = findCollectionView()', a)]; N=chr(10); x=(N+'            do {') in g; y=(N+'            {') not in g; z='self.findCollectionView()' in g; w='self.isScrollEnabled ? 0 : 1' in g; v=all(('self.'+k) in g for k in ['ios15LatchedNeedH','ios15LatchLen','ios15LatchW','ios15LastNeededH']); s2=('self.ios15LatchLen = self.textStorage.length') in t; print('OK' if all([x,y,z,w,v,s2]) else 'BAD')")
             # 四条诊断必须都在 NSLog 里(锚 NSLog 字符串, 不锚注释)。
             _v42_diag=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); ms=['V42-GATE','V42-LATCH','V42-THROTTLE','V42-MISS']; q=chr(34); print('OK' if all(t.count('NSLog('+q+'['+m+']')==1 for m in ms) else 'BAD')")
             if [ "$_v42_pos" = "OK" ] && [ "$_v42_nomax" = "OK" ] && [ "$_v42_key" = "OK" ] \
                && [ "$_v42_thr" = "OK" ] && [ "$_v42_thruse" = "OK" ] \
-               && [ "$_v42_swift" = "OK" ] && [ "$_v42_diag" = "OK" ]; then
+               && [ "$_v42_swift" = "OK" ] && [ "$_v42_diag" = "OK" ] \
+               && [ "$_v42_compile" = "OK" ]; then
               echo "✅ v42 闩锁就位 (带键缓存不用max + 三键齐判 + KVO兜底自测 + 120ms节流 + 4 条诊断)"
             else
-              echo "❌ v42 异常 (位置=$_v42_pos 不用max=$_v42_nomax 三键=$_v42_key 节流=$_v42_thr 节流沿用=$_v42_thruse Swift=$_v42_swift 诊断=$_v42_diag) —— needH=0 时补齐仍被跳过, 最后一两个字会继续卡住不显示!"
+              echo "❌ v42 异常 (位置=$_v42_pos 不用max=$_v42_nomax 三键=$_v42_key 节流=$_v42_thr 节流沿用=$_v42_thruse Swift=$_v42_swift 诊断=$_v42_diag 编译=$_v42_compile) —— needH=0 时补齐仍被跳过, 最后一两个字会继续卡住不显示!"
               exit 1
             fi
           else

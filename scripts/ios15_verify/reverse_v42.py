@@ -39,8 +39,8 @@ assert base_rc == 0, "基线就没通过, 后续证伪无意义"
 SABOTAGE = [
     # 1. 把闩锁改回取 max —— 这是 v42 审查中发现的真实缺陷, 必须能被抓到
     ("闩锁改回取 max(会造假空白)",
-     N + "            ios15LatchedNeedH = _needH",
-     N + "            if _needH > ios15LatchedNeedH { ios15LatchedNeedH = _needH }"),
+     N + "            self.ios15LatchedNeedH = _needH",
+     N + "            if _needH > self.ios15LatchedNeedH { self.ios15LatchedNeedH = _needH }"),
 
     # 2. 键判定去掉 Hash —— 缓存会跨内容误命中
     ("键判定去掉 Hash",
@@ -86,72 +86,81 @@ SABOTAGE = [
     # 这是 v41 踩过的坑: 无效 sabotage 会让人误以为"检查项无效"。
     ("GATE 整块挪到三道门之后",
      N + "            // [V42-GATE] 测量入口三道门的实际取值 — 见函数 docstring「诊断」。" + N +
+     "            //" + N +
      "            // 【为什么必须打在这里】要区分\"三道门哪一道没通\", 就必须打在三道门" + N +
      "            // **之前**。挂在里面的诊断在门关着时是哑的 —— v39/v40/v41 连续三次" + N +
      "            // 把诊断挂错层, 连续三次误判成\"代码没跑\"。这条铁律不能再犯。" + N +
-     "            {" + N +
+     "            //" + N +
+     "            // 【Swift 编译坑·v42 实测踩到】这一段**不能**写成裸 `{ ... }`。" + N +
+     "            // 它的上一行是 v18 补丁的注释 + 一个已结束的语句, Swift 会把 `{`" + N +
+     "            // 解析成那个表达式的 **trailing closure**, 于是块内所有裸引用都被" + N +
+     "            // 要求显式 `self.`, 并且报 \"closure expression is unused\"。" + N +
+     "            // v42 第一次推送就是这样编译失败的(8 个 error, 全部集中在这段)。" + N +
+     "            // 修法两条同时上: (1) 全部引用加 `self.` 前缀; (2) 用 `do { }` 而不是" + N +
+     "            // 裸 `{ }` —— `do` 块是独立语句, 不可能被吸成 trailing closure。" + N +
+     "            do {" + N +
      "                struct _GateLog { static var last: CFTimeInterval = 0 }" + N +
      "                let _gn = CACurrentMediaTime()" + N +
      "                if _gn - _GateLog.last > 1.0 {" + N +
      "                    _GateLog.last = _gn" + N +
-     "                    let _gCV = findCollectionView()" + N +
+     "                    let _gCV = self.findCollectionView()" + N +
      "                    NSLog(\"[V42-GATE] scrollOff=%d cvNil=%d cvW=%.1f latched=%.1f latchLen=%d latchW=%.1f raw=%.1f storageLen=%lu\"," + N +
-     "                          isScrollEnabled ? 0 : 1," + N +
+     "                          self.isScrollEnabled ? 0 : 1," + N +
      "                          _gCV == nil ? 1 : 0," + N +
      "                          _gCV?.bounds.width ?? -1," + N +
-     "                          ios15LatchedNeedH, ios15LatchLen, ios15LatchW," + N +
-     "                          ios15LastNeededH," + N +
-     "                          UInt(textStorage.length))" + N +
+     "                          self.ios15LatchedNeedH, self.ios15LatchLen, self.ios15LatchW," + N +
+     "                          self.ios15LastNeededH," + N +
+     "                          UInt(self.textStorage.length))" + N +
      "                }" + N +
      "            }" + N +
      "            if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {",
      N + "            if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {" + N +
      "            // [V42-GATE] 测量入口三道门的实际取值 — 见函数 docstring「诊断」。" + N +
-     "            {" + N +
+     "            do {" + N +
      "                struct _GateLog { static var last: CFTimeInterval = 0 }" + N +
      "                let _gn = CACurrentMediaTime()" + N +
      "                if _gn - _GateLog.last > 1.0 {" + N +
      "                    _GateLog.last = _gn" + N +
-     "                    let _gCV = findCollectionView()" + N +
+     "                    let _gCV = self.findCollectionView()" + N +
      "                    NSLog(\"[V42-GATE] scrollOff=%d cvNil=%d cvW=%.1f latched=%.1f latchLen=%d latchW=%.1f raw=%.1f storageLen=%lu\"," + N +
-     "                          isScrollEnabled ? 0 : 1," + N +
+     "                          self.isScrollEnabled ? 0 : 1," + N +
      "                          _gCV == nil ? 1 : 0," + N +
      "                          _gCV?.bounds.width ?? -1," + N +
-     "                          ios15LatchedNeedH, ios15LatchLen, ios15LatchW," + N +
-     "                          ios15LastNeededH," + N +
-     "                          UInt(textStorage.length))" + N +
+     "                          self.ios15LatchedNeedH, self.ios15LatchLen, self.ios15LatchW," + N +
+     "                          self.ios15LastNeededH," + N +
+     "                          UInt(self.textStorage.length))" + N +
      "                }" + N +
      "            }"),
 
     # 10. GATE 不再自己 findCollectionView(诊断值变假)
     ("GATE 借外部变量冒充门值",
-     "                    let _gCV = findCollectionView()",
+     "                    let _gCV = self.findCollectionView()",
      "                    let _gCV = self.superview"),
 
     # 11. 闩锁刷新挪到 needH 赋值之前(顺序倒置)
     ("闩锁刷新挪到赋值之前",
      N + "            ios15LastNeededH = _needH" + N +
-     "            // [V42-LATCH-SET] 刷新闩锁的键与值。**直接覆盖, 不是取 max** ——",
+     "            //",
      N + "            // [V42-LATCH-SET] 刷新闩锁的键与值。**直接覆盖, 不是取 max** ——"),
     # 上面这条拆两步更精确, 这里用另一条实现
     ("闩锁刷新与赋值顺序倒置",
-     N + "            ios15LatchedNeedH = _needH" + N +
-     "            ios15LatchLen = textStorage.length",
-     N + "            ios15LatchLen = textStorage.length"),
+     N + "            self.ios15LatchedNeedH = _needH" + N +
+     "            self.ios15LatchLen = self.textStorage.length",
+     N + "            self.ios15LatchLen = self.textStorage.length"),
 
     # 12. 赋值点不刷 Len 键(键永远陈旧)
     ("赋值点不刷 Len 键",
-     N + "            ios15LatchLen = textStorage.length",
+     N + "            self.ios15LatchLen = self.textStorage.length",
      N + "            // sabotage: 不刷 Len"),
 
     # 13. 赋值点不刷 W 键
     ("赋值点不刷 W 键",
-     N + "            ios15LatchW = textContainer.size.width",
+     N + "            self.ios15LatchW = self.textContainer.size.width",
      N + "            // sabotage: 不刷 W"),
 
     # 14. 赋值点不刷 Hash 键
     ("赋值点不刷 Hash 键",
-     N + "            ios15LatchHash = textStorage.mutableString.hash",
+     N + "            self.ios15LatchHash = self.textStorage.mutableString.hash",
      N + "            // sabotage: 不刷 Hash"),
 
     # 15. 自测改用屏宽而不是排版实际宽(测高与渲染不同宽)
@@ -235,6 +244,39 @@ SABOTAGE = [
     ("破坏 v41 KVOHEIGHT 标记",
      'NSLog("[V41-KVOHEIGHT] fixed',
      'NSLog("[V41-KVOHEIGHT-X] fixed'),
+
+    # ================= 以下 5 条是 v42 首次推送编译失败的复现 =================
+    # 【为什么单独列】v42 第一次推送 CI 编译失败(8 个 error), 全部来自 V42-GATE
+    # 写成了裸 `{ ... }` 被 Swift 吸成 trailing closure。当时正向 45/45 全绿、
+    # 反向 31/31 全抓、花括号平衡 depth=0 —— 所有静态检查都漏了它, 只有 swiftc
+    # 抓得到。所以必须把这几条固化进 sabotage, 防同类回归。
+
+    # 31. **重现原始 bug**: do { } 退回裸 { } -> 编译失败
+    ("GATE 退回裸 { }(重现原始编译失败)",
+     N + "            do {" + N +
+     "                struct _GateLog",
+     N + "            {" + N +
+     "                struct _GateLog"),
+
+    # 32. GATE 内去掉 self. 前缀 -> 闭包内裸引用编译失败
+    ("GATE 内 findCollectionView 去掉 self.",
+     "let _gCV = self.findCollectionView()",
+     "let _gCV = findCollectionView()"),
+
+    # 33. GATE 内属性引用去掉 self. 前缀
+    ("GATE 内 ios15LatchedNeedH 去掉 self.",
+     "                          self.ios15LatchedNeedH, self.ios15LatchLen, self.ios15LatchW,",
+     "                          ios15LatchedNeedH, ios15LatchLen, ios15LatchW,"),
+
+    # 34. GATE 内 isScrollEnabled 去掉 self.
+    ("GATE 内 isScrollEnabled 去掉 self.",
+     "                          self.isScrollEnabled ? 0 : 1,",
+     "                          isScrollEnabled ? 0 : 1,"),
+
+    # 35. 赋值点去掉 self. 前缀(与 GATE 同一防御口径)
+    ("赋值点 ios15LatchLen 去掉 self.",
+     N + "            self.ios15LatchLen = self.textStorage.length",
+     N + "            ios15LatchLen = textStorage.length"),
 ]
 
 orig = io.open(SRC, encoding="utf-8").read()

@@ -61,8 +61,8 @@ if base_rc != 0:
 
 SABOTAGE = [
     ("闩锁改回取 max",
-     N + "            ios15LatchedNeedH = _needH",
-     N + "            if _needH > ios15LatchedNeedH { ios15LatchedNeedH = _needH }"),
+     N + "            self.ios15LatchedNeedH = _needH",
+     N + "            if _needH > self.ios15LatchedNeedH { self.ios15LatchedNeedH = _needH }"),
     ("键判定去掉 Hash",
      "               self.ios15LatchHash == self.textStorage.mutableString.hash {",
      "               true {"),
@@ -90,56 +90,49 @@ SABOTAGE = [
     # 【sabotage 设计】必须移动**整个 GATE 块**(从注释到收尾花括号), 只改块内
     # 某一行的话 GATE 的 NSLog 位置根本没动, 位置判据察觉不到 —— 这是无效
     # sabotage, 会让人误以为"位置判据形同虚设"。v41 踩过同型坑。
+    # 【sabotage 设计】只把 `do {` 这一行挪到三道门 if 之后 = GATE 块整体移位。
+    # 之前硬编码 20 行注释做锚点, 注释一改就锚点异常(跳过) —— 锚点必须选**稳定
+    # 且语义关键**的那一行。`do {` 恰好是 CI 编译防御判据盯的那一行。
     ("GATE 整块挪到三道门之后",
-     N + "            // [V42-GATE] 测量入口三道门的实际取值 — 见函数 docstring「诊断」。" + N +
-     "            // 【为什么必须打在这里】要区分\"三道门哪一道没通\", 就必须打在三道门" + N +
-     "            // **之前**。挂在里面的诊断在门关着时是哑的 —— v39/v40/v41 连续三次" + N +
-     "            // 把诊断挂错层, 连续三次误判成\"代码没跑\"。这条铁律不能再犯。" + N +
-     "            {" + N +
+     N + "            do {" + N +
      "                struct _GateLog { static var last: CFTimeInterval = 0 }" + N +
      "                let _gn = CACurrentMediaTime()" + N +
      "                if _gn - _GateLog.last > 1.0 {" + N +
      "                    _GateLog.last = _gn" + N +
-     "                    let _gCV = findCollectionView()" + N +
+     "                    let _gCV = self.findCollectionView()",
+     N + "            // [GATE-MOVED]"),
+    ("GATE 的 do 块被塞到三道门之后",
+     N + "            if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {" + N +
+     "            // [IOS15-FIX-CLIP v14] 状态判定 + 修复。",
+     N + "            do {" + N +
+     "                struct _GateLog { static var last: CFTimeInterval = 0 }" + N +
+     "                let _gn = CACurrentMediaTime()" + N +
+     "                if _gn - _GateLog.last > 1.0 {" + N +
+     "                    _GateLog.last = _gn" + N +
+     "                    let _gCV = self.findCollectionView()" + N +
      "                    NSLog(\"[V42-GATE] scrollOff=%d cvNil=%d cvW=%.1f latched=%.1f latchLen=%d latchW=%.1f raw=%.1f storageLen=%lu\"," + N +
-     "                          isScrollEnabled ? 0 : 1," + N +
+     "                          self.isScrollEnabled ? 0 : 1," + N +
      "                          _gCV == nil ? 1 : 0," + N +
      "                          _gCV?.bounds.width ?? -1," + N +
-     "                          ios15LatchedNeedH, ios15LatchLen, ios15LatchW," + N +
-     "                          ios15LastNeededH," + N +
-     "                          UInt(textStorage.length))" + N +
+     "                          self.ios15LatchedNeedH, self.ios15LatchLen, self.ios15LatchW," + N +
+     "                          self.ios15LastNeededH," + N +
+     "                          UInt(self.textStorage.length))" + N +
      "                }" + N +
      "            }" + N +
-     "            if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {",
-     N + "            if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {" + N +
-     "            // [V42-GATE] 测量入口三道门的实际取值 — 见函数 docstring「诊断」。" + N +
-     "            {" + N +
-     "                struct _GateLog { static var last: CFTimeInterval = 0 }" + N +
-     "                let _gn = CACurrentMediaTime()" + N +
-     "                if _gn - _GateLog.last > 1.0 {" + N +
-     "                    _GateLog.last = _gn" + N +
-     "                    let _gCV = findCollectionView()" + N +
-     "                    NSLog(\"[V42-GATE] scrollOff=%d cvNil=%d cvW=%.1f latched=%.1f latchLen=%d latchW=%.1f raw=%.1f storageLen=%lu\"," + N +
-     "                          isScrollEnabled ? 0 : 1," + N +
-     "                          _gCV == nil ? 1 : 0," + N +
-     "                          _gCV?.bounds.width ?? -1," + N +
-     "                          ios15LatchedNeedH, ios15LatchLen, ios15LatchW," + N +
-     "                          ios15LastNeededH," + N +
-     "                          UInt(textStorage.length))" + N +
-     "                }" + N +
-     "            }"),
+     "            if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {" + N +
+     "            // [IOS15-FIX-CLIP v14] 状态判定 + 修复。"),
     ("闩锁刷新挪到赋值之前",
      N + "            ios15LastNeededH = _needH" + N +
-     "            // [V42-LATCH-SET]",
+     "            //",
      N + "            // [V42-LATCH-SET]"),
     ("赋值点不刷 Len 键",
-     N + "            ios15LatchLen = textStorage.length",
+     N + "            self.ios15LatchLen = self.textStorage.length",
      N + "            // sabotage"),
     ("赋值点不刷 W 键",
-     N + "            ios15LatchW = textContainer.size.width",
+     N + "            self.ios15LatchW = self.textContainer.size.width",
      N + "            // sabotage"),
     ("赋值点不刷 Hash 键",
-     N + "            ios15LatchHash = textStorage.mutableString.hash",
+     N + "            self.ios15LatchHash = self.textStorage.mutableString.hash",
      N + "            // sabotage"),
     ("自测改用屏宽",
      "            let _v42TCW = self.textContainer.size.width",
@@ -159,6 +152,17 @@ SABOTAGE = [
     ("抽掉 V42-MISS 标记",
      'NSLog("[V42-MISS] selfMeasured',
      'NSLog("[V42MISS] selfMeasured'),
+
+    # ===== 以下 3 条复现 v42 首次推送的真实编译失败(run 37082710565) =====
+    ("GATE 退回裸 { }(重现原始编译失败)",
+     N + "            do {" + N + "                struct _GateLog",
+     N + "            {" + N + "                struct _GateLog"),
+    ("GATE 内 findCollectionView 去掉 self.",
+     "let _gCV = self.findCollectionView()",
+     "let _gCV = findCollectionView()"),
+    ("GATE 内属性引用去掉 self.",
+     "                          self.ios15LatchedNeedH, self.ios15LatchLen, self.ios15LatchW,",
+     "                          ios15LatchedNeedH, ios15LatchLen, ios15LatchW,"),
 ]
 
 orig = io.open(SWIFT, encoding="utf-8").read()
