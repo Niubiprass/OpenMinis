@@ -8069,6 +8069,27 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {
                 _ios15WRegrabbed = true
             }
+            // [V48-PIN] log17 归因: v47 只治了一半 —— 重排触发了(tcW=390 的帧
+            // 69→48), 但 `textContainer.size.width` 仍是 390, 于是
+            // `ensureLayout` 照着 390 重排, 与按 358 算出的 `_needH` 依旧
+            // 不同源。log17 里 tcW 与 gap 完全同构、零例外:
+            //     tcW=358.0 → tvH-usedH 恒 8.0~8.3  (textContainerInset, 正常)
+            //     tcW=390.0 → tvH-usedH 为 30.5/117.5(空壳)
+            // len=229 那组最直接: 同一段文字, 358 宽 gap=8.1, 390 宽 gap=30.5。
+            //
+            // 修法: 碎片与目标宽不一致时, **连容器宽一起钉回** _realW2。
+            // 两者合起来才是完整条件 —— 容器宽==目标宽, 且碎片按目标宽重排过。
+            //
+            // **这不是新的抢宽时机**: 写在 v18 段内, 复用 v18 已算好的
+            // _realW2(与 sizeThatFits 测高用的是同一个值), 不引入第三方宽度。
+            // 判据 `abs(tcW-_realW2)>0.5` 保证幂等 —— 已在 358 时不写不重排,
+            // 稳态零开销; 被推回 390 才纠偏一次, 是**纠偏**不是**竞争**。
+            // v13/v34 翻车是因为在布局 pass 外无条件抢宽、与 SwiftUI 竞争,
+            // 本版恰好相反。只写 size.width, **不碰 frame/bounds/origin/高度**,
+            // 所以不会引起"整体缩小"那类几何漂移, 也不推翻 v45 的 tvH 补高。
+            if _ios15WRegrabbed, abs(textContainer.size.width - _realW2) > 0.5 {
+                textContainer.size.width = _realW2
+            }
             // [IOS15-FIX-RELC v28] 抢回宽度后必须强制重排。log11 实证: SwiftUI poll 每帧把
             // 容器宽打回 390 (cvW=390), TextKit 行碎片按 ~374pt 排版; v18 抢回 358 时仅改
             // textContainer.size 而不 invalidate, 旧行碎片不会被重排 → 358 视口裁掉行尾
