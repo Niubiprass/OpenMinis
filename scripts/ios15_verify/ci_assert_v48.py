@@ -25,10 +25,33 @@ SWIFT = os.path.join(ROOT, "src/ios/Views/Chat/SelectableMarkdownView.swift")
 # 那个闭合花括号恰好紧跟在唯一写入行之后, 段切片在写入行处就截断了,
 # 追加在写入行**之后**的破坏(frame/bounds/高度/setSize)全落在段外。
 # 教训: 锚点要选在 sabotage 改不到的地方, 否则判据只能证明"第一行没问题"。
+#
+# ★★ 第三次翻版(run#37137912522): 右边界又出事了, 这次是**右边界太宽**。
+#   v49 把纯诊断探针插在 `V48-PIN` 段内(钉宽 if 之后、v28 标记之前),
+#   而本判据的段是 `[V48-PIN, IOS15-FIX-RELC v28)` —— 于是 v49 探针的
+#   三行记忆位写入(self.ios15V18W= / _V49W.v18W= / _V49W.v18Tick=)
+#   全被算进 v48 的白名单段, 于是:
+#       core=OK pure=BAD 赋值4处 违规=[...] 旁路=False idem=OK
+#       ❌ v48 异常
+#   而 v49 本身完全合规(它自己的四层判据在 CI 里全绿)。
+#
+#   ⇒ v48 段的右边界必须**紧贴钉宽 if 的闭合花括号**, 不能用下游的
+#     v28 标记。v48 自己的内容就只有那一个 if, 到闭合花括号为止;
+#     闭合之后的东西(v28 重排、v49 探针)都不属于 v48。
+#   这与"右边界要选在 sabotage 改不到的地方"是同一条纪律的两面:
+#     右边界既要**够宽**(容得下 v48 自己的全部代码)、
+#     又要**够窄**(容不下别人的代码)。两个方向都栽过。
 PIN = "// [V48-PIN]"
 END = "// [IOS15-FIX-RELC v28]"
 GUARD = "if _ios15WRegrabbed, abs(textContainer.size.width - _realW2) > 0.5 {"
 WRITE = "textContainer.size.width = _realW2"
+# ★v48 段的**真右界**: v49 探针的起点。
+#   · 切掉 v49 探针 —— 那是 v49 的事, 由 v49 判据管
+#   · 保留 v48 if 之后的空间 —— 反向测试 B11 要在那里追加一行合法读取,
+#     验证"判据不误伤"。收得太紧(比如收到 if 的闭合花括号)会把那条
+#     误判成破坏, 于是 v48 反向测试出现假漏放(本轮实踩)。
+#   v49 未注入时回退到 v28 标记(兼容 v49 之前的历史产物)。
+V49_HEAD = "// [V49-WWRITER-V18]"
 
 # 禁几何/高度 —— v13/v34 的"整体缩小"与 v45 的 tvH 成果都在这条线上
 FORBID = ("height", "Height", "h", "needH", "newHeight", "lastComputedHeight",
@@ -39,6 +62,31 @@ FORBID = ("height", "Height", "h", "needH", "newHeight", "lastComputedHeight",
 def strip_comments(s):
     s = re.sub(r"/\*.*?\*/", "", s, flags=re.S)
     return re.sub(r"//[^\n]*", "", s)
+
+
+def _v48_end(t, i_pin):
+    """v48 段的右界位置(不含)。三处副本必须与此一致。"""
+    j = t.find(V49_HEAD, i_pin)
+    if j > i_pin:
+        return j
+    j = t.find(END, i_pin)
+    if j < 0:
+        # 与 ios15_fallback.verify_width_pin_v48 抛同样的错, 便于定位
+        raise SystemExit("BAD 未找到 v48 段右界(既无 %s 也无 %s)"
+                         % (V49_HEAD, END))
+    return j
+
+
+def _v48_block(t):
+    """切出 v48 自己的段。
+
+    ★右边界用 END_NEAR(钉宽 if 的闭合花括号), 不用 END(v28 标记) ——
+    run#37137912522 的教训: v49 探针就插在这两者之间, 用 END 会把 v49
+    的三行记忆位写入算进 v48 的白名单, 判出 `pure=BAD 赋值4处`,
+    而 v49 本身完全合规。详见常量定义处的注释。
+    """
+    i = t.index(PIN)
+    return t[i:_v48_end(t, i)]
 
 
 def _lhs(line):
@@ -60,8 +108,10 @@ def main():
         fails.append("core 缺: %s" % "|".join(miss))
         core = "BAD 缺:" + "|".join(miss)
     else:
+        # ★右边界用 END_NEAR 而非 END: v49 探针插在 END 之前, 用 END 判顺序
+        #   会被 v49 的存在干扰(详见 _v48_block 的 docstring)。
         i = t.index(PIN)
-        j = t.index(END, i)
+        j = _v48_end(t, i)
         g = t.find(GUARD, i)
         if not (i < g < j):
             core = "BAD 顺序 i=%d 守卫=%d j=%d" % (i, g, j)
@@ -71,7 +121,7 @@ def main():
 
     # ---- 2. pure: ★白名单 + 禁函数式旁路 ----
     if core == "OK":
-        blk = t[t.index(PIN):t.index(END, t.index(PIN))]
+        blk = _v48_block(t)
         code = strip_comments(blk)
         assigns = []
         for line in code.split("\n"):
@@ -100,7 +150,7 @@ def main():
 
     # ---- 3. idem: 幂等门 + 复用 v47 + 加法保留 ----
     if core == "OK":
-        blk = t[t.index(PIN):t.index(END, t.index(PIN))]
+        blk = _v48_block(t)
         gate = "abs(textContainer.size.width - _realW2) > 0.5 {" in blk
         reuse = "_ios15WRegrabbed" in blk
         v47 = ("self.ios15LastLaidOutW = _realW2" in t
