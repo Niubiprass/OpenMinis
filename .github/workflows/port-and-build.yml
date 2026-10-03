@@ -867,6 +867,77 @@ jobs:
 
           echo "::endgroup::"
 
+          # ---- 断言 51: v49 探针就位(纯诊断, 钉死「谁把 tcW 推回 390」)----
+          # log18 归因 —— **首次打破 log17 的「tcW 与 gap 完全同构」**:
+          #     tcW=358.0  10 条  gap 8.1~8.5    ← 全部正常
+          #     tcW=390.0  49 条  gap 8.2~97.6   ← ★18 帧正常 + 31 帧残缺(混合!)
+          # `len=122` 在 tcW=390 下 gap=8.2(**正常**)—— 前两版从未有过这个组合
+          # ⇒ v48 的钉宽**确实生效了, 但只治好轻文本**; 重文本(len=1013 含 1 个
+          # 表格)仍残缺。决定性对照:
+          #     n=9  cachedW=357.0 tcW=358.0 usedH=1727.6 gap=8.1  ✅
+          #     n=10 cachedW=389.0 tcW=390.0 usedH=1638.1 gap=97.6 ❌
+          # `cachedW` 与 `tcW` 完全同构(35/36 零例外)⇒ 推宽者与 cachedW 同源。
+          # 逐毫秒铁证(00:07:42): .678 [V42-MISS] tcW=358 usedH=1727.6(对)
+          # → .679 [V46-ATTACH] tcW=390 usedH=1638.1, **1 毫秒内被推回**。
+          # 而 v48 的钉宽写在 v18 段(缩进 12, layoutSubviews 内), **早于**表格
+          # 附件测量链跑完 ⇒ 纠偏追不上。
+          #
+          # 【为什么纯诊断不盲修】候选写入者至少三个, 修法互相冲突:
+          #   · V46 attachmentBounds 测量链 —— 放宽它动 v16 表格渲染
+          #   · v37 probe 钳位链 —— 动它动那套 9 处泄漏防护
+          #   · SwiftUI 自己的布局 pass —— 抢它是 v13/v34 闪屏翻车的老路
+          #   · (D4) TextContainerGuard 熔断 219 次那条 —— 治 fillLayoutHole
+          #     11918ms 卡死的, 同样是历史 trade-off
+          # 先探针定位到**行**再动刀。
+          #
+          # ★本断言查**四层**, 因为 v48 就是只有结构判据的那一版 ——
+          #   判据全绿、CI 全绿、装机后 tcW=390 的帧仍有 49 条:
+          #   1. struct —— 注入在位/段边界/日志字段/段内零赋值(verify_v49.py, 70 条)
+          #   2. scope  —— ★本轮连踩两个**编译级**错误而结构判据全程放行:
+          #      S1 struct _V49W 声明在函数体内 → KVO 侧跨函数引用不到 → 编译失败
+          #      S2 KVO 侧读 self.attV46CachedWidth → 那是 TableAttachment 的
+          #         成员 → 跨类访问 → 编译失败
+          #   3. heavy  —— 用户明确要求的"加重文本专项": v49 每帧都跑, 所以
+          #      "重文本下不能自我损害"是本版最该验的:
+          #      ★T3 usedRect 只能在 0.5s 节流内读(它是**惰性**属性, 无条件读
+          #        每帧都可能触发排版, len=1013/2000pt 高下必卡 = 拿 v49 换新 bug)
+          #      ★T8 探针在 v18 段**无条件**路径(被包进 if 的话, "碎片已排好"的
+          #        常态帧反而不经过探针, 而那正是 log18 里最该看的帧)
+          #      T6/T7 加法: v48 钉宽与 v47 重排都必须在(失效 = 前作成果作废)
+          #   4. sab    —— 判据自身能拦住本轮真实踩过的坑(否则是废判据)
+          #
+          # 【为什么四份判据分开成文件而不是内联】
+          #   ① 内联判据没有语法检查、没有 IDE 跳转, 跑一次要 7 分钟 ——
+          #      run#37133557819 就是死在「内联判据与 verify_v47.py 两份副本
+          #      只改了一份」。同一类判据只能有一处实现。
+          #   ② 本文件既有教训: YAML 双引号标量会把 反斜杠+n **真的转成换行**,
+          #      于是 re.sub(r'//[^换行]*', ...) 会被截断成两行而报 ParserError
+          #      (断言 49 踩过一次)。★所以本段注释里刻意不写该字面量 ——
+          #      上一版照抄了那条教训里的原文, 自己就把 YAML 写崩了(本轮实踩)。
+          if grep -q "fix_width_writer_diag_v49" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v49.py" . ; then
+              echo "✅ v49 就位 (纯诊断, 不改任何行为; 两处探针构成同帧差分: v18 段末尾(v48 钉宽后)记 v18W + v41 KVO 抢帧器记 kvoW 与来源指纹 cvW/laidW/boundW/tcH。同 tick 内读到不同值 ⇒ 中间有人写过; 跨 tick ⇒ SwiftUI pass 之间写的。★四层判据: struct 70 条 + scope(编译级) + heavy(重文本 9 条, 含 usedRect 节流与探针路径可达性) + sab(判据自证 6 条); 段内零赋值零 invalidate*; 0.5s 节流与 V44/V45/V46/V41 同周期; v44~v48 全保留)"
+            else
+              echo "❌ v49 探针异常 (见上方 ci_assert_v49.py 的 struct/scope/heavy/sab 四行)"
+              echo "   —— struct BAD: 探针段/END 标记/日志字段缺失, 或段内出现赋值或"
+              echo "      invalidate*。本版是**纯诊断**, 一行写操作都会让归因作废"
+              echo "   —— ★scope BAD: **编译会失败**。S1 struct _V49W 声明在函数体内"
+              echo "      (局部类型跨函数不可见); S2 读了别的类的成员(跨类访问)"
+              echo "   —— ★heavy BAD: 重文本(len=1013, v49 每帧都跑)下探针自我损害。"
+              echo "      最关键是 T3: usedRect 是惰性属性, 提到 0.5s 节流外 = 每帧"
+              echo "      触发排版 = 拿 v49 换一个新卡顿; T8: 探针被包进 if 则常态帧不经过"
+              echo "   —— sab BAD: 判据自身拦不住本轮真实踩过的坑 ⇒ 判据是废的"
+              exit 1
+            fi
+          else
+            echo "❌ v49 缺失 —— log18 已证明 v48 钉宽追不上表格附件测量链(1ms 内被推回),"
+            echo "   重文本 tcW=390 的帧 gap 达 97.6。没有 v49 探针就只能继续在三个"
+            echo "   候选写入者里猜, 而三者的修法互相冲突"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
           echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
           # 病根A 实证 (minis-2026-10-03 6.log):
           #   04:55:03.045 FIRST-MEASURE CORRECTION cellH=1591.7 newH=1748.0

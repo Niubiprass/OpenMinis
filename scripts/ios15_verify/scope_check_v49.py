@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""v49 探针的**作用域静态检查** —— 判据证明不了编译。
+
+【为什么需要它】本轮 v49 连踩两个**编译级**错误, 判据全都放行:
+  1. `struct _V49W` 声明在 v18 段内(layoutSubviews 函数体里), 而 KVO 侧
+     探针在**另一个函数**里引用它 —— Swift 局部类型跨函数不可见, 编译
+     直接失败。判据第 2 组只查了 "struct 存在", 查不出"声明在哪一层"。
+  2. KVO 侧探针读 `self.attV46CachedWidth`, 而那个 getter 声明在
+     **TableAttachment 类**里(@2039), 探针却在
+     **SelectableMarkdownTextView** 内 —— 跨类访问不到, 同样编译失败。
+     判据第 5 组只查了"日志字段齐全", 查不出"这个属性能不能在这儿读"。
+
+【本检查做什么】只验 v49 探针新增代码的**作用域合法性**, 四条:
+  A. `_V49W` 声明在**类型级**(缩进与类成员一致), 且类体内只有一处声明
+  B. KVO 侧探针引用的每个 `self.xxx` / `xxx` 标识符, 在
+     SelectableMarkdownTextView 类型内**确实存在**(或是局部量 cvW)
+  C. 探针段内引用的类型名都在本文件里声明过(没有凭空引用外部类型)
+  D. 探针段内没有引用任何**其它类**的成员(跨类访问 = 编译失败)
+
+【与判据的分工】
+  verify_width_writer_v49  → 结构在位 / 段内零赋值 / 标记计数(纯文本)
+  scope_check_v49 (本文件) → 作用域与可见性(编译级)
+  两者都过, 才认为可以发版。
+"""
+import re
+import sys
+
+PROBE_V18 = "// [V49-WWRITER-V18]"
+PROBE_KVO = "// [V49-WWRITER-KVO]"
+END_V18 = "// [V49-WWRITER-V18-END]"
+END_KVO = "// [V49-WWRITER-KVO-END]"
+
+# 探针宿主类 —— KVO 与 v18 两侧探针都在这个类里。
+# ★只写**纯类名**, 不带 "final class" 前缀: _class_body() 会在声明行里
+#   匹配 `(final )?class <纯类名>`, 写成整串会导致永远匹配不上。
+HOST = "SelectableMarkdownTextView"
+# 本文件里**其它**顶层类型 —— 它们的成员在 HOST 内不可见(除非是 static
+# 且类型名限定)。出现即编译失败。
+OTHER_CLASSES = (
+    "SelectableMarkdownTheme", "CodeBlockAttachment", "TableAttachment",
+    "AudioAttachment", "MinisLayoutManager",
+)
+
+
+def _fail(msg):
+    raise AssertionError("scope_check_v49: " + msg)
+
+
+def _mask(t):
+    """把注释与字符串字面量替换成等长空格, 只留代码骨架。
+
+    ★必要性(本轮实踩): 直接对源码裸配平花括号会**失衡** —— 本文件的
+      类体里有字符串字面量/注释含 '{' 与 '}'(如 "\(...)" 插值、示例文本),
+      裸扫到文件末尾 depth 仍为 1, 于是"类体"切不出来, 检查全盘误报。
+      插值里的括号是真实代码, 所以只整体挖空字符串(不区分插值) ——
+      对"找类体边界"这个用途足够, 边界永远在类体末尾那层 '}'。
+    """
+    out = list(t)
+    i, n = 0, len(t)
+    while i < n:
+        c = t[i]
+        if c == "/" and i + 1 < n and t[i + 1] == "/":
+            while i < n and t[i] != "\n":
+                out[i] = " "
+                i += 1
+        elif c == "/" and i + 1 < n and t[i + 1] == "*":
+            depth_c = 1
+            out[i] = out[i + 1] = " "
+            i += 2
+            while i < n and depth_c:
+                if t[i] == "/" and i + 1 < n and t[i + 1] == "*":
+                    depth_c += 1
+                    out[i] = out[i + 1] = " "
+                    i += 2
+                elif t[i] == "*" and i + 1 < n and t[i + 1] == "/":
+                    depth_c -= 1
+                    out[i] = out[i + 1] = " "
+                    i += 2
+                else:
+                    if t[i] != "\n":
+                        out[i] = " "
+                    i += 1
+        elif c == '"':
+            # 三引号多行字符串
+            if t[i:i + 3] == '"""':
+                out[i] = out[i + 1] = out[i + 2] = " "
+                i += 3
+                while i < n and t[i:i + 3] != '"""':
+                    if t[i] != "\n":
+                        out[i] = " "
+                    i += 1
+                for _ in range(3):
+                    if i < n:
+                        out[i] = " "
+                        i += 1
+            else:
+                out[i] = " "
+                i += 1
+                while i < n and t[i] != '"':
+                    if t[i] == "\\" and i + 1 < n:
+                        out[i] = " "
+                        out[i + 1] = " "
+                        i += 2
+                        continue
+                    if t[i] != "\n":
+                        out[i] = " "
+                    i += 1
+                if i < n:
+                    out[i] = " "
+                    i += 1
+        else:
+            i += 1
+    return "".join(out)
+
+
+def _class_body(t, name):
+    """取某个顶层类型的类体(按大括号配平)。找不到返回 ''。
+
+    ★定位纪律(本轮实踩两次): 不用"从文件里 find 类名再猜哪处是声明"
+      这种写法 —— 类名在文件里往往**先出现在注释里**(如 "Same rationale
+      as SelectableMarkdownTextView.addInteraction"), 首次命中根本不是声明。
+      正确做法: **逐行扫, 只认行首的结构声明**, 且必须带类型名。
+    """
+    pat = re.compile(
+        r"^[ \t]*(?:@[\w()., ]+[ \t]*\n[ \t]*)*"          # 修饰注解可独占行
+        r"(?:(?:public|private|internal|fileprivate|open|final)\s+)*"
+        r"(class|struct|enum|extension)\s+" + re.escape(name) + r"\b",
+        re.M)
+    m = pat.search(t)
+    if not m:
+        return ""
+    # 必须是顶层(行首无缩进), 否则是嵌套类型 —— 嵌套类型不在本检查范围
+    if m.group(0)[:1] in (" ", "\t"):
+        return ""
+    # ★从**声明行本身**找 '{', 不能跳到下一行(本轮实踩): Swift 的类声明
+    #   常写成 `final class X: UITextView, Delegate {` —— 行尾就带 '{'。
+    #   跳到下一行会抓到类体里第一个 '{'(这里是
+    #   `override var intrinsicContentSize: CGSize {`), 于是"类体"被切成
+    #   269 字符, 后续所有成员都查不到 → 误报"声明不在类内"。
+    #
+    #   两种合法形态都要接受:
+    #     (a) '{' 在声明行内(单行声明)      —— 最常见
+    #     (b) '{' 在后续行(多行声明/注解跨行) —— 允许, 但要求 200 字符内
+    nl = t.find("\n", m.start())
+    if nl < 0:
+        return ""
+    k_same = t.find("{", m.start())
+    if k_same >= 0 and k_same < nl:
+        k = k_same                                    # 形态 (a)
+    else:
+        k = t.find("{", nl)                           # 形态 (b)
+        if k < 0 or k - nl > 200:
+            return ""
+    # ★配平必须用**挖空注释/字符串后的骨架**, 不能裸扫(本轮实踩):
+    #   本文件类体内有字符串字面量与注释含花括号, 裸扫到文件末尾 depth
+    #   仍为 1 → 类体切不出来 → 检查全盘误报。
+    sk = _mask(t)
+    depth, p = 0, k
+    while p < len(sk):
+        if sk[p] == "{":
+            depth += 1
+        elif sk[p] == "}":
+            depth -= 1
+            if depth == 0:
+                return t[k:p]
+        p += 1
+    return ""
+
+
+def _seg(t, start, end):
+    i = t.find(start)
+    if i < 0:
+        _fail("缺少标记 %s" % start)
+    j = t.find(end, i)
+    if j < 0:
+        _fail("标记 %s 之后找不到 %s" % (start, end))
+    return t[i:j]
+
+
+def _strip_comments(code):
+    code = re.sub(r"/\*.*?\*/", "", code, flags=re.S)
+    return re.sub(r"//[^\n]*", "", code)
+
+
+def scope_check_v49(t):
+    body = _class_body(t, "SelectableMarkdownTextView")
+    if not body:
+        _fail("找不到宿主类 %s 的类体" % HOST)
+
+    seg_v18 = _seg(t, PROBE_V18, END_V18)
+    seg_kvo = _seg(t, PROBE_KVO, END_KVO)
+
+    # ---- A. _V49W 必须是类型级声明, 且只有一处 ----
+    decls = []
+    for m in re.finditer(r"^([ \t]*)struct\s+_V49W\b", t, re.M):
+        decls.append(m)
+    if len(decls) != 1:
+        _fail("_V49W 声明应恰为 1 处, 实为 %d —— "
+              "重复声明会遮蔽跨函数读取" % len(decls))
+    ind = len(decls[0].group(1).expandtabs(4))
+    if ind != 4:
+        _fail("_V49W 声明缩进为 %d 空格, 应为 4 —— 缩进 >4 说明它落在某个"
+              "函数体内, **局部 struct 跨函数不可见**, KVO 侧会编译失败"
+              % ind)
+    off = decls[0].start()
+    # 声明必须落在宿主类体内。
+    # ★偏移比较要严谨: body 是 t.find("{") 之后的内容, 所以 body 在 t 里
+    #   的起点 = 类声明行的位置, 用 t.find(body) 拿到的正是不含前导 `{`
+    #   的那段文本起点 —— 直接拿声明偏移去比会差几个字符而误判
+    #   (本轮实踩)。稳妥做法: 找 body 的**最后一个**特征(类体末尾的 "}")
+    #   之前的范围, 或者干脆用"类体文本在 t 中的首次出现位置 + 容差"。
+    bstart = t.find(body)
+    if bstart < 0:
+        _fail("类体文本在源文件里定位不到(不应发生)")
+    # body 以 "{" 开头, 它在 t 中的位置就是类体的 '{' 处
+    bstart = t.rfind("{", 0, bstart + 1)
+    if not (bstart <= off < bstart + len(body)):
+        _fail("_V49W 声明不在宿主类 %s 内(声明@%d, 类体 %d~%d)"
+              % (HOST, off, bstart, bstart + len(body)))
+
+    # ---- B/C. 探针内引用的标识符必须在宿主类内可见 ----
+    # 宿主类里可见 = 类成员(任意缩进的 var/let/func/struct 声明)
+    #             + 探针所在函数的局部量
+    # KVO 侧额外可见: cvW / _v49Now(探针自己声明的局部量)
+    members = set(re.findall(
+        r"^\s*(?:@\w+\s+)*(?:public |private |internal |fileprivate |"
+        r"open |static |final |lazy |weak |unowned )*"
+        r"(?:var|let|func|struct|enum|typealias)\s+([A-Za-z_]\w*)",
+        body, re.M))
+    # KVO 闭包内的局部量(v41 自己声明的), 探针合法引用
+    kvo_locals = set(re.findall(
+        r"\b(?:let|var)\s+([A-Za-z_]\w*)\s*(?:=|:)", seg_kvo))
+    # 探针自己声明的局部量
+    own_locals = {"_v49Now", "_v49SameTick"}
+    # 宿主类的继承自 UIKitView 的成员(用到但不必在类体里声明)
+    inherited = {
+        "textContainer", "layoutManager", "textStorage", "bounds", "frame",
+        "size", "superview", "subviews", "window", "layer", "tintColor",
+        "isHidden", "alpha", "tag", "superview", "setNeedsLayout",
+        "setNeedsDisplay", "invalidateIntrinsicContentSize", "addSubview",
+    }
+    # 类型级静态成员: _V49W.xxx 由类型本身提供
+    static_ok = {"_V49W"}
+
+    for seg, name in ((seg_v18, "v18 侧"), (seg_kvo, "KVO 侧")):
+        code = _strip_comments(seg)
+        # 抓 self.X 与裸标识符引用(排除 Swift 关键字/字面量/参数标签)
+        refs = set(re.findall(r"\bself\.([A-Za-z_]\w*)", code))
+        if name == "KVO 侧":
+            refs |= set(re.findall(r"(?<![\w.])([a-z_]\w*)(?=\s*[,)\n])",
+                                   code))
+        for r in sorted(refs):
+            if r in inherited or r in members or r in own_locals \
+                    or r in kvo_locals or r in static_ok:
+                continue
+            # 局部量(cvW 等)在 KVO 段里已被 kvo_locals 收走
+            _fail("★%s 探针引用 self.%s —— 它在宿主类 %s 内**不可见**。"
+                  "若它属于其它类型就是跨类访问, 编译失败(本轮实踩: "
+                  "attV46CachedWidth 属于 TableAttachment)"
+                  % (name, r, HOST))
+
+    # ---- D. 探针不得引用其它顶层类型的成员 ----
+    for seg, name in ((seg_v18, "v18 侧"), (seg_kvo, "KVO 侧")):
+        code = _strip_comments(seg)
+        for oc in OTHER_CLASSES:
+            # 裸类型名限定访问 OtherCls.member
+            if re.search(r"\b%s\s*\." % re.escape(oc), code):
+                _fail("★%s 探针访问了 %s 的成员 —— 那是另一个类型, "
+                      "跨类访问编译失败" % (name, oc))
+            # 或者直接用该类独有的成员名
+        # 宿主类外的成员名: 取其它类体里的成员, 看有没有被引用
+        for oc in OTHER_CLASSES:
+            ob = _class_body(t, oc)
+            if not ob:
+                continue
+            omem = set(re.findall(
+                r"^\s*(?:@\w+\s+)*(?:public |private |internal |fileprivate |"
+                r"open |static |final |lazy |weak )*"
+                r"(?:var|let|func)\s+([A-Za-z_]\w*)", ob, re.M))
+            hit = omem & set(re.findall(r"\bself\.([A-Za-z_]\w*)", code))
+            if hit:
+                _fail("★%s 探针引用 self.%s —— 该成员声明在 %s 里, "
+                      "而探针在 %s 内, 跨类访问编译失败"
+                      % (name, sorted(hit)[0], oc, HOST))
+
+    return True
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("用法: scope_check_v49.py <SelectableMarkdownView.swift>")
+        return 2
+    t = open(sys.argv[1], encoding="utf-8").read()
+    try:
+        scope_check_v49(t)
+    except AssertionError as e:
+        print("❌ %s" % e)
+        return 1
+    print("✅ v49 探针作用域检查通过 (A 类型级 struct / B 标识符可见 / "
+          "C 无跨类访问)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

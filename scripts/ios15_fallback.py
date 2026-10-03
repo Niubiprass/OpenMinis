@@ -4997,6 +4997,454 @@ def verify_width_pin_v48(t):
     return True
 
 
+# ══════════════════════════════════════════════════════════════════════
+# v49 —— 【纯诊断】钉死「谁把 textContainer.size.width 推回 390」
+# ══════════════════════════════════════════════════════════════════════
+#
+# ── log18 实测: v48 起了一半作用, 但重文本仍未治好 ──
+#
+# log18(59 条 V44-TEXTFRAME)按容器宽分组:
+#
+#     tcW      条数   gap最小  gap最大
+#     358.0      10      8.1      8.5     ← 全部正常
+#     390.0      49      8.2     97.6     ← ★18 帧正常 + 31 帧残缺(混合!)
+#
+# ★★ log17 的"tcW 与 gap 完全同构"**被打破**了:
+# len=122 在 tcW=390 下 gap=8.2(**正常**) —— 前两版从未有过这个组合。
+# ⇒ **v48 的钉宽确实生效了**, 但只治好了轻文本。
+#
+# 而重文本(len=1013, 含 1 个表格)仍然残缺:
+#
+#     n=9   cachedW=357.0  tcW=358.0  usedH=1727.6  gap=8.1    ✅
+#     n=10  cachedW=389.0  tcW=390.0  usedH=1638.1  gap=97.6   ❌
+#
+# **cachedW 与 tcW 完全同构(35/36 零例外)** ⇒ 推宽者与 cachedW 同源。
+#
+# ── 逐毫秒读 log18 的 00:07:42 那几行, 因果链就齐了 ──
+#
+#   .672 [V42-GATE] cvW=390.0 latched=0.0 raw=0.0 storageLen=1013
+#        [V41-KVOPRE] sv=(16,202.7,358.0,1377.7) needH=0.0 cvW=390.0
+#   .676 [V43-WIDTH] dirtyW=390.0 netW=358.0 hDirty=1646.3 hNet=1735.7 dh=89.3
+#   .678 [V42-MISS] selfMeasured needH=1735.7 **tcW=358.0**   ← ★此刻排版是对的
+#        [V41-KVOHEIGHT] svH 1377.7→1735.7 debt=358.0
+#   .679 [V46-ATTACH] usedH=1638.1 **tcW=390.0** cachedW=389.0 ← ★2ms 后被推回
+#        [V44-TEXTFRAME] tcW=390.0 usedH=1638.1
+#
+# ⇒ 在 42.678→42.679 这**1 毫秒**里, tcW 从 358 变成 390。
+# v48 的钉宽写在 `layoutSubviews` 里的 v18 段(缩进 12, 三层深),
+# 而这段代码在**表格附件测量(V46-ATTACH)** 之前就跑完了 ——
+# 纠偏时机**早于**推宽时机, 于是追不上。
+#
+# ── 为什么这一版是纯诊断, 不直接修 ──
+#
+# 从"1 毫秒内被推回"能推出候选写入者至少三个: V46 的 attachmentBounds
+# 测量链、v37 的 probe 钳位链、SwiftUI 自己的布局 pass。**三者的修法互相冲突**:
+# 放宽 V46 会动 v16 表格渲染; 动 probe 钳位会动 v37 那套 9 处泄漏防护;
+# 抢 SwiftUI pass 就是 v13/v34 翻车的老路。
+# 而 D4(`TextContainerGuard` 熔断 219 次, 358x2000 被熔 109 次)那条路
+# 是治 fillLayoutHole 11918ms 卡死的, 同样是历史 trade-off。
+#
+# ⇒ 先用探针把「谁最后写的 tcW、值从哪来」打出来, 装机一次就能定位到**行**,
+#    而不是继续在三个候选里猜。判据只读, 段内零赋值(与 v44/v46 同纪律)。
+#
+# ── 探针设计: 记录每一次 tcW 变化及其"来源指纹" ──
+#
+# 关键难点: Swift 无法在赋值点拦截。改用**前后差分 + 时序对齐**:
+#   在 v18 段末尾(layoutSubviews 内, v48 钉宽**之后**)读一次 tcW,
+#   在 KVO 抢帧器里(v41 补高处)再读一次, 两者同帧比对:
+#     · v18 读到的已是 358, KVO 读到 390 ⇒ 推宽发生在 v18 之后
+#   再叠加 `attV46CachedWidth`(cachedW)与 `cvW`, 三者构成完整指纹。
+#
+# ★ 为什么指纹里要记 `boundW`(textContainer 自身 bounds 宽):
+#   TextKit 内部有一条独立于 size 的排版路径会用 bounds 推导宽度。
+#   log18 里 `tcH=2000.0` 与 `358x2000.0` 被熔 109 次说明容器高常被放到
+#   2000(v25/v26 遗留), 此时 TextKit 可能走 bounds 分支。
+#   只记 size 看不到这一条。
+
+# ★ v49 探针的静态状态声明为**类型级**(与 v44/v46 的诊断 struct 同法),
+#   不能留在函数内 —— 【本轮实踩, 编译级】原先把它放在 v18 段(layoutSubviews
+#   内)声明, 而 KVO 侧探针在另一个函数里引用 `_V49W`, **Swift 局部类型
+#   跨函数不可见 → 编译直接失败**。类型级 struct 的 static 存储同样是
+#   全进程单例, 语义不变, 探针只在自己的两个点读写它。
+_V49_STATE = """    /// [V49-WSTATE] 探针静态状态: v18 段与 KVO 段的同帧读数 + 来源指纹。
+    /// **必须是类型级** —— 两个读点分处 layoutSubviews 与 KVO 闭包两个函数,
+    /// 函数内局部 struct 跨函数不可见(本轮实踩, 编译失败)。
+    /// 纯诊断用的记忆字段, 不参与任何布局决策。
+    struct _V49W {
+        static var last: CFTimeInterval = 0
+        static var n: UInt = 0
+        // ★跨函数指纹: v18 段(layoutSubviews)与 KVO 抢帧器各写一次,
+        // 两者在**同一帧**内的差值就是"谁在 v18 之后推的宽"。
+        static var v18W: CGFloat = -1
+        static var v18Tick: UInt = 0
+        static var kvoW: CGFloat = -1
+        static var kvoTick: UInt = 0
+        static var tick: UInt = 0
+    }
+"""
+
+_V49_TAIL = """            // [V49-WWRITER-V18] log18 归因: **谁**把容器宽推回 390。
+            // 纯诊断, 段内零赋值 —— 与 v44/v46 同纪律, 行为改动必须另起一版。
+            //
+            // log18 逐毫秒铁证(00:07:42):
+            //   .678 [V42-MISS] tcW=358.0  usedH=1727.6  ← 排版正确
+            //   .679 V46-ATTACH tcW=390.0  usedH=1638.1  ← 1ms 后被推回
+            // 而 v48 的钉宽写在 v18 段内(本段之前就跑完了) ⇒ 纠偏早于推宽,
+            // 追不上。所以 v48 治好了轻文本(len=122 在 390 宽下 gap=8.2)
+            // 却治不了重文本(len=1013 在 358 宽下 gap=8.1、在 390 下 97.6)。
+            //
+            // 候选写入者至少三个(V46 附件测量链 / v37 probe 钳位链 /
+            // SwiftUI 布局 pass), 修法互相冲突, 先探针定位到行再动刀。
+            _V49W.tick &+= 1
+            self.ios15V18W = textContainer.size.width
+            _V49W.v18W = textContainer.size.width
+            _V49W.v18Tick = _V49W.tick
+            // [V49-WWRITER-V18-END] 段结束标记 —— 见 v49 判据第 3 组。
+"""
+
+_V49_KVO = """                        // [V49-WWRITER-KVO] KVO 侧读数(与 v18 侧同帧比对)
+                        _V49W.tick &+= 1
+                        _V49W.kvoW = self.textContainer.size.width
+                        _V49W.kvoTick = _V49W.tick
+                        // ★来源指纹三个都必须是**真实读数**, 声明了不赋值等于白打:
+                        //   cvW   = collectionView 自身脏宽(log18 里恒 390,
+                        //           而 svW 是 358 —— 两者之差 32 就是嫌疑)
+                        //   laidW = v47 注入的 ios15LastLaidOutW, 即行碎片**上一次
+                        //           定型时用的排版宽**。装机后判据:
+                        //             laidW=358 而 kvoW=390 ⇒ 碎片按 358 排过,
+                        //             容器宽却被推回 390 —— 排版与视口脱钩,
+                        //             gap 就是 97.6 那种空壳;
+                        //             laidW=390 ⇒ 连排版都按脏宽定型了(v47 判据
+                        //             压根没触发), 修法完全不同。
+                        // ★cvW 直接用本 KVO 闭包已有的局部量 cvW(作用域内, 零新增读取)。
+                        // ★laidW 走 v47 注入的类型级属性(同在
+                        //   SelectableMarkdownTextView 内, 可读)。
+                        //   —— 本轮实踩: 原先想用 v46 的只读 getter
+                        //   `attV46CachedWidth`(log18 里 cachedW=389 ↔ tcW=390
+                        //   完全同构 35/36, 是最直接的嫌疑), 但那个 getter 声明在
+                        //   **TableAttachment 类**里(@2039), 而本探针在
+                        //   **SelectableMarkdownTextView** 内 —— **跨类访问不到,
+                        //   编译直接失败**。换成同类型的 laidW, 诊断力不减:
+                        //   两者问的都是"碎片按哪个宽排的"。
+                        // ★不新加读取语句, 免得探针自己引入新的布局读取扰动。
+                        self.ios15V41CvW = cvW
+                        self.ios15V46LaidOutW = self.ios15LastLaidOutW ?? -1
+                        let _v49Now = CACurrentMediaTime()
+                        if _v49Now - _V49W.last > 0.5 {
+                            _V49W.last = _v49Now
+                            _V49W.n &+= 1
+                            let _v49SameTick = _V49W.v18Tick == _V49W.kvoTick
+                            NSLog("[V49-WWRITER] v18W=%.1f kvoW=%.1f boundW=%.1f cvW=%.1f laidW=%.1f tcH=%.1f sameTick=%d dtick=%d usedH=%.1f needH=%.1f len=%d n=%u",
+                                  _V49W.v18W, _V49W.kvoW, self.textContainer.bounds.width,
+                                  self.ios15V41CvW, self.ios15V46LaidOutW,
+                                  self.textContainer.size.height,
+                                  _v49SameTick ? 1 : 0,
+                                  Int(_V49W.kvoTick &- _V49W.v18Tick),
+                                  self.layoutManager.usedRect(for: self.textContainer).height,
+                                  self.ios15LastNeededH, self.textStorage.length, _V49W.n)
+                        }
+                        // [V49-WWRITER-KVO-END] 段结束标记 —— 见 v49 判据第 3 组。
+"""
+
+
+def fix_width_writer_diag_v49(t):
+    """v49: 【纯诊断】钉死「谁把 textContainer.size.width 推回 390」。
+
+    见本函数上方 V49 段的大段归因注释。核心结论三条:
+
+    1. log18 证明 v48 **方向对但只治好轻文本** —— tcW=390 组里第一次出现
+       gap=8.2 的正常帧(len=122), 而 len=1013(重文本+表格)仍然 97.6。
+    2. 逐毫秒对齐: tcW 在 `00:07:42.678 → .679` 的 **1 毫秒**内从 358
+       变成 390, 推宽者是 V46 附件测量链(`cachedW=389` 与 `tcW=390`
+       完全同构 35/36)。而 v48 的钉宽在 v18 段, **早于**它跑完。
+    3. 候选写入者三个且修法互相冲突 ⇒ 本版只探不打。
+
+    探针落在两处(构成同帧差分):
+      · v18 段末尾(layoutSubviews 内, **v48 钉宽之后**)—— 记 `v18W`
+      · v41 KVO 抢帧器内 —— 记 `kvoW` + 完整来源指纹
+    两处读数在同一 tick 内不同 ⇒ 中间有人写过。
+    """
+    # ---- 注入点 1: v48 的钉宽 if 之后 ----
+    OLD1 = """            if _ios15WRegrabbed, abs(textContainer.size.width - _realW2) > 0.5 {
+                textContainer.size.width = _realW2
+            }"""
+    if OLD1 not in t:
+        raise RuntimeError(
+            "fix_width_writer_diag_v49: 未找到 v48 的钉宽锚点 —— "
+            "v48 结构变了, 必须更新 OLD1 后再发版")
+    if t.count(OLD1) != 1:
+        raise RuntimeError(
+            "fix_width_writer_diag_v49: v48 钉宽锚点命中 %d 处(应恰为 1), "
+            "定位会错" % t.count(OLD1))
+    t = t.replace(OLD1, OLD1 + "\n" + _V49_TAIL.rstrip("\n"), 1)
+
+    # ---- 注入点 2: v41 KVO 抢帧器内(V41-KVOHEIGHT 那条日志之后) ----
+    # 选它是因为它是"v18 之后、SwiftUI pass 之外"的最后一个已知观测点,
+    # 且 log18 显示 KVO 在 42.678 触发过 —— 正是推宽的那一毫秒。
+    OLD2 = 'NSLog("[V41-KVOHEIGHT]'
+    i2 = t.find(OLD2)
+    if i2 < 0:
+        raise RuntimeError(
+            "fix_width_writer_diag_v49: 未找到 V41-KVOHEIGHT 日志锚点 —— "
+            "v41 结构变了, 必须更新 OLD2 后再发版")
+    if t.count(OLD2) != 1:
+        raise RuntimeError(
+            "fix_width_writer_diag_v49: V41-KVOHEIGHT 命中 %d 处(应恰为 1)"
+            % t.count(OLD2))
+    # 定位这条 NSLog 所在调用的结尾(`)` 后跟换行 + 缩进), 插在其后
+    # ★插入点用**下游稳定锚点**, 不用"找这条 NSLog 的结尾"——
+    #   V41-KVOHEIGHT 是多行格式串, 它的参数列表在下一行, 而 `t.find(");")`
+    #   会越过整个补高块抓到 500 多行之后的某个 `);`(实测偏到行 6298,
+    #   而日志在行 5730)。三版定位写法都栽在这里:
+    #     · find(")", find("n=%u")) → 抓到 v44 那条日志(格式串末尾也是 n=%u)
+    #     · find(");")            → 越过补高块抓到远处的括号
+    #     · find 整块 OLD1         → 位置对但被前面的错误定位连带
+    #   纪律: **锚点必须是下游的真实代码标记, 不能是"某个分隔符"**。
+    #   这里用 v41 补高块结束的那两行(唯一的):
+    #       }            ← 关掉 0.5s 节流块
+    #       f = _hFix    ← 交棒给后续宽度修正
+    #   插在 `f = _hFix` 之后 —— 此时 v41 的高度已补完, 是"v18 之后的
+    #   最后一个已知观测点", 正是探针要对比的位置。
+    #   裸串 "f = _hFix" 在文件里有**两处**: 一处是 v41 自己写的**注释**
+    #   (「(`f = _hFix`), Swift 的 let 不可重新赋值」), 一处是真代码。
+    #   裸串计数为 2 —— 与 v48 期间"锚点必须唯一"同一个教训, 这里补上前缀。
+    _HANDOFF = "交棒: 下面的宽度修正必须基于新高度继续"
+    i2end = t.find(_HANDOFF, i2)
+    if i2end < 0:
+        raise RuntimeError(
+            "fix_width_writer_diag_v49: 未找到 v41 的交棒注释锚点 —— "
+            "v41 结构变了, 必须更新 _HANDOFF 后再发版")
+    # 从注释行推到该行末尾(下一个换行), 插在它之后
+    i2end = t.find("\n", i2end)
+    if i2end < 0:
+        raise RuntimeError("fix_width_writer_diag_v49: 交棒行结尾定位失败")
+    t = (t[:i2end + 1] + _V49_KVO.rstrip("\n") + "\n"
+         + t[i2end + 1:].lstrip("\n"))
+
+    # ---- 探针状态: 类型级 struct + 三个实例属性 ----
+    # ★ struct 必须与实例属性**分开注入**: struct 是类型级声明, 属性是
+    #   实例级, 前者是 `    struct`(4 空格)后者是 `    var`(4 空格),
+    #   但 struct 内部成员是 8 空格 —— 混在一段里会写出坏的缩进层级。
+    #   更要紧的是语义: struct 的 static 存储全进程单例(两个读点共享),
+    #   属性是每实例一份(只做"最近一次读数"的可观测出口)。
+    DECL = """    var ios15V18W: CGFloat = -1
+    var ios15V41CvW: CGFloat = -1
+    var ios15V46LaidOutW: CGFloat = -1
+"""
+    DECL_ANCHOR = "    /// [V47-WSTATE]"
+    if DECL_ANCHOR not in t:
+        raise RuntimeError(
+            "fix_width_writer_diag_v49: 未找到 V47-WSTATE 属性声明锚点 —— "
+            "v47 结构变了, 必须更新 DECL_ANCHOR 后再发版")
+    t = t.replace(DECL_ANCHOR, _V49_STATE.rstrip("\n") + "\n" + DECL + DECL_ANCHOR, 1)
+
+    # ---- 注入后自检 ----
+    # 结构判据实现在本文件内(verify_width_writer_v49), 因为注入时就要用它
+    # 把关; CI 侧另有一份 scripts/ios15_verify/verify_v49.py 做 70 条正向
+    # 判据 + 另两项(作用域/重文本)。两份**互补不重叠**:
+    #   本函数 = 注入时最小自检(结构 + 零赋值 + 加法), 缺它就没有"注入即拦"
+    #   verify_v49.py = 装机前完整正向验证(70 条)
+    #   scope_check_v49.py = 编译级作用域
+    #   reverse_v49_heavy.py = 重文本专项
+    # 纪律: **同一类判据只能有一处实现**(v48 的 run#37133557819 就是死于
+    # 内联判据与 verify_v47.py 两份副本只改了一份)。上面四类**职责不重叠**,
+    # 所以不构成副本。
+    verify_width_writer_v49(t)
+    return t
+
+
+# v49 段禁写的标识 —— 纯诊断: 连宽度读取都不该改, 更不该写。
+_V49_FORBIDDEN_LHS = frozenset((
+    "textContainer", "size", "bounds", "frame", "origin", "layoutManager",
+    "textStorage", "characterStorage", "cachedLayout", "rowHeights",
+    "attV46CachedWidth", "attV46CachedTotalH", "ios15LastNeededH",
+))
+
+# v49 段右边界锚点 —— **由探针自己声明**, 不借外部标记。
+# 【本轮实踩, 连踩两次】原先 v18 侧借 `// [IOS15-FIX-RELC v28]`、KVO 侧借
+# `NSLog("[V44-TEXTFRAME]` 当右界, 两处都错:
+#   · KVO 侧那个右界在下游 5000 行开外, 把 v41 自己的 `f = _hFix`、
+#     v45 整段、v46 整段全吞进"探针段" ⇒ 段内零赋值判据必然误报
+#     (报错: "KVO 侧 探针段内出现赋值 'f = _hFix'")。
+#   · 借外部标记 = 判据与被注入代码的**下游邻居**耦合, 上游重排版本一改
+#     邻居就误报, 而那段邻居跟本版毫无关系。
+# 正确做法: 每段自带 END 标记, 判据只认自己这一对标记。段边界由注入函数
+# 自己定义, 与文件其他部分零耦合。
+_V49_END_V18 = "// [V49-WWRITER-V18-END]"
+_V49_END_KVO = "// [V49-WWRITER-KVO-END]"
+
+
+def verify_width_writer_v49(t):
+    """校验 v49 探针段: 结构在位 + **段内零赋值**(纯诊断的硬底线)。"""
+    import re as _re
+
+    # ★两个注入点用**不同标记**, 按语义定位而不是按文件顺序 ——
+    #   KVO 侧在行 ~5730、v18 侧在行 ~8093, **KVO 侧排在前面**。
+    #   原先两处都叫 `// [V49-WWRITER]`, 判据用 `find` + `find(+1)` 取
+    #   "第一个/第二个", 于是把 i1(KVO 侧)当成 v18 侧, 坐标判据必然误报
+    #   (本轮实踩: "探针上游找不到 textContainer.size.width = _realW2")。
+    #   教训与"锚点必须唯一"同源, 但更进一层: **唯一还不够, 还得能区分**。
+    for tag, want in (("// [V49-WWRITER-V18]", 1), ("// [V49-WWRITER-KVO]", 1),
+                      ("/// [V49-WSTATE]", 1),
+                      (_V49_END_V18, 1), (_V49_END_KVO, 1)):
+        if t.count(tag) != want:
+            raise RuntimeError(
+                "verify_width_writer_v49: 标记 %s 计数应为 %d, 实为 %d"
+                % (tag, want, t.count(tag)))
+
+    # ---- 1. 两段都在位 ----
+    i1 = t.find("// [V49-WWRITER-V18]")
+    i2 = t.find("// [V49-WWRITER-KVO]")
+    if i1 < 0 or i2 < 0:
+        raise RuntimeError(
+            "verify_width_writer_v49: 两个探针注入点缺失(v18@%d kvo@%d)"
+            % (i1, i2))
+    # ★判据: 探针必须**紧邻在 v48 钉宽 if 的闭合花括号之后**。
+    #
+    # 【为什么不能用绝对坐标比较 —— 本轮连踩三次】
+    #   V48-PIN 标记、v18 既有钳宽、v48 钉宽 if 三者的行序是:
+    #       v18 既有钳宽(@425145) < V48-PIN(@426293) < v48 钉宽 if(@427269)
+    #   而 v49 探针插在钉宽 if 之后(@427431)。于是:
+    #     · 只比 PIN        → 探针 > PIN, 判据成立(这条碰巧对)
+    #     · 只比裸串钉宽行  → 抓到 v18 那处(@425145 < 探针), 判据成立(也碰巧对)
+    #     · 两者都比        → PIN(@426293) < 钉宽行(@425145) 不成立, **误报**
+    #   三次错位都源于"从文件里找某个串的坐标, 再猜它属于哪一处"。
+    #   正确做法: **只比"探针紧邻上游"** —— 以探针为起点往前找最近的
+    #   `_realW2` 写入, 它必然是 v48 的钉宽行(v18 那处远在几千行之外)。
+    #   这样判据与绝对行号无关, 上游重排版本也不会失效。
+    _up = t.rfind(_V48_ALLOWED_WRITE, 0, i1)
+    if _up < 0:
+        raise RuntimeError(
+            "verify_width_writer_v49: v18 侧探针上游找不到 %s —— "
+            "探针必须插在 v48 钉宽 if 之后" % _V48_ALLOWED_WRITE)
+    _gap = t[_up:i1]
+    # 两者之间只允许有注释、空行与那个 if 的闭合花括号 —— 有代码就是插错位置了
+    # _gap 的**正确形态**就是"那一行写入 + 闭合花括号":
+    #     textContainer.size.width = _realW2
+    # }
+    # 所以剥注释去空白后必须恰为 `textContainer.size.width=_realW2}`。
+    # 先前写成"只许 `}`"是判据写严了(本轮实踩, 自检当场抓出来)。
+    _code = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", _gap, flags=re.S))
+    _code = re.sub(r"\s+", "", _code)
+    _expect = re.sub(r"\s+", "", _V48_ALLOWED_WRITE + "}")
+    if _code != _expect:
+        raise RuntimeError(
+            "verify_width_writer_v49: 探针与 v48 钉宽行之间夹了非预期内容 —— "
+            "得到 %r, 应为 %r(探针必须紧邻钉宽 if 的闭合花括号)"
+            % (_code[:60], _expect))
+
+    # ---- 2. 探针状态声明齐全 ----
+    # ★ struct 必须是**类型级**(4 空格缩进, 紧邻实例属性块之前)——
+    #   函数内局部 struct 跨函数不可见, 两个读点分处 layoutSubviews 与
+    #   KVO 闭包, 放在函数内编译直接失败(本轮实踩)。
+    for k in ("var ios15V18W: CGFloat = -1",
+              "var ios15V41CvW: CGFloat = -1",
+              "var ios15V46LaidOutW: CGFloat = -1"):
+        if k not in t:
+            raise RuntimeError(
+                "verify_width_writer_v49: 缺少探针状态属性 %r" % k)
+    # 类型级 struct 的缩进层级必须正确: `    struct _V49W {`(4 空格)
+    if "\n    struct _V49W {\n" not in t:
+        raise RuntimeError(
+            "verify_width_writer_v49: _V49W 必须声明为**类型级** struct"
+            "(4 空格缩进) —— 函数内局部 struct 跨函数不可见, 会编译失败")
+    # 段内不得再出现 struct 声明(否则就是误放回函数内了)
+    for seg, name in (("v18 侧", _V49_TAIL), ("KVO 侧", _V49_KVO)):
+        if "struct _V49W" in name:
+            raise RuntimeError(
+                "verify_width_writer_v49: ★%s 探针文本里含 struct _V49W 声明 —— "
+                "它必须只出现在类型级声明段, 段内重复声明会遮蔽跨函数读取"
+                % name)
+
+    # ---- 3. ★段内零赋值(纯诊断的硬底线) ----
+    # 两个段各自独立判。段内**只允许**对静态探针字段(_V49W.*)与
+    # 探针状态属性(self.ios15V*)赋值 —— 那是探针自己的记忆位。
+    # 任何对 textContainer / size / bounds / frame / layoutManager /
+    # 缓存的赋值都算违规: 纯诊断一旦改了行为, 归因就作废
+    # (分不清"修好了"还是"被诊断改坏了")。
+    _end1 = t.find(_V49_END_V18, i1)
+    _seg1 = t[i1:_end1] if _end1 > i1 else ""
+    _end2 = t.find(_V49_END_KVO, i2)
+    _seg2 = t[i2:_end2] if _end2 > i2 else ""
+    if not (_seg1 and _seg2):
+        raise RuntimeError(
+            "verify_width_writer_v49: 探针段切片失败(seg1=%d seg2=%d 字符) —— "
+            "END 标记必须在各自 START 标记下游" % (len(_seg1), len(_seg2)))
+
+    for seg, name in ((_seg1, "v18 侧"), (_seg2, "KVO 侧")):
+        code = _re.sub(r"//[^\n]*", "",
+                       _re.sub(r"/\*.*?\*/", "", seg, flags=_re.S))
+        for ln in code.split("\n"):
+            m = _re.match(r"\s*(?:let\s+|var\s+)?([\w.]+)\s*(?:=|\+=|-=|\*=|/=)(?!=)", ln)
+            if not m:
+                continue
+            tgt = m.group(1)
+            last = tgt.split(".")[-1]
+            # 允许: 探针自己的记忆位
+            # ★按**最后一段**匹配, 与 reverse_v49_heavy.py 的 ALLOWED_EXACT
+            #   保持同一口径 —— 两边不一致会互相打脸(本轮实踩: 专项里对
+            #   `_V49W.v18W` 用完整串 startswith 判成越界, 误报)。
+            if last in ("last", "n", "v18W", "v18Tick", "kvoW",
+                        "kvoTick", "tick"):
+                continue
+            if last.startswith("ios15V"):
+                continue
+            if last.startswith("_v49"):
+                continue
+            raise RuntimeError(
+                "verify_width_writer_v49: ★%s 探针段内出现赋值 %r —— "
+                "本版是纯诊断, 一行写操作都会让归因作废"
+                % (name, ln.strip()[:60]))
+
+    # ---- 4. 段内零函数式写操作(invalidate*/setSize/computeLayout) ----
+    for seg, name in ((_seg1, "v18 侧"), (_seg2, "KVO 侧")):
+        code = _re.sub(r"//[^\n]*", "",
+                       _re.sub(r"/\*.*?\*/", "", seg, flags=_re.S))
+        for bad in ("invalidateLayout", "invalidateDisplay", "invalidateSize",
+                    "ensureLayout", "setNeedsLayout", "setNeedsDisplay",
+                    "setSize", "computeLayout", "invalidateCachedLayout"):
+            if bad in code:
+                raise RuntimeError(
+                    "verify_width_writer_v49: ★%s 探针段内出现 %s —— "
+                    "纯诊断不得触发任何布局或强制重排" % (name, bad))
+
+    # ---- 5. 日志字段齐全(装机后靠这些字段定位) ----
+    _need = ("v18W=", "kvoW=", "boundW=", "cvW=", "laidW=", "tcH=",
+             "sameTick=", "dtick=", "usedH=", "needH=", "len=")
+    for k in _need:
+        if k not in _seg2:
+            raise RuntimeError(
+                "verify_width_writer_v49: KVO 侧日志缺字段 %r —— "
+                "装机后靠它区分'同帧内被写'与'跨 pass 被写'" % k)
+    # 格式串与实参个数必须配平: %-specifier 数 == 实参数, 否则装机即崩。
+    # (纯诊断也不许崩 —— 崩了就拿不到日志, 整版白测。)
+    _spec = len([m for m in _re.findall(r"%[-0-9.]*[a-z]", _seg2)])
+    _arg = _seg2.count("%.1f") + _seg2.count("%d") + _seg2.count("%u")
+    if _spec != _arg:
+        raise RuntimeError(
+            "verify_width_writer_v49: KVO 侧日志格式符数 %d 与实参数 %d 不配平"
+            % (_spec, _arg))
+
+    # ---- 6. 加法保留: v44/v45/v46/v47/v48 一个都不能少 ----
+    # ★期望值必须**从干净上游跑完的完整链产物**上数, 不能凭印象写。
+    #   【本轮实踩, 与 v48 那次"假故障"同源】原先凭印象写了
+    #   V44=1/V45=1/V46=1, 实测基线是 2/2/4 —— 原因: 这些标记在产物里
+    #   **各出现多次**: 一次是段首的 `// [Vn-...] 见函数 docstring` 标记,
+    #   一次是段内 `NSLog("[Vn-...]`, 而 v46 另有第二处段(V46-ATTACH 出现 4 次)。
+    #   拿半截产物或凭印象数, 判据就成了假故障 —— 上一次就是这样差点把
+    #   v48 的真修法一起改坏。
+    #   基线: /tmp/v48fin(干净上游 1.14 跑完 v48 全链)581354 字节。
+    for tag, want in (("// [V48-PIN]", 1), ("// [V47-REWRAP]", 2),
+                      ("/// [V47-WSTATE]", 1), ("[V44-TEXTFRAME]", 2),
+                      ("[V45-TVHFIX]", 2), ("[V46-ATTACH]", 4)):
+        if t.count(tag) != want:
+            raise RuntimeError(
+                "verify_width_writer_v49: 加法违例 %s 计数应为 %d, 实为 %d"
+                % (tag, want, t.count(tag)))
+
+    return True
+
+
 # [V47-FORBIDDEN] v47 段内禁写的标识集合 —— 精确匹配, 不用子串。
 #   用子串会踩坑: 既有变量 `_ios15WRegrabbed` 里含 "eight"(r-EIGHT-grabbed)。
 #   这里只列**真正与高度有关**的名字, 且区分大小写形态。
@@ -5779,6 +6227,7 @@ def main():
     # ---- v47: 统一测宽源(排版宽与目标宽同步) ----
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_reflow_v47, "v47: 统一测宽源 — 治'终端框盖住上面的字/定时任务字一下有一下没有'(v46 纯诊断归因, log16 45 条: **D1/D2/D3 三个候选全排除** —— `attWant==attCached` 45/45 缓存新鲜, `cachedW` 与 `tcW` 恒差 1.0 不是陈旧值, `attNVI=1` 0/45 失效信号从未置位。真凶是**排版宽与测高宽不同源**: `tcH-needH=-8.0` 恒定证明容器高度没问题, `V43-WIDTH dirtyW=390 netW=358 dh=0.0` 证明测高用的净宽 358 也没问题, 但 `tcW` 实测恒为 390 且 `tcH-usedH` 在异常组达 44~67pt —— **同一段文字在 390/358 两个宽度下排出的行数不同**, 行碎片停在旧宽而 needH 恒按新宽算, 差出的就是空壳(终端框于是画在空壳上)。根因是 `_ios15WRegrabbed` 由 `abs(tcW-_realW2)>0.5` 决定, 它只表示'有没有改过容器宽'而不表示'碎片有没有按目标宽重排过' —— 而 `invalidateLayout` 才是让碎片重排的那一步。修法: 新增 `ios15LastLaidOutW` 记住上次排版宽, 与目标宽不等就补一次 invalidateLayout。**不新增任何宽度写入点**(仍只有 v18 那两处)、**不碰高度**(v45 成果保护), 稳态下零额外开销且幂等。v13/v34 曾因抢宽引起闪屏与整体缩小, 那是改钳宽翻的车, 本版只加同宽重排。★登记必须排在 v46 之后")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_pin_v48, "v48: 排版宽钉回目标宽 — 收口 log17 实测的「v47 只治了一半」。log17 对比 log16: tcW=390 的帧 69→48(v47 的重排确实触发了), 但仍有 48/56 帧 tcW 是 390 —— 因为 v47 只调 invalidateLayout **不写 textContainer.size.width**, TextKit 的 ensureLayout 只在当前容器宽下重排, 容器还是 390 时重排出来的仍是 390 宽的行数, 与按 358 算的 _needH 依旧不同源。**log17 里 tcW 与 gap 完全同构、零例外**: tcW=358.0 → tvH-usedH 恒 8.0~8.3(= textContainerInset 上下之和, 正常态), tcW=390.0 → gap 为 30.5(len=229)/117.5(len=839, 连续 26 条一模一样)。len=229 那组最直接: 同一段文字, 358 宽 gap=8.1, 390 宽 gap=30.5, 差值就是 390 宽排不下的那几行。tvH-needH 全部 56 条为 0.0, v45 补高依然完美, 问题**只在宽度不在高度**。修法: 碎片与目标宽不一致时, **连容器宽一起钉回 _realW2**, 两者合起来才是完整条件(容器宽==目标宽 且 碎片按目标宽重排过); v47 的 ios15LastLaidOutW 判据保留不动, 两个判据正交。**这不是新的抢宽时机**: 写在 v18 段内, 复用 v18 已算好的 _realW2(与 sizeThatFits 测高同一个值), 不引入第三方宽度; 判据 abs(tcW-_realW2)>0.5 保证幂等(已在 358 不写不重排, 稳态零开销; 被推回 390 才纠偏一次, 是**纠偏**不是**竞争**)。v13/v34 翻车是因为在布局 pass外无条件抢宽、与 SwiftUI 竞争, 本版恰好相反; 只写 size.width, **不碰 frame/bounds/origin/高度**, 不会引起「整体缩小」那类几何漂移, 也不推翻 v45。**不做常驻钳宽**: 每帧无条件写 358 正是 v13/v34 的翻车形态。校验用**白名单**(只许 textContainer.size.width = _realW2, 精确等值)而非黑名单 —— 多写一个 frame.origin 就足以让整棵 cell 重新布局。★登记必须排在 v47 之后(锚点是 v47 注入的判据块)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_width_writer_diag_v49, "v49: 【纯诊断, 不改任何行为】V49-WWRITER — 钉死「谁把 textContainer.size.width 推回 390」。log18 首次打破 log17 的「tcW 与 gap 完全同构」: tcW=390 组里出现 18 帧 gap=8.2(**正常**) —— len=122 在 390 宽下排版正确, 前两版从未有过 ⇒ **v48 钉宽确实生效, 但只治好轻文本**。重文本 len=1013(含 1 个表格)仍残缺: n=9 cachedW=357→tcW=358→usedH=1727.6 gap=8.1 ✅ / n=10 cachedW=389→tcW=390→usedH=1638.1 gap=97.6 ❌ —— **cachedW 与 tcW 完全同构(35/36)**。逐毫秒读 00:07:42: .678 [V42-MISS] tcW=358 usedH=1727.6(对) → .679 [V46-ATTACH] tcW=390 usedH=1638.1, **1 毫秒内被推回**; 而 v48 的钉宽写在 v18 段(缩进 12, layoutSubviews 内), **早于**表格附件测量链跑完 ⇒ 纠偏追不上。**为什么纯诊断不盲修**: 候选写入者至少三个(V46 attachmentBounds 测量链 / v37 probe 钳位链 / SwiftUI 布局 pass), 修法互相冲突 —— 放宽 V46 动表格渲染, 动 probe 钳位动 v37 那套 9 处泄漏防护, 抢 SwiftUI pass 是 v13/v34 翻车老路; 而 D4(TextContainerGuard 熔断 219 次, 358x2000 被熔 109 次)那条路是治 fillLayoutHole 11918ms 卡死的, 同样是历史 trade-off。先探针定位到**行**再动刀。探针两处构成**同帧差分**: v18 段末尾(v48 钉宽之后, 记 v18W) + v41 KVO 抢帧器(记 kvoW + 来源指纹 cvW/laidW/boundW/tcH)。同 tick 内读到不同值 ⇒ 中间有人写过; 跨 tick ⇒ SwiftUI pass 之间写的。段内零赋值零 invalidate*(与 v44/v46 同纪律), 指纹全部走既有只读属性与本闭包局部量(cvW 用 KVO 闭包内已有的局部量, laidW 用 v47 注入的 ios15LastLaidOutW), 不新增读取语句以免探针自己扰动布局。★本轮实踩两个**编译级**坑: (1) struct _V49W 声明在函数体内 → KVO 侧跨函数引用不到(局部类型跨函数不可见) ⇒ 已提到类型级; (2) 原想读 v46 的 attV46CachedWidth, 但那个 getter 声明在 **TableAttachment** 类里而探针在 SelectableMarkdownTextView 内 ⇒ 跨类访问, 编译失败 ⇒ 换成同类型的 laidW(问的都是「碎片按哪个宽排的」, 诊断力不减)。为此新增 scripts/ios15_verify/scope_check_v49.py 专查作用域(判据查不出编译问题)。0.5s 节流与 V44/V45/V46/V41 同周期。★登记必须排在 v48 之后(探针要读 v48 钉宽之后的值)")
     # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")
