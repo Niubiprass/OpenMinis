@@ -38,7 +38,7 @@
 
 【探针设计】两处构成**同帧差分**:
     v18 段末尾(v48 钉宽**之后**, 记 v18W + v18Tick)
-    v41 KVO 抢帧器(记 kvoW + kvoTick + 来源指纹 cvW/laidW/boundW/tcH)
+    v41 KVO 抢帧器(记 kvoW + kvoTick + 来源指纹 cvW/laidW/fragW/tcH)
 同 tick 内读到不同值 ⇒ 中间有人写过; 跨 tick ⇒ SwiftUI pass 之间写的。
 
 用法: verify_v49.py [产物根目录 或 swift 文件]
@@ -150,7 +150,7 @@ for bad_f in ("invalidateLayout", "invalidateDisplay", "invalidateSize",
     ck("无 %s" % bad_f, bad_f not in code_of(s1) + code_of(s2))
 
 print("=== 6. 日志字段齐全(装机后靠它定位) ===")
-for f in ("v18W=", "kvoW=", "boundW=", "cvW=", "laidW=", "tcH=",
+for f in ("v18W=", "kvoW=", "fragW=", "cvW=", "laidW=", "tcH=",
           "sameTick=", "dtick=", "usedH=", "needH=", "len=", "n="):
     ck("字段 %s" % f, f in s2)
 # 格式符与实参配平 —— 不配平则装机即崩, 崩了就拿不到日志, 整版白测
@@ -190,9 +190,12 @@ if _m:
     ck("size.height 只在节流内读",
        all(x.start() > _g for x in
            re.finditer(re.escape("textContainer.size.height"), _c2)))
-    ck("bounds.width 只在节流内读",
+    ck("lineFragmentWidth 只在节流内读",
        all(x.start() > _g for x in
-           re.finditer(re.escape("textContainer.bounds.width"), _c2)))
+           re.finditer(re.escape("textContainer.lineFragmentWidth"), _c2)))
+    ck("★不得出现 textContainer.bounds(NSTextContainer 无此属性, 编译失败)",
+       "textContainer.bounds" not in t,
+       "run#37139821021 就死在这一行上")
 ck("节流周期与 V44/V45/V46/V41 同为 0.5s", "> 0.5 {" in _c2)
 
 print("=== 10. 加法: v44~v48 一个都不能少 ===")

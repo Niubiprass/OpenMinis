@@ -284,6 +284,77 @@ def scope_check_v49(t):
                       "而探针在 %s 内, 跨类访问编译失败"
                       % (name, sorted(hit)[0], oc, HOST))
 
+    # ---- E. ★探针调用的 API 必须在接收者类型上真实存在 ----
+    #
+    # 【本轮实踩, run#37139821021】v49 探针里写了
+    #     self.textContainer.bounds.width
+    # `NSTextContainer` 是 `NSView`(NSLayoutManager 那侧)之外的**纯
+    # TextKit 对象**, 它**没有 bounds** —— 那是 NSView 的 API:
+    #     error: value of type 'NSTextContainer' has no member 'bounds'
+    #
+    # ★为什么 B/C 两层都没抓到: 上面 `inherited` 白名单里有 "bounds"
+    #   (它是宿主类 SelectableMarkdownTextView 自己的 UIView 成员),
+    #   于是 `self.textContainer.bounds` 里的 `bounds` 被当成"继承自
+    #   UIKitView 的合法成员"放行。**白名单只验名字, 不验接收者** ——
+    #   同一个名字挂在不同类型的链路上, 合法性完全不同。
+    #
+    #   修法: 这里单列一张"已知 TextKit 对象的合法成员"表, 只覆盖
+    #   探针真正可能碰的几个对象。表外的一律要求显式登记。
+    # ★表里**故意不含 "self"**: 宿主类自己的成员由 B/C 两层管(它们查的是
+    #   宿主类体与其它顶层类型)。这张表只管"挂在 TextKit 对象上的成员",
+    #   把 self 塞进来会让 `self.ios15V18W` 被判成"self 上没有这个成员"。
+    KNOWN_MEMBERS = {
+        "textContainer": {
+            "size", "lineFragmentWidth", "layoutManager", "textStorage",
+            "maximumNumberOfLines", "lineBreakMode", "lineFragmentPadding",
+        },
+        "layoutManager": {
+            "usedRect", "usedRange", "textContainer", "textStorage",
+            "glyphRange", "numberOfGlyphs", "allowsNonContiguousLayout",
+        },
+        "textStorage": {"length"},
+    }
+    for seg, name in ((seg_v18, "v18 侧"), (seg_kvo, "KVO 侧")):
+        code = _strip_comments(seg)
+        # ★必须抓**完整链**的最后一跳。
+        #   【本轮实踩】第一版写的是 `(?<![\w.])([a-z_]\w*)\.([a-z_]\w*)`,
+        #   只能抓到 "self".'textContainer' 这种两段链的第一跳, 于是
+        #   `self.textContainer.attachedRange` 里真正要查的 **attachedRange
+        #   根本没被看到** —— 4 条 sabotage 全漏放, 检查形同虚设。
+        #   正确做法: 先把 `X.Y` 连续链整体抓出来, 再逐跳验证。
+        for m in re.finditer(r"(?<![\w.])([a-z_]\w*(?:\.[a-z_]\w*)+)", code):
+            chain = m.group(1).split(".")
+            # 逐跳推进: 只要当前节点是已知 TextKit 对象, 就用它那张表
+            # 校验**下一跳**, 然后把下一跳当作新的当前节点继续。
+            # ★不能"校验通过就 break" —— `self.textContainer.layoutManager.xxx`
+            # 里 textContainer 与 layoutManager **都是** TextKit 对象,
+            # 中间那一跳也要查。第一版在 textContainer 验通后直接 break,
+            # 于是 `textContainer.layoutManager.estimatedGlyphCount` 全漏放。
+            for idx in range(len(chain) - 1):
+                node, nxt = chain[idx], chain[idx + 1]
+                if node not in KNOWN_MEMBERS:
+                    if node == "self":
+                        # ★只能**跳过**, 不能 break(本轮实踩, 调试出来的)。
+                        #   Swift 成员访问几乎都写成 `self.textContainer.xxx`,
+                        #   于是 chain[0] 恒为 "self" —— 一开始就 break 的话,
+                    #   后面每一跳都不会被检查, 整条 E 层形同虚设
+                    #   (4 条 sabotage 全漏放却毫无察觉)。
+                        continue
+                    break          # 已离开 TextKit 链路(局部量等), 归 B/C 层
+                if nxt in KNOWN_MEMBERS[node]:
+                    continue      # 这一跳合法, 继续沿链推进
+                _fail("★%s 探针访问 %s —— **%s 上没有这个成员**, "
+                      "编译会失败(run#37139821021 就是这么挂的: "
+                      "NSTextContainer 没有 bounds, 那是 NSView 的 API)。"
+                      "TextKit 对象的合法成员表见本函数 KNOWN_MEMBERS"
+                      % (name, ".".join(chain[:idx + 1] + [nxt]), node))
+
+    # ★单点硬禁: 探针里出现 textContainer.bounds 即失败。
+    #   历史教训见上 —— 即使有人后来往白名单里补了 "bounds", 这条仍然拦。
+    if "textContainer.bounds" in _strip_comments(seg_v18 + seg_kvo):
+        _fail("★探针出现 textContainer.bounds —— NSTextContainer 没有 "
+              "bounds(那是 NSView 的)。请用 lineFragmentWidth(排版行宽)")
+
     return True
 
 
@@ -298,7 +369,7 @@ def main():
         print("❌ %s" % e)
         return 1
     print("✅ v49 探针作用域检查通过 (A 类型级 struct / B 标识符可见 / "
-          "C 无跨类访问)")
+          "C 无跨类访问 / E TextKit 成员存在)")
     return 0
 
 
