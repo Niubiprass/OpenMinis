@@ -750,6 +750,17 @@ jobs:
             # (2) 位置: 必须在 v45 之后、v44 之前(插入点固定在 V44 段头 ⇒ v45→v46→v44)
             #     【反向测试 C2 逼出来的】只查"在 v45 之后"会漏放"搬到 v44 之后", 两个方向都要钉死
             _v46_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); a=t.index('// [V45-TVHFIX]') if '// [V45-TVHFIX]' in t else -1; b=t.index('// [V46-ATTACH] 表格附件高度') if '// [V46-ATTACH] 表格附件高度' in t else -1; c=t.index('// [V44-TEXTFRAME] 见函数 docstring') if '// [V44-TEXTFRAME] 见函数 docstring' in t else -1; print('OK' if (a>=0 and b>a and c>b) else 'BAD v45@%d v46@%d v44@%d'%(a,b,c))")
+            # (2b) ★API 名存在性: run#37124793234 的真实死因。
+            #      注入与其它断言全绿, 但"编译 App"这步炸了 —— 第一版写了
+            #      `enumerateAttributes`(复数), 而 NSAttributedString 只有
+            #      `enumerateAttribute(_:in:options:using:)`(单数)。断言只看子串
+            #      存在性, 抓不到 API 名错误, 编译期才炸, 而那时已经跑了 7 分钟。
+            #      ★判"错名字"必须基于**剥掉注释后**的代码: 注入体里那段"踩坑记录"
+            #      注释本身就写着 enumerateAttributes 这个错名字, 直接搜原始文本
+            #      会自己把自己拦下(本地实跑踩了一轮)。剥注释用 python 单行
+            #      lambda(不用 def/多行, YAML 缩进 + shell + python 三层嵌套时
+            #      多行 -c 里的缩进会被原样带进去 SyntaxError, 这是本文件既有教训)。
+            _v46_api=$(python3 -c "import re;t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read();M='// [V46-ATTACH] 表格附件高度';b=t.index(M) if M in t else -1;c=t.index('// [V44-TEXTFRAME] 见函数 docstring',b) if (b>=0 and '// [V44-TEXTFRAME] 见函数 docstring' in t[b:]) else -1;seg=t[b:c] if (b>=0 and c>b) else '';code=re.sub(r'//[^\n]*','',re.sub(r'/\*.*?\*/','',seg,flags=re.S));bad=[w for w in ('enumerateAttributes','textStorage?.enumerate') if w in code];miss=[w for w in ('textStorage as? NSTextStorage','enumerateAttribute(','NSRange(location: 0, length: _v46St.length)') if w not in code];print('OK' if (code and not bad and not miss) else ('BAD:拼写错:'+'|'.join(bad) if bad else ('BAD:缺形式:'+'|'.join(miss) if miss else 'BAD:seg')))")
             # (3) ★纯诊断: 段内不得有 invalidate/强制布局/缓存写入, 否则等于偷偷把 v47 的活干了
             _v46_readonly=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); b=t.index('// [V46-ATTACH] 表格附件高度') if '// [V46-ATTACH] 表格附件高度' in t else -1; c=t.index('// [V44-TEXTFRAME] 见函数 docstring', b) if (b>=0 and '// [V44-TEXTFRAME] 见函数 docstring' in t[b:]) else -1; seg=t[b:c] if (b>=0 and c>b) else ''; bad=[w for w in ('invalidateLayout','invalidateDisplay','invalidateSize','ensureLayout','invalidateCachedLayout','cachedLayout =','needsLayoutInvalidation =','needsViewRebuild =','textContainer.size =','.frame =','setNeedsDisplay','computeLayout(') if w in seg]; print('OK' if (seg and not bad) else ('BAD:'+'|'.join(bad) if bad else 'BAD:seg'))")
             # (4) 访问器必须只读(无 setter)—— 结构上保证诊断改不了缓存
@@ -757,13 +768,15 @@ jobs:
             # (5) 加法 + 节流: v44/v45 必须都还在(诊断不是替换), 0.5s 节流同周期
             _v46_keep=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); q=chr(34); print('OK' if ('_v46Now - _V46Log.last > 0.5' in t and t.count('NSLog('+q+'[V46-ATTACH]')==1 and ('NSLog('+q+'[V44-TEXTFRAME]') in t and ('NSLog('+q+'[V45-TVHFIX]') in t) else 'BAD')")
             if [ "$_v46_fields" = "OK" ] && [ "$_v46_pos" = "OK" ] \
+               && [ "$_v46_api" = "OK" ] \
                && [ "$_v46_readonly" = "OK" ] && [ "$_v46_getter" = "OK" ] \
                && [ "$_v46_keep" = "OK" ]; then
-              echo "✅ v46 就位 (attWant/attCached/cachedW/attGen/attNVI 六字段齐全打四个候选根因, 段内只读无 invalidate/缓存写, 访问器无 setter, 位置 v45→v46→v44, 0.5s 节流, v44/v45 保留)"
+              echo "✅ v46 就位 (attWant/attCached/cachedW/attGen/attNVI 六字段齐全打四个候选根因, API 形式正确, 段内只读无 invalidate/缓存写, 访问器无 setter, 位置 v45→v46→v44, 0.5s 节流, v44/v45 保留)"
             else
-              echo "❌ v46 异常 (字段=$_v46_fields 位置=$_v46_pos 只读=$_v46_readonly 访问器只读=$_v46_getter 节流/保留=$_v46_keep)"
+              echo "❌ v46 异常 (字段=$_v46_fields 位置=$_v46_pos API=$_v46_api 只读=$_v46_readonly 访问器只读=$_v46_getter 节流/保留=$_v46_keep)"
               echo "   —— 字段 BAD 说明某个候选根因(D1/D2/D3/D4)没有对应判据, 装机后该假设将无法验证"
               echo "   —— 位置 BAD 则锚点失配(v45/v44 结构变了), 或 v46 跑在 v45 之前"
+              echo "   —— ★API BAD 则编译必炸(run#37124793234 的真实死因): 只能是 enumerateAttribute(单数), 写成 enumerateAttributes 会编译失败"
               echo "   —— 只读 BAD 说明诊断段里混进了写操作/强制布局, 装机后分不清'修好了'还是'被诊断改坏了', 归因作废"
               echo "   —— 访问器带 setter 则从后门打开纯诊断防线, cachedLayout 可被诊断改写"
               exit 1

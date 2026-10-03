@@ -197,6 +197,18 @@ if i46 >= 0 and i44 >= 0 and i44 > i46:
     seg = t[i46:i44]
 ck("v46 do 块可定位", bool(seg))
 seg_code = strip_noise(seg) if seg else ""
+
+# ============ 5b. ★API 名(run#37124793234 的真实死因) ============
+# 第一版写了 enumerateAttributes(复数), 而 NSAttributedString 只有
+# enumerateAttribute(单数) —— 注入与其余断言全绿, 编译期才炸, 白跑 7 分钟。
+# 这类错"断言抓不到", 必须专门钉死。
+# 判"错名字"必须基于**剥掉注释后**的代码 —— 注入体的踩坑记录注释里就写着
+# 那个错名字, 直接搜原始文本会自己把自己拦下(本轮实跑踩过, 修了一轮)。
+ck("API: 用 textStorage as? NSTextStorage 遍历", "textStorage as? NSTextStorage" in t)
+ck("API: enumerateAttribute 单数存在", "enumerateAttribute(" in t)
+ck("API: range 用 _v46St.length", "NSRange(location: 0, length: _v46St.length)" in t)
+ck("API: 无 enumerateAttributes 复数(编译必炸)", "enumerateAttributes" not in seg_code)
+seg_code = strip_noise(seg) if seg else ""
 import re as _re
 assign_hits = []
 for ln in seg_code.splitlines():

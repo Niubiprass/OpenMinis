@@ -4292,26 +4292,37 @@ def fix_diag_attachment_v46(t):
                 var _v46AttCachedW = CGFloat(-1)
                 var _v46AttGen = UInt64(0)
                 var _v46AttNVI = false
-                let _v46All = self.textStorage?.enumerateAttributes(
-                    in: NSRange(location: 0, length: self.textStorage.length),
-                    options: []) { attrs, _, _ in
-                    guard let _a = attrs[.attachment] as? NSTextAttachment else { return }
-                    _v46AttN += 1
-                    if let _t = _a as? TableAttachment {
-                        _v46AttGen &+= _t.contentGeneration
-                        if _v46AttNVI == false, _t.needsLayoutInvalidation { _v46AttNVI = true }
-                        // D1: 缓存里扣了多少高度
-                        if _v46AttCached < 0 { _v46AttCached = 0 }
-                        // D1/D2: attachmentBounds 现在**会**返回多高 —— 用当前
-                        // tcW 构造 lineFrag, 与 usedH/needH 并列对照。
-                        let _v46W = self.textContainer.size.width
-                        let _v46Frag = CGRect(x: 0, y: 0, width: _v46W, height: .greatestFiniteMagnitude)
-                        let _v46R = _t.attachmentBounds(
-                            for: self.textContainer, proposedLineFragment: _v46Frag,
-                            glyphPosition: .zero, characterIndex: 0)
-                        _v46AttWant += _v46R.height
-                        _v46AttCached = _t.attV46CachedTotalH
-                        if _v46AttCachedW < 0 { _v46AttCachedW = _t.attV46CachedWidth }
+                // 【踩坑记录(run#37124793234)】第一版写的是
+                // `self.textStorage?.enumerateAttributes(...)` —— **API 名错了**。
+                // NSAttributedString 只有 `enumerateAttribute(_:in:options:using:)`
+                // (单数), 没有复数形式, 于是 run#37124793234 在"编译 App"这一步
+                // 失败 —— 注入与断言全绿(断言只看子串存在性, 抓不到 API 名错误),
+                // 编译期才炸。修法: 照源码既有写法(traitCollectionDidChange /
+                // needsAttachmentRecovery 两处都是这个形式)改成
+                // `textStorage as? NSTextStorage` + `enumerateAttribute`。
+                if let _v46St = textStorage as? NSTextStorage {
+                    _v46St.enumerateAttribute(
+                        .attachment,
+                        in: NSRange(location: 0, length: _v46St.length),
+                        options: []) { _v, _, _ in
+                        guard let _a = _v as? NSTextAttachment else { return }
+                        _v46AttN += 1
+                        if let _t = _a as? TableAttachment {
+                            _v46AttGen &+= _t.contentGeneration
+                            if _v46AttNVI == false, _t.needsLayoutInvalidation { _v46AttNVI = true }
+                            // D1: 缓存里扣了多少高度
+                            if _v46AttCached < 0 { _v46AttCached = 0 }
+                            // D1/D2: attachmentBounds 现在**会**返回多高 —— 用当前
+                            // tcW 构造 lineFrag, 与 usedH/needH 并列对照。
+                            let _v46W = self.textContainer.size.width
+                            let _v46Frag = CGRect(x: 0, y: 0, width: _v46W, height: .greatestFiniteMagnitude)
+                            let _v46R = _t.attachmentBounds(
+                                for: self.textContainer, proposedLineFragment: _v46Frag,
+                                glyphPosition: .zero, characterIndex: 0)
+                            _v46AttWant += _v46R.height
+                            _v46AttCached = _t.attV46CachedTotalH
+                            if _v46AttCachedW < 0 { _v46AttCachedW = _t.attV46CachedWidth }
+                        }
                     }
                 }
                 if _v46AttN > 0 {
@@ -4363,6 +4374,12 @@ def verify_attachment_v46(t):
               "_v46AttWant += _v46R.height",
               "_v46AttCached = _t.attV46CachedTotalH",
               "_v46AttCachedW = _t.attV46CachedWidth",
+              # ★run#37124793234 的真实死因: 写成了 enumerateAttributes(复数)。
+              #   NSAttributedString 只有 enumerateAttribute(单数), 编译期才炸,
+              #   而断言只查子串存在性抓不到 —— 这里把 API 形式钉死。
+              "textStorage as? NSTextStorage",
+              "enumerateAttribute(",
+              "NSRange(location: 0, length: _v46St.length)",
               # ★反向测试 A5 逼出来的: attNVI 必须**声明+被读+进日志**三处齐全。
               #   原来只查 `var _v46AttNVI = false` 这个子串, 删掉它之后
               #   `if _v46AttNVI == false ...` 与 NSLog 里的 attNVI 仍在,
@@ -4431,14 +4448,34 @@ def verify_attachment_v46(t):
                     "(v46 必须只读; 任何写入都会让四个候选根因无法归因)")
     # 4. ★硬禁危险调用: invalidate / 强制布局 / 缓存写入。这些是"修法"动作,
     #    出现在诊断段里等于偷偷把 v47 的活干了, 装机数据失去归因价值。
+    # 4b. ★硬禁危险 API 名 —— 必须在**剥掉注释与字符串之后**的代码上查。
+    #     【踩坑记录(本轮实跑)】第一版直接查原始文本, 结果注入体里那段
+    #     "踩坑记录: 第一版写的是 enumerateAttributes" 的**注释**被判成真代码,
+    #     自己把自己拦下了。API 名误报/漏报都发生在这里: 注释里提一嘴错名字
+    #     不算错, 代码里真写错才算。所以这一条必须基于 _v46_code。
     for _bad in ("invalidateLayout", "invalidateDisplay", "invalidateIntrinsic",
                  "invalidateSize", "ensureLayout", "invalidateCachedLayout",
                  "cachedLayout =", "needsLayoutInvalidation =", "needsViewRebuild =",
                  "textContainer.size =", ".frame =", "setNeedsDisplay",
-                 "computeLayout(", "contentGeneration &+="):
-        if _bad in _v46_seg:
+                 "computeLayout(", "contentGeneration &+=",
+                 # ★run#37124793234 的真实死因。NSAttributedString 只有
+                 #   enumerateAttribute(单数), 写成复数编译必炸, 而所有其它
+                 #   判据都抓不到(它们只查自己关心的子串)—— 只能显式禁。
+                 "enumerateAttributes"):
+        if _bad in _v46_code:
             raise RuntimeError(
-                f"verify_attachment_v46: ★纯诊断违规 —— 段内出现危险调用 {_bad!r}")
+                f"verify_attachment_v46: 段内出现禁用项 {_bad!r}"
+                + ("  ★API 名错误: NSAttributedString 只有 enumerateAttribute(单数), "
+                   "写成复数编译期才炸(run#37124793234 就是这样失败的)"
+                   if _bad == "enumerateAttributes" else "  ★纯诊断违规"))
+    # 4c. 必需的 API 形式(正向): 遍历附件必须走 textStorage as? NSTextStorage
+    #     + enumerateAttribute(单数)。少了任一个都编译不过, 所以正向也钉死。
+    for _must in ("textStorage as? NSTextStorage", "enumerateAttribute(",
+                  "NSRange(location: 0, length: _v46St.length)"):
+        if _must not in _v46_code:
+            raise RuntimeError(
+                f"verify_attachment_v46: 段内缺少必需的 API 形式 {_must!r} "
+                "(编译期错误, 断言阶段必须拦住)")
     # 5. 必须挂在 v45 之后、v44 之前(同一闭包内, v45 -> v46 -> v44 依次相邻),
     #    这样几何(v44)/补高(v45)/附件(v46)三者同帧并列对照。
     #    【反向测试 C2 逼出来的缺口】原来只查了"v46 在 v45 之后", 没查

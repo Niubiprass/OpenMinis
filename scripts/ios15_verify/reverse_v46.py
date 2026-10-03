@@ -111,6 +111,14 @@ run("A8 删访问器",
                      "// removed"), "只读访问器")
 
 print("\n=== B 类: ★纯诊断被写坏 ===")
+# B0: ★API 名错误(run#37124793234 的真实死因) —— 编译期才炸, 其它判据全漏
+run("B0a 写 enumerateAttributes(复数)",
+    INJECTED.replace("_v46St.enumerateAttribute(", "_v46St.enumerateAttributes("),
+    "API 名错误")
+run("B0b 去掉 as? NSTextStorage 强转",
+    INJECTED.replace("if let _v46St = textStorage as? NSTextStorage {",
+                     "if let _v46St = textStorage {"),
+    "必需的 API 形式")
 # B1: 段内偷偷写 self.frame —— 正是 v47 该干的事, 绝不能出现在 v46
 run("B1 段内写 self.frame",
     INJECTED.replace("_v46AttWant += _v46R.height",
@@ -122,7 +130,7 @@ run("B2 段内调 invalidateLayout",
     INJECTED.replace("_v46AttWant += _v46R.height",
                      "_v46AttWant += _v46R.height\n"
                      "                    self.layoutManager.invalidateLayout(for: self.textContainer)"),
-    "危险调用")
+    "纯诊断违规")
 # B3: 段内写缓存(被"段内赋值"判据拦下 —— 赋值判据比危险调用清单更早命中)
 run("B3 段内写 cachedLayout",
     INJECTED.replace("_v46AttWant += _v46R.height",
