@@ -1277,7 +1277,7 @@ jobs:
             echo "❌ workflow 的 run 块有 bash 语法错—— 判据再全绿也没用:"
             echo "   shell 解析不过, 根本执行不到判据(run#127 就是这么红的:"
             echo "   断言 56 的 echo 文案里用了 markdown 反引号, bash 在双引号内"
-            echo "   把它当命令替换, `applyCellCorrection()` 的括号闭不上)"
+            echo "   把它当命令替换, 「applyCellCorrection()」 的括号闭不上)"
             echo "   ⇒ echo 文案一律用直角引号「」; 改完必须 bash -n 过一遍"
             exit 1
           fi
