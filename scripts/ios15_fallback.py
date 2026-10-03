@@ -37,6 +37,87 @@ def write(p, s):
         f.write(s)
 
 
+def _strip_swift_noise(src):
+    """去掉 Swift 注释与字符串字面量, 只留可执行代码。
+
+    【为什么需要】"段内是否有赋值"这类判据, 如果直接对原始文本做正则, 会被
+    两类噪声骗到:
+      - 注释里写 `// 缓存 = nil` 会被当成真赋值(markdown 式说明文字里
+        这种写法很自然);
+      - 字符串里出现 `=`(比如日志格式串)会被当成赋值。
+    而"逐行白名单"更糟 —— v46 第一版就栽在这: 为了让正常代码通过, 白名单
+    里堆了 11 条 continue 特例, 格式一变就误报, 写一个新语句就穿透。
+    剥掉噪声后再做**语义级**的赋值识别, 判据才不受排版影响。
+    """
+    out = []
+    i = 0
+    n = len(src)
+    while i < n:
+        c = src[i]
+        # 行注释
+        if c == "/" and i + 1 < n and src[i + 1] == "/":
+            j = src.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        # 块注释(可嵌套, Swift 允许)
+        if c == "/" and i + 1 < n and src[i + 1] == "*":
+            depth = 1
+            i += 2
+            while i < n and depth > 0:
+                if src.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                elif src.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            continue
+        # 多行字符串 """...""" —— 里面换行保留, 否则行号会错位
+        if src.startswith('"""', i):
+            j = src.find('"""', i + 3)
+            j = n if j < 0 else j + 3
+            out.append('""')
+            i = j
+            continue
+        # 普通字符串
+        if c == '"':
+            i += 1
+            while i < n:
+                if src[i] == "\\":
+                    i += 2
+                    continue
+                if src[i] == '"':
+                    break
+                i += 1
+            i += 1
+            out.append('""')
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _brace_balance(src):
+    """全文花括号平衡扫描(跳过注释/字符串)。返回 (净深度, 最深负值)。
+
+    【为什么要有】v45 反向测试 F1 实跑教训: 在别处插一个永不闭合的函数,
+    前面 7 条判据全部通过, 直到编译才炸。所以任何"段内结构正确"的判据
+    都不足以保证产物能编译, 必须有一条**全文级**的结构兜底。
+    """
+    s = _strip_swift_noise(src)
+    depth = 0
+    low = 0
+    for c in s:
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth < low:
+                low = depth
+    return depth, low
+
+
 def edit(relpath, func, label=None):
     p = os.path.join(ROOT, relpath)
     if not os.path.isfile(p):
@@ -4064,6 +4145,350 @@ def fix_tvh_debt_v45(t):
     return t
 
 
+def fix_diag_attachment_v46(t):
+    """v46: 表格附件高度**没进排版**的归因 — 治"终端框盖住上面的字/定时任务字闪烁卡住"。
+
+    ## v45 验收结论(log14/log15, 装机实测)
+
+    v45 把欠账补到画字的那个视图上, **完全成功**:
+
+    - log14: `V45-TVHFIX debt=0.0` 71/71, `needH - tvH == 0.0` 74/74
+    - log15: `V45-TVHFIX debt` 仍全 0.0, 跨帧 tvH 稳定(23 个 len 里只有
+      len=49 有多值, 且是流式正常重测 182->236, 不是抖动)
+
+    假设 A(UITextView 自己矮)彻底关闭。但用户反馈**两个新现象仍在**:
+
+    1. 终端框(表格)盖住上面的字; 定时任务那几个字一下有一下没有、卡住
+    2. 内容下方还有一小片空白
+
+    ## log15 的硬证据: 现象 1 = v44 假设 C 真实命中
+
+    ```
+    [V44-TEXTFRAME] tvH=304.3 svAfter=376.3 usedH=114.3 needH=304.3 len=29
+    [invalidateCell][SKIP-DEDUPE] lastH=304.3 tableGen=4 — fingerprint match
+    [table#0 CACHE UPDATE] rows=7 cols=2          <- 表格内容变了
+    [UAV][SKIP-DEDUPE] tableGen=6                <- 代数变了但仍被去重跳过
+    ```
+
+    三个数字打架: `needH=304.3`(UITextView 的高度) / `usedH=114.3`
+    (TextKit 真实占用) / `svAfter=376.3`(superview 反而更高)。
+    **`usedH` 只有 `needH` 的 1/3** —— 表格那个 7x2 附件占的 ~190pt
+    完全没进 `usedRect`。量化: 111 条 V44 里 **71 条 `needH-usedH > 8.5`**
+    (中位 55.6pt, 最大 190.0pt), 另 40 条 `<= 8.5`(纯文字, 附件高度为 0,
+    差额就是 textContainerInset 的 8.1~8.3)。**差额与"有没有附件"完全同构。**
+
+    而"定时任务字一下有一下没有"是 len=49 那组: 唯一一组
+    **`usedH` 恒为 99.9 而 `needH` 在 182<->236 之间跳**的样本 ——
+    附件高度在两种取值间反复切换, 文字跟着忽隐忽现。
+
+    ## 四个候选根因(源码逐个定位, 装机一次打完)
+
+    `TableAttachment` 的高度要走完这条链才能进排版:
+
+    ```
+    update(rows:) -> contentGeneration++ / needsLayoutInvalidation
+                  -> computeLayout(for: w) -> cachedLayout
+                  -> attachmentBounds(...) -> CGRect.height
+                  -> TextKit typesetter -> usedRect
+    ```
+
+    链上有**四个**能造成"attachmentBounds 返回了新高度但 usedRect 没变"的点:
+
+    - **D1 缓存未失效**: `computeLayout` 开头 `if let cached = cachedLayout,
+      cached.width == width { return cached }` —— 表格 `update()` 若判定
+      `structureChanged || contentGrew` 为 false(只是某个单元格内容变了变短,
+      或列数比较维度不对), `cachedLayout` 就留着**旧 rowHeights**,
+      `attachmentBounds` 返回旧高度。**这是最可疑的一个。**
+    - **D2 探针宽度**: `isOversizedProbe`(lineFrag.width >= 100_000)时高度
+      按 `containerRealWidth ?? lastRealWidth ?? narrowestRealWidth` 算, 而
+      **返回的 width 仍是 clampedWidth**。SwiftUI 探针拿到的 cell 尺寸与
+      真实宽度不同源。
+    - **D3 失效信号没被消费**: `needsLayoutInvalidation` 置位后, 若
+      `updateUIView` 那条 invalidate 路径没跑到, layoutManager 根本不知道
+      附件 bounds 变了。
+    - **D4 容器被短路**: `NSTextContainerSetSizeGuard` 把同 tick 重复
+      `setSize:` 全部丢弃(log15: 累计 3617 次短路, 高度出现 2000.0 /
+      1057.3 / 18.7 等一串与真实需求无关的值)。容器尺寸不更新 ->
+      TextKit 不重排 -> `usedRect` 冻结。
+
+    一条日志同时打 D1/D2/D3/D4, 装机后用数据定 v47 修法。**不改任何行为。**
+
+    ## 为什么不能盲修
+
+    这四点修法互相冲突: D1 要放宽缓存失效判据(但那正是 HangFix 2026-05-14
+    为了治"流式每 token 全量重测导致主线程卡死数秒"而故意保留的), D4 要
+    放宽 guard(而 guard 是治 `fillLayoutHole` 11918ms 主线程卡死的)。
+    **两个都是拿性能换正确性, 盲修任何一处都可能把卡死放回来。** 所以先量。
+
+    ## 判据设计(每条都要能证伪一个具体修法)
+
+    - `attWant`  = 直接调 `attachmentBounds` 拿它**现在**会返回的高度
+      (用当前 tcW 构造 lineFrag) —— 若它已经等于 needH, 说明 attachmentBounds
+      侧是对的, 问题在下游(D3/D4); 若它还是旧的, 根因就是 D1/D2。
+    - `attCached` = `cachedLayout?.totalHeight` —— 与 attWant 对比, 差值
+      就是"缓存扣了多少"。
+    - `attGen`    = `contentGeneration`, `attNVI` = `needsLayoutInvalidation`
+      —— 若 attWant 已是新高度而 usedH 仍旧, 且 attNVI 为 true, 则 D3 成立。
+    - `attN`      = textStorage 里附件的个数(0 则本条无意义, 跳过)。
+
+    ## 与 v44/v45 的关系(纯并列, 不覆盖)
+
+    v44 打几何(tvH/svAfter/usedH/needH), v45 补几何, **v46 一行几何都不碰**
+    —— 它只读 attachment 与 cachedLayout 的内部状态。挂在 v45 之后,
+    同一闭包同一帧, 便于三者并列对照。
+    """
+    # 锚点 = V44 段头。v45 把自己插在 V44 段**之前**(顺序: v42 -> v44 注入 ->
+    # v45 在 V44 段前插 -> v46 在 V44 段前、v45 之后插), 所以锚点取 V44 段头
+    # 即可让 v46 落在 v45 之后。
+    # 【踩坑记录】第一版锚点写成 "v45 段尾的 }" + V44 段头, 结果替换后
+    # 全文花括号净 +1 编译失败 —— 那个前导 `}` 是**闭合 v45 的 do 块**的,
+    # v46 段自带完整闭合(do{...}), 把这个 `}` 一起替换掉就没人闭 v45 的块了。
+    # 锚点只取 V44 段头, 不碰前一行。
+    ANCHOR = _V44HEAD = """            // [V44-TEXTFRAME] 见函数 docstring: v41/v42/v43 三轮都在猜"高度够不够",\n"""
+    if ANCHOR not in t:
+        raise RuntimeError(
+            "fix_diag_attachment_v46: 未找到 V44 诊断段锚点(v44/v45 没注入? 登记顺序错了?)")
+    if t.count(ANCHOR) != 1:
+        raise RuntimeError(
+            f"fix_diag_attachment_v46: V44 段锚点不唯一(命中 {t.count(ANCHOR)} 处)")
+
+    # 只读访问器: cachedLayout 是 private, 诊断段在 SelectableMarkdownTextView 里,
+    # 不加这个就读不到 —— D1(缓存扣了多少高度)就永远无法验证。
+    # 必须是只读 getter, 没有任何 setter, 结构上不可能写。
+    ACCESSOR = """    /// [V46-ATTACH] 只读访问器: 把 private 的 cachedLayout 的总高暴露给诊断段。
+    /// 纯诊断用, **没有 setter** —— 结构上不可能从这里改缓存。
+    var attV46CachedTotalH: CGFloat { cachedLayout?.totalHeight ?? -1 }
+    /// [V46-ATTACH] 缓存自算宽度(0 = 从未算过)。用于判断缓存是不是在别的
+    /// 宽度下留下的陈旧值(D1 的另一半)。
+    var attV46CachedWidth: CGFloat { cachedLayout?.width ?? 0 }
+
+""" + """    /// Discard the cached layout so the next `computeLayout` / `attachmentBounds`
+    /// recomputes column widths and row heights for whatever width is current."""
+    _acc_anchor = """    /// Discard the cached layout so the next `computeLayout` / `attachmentBounds`
+    /// recomputes column widths and row heights for whatever width is current."""
+    if _acc_anchor not in t:
+        raise RuntimeError(
+            "fix_diag_attachment_v46: 未找到 cachedLayout 邻近锚点(TableAttachment 结构变了?)")
+    if t.count(_acc_anchor) != 1:
+        raise RuntimeError(
+            f"fix_diag_attachment_v46: cachedLayout 锚点不唯一(命中 {t.count(_acc_anchor)} 处)")
+    t = t.replace(_acc_anchor, ACCESSOR, 1)
+
+    _V44HEAD = ANCHOR
+    NEW = """            // [V46-ATTACH] 表格附件高度**没进排版**的归因 — 见函数 docstring。
+            //
+            // log15 硬证据: needH=304.3 而 usedH=114.3(差 190pt), 表格 7x2
+            // 附件占的高度完全不在 usedRect 里; 111 条里 71 条 needH-usedH>8.5,
+            // 差额与"有没有附件"完全同构。这是 v44 假设 C 的首次真实命中。
+            //
+            // **纯诊断, 一行几何都不碰。** 链路上有四个可疑点(D1 缓存未失效 /
+            // D2 探针宽度 / D3 失效信号未消费 / D4 容器被 guard 短路), 修法
+            // 互相冲突 —— D1/D4 都是拿性能换正确性的历史 trade-off, 盲修任一
+            // 处都可能把主线程卡死放回来。先量, 再动。
+            do {
+                var _v46AttN = 0
+                var _v46AttWant = CGFloat(0)
+                var _v46AttCached = CGFloat(-1)
+                var _v46AttCachedW = CGFloat(-1)
+                var _v46AttGen = UInt64(0)
+                var _v46AttNVI = false
+                let _v46All = self.textStorage?.enumerateAttributes(
+                    in: NSRange(location: 0, length: self.textStorage.length),
+                    options: []) { attrs, _, _ in
+                    guard let _a = attrs[.attachment] as? NSTextAttachment else { return }
+                    _v46AttN += 1
+                    if let _t = _a as? TableAttachment {
+                        _v46AttGen &+= _t.contentGeneration
+                        if _v46AttNVI == false, _t.needsLayoutInvalidation { _v46AttNVI = true }
+                        // D1: 缓存里扣了多少高度
+                        if _v46AttCached < 0 { _v46AttCached = 0 }
+                        // D1/D2: attachmentBounds 现在**会**返回多高 —— 用当前
+                        // tcW 构造 lineFrag, 与 usedH/needH 并列对照。
+                        let _v46W = self.textContainer.size.width
+                        let _v46Frag = CGRect(x: 0, y: 0, width: _v46W, height: .greatestFiniteMagnitude)
+                        let _v46R = _t.attachmentBounds(
+                            for: self.textContainer, proposedLineFragment: _v46Frag,
+                            glyphPosition: .zero, characterIndex: 0)
+                        _v46AttWant += _v46R.height
+                        _v46AttCached = _t.attV46CachedTotalH
+                        if _v46AttCachedW < 0 { _v46AttCachedW = _t.attV46CachedWidth }
+                    }
+                }
+                if _v46AttN > 0 {
+                    struct _V46Log { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                    let _v46Now = CACurrentMediaTime()
+                    if _v46Now - _V46Log.last > 0.5 {
+                        _V46Log.last = _v46Now
+                        _V46Log.n &+= 1
+                        let _v46Lm = self.layoutManager
+                        let _v46Used = _v46Lm.usedRect(for: self.textContainer).height
+                        NSLog("[V46-ATTACH] attN=%d attWant=%.1f attCached=%.1f cachedW=%.1f attGen=%llu attNVI=%d usedH=%.1f needH=%.1f tcW=%.1f tcH=%.1f nGlyph=%d len=%d n=%u",
+                              _v46AttN, _v46AttWant, _v46AttCached, _v46AttCachedW, _v46AttGen,
+                              _v46AttNVI ? 1 : 0, _v46Used, _v42Need,
+                              self.textContainer.size.width, self.textContainer.size.height,
+                              _v46Lm.numberOfGlyphs, _v42Len, _V46Log.n)
+                    }
+                }
+            }
+""" + _V44HEAD
+    t = t.replace(ANCHOR, NEW, 1)
+    verify_attachment_v46(t)
+    return t
+
+
+def verify_attachment_v46(t):
+    """校验 v46 附件诊断段 —— 独立成函数, 理由同 verify_textframe_v44。
+
+    【判据顺序】具体 -> 宽泛, 标记计数放最后当总兜底(v44 实跑踩出来的:
+    标记计数放最前会把其他判据全部稀释掉, 那些防御形同虚设)。
+
+    【★纯诊断纪律】与 v44 同一条纪律, 但这里判据更重: v46 必须**只读不写**。
+    四个候选根因(D1/D2/D3/D4)互相冲突, 任何一个写操作都会让装机数据
+    无法归因 —— 写了 attachmentBounds 之外的任何东西, 就分不清"修好了"
+    还是"被诊断改坏了"。所以硬禁: 一切对实例状态的赋值、一切 frame/
+    bounds/size 写入、invalidate* 调用、缓存写入。
+    """
+    # 0. 整段缺失。必须排在字段检查之前(否则报"缺字段"方向误导)。
+    _i0 = t.find("// [V46-ATTACH] 表格附件高度")
+    if _i0 < 0:
+        raise RuntimeError("verify_attachment_v46: 诊断段整段缺失")
+    # 0.5 只读访问器必须一并注入 —— 没有它就读不到 cachedLayout(它是 private),
+    #     D1(缓存扣了多少)就永远无法验证。
+    if "var attV46CachedTotalH" not in t:
+        raise RuntimeError("verify_attachment_v46: 缺少 TableAttachment 只读访问器 attV46CachedTotalH")
+    # 1. 六个判据字段一个都不能少, 少一个就有一个候选根因永远无法验证。
+    for k in ('NSLog("[V46-ATTACH] attN=%d attWant=%.1f attCached=%.1f cachedW=%.1f attGen=%llu',
+              "attNVI=%d usedH=%.1f needH=%.1f tcW=%.1f tcH=%.1f nGlyph=%d len=%d n=%u",
+              "_v46R = _t.attachmentBounds(",
+              "_v46AttWant += _v46R.height",
+              "_v46AttCached = _t.attV46CachedTotalH",
+              "_v46AttCachedW = _t.attV46CachedWidth",
+              # ★反向测试 A5 逼出来的: attNVI 必须**声明+被读+进日志**三处齐全。
+              #   原来只查 `var _v46AttNVI = false` 这个子串, 删掉它之后
+              #   `if _v46AttNVI == false ...` 与 NSLog 里的 attNVI 仍在,
+              #   判据 `in t` 依然为真 —— 字段等于白声明, D3 永远无法验证。
+              "var _v46AttNVI = false",
+              "if _v46AttNVI == false, _t.needsLayoutInvalidation { _v46AttNVI = true }",
+              "_v46AttNVI ? 1 : 0",
+              "if _v46AttN > 0 {"):
+        if k not in t:
+            raise RuntimeError(f"verify_attachment_v46: 缺少判据字段 {k}")
+    # 2. 必须用 do { } —— 裸块会被吸成 trailing closure(v42 首次推送就栽在这)。
+    #    【切片边界】切到 do 块的闭合而不是 NSLog( —— NSLog 参数列表里也含
+    #    self. 引用, 只切到 NSLog( 会把参数切掉让下一条判据误报(同 v44)。
+    _i_do = t.find("do {", _i0)
+    if _i_do < 0:
+        raise RuntimeError("verify_attachment_v46: 诊断段没有 do { 块")
+    _i_end = t.find("\n            }\n", _i_do)
+    if _i_end < 0:
+        raise RuntimeError("verify_attachment_v46: do 块未闭合")
+    _v46_seg = t[_i0:_i_end + 15]
+    # 3. ★纯诊断: 段内不得对**任何已有状态**赋值。
+    #    【为什么不用"逐行白名单"】第一版写的是逐行 if/continue 白名单, 结果
+    #    为了让正常代码通过, 白名单里堆了 11 条 continue 特例 —— 任何一处
+    #    格式变动(缩进/换行/参数顺序)都会误报, 而漏放只要写一个新语句就穿透。
+    #    改成**扣赋值语句本身**: 去掉注释与字符串后, 找出所有"标识符 = "形式
+    #    的赋值, 再排除掉唯一合法的一类(局部 `let`/`var` 声明)。语义判据,
+    #    不受格式影响。
+    _v46_code = _strip_swift_noise(_v46_seg)
+    for _ln in _v46_code.splitlines():
+        _s = _ln.strip()
+        if not _s:
+            continue
+        # 局部声明: 合法
+        if _s.startswith("let ") or _s.startswith("var "):
+            continue
+        # struct 声明行里的 `static var last: CFTimeInterval = 0` 是**类型标注
+        # 上的默认值**, 不是对已有状态的写。节流计数器必须有这个结构
+        # (与 V41-KVOPRE/V44/V45 同款), 不能因此把 attNVI/attain 判据删掉。
+        if _s.startswith("struct "):
+            continue
+        # 自增: 不是赋值(它本身就是"读+写", 但写的是诊断自己的计数器)
+        if "&+=" in _s:
+            continue
+        # 可选绑定是**读取**, 不是赋值 —— `guard let _a = attrs[...]` / `if let
+        # x = y` 只是把可选项解包成本地常量, 它没有写任何已有状态。
+        # (第一版没排除这条, 结果诊断段里第一个 guard let 就被自己判死。)
+        _bind = re.match(r"^(guard|if|while)\s+(let|var)\b", _s)
+        if _bind:
+            continue
+        # 找赋值: 形如 `x = ...` 或 `x.y = ...` / `x[i] = ...`
+        _m = re.search(r"(?<![\w.\]\)])\b([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*(?:\[[^\]]*\])?)\s*=(?!=)", _s)
+        if _m and not _s.startswith("=="):
+            # ★只拦"对已有状态的写", 不拦诊断自己的局部计数器。
+            #   `_v46AttNVI = true` 写的是本段刚声明的局部 var, 它是**收集
+            #   判据数据**的必要步骤(attNVI 这个字段就是这么来的), 不是修法。
+            #   `_V46Log.last = ...` 同理 —— 节流计数器是所有诊断段的标准
+            #   结构(V41-KVOPRE/V44/V45 都是这么写的), 禁掉它等于禁掉节流,
+            #   而没有节流的诊断会把主线程日志打爆。
+            #   真正要禁的是写 self./attachment/容器/缓存 —— 那些由第 4 条
+            #   的危险调用清单覆盖。判据若不区分这两者, 就会逼着把 attNVI
+            #   这类必需字段从诊断里删掉, 反而损失候选根因的判据。
+            _lhs = _m.group(1)
+            if not (_lhs.startswith("_v46") or _lhs.startswith("_V46Log")):
+                raise RuntimeError(
+                    f"verify_attachment_v46: ★纯诊断违规 —— 段内出现赋值 {_lhs!r}: {_s[:70]!r} "
+                    "(v46 必须只读; 任何写入都会让四个候选根因无法归因)")
+    # 4. ★硬禁危险调用: invalidate / 强制布局 / 缓存写入。这些是"修法"动作,
+    #    出现在诊断段里等于偷偷把 v47 的活干了, 装机数据失去归因价值。
+    for _bad in ("invalidateLayout", "invalidateDisplay", "invalidateIntrinsic",
+                 "invalidateSize", "ensureLayout", "invalidateCachedLayout",
+                 "cachedLayout =", "needsLayoutInvalidation =", "needsViewRebuild =",
+                 "textContainer.size =", ".frame =", "setNeedsDisplay",
+                 "computeLayout(", "contentGeneration &+="):
+        if _bad in _v46_seg:
+            raise RuntimeError(
+                f"verify_attachment_v46: ★纯诊断违规 —— 段内出现危险调用 {_bad!r}")
+    # 5. 必须挂在 v45 之后、v44 之前(同一闭包内, v45 -> v46 -> v44 依次相邻),
+    #    这样几何(v44)/补高(v45)/附件(v46)三者同帧并列对照。
+    #    【反向测试 C2 逼出来的缺口】原来只查了"v46 在 v45 之后", 没查
+    #    "v46 在 v44 之前" —— 把 v46 搬到 v44 之后(v45 < v44 < v46)时,
+    #    第一条判据仍然成立, 整段漏放。现在两个方向都钉死。
+    _i45 = t.find("// [V45-TVHFIX] 补高**补到画字的那个视图上**")
+    if _i45 < 0:
+        raise RuntimeError("verify_attachment_v46: 未找到 v45 段(登记顺序错了?)")
+    if _i45 > _i0:
+        raise RuntimeError(
+            "verify_attachment_v46: v46 挂在 v45 之前 —— 必须排在 v45 之后, "
+            "同一闭包同帧, 三者(几何/补高/附件)才能并列对照")
+    _i44 = t.find("// [V44-TEXTFRAME] 见函数 docstring")
+    if _i44 < 0:
+        raise RuntimeError("verify_attachment_v46: 未找到 v44 段(登记顺序错了?)")
+    if _i0 > _i44:
+        raise RuntimeError(
+            "verify_attachment_v46: v46 挂在 v44 之后 —— 必须排在 v44 之前 "
+            "(插入点固定在 V44 段头, 顺序应为 v45 -> v46 -> v44)")
+    # 6. 节流必须 0.5s —— 与 V41-KVOPRE/V44-TEXTFRAME/V45-TVHFIX 同周期。
+    if "_v46Now - _V46Log.last > 0.5" not in t:
+        raise RuntimeError("verify_attachment_v46: 必须 0.5s 节流(与其余诊断同周期)")
+    # 7. 必须保留 v44 诊断与 v45 修法(诊断是加法, 不是替换)。
+    for _keep in ('NSLog("[V44-TEXTFRAME]', 'NSLog("[V45-TVHFIX]'):
+        if _keep not in t:
+            raise RuntimeError(f"verify_attachment_v46: 必须保留 {_keep} —— v46 是加法")
+    # 8. 全文花括号平衡(共用 _brace_balance)。min_depth 也查 ——
+    #    v45 反向测试 F1 实跑教训: 在别处插一个永不闭合的函数, 前 7 条判据
+    #    全过、编译才炸。放最后当总兜底。
+    _depth, _low = _brace_balance(t)
+    if _depth != 0:
+        raise RuntimeError(f"verify_attachment_v46: 花括号不平衡(净 {_depth:+d} 处)")
+    if _low < 0:
+        raise RuntimeError(f"verify_attachment_v46: 花括号中途变负(最深 {_low}) —— 有未闭合结构")
+    # 9. 标记计数放最后当总兜底(见函数 docstring「判据顺序」)。
+    if t.count('NSLog("[V46-ATTACH]') != 1:
+        raise RuntimeError("verify_attachment_v46: V46-ATTACH 标记必须唯一")
+    # 10. 访问器必须无 setter —— 结构上保证"只读"。出现 setter 即失去意义,
+    #     而且会让第 4 条的纯诊断防线从后门被打开。
+    _i_acc = t.find("var attV46CachedTotalH")
+    if _i_acc < 0:
+        raise RuntimeError("verify_attachment_v46: 访问器缺失")
+    _acc_line = t[t.rfind("\n", 0, _i_acc) + 1:t.find("\n", _i_acc)]
+    if "{" not in _acc_line or "}" not in _acc_line:
+        raise RuntimeError(
+            f"verify_attachment_v46: 访问器必须是只读 getter(结构上不可写): {_acc_line.strip()!r}")
+    if "set" in _acc_line:
+        raise RuntimeError("verify_attachment_v46: 访问器不得带 setter")
+
+
 def verify_textframe_v44(t):
     """校验 v44 诊断段 —— 独立成函数, 不只服务于注入。
 
@@ -4664,6 +5089,8 @@ def main():
     # 是脏宽, 正常样本 9/9 是净宽 358), 但宽度抢回在 v13/v34 反复引起过闪屏,
     # 风险面独立, 留待单独一版。
     edit("Views/Chat/SelectableMarkdownView.swift", fix_tvh_debt_v45, "v45: 补高**补到画字的那个视图上** — 治'下面一小片空白 + 字卡一半'(v44 纯诊断归因, log13 53 条零例外: 假设 A 命中 44/53, 假设 B 彻底排除 —— svAfter == needH 53/53 全成立, 补高从来没被挡掉过。真凶是**补错了对象**: v41~v44 一路补 superview 的 sv.frame, 而画字的是 UITextView 自己的 self.frame。实测 tvH=912.7 而 svAfter=needH=1136.3 —— 外层补到位了, 内层矮 223.6pt, 多出来的是空壳(所以有空白), 有字的地方被自己的 bounds 裁断(所以卡一半)。44 条样本的 usedH-tvH 恒为负(-8.0~-44.7 均值 -34.5) 从不转正, 证明不是随机拉锯而是两个来源各写一次高度。修法: 在 KVO 补高路径里把 needH 同时写进 self.frame。**只动 size.height, 绝不碰 origin/width** —— 宽度由 v18/v34 经 ios15LastSaneSVFrame 维护, 在这里碰它等于绕过那套状态机(v13/v34 都因抢宽引起过闪屏/整体缩小), 校验函数硬禁非高度改动。needH 是本闭包按抢回后净宽算出的权威需求高, 补到它即同时覆盖 v44 假设 C 的虚高差额(30~268pt), C 无需单独代码; 连续多帧时 tvH >= needH 让条件自然转 false, 幂等不反复写。★登记必须排在 v42 与 v44 之后")
+    # ---- v46: 表格附件排版链归因(纯诊断, 一行几何都不碰) ----
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_diag_attachment_v46, "v46: 【纯诊断, 不改任何行为】V46-ATTACH — 治'终端框盖住上面的字/定时任务字一下有一下没有'。log15 硬证据: needH=304.3 而 usedH=114.3(差 190pt), 表格 7x2 附件占的高度完全不在 usedRect 里; 111 条 V44 里 71 条 needH-usedH>8.5(中位 55.6 最大 190.0), 另 40 条 <=8.5(纯文字, 差额就是 textContainerInset 的 8.1~8.3) —— **差额与'有没有附件'完全同构**, 这是 v44 假设 C 的首次真实命中。len=49 那组更直白: 唯一一组 usedH 恒为 99.9 而 needH 在 182<->236 之间跳的样本, 附件高度反复切换 = 文字忽隐忽现。链路上四个候选根因一次性打完: D1 缓存未失效(computeLayout 开头 cachedLayout 命中即返回, update() 的 structureChanged||contentGrew 若为 false 就留着旧 rowHeights) / D2 探针宽度(isOversizedProbe 时高度按 containerRealWidth 算但返回宽度是 clampedWidth) / D3 失效信号未消费(needsLayoutInvalidation 置位但 invalidate 路径没跑到) / D4 容器被 TextContainerGuard 短路(log15 累计 3617 次, 高度出现 2000.0/1057.3/18.7 等与真实需求无关的值)。**为什么不盲修**: D1 要放宽缓存失效判据, 而那正是 HangFix 2026-05-14 治'流式每 token 全量重测致主线程卡死数秒'故意保留的; D4 要放宽 guard, 而 guard 是治 fillLayoutHole 11918ms 卡死的 —— 两处都是拿性能换正确性的历史 trade-off, 盲修任一处都可能把卡死放回来。校验函数硬禁段内一切赋值与 invalidate*/computeLayout 调用(用剥注释去字符串后的语义级赋值识别, 不靠逐行白名单), 并硬禁访问器带 setter; 另注入 TableAttachment.attV46CachedTotalH/attV46CachedWidth 两个**只读 getter**(cachedLayout 是 private, 不加就读不到, D1 就无法验证)。0.5s 节流与 V41-KVOPRE/V44-TEXTFRAME/V45-TVHFIX 同周期。★登记必须排在 v45 之后(同一闭包同帧, 三者并列对照)")
     # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")

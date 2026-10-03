@@ -195,10 +195,10 @@ jobs:
           set -e
           # 单行 python, 不带换行/引号转义 —— YAML 缩进 + shell + python 三层
           # 嵌套时, 多行 -c 里的缩进会被 YAML 原样带进去从而 SyntaxError。
-          _pre=$(python3 -c 'import sys;t=open(sys.argv[1],encoding="utf-8").read();b=t[t.index("def main()"):];a=b.find("fix_kvo_height_clamp_v41");v=b.find("fix_needh_latch_v42");c=b.find("fix_diag_textframe_v44");d=b.find("fix_tvh_debt_v45");print("OK" if (a>=0 and v>=0 and c>=0 and d>=0 and a<v<c<d) else ("BAD v41@%d v42@%d v44@%d v45@%d"%(a,v,c,d)))' "$SCRIPT_DIR/ios15_fallback.py")
+          _pre=$(python3 -c 'import sys;t=open(sys.argv[1],encoding="utf-8").read();b=t[t.index("def main()"):];a=b.find("fix_kvo_height_clamp_v41");v=b.find("fix_needh_latch_v42");c=b.find("fix_diag_textframe_v44");d=b.find("fix_tvh_debt_v45");e=b.find("fix_diag_attachment_v46");print("OK" if (a>=0 and v>=0 and c>=0 and d>=0 and e>=0 and a<v<c<d<e) else ("BAD v41@%d v42@%d v44@%d v45@%d v46@%d"%(a,v,c,d,e)))' "$SCRIPT_DIR/ios15_fallback.py")
           echo "编辑顺序: $_pre"
           case "$_pre" in
-            OK) echo "✅ 注入顺序正确 v41 → v42 → v44 (v44 的锚点依赖 v42 注入的赋值点)" ;;
+            OK) echo "✅ 注入顺序正确 v41 → v42 → v44 → v45 → v46 (v44 锚点依赖 v42 注入的赋值点; v46 锚点依赖 v45 已插入 V44 段前)" ;;
             *)  echo "❌ 注入顺序错误: $_pre"
                 echo "   v44 的注入锚点与位置判据依赖 v42 注入的 self.ios15LastNeededH = _v42Need。"
                 echo "   排在 v42 之前 → 干净上游基线上锚点不存在 → fallback 崩在本步骤，"
@@ -716,6 +716,61 @@ jobs:
             fi
           else
             echo "❌ v45 缺失 —— v44 已归因真凶是'补错了对象'(superview 补到位、UITextView 自己矮 223.6pt), 没有 v45 就只能继续补错地方"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::断言48: v46 附件排版链归因诊断必须就位, 且**段内只读**(纯诊断)"
+          # v45 装机验收 (log14/log15, 109~111 条 V44-TEXTFRAME):
+          #   v45 修法完全成功 —— V45-TVHFIX debt 全为 0.0(log14 71/71, log15 109 条零例外),
+          #   跨帧 tvH 稳定(23 个 len 里只有 len=49 有多值, 且是流式正常重测 182->236)。
+          #   ⇒ 假设 A(UITextView 自己矮)彻底关闭。
+          # 但用户报出两个新现象, log15 指向两条独立根因。现象一「终端框盖住上面的字 /
+          # 定时任务字一下有一下没有」= v44 **假设 C 首次真实命中**:
+          #   [V44-TEXTFRAME] tvH=304.3 svAfter=376.3 usedH=114.3 needH=304.3 len=29
+          #   [table#0 CACHE UPDATE] rows=7 cols=2   ← 表格内容变了(7x2)
+          #   [UAV][SKIP-DEDUPE] tableGen=6         ← 代数变了但仍被去重跳过
+          #   三个数字打架: needH=304.3 / usedH=114.3 / svAfter=376.3
+          #   **usedH 只有 needH 的 1/3** —— 表格附件占的 ~190pt 完全没进 usedRect。
+          # 量化: 111 条里 71 条 needH-usedH>8.5(中位 55.6, 最大 190.0), 另 40 条 <=8.5
+          #   (纯文字, 差额就是 textContainerInset 的 8.1~8.3) ⇒ 差额与"有没有附件"完全同构。
+          # 而 len=49 那组是唯一「usedH 恒 99.9 而 needH 在 182<->236 跳」的样本 = 字闪/卡住。
+          # 现象二(下方空白)= 脏宽 tcW=390 vs 净宽 358, 与附件链无关, 留待 v47。
+          #
+          # v46 是**纯诊断**: 链路上四个候选根因(D1 缓存未失效 / D2 探针宽度 /
+          # D3 失效信号未消费 / D4 容器被 TextContainerGuard 短路)修法互相冲突 ——
+          # D1 要放宽缓存失效判据, 而那是 HangFix 2026-05-14 治"流式每 token 全量
+          # 重测致主线程卡死数秒"故意保留的; D4 要放宽 guard, 而 guard 治的是
+          # fillLayoutHole 11918ms 卡死。**都是拿性能换正确性的历史 trade-off。**
+          # 所以 v46 一行几何都不碰, 任何写操作都会让归因失效(分不清"修好了"还是
+          # "被诊断改坏了")。
+          if grep -q "V46-ATTACH" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            # (1) 判据字段: D1/D2/D3/D4 各需一个字段, 少一个就有一个候选根因无法验证
+            _v46_fields=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); ks=('_v46R = _t.attachmentBounds(','_v46AttWant += _v46R.height','_v46AttCached = _t.attV46CachedTotalH','_v46AttCachedW = _t.attV46CachedWidth','var _v46AttNVI = false','if _v46AttNVI == false, _t.needsLayoutInvalidation { _v46AttNVI = true }','_v46AttNVI ? 1 : 0','_v46Lm.numberOfGlyphs','if _v46AttN > 0 {','var attV46CachedTotalH','var attV46CachedWidth'); print('OK' if all(k in t for k in ks) else 'BAD:'+','.join(k for k in ks if k not in t))")
+            # (2) 位置: 必须在 v45 之后、v44 之前(插入点固定在 V44 段头 ⇒ v45→v46→v44)
+            #     【反向测试 C2 逼出来的】只查"在 v45 之后"会漏放"搬到 v44 之后", 两个方向都要钉死
+            _v46_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); a=t.index('// [V45-TVHFIX]') if '// [V45-TVHFIX]' in t else -1; b=t.index('// [V46-ATTACH] 表格附件高度') if '// [V46-ATTACH] 表格附件高度' in t else -1; c=t.index('// [V44-TEXTFRAME] 见函数 docstring') if '// [V44-TEXTFRAME] 见函数 docstring' in t else -1; print('OK' if (a>=0 and b>a and c>b) else 'BAD v45@%d v46@%d v44@%d'%(a,b,c))")
+            # (3) ★纯诊断: 段内不得有 invalidate/强制布局/缓存写入, 否则等于偷偷把 v47 的活干了
+            _v46_readonly=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); b=t.index('// [V46-ATTACH] 表格附件高度') if '// [V46-ATTACH] 表格附件高度' in t else -1; c=t.index('// [V44-TEXTFRAME] 见函数 docstring', b) if (b>=0 and '// [V44-TEXTFRAME] 见函数 docstring' in t[b:]) else -1; seg=t[b:c] if (b>=0 and c>b) else ''; bad=[w for w in ('invalidateLayout','invalidateDisplay','invalidateSize','ensureLayout','invalidateCachedLayout','cachedLayout =','needsLayoutInvalidation =','needsViewRebuild =','textContainer.size =','.frame =','setNeedsDisplay','computeLayout(') if w in seg]; print('OK' if (seg and not bad) else ('BAD:'+'|'.join(bad) if bad else 'BAD:seg'))")
+            # (4) 访问器必须只读(无 setter)—— 结构上保证诊断改不了缓存
+            _v46_getter=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); res=[]; [res.append((n,'set' in t[t.rfind(chr(10),0,t.index('var '+n))+1:t.find(chr(10),t.index('var '+n))])) for n in ('attV46CachedTotalH','attV46CachedWidth') if 'var '+n in t]; print('OK' if (len(res)==2 and not any(b for _,b in res)) else 'BAD')")
+            # (5) 加法 + 节流: v44/v45 必须都还在(诊断不是替换), 0.5s 节流同周期
+            _v46_keep=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); q=chr(34); print('OK' if ('_v46Now - _V46Log.last > 0.5' in t and t.count('NSLog('+q+'[V46-ATTACH]')==1 and ('NSLog('+q+'[V44-TEXTFRAME]') in t and ('NSLog('+q+'[V45-TVHFIX]') in t) else 'BAD')")
+            if [ "$_v46_fields" = "OK" ] && [ "$_v46_pos" = "OK" ] \
+               && [ "$_v46_readonly" = "OK" ] && [ "$_v46_getter" = "OK" ] \
+               && [ "$_v46_keep" = "OK" ]; then
+              echo "✅ v46 就位 (attWant/attCached/cachedW/attGen/attNVI 六字段齐全打四个候选根因, 段内只读无 invalidate/缓存写, 访问器无 setter, 位置 v45→v46→v44, 0.5s 节流, v44/v45 保留)"
+            else
+              echo "❌ v46 异常 (字段=$_v46_fields 位置=$_v46_pos 只读=$_v46_readonly 访问器只读=$_v46_getter 节流/保留=$_v46_keep)"
+              echo "   —— 字段 BAD 说明某个候选根因(D1/D2/D3/D4)没有对应判据, 装机后该假设将无法验证"
+              echo "   —— 位置 BAD 则锚点失配(v45/v44 结构变了), 或 v46 跑在 v45 之前"
+              echo "   —— 只读 BAD 说明诊断段里混进了写操作/强制布局, 装机后分不清'修好了'还是'被诊断改坏了', 归因作废"
+              echo "   —— 访问器带 setter 则从后门打开纯诊断防线, cachedLayout 可被诊断改写"
+              exit 1
+            fi
+          else
+            echo "❌ v46 缺失 —— log15 已证明表格附件高度没进排版(usedH 114.3 vs needH 304.3, 差 190pt), 没有 v46 无法区分 D1/D2/D3/D4 四个候选根因, 只能盲修"
+            echo "   而 D1/D4 都是治主线程卡死的历史 trade-off, 盲修任一处都可能把卡死放回来"
             exit 1
           fi
           echo "::endgroup::"
