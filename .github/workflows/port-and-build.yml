@@ -498,23 +498,37 @@ jobs:
              && grep -q "V42-LATCH" src/ios/Views/Chat/SelectableMarkdownView.swift \
              && grep -q "V42-MISS" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
             # 位置判据锚**真正执行的赋值/条件语句**, 不锚注释(反向证伪31/31 已验证)。
-            _v42_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('ios15LastNeededH = _needH'); a=t.index(chr(10)+'            self.ios15LatchedNeedH = _needH', s); b=t.index(chr(10)+'            self.ios15LatchLen = self.textStorage.length', s); c=t.index(chr(10)+'            self.ios15LatchW = self.textContainer.size.width', s); d=t.index(chr(10)+'            self.ios15LatchHash = self.textStorage.mutableString.hash', s); g=t.index('NSLog('+chr(34)+'[V42-GATE]'); f=t.index('if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {'); print('OK' if s<a<b<c<d and g<f else 'BAD')")
+            # 【v43 两代兼容】键里的宽度两代不同, 都必须带 self., 顺序不变:
+            #   v42 世代: self.ios15LatchW = self.textContainer.size.width  (脏宽, 会造假高度)
+            #   v43 世代: self.ios15LatchW = _realW2                        (抢回净宽, 与排版同源)
+            # 判据两代都放行 —— 不能因 v43 改了写法就删 v42 判据(那等于让"三键刷新"无人看守),
+            # 也不能只认 v42(那 v43 永远跑不过)。
+            _v42_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); N=chr(10); s=t.index('ios15LastNeededH = _needH'); a=t.index(N+'            self.ios15LatchedNeedH = _needH', s); b=t.index(N+'            self.ios15LatchLen = self.textStorage.length', s); w=N+'            self.ios15LatchW = _realW2'; w2=N+'            self.ios15LatchW = self.textContainer.size.width'; c=t.index(w, s) if w in t else t.index(w2, s); d=t.index(N+'            self.ios15LatchHash = self.textStorage.mutableString.hash', s); g=t.index('NSLog('+chr(34)+'[V42-GATE]'); f=t.index('if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1 {'); print('OK' if s<a<b<c<d and g<f else 'BAD')")
             # 反向断言: 闩锁**禁止取 max**。max 在视图复用展示更短的新文本时会把新文本
             # 撑到旧高度, 凭空造出 1600pt 大片空白 —— 正是 v40 用户报过的症状。
             # 为了治卡字而引入空白是净亏, 必须硬性拦住。
             _v42_nomax=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); print('OK' if 'if _needH > self.ios15LatchedNeedH' not in t and (chr(10)+'            self.ios15LatchedNeedH = _needH') in t else 'BAD')")
             # 反向断言: 三个键必须都在 KVO 命中判定里。少任一个, 缓存就会跨内容误命中
             # (比如只比长度, 等长替换内容时会拿旧高度去撑新文本)。
-            _v42_key=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:s+4000]; a='self.ios15LatchLen == _v42Len' in g; b='abs(self.ios15LatchW - _v42TCW) < 0.5' in g; c='self.ios15LatchHash == self.textStorage.mutableString.hash' in g; print('OK' if a and b and c else 'BAD')")
+            # 【v43 窗口自适应 · 原来写死 s+4000 是错的】v43 在 FALLBACK 段里插入了
+            # V43-NETW + V43-WIDTH 诊断(约 60 行注释), 段长从 ~4000 涨到 6796,
+            # 写死窗口会**只覆盖到 _SelfLast 声明处**, 三键/节流/沿用/CGFloat 全落空,
+            # 于是断言在正确产物上误报 BAD。段尾改锚"补齐分支入口"(全文件唯一),
+            # 语义稳定: 它就是 KVO 段真正结束、开始补 superview 的地方。
+            _v42_key=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); N=chr(10); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:t.index(N+'            if _v42Need > 1 {', s)]; a='self.ios15LatchLen == _v42Len' in g; b='abs(self.ios15LatchW - _v42TCW) < 0.5' in g; c='self.ios15LatchHash == self.textStorage.mutableString.hash' in g; print('OK' if a and b and c else 'BAD')")
             # 反向断言: 自测必须限频 120ms。键再精确, 流式输出下 length 也每帧都变,
             # 必然次次不命中 -> 次次 sizeThatFits; 测量链本来就在排版, 叠加等于开销
             # 翻倍, **正好加重用户报的"终端卡一下才显示"**。为了治卡字引入卡顿是净亏。
-            _v42_thr=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:s+4000]; a='_v42Now - _v42SelfLast < 0.12' in g; b='struct _SelfLast { static var t: CFTimeInterval = 0 }' in g; c='let _v42SelfLast = _SelfLast.t' in g; d='_SelfLast.t = _v42Now' in g; print('OK' if a and b and c and d else 'BAD')")
+            _v42_thr=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); N=chr(10); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:t.index(N+'            if _v42Need > 1 {', s)]; a='_v42Now - _v42SelfLast < 0.12' in g; b='struct _SelfLast { static var t: CFTimeInterval = 0 }' in g; c='let _v42SelfLast = _SelfLast.t' in g; d='_SelfLast.t = _v42Now' in g; print('OK' if a and b and c and d else 'BAD')")
             # 节流分支必须**沿用旧高度**而不是放弃补齐 —— 放弃等于末行又被裁。
-            _v42_thruse=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:s+4000]; print('OK' if g.count('_v42Need = self.ios15LatchedNeedH')==2 else 'BAD')")
+            _v42_thruse=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); N=chr(10); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:t.index(N+'            if _v42Need > 1 {', s)]; print('OK' if g.count('_v42Need = self.ios15LatchedNeedH')==2 else 'BAD')")
             # 编译正确性: _v42Need 必须是 CGFloat(0)(写 0 会与 CGFloat 冲突编译失败),
             # 键里的 abs() 两侧必须都是 CGFloat。
-            _v42_swift=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:s+4000]; a='var _v42Need = CGFloat(0)' in g; b='var _v42Need = 0' not in g; c='let _v42TCW = self.textContainer.size.width' in g; d='abs(self.ios15LatchW - _v42TCW) < 0.5' in g; print('OK' if a and b and c and d else 'BAD')")
+            # 【v43 两代兼容】测高宽度的来源两代不同, 都必须与排版实际宽**同源**:
+            #   v42 世代: let _v42TCW = self.textContainer.size.width (脏宽 -> 与 v18 不同源)
+            #   v43 世代: let _v42TCW = _v43NetW (抢回净宽, 与 v18 同源)
+            # 判据只要求"取到了一个宽度变量", 具体的同源性由断言 45 盯。
+            _v42_swift=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); N=chr(10); s=t.index('// [V42-FALLBACK] 闩锁(带键缓存) + 兜底自测'); g=t[s:t.index(N+'            if _v42Need > 1 {', s)]; a='var _v42Need = CGFloat(0)' in g; b='var _v42Need = 0' not in g; c=('let _v42TCW = _v43NetW' in g) or ('let _v42TCW = self.textContainer.size.width' in g); d='abs(self.ios15LatchW - _v42TCW) < 0.5' in g; print('OK' if a and b and c and d else 'BAD')")
             # 【编译防御·v42 首次推送的真实失败原因】V42-GATE 原本写成裸 `{ ... }`,
             # 被 Swift 吸成上一个表达式的 trailing closure, 8 个编译错误:
             #   closure expression is unused
@@ -538,6 +552,63 @@ jobs:
             fi
           else
             echo "❌ v42 闩锁缺失 —— 82% 的 KVO 触发里 needH=0, 补齐被跳过, superview 高度恒定, 最后一两个字必然继续卡住!"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::断言45: v43 测高宽度同源(治'只有第一段卡字') + 涌入型重排节流(治'终端框卡画面')"
+          # v42 实测(log11)打脸: v42 注释里写"宽度用 textContainer.size.width,
+          # 与排版实际用的宽严格一致"—— **这句话是错的**。逐条交叉比对证明同一段
+          # 文本被量出**两个高度**:
+          #   文本长度   KVO自测(脏390)   v18实测(净358)    差
+          #   len=51        79.3              79.3           0.0
+          #   len=80       112.3             112.3           0.0
+          #   len=336      356.7             440.7          84.0   <-- 裁掉整段
+          #   len=466      782.3             821.7          39.4
+          # 短文本在 390/358 下高度完全相同(0 差), 长文本才差出整行 —— 这精确解释
+          # 了用户说的"**只有第一段卡字**": 第一段通常最长。
+          # 机制: KVO 抢帧器抢在 v18 之前跑, 此刻 tcW 还是 SwiftUI 刚写下的脏宽 390,
+          # 于是用 390 测出偏小的高度写进 superview; v18 随后抢回 358 用 358 测高写进
+          # frame。两条链同文本不同宽 -> 高度不一致 -> 拉锯。log11 里
+          # `svH=252.0 -> 356.7 debt=104.7` 47 次一字不差、持续 60 秒, 就是稳态。
+          if grep -q "V43-NETW" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "V43-BURST" src/ios/Agent/MessageList/MessageListLayout.swift ; then
+            # ---- v43-A: 测高宽度必须与 v18 同源 ----
+            # 判据盯"净宽公式 + 自测取净宽 + 闩锁键存净宽"三件事, 缺一件就复发。
+            # 【为什么不能"两链都改用 tcW"】v18 必须用净宽: 渲染排版最终按 358 做
+            # (行碎片已被 v18 的 invalidateLayout 重排), 用 390 量出的高度对应一个
+            # **不存在的排版**, 永远对不上真实渲染。
+            _v43_src=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); a=('let _v43NetW = max(200.0, cvW - 32)' in t); b=('let _v42TCW = _v43NetW' in t); c=('let _v43DirtyW = self.textContainer.size.width' in t); d=('self.ios15LatchW = _realW2' in t); e=('let _fh = self.sizeThatFits(' in t); f=('CGSize(width: _v43NetW, height: .greatestFiniteMagnitude)).height' in t); g=('CGSize(width: _v43DirtyW, height: .greatestFiniteMagnitude)).height' in t); h=('_hNet - _hDirty' in t); print('OK' if all([a,b,c,d,e,f,g,h]) else 'BAD')")
+            # 诊断必须**两宽对照**才有意义: 只测一个宽, dh 恒为 0, 白测。
+            _v43_diag=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); q=chr(34); a=t.count('NSLog('+q+'[V43-WIDTH]')==1; b=t.count('V43-NETW')>=1; c=t.count('V43-LATCHW')>=1; print('OK' if all([a,b,c]) else 'BAD')")
+            # ---- v43-B: 涌入型全表重排节流 ----
+            # 【一个很容易看错的点】shouldInvalidateLayout 里紧跟的
+            # `if shouldInvalidate && delta > 100` 看着像判定阈值, 其实**只是日志
+            # 阈值** —— 真正判定是上面那个 `delta > 2`。
+            # 【v43-B 位置在第二轮被纠正】第一版把节流插在 shouldInvalidateLayout
+            # 里 return false, 那是净亏: 返回 false 会让 UIKit **跳过整个
+            # invalidationContext**, 连 `heightCache[index] = newHeight` 一起跳过,
+            # prepare() 读到旧高度 → 内容被裁, 比原症状更糟。log11 里 `est` 恒等于
+            # 上次 `pref`(29→159→303→408→518→612→742) 就是"每次都被采纳"的铁证。
+            # 正确节流点是 invalidationContext 末尾那次 O(items) 的全表重排。
+            # log11 实证(idx=14, 1.08 秒内 5 次重排 29→159→303→408→518→742,
+            # 对应 ReflowGap re-flows=6 全日志最高)。
+            _v43_burst=$(python3 -c "t=open('src/ios/Agent/MessageList/MessageListLayout.swift',encoding='utf-8').read(); a=t.count('V43-BURST')==3; b=('if abs(delta) > 100 {' in t); c=('_v43Now - _v43Prev < 0.25' in t); d=('private static var v43BurstAt: [Int: CFTimeInterval] = [:]' in t); e=('Self.v43BurstAt[index] = _v43Now' in t); f=('Self.v43BurstAt = Self.v43BurstAt.filter' in t); an='if abs(delta) > 0.5, !isStreamingCell(index), !pendingFooterReflow {'; g=t.count(an)==1; mk='// [V43-BURST] 涌入型突增的**全表重排**节流'; h=t.index(mk) if mk in t else -1; i=t.index(an) if g else -1; j=t.index('pendingFooterReflow = true', i) if i>=0 else -1; k=(i<h<j) if (i>=0 and h>=0 and j>=0) else False; print('OK' if all([a,b,c,d,e,f,g,k]) else 'BAD')")
+            # 【★裁字风险的核心判据】节流点必须晚于 heightCache 写入。插到前面
+            # 就等于拦掉高度落地, prepare() 读旧高度, 涌入的后半段内容被裁 ——
+            # 正是用户在治的"字只显示一半"。v43-B 第一版就错在这里, 必须钉死。
+            # 同时要求窗口内是 `return ctx`(只重排本 cell)而不是置位
+            # pendingFooterReflow —— 置位会另起一次全表重排, 节流等于没做。
+            _v43_cache=$(python3 -c "t=open('src/ios/Agent/MessageList/MessageListLayout.swift',encoding='utf-8').read(); a=('heightCache[index] = newHeight' in t); b=t.index('heightCache[index] = newHeight') if a else -1; mk='// [V43-BURST] 涌入型突增的**全表重排**节流'; c=t.index(mk) if mk in t else -1; d=(b>=0 and c>b); tail=t[c:t.index('pendingFooterReflow = true', c)] if (c>=0 and 'pendingFooterReflow = true' in t[c:]) else ''; e=('return ctx' in tail) and ('pendingFooterReflow = true' not in tail); print('OK' if a and d and e else 'BAD')")
+            if [ "$_v43_src" = "OK" ] && [ "$_v43_diag" = "OK" ] \
+               && [ "$_v43_burst" = "OK" ] && [ "$_v43_cache" = "OK" ]; then
+              echo "✅ v43 就位 (测高用抢回净宽 max(200,cvW-32) + 闩锁键存净宽 + 两宽对照诊断 + 涌入全表重排节流 250ms/idx, 节流点在 heightCache 写入之后故绝不裁字)"
+            else
+              echo "❌ v43 异常 (同源=$_v43_src 诊断=$_v43_diag 涌入节流=$_v43_burst 高度先落地=$_v43_cache) —— 两条测量链仍不同源(长文本差整行 -> 裁字), 或涌入全表重排未节流 / 节流拦到了高度落地之前(终端框继续卡画面, 或内容反被裁掉)!"
+              exit 1
+            fi
+          else
+            echo "❌ v43 缺失 —— 测高宽度与排版不同源(长文本量出两个高度, 差 84pt 裁掉整段), 且涌入型全表重排无节流(终端框 1.08 秒重排 5 次)!"
             exit 1
           fi
           echo "::endgroup::"

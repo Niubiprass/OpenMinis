@@ -3179,6 +3179,136 @@ def _v42_marks(t, mark):
     return t.count('NSLog("[' + mark + ']')
 
 
+def fix_burst_reflow_v43(t):
+    """v43-B: 涌入型突增的**全表重排**节流 — 治"终端框卡一下才显示画面"。
+
+    【与 v43-A 是两个问题】用户原话"终端框卡画面和字不显示是两个问题", 代码上
+    也确实是两处独立根因, 必须分开治:
+      - v43-A(V43-NETW, SelectableMarkdownView): 两条测量链宽度不同源 → 高度差
+        84pt → **字被裁**。
+      - 本条(MessageListLayout): 工具输出一次性涌入 → 每行都触发一次**全表**
+        prepare() → **终端框卡画面**。
+
+    log11 实证 (minis-2026-10-03 11.log, idx=14, 1.08 秒内 5 次重排):
+      09:36:03.480 delta=129 est=29   → pref=159
+      09:36:03.683 delta=144 est=159  → pref=303
+      09:36:03.913 delta=105 est=303  → pref=408
+      09:36:04.168 delta=110 est=408  → pref=518
+      09:36:04.562 delta=129 est=612  → pref=742
+    对应 [ScrollStall][ReflowGap] last1s coalesced re-flows=6 (全日志最高)。
+    同期 [RND] table#0 CACHE UPDATE rows=4→6→7, storageLen 25→67→224→270→414→466。
+
+    根因: shell_execute 输出**一次性涌入**(1.08 秒灌进 7 行表格 + 466 字符文本)。
+    每一行都让 cell 高度跳 105~144pt, 于是 invalidationContext 末尾那个
+    `invalidateLayout()` 被触发 5 次 —— 每次都是 O(items) 的全表 prepare()。
+
+    【v43-B 第一版插错了地方, 这是本函数被重写的原因 —— 记下来别再犯】
+    第一版把节流插在 `shouldInvalidateLayout` 里 `return shouldInvalidate` 之前,
+    窗口内 `return false`。**那是净亏, 比原症状更糟**, 原因链条:
+      shouldInvalidateLayout 返回 false
+        → UIKit **根本不调用** invalidationContext
+        → `heightCache[index] = newHeight`(方法开头那行) 不执行
+        → prepare() 读到的是**旧高度**
+        → 涌入的后半段内容被**裁掉**(正是用户在治的"字只显示一半")
+    也就是说: 拦 invalidate = 拦高度落地。log11 里 `est` 恒等于上一次的 `pref`
+    (29→159→303→408→518→612→742) 正是"每次都被采纳"的铁证, 第一版与日志矛盾。
+    第一版注释里"heightCache 在本方法开头已经写了 newHeight"**是错的** ——
+    那是 invalidationContext 的开头, 不是 shouldInvalidateLayout 的。
+
+    【一个很容易看错的点】shouldInvalidateLayout 里紧跟的
+    `if shouldInvalidate && delta > 100` 看着像判定阈值, 其实**只是日志阈值** ——
+    真正的判定是上面那个 `delta > 2`。第一遍读源码时也误以为 "> 100 会拦",
+    差点改错地方。日志里 5 条 INVALIDATE 全部 delta>100 只是因为日志恰好也卡在 100。
+
+    修法: 节流**只拦全表 invalidateLayout() 那一步**, 高度照旧每次落地。
+      - `heightCache[index] = newHeight` 在节流点之前, 一次都不拦 → 绝不裁字。
+      - 高度虽然每次都写, 但**用它去重排全表**才是 O(items) 的开销。涌入的
+        5 次写入里有 4 次落在 250ms 窗口内, 塌缩成 1 次全表 prepare(),
+        终端框"一次性长出来"而不是"抖着长"。
+      - 窗口极短(250ms)且只在 `delta > 100` 时生效, 真实的大幅变化
+        (图片占位→加载完)最多延迟 250ms 落地。
+
+    【为什么不动 V31-FLIPLOCK】FLIPLOCK 拦的是"翻回变小"(振荡), 本条拦的是
+    **单调增长**的全表重排。两者判据不同、目标不同, 叠加会互相掩盖。
+    """
+    # 锚点: invalidationContext 末尾的 reflow 触发条件。必须**唯一**命中 ——
+    # 这个条件串在 prepare()/applySnapshot() 等处也有形态相近的兄弟, 命中多处
+    # 会把节流插到不该插的地方。
+    OLD = """        if abs(delta) > 0.5, !isStreamingCell(index), !pendingFooterReflow {
+            pendingFooterReflow = true"""
+    NEW = """        if abs(delta) > 0.5, !isStreamingCell(index), !pendingFooterReflow {
+            // [V43-BURST] 涌入型突增的**全表重排**节流 — 见函数 docstring 完整推导。
+            //
+            // 【关键: 高度在上一行已经落地, 这里只拦 O(items) 的全表 prepare()】
+            // `heightCache[index] = newHeight` 在本 if 之前, 一次都没被拦过,
+            // 所以内容永远不会被裁。拦掉的只是"拿这个新高度去重排所有 cell" ——
+            // 涌入的 1.08 秒里 5 次写入, 有 4 次落在窗口内, 塌缩成 1 次全表重排。
+            //
+            // 【为什么不插在 shouldInvalidateLayout 里 return false —— 见 docstring】
+            // 那样会让 UIKit 跳过整个 invalidationContext, 连 heightCache 写入
+            // 一起跳过, 高度不落地 -> 内容被裁, 比原症状更糟。log11 里
+            // `est` 恒等于上次 `pref`(29→159→303→408→518→612→742) 证明
+            // 每次 invalidate 都被采纳, 拦它等于拦高度本身。
+            if abs(delta) > 100 {
+                let _v43Now = CACurrentMediaTime()
+                let _v43Prev = Self.v43BurstAt[index] ?? 0
+                if _v43Prev > 0, _v43Now - _v43Prev < 0.25 {
+                    // 窗口内: 只重排**这个 cell**, 不动全表。上面的 heightCache
+                    // 已经写好, 下一次真正的全表 prepare() 会用上正确高度。
+                    AppLogger(category: "CellSizing").info("[V43-BURST] idx=\\(index) delta=\\(String(format: "%.0f", delta)) full-reflow suppressed — 距上次全表重排 \\(String(format: "%.3f", _v43Now - _v43Prev))s < 0.25s")
+                    return ctx
+                }
+                Self.v43BurstAt[index] = _v43Now
+                // 陈旧条目清理: 长会话里 idx 会累积到几百个, 不清会一直涨。
+                if Self.v43BurstAt.count > 64 {
+                    let _v43Cut = _v43Now - 2.0
+                    Self.v43BurstAt = Self.v43BurstAt.filter { $0.value > _v43Cut }
+                }
+            }
+            pendingFooterReflow = true"""
+    if OLD not in t:
+        raise RuntimeError("fix_burst_reflow_v43: 未找到 invalidationContext 末尾的 reflow 锚点 (上游结构变了?)")
+    if t.count(OLD) != 1:
+        raise RuntimeError(
+            f"fix_burst_reflow_v43: reflow 锚点不唯一(命中 {t.count(OLD)} 处) —— "
+            "不能盲插, 会把节流塞进 prepare()/applySnapshot() 的同名条件里")
+    NEW = NEW.replace("\\n", "\n") if "\\n" in NEW else NEW
+    t = t.replace(OLD, NEW, 1)
+
+    # 静态存储声明挂在 reflow 计数器旁边(同一片存储区, 便于对照排查)。
+    OLD2 = """    private static var reflowCount = 0
+    private static var reflowLastFlush: CFTimeInterval = 0"""
+    NEW2 = """    private static var reflowCount = 0
+    private static var reflowLastFlush: CFTimeInterval = 0
+    // [V43-BURST] 每 idx 最近一次**全表重排**被放行的时刻(节流窗口基准)。
+    private static var v43BurstAt: [Int: CFTimeInterval] = [:]"""
+    if OLD2 not in t:
+        raise RuntimeError("fix_burst_reflow_v43: 未找到 reflowCount 声明锚点")
+    t = t.replace(OLD2, NEW2, 1)
+
+    # 编译防御: 静态存储必须声明, 且节流窗口与阈值必须原样出现。
+    for k in ("private static var v43BurstAt: [Int: CFTimeInterval] = [:]",
+              "Self.v43BurstAt[index] = _v43Now",
+              "_v43Now - _v43Prev < 0.25",
+              "Self.v43BurstAt = Self.v43BurstAt.filter",
+              "if abs(delta) > 100 {",
+              '[V43-BURST] idx='):
+        if k not in t:
+            raise RuntimeError(f"fix_burst_reflow_v43: 缺少关键片段 {k}")
+    # 【防回退到错位】节流点必须落在 heightCache 写入**之后** —— 插到前面就等于
+    # 拦高度落地, 直接裁字。这是 v43-B 第一版的错, 必须由编译防御钉死。
+    i_hc = t.index("heightCache[index] = newHeight")
+    i_v43 = t.index("// [V43-BURST] 涌入型突增的**全表重排**节流")
+    if not i_hc < i_v43:
+        raise RuntimeError(
+            "fix_burst_reflow_v43: 节流点必须晚于 heightCache[index] = newHeight "
+            f"(实际 hc@{i_hc} v43@{i_v43}) —— 插到前面会拦掉高度落地, 内容被裁")
+    if t.count("V43-BURST") != 3:
+        raise RuntimeError(
+            f"fix_burst_reflow_v43: 标记数不符 (期望 3, 实际 {t.count('V43-BURST')})")
+    return t
+
+
 def fix_needh_latch_v42(t):
     """v42: 需求高度"闩锁" — 治KVO 触发时 needH=0 导致补齐被跳过。
 
@@ -3382,7 +3512,13 @@ def fix_needh_latch_v42(t):
             // 属性引用一律写 `self.`, 与上面的 V42-GATE 保持同一防御口径。
             self.ios15LatchedNeedH = _needH
             self.ios15LatchLen = self.textStorage.length
-            self.ios15LatchW = self.textContainer.size.width
+            // [V43-LATCHW] 键里的宽度必须是**抢回后的净宽** _realW2, 不能存
+            // textContainer.size.width(此刻是 SwiftUI 刚写下的脏宽 390)。
+            // 两链不同源 -> 键在"抢回前/抢回后"之间反复失效 -> 退化成每次自测,
+            // 而每次自测用的又是脏宽, 于是值也错。log11 证据: V42-MISS 102 次
+            // vs V42-LATCH 103 次看似平衡, 但 THROTTLE 只命中 3 次, 说明
+            // 绝大多数自测发生在"距上次自测 > 120ms"之后 —— 键压根没起作用。
+            self.ios15LatchW = _realW2
             self.ios15LatchHash = self.textStorage.mutableString.hash"""
     t = t.replace(ANCHOR_SET, NEW_SET, 1)
 
@@ -3414,8 +3550,55 @@ def fix_needh_latch_v42(t):
             // 不命中 -> 次次 sizeThatFits。测量链本来就在排版, 叠加会翻倍,
             // 正好加重"终端卡一下"。所以自测本身再限频 120ms。
             let _v42Len = self.textStorage.length
-            let _v42TCW = self.textContainer.size.width
             let _v42Now = CACurrentMediaTime()
+            // [V43-NETW] 测高**必须用抢回后的净宽**, 不能用 textContainer.size.width。
+            //
+            // 【v42 实测打脸·这是 v42 自己的设计错误, 不是上游问题】
+            // v42 注释里写"宽度用 textContainer.size.width, 与排版实际用的宽严格一致",
+            // **这句话是错的**。log11 逐条交叉比对证明同一段文本被量出**两个高度**:
+            //
+            //   文本长度   KVO自测(脏390)   v18实测(净358)    差
+            //   len=51        79.3              79.3           0.0
+            //   len=80       112.3             112.3           0.0
+            //   len=336      356.7             440.7          84.0   <-- 裁掉整段
+            //   len=466      782.3             821.7          39.4
+            //   len=533      857.7             897.0          39.3
+            //
+            // 短文本在 390/358 下高度完全相同(0 差), 长文本才差出整行 —— 这精确解释
+            // 了用户说的"**只有第一段卡字**": 第一段通常最长。
+            //
+            // 机制: SwiftUI 每帧把 textContainer 宽写成 390(全屏宽), v18 在
+            // layoutSubviews 里抢回 358 并**用 358 测高**写进 frame。而 KVO 抢帧器
+            // 每帧抢在 v18 之前跑, 此刻 tcW 还是脏的 390, 于是用 390 测出一个
+            // **偏小**的高度, 写进 superview。两条链同文本不同宽 -> 高度不一致 ->
+            // 拉锯。log11 里 `svH=252.0 -> 356.7 debt=104.7` 47 次一字不差、持续
+            // 60 秒, 就是这个拉锯的稳态。
+            //
+            // 修法: 净宽与 v18 完全同源 —— `max(200, cvW - 32)`, 两条链同宽必然同值,
+            // 拉锯从根上消失(而不是靠节流压住, 节流只是让它慢一点仍在错)。
+            //
+            // 为什么不能"两链都改用 tcW": v18 必须用净宽, 因为渲染排版最终是按
+            // 358 做的(行碎片已被 v18 的 invalidateLayout 重排), 用 390 量出来的
+            // 高度对应一个**不存在的排版**, 永远对不上真实渲染。
+            let _v43NetW = max(200.0, cvW - 32)
+            // 闩锁键的宽度也必须换成净宽: 键里存脏宽的话, 即使值对了也会在
+            // "抢回前/抢回后"两个键之间反复失效, 退化成每次都自测(v42 的
+            // V42-THROTTLE 命中 3 次 / V42-MISS 102 次就是征兆)。
+            let _v42TCW = _v43NetW
+            let _v43DirtyW = self.textContainer.size.width
+            // [V43-WIDTH] 脏宽/净宽/两者测出的高度差 —— 一次就能判断是否同宽。
+            // 同宽时 dh 应为 0.0; 若非 0 说明还有第三条测量链在用别的宽。
+            struct _WLog { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+            if _v42Now - _WLog.last > 0.5 {
+                _WLog.last = _v42Now
+                _WLog.n &+= 1
+                let _hNet = self.sizeThatFits(
+                    CGSize(width: _v43NetW, height: .greatestFiniteMagnitude)).height
+                let _hDirty = self.sizeThatFits(
+                    CGSize(width: _v43DirtyW, height: .greatestFiniteMagnitude)).height
+                NSLog("[V43-WIDTH] dirtyW=%.1f netW=%.1f hDirty=%.1f hNet=%.1f dh=%.1f len=%d n=%u",
+                      _v43DirtyW, _v43NetW, _hDirty, _hNet, _hNet - _hDirty, _v42Len, _WLog.n)
+            }
             // _v42SelfLast: 上次**自测**时刻(节流基准), 声明在 KVO 闭包体顶部
             // 的局部变量区, 不进实例属性 —— KVO 闭包每帧新建, 但这个值需要跨帧,
             // 所以放在闭包捕获不到的层级不行; 实际上 Swift 每次调用 observe 闭包
@@ -3590,11 +3773,21 @@ def fix_needh_latch_v42(t):
     # 【必须带 self. 前缀】v42 第一次推送编译失败教训: 该赋值点与 V42-GATE 块
     # 处在同一段落, Swift 可能把后面的 `{` 吸成 trailing closure, 于是裸引用
     # 会被要求显式 self.。所以注入时就一律写 self.，断言也跟着锚 self. 版本。
+    #
+    # 【v43 两代兼容】键里的宽度两代不同, 都必须带 self.:
+    #   v42 世代: self.ios15LatchW = self.textContainer.size.width  (脏宽, 会造假)
+    #   v43 世代: self.ios15LatchW = _realW2                        (抢回净宽, 正确)
+    # 判据要两代都放行 —— 不能因为 v43 改了写法就把 v42 判据删掉, 那等于让
+    # "键刷新"这件事彻底无人看守; 但也不能只认 v42, 否则 v43 永远跑不过。
     for k in ("self.ios15LatchLen = self.textStorage.length",
-              "self.ios15LatchW = self.textContainer.size.width",
               "self.ios15LatchHash = self.textStorage.mutableString.hash"):
         if k not in t:
             raise RuntimeError(f"fix_needh_latch_v42: 赋值点缺少键刷新 {k}")
+    _v43_w = "self.ios15LatchW = _realW2"
+    _v42_w = "self.ios15LatchW = self.textContainer.size.width"
+    if _v43_w not in t and _v42_w not in t:
+        raise RuntimeError(
+            "fix_needh_latch_v42: 赋值点缺少键刷新 (v43 净宽 / v42 脏宽 两种写法都不存在)")
 
     # 【编译防御】V42-GATE 必须用 do { } 而不是裸 { }。裸块会被 Swift 吸成
     # 上一个表达式的 trailing closure -> 8 个编译错误(closure expression is
@@ -3875,7 +4068,9 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_clamp_v39, "v39: 帧同步补上高度 — 治'字显示不全/排版不对'(v23 帧同步只修宽度不修高度, 每帧把 v18 撑好的高度改回去 → svH 恒为 needH 的 0.50~0.74, 37/37)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_unconditional_v40, "v40: 高度补齐挪出 polluted 分支 — 治'块重叠/字只剩一半'(v39 实测: textView 自身 frameH==needH 已 52/52 全对, 但 superview 52/52 仍欠 23.7~476pt。根因: polluted 判据只看宽度, 宽度修好后早退, v39 的高度代码一行没跑 → 宽度修好反而挡住了高度)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_height_clamp_v41, "v41: KVO 抢帧器补高度 — 治'字只剩一半/终端框不接结果'(推翻 v39/v40 的诊断: log9 同一毫秒同一 layoutSubviews 内 DIAG2 读到 358x2000.33 而开头快照是 100000x1455.33 → v18+v40 在 pass 内**确实修好了**, 欠账是 pass 结束后 SwiftUI 写回的。真凶: KVO 抢帧器只修x/width 从不写高度, 且 polluted 判据只看宽度 → '宽度正常+高度欠账'的帧被 if !polluted { return } 放过 → 末行被裁。v41: KVO 内无条件补高度 + polluted 增加高度维度 + 提交前兜底 + pass 末尾 V41-DEBT 回写侦测)")
-    edit("Views/Chat/SelectableMarkdownView.swift", fix_needh_latch_v42, "v42: 需求高度闩锁 + KVO 兜底自测 — 治'最后一段字卡住'(v41 实测: KVO 94 次触发里**77 次(82%) needH=0**, 补齐条件 needH>1 直接跳过 → superview 卡在 1123.7/1006.0 恒定不变(25次同值), 末行持续被裁。根因: ios15LastNeededH 唯一赋值点在 layoutSubviews 第7618 行那个 `if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1` 内部, 三道门任一不满足就永远是 0; 而 KVO 抢帧器**不在这三道门里** → '抢帧器正常工作, 测量链没跟上'。v42: 闩锁改为**带键精确缓存**(长度/宽/hash, 不用 max——max 会在视图复用时把新短文本撑到旧高度造出大片空白) + KVO 里键不符时自测兜底(不经过那三道门) + V42-GATE 打在三道门之前(区分哪一道没通) + V42-LATCH/V42-MISS 区分缓存命中与自测)")
+    # ---- v43: 两个独立根因分开治(用户实测: "只有第一段卡" + "终端框还是卡画面") ----
+    edit("Agent/MessageList/MessageListLayout.swift", fix_burst_reflow_v43, "v43-B: 涌入型突增的重排节流(250ms/idx) — 治'终端框卡一下才显示画面'(log11: shell_execute 输出 1.08 秒涌入 7 行表格, idx=14 连续 5 次 INVALIDATE 29→159→303→408→518→742, 对应 ReflowGap re-flows=6 全日志最高。根因: shouldInvalidate=delta>2 全放行, 上游那个 delta>100 只是**日志**阈值不是判定阈值) + 治字被裁的宽度不同源在 SelectableMarkdownView 侧 v43-A")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_needh_latch_v42, "v42: 需求高度闩锁 + KVO 兜底自测 — 治'最后一段字卡住'(v41 实测: KVO 94 次触发里**77 次(82%) needH=0**, 补齐条件 needH>1 直接跳过 → superview 卡在 1123.7/1006.0 恒定不变(25次同值), 末行持续被裁。根因: ios15LastNeededH 唯一赋值点在 layoutSubviews 第7618 行那个 `if !isScrollEnabled, let rCv2 = findCollectionView(), rCv2.bounds.width > 1` 内部, 三道门任一不满足就永远是 0; 而 KVO 抢帧器**不在这三道门里** → '抢帧器正常工作, 测量链没跟上'。v42: 闩锁改为**带键精确缓存**(长度/宽/hash, 不用 max——max 会在视图复用时把新短文本撑到旧高度造出大片空白) + KVO 里键不符时自测兜底(不经过那三道门) + V42-GATE 打在三道门之前(区分哪一道没通) + V42-LATCH/V42-MISS 区分缓存命中与自测)【v43-A 已就地改宽: 键与自测统一用抢回净宽 max(200,cvW-32), 见函数内 V43-NETW/V43-LATCHW】")
     # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")

@@ -25,6 +25,14 @@ SWIFT_REL = "src/ios/Views/Chat/SelectableMarkdownView.swift"
 SWIFT = os.path.join(ARG, SWIFT_REL) if os.path.isdir(ARG) else ARG
 N = chr(10)
 
+# 【v43 两代兼容】闩锁键宽度与自测宽度的写法两代不同:
+#   v42: ios15LatchW = textContainer.size.width / _v42TCW = textContainer.size.width
+#   v43: ios15LatchW = _realW2                   / _v42TCW = _v43NetW
+# sabotage 锚点必须按产物实际写法选, 否则在另一代产物上会"锚点失配"被静默跳过
+# —— 静默跳过比失败更危险: 它让证伪报告显示"抓到 N 条", 实际那条根本没跑。
+_base_swift = io.open(SWIFT, encoding="utf-8").read() if os.path.exists(SWIFT) else ""
+_is_v43 = "V43-NETW" in _base_swift
+
 
 def extract_v42_block():
     """从工作流里抽出断言 44 的 run 片段(连同它依赖的路径上下文)。"""
@@ -129,13 +137,15 @@ SABOTAGE = [
      N + "            self.ios15LatchLen = self.textStorage.length",
      N + "            // sabotage"),
     ("赋值点不刷 W 键",
-     N + "            self.ios15LatchW = self.textContainer.size.width",
+     (N + "            self.ios15LatchW = _realW2" if _is_v43 else
+      N + "            self.ios15LatchW = self.textContainer.size.width"),
      N + "            // sabotage"),
     ("赋值点不刷 Hash 键",
      N + "            self.ios15LatchHash = self.textStorage.mutableString.hash",
      N + "            // sabotage"),
     ("自测改用屏宽",
-     "            let _v42TCW = self.textContainer.size.width",
+     ("            let _v42TCW = _v43NetW" if _is_v43 else
+      "            let _v42TCW = self.textContainer.size.width"),
      "            let _v42TCW = UIScreen.main.bounds.width"),
     ("_v42Need 初值用 Int 字面量",
      "            var _v42Need = CGFloat(0)",

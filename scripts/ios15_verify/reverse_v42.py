@@ -154,8 +154,12 @@ SABOTAGE = [
      N + "            // sabotage: 不刷 Len"),
 
     # 13. 赋值点不刷 W 键
+    # 【v43 两代兼容】W 键写法两代不同(v42 脏宽 / v43 抢回净宽), 锚点按产物
+    # 实际写法选, 否则 v43 产物上这条会"锚点失配"而被静默跳过。
     ("赋值点不刷 W 键",
-     N + "            self.ios15LatchW = self.textContainer.size.width",
+     (N + "            self.ios15LatchW = _realW2"
+      if SRC and "_realW2" in open(SRC, encoding="utf-8").read()
+      else N + "            self.ios15LatchW = self.textContainer.size.width"),
      N + "            // sabotage: 不刷 W"),
 
     # 14. 赋值点不刷 Hash 键
@@ -164,8 +168,11 @@ SABOTAGE = [
      N + "            // sabotage: 不刷 Hash"),
 
     # 15. 自测改用屏宽而不是排版实际宽(测高与渲染不同宽)
+    # 【v43】v43 世代的 _v42TCW 来自 _v43NetW, 改成屏宽同样破坏"测高与渲染同宽"
     ("自测改用屏宽",
-     "            let _v42TCW = self.textContainer.size.width",
+     ("            let _v42TCW = _v43NetW"
+      if SRC and "_v43NetW" in open(SRC, encoding="utf-8").read()
+      else "            let _v42TCW = self.textContainer.size.width"),
      "            let _v42TCW = UIScreen.main.bounds.width"),
 
     # 16. 自测不再调 sizeThatFits
