@@ -3925,6 +3925,145 @@ def fix_diag_textframe_v44(t):
     return t
 
 
+def fix_tvh_debt_v45(t):
+    """v45: 补高**补到画字的那个视图上** — 治"外层留空白/字卡一半"。
+
+    ## v44 的归因结论(log13, 53 条 V44-TEXTFRAME, 零例外)
+
+    v44 是纯诊断版, 装机后一条日志把三个假设一次打完, 结果 44/53 命中
+    同一个组合, 剩下 9 条是正常短消息:
+
+    | 组合 | 次数 | 含义 |
+    |---|---|---|
+    | A-C | 44 | textView 自己矮 + attachment 虚高 |
+    | --C | 9 | 正常 |
+
+    **假设 B(补高被 `ios15KvoFixing` 重入挡掉)彻底排除**:
+    `svAfter == needH` 在 53 条里**全部成立**(1136.3/1136.3、538.0/538.0、
+    49.0/49.0 …)。补高从来都成功了, 从来没被挡掉过。
+
+    ## 真凶: 补的对象错了 —— 补了 superview, 文字活在 UITextView 里
+
+    决定性的一行:
+
+    ```
+    tvH=912.7  svAfter=1136.3  needH=1136.3  tvW=390.0  svW=358.0  len=629
+    ↑画字的UITextView 自己矮了 223.6pt
+    ```
+
+    v41~v44 四版都在补 `sv.frame`(superview/scroll容器), 而**画字的是
+    `self.frame`**(UITextView 自己)。superview 补到 1136.3 了, 里面那个
+    UITextView 只有 912.7 —— 多出来的 223.6pt 是**空壳**, 文字被自己
+    的 bounds 裁断。
+
+    这就是用户报的"上面 Minis 下面一小片空白 + 字还是卡一半"的**完整机制**:
+    外层被撑高, 内层矮一截, 空出来的地方没有文字, 有文字的地方被裁。
+
+    ## 欠账额的结构证明"不是拉锯, 是两个来源各写一次"
+
+    44 条样本逐条算:
+
+    ```
+    needH - tvH = (usedH - tvH) + (needH - usedH)
+    ```
+
+    `usedH - tvH` **恒为负**(-8.0 ~ -44.7, 均值 -34.5), 从没转正过。
+    如果 tvH 是被随机拉回來的拉锯, 这个差必然有正有负。恒负说明:
+    UITextView 的高度始终**系统性地**比 TextKit 实际占用矮一截, 而外层
+    欠的账正好等于"自己矮的量 + 一份固定差额"。
+
+    44 条欠账样本的 `needH - tvH` 分布高度集中:
+    223.6(30 次)/ 224.0(3)/ 112.0(16)/ 45.0 / 22.3 —— 全是固定值。
+
+    ## 顺带确认: 脏宽是**共犯**, 不是主犯
+
+    ```
+    44 条欠账样本: tvW=390/tcW=390 -> 42 条, tvW=358/tcW=358 -> 2 条
+     9 条正常样本: tvW=358/tcW=358 -> 9 条(100%)
+    ```
+
+    欠账几乎全部发生在 `tcW=390`(脏宽没抢回)时, 正常样本 100% 是 358。
+    但**本版不动宽度** —— 宽度抢回在 v13/v34 反复引起过闪屏/整体缩小,
+    风险面独立, 留待单独一版。这一版只治 tvH, 让 A 主因先落地看效果。
+
+    ## 修法: 在 KVO 补高路径里, 把 needH 同时写进 self.frame
+
+    位置选在 v41 补高段之后、V41-KVOPOST 之前 —— 那里 `_v42Need` 刚算完、
+    `f` 已是补过 sv高度的新帧, 是**同一条KVO 闭包内**唯一能同时拿到
+    `needH` 与 `self` 的地方, 不需要跨函数传递。
+
+    写 `self.frame` 有个前提必须守住: **只动高度, 绝不碰 origin 和宽度**。
+    宽度是 v18/v34 那一族(经`ios15LastSaneSVFrame` + KVO 宽度修正)精心
+    维护的, 在这里碰它等于绕过那套状态机。判据用 `frame.size.height`,
+    写入也只改 `size.height` —— 语义上"给这个视图更多竖直空间", 不越界。
+
+    ## 为什么不写"tvH 补到 max(needH, usedH)"
+
+    因为 A 与 C 都会在这里被一并缓解: needH 已经是本闭包按**抢回后的净宽**
+    算出的权威需求高(v43-A 起`_v42TCW = max(200, cvW-32)`), 补到它即
+    包含 C 需要的空间。C 的 `needH-usedH` 差额(30~268pt)会被这一条覆盖掉,
+    不需要额外为 C 写任何代码。若装机后 C 仍显形, 再单独收口。
+
+    ## 与 v41 的关系(幂等, 不是叠加)
+
+    v41 补的是 `obj.frame`(superview), v45 补的是 `self.frame`。
+    两者目标不同层, 互不覆盖 —— v41 之后 `f` 已是新高度, v45 在它之上
+    再补 self。连续多帧执行时 `tvH >= needH` 自然让本段条件转 false,
+    不存在反复写入。日志按 0.5s 节流, 与 v44 同周期便于并列对照。
+    """
+    ANCHOR = """            // [V44-TEXTFRAME] 见函数 docstring: v41/v42/v43 三轮都在猜"高度够不够",
+            // 这一条把三个候选根因一次打完, 不改任何行为。
+            //
+            // tvH     —— **渲染文字的 UITextView 自己**有多高。superview 补到
+            //            needH 而 tvH 仍矮, 那欠账根本不在 superview 上(假设 A)。"""
+    if ANCHOR not in t:
+        raise RuntimeError(
+            "fix_tvh_debt_v45: 未找到 V44 诊断段锚点(V44 没注入? 登记顺序错了?)")
+    if t.count(ANCHOR) != 1:
+        raise RuntimeError(
+            f"fix_tvh_debt_v45: V44 段锚点不唯一(命中 {t.count(ANCHOR)} 处)")
+
+    NEW = """            // [V45-TVHFIX] 补高**补到画字的那个视图上** — 见函数 docstring。
+            //
+            // v44 归因(log13, 53 条零例外): 假设 A 命中 44/53, 假设 B 被彻底
+            // 排除(svAfter == needH 全成立)。真凶是**补错了对象**:
+            // v41~v44 一路补的都是 superview(sv.frame), 而画字的是
+            // UITextView 自己(self.frame)。实测 tvH=912.7 而 svAfter=needH=
+            // 1136.3 —— 外层补到位了, 内层矮 223.6pt, 多出来的是空壳,
+            // 有字的地方被自己的 bounds 裁掉。这就是"下面一小片空白 + 字卡一半"。
+            //
+            // 【只动高度, 绝不碰 origin/width】宽度由 v18/v34 那一族经
+            // ios15LastSaneSVFrame 精心维护, 在这里碰它等于绕过那套状态机
+            // (v13/v34 都因抢宽引起过闪屏/整体缩小)。所以判据与写入都只涉
+            // size.height, 语义严格限定为"给这个视图更多竖直空间"。
+            //
+            // needH 是本闭包按抢回后净宽算出的权威需求高(v43-A 起
+            // _v42TCW = max(200, cvW-32)), 补到它即同时覆盖 v44 假设 C 的
+            // 虚高差额, C 无需单独代码。连续多帧时 tvH >= needH 让条件自然
+            // 转 false, 幂等不反复写。
+            do {
+                if _v42Need > 1, self.frame.size.height + 0.5 < _v42Need {
+                    var _tvf = self.frame
+                    _tvf.size.height = _v42Need
+                    self.frame = _tvf
+                    struct _TvhLog { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                    let _tvhNow = CACurrentMediaTime()
+                    if _tvhNow - _TvhLog.last > 0.5 {
+                        _TvhLog.last = _tvhNow
+                        _TvhLog.n &+= 1
+                        NSLog("[V45-TVHFIX] tvH %.1f -> needH %.1f debt %.1f tvW %.1f svH %.1f len %d n %u",
+                              f.size.height, _v42Need, _v42Need - f.size.height,
+                              self.frame.size.width, obj.frame.size.height,
+                              _v42Len, _TvhLog.n)
+                    }
+                }
+            }
+""" + ANCHOR
+    t = t.replace(ANCHOR, NEW, 1)
+    verify_tvh_debt_v45(t)
+    return t
+
+
 def verify_textframe_v44(t):
     """校验 v44 诊断段 —— 独立成函数, 不只服务于注入。
 
@@ -4056,6 +4195,179 @@ def verify_textframe_v44(t):
     if _tfd_cnt != 1:
         raise RuntimeError(
             f"verify_textframe_v44: NSLog 标记数不符 (期望 1, 实际 {_tfd_cnt})")
+    return t
+
+
+def verify_tvh_debt_v45(t):
+    """校验 v45 补高段 —— 独立成函数(与 v44 同一条纪律, 见该函数docstring)。
+
+    ## 本版校验的核心判据: **只准动高度,不准碰宽度**
+
+    v45 的整个安全性建立在"只写 size.height"上。宽度由 v18/v34 一族经
+    ios15LastSaneSVFrame 精心维护, v13/v34 都因抢宽引起过闪屏/整体缩小。
+    一旦 v45 的代码里出现 origin.x / size.width 的写入或改动, 就是在绕过
+    那套状态机, 且装机后一旦闪屏将无法归因(是 v45 引起的还是老问题复发)。
+
+    所以下面第 4 条是**硬禁**任何非 height 的 frame 改动, 而不只是"检查一下"。
+    """
+    # ---- 判据顺序: 具体 → 宽泛, 标记计数放最后当总兜底 ----
+    # (与 verify_textframe_v44 完全同一个教训: 判据抢在前面会把其他判据
+    #  全部稀释掉, 删掉标记计数它们就完全不生效。见该函数开头的说明。)
+    #
+    # 0. 整段缺失。排在字段检查之前: 整段被删时字段当然也没了, 报"缺字段"
+    #    会让人去查一个根本不存在的东西, 方向误导。用 find 不用 index。
+    _i_tvh = t.find("// [V45-TVHFIX] 补高**补到画字的那个视图上**")
+    if _i_tvh < 0:
+        raise RuntimeError("verify_tvh_debt_v45: 补高段整段缺失")
+    # 1. 核心判据字段: 判据条件 + 写入 + 日志。
+    for k in ("if _v42Need > 1, self.frame.size.height + 0.5 < _v42Need {",
+              "_tvf.size.height = _v42Need",
+              "self.frame = _tvf"):
+        if k not in t:
+            raise RuntimeError(f"verify_tvh_debt_v45: 缺少关键字段 {k}")
+    # 2. 必须用 do { } —— 裸块会被吸成 trailing closure(v42 首次推送就栽这)。
+    #    切片到 do 块的**闭合**, 不能切到 NSLog( : NSLog 参数列表里也含
+    #    self. 引用, 只切到 NSLog( 会把参数切掉让下一条判据误报"缺字段"
+    #    (v44 校验实跑时真撞到过这个坑)。
+    #
+    #    【为什么用语义窗口而非固定字符数】v44 第一版写的是"标记后 400 字符内
+    #    必须出现 do {", 结果标记与 do { 之间夹着 7 行中文注释, 400 不够,
+    #    直接误报正常产物。注释长度会随文档增删变长, 用字符数赌它迟早再炸。
+    #    改用稳定锚点做窗口: 本段必须落在"V45 标记"与"V44 诊断标记"之间
+    #    —— 那正是本段该待的位置(v41 补高段之后、诊断之前)。
+    _MARK44 = "// [V44-TEXTFRAME] 见函数 docstring"
+    if _MARK44 not in t:
+        raise RuntimeError(
+            "verify_tvh_debt_v45: 找不到 V44 诊断标记 —— v44 未注入? "
+            "v45 的注入锚点依赖 v44 段, 登记必须排在 v44 之后")
+    _i_44 = t.index(_MARK44)
+    if _i_44 <= _i_tvh:
+        raise RuntimeError(
+            f"verify_tvh_debt_v45: V44 段在 v45 段之前 "
+            f"(tvh@{_i_tvh} v44@{_i_44}) —— 上游结构变了?")
+    _DO = chr(10) + "            do {"
+    if _DO not in t[_i_tvh:_i_44]:
+        raise RuntimeError(
+            "verify_tvh_debt_v45: 必须用 do { }(裸 { } 会被吸成 trailing closure 编译失败)")
+    _i_do = t.find(_DO, _i_tvh)
+    if not _i_tvh < _i_do < _i_44:
+        raise RuntimeError(
+            f"verify_tvh_debt_v45: do {{ 位置越界 (do@{_i_do} 窗口[{_i_tvh},{_i_44}])"
+            " —— 补高段被拆散了? 裸块被吸成 trailing closure?")
+    # 6. do 块必须有同缩进闭合, 否则块没关(或者被上游改动挪走了)。
+    #    ★这一条不只是"闭合存在" —— 反向测试 F1 实跑抓到: 在别处插一个
+    #    永不闭合的函数, 块本身闭合完好, 前7 条判据**全部通过**, 编译才炸。
+    #    所以必须在**全文**扫花括号平衡, 不能只盯着本块。
+    _i_close = t.find(chr(10) + "            }", _i_do)
+    if _i_close < 0 or _i_close > _i_44:
+        raise RuntimeError(
+            "verify_tvh_debt_v45: do 块缺同缩进闭合(找 "
+            f"{chr(10)}            }} 于 {_i_do} 之后) —— 上游结构变了, 或闭合 }} 缩进被改动")
+    # 全文花括号平衡(跳过行注释/块注释/字符串, 与正向脚本同一套扫描逻辑)。
+    # 用手写状态机而非 t.count("{")==t.count("}") —— 后者会被注释里的大括号
+    # 和字符串里的引号骗到。min_depth 也要查: 中途变负说明有孤立右括号,
+    # 末尾相等也掩盖不了。
+    _depth = 0
+    _mind = 0
+    _state = None
+    _j = 0
+    while _j < len(t):
+        _c = t[_j]
+        _nxt = t[_j + 1] if _j + 1 < len(t) else ""
+        if _state is None:
+            if _c == "/" and _nxt == "/":
+                _state = "line"; _j += 2; continue
+            if _c == "/" and _nxt == "*":
+                _state = "block"; _j += 2; continue
+            if _c == '"':
+                _state = "str"; _j += 1; continue
+            if _c == "{":
+                _depth += 1
+            elif _c == "}":
+                _depth -= 1
+                _mind = min(_mind, _depth)
+            _j += 1
+        elif _state == "line":
+            if _c == chr(10):
+                _state = None
+            _j += 1
+        elif _state == "block":
+            if _c == "*" and _nxt == "/":
+                _state = None; _j += 2
+            else:
+                _j += 1
+        else:
+            if _c == "\\":
+                _j += 2
+            elif _c == '"':
+                _state = None; _j += 1
+            else:
+                _j += 1
+    if _depth != 0 or _mind < 0:
+        raise RuntimeError(
+            f"verify_tvh_debt_v45: 花括号不平衡 (final={_depth}, min={_mind}) —— "
+            "注入破坏了块结构, 会编译失败(反向测试 F1 抓到过这条缺失)")
+    seg = t[_i_do:_i_close]
+    # 3. 闭包内引用 self 的成员必须带 self. —— 与 V42-GATE 同一个编译教训
+    #    (裸块被吸成 trailing closure 后, 块内裸引用会连锁报错)。
+    for k in ("self.frame.size.height", "self.frame.size.width", "self.frame = _tvf"):
+        if k not in seg:
+            raise RuntimeError(f"verify_tvh_debt_v45: do 块内必须显式用 {k}")
+    # 4. ★★硬禁: 块内除 size.height 外不得改动 frame 的任何其他维度。
+    #    判据用"赋值目标"而不是"出现次数" —— 注释里提到 width 是允许的(本版
+    #    注释就解释了为什么不碰宽度), 真正要禁的是**代码**改了它。
+    #
+    #    【bounds.size 也在禁列】反向测试 B4 实跑抓到: 只禁 frame 的三个维度时,
+    #    块内改 `self.bounds.size.height` 能一路溜过。但 bounds 与 frame 在
+    #    UITextView 上是两套东西 —— 改 bounds 会连带影响滚动内容与
+    #    textContainer 的可见区域, 后果比改 frame 更难归因。所以一并禁死。
+    for forbidden in ("size.width =", "origin.x =", "origin.y =",
+                      "_tvf.size.width", "_tvf.origin", "bounds.size"):
+        if forbidden in seg:
+            raise RuntimeError(
+                f"verify_tvh_debt_v45: ★只准动高度, 块内出现非高度改动 {forbidden} —— "
+                "宽度由 v18/v34 经 ios15LastSaneSVFrame 维护, 在这里碰它会绕过"
+                "那套状态机(v13/v34 都因抢宽引起过闪屏/整体缩小); bounds 另有一套"
+                "语义(滚动内容/可见区域), 改它后果更难归因")
+    # 5. ★必须落在 v41 补高**之后**: 在补高之前补self.frame 会拿到尚未补过
+    #    高度的 sv 上下文, 且与 v41 的写入顺序纠缠, 装机后无法归因。
+    #    用先判存在再 find —— 裸index 的 ValueError 只说"substring not found",
+    #    看的人猜不到是**登记顺序**错了(run#37118226923 的真实死因)。
+    _NEED_ANCHORS = ("self.ios15LastNeededH = _v42Need",
+                     "ios15LastNeededH = _v42Need")
+    _i_need = -1
+    for _a in _NEED_ANCHORS:
+        if _a in t:
+            _i_need = t.index(_a)
+            break
+    if _i_need < 0:
+        raise RuntimeError(
+            "verify_tvh_debt_v45: 找不到补高赋值点(ios15LastNeededH = _v42Need) —— "
+            "多半是 main() 里 v45 登记排在了 v42 **之前**: 干净上游基线上 v42 "
+            "还没注入这行, 位置判据必然落空(run#37118226923 的真实死因)")
+    i_hit = t.find('NSLog("[V41-KVOHEIGHT]')
+    if i_hit < 0:
+        raise RuntimeError(
+            "verify_tvh_debt_v45: 找不到 V41-KVOHEIGHT 补高日志 —— v41 未注入? "
+            "v45 依赖 v41 的补高块, 登记必须排在 v41 之后")
+    if not _i_need < i_hit < _i_tvh:
+        raise RuntimeError(
+            "verify_tvh_debt_v45: 补高段必须在 v41 补高之后 "
+            f"(need@{_i_need} hit@{i_hit} tvh@{_i_tvh}) —— "
+            "插在补高前会与 v41 的写入顺序纠缠, 装机后无法归因")
+    # 6. 节流周期必须为 0.5s —— 与 V41-KVOPRE / V44-TEXTFRAME 同周期,
+    #    三条日志才能逐条并列对照(同一节流周期内看到的是同一帧)。
+    if "_tvhNow - _TvhLog.last > 0.5" not in t:
+        raise RuntimeError(
+            "verify_tvh_debt_v45: 必须 0.5s 节流(与 V41-KVOPRE/V44-TEXTFRAME 同周期)")
+    # 7. 标记必须是**唯一**的一次 NSLog —— 注释行里的同名字符串不算。
+    #    (与 _v41_marks 同一个教训: 模糊匹配会把注释算进去。)
+    #    放最后当总兜底, 理由见本段开头的顺序说明。
+    _tvh_mark = 'NSLog("[V45-TVHFIX]'
+    _tvh_cnt = t.count(_tvh_mark)
+    if _tvh_cnt != 1:
+        raise RuntimeError(
+            f"verify_tvh_debt_v45: NSLog 标记数不符 (期望 1, 实际 {_tvh_cnt})")
     return t
 
 
@@ -4334,6 +4646,24 @@ def main():
     # v41/v42/v43 三轮都在猜"高度够不够", 全部猜错, 所以这一版**只测不改**:
     # 一条 V44-TEXTFRAME 把三个候选根因一次打完, 装机结果才有归因价值。
     edit("Views/Chat/SelectableMarkdownView.swift", fix_diag_textframe_v44, "v44: 【纯诊断, 不改任何行为】V44-TEXTFRAME — 治'终端框内容显示不全/字卡一半'的归因版。log12 硬证据: (1) v43-A '宽度同源'假设被推翻, dh 会正负翻转, 存在第三条测量链; (2) V41 补高循环 n=138 永不收敛, debt 恒在 156.3/447.7; (3) V41-KVOPRE 抓的是**superview**, 而画字的是 UITextView 自己, 补 superview 可能补不到画字的那个。一条日志同时测三个假设: tvH(UITextView 自身高) vs needH → 假设A 渲染视图自己矮了没人补; svAfter(补高**立刻回读**) vs needH → 假设B 补高被 ios15KvoFixing 重入挡掉(v41 补完从不回读, 这条至今无日志可答); usedH(TextKit usedRect 真实占用) vs needH → 假设C 表格/代码块 attachment bounds 没进排版导致 needH 虚高。0.5s 节流与 V41-KVOPRE/V43-WIDTH 同周期以便并列对照; 校验函数硬禁块内任何写操作, 行为改动必须另起一版。★登记必须排在 v42 之后(锚点依赖 v42 注入的赋值点, run#37118226923 就是栽在这)")
+    # ---- v45: 补高补到画字的那个视图上(行为版, 归因已完成) ----
+    # ★登记必须排在 v42 与 v44 **之后**:
+    #   - 排在 v42 后: 位置判据依赖 v42 注入的 `self.ios15LastNeededH = _v42Need`,
+    #     干净上游基线上那行还不存在(run#37118226923 的真实死因)。
+    #   - 排在 v44 后: 注入锚点就是 V44 诊断段的首行, v44 没注入则锚点落空。
+    #
+    # log13 归因(53 条 V44-TEXTFRAME, 零例外): 假设 A 命中 44/53,
+    # 假设 B(svAfter < needH)**彻底排除** —— svAfter == needH 53/53 全成立。
+    # 真凶: v41~v44 一路补的都是 superview(sv.frame), 而画字的是 UITextView
+    # 自己(self.frame)。实测 tvH=912.7 而 svAfter=needH=1136.3, 外层补到位、
+    # 内层矮 223.6pt —— 多出来的是空壳, 有字的地方被自己的 bounds 裁掉。
+    # 这就是"下面一小片空白 + 字还是卡一半"的完整机制。
+    # 44 条样本的 `usedH - tvH` **恒为负**(-8.0~-44.7, 均值 -34.5), 从没转正
+    # —— 不是随机拉锯, 是两个来源各写一次高度的系统性偏差。
+    # 本版只治 tvH(A 主因), **不碰宽度**: 脏宽 tcW=390 确是共犯(欠账样本 42/44
+    # 是脏宽, 正常样本 9/9 是净宽 358), 但宽度抢回在 v13/v34 反复引起过闪屏,
+    # 风险面独立, 留待单独一版。
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_tvh_debt_v45, "v45: 补高**补到画字的那个视图上** — 治'下面一小片空白 + 字卡一半'(v44 纯诊断归因, log13 53 条零例外: 假设 A 命中 44/53, 假设 B 彻底排除 —— svAfter == needH 53/53 全成立, 补高从来没被挡掉过。真凶是**补错了对象**: v41~v44 一路补 superview 的 sv.frame, 而画字的是 UITextView 自己的 self.frame。实测 tvH=912.7 而 svAfter=needH=1136.3 —— 外层补到位了, 内层矮 223.6pt, 多出来的是空壳(所以有空白), 有字的地方被自己的 bounds 裁断(所以卡一半)。44 条样本的 usedH-tvH 恒为负(-8.0~-44.7 均值 -34.5) 从不转正, 证明不是随机拉锯而是两个来源各写一次高度。修法: 在 KVO 补高路径里把 needH 同时写进 self.frame。**只动 size.height, 绝不碰 origin/width** —— 宽度由 v18/v34 经 ios15LastSaneSVFrame 维护, 在这里碰它等于绕过那套状态机(v13/v34 都因抢宽引起过闪屏/整体缩小), 校验函数硬禁非高度改动。needH 是本闭包按抢回后净宽算出的权威需求高, 补到它即同时覆盖 v44 假设 C 的虚高差额(30~268pt), C 无需单独代码; 连续多帧时 tvH >= needH 让条件自然转 false, 幂等不反复写。★登记必须排在 v42 与 v44 之后")
     # ---- v30: 测高双引擎振荡熔断 + 流式测高节流 + 输入栏假死自愈 ----
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")

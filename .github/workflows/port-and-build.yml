@@ -195,7 +195,7 @@ jobs:
           set -e
           # 单行 python, 不带换行/引号转义 —— YAML 缩进 + shell + python 三层
           # 嵌套时, 多行 -c 里的缩进会被 YAML 原样带进去从而 SyntaxError。
-          _pre=$(python3 -c 'import sys;t=open(sys.argv[1],encoding="utf-8").read();b=t[t.index("def main()"):];a=b.find("fix_kvo_height_clamp_v41");v=b.find("fix_needh_latch_v42");c=b.find("fix_diag_textframe_v44");print("OK" if (a>=0 and v>=0 and c>=0 and a<v<c) else ("BAD v41@%d v42@%d v44@%d"%(a,v,c)))' "$SCRIPT_DIR/ios15_fallback.py")
+          _pre=$(python3 -c 'import sys;t=open(sys.argv[1],encoding="utf-8").read();b=t[t.index("def main()"):];a=b.find("fix_kvo_height_clamp_v41");v=b.find("fix_needh_latch_v42");c=b.find("fix_diag_textframe_v44");d=b.find("fix_tvh_debt_v45");print("OK" if (a>=0 and v>=0 and c>=0 and d>=0 and a<v<c<d) else ("BAD v41@%d v42@%d v44@%d v45@%d"%(a,v,c,d)))' "$SCRIPT_DIR/ios15_fallback.py")
           echo "编辑顺序: $_pre"
           case "$_pre" in
             OK) echo "✅ 注入顺序正确 v41 → v42 → v44 (v44 的锚点依赖 v42 注入的赋值点)" ;;
@@ -681,6 +681,41 @@ jobs:
             fi
           else
             echo "❌ v44 缺失 —— v41/v42/v43 三轮都在猜'高度够不够'全部猜错, 没有这条诊断就只能继续盲修"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::断言47: v45 必须把 needH 补到 self.frame, 且**只准动高度** (v44 已归因: 补错了对象)"
+          # v44 装机归因 (minis-2026-10-03 13.log, 53 条 V44-TEXTFRAME 零例外):
+          #   组合(A/B/C): A-C 44 条 / --C 9 条
+          #   决定性一行: tvH=912.7  svAfter=1136.3  needH=1136.3  tvW=390.0  len=629
+          #   → svAfter == needH 在 53 条里**全部成立** ⇒ 假设 B(补高被重入挡掉)彻底排除
+          #   → 外层(superview)补到位了, 内层 tvH 仍矮 223.6pt ⇒ 真凶是**补错了对象**
+          # 44 条样本的 usedH-tvH 恒为负(-8.0~-44.7 均值-34.5)从不转正 ⇒ 系统性偏差, 非随机拉锯
+          if grep -q "V45-TVHFIX" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            # (1) 判据字段: 条件 + 只改高度的写入 + 提交
+            _v45_fields=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); ks=('if _v42Need > 1, self.frame.size.height + 0.5 < _v42Need {','var _tvf = self.frame','_tvf.size.height = _v42Need','self.frame = _tvf'); print('OK' if all(k in t for k in ks) else 'BAD')")
+            # (2) 位置: 必须在 v41 补高之后、v44 诊断之前(同窗口边界)
+            _v45_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); q=chr(34); a=t.index('self.ios15LastNeededH = _v42Need') if 'self.ios15LastNeededH = _v42Need' in t else -1; b=t.index('NSLog('+q+'[V41-KVOHEIGHT]') if ('NSLog('+q+'[V41-KVOHEIGHT]') in t else -1; c=t.index('// [V45-TVHFIX]') if '// [V45-TVHFIX]' in t else -1; d=t.index('// [V44-TEXTFRAME] 见函数 docstring') if '// [V44-TEXTFRAME] 见函数 docstring' in t else -1; print('OK' if (a>=0 and b>a and c>b and d>c) else 'BAD')")
+            # (3) ★只准动高度: 块内出现任何非 height 的 frame 改动/bounds 改动即失败
+            _v45_heightonly=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); n=chr(10); c=t.index('// [V45-TVHFIX]') if '// [V45-TVHFIX]' in t else -1; DO=n+'            do {'; k=t.index('// [V44-TEXTFRAME] 见函数 docstring', c) if (c>=0 and '// [V44-TEXTFRAME] 见函数 docstring' in t[c:]) else -1; s=t.index(DO, c) if (c>=0 and k>c and DO in t[c:k]) else -1; e=t.index(n+'            }', s) if s>=0 else -1; seg=t[s:e] if (s>=0 and e>s) else ''; bad=[w for w in ('size.width =','origin.x =','origin.y =','_tvf.size.width','_tvf.origin','bounds.size') if w in seg]; print('OK' if (seg and not bad) else ('BAD:'+'|'.join(bad) if bad else 'BAD:seg'))")
+            # (4) 幂等: 判据必须是严格 <, 否则补完下一帧仍成立 ⇒ 死循环反复写
+            _v45_idem=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); print('OK' if ('self.frame.size.height + 0.5 < _v42Need {' in t and 'self.frame.size.height + 0.5 <= _v42Need {' not in t) else 'BAD')")
+            # (5) 节流 + v44 诊断必须仍在(装机后靠它验证 v45 是否真把 tvH 拉到 needH)
+            _v45_keep=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); q=chr(34); print('OK' if ('_tvhNow - _TvhLog.last > 0.5' in t and t.count('NSLog('+q+'[V45-TVHFIX]')==1 and ('NSLog('+q+'[V44-TEXTFRAME]') in t) else 'BAD')")
+            if [ "$_v45_fields" = "OK" ] && [ "$_v45_pos" = "OK" ] \
+               && [ "$_v45_heightonly" = "OK" ] && [ "$_v45_idem" = "OK" ] \
+               && [ "$_v45_keep" = "OK" ]; then
+              echo "✅ v45 就位 (needH 补到 self.frame/UITextView 自己, 只动 size.height 不碰 width/origin/bounds, 严格< 保证幂等, 0.5s 节流, v44 诊断保留以便装机后核对)"
+            else
+              echo "❌ v45 异常 (字段=$_v45_fields 位置=$_v45_pos 只动高度=$_v45_heightonly 幂等=$_v45_idem 节流/保留v44=$_v45_keep)"
+              echo "   —— 位置 BAD 则 v45 跑在 v41/v42/v44 之前, 锚点不存在, fallback 会在本阶段直接崩(同 run#37118226923)"
+              echo "   —— 只动高度 BAD 说明块内混进了 width/origin/bounds 改动, 会绕过 v18/v34 的 ios15LastSaneSVFrame 状态机(v13/v34 都因抢宽引起过闪屏/整体缩小), 装机后一旦闪屏无法归因是本版还是老问题复发"
+              echo "   —— 幂等 BAD(<=)说明补完后条件仍成立, 每一帧都重写 frame, 会加重排版/卡顿"
+              exit 1
+            fi
+          else
+            echo "❌ v45 缺失 —— v44 已归因真凶是'补错了对象'(superview 补到位、UITextView 自己矮 223.6pt), 没有 v45 就只能继续补错地方"
             exit 1
           fi
           echo "::endgroup::"
