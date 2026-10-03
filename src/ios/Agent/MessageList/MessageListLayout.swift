@@ -640,6 +640,34 @@ final class MessageListLayout: UICollectionViewLayout {
         // by the pin logic), and coalesced to at most one `prepare()` per
         // runloop tick so a burst of N corrections cannot go O(N²).
         if abs(delta) > 0.5, !isStreamingCell(index), !pendingFooterReflow {
+            // [V43-BURST] 涌入型突增的**全表重排**节流 — 见函数 docstring 完整推导。
+            //
+            // 【关键: 高度在上一行已经落地, 这里只拦 O(items) 的全表 prepare()】
+            // `heightCache[index] = newHeight` 在本 if 之前, 一次都没被拦过,
+            // 所以内容永远不会被裁。拦掉的只是"拿这个新高度去重排所有 cell" ——
+            // 涌入的 1.08 秒里 5 次写入, 有 4 次落在窗口内, 塌缩成 1 次全表重排。
+            //
+            // 【为什么不插在 shouldInvalidateLayout 里 return false —— 见 docstring】
+            // 那样会让 UIKit 跳过整个 invalidationContext, 连 heightCache 写入
+            // 一起跳过, 高度不落地 -> 内容被裁, 比原症状更糟。log11 里
+            // `est` 恒等于上次 `pref`(29→159→303→408→518→612→742) 证明
+            // 每次 invalidate 都被采纳, 拦它等于拦高度本身。
+            if abs(delta) > 100 {
+                let _v43Now = CACurrentMediaTime()
+                let _v43Prev = Self.v43BurstAt[index] ?? 0
+                if _v43Prev > 0, _v43Now - _v43Prev < 0.25 {
+                    // 窗口内: 只重排**这个 cell**, 不动全表。上面的 heightCache
+                    // 已经写好, 下一次真正的全表 prepare() 会用上正确高度。
+                    AppLogger(category: "CellSizing").info("[V43-BURST] idx=\(index) delta=\(String(format: "%.0f", delta)) full-reflow suppressed — 距上次全表重排 \(String(format: "%.3f", _v43Now - _v43Prev))s < 0.25s")
+                    return ctx
+                }
+                Self.v43BurstAt[index] = _v43Now
+                // 陈旧条目清理: 长会话里 idx 会累积到几百个, 不清会一直涨。
+                if Self.v43BurstAt.count > 64 {
+                    let _v43Cut = _v43Now - 2.0
+                    Self.v43BurstAt = Self.v43BurstAt.filter { $0.value > _v43Cut }
+                }
+            }
             pendingFooterReflow = true
             // [T-ios-steadystate-reflow-gap] Rate evidence: a full prepare() is
             // O(items), so if this fired per correction during a fast scroll it
@@ -672,6 +700,8 @@ final class MessageListLayout: UICollectionViewLayout {
     /// holds once the re-flow is no longer restricted to the first settle.
     private static var reflowCount = 0
     private static var reflowLastFlush: CFTimeInterval = 0
+    // [V43-BURST] 每 idx 最近一次**全表重排**被放行的时刻(节流窗口基准)。
+    private static var v43BurstAt: [Int: CFTimeInterval] = [:]
 
     /// [T-ios-plaf-streaming-graph-reentry] True while any streaming cell
     /// range is active. Locked snapshot (same lock as streamingCellRanges) so

@@ -5587,8 +5587,55 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // 不命中 -> 次次 sizeThatFits。测量链本来就在排版, 叠加会翻倍,
             // 正好加重"终端卡一下"。所以自测本身再限频 120ms。
             let _v42Len = self.textStorage.length
-            let _v42TCW = self.textContainer.size.width
             let _v42Now = CACurrentMediaTime()
+            // [V43-NETW] 测高**必须用抢回后的净宽**, 不能用 textContainer.size.width。
+            //
+            // 【v42 实测打脸·这是 v42 自己的设计错误, 不是上游问题】
+            // v42 注释里写"宽度用 textContainer.size.width, 与排版实际用的宽严格一致",
+            // **这句话是错的**。log11 逐条交叉比对证明同一段文本被量出**两个高度**:
+            //
+            //   文本长度   KVO自测(脏390)   v18实测(净358)    差
+            //   len=51        79.3              79.3           0.0
+            //   len=80       112.3             112.3           0.0
+            //   len=336      356.7             440.7          84.0   <-- 裁掉整段
+            //   len=466      782.3             821.7          39.4
+            //   len=533      857.7             897.0          39.3
+            //
+            // 短文本在 390/358 下高度完全相同(0 差), 长文本才差出整行 —— 这精确解释
+            // 了用户说的"**只有第一段卡字**": 第一段通常最长。
+            //
+            // 机制: SwiftUI 每帧把 textContainer 宽写成 390(全屏宽), v18 在
+            // layoutSubviews 里抢回 358 并**用 358 测高**写进 frame。而 KVO 抢帧器
+            // 每帧抢在 v18 之前跑, 此刻 tcW 还是脏的 390, 于是用 390 测出一个
+            // **偏小**的高度, 写进 superview。两条链同文本不同宽 -> 高度不一致 ->
+            // 拉锯。log11 里 `svH=252.0 -> 356.7 debt=104.7` 47 次一字不差、持续
+            // 60 秒, 就是这个拉锯的稳态。
+            //
+            // 修法: 净宽与 v18 完全同源 —— `max(200, cvW - 32)`, 两条链同宽必然同值,
+            // 拉锯从根上消失(而不是靠节流压住, 节流只是让它慢一点仍在错)。
+            //
+            // 为什么不能"两链都改用 tcW": v18 必须用净宽, 因为渲染排版最终是按
+            // 358 做的(行碎片已被 v18 的 invalidateLayout 重排), 用 390 量出来的
+            // 高度对应一个**不存在的排版**, 永远对不上真实渲染。
+            let _v43NetW = max(200.0, cvW - 32)
+            // 闩锁键的宽度也必须换成净宽: 键里存脏宽的话, 即使值对了也会在
+            // "抢回前/抢回后"两个键之间反复失效, 退化成每次都自测(v42 的
+            // V42-THROTTLE 命中 3 次 / V42-MISS 102 次就是征兆)。
+            let _v42TCW = _v43NetW
+            let _v43DirtyW = self.textContainer.size.width
+            // [V43-WIDTH] 脏宽/净宽/两者测出的高度差 —— 一次就能判断是否同宽。
+            // 同宽时 dh 应为 0.0; 若非 0 说明还有第三条测量链在用别的宽。
+            struct _WLog { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+            if _v42Now - _WLog.last > 0.5 {
+                _WLog.last = _v42Now
+                _WLog.n &+= 1
+                let _hNet = self.sizeThatFits(
+                    CGSize(width: _v43NetW, height: .greatestFiniteMagnitude)).height
+                let _hDirty = self.sizeThatFits(
+                    CGSize(width: _v43DirtyW, height: .greatestFiniteMagnitude)).height
+                NSLog("[V43-WIDTH] dirtyW=%.1f netW=%.1f hDirty=%.1f hNet=%.1f dh=%.1f len=%d n=%u",
+                      _v43DirtyW, _v43NetW, _hDirty, _hNet, _hNet - _hDirty, _v42Len, _WLog.n)
+            }
             // _v42SelfLast: 上次**自测**时刻(节流基准), 声明在 KVO 闭包体顶部
             // 的局部变量区, 不进实例属性 —— KVO 闭包每帧新建, 但这个值需要跨帧,
             // 所以放在闭包捕获不到的层级不行; 实际上 Swift 每次调用 observe 闭包
@@ -7883,7 +7930,13 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // 属性引用一律写 `self.`, 与上面的 V42-GATE 保持同一防御口径。
             self.ios15LatchedNeedH = _needH
             self.ios15LatchLen = self.textStorage.length
-            self.ios15LatchW = self.textContainer.size.width
+            // [V43-LATCHW] 键里的宽度必须是**抢回后的净宽** _realW2, 不能存
+            // textContainer.size.width(此刻是 SwiftUI 刚写下的脏宽 390)。
+            // 两链不同源 -> 键在"抢回前/抢回后"之间反复失效 -> 退化成每次自测,
+            // 而每次自测用的又是脏宽, 于是值也错。log11 证据: V42-MISS 102 次
+            // vs V42-LATCH 103 次看似平衡, 但 THROTTLE 只命中 3 次, 说明
+            // 绝大多数自测发生在"距上次自测 > 120ms"之后 —— 键压根没起作用。
+            self.ios15LatchW = _realW2
             self.ios15LatchHash = self.textStorage.mutableString.hash
             if textStorage.length > 0, _needH > 1 {
                 if frame.size.height < _needH - 0.5 {
