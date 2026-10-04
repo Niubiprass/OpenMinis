@@ -73,7 +73,7 @@ struct MinisAudioPreviewView: View {
                     .aspectRatio(contentMode: .fill)
                     .ignoresSafeArea()
                 Rectangle()
-                    .fill(Color(UIColor.tertiarySystemFill))
+                    .fill(.ultraThinMaterial)
                     .ignoresSafeArea()
                 dominantColor
                     .opacity(0.5)
@@ -97,7 +97,7 @@ struct MinisAudioPreviewView: View {
                     .foregroundStyle(ChatColors.primaryText)
                     .frame(width: 44, height: 44)
                     .contentShape(Circle())
-                    .background(Color(UIColor.tertiarySystemFill), in: Circle())
+                    .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
 
@@ -112,7 +112,7 @@ struct MinisAudioPreviewView: View {
                     .foregroundStyle(ChatColors.primaryText)
                     .frame(width: 44, height: 44)
                     .contentShape(Circle())
-                    .background(Color(UIColor.tertiarySystemFill), in: Circle())
+                    .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
 
@@ -125,7 +125,7 @@ struct MinisAudioPreviewView: View {
                     .foregroundStyle(ChatColors.primaryText)
                     .frame(width: 44, height: 44)
                     .contentShape(Circle())
-                    .background(Color(UIColor.tertiarySystemFill), in: Circle())
+                    .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
         }
@@ -166,7 +166,7 @@ struct MinisAudioPreviewView: View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(displayTitle)
-                    .font(.title2)
+                    .font(.title2.bold())
                     .lineLimit(1)
                     .foregroundColor(artworkImage != nil ? .white : Color(UIColor.label))
                 Text(displaySubtitle)

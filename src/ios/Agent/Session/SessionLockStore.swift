@@ -42,7 +42,7 @@ enum SessionLockDefaultsKey {
 /// Built-in idle-timeout choices surfaced in Settings.
 struct SessionLockIdleOption: Identifiable, Equatable {
     let seconds: Int
-    let labelKey: String
+    let labelKey: LocalizedStringResource
 
     var id: Int { seconds }
 

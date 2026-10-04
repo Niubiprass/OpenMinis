@@ -7,21 +7,6 @@ enum SharedContainerStore {
 
     private static let pendingShareKey = "pendingShare"
 
-    /// Best-effort container directory. TrollStore unsigned installs have no
-    /// provisioning profile, so App Groups are unavailable and
-    /// `containerURL(forSecurityApplicationGroupIdentifier:)` returns nil.
-    /// Fall back to the app's own Application Support directory.
-    static var containerDirectory: URL {
-        let fm = FileManager.default
-        if let url = fm.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) {
-            return url
-        }
-        let fallback = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MinisAppGroupFallback", isDirectory: true)
-        try? fm.createDirectory(at: fallback, withIntermediateDirectories: true)
-        return fallback
-    }
-
     static var sharedDefaults: UserDefaults? {
         UserDefaults(suiteName: appGroupID)
     }

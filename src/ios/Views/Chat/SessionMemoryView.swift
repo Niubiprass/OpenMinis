@@ -274,7 +274,7 @@ private struct MemoryContentView: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-
+            if fileURL != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     if isEditing {
                         Button("Save") {
@@ -289,7 +289,7 @@ private struct MemoryContentView: View {
                         }
                     }
                 }
-            
+            }
         }
         .overlay(alignment: .bottom) {
             if saved {
@@ -297,7 +297,7 @@ private struct MemoryContentView: View {
                     .font(.caption)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(Color(UIColor.tertiarySystemFill), in: Capsule())
+                    .background(.ultraThinMaterial, in: Capsule())
                     .padding(.bottom, 8)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -401,7 +401,7 @@ private struct MemoryWriteDetailView: View {
                     .font(.caption)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(Color(UIColor.tertiarySystemFill), in: Capsule())
+                    .background(.ultraThinMaterial, in: Capsule())
                     .padding(.bottom, 8)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -511,7 +511,7 @@ private struct MemoryGetDetailView: View {
                         Image(systemName: "magnifyingglass")
                             .foregroundStyle(.secondary)
                         Text(kw)
-                            .font(.subheadline)
+                            .font(.subheadline.bold())
                     }
                     .padding(.horizontal)
                     .padding(.top, 8)
@@ -536,7 +536,7 @@ private struct SectionHeader: View {
     let title: String
     var body: some View {
         Text(title)
-            .font(.caption)
+            .font(.caption.bold())
             .foregroundStyle(.secondary)
             .textCase(.uppercase)
             .padding(.horizontal)

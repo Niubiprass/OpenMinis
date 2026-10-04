@@ -60,7 +60,7 @@ struct MemoryManagementView: View {
         .navigationTitle("Memory")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-
+            if #available(iOS 17.0, *), iCloudSyncEnabled {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button {
@@ -73,7 +73,7 @@ struct MemoryManagementView: View {
                         Image(systemName: "ellipsis.circle")
                     }
                 }
-            
+            }
         }
         .overlay(alignment: .top) {
             if let msg = forceSyncToast {

@@ -87,6 +87,7 @@ struct ShadowVoiceProviderDetailView: View {
             // sheet identity and its stale TestSession.
             ModelQuickTestSheet(entry: entry)
                 .id(entry.id)
+                .presentationDetents([.medium, .large])
         }
     }
 

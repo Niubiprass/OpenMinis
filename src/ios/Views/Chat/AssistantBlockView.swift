@@ -124,13 +124,13 @@ struct AssistantBlockView: View {
             .background(Color.orange.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.14), lineWidth: 0.5))
-            .contextMenu (menuItems: {
+            .contextMenu {
                 Button {
                     UIPasteboard.general.string = block.content
                 } label: {
                     Label(AppLocalized("Copy Error"), systemImage: "doc.on.doc")
                 }
-            })
+            }
         }
     }
 
@@ -476,7 +476,7 @@ struct ToolCapsuleView: View {
             .onTapGesture {
                 detailBlock = block
             }
-            .contextMenu (menuItems: {
+            .contextMenu {
                 // [T-ios-msg-contextmenu-recursion-crash] Gate the eager menu
                 // tree behind an Equatable key so this tool cell's body churn
                 // during `gh`/shell streaming doesn't rebuild + re-diff the menu
@@ -536,7 +536,7 @@ struct ToolCapsuleView: View {
                     }
                 }
                 .equatable()
-            })
+            }
             // [T-tool-bg-suspended-hint] Yellow ⓘ just outside the capsule's
             // trailing edge when this tool was likely suspended by the OS in the
             // background. Tapping shows an alert offering to enable enhanced
@@ -1172,6 +1172,7 @@ struct ThinkingLevelSheetView: View {
                 if isSelected {
                     Image(systemName: "checkmark")
                         .foregroundStyle(.blue)
+                        .fontWeight(.semibold)
                 }
             }
         }

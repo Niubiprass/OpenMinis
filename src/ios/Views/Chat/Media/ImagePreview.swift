@@ -32,11 +32,11 @@ struct ZoomableImageView: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: geo.size.width)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-                .contextMenu (menuItems: {
+                .contextMenu {
                     Button { UIPasteboard.general.image = image } label: {
                         Label("Copy Image", systemImage: "doc.on.doc")
                     }
-                })
+                }
                 .scaleEffect(scale)
                 .offset(offset)
                 .gesture(
@@ -425,7 +425,7 @@ struct ImagePreviewView: View {
                             .foregroundStyle(ChatColors.primaryText)
                             .frame(width: 44, height: 44)
                             .contentShape(Circle())
-                            .background(Color(UIColor.tertiarySystemFill), in: Circle())
+                            .background(.ultraThinMaterial, in: Circle())
                     }
 
                     Spacer()
@@ -441,7 +441,7 @@ struct ImagePreviewView: View {
                             .foregroundStyle(copyDone ? .green : ChatColors.primaryText)
                             .frame(width: 44, height: 44)
                             .contentShape(Circle())
-                            .background(Color(UIColor.tertiarySystemFill), in: Circle())
+                            .background(.ultraThinMaterial, in: Circle())
                     }
                     .disabled(copyDone)
 
@@ -468,7 +468,7 @@ struct ImagePreviewView: View {
                         .foregroundStyle(ChatColors.primaryText)
                         .frame(width: 44, height: 44)
                         .contentShape(Circle())
-                        .background(Color(UIColor.tertiarySystemFill), in: Circle())
+                        .background(.ultraThinMaterial, in: Circle())
                     }
                     .disabled(saveStatus == .saving || saveStatus == .saved)
 
@@ -481,7 +481,7 @@ struct ImagePreviewView: View {
                             .foregroundStyle(ChatColors.primaryText)
                             .frame(width: 44, height: 44)
                             .contentShape(Circle())
-                            .background(Color(UIColor.tertiarySystemFill), in: Circle())
+                            .background(.ultraThinMaterial, in: Circle())
                     }
 
                     // Share button
@@ -494,7 +494,7 @@ struct ImagePreviewView: View {
                             .foregroundStyle(ChatColors.primaryText)
                             .frame(width: 44, height: 44)
                             .contentShape(Circle())
-                            .background(Color(UIColor.tertiarySystemFill), in: Circle())
+                            .background(.ultraThinMaterial, in: Circle())
                     }
                 }
                 .padding(.horizontal)
@@ -565,7 +565,7 @@ struct AsyncImagePreviewView: View {
                         .foregroundStyle(ChatColors.primaryText)
                         .frame(width: 44, height: 44)
                         .contentShape(Circle())
-                        .background(Color(UIColor.tertiarySystemFill), in: Circle())
+                        .background(.ultraThinMaterial, in: Circle())
                 }
                 .padding(.horizontal)
                 .padding(.top, 2)

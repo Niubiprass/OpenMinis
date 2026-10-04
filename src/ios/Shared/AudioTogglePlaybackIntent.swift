@@ -18,7 +18,6 @@ import Foundation
 /// the app in the background to service it when tapped from the Lock Screen /
 /// Dynamic Island — so the Darwin notification is delivered to a live app process
 /// and the toggle takes effect immediately without opening the app to foreground.
-@available(iOS 17.0, *) // ios15-port
 enum AudioTogglePlaybackBridge {
     /// Darwin notification name the widget posts and the app observes.
     static let darwinNotificationName = "com.openminis.app.liveActivity.audioToggle"
@@ -31,7 +30,6 @@ enum AudioTogglePlaybackBridge {
 /// this type, so gating it behind `@available(iOS 17.0, *)` keeps the 16 path
 /// compiling.
 @available(iOS 17.0, *)
-@available(iOS 17.0, *) // ios15-port
 struct AudioTogglePlaybackIntent: LiveActivityIntent {
     static var title: LocalizedStringResource = "Play or Pause Narration"
     static var description = IntentDescription("Toggles play/pause on Minis audio narration from the Live Activity.")

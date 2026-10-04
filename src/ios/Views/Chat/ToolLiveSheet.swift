@@ -1055,6 +1055,7 @@ struct ToolLiveSheet: View {
         .onReceive(block.objectWillChange) { _ in
             blockUpdateTick += 1
         }
+        .presentationDragIndicator(.hidden)
         // Tapping a URL in shell output (underlined via attributedShellLine)
         // routes through `activeSheet` so it shares one `.sheet(item:)`
         // modifier with the browser takeover below.
@@ -1530,11 +1531,11 @@ struct ToolLiveSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 10)
                         .stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5))
                     .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 3)
-                    .contextMenu (menuItems: {
+                    .contextMenu {
                         Button { UIPasteboard.general.image = image } label: {
                             Label("Copy Image", systemImage: "doc.on.doc")
                         }
-                    })
+                    }
                     .padding(.horizontal, 12)
                     .padding(.top, action.isEmpty && url.isEmpty ? 12 : 0)
 
@@ -1561,7 +1562,7 @@ struct ToolLiveSheet: View {
                             // sanitized: this path used to feed raw text
                             // (ANSI codes, unbounded line length) straight
                             // into CoreText.
-                            LazyVStack(alignment: .leading, spacing: 0) {
+                            VStack(alignment: .leading, spacing: 0) {
                                 LazyRevealChunks(chunks: Self.chunkedLines(text), resetKey: block.id) { t in
                                     Text(t)
                                         .font(.system(size: 13, design: .monospaced))
@@ -1640,7 +1641,7 @@ struct ToolLiveSheet: View {
 
                         // Result content — chunked + windowed (was one Text
                         // holding the whole result).
-                        LazyVStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 0) {
                             LazyRevealChunks(chunks: Self.chunkedLines(text), resetKey: block.id) { t in
                                 Text(t)
                                     .font(.system(size: 13, design: .monospaced))
@@ -1688,7 +1689,7 @@ struct ToolLiveSheet: View {
                     let output = text.hasPrefix(cmdPrefix) ? String(text.dropFirst(cmdPrefix.count)) : text
                     let chunks = Self.chunkedLines(output.isEmpty ? " " : output)
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 0) {
                             Text("$ \(cmd)")
                                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                                 .foregroundColor(.white)
@@ -1716,7 +1717,7 @@ struct ToolLiveSheet: View {
                     }
                 } else {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 0) {
                             if !contentHeader.isEmpty {
                                 Text(contentHeader)
                                     .font(.system(size: 12, weight: .medium))
@@ -1833,7 +1834,7 @@ struct ToolLiveSheet: View {
                     let cardWidth = geo.size.width - 24 // 12pt horizontal padding each side
                     let cardMinHeight = cardWidth * 3.0 / 4.0
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 0) {
                             // Diff card
                             VStack(spacing: 0) {
                             // Title bar — filename + byte size only
@@ -2057,7 +2058,7 @@ struct ToolLiveSheet: View {
 
             // Script content — chunked + windowed; execute_js scripts are
             // usually small but nothing bounds them.
-            LazyVStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 LazyRevealChunks(chunks: Self.chunkedLines(script), resetKey: block.id) { t in
                     Text(t)
                         .font(.system(size: 12, design: .monospaced))
@@ -2083,7 +2084,7 @@ struct ToolLiveSheet: View {
             : Self.formatBytes(byteCount)
 
         return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 VStack(spacing: 0) {
                     // Title bar
                     HStack(spacing: 6) {
@@ -2157,7 +2158,7 @@ struct ToolLiveSheet: View {
             : Self.chunkedLines(fileContent.isEmpty ? " " : fileContent)
 
         return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 // Editor card
                 VStack(spacing: 0) {
                     // Title bar
@@ -2390,7 +2391,7 @@ struct ToolLiveSheet: View {
                     // [T-ios-tool-result-lazy-render] In the detail (non-live)
                     // view reveal only an initial window and grow on scroll.
                     let chunks = isLive ? allChunks : Array(allChunks.prefix(max(revealedChunkCount, 1)))
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
                         Text("$ \(cmd)")
                             .font(.system(size: 13, weight: .bold, design: .monospaced))
                             .foregroundColor(.white)
@@ -2438,7 +2439,7 @@ struct ToolLiveSheet: View {
                     .padding(.bottom, 16)
                 } else {
                     // Non-shell: header + chunked content card
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
                         if !contentHeader.isEmpty {
                             Text(contentHeader)
                                 .font(.system(size: 12, weight: .medium))
@@ -2546,11 +2547,11 @@ struct ToolLiveSheet: View {
                             .overlay(RoundedRectangle(cornerRadius: 10)
                                 .stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5))
                             .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 3)
-                            .contextMenu (menuItems: {
+                            .contextMenu {
                                 Button { UIPasteboard.general.image = img } label: {
                                     Label("Copy Image", systemImage: "doc.on.doc")
                                 }
-                            })
+                            }
                             .padding(.horizontal, 12)
                     }
                     .padding(.bottom, 16)
@@ -2939,7 +2940,7 @@ private struct ToolPreviewThumbnail: View {
 
     /// Text preview from snapshot data (persisted last N lines).
     private func snapshotTextPreview(_ text: String) -> some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             Text(previewHeader)
                 .font(.system(size: 6, weight: .bold, design: isShell ? .monospaced : .default))
                 .foregroundStyle(isShell ? .white : .white.opacity(0.45))
@@ -2993,7 +2994,7 @@ private struct ToolPreviewThumbnail: View {
             }
             return block.content
         }()
-        return LazyVStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 0) {
             Text(previewHeader)
                 .font(.system(size: 6, weight: .bold, design: isShell ? .monospaced : .default))
                 .foregroundStyle(isShell ? .white : .white.opacity(0.45))
@@ -3028,7 +3029,7 @@ private struct ToolPreviewThumbnail: View {
         let oldText = editStrings?.oldString ?? block.streamingFileContent ?? ""
         let newText = editStrings?.newString ?? ""
 
-        return LazyVStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 0) {
             Text(previewHeader)
                 .font(.system(size: 6, weight: .bold))
                 .foregroundStyle(.white.opacity(0.45))

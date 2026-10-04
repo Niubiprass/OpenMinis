@@ -276,6 +276,8 @@ struct AudioPiPCapsule: View {
                     .sheet(isPresented: $player.showFullPreview) {
                         if let url = player.activeFileURL {
                             MinisAudioPreviewView(fileURL: url)
+                                .presentationDetents([.large])
+                                .presentationDragIndicator(.hidden)
                         }
                     }
                     .onAppear {
@@ -327,7 +329,7 @@ struct AudioPiPCapsule: View {
         .frame(width: 160, height: 40)
         .background {
             Capsule()
-                .fill(Color(UIColor.tertiarySystemFill))
+                .fill(.ultraThinMaterial)
                 .overlay(
                     Capsule()
                         .fill(
@@ -440,6 +442,8 @@ struct MinisAudioPlayerView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .sheet(isPresented: $showPreview) {
             MinisAudioPreviewView(fileURL: fileURL)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
         }
     }
 

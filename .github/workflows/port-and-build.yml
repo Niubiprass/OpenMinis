@@ -2002,6 +2002,89 @@ jobs:
           fi
           echo "::endgroup::"
 
+          # ============================================================
+          # 断言 61: v58 纠偏后强制重排 (v57.1 的「位置」已对, 缺的是「写完要排」)
+          # ============================================================
+          # 【装机日志逐毫秒对齐给出的因果链 (04:32 段, v57.1 实测)】
+          #   41.372 V51-FRAMEPIN  fvW=358.0 tcW=358.0 svW=358.0  ← layoutSubviews 那趟干净
+          #   41.595 V570-KVOCW    dirty=1 netW=358.0              ← v57.1 纠偏确实执行了
+          #   41.598 V49-WWRITER   kvoW=390.0 laidW=-1.0           ← 同一 tick 读回还是 390
+          #   41.599 V44-TEXTFRAME tvW=390.0 svW=358.0 tcW=390.0  ← 落屏那版就是 390
+          #   41.599 V41-KVOHEIGHT usedH=258.7 needH=387.0         ← 欠 128.3pt(≈6 行)
+          # ⇒ **纠偏没白做, 但排版没重排**。v48 自己的注释里早就写明:
+          #   改容器宽只改容器, 不动已排好的行碎片。
+          #   ⇒ 必须紧跟一次 invalidateLayout, 且**必须在 if _v570Dirty 块内**:
+          #     块外 = 每帧全量重排(掉帧); 块内 = 只在 SwiftUI 真推脏了宽度时排。
+          #
+          # 【为什么 v58 判据自己有 6 层, 3 层是本项目血的教训】
+          #   第 5 层(纪律54): v58 块位置在 v49 探针**之前**。v49 的 S7/S8/S12
+          #     三条 sabotage 都按「首个出现处」替换 size.height 成员访问, 注释里
+          #     写一次就把变异体吸走 ⇒ v49 3/12 未拦 ⇒ CI 变红(真实发生)。
+          #   第 6 层(纪律55): v50 判据用全文正则数「容器宽赋值」字面量并硬编码
+          #     期望 5 处, **注释同样计入**。v58 注释里写一次就变 6 ⇒ CI 变红
+          #     (真实发生, 同一个根因第三次)。故本层直接数 V58_ANCHOR_NEW 全文。
+          #   第 3 层: invalidateLayout 的签名必须与 v28 段(第 8835 行)已验证的
+          #     形式**逐字**一致 —— 判据里只允许出现编译器已验证存在的 API。
+          if grep -q "fix_kvo_reflow_v58" "$SCRIPT_DIR/ios15_fallback.py" \
+             && grep -q "verify_kvo_reflow_v58" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+               python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v58.py" . ; then
+              echo "✅ v58 就位 (4 层全绿: core 6层 / scope 编译级 / sab 反向 8 条 / scope自证 5 条)"
+            else
+              echo "::error::v58 判据异常 —— 纠偏后没有重排 = 卡字一定还在"
+              echo "   —— 报「F1/块内无重排」: 回到 v57.1 形态(只改容器宽, 行碎片不重排 ⇒ 整行缺失)"
+              echo "   —— 报「F2/F3/块外重排」: invalidateLayout 写在了 if _v570Dirty 外面 ⇒ 每帧全量重排(掉帧)"
+              echo "   —— 报「纪律54」: v58 段注释里写了 size.height 成员访问 ⇒ v49 判据已被吸走"
+              echo "   —— 报「纪律55」: v58 段注释里写了容器宽赋值字面量 ⇒ v50 判据计数会变 6"
+              echo "   —— 报「sab 漏过」: 判据本身有洞, 等于没人看守"
+              exit 1
+            fi
+          else
+            echo "::error::ios15_fallback.py 里找不到 fix_kvo_reflow_v58 / verify_kvo_reflow_v58"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          # ============================================================
+          # 断言 62: v59 关闭主 Markdown 视图容器宽跟随
+          #          —— v31~v58 全部改动真正失效的机制性原因
+          # ============================================================
+          # 【装机日志(v57.1, 04:32 段)的完整证据链】
+          #   superview 宽 358(SwiftUI inset 16/16 已生效, svOriginX=16 证明),
+          #   但 SelectableMarkdownTextView 自己的 frame 被上游布局撑到 390
+          #   ⇒ widthTracksTextView=true 让 UIKit 每趟布局从 frame(390)
+          #   派生容器宽并覆盖 ⇒ v31~v58 每一版写入的 358 都被顶回:
+          #   41.595 写 358 → 41.598(3 毫秒后)读回 390 —— 「改了等于没改」。
+          # 【为什么不更早修】v9/v9.1/v10 曾在 setSize swizzle 层面对抗,
+          #   44131 次死循环 + 508 次 10s 卡死; Guard 注释结论:
+          #   「widthTracksTextView=true 时宽度由 UIKit 从 frame 派生,
+          #     要修就修产生它的源头」。关掉派生 = 断源, 不是又一层对抗。
+          # 【关掉之后谁管宽】v18 渲染段 + v57.0 KVO 纠偏(netW=cvW-32,
+          #   collectionView 干净源)独占维护; v58 的重排随之真正生效。
+          # 【范围红线】TableScrollView 的内联代码 TextView 保持 true
+          #   (表格用, frame 干净, 不是病灶) —— reverse_v59 的 S3 专打这条。
+          if grep -q "fix_md_notrack_v59" "$SCRIPT_DIR/ios15_fallback.py" \
+             && grep -q "verify_md_notrack_v59" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if grep -q "\[V59-NOTRACK\]" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+              if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+                 python3 "$SCRIPT_DIR/ios15_verify/reverse_v59.py" ; then
+                echo "✅ v59 就位 (反向 5 条全拦: 改回 true/删兜底/范围失控/摘标记/1e7 兜底)"
+              else
+                echo "::error::v59 判据异常 —— 容器宽跟随还开着 = 纠偏写入每趟都被覆盖"
+                echo "   —— 报「跟随宽 N 处」: 0=表格那处也被改(范围失控); >1=上游新增视图"
+                echo "   —— 报「缺兜底」: 容器默认 1e7, 首趟排版排成一行超长(历史 1e7 污染)"
+                exit 1
+              fi
+            else
+              echo "::error::产物里没有 [V59-NOTRACK] —— v59 注入没生效(上游 init 可能变了)"
+              exit 1
+            fi
+          else
+            echo "::error::ios15_fallback.py 里找不到 fix_md_notrack_v59 / verify_md_notrack_v59"
+            exit 1
+          fi
+          echo "::endgroup::"
+
       - name: "设置部署目标 (主 App=${{ env.DEPLOY_TARGET }}, 扩展单独抬高)"
         run: |
           set -e

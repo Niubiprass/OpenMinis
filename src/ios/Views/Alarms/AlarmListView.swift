@@ -333,6 +333,7 @@ private struct AlarmRowView: View {
             if #available(iOS 17.0, *) {
                 Image(systemName: "bell.fill")
                     .foregroundStyle(.orange)
+                    .symbolEffect(.pulse)
             } else {
                 Image(systemName: "bell.fill")
                     .foregroundStyle(.orange)

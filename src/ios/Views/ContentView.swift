@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 private let shareLog = AppLogger(category: "Share")
 private let draftLog = AppLogger(category: "DraftSession")
@@ -434,7 +433,7 @@ private struct FolderSurface: ViewModifier {
                 }
             } else {
                 if #available(iOS 26.0, *) {
-                    content.background(shape.fill(Color(UIColor.secondarySystemBackground)))
+                    content.background(shape.fill(.regularMaterial))
                 } else {
                     content.background(shape.fill(Color(UIColor.secondarySystemBackground)))
                 }
@@ -778,8 +777,8 @@ private struct FolderPickerSheet: View {
                     // One-sentence auto-grouping context (≤100 chars). Typed
                     // here or prefilled by AI Suggest; never shown in the
                     // list, editable later from Rename Group.
-                    TextField("Description (optional, guides auto-grouping)", text: $newFolderDesc)
-                        .lineLimit(2)
+                    TextField("Description (optional, guides auto-grouping)", text: $newFolderDesc, axis: .vertical)
+                        .lineLimit(1...2)
                         .font(.subheadline)
                         .onChange(of: newFolderDesc) { v in
                             if v.count > 100 { newFolderDesc = String(v.prefix(100)) }
@@ -812,6 +811,7 @@ private struct FolderPickerSheet: View {
                         Spacer()
                         Button("Create", action: createIfNamed)
                             .buttonStyle(.borderless)
+                            .fontWeight(.semibold)
                             .disabled(trimmedName.isEmpty || duplicateFolder != nil)
                     }
                     // [T-folder-duplicate-name] Name already taken. Says so, and
@@ -1079,6 +1079,7 @@ private let rowHeightLog = AppLogger(category: "RowHeight")
 /// Already ruled out, do not retry: `.scrollEdgeEffectStyle(.hard)` (the style
 /// applies but the height is unchanged, and it does not cover sticky headers —
 /// same report in Apple forums thread/795159); an opaque `.background` plus
+/// `.scrollContentBackground(.hidden)` (the list background is not what is
 /// sampled); mutating the effect view's hidden/alpha/frame at runtime (the
 /// system rebuilds and restores it on every layout, so the experiment shows
 /// nothing).
@@ -1123,6 +1124,8 @@ struct MacOS27OpaqueNavigationBar<S: ShapeStyle>: ViewModifier {
         if #available(iOS 26.0, *), MacOS27GlassWorkaround.isActive {
             content
                 .scrollEdgeEffectHidden(true, for: .top)
+                .toolbarBackground(background, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
         } else {
             content
         }
@@ -1796,7 +1799,7 @@ struct ContentView: View {
                 switchToSession(targetId)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("openSessionFromIntent"))) { note in
+        .onReceive(NotificationCenter.default.publisher(for: .openSessionFromIntent)) { note in
             guard let sessionId = (note.userInfo as? [String: String])?["sessionId"] else { return }
             // [T-notification-tap-vs-launch-session] Warm path owns this
             // navigation: drop the cold-launch buffer copy and stamp the
@@ -1873,6 +1876,7 @@ struct ContentView: View {
             .onAppear {
                 print("[DELETE] Sheet appeared. singleDeleteInfo is \(singleDeleteInfo == nil ? "nil" : "non-nil, sessionCount=\(singleDeleteInfo!.sessionCount)")")
             }
+            .presentationDetents([.medium])
         }
         .sheet(item: $sessionToEdit) { session in
             SessionEditSheet(session: session) { newTitle, newCategory in
@@ -1884,6 +1888,7 @@ struct ContentView: View {
                 }
                 sessionToEdit = nil
             }
+            .presentationDetents([.medium])
         }
         .sheet(isPresented: $showDeleteConfirm, onDismiss: {
             if deleteInfo == nil {
@@ -1900,6 +1905,7 @@ struct ContentView: View {
                 deleteSelectedSessions()
                 showDeleteConfirm = false
             }
+            .presentationDetents([.medium])
         }
         .sheet(isPresented: $showExportPreview) {
             ExportPreviewSheet(fileURL: exportFileURL, previewURL: exportPreviewURL, summary: exportSummary)
@@ -1934,6 +1940,7 @@ struct ContentView: View {
                 if req.fromMultiSelect { folderMoveApplied = true }
                 folderPickerRequest = nil
             }
+            .presentationDetents([.medium, .large])
         }
         .modifier(FolderAlertsModifier(
             folderToRename: $folderToRename,
@@ -2003,7 +2010,7 @@ struct ContentView: View {
                         }
                     }
                     .padding(24)
-                    .background(Color(UIColor.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 16))
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
                 }
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.2), value: isExporting)
@@ -2548,7 +2555,7 @@ struct ContentView: View {
                     .font(.system(size: 48))
                     .foregroundStyle(.secondary)
                 Text("No Conversation Selected")
-                    .font(.title3)
+                    .font(.title3.bold())
                 Text("Select a conversation or start a new one")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -3064,7 +3071,7 @@ struct ContentView: View {
         .padding(.trailing, 8)
         .frame(height: 48)
         .frame(maxWidth: 320)
-        .background(Color(UIColor.tertiarySystemFill), in: Capsule())
+        .background(.ultraThinMaterial, in: Capsule())
         .overlay(Capsule().stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5))
         .shadow(color: Color.black.opacity(0.15), radius: 8, y: 2)
         .padding(.top, 8)
@@ -3243,6 +3250,7 @@ struct ContentView: View {
             // with a hand-rolled gesture sequence — the
             // gesture layer is where system gestures are
             // beaten (see the WebView sheet-dismiss fix).
+            .draggable(session.id)
             .overlay {
                 if regeneratingTitleSessionId == session.id {
                     ZStack {
@@ -3264,7 +3272,7 @@ struct ContentView: View {
                     Color(.systemBackground)
                 }
             })
-            .contextMenu (menuItems: {
+            .contextMenu {
                 // [T-ios-crash-contextmenu-uaf] Value-only menu view,
                 // no closure captures — see SessionContextMenu.
                 SessionContextMenu(
@@ -3272,7 +3280,7 @@ struct ContentView: View {
                     actions: menuActions
                 )
                 .equatable()
-            })
+            }
         )
     }
 
@@ -3444,6 +3452,7 @@ struct ContentView: View {
                                 // with a hand-rolled gesture sequence — the
                                 // gesture layer is where system gestures are
                                 // beaten (see the WebView sheet-dismiss fix).
+                                .draggable(session.id)
                                 .overlay {
                                     if regeneratingTitleSessionId == session.id {
                                         ZStack {
@@ -3464,7 +3473,7 @@ struct ContentView: View {
                                 // triggers on every row regardless of selection state.
                                 // iPhone uses `stackList` (no selection:) and is
                                 // unaffected.
-                                .contextMenu (menuItems: {
+                                .contextMenu {
                                     // [T-ios-ipad-new-session-contextmenu-broken / GH#30]
                                     // The selected new-chat row keeps the DRAFT id as its
                                     // tag even after the user sends a message and the
@@ -3490,7 +3499,7 @@ struct ContentView: View {
                                         )
                                         .equatable()
                                     }
-                                })
+                                }
                                 .tag(session.id)
                                 .listRowInsets(EdgeInsets())
                                 .listRowSeparator(.hidden)
@@ -3546,6 +3555,7 @@ struct ContentView: View {
 
         }
         .listStyle(.plain)
+        .navigationSplitViewColumnWidth(min: 340, ideal: 380, max: 500)
         // [T-macos27-liquid-glass-navbar] See MacOS27GlassWorkaround. Applied to
         // the Mac sidebar List only; the iPhone compact list (the other branch
         // of sessionList) is unaffected and does not get it.
@@ -4405,7 +4415,7 @@ struct ContentView: View {
                         }
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
-                        .contextMenu (menuItems: {
+                        .contextMenu {
                             Button {
                                 // [T-ios-state-publish-offmain-crash] @MainActor
                                 // so the @State write stays on the main thread.
@@ -4422,7 +4432,7 @@ struct ContentView: View {
                             } label: {
                                 Label("Fork Session", systemImage: "arrow.branch")
                             }
-                        })
+                        }
                     }
                 }
             } header: {
@@ -4522,7 +4532,7 @@ struct ContentView: View {
 
             VStack(spacing: 8) {
                 Text("Welcome to Minis")
-                    .font(.title2)
+                    .font(.title2.bold())
                 Text("Your first On-Device Agent is almost ready.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -5002,7 +5012,7 @@ struct ContentView: View {
                 // showed a grey rounded-rect slab peeking out from under the
                 // circular button on long press. `ChatMessageRow` already
                 // declares the two shapes separately for the same reason.
-                .contentShape(Circle())
+                .contentShape(.contextMenuPreview, Circle())
         } else {
             Circle()
                 .fill(fallbackFill)
@@ -5064,7 +5074,7 @@ struct ContentView: View {
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(Self.newChatIconColor)
                 }
-                    .contextMenu (menuItems: {
+                    .contextMenu {
                         let groups = Array(ProviderConfigStore.shared.config.modelGroups.prefix(10))
                         if !groups.isEmpty {
                             Section(AppLocalized("New Chat with Group")) {
@@ -5077,7 +5087,7 @@ struct ContentView: View {
                                 }
                             }
                         }
-                    })
+                    }
             }
 
             // Search FAB or inline search bar (hidden when no sessions)
@@ -5250,6 +5260,19 @@ struct ContentView: View {
             // Dropping on a date-bucket header moves the sessions OUT of any
             // folder — the drag gesture works both directions, otherwise
             // moving out would still require a trip through the menu.
+            .dropDestination(for: String.self) { sessionIds, _ in
+                Task { @MainActor in
+                    await ChatStore.shared.setFolder(nil, forSessions: sessionIds)
+                    refreshSessionList()
+                }
+                return true
+            } isTargeted: { over in
+                if over {
+                    dropTargetFolderId = ""
+                } else if dropTargetFolderId == "" {
+                    dropTargetFolderId = nil
+                }
+            }
         }
     }
 
@@ -5444,7 +5467,21 @@ struct ContentView: View {
         // ScrollViewReader anchor for the mini-bar's "back to header" jump.
         .id("folderHeader-\(group.folderId ?? "")")
         .listRowInsets(EdgeInsets())
-        .contextMenu (menuItems: {
+        .dropDestination(for: String.self) { sessionIds, _ in
+            guard let fid = group.folderId else { return false }
+            Task { @MainActor in
+                await ChatStore.shared.setFolder(fid, forSessions: sessionIds)
+                refreshSessionList()
+            }
+            return true
+        } isTargeted: { over in
+            if over {
+                dropTargetFolderId = group.folderId
+            } else if dropTargetFolderId == group.folderId {
+                dropTargetFolderId = nil
+            }
+        }
+        .contextMenu {
             if let fid = group.folderId, let folder = folders.first(where: { $0.id == fid }) {
                 Button {
                     Task { @MainActor in
@@ -5496,7 +5533,7 @@ struct ContentView: View {
                     Label("Delete Group & \(group.totalCount) Sessions", systemImage: "trash")
                 }
             }
-        })
+        }
     }
 
     /// "New chat in folder": file the just-promoted draft. Separate from the
@@ -5637,7 +5674,7 @@ struct ContentView: View {
             .disabled(selectedIds.isEmpty)
         }
         .padding(.vertical, 10)
-        .background(Color(UIColor.tertiarySystemFill))
+        .background(.ultraThinMaterial)
     }
 
     /// Force-sync the given sessions: bumps each session, its messages,
@@ -6282,7 +6319,7 @@ private struct DeleteConfirmSheet: View {
                             if info.totalFileCount > 0 {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Associated Files")
-                                        .font(.subheadline)
+                                        .font(.subheadline.bold())
                                         .foregroundStyle(.primary)
                                     ForEach(info.fileNames, id: \.self) { name in
                                         HStack(spacing: 6) {
@@ -6318,7 +6355,7 @@ private struct DeleteConfirmSheet: View {
                             dismiss()
                         } label: {
                             Text("Delete (\(info.formattedSize))")
-                                .font(.body)
+                                .font(.body.bold())
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
                         }
@@ -6346,7 +6383,7 @@ private struct DeleteConfirmSheet: View {
     private func infoRow(title: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.subheadline)
+                .font(.subheadline.bold())
                 .foregroundStyle(.primary)
             Text(value)
                 .font(.subheadline)
@@ -7503,6 +7540,7 @@ struct SessionEditSheet: View {
                         guard !title.isEmpty else { return }
                         onSave(title, editCategory.isEmpty ? nil : editCategory)
                     }
+                    .bold()
                     .disabled(editTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -7973,6 +8011,7 @@ private struct AppearanceSettingsView: View {
                             if appLanguage == lang.id {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(.blue)
+                                    .fontWeight(.semibold)
                             }
                         }
                     }

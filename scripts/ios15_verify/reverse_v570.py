@@ -65,6 +65,50 @@ def build_product():
     return io.open(p, encoding='utf-8').read(), 'src/ios'
 
 
+
+
+# ----------------------------------------------------------------------
+# v58 之后的摘块工具 —— s1/s10/s11 共用
+# ----------------------------------------------------------------------
+# 【为什么 v57.0 版的 DIRTY 常量在 v58 之后失效】
+#   DIRTY 是 v57.0 注入的原始 5 行块; v58 的注入把其中 `if _v570Dirty {`
+#   块扩充(块内加了 invalidateLayout + 大段注释) ⇒ 旧 5 行串在产物里
+#   **不复存在** ⇒ t.find(DIRTY) 返回 -1 ⇒ s1/s10/s11 全部"注入未生效"
+#   (本版实测: 3 条同时变无效, 判据还显示 9/12 拦下 —— 看着还行, 其实
+#    最核心的三条位置回归已经没人测了)。
+# 【行级摘块对注释长度免疫】(与 reverse_v58.py 的纪律同源)
+def _extract_v57_block(t):
+    """摘掉纠偏块(let _v570NetW 起, 到 if _v570Dirty 的缩进收尾 })。
+
+    返回 (摘掉后的文本, 块原文)。定位失败返回 (None, None)。
+    """
+    raw = t.split('\n')
+    i_netw = -1
+    for k, ln in enumerate(raw):
+        if 'let _v570NetW = max(200.0, cvW - 32)' in ln:
+            i_netw = k
+            break
+    if i_netw < 0:
+        return None, None
+    i_if = -1
+    for k in range(i_netw, min(i_netw + 6, len(raw))):
+        if raw[k].strip() == 'if _v570Dirty {':
+            i_if = k
+            break
+    if i_if < 0:
+        return None, None
+    indent = raw[i_if][:len(raw[i_if]) - len(raw[i_if].lstrip())]
+    i_end = -1
+    for k in range(i_if + 1, len(raw)):
+        if raw[k].startswith(indent + '}'):
+            i_end = k
+            break
+    if i_end < 0:
+        return None, None
+    block = '\n'.join(raw[i_netw:i_end + 1])
+    rest = raw[:i_netw] + raw[i_end + 1:]
+    return '\n'.join(rest), block
+
 # ----------------------------------------------------------------------
 # 外部判据（刻意不 import fallback 的 verify，避免自己验自己）
 # ----------------------------------------------------------------------
@@ -174,13 +218,13 @@ def s1_move_after_guard(t):
       同名的 `textContainer.size.width = ...` 写入点(v49)，全局首个匹配
       会拿错位置，让本条 sabotage 变成"什么都没改"(实测漏过一次)。
     """
-    i = t.find(DIRTY)
-    if i < 0:
+    out, blk = _extract_v57_block(t)
+    if out is None:
         return t, '锚点缺失'
-    out = t[:i] + t[i + len(DIRTY):]
     ip = out.find('|| _hDebt || _v570Dirty')
     g = out.find('if !polluted {', ip)
-    return out[:g] + DIRTY + '\n' + out[g:], '纠偏挪到早退之后'
+    ls = out.rfind('\n', 0, g) + 1
+    return out[:ls] + blk + '\n' + out[ls:], '纠偏挪到早退之后'
 
 
 def s2_polluted_no_dirty(t):
@@ -258,30 +302,26 @@ def s10_move_back_before_v43(t):
       排版已按脏宽发生一次 ⇒ 屏幕仍是按 390 排的那一版。
       本条是整个 v57.1 的核心回归: 它必须被拦下。
     """
-    i = t.find(DIRTY)
-    if i < 0:
+    out, blk = _extract_v57_block(t)
+    if out is None:
         return t, '锚点缺失'
-    out = t[:i] + t[i + len(DIRTY):]
-    # 挪到 V43-WIDTH 声明行之前
     a = out.find('let _v43DirtyW = self.textContainer.size.width')
     if a < 0:
         return t, 'V43 锚点缺失'
-    # 往回退到该行所属语句块的缩进起点
     ls = out.rfind('\n', 0, a) + 1
-    return out[:ls] + DIRTY + '\n' + out[ls:], '纠偏挪到 V43 之后(= v57.0 位置)'
+    return out[:ls] + blk + '\n' + out[ls:], '纠偏挪到 V43 之后(= v57.0 位置)'
 
 
 def s11_move_after_v44(t):
     """把纠偏整块挪到 V44-TEXTFRAME 诊断之后 —— 诊断先看到脏宽。"""
-    i = t.find(DIRTY)
-    if i < 0:
+    out, blk = _extract_v57_block(t)
+    if out is None:
         return t, '锚点缺失'
-    out = t[:i] + t[i + len(DIRTY):]
     a = out.find('// [V44-TEXTFRAME]')
     if a < 0:
         return t, 'V44 锚点缺失'
     ls = out.rfind('\n', 0, a) + 1
-    return out[:ls] + DIRTY + '\n' + out[ls:], '纠偏挪到 V44 之后'
+    return out[:ls] + blk + '\n' + out[ls:], '纠偏挪到 V44 之后'
 
 
 def s12_weaken_to_v42miss_only(t):

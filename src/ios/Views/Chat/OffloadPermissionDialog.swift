@@ -12,6 +12,7 @@ struct OffloadPermissionDialogModifier: ViewModifier {
                     // buttons trailing them, leaving no way to respond. Allow
                     // dragging up to .large; the content is scrollable in
                     // either height.
+                    .presentationDetents([.medium, .large])
                     .interactiveDismissDisabled()
             }
     }
@@ -36,7 +37,7 @@ private struct OffloadPermissionDialogContent: View {
                             .foregroundStyle(.orange)
 
                         Text("Permission Request")
-                            .font(.title3)
+                            .font(.title3.bold())
 
                         Text("The agent wants to use **\(request.commandName)**")
                             .font(.subheadline)
@@ -63,7 +64,7 @@ private struct OffloadPermissionDialogContent: View {
                             ForEach(Array(args.enumerated()), id: \.offset) { idx, arg in
                                 HStack {
                                     Text(arg.key)
-                                        .font(.footnote)
+                                        .font(.footnote.bold())
                                         .foregroundStyle(.secondary)
                                         .frame(width: 80, alignment: .trailing)
                                     Text(arg.value)

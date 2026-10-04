@@ -832,10 +832,14 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     private func refreshActiveTaskBadge(sessions: Set<String>, enabled: Bool) {
         let center = UNUserNotificationCenter.current()
         guard enabled else {
-            UIApplication.shared.applicationIconBadgeNumber = 0
+            center.setBadgeCount(0) { _ in }
             return
         }
-        UIApplication.shared.applicationIconBadgeNumber = sessions.count
+        center.setBadgeCount(sessions.count) { err in
+            if let err {
+                logger.error("[Badge] setBadgeCount failed: \(err.localizedDescription)")
+            }
+        }
     }
 
     // MARK: - Background Task Notifications
@@ -1768,7 +1772,7 @@ struct BackgroundInterruptionBanner: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Background Task Interrupted")
-                    .font(.subheadline)
+                    .font(.subheadline.bold())
                     .foregroundColor(.white)
                 Text("Enable enhanced background to keep tasks running")
                     .font(.caption)
@@ -1785,7 +1789,7 @@ struct BackgroundInterruptionBanner: View {
                     withAnimation { tracker.dismiss() }
                 } label: {
                     Text("Enable")
-                        .font(.caption)
+                        .font(.caption.bold())
                         .padding(.horizontal, 12)
                         .padding(.vertical, 5)
                         .background(Color.white)
@@ -1807,7 +1811,7 @@ struct BackgroundInterruptionBanner: View {
         .padding(.top, 4)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color.orange)
+                .fill(Color.orange.gradient)
                 .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
         )
         .padding(.horizontal, 12)

@@ -494,13 +494,13 @@ struct RemoteDeviceSessionsView: View {
                             .controlSize(.small)
                         }
                     }
-                    .contextMenu (menuItems: {
+                    .contextMenu {
                         Button {
                             forkSession(session)
                         } label: {
                             Label("Fork Session", systemImage: "arrow.branch")
                         }
-                    })
+                    }
                 }
             }
         }

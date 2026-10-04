@@ -718,6 +718,7 @@ struct UnifiedModelPicker: View {
             // model while TestSession still ran the OLD one.
             ModelQuickTestSheet(entry: entry)
                 .id(entry.id)
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -879,14 +880,14 @@ struct UnifiedModelPicker: View {
             config.onSelectGroup?(group)
             dismissIfNeeded()
         }
-        .contextMenu (menuItems: {
+        .contextMenu {
             Button {
                 UIPasteboard.general.string = "group:\(group.id)"
                 MinisToast.show(AppLocalized("Copied: \(group.name)"))
             } label: {
                 Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
             }
-        })
+        }
     }
 
     private func isGroupSelected(_ group: ModelGroup) -> Bool {
@@ -1123,14 +1124,14 @@ struct UnifiedModelPicker: View {
             }
             dismissIfNeeded()
         }
-        .contextMenu (menuItems: {
+        .contextMenu {
             Button {
                 UIPasteboard.general.string = "entry:\(entry.compositeKey)"
                 MinisToast.show(AppLocalized("Copied: \(entry.model.displayName)"))
             } label: {
                 Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
             }
-        })
+        }
     }
 
     /// [T-ios-picker-prune-dangling-member] True when this member refers to an
@@ -1389,14 +1390,14 @@ struct UnifiedModelPicker: View {
                 dismissIfNeeded()
             }
         }
-        .contextMenu (menuItems: {
+        .contextMenu {
             Button {
                 UIPasteboard.general.string = "entry:\(entry.compositeKey)"
                 MinisToast.show(AppLocalized("Copied: \(entry.model.displayName)"))
             } label: {
                 Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
             }
-        })
+        }
     }
 
     // MARK: - Empty State

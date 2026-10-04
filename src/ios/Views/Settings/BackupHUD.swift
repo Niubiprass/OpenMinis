@@ -27,7 +27,7 @@ struct BackupHUD: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Color(UIColor.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .shadow(radius: 8, y: 2)
         .padding(.horizontal, 24)
         .transition(.move(edge: .top).combined(with: .opacity))

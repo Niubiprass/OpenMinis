@@ -5,7 +5,6 @@ import Foundation
 /// Gated behind iOS 17+ because UserMessageEntityQuery uses
 /// @IntentParameterDependency which crashes Swift metadata resolution on iOS 16.
 @available(iOS 17.0, *)
-@available(iOS 16.0, *) // ios15-port
 struct UserMessageEntity: AppEntity {
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "User Message")
     static var defaultQuery = UserMessageEntityQuery()
@@ -53,7 +52,6 @@ struct UserMessageEntity: AppEntity {
 // MARK: - Query with session dependency
 
 @available(iOS 17.0, *)
-@available(iOS 16.0, *) // ios15-port
 struct UserMessageEntityQuery: EntityQuery {
     @IntentParameterDependency<RetryRunIntent>(\.$session)
     var retryIntent

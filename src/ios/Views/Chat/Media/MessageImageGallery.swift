@@ -117,7 +117,7 @@ struct MessageImageGallery: View {
                         .truncationMode(.middle)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .background(Color(UIColor.tertiarySystemFill), in: Capsule())
+                        .background(.ultraThinMaterial, in: Capsule())
                         .padding(.bottom, 24)
                         .allowsHitTesting(false)
                 }
@@ -185,7 +185,7 @@ struct MessageImageGallery: View {
                 .foregroundStyle(ChatColors.primaryText)
                 .frame(width: 44, height: 44)
                 .contentShape(Circle())
-                .background(Color(UIColor.tertiarySystemFill), in: Circle())
+                .background(.ultraThinMaterial, in: Circle())
             }
             .disabled(saveStatus != .idle || currentImage == nil)
 
@@ -215,7 +215,7 @@ struct MessageImageGallery: View {
             .foregroundStyle(tint ?? ChatColors.primaryText)
             .frame(width: 44, height: 44)
             .contentShape(Circle())
-            .background(Color(UIColor.tertiarySystemFill), in: Circle())
+            .background(.ultraThinMaterial, in: Circle())
     }
 
     private func loadIfNeeded(item: GalleryItem) async {

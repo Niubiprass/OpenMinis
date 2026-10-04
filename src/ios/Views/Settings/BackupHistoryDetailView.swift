@@ -36,7 +36,7 @@ struct BackupHistoryDetailView: View {
             // Hidden while the run is live: a delete that dropped the record
             // while the upload kept running would strand a job with nothing
             // tracking it. Stop it first — this button is then right here.
-
+            if !isLive {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(role: .destructive) {
                         showDeleteConfirm = true
@@ -44,7 +44,7 @@ struct BackupHistoryDetailView: View {
                         Label("Delete", systemImage: "trash")
                     }
                 }
-            
+            }
         }
         // Confirmed, unlike the list's swipe action: a swipe is deliberate and
         // undoable-by-redoing-the-backup, but a toolbar button sits next to

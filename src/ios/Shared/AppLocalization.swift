@@ -15,7 +15,7 @@
 //  Measured, not assumed. With the swizzle installed:
 //
 //      NSLocalizedString("k")   -> Bundle.localizedString hits: 1
-//      "k"   -> Bundle.localizedString hits: 0
+//      String(localized: "k")   -> Bundle.localizedString hits: 0
 //
 //  Three interception strategies were tried against a real bundle and all
 //  three failed to redirect `String(localized:)`:
@@ -70,8 +70,15 @@ enum AppBundle {
 ///   - key: the localization key, i.e. the English source string.
 ///   - comment: translator context, kept so `genstrings`-style extraction and
 ///     the String Catalog continue to see it.
-func AppLocalized(_ key: String, comment: StaticString? = nil) -> String {
-    NSLocalizedString(key, bundle: AppBundle.current,
-                      comment: comment.map { String(describing: $0) } ?? "")
+func AppLocalized(_ key: String.LocalizationValue, comment: StaticString? = nil) -> String {
+    String(localized: key, bundle: AppBundle.current, comment: comment)
 }
 
+/// `LocalizedStringResource` overload, for call sites that already hold a
+/// resource (App Intents build these) rather than a literal key.
+func AppLocalized(_ resource: LocalizedStringResource) -> String {
+    // A LocalizedStringResource carries its own bundle reference, so it cannot
+    // be re-pointed the way a literal key can. Resolve it as-is rather than
+    // pretending the override applies.
+    String(localized: resource)
+}

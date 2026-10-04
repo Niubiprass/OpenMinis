@@ -4754,7 +4754,7 @@ final class VideoAttachment: NSTextAttachment {
 
             var thumb: UIImage?
             do {
-                let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+                let (cgImage, _) = try await generator.image(at: .zero)
                 thumb = UIImage(cgImage: cgImage)
             } catch {
                 // Fallback: no thumbnail
@@ -5730,6 +5730,83 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             let _v570Dirty = abs(self.textContainer.size.width - _v570NetW) > 1
             if _v570Dirty {
                 self.textContainer.size.width = _v570NetW
+                // [V58-REFLOW] ★v58 全部修复的支点★ 纠偏后**立刻重排**。
+                //
+                // 【v57.1 为什么 100% 无效 —— 这次不是"位置"问题, 是"只写不排"】
+                // v57.1 把纠偏整块搬到了 KVO 闭包最前, 判据八层全绿,
+                // 装机日志里 dirty=1 也确实每帧都在改写宽度 —— **但症状一字未改**。
+                // 逐毫秒对齐(minis-2026-10-05 3.log, 04:32:41, len=288):
+                //   41.372 V51-FRAMEPIN  fvW=358.0 tcW=358.0 svW=358.0  <- 干净
+                //   41.595 V570-KVOCW    dirty=1 netW=358.0               <- 纠偏执行
+                //   41.598 V49-WWRITER   kvoW=390.0 laidW=-1.0            <- 读回又是 390
+                //   41.599 V44-TEXTFRAME tvW=390.0 svW=358.0 tcW=390.0   <- 落屏那版就是 390
+                //   41.599 V41-KVOHEIGHT usedH=258.7 needH=387.0        <- 欠 128.3pt
+                // ⇒ **纠偏写进去了, 但同一 tick 再读回来还是 390**。
+                //
+                // 【机理: 对容器宽做赋值只改容器本身, 不动已排好的行碎片】
+                // 这是 v48 自己的注释里已经写明的事实(原文大意: 容器宽赋值
+                // = 只改容器不重排既有碎片"), v47/v48/v50/v51 全都靠紧邻的
+                // `layoutManager.invalidateLayout(...)` 才真正生效。
+                // ★而 v57.1 的纠偏块里**没有那一行 invalidateLayout** ——
+                //   它只写了宽度。于是: 容器宽写成 358 ✓, 行碎片仍停在 390 那版,
+                //   下一趟布局再读 textContainer 时又按旧碎片走 ⇒ 读回 390。
+                // 这是 v47/v48/v50 三代都写了 invalidate 而 v57.1 唯独漏掉的
+                // **唯一一个环节** —— 也是三十余版修复反复失败的共同原因:
+                // **每版都在"写宽度", 却没人保证"写完的宽度被排版采纳"。**
+                //
+                // 【为什么必须在这一处(而不是 v18 段)】
+                // v18 段的 invalidateLayout 被 `if _ios15WRegrabbed` 包着, 而
+                // _ios15WRegrabbed 依赖 `ios15LastLaidOutW`, 装机日志里 laidW
+                // **恒为 -1.0** ⇒ 那个 if 的判据在真机上从未成立 ⇒ v47/v48/v50
+                // 的重排**全是死代码**。日志实证: V50-LAIDW 只在 layoutSubviews
+                // 那趟打成 358, KVO 这趟读到的永远是上一帧的残留 -1。
+                // 这里不依赖任何记忆变量, 只看"本帧有没有动过手"(_v570Dirty),
+                // 写完就排, 幂等, 稳态零开销。
+                //
+                // 【为什么用 invalidateLayout(forCharacterRange:) 而不是 ensureLayout】
+                // 与 v28 段(第 8835 行)已验证合法的签名完全一致, 不引入
+                // 编译器未验证过的 API(纪律 4)。只重排全文行碎片, 不碰高度、
+                // 不碰 frame/bounds/origin ⇒ 不推翻 v41/v45/v51 任何成果。
+                //
+                // 【为什么不会每帧重排 → 不会掉帧加重】
+                // 整块被 `if _v570Dirty` 包着。稳态下 tcW 已是 358, abs<=1 ⇒
+                // 判据恒 false ⇒ 一次写入、一次重排都没有。只有 SwiftUI 真的
+                // 把宽度推回 390 时才动手, 而那正是必须重排的时刻。
+                if self.textStorage.length > 0 {
+                    layoutManager.invalidateLayout(
+                        forCharacterRange: NSMakeRange(0, self.textStorage.length),
+                        actualCharacterRange: nil)
+                }
+            }
+            // [V58-REFLOW-DIAG] 纯诊断, 一行几何都不碰。装机判据:
+            //   reflow=1 => 本帧纠偏且已重排 = 修复链闭合
+            //   reflow=0 => 稳态(容器已是 358), 无需重排
+            // 纪律42: 用判据结果表示"是否动过手", 不回读宽度冒充脏值。
+            //
+            // ★★ 纪律54(本版实测踩到, 由 v49 判据 sab 3/12 拦下) ★★
+            // 本块**不得**出现「textContainer 的 .size.height 成员访问」,
+            // 连**注释里写出来也不行**。原因: v49 判据的 S7/S8/S12 三条
+            // sabotage 都按「该成员访问串的**首个出现处**」做替换, 而本块
+            // 位于 v49 探针段**之前**(行 5781 vs 6096)。本块一旦出现那个串
+            // (哪怕在注释里), 三条就替换到本块而没落在 v49 探针上
+            // ⇒ 变异体不在判据视野内 ⇒ v49 判据失效 ⇒ CI 变红。
+            // ★本版真实经过: 首次实现的诊断块真的写了那个成员访问,
+            //   于是 CI 报 v49 sab 3/12 未拦截; 把成员访问换成 needH 之后,
+            //   **注释里残留的字面量**又让判据继续变红 —— 两次才彻底修干净。
+            // ⇒ 纪律: 判据锚点串是**代码级**敏感物质, 注释同样会命中。
+            //   高度只打 needH(ios15LastNeededH); 容器实测占用交给 v44。
+            do {
+                struct _V58Log { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                let _v58Now = CACurrentMediaTime()
+                if _v58Now - _V58Log.last > 0.5 {
+                    _V58Log.last = _v58Now
+                    _V58Log.n &+= 1
+                    NSLog("[V58-REFLOW] reflow=%d netW=%.1f tcW=%.1f needH=%.1f len=%d n=%u",
+                          _v570Dirty ? 1 : 0, _v570NetW,
+                          self.textContainer.size.width,
+                          self.ios15LastNeededH, self.textStorage.length,
+                          _V58Log.n)
+                }
             }
             // [V570-KVODIAG] 纯诊断, 一行几何都不碰。装机后判定:
             //   dirty=1 => 证实「KVO 闭包最前面容器是脏的」= 本版假设成立
@@ -6464,7 +6541,19 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         let layoutManager = MinisLayoutManager()
         let textContainer = NSTextContainer()
         textContainer.lineFragmentPadding = 0
-        textContainer.widthTracksTextView = true
+        textContainer.widthTracksTextView = false
+        // [V59-NOTRACK] ★v59 关闭容器宽跟随★ 上游默认 true = 每趟布局从
+        // frame 派生并覆盖容器宽。装机日志(v57.1, 04:32 段)实证: superview
+        // 宽 358(SwiftUI inset 16/16 已生效), 但本视图 frame 被上游布局撑到
+        // 390 => 派生容器宽 = 390 => v31~v58 每一版写入的净宽都在下一趟布局
+        // 被系统覆盖回 390(41.595 写 358 -> 41.598 读回 390) —— 这就是
+        // 「改了等于没改」的机制。关掉跟随后, 容器宽由 v18 渲染段与 v57.0 KVO
+        // 纠偏(netW = cvW - 32, 来自 collectionView 干净源)独占维护, v58 的
+        // invalidateLayout 重排随之生效。旋转/resize 后 KVO 亦会重写。
+        // 首帧兜底: NSTextContainer 默认 1e7 x 1e7(项目日志里的 1e7 污染值
+        // 就是它), 关掉跟随后的首趟排版会按 1e7 排成一行超长 —— 压一个
+        // 保守初值, KVO 纠偏一跑就以真实净宽覆盖。SetSizeGuard 仍兜底风暴。
+        textContainer.size = CGSize(width: 320, height: 2000)
         layoutManager.addTextContainer(textContainer)
         textStorage.addLayoutManager(layoutManager)
 
@@ -10246,7 +10335,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // becomes a measurable chunk of every updateUIView pass (and
         // updateUIView runs on each SwiftUI body re-evaluation, so it
         // multiplies during streaming and self-sizing measurement loops).
-        let imageMatches = MinisRegex.ranges(markdown, "!\\[([^\\]]*)\\]\\(([^)]+)\\)")
+        let imageMatches = markdown.ranges(of: /!\[([^\]]*)\]\(([^)]+)\)/)
         if !imageMatches.isEmpty {
             for match in imageMatches {
                 let matchStr = String(markdown[match])
@@ -10695,26 +10784,6 @@ struct SelectableMarkdownView: UIViewRepresentable {
     }
 
     @available(iOS 16.0, *)
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: SelectableMarkdownTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
         // Key the size cache on the SwiftUI binding length, not

@@ -6322,8 +6322,8 @@ V58_ANCHOR_NEW = """            let _v570NetW = max(200.0, cvW - 32)
                 //   41.599 V41-KVOHEIGHT usedH=258.7 needH=387.0        <- 欠 128.3pt
                 // ⇒ **纠偏写进去了, 但同一 tick 再读回来还是 390**。
                 //
-                // 【机理: `textContainer.size.width = ` 只改容器, 不动行碎片】
-                // 这是 v48 自己的注释里已经写明的事实(原文: "textContainer.size.width
+                // 【机理: 对容器宽做赋值只改容器本身, 不动已排好的行碎片】
+                // 这是 v48 自己的注释里已经写明的事实(原文大意: 容器宽赋值
                 // = 只改容器不重排既有碎片"), v47/v48/v50/v51 全都靠紧邻的
                 // `layoutManager.invalidateLayout(...)` 才真正生效。
                 // ★而 v57.1 的纠偏块里**没有那一行 invalidateLayout** ——
@@ -6361,16 +6361,28 @@ V58_ANCHOR_NEW = """            let _v570NetW = max(200.0, cvW - 32)
             //   reflow=1 => 本帧纠偏且已重排 = 修复链闭合
             //   reflow=0 => 稳态(容器已是 358), 无需重排
             // 纪律42: 用判据结果表示"是否动过手", 不回读宽度冒充脏值。
+            //
+            // ★★ 纪律54(本版实测踩到, 由 v49 判据 sab 3/12 拦下) ★★
+            // 本块**不得**出现「textContainer 的 .size.height 成员访问」,
+            // 连**注释里写出来也不行**。原因: v49 判据的 S7/S8/S12 三条
+            // sabotage 都按「该成员访问串的**首个出现处**」做替换, 而本块
+            // 位于 v49 探针段**之前**(行 5781 vs 6096)。本块一旦出现那个串
+            // (哪怕在注释里), 三条就替换到本块而没落在 v49 探针上
+            // ⇒ 变异体不在判据视野内 ⇒ v49 判据失效 ⇒ CI 变红。
+            // ★本版真实经过: 首次实现的诊断块真的写了那个成员访问,
+            //   于是 CI 报 v49 sab 3/12 未拦截; 把成员访问换成 needH 之后,
+            //   **注释里残留的字面量**又让判据继续变红 —— 两次才彻底修干净。
+            // ⇒ 纪律: 判据锚点串是**代码级**敏感物质, 注释同样会命中。
+            //   高度只打 needH(ios15LastNeededH); 容器实测占用交给 v44。
             do {
                 struct _V58Log { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
                 let _v58Now = CACurrentMediaTime()
                 if _v58Now - _V58Log.last > 0.5 {
                     _V58Log.last = _v58Now
                     _V58Log.n &+= 1
-                    NSLog("[V58-REFLOW] reflow=%d netW=%.1f tcW=%.1f usedH=%.1f needH=%.1f len=%d n=%u",
+                    NSLog("[V58-REFLOW] reflow=%d netW=%.1f tcW=%.1f needH=%.1f len=%d n=%u",
                           _v570Dirty ? 1 : 0, _v570NetW,
                           self.textContainer.size.width,
-                          self.textContainer.size.height,
                           self.ios15LastNeededH, self.textStorage.length,
                           _V58Log.n)
                 }
@@ -6411,15 +6423,62 @@ def fix_kvo_reflow_v58(t):
 
 
 def verify_kvo_reflow_v58(t):
-    """v58 判据: 四层。
+    """v58 判据: 六层。
 
     1. [V58-REFLOW] 标记在位
     2. invalidateLayout 必须**在** `if _v570Dirty {` 块内 —— 写在外面的
        恒重排(掉帧), 写在后面的永不执行(v57.1 的病)
-    3. invalidateLayout 的签名必须是 v28 段已验证的合法形式
-       (纪律4: 判据里只允许出现编译器已验证存在的 API)
-    4. 必须有纯诊断 [V58-REFLOW-DIAG], 且用 reflow 标记而非回读宽度
+    3. 块内实参必须是全量范围 (0, textStorage.length) + actualCharacterRange: nil
+       —— 半截范围排不掉已被切断的行碎片
+       (纪律4: 判据里只允许出现编译器已验证存在的 API 与实参形态)
+    4. 诊断块必须零副作用(不得写 frame/bounds/height, 连 `+=` 也不行)
+    5. ★纪律54★ v58 段**不得**在 v49 探针之前写出 `self.textContainer.size.height`
+       —— v49 判据的 S7/S8/S12 三条 sabotage 都按「首个出现处」替换这个串,
+       本段位置在 v49 探针之前, 写了就会把那三条的变异体吸走 ⇒ 判据失效
+       ⇒ CI 变红(本版真实发生: v49 sab 3/12 未被拦截)。高度只打 needH。
+    6. ★纪律55★ 本版**注释**里不得写出「容器宽 + 赋值」的完整字面量
+       —— v50 判据用 `re.findall(r"textContainer\\.size\\.width\\s*=", t)`
+       全文数写入点, 硬编码期望 5(codeTextView 1 + v18 3 + v57.0 KVO 1),
+       **注释同样被计入**。v58 注释里写一次这个字面量, 计数就变 6,
+       v50 当场变红(本版真实发生: A' 宽度同源 BAD, 实为 6)。
+       ⇒ 本层直接数 V58_ANCHOR_NEW 全文, 必须恰好 1(只有真代码那处)。
+
+    ★★ 第 2~4 层全部走**行级**坐标 ★★
+      字符偏移有三个已实测的失效点(由 reverse_v58.py 的 S1/S2/S5 抓到):
+        a) 全文搜 invalidateLayout 会先撞上 v58 **注释里**那处说明文字;
+        b) 文件别处(v28 段)还有一次合法调用, 摘掉块内那次后会撞上它
+           ⇒「块内无重排」被误报成「重排在块外」;
+        c) 剥注释后偏移改变, 拿它切原文会切到别处。
+      行级对以上三条全部免疫。
     """
+    # ---- 6. ★纪律55★ 「容器宽 + 赋值」字面量计数(注释也算) ----
+    # ★两处都要数★:
+    #   (a) V58_ANCHOR_NEW 常量自身 —— 挡住**注入前**就把字面量写进注释
+    #       (写常量时手滑, 编译能过, 但 v50 判据会红);
+    #   (b) 产物全文 t —— 挡住**别处**新引入的注释(比如未来某版在 v58 段
+    #       之外补一句说明), 以及将来新增的宽度写入点。
+    #   ★(b) 期望值是 5★, 与 v50 判据硬编码的那个数字同源 —— 两处必须
+    #   一起改, 否则一个绿一个红, 排错时互相指认对方是错的。
+    # ★拼接构造, 不在判据源码里留字面量★(纪律54 同一理由)
+    _wr = ("textContainer" + r"\.size\.width\s*=")
+    import re as _re6
+    _n_const = len(_re6.findall(_wr, V58_ANCHOR_NEW))
+    if _n_const != 1:
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: ★纪律55★ V58_ANCHOR_NEW 里"
+            "「容器宽赋值」字面量出现 %d 次, 必须恰好 1 次(只有真代码那处)\n"
+            "  v50 判据用全文正则数这个字面量并硬编码期望 5, **注释也计入**,\n"
+            "  注释里写一次就变 6 ⇒ v50 当场变红(本版真实发生)。\n"
+            "  修法: 注释改说「对容器宽做赋值」, 不写完整字面量。" % _n_const)
+    _n_prod = len(_re6.findall(_wr, t))
+    if _n_prod != 5:
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: ★纪律55★ 产物里「容器宽赋值」字面量 %d 处, "
+            "应为 5(codeTextView 1 + v18 3 + v57.0 KVO 1)\n"
+            "  ★注释同样被计入★ —— 在注释里写一次这个字面量就会让 v50 判据变红,\n"
+            "  而 v50 判据的报错信息只说「宽度写入点数不对」, 不会告诉你是注释\n"
+            "  干的 ⇒ 排错成本极高(本版真实踩了两次)。\n"
+            "  若确实新增了写入点: 改代码**并且**同步改 v50 的期望值与本处。" % _n_prod)
     if "[V58-REFLOW]" not in t:
         raise RuntimeError("verify_kvo_reflow_v58: 缺 [V58-REFLOW] 标记")
     if "[V58-REFLOW-DIAG]" not in t:
@@ -6429,83 +6488,275 @@ def verify_kvo_reflow_v58(t):
             "verify_kvo_reflow_v58: 诊断必须是 reflow 标记式 ——\n"
             "回读宽度在纠正之后恒等于 netW, 会永远打「全绿」骗人")
 
-    # ---- 2. invalidateLayout 必须在 _v570Dirty 的 if 块内 ----
-    i_seg = t.find("let _v570NetW = ")
-    if i_seg == -1:
+    # ---- 5. ★纪律54: 不得抢 v49 sabotage 锚点的首个出现位置 ----
+    # ★判据自身也必须避开那个字面量★: 本函数运行在**注入前**的文本上,
+    #   而 v49 判据的 S7/S8/S12 是按「首个出现处」替换 —— 若判据代码里
+    #   写出那个串, 它自己就会成为首个出现处, 于是本判据永远判「已写入」
+    #   而恒绿。故这里用**拼接**构造锚点, 不在源码里留字面量。
+    # ★纪律54 的窗口必须覆盖「v58 段起点 → v49 探针」**整段**★
+    #   —— 最初只从 [V58-REFLOW-DIAG] 标记起算固定 2000 字符, 于是写在
+    #   标记**之前**的注释(那是最自然的写法)会滑出窗口 ⇒ 漏过。
+    #   由 reverse_v58.py 的 S7 实测抓到。
+    _probe = ("self.textContainer" + ".size" + ".height")
+    _i_v49 = t.find("// [V49-WWRITER-KVO]")
+    _i_seg0 = t.find("let _v570NetW = ")
+    if _i_v49 == -1:
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: 找不到 v49 的 KVO 探针段锚点 ——\n"
+            "第 5 层判据依赖它做位置比较, 锚点消失说明上游结构变了")
+    if _i_seg0 == -1:
         raise RuntimeError("verify_kvo_reflow_v58: 缺少 _v570NetW 声明")
-    i_inv = t.find("layoutManager.invalidateLayout(", i_seg)
-    if i_inv == -1:
+    if _i_seg0 < _i_v49:
+        if _probe in t[_i_seg0:_i_v49]:
+            raise RuntimeError(
+                "verify_kvo_reflow_v58: ★纪律54★ v58 段(位于 v49 探针**之前**)"
+                "出现了 textContainer 的 .size.height 成员访问\n"
+                "  —— 连**注释里**写出来也不行。\n"
+                "  v49 判据的 S7/S8/S12 三条 sabotage 都按该串的**首个出现处**\n"
+                "  替换, 本段一旦命中, 那三条就替换到本段而没落在 v49 探针上\n"
+                "  ⇒ 变异体不在判据视野内 ⇒ v49 判据失效 ⇒ CI 变红。\n"
+                "  修法: 高度只打 needH(ios15LastNeededH), 容器实测占用交给 v44。")
+
+    # ---- 2. invalidateLayout 必须在 _v570Dirty 的 if 块内 ----
+    # ★★ 全部用**行级**坐标 ★★
+    #   字符偏移有三个已实测的失效点(reverse_v58.py 的 S1/S2/S5):
+    #     a) `t.find(INVOKE, i_seg)` 会先撞上 v58 **注释里**那处同名说明文字;
+    #     b) 文件别处(v28 段)还有一次合法调用, 删掉块内那次后会撞上它
+    #        ⇒ 「块内无重排」被误报成「重排在块外」;
+    #     c) 剥注释后偏移改变, 拿它切原文会切到别处。
+    #   行级对以上三条全部免疫。
+    import re as _re
+
+    def _strip_comments(s):
+        return _re.sub(r"//[^\n]*", "",
+                       _re.sub(r"/\*.*?\*/", "", s, flags=_re.S))
+
+    _raw_lines = t.split("\n")
+    _lines = _strip_comments(t).split("\n")
+    if len(_raw_lines) != len(_lines):
+        # 剥注释只做行内删除, 行数不该变; 真变了说明有块注释含换行,
+        # 此时行级桥不可靠 —— 直接要求上游保持现状, 不猜。
         raise RuntimeError(
-            "verify_kvo_reflow_v58: 纠偏块里没有 invalidateLayout ——\n"
-            "这正是 v57.1 的病: 只写 textContainer.size.width 而不重排,\n"
-            "容器宽改了但行碎片仍停在 390 那版, 下一趟读回又是 390。")
-    # ★块范围必须按**缩进**收尾, 不能按文本找 `\n            }` ★
-    #   纪律53(本版实测踩到): 按文本找收尾会被**注释里出现的 `}`** 误导,
-    #   也会被 sabotage 里人为插入的多余 `{` 带偏 —— 判据因此假绿。
-    #   正确做法: 锚 `if _v570Dirty {` 所在行的**缩进**, 找第一条缩进**相同**
-    #   且以 `}` 开头的行, 那是块的真收尾。
-    i_blk = t.find("if _v570Dirty {", i_seg)
-    if i_blk == -1:
-        raise RuntimeError("verify_kvo_reflow_v58: 找不到 `if _v570Dirty {`")
-    if i_blk > i_inv:
-        raise RuntimeError(
-            "verify_kvo_reflow_v58: 顺序错 —— invalidateLayout 写在 "
-            "`if _v570Dirty {` **之前**\n"
-            "  那样每帧都会重排(稳态也排) ⇒ 掉帧加重, 且与纠偏不同源。")
-    _ln_start = t.rfind("\n", 0, i_blk) + 1
-    _indent = t[_ln_start:i_blk]
-    if _indent.strip():
-        raise RuntimeError(
-            "verify_kvo_reflow_v58: `if _v570Dirty {` 不在行首(缩进异常) —— "
-            "块边界判据依赖行首缩进, 锚点已漂移")
-    i_end = -1
-    for _ln in t[i_inv:].split("\n"):
-        if _ln.startswith(_indent + "}"):
-            i_end = i_inv + len(_ln)
+            "verify_kvo_reflow_v58: 剥注释后行数变了(%d → %d) —— "
+            "行级定位的前置条件被破坏, 请检查 v58 段是否引入了跨行块注释"
+            % (len(_raw_lines), len(_lines)))
+
+    _i_blk = _i_inv = _i_end = -1
+    for _k, _ln in enumerate(_lines):
+        if _ln.strip() == "if _v570Dirty {":
+            _i_blk = _k
             break
-    if i_end == -1:
+    if _i_blk < 0:
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: 找不到 `if _v570Dirty {`\n"
+            "  ★必须**整行等于**该串 —— 子串匹配会放过 `if _v570Dirty && x`"
+            "这种把纠偏与别的条件绑在一起的写法(块边界随即不再是它)")
+    _indent = _lines[_i_blk][:len(_lines[_i_blk]) - len(_lines[_i_blk].lstrip())]
+    for _k in range(_i_blk + 1, len(_lines)):
+        # ★按**行首缩进**收尾(纪律53)★ —— 按文本找收尾会被注释里出现的
+        #   `}` 误导, 也会被多余 `{` 带偏 ⇒ 判据假绿。
+        if _lines[_k].startswith(_indent + "}"):
+            _i_end = _k
+            break
+    if _i_end < 0:
         raise RuntimeError(
             "verify_kvo_reflow_v58: 找不到 `_v570Dirty` 块的收尾(按缩进 %r 找)"
             % _indent)
-    if i_inv > i_end:
-        raise RuntimeError(
-            "verify_kvo_reflow_v58: ★核心错★ invalidateLayout 在 "
-            "`if _v570Dirty {` 块**之外**\n"
-            "  块外重排 = 每帧全量重排(掉帧);\n"
-            "  块内才正确: 只在 SwiftUI 真的推脏了宽度时才排。")
+    for _k in range(_i_blk, _i_end + 1):
+        if "layoutManager.invalidateLayout(" in _lines[_k]:
+            _i_inv = _k
+            break
 
-    # ---- 3. 签名必须与 v28 段已验证的形式一致 ----
-    _sig = ("layoutManager.invalidateLayout(\n"
-            "                        forCharacterRange: NSMakeRange(0, self.textStorage.length),\n"
-            "                        actualCharacterRange: nil)")
-    if _sig not in t:
+    if _i_inv < 0:
+        # 区分「本来就没写(F1=v57.1 的病)」与「写到块外去了(F2/F3)」
+        _elsewhere = any("layoutManager.invalidateLayout(" in _l
+                         for _l in _lines[_i_end + 1:_i_end + 400])
+        if _elsewhere:
+            raise RuntimeError(
+                "verify_kvo_reflow_v58: ★F2/F3★ invalidateLayout 不在 "
+                "`if _v570Dirty {` 块内\n"
+                "  块外 = 每帧全量重排(稳态也排) ⇒ 掉帧;\n"
+                "  块后 = 纠偏时还没排, 排版仍停在旧宽 ⇒ 与 v57.1 等价。")
         raise RuntimeError(
-            "verify_kvo_reflow_v58: invalidateLayout 签名与 v28 段已验证的合法形式\n"
-            "不一致(纪律4: 判据里只允许出现编译器已验证存在的 API)。\n"
-            "必须是:\n%s" % _sig)
+            "verify_kvo_reflow_v58: ★F1★ 纠偏块里没有 invalidateLayout ——\n"
+            "这正是 v57.1 的病: 只写 textContainer.size.width 而不重排,\n"
+            "容器宽改了但行碎片仍停在 390 那版, 下一趟读回又是 390。\n"
+            "  装机日志实证(04:32 段): 41.595 dirty=1 netW=358.0 纠偏执行了,\n"
+            "  41.598 kvoW=390.0 同一 tick 读回还是 390, needH 欠 128.3pt。")
 
-    # ---- 4. 不得引入额外几何写入(只许宽 + 重排) ----
-    _i_diag = t.find("[V58-REFLOW-DIAG]", i_seg)
-    if _i_diag == -1:
-        raise RuntimeError("verify_kvo_reflow_v58: 找不到诊断块")
-    _blk = t[i_seg:_i_diag]
-    import re as _re
-    _code = _re.sub(r"//[^\n]*", "",
-                    _re.sub(r"/\*.*?\*/", "", _blk, flags=_re.S))
-    for _ln in _code.split("\n"):
-        _m = _re.match(r"\s*([\w.]+)\s*=(?!=)", _ln)
+    # ---- 3. 实参必须是全量范围(与 v28 段已验证的形式一致) ----
+    # ★纪律4: 判据里只允许出现编译器已验证存在的 API 与实参形态★
+    _seg_inv = "\n".join(_lines[_i_inv:_i_end + 1])
+    if not _re.search(r"forCharacterRange:\s*NSMakeRange\(0,\s*"
+                      r"self\.textStorage\.length\),\s*"
+                      r"actualCharacterRange:\s*nil\)", _seg_inv):
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: 块内 invalidateLayout 的实参不是全量范围\n"
+            "  必须是 (0, textStorage.length) + actualCharacterRange: nil ——\n"
+            "  半截范围排不掉已被切断的行碎片(等于没排)。\n"
+            "  该签名与 v28 段的已验证调用逐字一致。")
+
+    # ---- 4. 不得引入额外几何写入(只许宽 + 节流器状态) ----
+    # ★切片到**日志点**为止, 不是到 [V58-REFLOW-DIAG] 标记★ —— 后者在块首
+    #   注释里、位置在 `do {` 之前, 拿它当上界会切出空段(诊断块整块漏检)。
+    # ★先定 do {, 再从它往后找日志点★ —— 反过来写(先扫日志点)会在遇到
+    #   `do {` 时提前 break, 留下 _i_log 还是**字符偏移**当行号用,
+    #   于是切片越过整个诊断块一路吃到 v57.0 的诊断段(本版实测:
+    #   报 "_V570Log.last 非白名单写入", 而那段根本不在 v58 范围内)。
+    _i_do = -1
+    for _k in range(_i_end + 1, len(_lines)):
+        if "do {" in _lines[_k]:
+            _i_do = _k
+            break
+    _i_log = -1
+    for _k in range(_i_do + 1, len(_lines)):
+        if 'NSLog("[V58-REFLOW]' in _lines[_k]:
+            _i_log = _k
+            break
+    if _i_do < 0 or _i_log < 0:
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: 诊断块结构异常(do@%s, 日志@%s) —— "
+            "找不到纠偏块之后、包裹诊断的 do { 或其内的日志点"
+            % (_i_do, _i_log))
+    for _ln in _lines[_i_do:_i_log + 1]:
+        # ★必须连**复合赋值**一起拦★ —— 只匹配裸 `=` 时
+        #   `self.frame.size.height += x` 会整条溜过去(reverse_v58.py S6 实测)。
+        _m = _re.match(r"\s*([\w.]+)\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)", _ln)
         if not _m:
             continue
         _lhs = _m.group(1)
+        # ★白名单**逐条列举**, 不用 endswith('.width'/'.height')** ——
+        #   那等于放行一切「对 .height/.width 的赋值」, 于是
+        #   `self.frame.size.height += x` 这类最该拦的写法会溜过去。
         if _lhs == "self.textContainer.size.width":
             continue
-        if _lhs.endswith(".width") or _lhs.endswith(".height"):
+        # v58 段自己的节流器状态(struct _V58Log)。
+        # ★不放行 _V570Log★ —— 切片已精确到 v58 段内, v57.0 的诊断段
+        #   根本不该出现在这里; 放行它等于给「切片越界」留后门。
+        if _lhs.startswith("_V58Log."):
             continue
         raise RuntimeError(
-            "verify_kvo_reflow_v58: v58 段内出现非白名单写入 `%s`(行: %s)\n"
-            "  v58 只许写 textContainer.size.width + 调 invalidateLayout,\n"
-            "  碰 frame/bounds/height 会推翻 v41/v45/v51 的成果。"
-            % (_lhs, _ln.strip()))
+            "verify_kvo_reflow_v58: v58 诊断块内出现非白名单写入 `%s`(行: %s)\n"
+            "  诊断必须零副作用; 就算它不是诊断, 碰 frame/bounds/height 也会\n"
+            "  推翻 v41/v45/v51 的成果。" % (_lhs, _ln.strip()))
+
+
+
+# ============================================================
+# v59: 关闭 SelectableMarkdownTextView 的容器宽跟随
+#      (widthTracksTextView) —— v31~v58 全部改动的天花板
+# ============================================================
+# 【机理(装机日志 v57.1, 04:32 段实证)】
+#   上游在 SelectableMarkdownTextView.init() 里设 widthTracksTextView=true,
+#   意思是「每趟布局, UIKit 从 frame 派生容器宽并覆盖之」。
+#   superview 宽 358(SwiftUI inset 16/16 已生效), 但本视图 frame 被上游
+#   布局撑到 390 ⇒ 派生容器宽 = 390 ⇒ 我们写的 358 每趟都被顶回。
+#   41.595 写入 358 → 41.598(3ms 后)读回 390 —— 「改了等于没改」的机制。
+# 【为什么不早改】v9/v9.1/v10 曾试图在容器层面(setSize swizzle)对抗,
+#   结果 44131 次死循环 + 508 次 10s 卡死; Guard 注释的结论是
+#   「要修就修产生它的源头」。关掉派生就是断源, 不是又一层对抗。
+# 【关掉之后谁管宽】v18 渲染段 + v57.0 KVO 纠偏(netW=cvW-32, 干净源);
+#   旋转/resize 后 KVO 亦会重写。v58 的重排随之真正生效。
+# 【范围红线】TableScrollView 的内联代码 TextView(表格用, frame 干净)
+#   保持 true —— 它不是病灶。两处 true 在上游逐字相同, 锚点靠
+#   super.init + isEditable 区分(仅 SelectableMarkdownTextView 有)。
+
+V59_ANCHOR_OLD = """        textContainer.widthTracksTextView = true
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+
+        super.init(frame: .zero, textContainer: textContainer)
+
+        isEditable = false"""
+
+V59_ANCHOR_NEW = """        textContainer.widthTracksTextView = false
+        // [V59-NOTRACK] ★v59 关闭容器宽跟随★ 上游默认 true = 每趟布局从
+        // frame 派生并覆盖容器宽。装机日志(v57.1, 04:32 段)实证: superview
+        // 宽 358(SwiftUI inset 16/16 已生效), 但本视图 frame 被上游布局撑到
+        // 390 => 派生容器宽 = 390 => v31~v58 每一版写入的净宽都在下一趟布局
+        // 被系统覆盖回 390(41.595 写 358 -> 41.598 读回 390) —— 这就是
+        // 「改了等于没改」的机制。关掉跟随后, 容器宽由 v18 渲染段与 v57.0 KVO
+        // 纠偏(netW = cvW - 32, 来自 collectionView 干净源)独占维护, v58 的
+        // invalidateLayout 重排随之生效。旋转/resize 后 KVO 亦会重写。
+        // 首帧兜底: NSTextContainer 默认 1e7 x 1e7(项目日志里的 1e7 污染值
+        // 就是它), 关掉跟随后的首趟排版会按 1e7 排成一行超长 —— 压一个
+        // 保守初值, KVO 纠偏一跑就以真实净宽覆盖。SetSizeGuard 仍兜底风暴。
+        textContainer.size = CGSize(width: 320, height: 2000)
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+
+        super.init(frame: .zero, textContainer: textContainer)
+
+        isEditable = false"""
+
+
+def fix_md_notrack_v59(t):
+    """v59 注入: 只改 SelectableMarkdownTextView.init() 那一处。
+
+    幂等: 产物里已有 [V59-NOTRACK] 时原样返回。
+    锚点失配时**报错**而不是静默跳过 —— 上游若改了 init 结构, 静默跳过
+    会让「看似修复实则没进包」的历史重演(v31~v58 最大的教训)。
+    """
+    if "[V59-NOTRACK]" in t:
+        return t
+    if V59_ANCHOR_OLD not in t:
+        raise RuntimeError(
+            "fix_md_notrack_v59: SelectableMarkdownTextView.init() 的锚点没找到 ——\n"
+            "  期望(上游原文):\n%s\n"
+            "  上游可能改了 init() 结构; 也有可能锚点撞上了 TableScrollView 的"
+            "convenience init —— 两处 true 逐字相同, 锚点必须靠 super.init + "
+            "isEditable 区分。" % V59_ANCHOR_OLD)
+    # 防呆: 若上游出现第二处同形 init(两个都在), 只允许替换一次
+    n = t.count(V59_ANCHOR_OLD)
+    if n != 1:
+        raise RuntimeError(
+            "fix_md_notrack_v59: 锚点出现 %d 次(应为 1) —— "
+            "上游出现了第二处 SelectableMarkdownTextView 同形 init, "
+            "需要人工确认改哪处。" % n)
+    return t.replace(V59_ANCHOR_OLD, V59_ANCHOR_NEW, 1)
+
+
+def verify_md_notrack_v59(t):
+    """v59 判据: 五层。
+
+    1. [V59-NOTRACK] 标记在位
+    2. 标记所在段必须真的是 SelectableMarkdownTextView.init()
+       (其后紧跟 isEditable = false —— 这是该 init 的指纹,
+        TableScrollView 的 convenience init 没有这一段)
+    3. 首帧兜底在位(容器初值 320, 不是 1e7 —— 否则首趟排版排成一行超长)
+    4. 全文件 widthTracksTextView = true 恰好 1 处(TableScrollView 保留)。
+       ★这一层同时是范围红线: 0 处 = 顺手把表格那处也改了 = 范围失控(v56.6 纪律)
+    5. 全文件 widthTracksTextView = false 恰好 2 处(codeTextView 的 v4 +
+       本版)。0 处 = 注入没生效; >2 = 有人在别处也关了, 需要登记。
+    """
+    if "[V59-NOTRACK]" not in t:
+        raise RuntimeError("verify_md_notrack_v59: 缺 [V59-NOTRACK] 标记")
+
+    i = t.find("[V59-NOTRACK]")
+    tail = t[i:i + 3000]
+    if "isEditable = false" not in tail:
+        raise RuntimeError(
+            "verify_md_notrack_v59: 标记之后 3000 字符内没有 isEditable = false ——\n"
+            "  [V59-NOTRACK] 不在 SelectableMarkdownTextView.init() 里。\n"
+            "  这正是 v46「探针装错类」的形态: 标记在、判据绿、测的全是别的东西。")
+    if "textContainer.size = CGSize(width: 320" not in tail:
+        raise RuntimeError(
+            "verify_md_notrack_v59: 缺首帧兜底(容器初值 320) ——\n"
+            "  NSTextContainer 默认 1e7 x 1e7, 关掉跟随后的首趟排版会按 1e7\n"
+            "  排成一行超长(项目日志里的 1e7 污染值就是它)。")
+    n_true = t.count("widthTracksTextView = true")
+    if n_true != 1:
+        raise RuntimeError(
+            "verify_md_notrack_v59: 全文件「跟随宽」出现 %d 处, 应为 1 处 ——\n"
+            "  TableScrollView 的内联代码 TextView(表格用, frame 干净)必须保持 true。\n"
+            "  0 处 = 顺手把表格那处也改了 = 范围失控(v56.6 纪律);\n"
+            "  >1 处 = 上游加了新视图, 需要逐个确认是不是病灶再登记。" % n_true)
+    n_false = t.count("widthTracksTextView = false")
+    if n_false != 2:
+        raise RuntimeError(
+            "verify_md_notrack_v59: 全文件「关闭跟随」出现 %d 处, 应为 2 处 ——\n"
+            "  codeTextView 的 v4 断言(防代码块 setSize 风暴) + 本版主视图。\n"
+            "  1 处 = 注入没生效; >2 处 = 别处新关了跟随但没登记, 风险未知。" % n_false)
 
 
 def fix_kvo_debt_v569(t):
@@ -12651,6 +12902,28 @@ def main():
 
     # ★顺序要点: v55-B 仍先注册(它是 v56-B 的锚点载体), v56-B 在其产物上改写,
     #   所以 v56 不能删掉 v55-B 的注册, 只在 v56 里把它放行。
+
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_md_notrack_v59,
+        "v59: 关闭主 Markdown 视图容器宽跟随 —— v31~v58 全部改动的真正天花板。"
+        "【上游代码 SelectableMarkdownTextView.init() 里 widthTracksTextView=true】"
+        "  意思是「容器宽每趟布局自动从 frame 派生」。装机日志(v57.1, 04:32 段)"
+        "  实证: SwiftUI inset 后 superview 宽 358, 但本视图 frame 被上游布局"
+        "  撑到 390 ⇒ 派生容器宽 = 390。"
+        "【为什么 30 多版全白改】v31~v58 每一版都在往容器里写 358, 而系统每趟"
+        "  布局都用 frame(390)把它覆盖回去: 41.595 写入 358 → 41.598(3 毫秒后)"
+        "  读回 390。NSTextContainerSetSizeGuard.m 的注释早就写着这个结论"
+        "  (v9/v9.1/v10 三版试图在容器层面对抗, 44131 次死循环 + 508 次 10s 卡死):"
+        "  「widthTracksTextView=true 时宽度由 UIKit 从 frame 派生, 要修就修源头」。"
+        "  本版就是修源头: 关掉派生。"
+        "【关掉之后谁管宽】v18 渲染段 + v57.0 KVO 纠偏(netW = cvW - 32, 来自 "
+        "  collectionView 干净源) 独占维护; 旋转/resize 后 KVO 亦会重写。"
+        "  v58 的 invalidateLayout 重排随之真正生效(此前排完又被覆盖回 390 的"
+        "  行碎片, 现在不会再被顶回)。"
+        "【首帧兜底】NSTextContainer 默认 1e7 x 1e7(项目日志里的 1e7 污染值就是"
+        "  它), 关掉跟随后的首趟排版会按 1e7 排成一行超长 —— 压一个保守初值 320, "
+        "  KVO 纠偏一跑就以真实净宽覆盖。"
+        "【范围红线】TableScrollView 的内联代码 TextView(表格用, frame 干净)保持 "
+        "  true 不动 —— 它不是病灶, 顺手改它就是范围失控(v56.6 纪律)。")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")

@@ -246,6 +246,7 @@ struct SoulSettingsView: View {
             TextEditor(text: $bodyText)
                 .frame(minHeight: 220)
                 .font(.system(.body, design: .monospaced))
+                .scrollContentBackground(.hidden)
             // SwiftUI's TextEditor has no native placeholder. We render
             // a greyed hint on top when the body is empty + not being
             // typed into. allowsHitTesting(false) so taps fall through
@@ -493,6 +494,7 @@ private struct SoulEmojiPickerSheet: View {
                 }
             }
         }
+        .presentationDetents([.height(380)])
     }
 
     /// Keep at most one emoji, preferring whatever the user just added.
@@ -533,6 +535,8 @@ private struct SoulIconEditing: ViewModifier {
                     icon = chosen
                 }
             }
+            .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem,
+                          matching: .images, photoLibrary: .shared())
             // Single-parameter form: the two-parameter `onChange` is iOS 17+,
             // and this target still deploys lower.
             .onChange(of: photoItem) { newItem in

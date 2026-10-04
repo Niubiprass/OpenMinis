@@ -39,13 +39,13 @@ struct MCPIntegrationsView: View {
                     .buttonStyle(.plain)
                     // [T-mcp-tools-refresh] Per-server tools entry: opens the
                     // sheet, which force-reconnects + re-pulls tools/list.
-                    .contextMenu (menuItems: {
+                    .contextMenu {
                         Button {
                             toolsServer = server
                         } label: {
                             Label(AppLocalized("Refresh Tools"), systemImage: "arrow.clockwise")
                         }
-                    })
+                    }
                     .swipeActions(edge: .leading, allowsFullSwipe: false) {
                         Button {
                             toolsServer = server

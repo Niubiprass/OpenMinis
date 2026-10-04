@@ -151,3 +151,4 @@ src/android/app/libs/rclone.aar
 # CPython write __pycache__/ next to it; those .pyc were committed once)
 __pycache__/
 *.pyc
+.upstream-ios/

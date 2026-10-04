@@ -18,7 +18,6 @@ import CoreLocation
         longitude lng: Double,
         completion: @escaping (NSDictionary?, Error?) -> Void
     ) {
-        guard #available(iOS 16.0, *) else { return }
         let location = CLLocation(latitude: lat, longitude: lng)
         let service = WeatherService.shared
 
