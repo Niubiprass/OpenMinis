@@ -6036,47 +6036,60 @@ V570_KVOCW_OLD = """            // [V41-POLLED] polluted 判据增加**高度维
 V570_KVOCW_NEW = """            // [V41-POLLED] polluted 判据增加**高度维度**: 宽度正常但高度欠账的帧
             // 也必须进修正分支, 不能被 `if !polluted { return }` 放过。
             let _hDebt = _v42Need > 1 && f.size.height + 0.5 < _v42Need
-            // [V570-KVOCW] ★v57.0 全部修复的支点★（装机日志交叉验证，见 edit() 理由）
+            let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
+                || _hDebt || _v570Dirty
+            if !polluted {"""
+
+
+# ★v57.1★ 装机日志(minis-2026-10-05.log, 03:19:00.543~.547)证明 v57.0
+#   的纠偏位置**仍然太晚**: 同一帧内六个既有探针与实际排版全部排在它之前。
+#   ⇒ 整块从「早退之前」上移到「cvW 就绪之后、KVO 闭包第一条业务语句」。
+V571_HEAD_OLD = """            guard cvW > 1 else { return }
+            // [V41-KVOPRE] 抢帧器抓到的**原始**值(脏)。见函数 docstring「诊断打穿pass 内 vs pass 后」。"""
+
+V571_HEAD_NEW = """            guard cvW > 1 else { return }
+            // [V570-KVOCW] ★v57.1 全部修复的支点★（装机日志逐毫秒证据，见 edit() 理由）
             //
-            // 【旧判据为什么漏】`polluted` 三项**全都只看 superview 的 frame**：
-            //     f.size.width > cvW + 1  ||  f.origin.x < -0.5  ||  _hDebt
-            // 而 SwiftUI 每帧推脏的是 **`textContainer.size.width`**（不是 superview.frame）。
-            // 装机日志(minis-2026-10-05 2.log)实测：
-            //     V41-KVOPRE sv=(16.0,188.7,358.0,994.3) cvW=390.0
-            //     V44-TEXTFRAME tvW=390.0 svW=358.0 tcW=390.0
-            // superview 宽 358 完全正常 ⇒ 三项全假 ⇒ `polluted = false`
-            // ⇒ `if !polluted { return }` **每帧早退** ⇒ 脏容器宽从 KVO 这条
-            // 路径永远没人纠正，只有 layoutSubviews 在事后纠 —— 而 KVO 闭包
-            // 里排版已经按 390 发生过一次（行尾多排/少排都算在这个宽上）。
-            // 旁证：`V41-KVOFIXH` 0 条、`LASTSANE` 0 条 ⇒ 修正分支一次没进过。
+            // 【v57.0 为什么不够 —— 同一帧逐毫秒对齐, 六个既有探针全排在纠偏之前】
+            // 装机日志 minis-2026-10-05.log, len=297 那一 tick（4ms 内）：
+            //   .543 V41-KVOPRE    sv=(16.0,79.7,358.0,297.7)
+            //   .544 V43-WIDTH     dirtyW=390.0 netW=358.0 dh=22.7
+            //   .545 V42-MISS      selfMeasured needH=409.7 tcW=358.0   <- 测高用 358(对)
+            //   .545 V41-KVOHEIGHT fixed svH=297.7 -> needH=409.7 debt=112.0
+            //   .545 [V45]         v18W=358 kvoW=390 laidW=-1 **usedH=258.7 needH=409.7**
+            //   .545 V44-TEXTFRAME tvW=390.0 svW=358.0 **tcW=390.0**
+            //   .546 V570-KVOCW    **dirty=1**  <- v57.0 的纠偏到这里才执行
+            //   .546 V50-PINW      tcW=358.0                            <- 纠偏成功
+            //   .547 V50-LAIDW     laidW=358.0 regrabbed=1
             //
-            // 【为什么必须在这里、而不是只依赖 layoutSubviews】
-            // 时间戳证明纠偏晚了整整一拍：
-            //     01:19:10.524  V44      tcW=390.0   <- KVO 闭包内
-            //     01:19:10.526  V50-PINW tcW=358.0   <- layoutSubviews 内已纠
-            // 同一帧 KVO 读 390、layout 读 358。而**渲染落屏用的是 KVO
-            // 那一刻的行碎片** ⇒ 用户看到的就是「每行右端被竖直切断」。
+            // ⇒ `usedH=258.7 needH=409.7` 差 151pt(≈6 行), 而这 151pt 正是
+            //   **落屏用的那份按 390 排的行碎片**。v57.0 把它纠回来了, 但
+            //   纠正发生在排版之后 ⇒ 屏幕仍然是按 390 排的那一版。
+            //   v57.0 的判据「纠偏行号 < 早退行号」是**真的通过了**, 但那个
+            //   顺序约束**太弱** —— 早退本身就在一帧的中段, 前面还有六条语句。
             //
-            // 【修法】把容器宽纳入 polluted, 且用**净宽**(cvW-32) 当目标:
-            // 1) 判据双向(abs>1)—— 任何非目标宽都算脏, 不只偏大;
-            // 2) 纠偏写在**早退之前**—— KVO 是本帧最早拿回控制权的点,
-            //    这里纠完, 后面 layoutSubviews 的 v47/v48/v50 只会看到已干净的
-            //    容器宽(它们是幂等纠偏, 已达标时零写入, 不产生额外排版);
-            // 3) 只写 textContainer.size.width, **不碰 frame/bounds/高度**,
-            //    所以不推翻 v41 的 KVO 补高、也不引入新的抢宽时机。
+            // 【v57.1 的顺序约束: 纠偏必须早于「本帧第一次用宽度做决策」】
+            //   排在最前的三个必须全在纠偏之后:
+            //     V43-WIDTH 声明行  (它读 _v43DirtyW = textContainer.size.width)
+            //     V42-MISS 调用行    (它 sizeThatFits 用 _v42TCW, 并刷新闩锁键 latchW)
+            //     V44-TEXTFRAME 行   (诊断落点; 它读到的 tcW 必须是纠偏**后**的值)
+            //   满足后, 本帧所有测高/排版/诊断都只看一个宽度 ⇒ 不再有两套几何。
             //
-            // 【为什么不会与 SwiftUI 形成竞争】这是**纠偏**不是抢宽:
-            // 目标是本帧由 superview 宽算出的权威净宽, 与 layoutSubviews 的
-            // _realW2 同源同值(v43 起两者都是 max(200, cvW-32)); 稳态下
-            // abs<=1 不写 ⇒ 零写入零排版。v13/v34 翻车是因为在 pass 外
-            // 无条件抢一个**第三方**宽度, 这里不是。
+            // 【为什么不碰 frame/bounds/高度】只写 textContainer.size.width:
+            //   不推翻 v41/v45 的 KVO 补高、不推翻 v51 的 frame 钉宽,
+            //   也不新增 pass 外的抢宽时机(v13/v34 翻车的形态)。
+            //
+            // 【为什么不会与 SwiftUI 竞争】这是**纠偏**不是抢宽: 目标宽度是
+            //   本帧由 superview 宽算出的权威净宽, 与 layoutSubviews 的
+            //   _realW2 同源同值(v43 起两者都是 max(200, cvW-32)); 稳态下
+            //   abs<=1 不写 ⇒ 零写入零排版。
             let _v570NetW = max(200.0, cvW - 32)
             let _v570Dirty = abs(self.textContainer.size.width - _v570NetW) > 1
             if _v570Dirty {
                 self.textContainer.size.width = _v570NetW
             }
             // [V570-KVODIAG] 纯诊断, 一行几何都不碰。装机后判定:
-            //   dirty=1 => 证实「KVO 早退前容器是脏的」= 本版假设成立
+            //   dirty=1 => 证实「KVO 闭包最前面容器是脏的」= 本版假设成立
             //   dirty=0 => 已是目标宽, 本版无事可做(则病根在别处)
             // 纪律42: 探针必须打在**被修改之前**的状态上, 所以此处用判据
             // 结果 _v570Dirty 表示"是否动过手", 不回读宽度冒充脏值
@@ -6089,12 +6102,10 @@ V570_KVOCW_NEW = """            // [V41-POLLED] polluted 判据增加**高度维
                     _V570Log.n &+= 1
                     NSLog("[V570-KVOCW] dirty=%d netW=%.1f svW=%.1f cvW=%.1f len=%d n=%u",
                           _v570Dirty ? 1 : 0, _v570NetW,
-                          f.size.width, cvW, _v42Len, _V570Log.n)
+                          f.size.width, cvW, self.textStorage.length, _V570Log.n)
                 }
             }
-            let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
-                || _hDebt || _v570Dirty
-            if !polluted {"""
+            // [V41-KVOPRE] 抢帧器抓到的**原始**值(脏)。见函数 docstring「诊断打穿pass 内 vs pass 后」。"""
 
 
 def fix_kvo_container_v570(t):
@@ -6125,23 +6136,60 @@ def fix_kvo_container_v570(t):
          tcW=390 时 30.6/52.8/53.0 ⇒ 按 390 排的行碎片留下的空壳。
        - 帧 1280 空白 → 1281「Minis」+loading 圈 → 1282 文字回来
          ⇒ 滑动中同步重排版，文字被清空重画 = 「滑动字消失」的直接来源。
+
+    ★v57.1 追加(装机日志 minis-2026-10-05.log 逐毫秒对齐, 第三次定位)★
+
+    v57.0 把纠偏放在 `if !polluted` 之前, 判据「纠偏行号 < 早退行号」
+    **真的通过了**, 但症状一字未改。原因是那个顺序约束**太弱**:
+    早退本身就在一帧的中段, 前面还有六条语句。len=297 那一 tick 实测:
+
+        .543 V41-KVOPRE     sv=(16.0,79.7,358.0,297.7)
+        .544 V43-WIDTH      dirtyW=390.0 netW=358.0 dh=22.7
+        .545 V42-MISS       selfMeasured needH=409.7 tcW=358.0
+        .545 V41-KVOHEIGHT  fixed svH=297.7 -> needH=409.7 debt=112.0
+        .545 [V45]          v18W=358 kvoW=390 laidW=-1 usedH=258.7 needH=409.7
+        .545 V44-TEXTFRAME  tvW=390.0 svW=358.0 tcW=390.0
+        .546 V570-KVOCW     dirty=1      <- v57.0 纠偏到这里才跑
+        .546 V50-PINW       tcW=358.0    <- 纠偏成功, 但排版已经发生
+        .547 V50-LAIDW      laidW=358.0 regrabbed=1
+
+    `usedH=258.7 needH=409.7` 差 151pt(≈6 行) = **落屏用的正是这份按
+    390 排的行碎片**。v57.0 把它纠回来了, 但纠正发生在排版**之后**。
+
+    ★同时, dirty=1(41 帧) 与 tcW=390(41 帧) **完全同集合**, dirty=0(12)
+    与 tcW=358(12) 完全同集合 ⇒ 纠偏的判据本身是对的、写入也执行了,
+    唯一的问题就是**晚了**。这两组读数是 v57.0 唯一被证实的部分。
+
+    ⇒ v57.1: 整块上移到 `guard cvW > 1` 之后、KVO 闭包第一条业务语句。
     """
     if "[V570-KVOCW]" in t:
         return t
+    if V571_HEAD_OLD not in t:
+        raise RuntimeError(
+            "fix_kvo_container_v570: KVO 闭包头部锚点没找到 ——\n"
+            "必须是 `guard cvW > 1 else { return }` 紧跟 [V41-KVOPRE] 注释那两行")
+    t = t.replace(V571_HEAD_OLD, V571_HEAD_NEW, 1)
     if V570_KVOCW_OLD not in t:
-        raise RuntimeError("fix_kvo_container_v570: polluted 早退锚点没找到")
+        raise RuntimeError(
+            "fix_kvo_container_v570: polluted 早退锚点没找到 ——\n"
+            "纠偏整块已插到闭包头部, 但 polluted 判据仍未并入 _v570Dirty")
     return t.replace(V570_KVOCW_OLD, V570_KVOCW_NEW, 1)
 
 
 def verify_kvo_container_v570(t):
-    """v57.0 判据: 六层。
+    """v57.1 判据: 八层（v57.0 六层 + 顺序约束升级为三层）。
 
     1. [V570-KVOCW] 标记在位
     2. **早退判据必须真的把 _v570Dirty 并进去**(整段逐字) —— 只加变量不用同样红
-    3. 纠偏必须写在 `if !polluted` **之前**(顺序错 = 又一次"判断在写入之后")
-    4. 纠偏必须**双向**(abs>1), 防退回单向 `>`
-    5. 必须有纯诊断 [V570-KVODIAG], 且用 dirty 标记而不是回读宽度
-    6. 旧的 [V570-BIDIR] 双向化修法必须**已移除**(它证明不了 390 的成因)
+    3. 纠偏必须**双向**(abs>1), 防退回单向 `>`
+    4. 必须有纯诊断 [V570-KVODIAG], 且用 dirty 标记而不是回读宽度
+    5. 旧的 [V570-BIDIR] 双向化修法必须**已移除**(它证明不了 390 的成因)
+    6. 净宽来源必须与 _realW2 同源(max(200.0, cvW-32))
+    7. ★v57.1★ 纠偏必须早于 `if !polluted`(Swift 编译期 use-before-declaration)
+    8. ★v57.1★ **纠偏必须早于本帧第一次用宽度做决策的三处**：
+       V43-WIDTH 声明行 / V42-MISS 的 sizeThatFits 调用行 / V44-TEXTFRAME 行。
+       这是 v57.0 漏掉的那一层 —— 它的「纠偏 < 早退」通过了，但纠偏
+       实际发生在六条语句之后，排版已经按脏宽发生过一次。
     """
     if "[V570-KVOCW]" not in t:
         raise RuntimeError("verify_kvo_container_v570: 找不到 [V570-KVOCW] 标记")
@@ -6187,6 +6235,43 @@ def verify_kvo_container_v570(t):
         raise RuntimeError(
             "verify_kvo_container_v570: 顺序错 —— 纠偏必须写在 `if !polluted` "
             "**之前**。写在之后 = 每次都早退, 一次都不会执行。")
+    # ★★v57.1 新增第 8 层: 纠偏必须早于「本帧第一次用宽度做决策」的四处 ★★
+    # v57.0 只约束了「纠偏 < 早退」, 那条约束**通过了**但太弱 —— 早退在
+    # 一帧的中段, 前面还有六条语句, 排版已经按脏宽发生过一次。装机日志
+    # (len=297 那一 tick) 证明: usedH=258.7 needH=409.7 差 151pt(≈6 行),
+    # 那 151pt 就是落屏用的按 390 排的行碎片。
+    # 三处锚点各自的作用:
+    #   V43 声明行 —— 它读 _v43DirtyW = textContainer.size.width
+    #   V42-MISS    —— 它 sizeThatFits 用 _v42TCW 并刷新闩锁键 latchW
+    #   V44         —— 诊断落点, 它读到的 tcW 必须是纠偏**后**的值
+    # ★锚点必须用「KVO 闭包第一条业务语句」(_v42Len 声明), 不能只用 V43 ★
+    #   判据第一版锚 V43 时, reverse S10 **漏过** —— 把纠偏插在
+    #   `let _v42TCW = _v43NetW` 之后、V43 声明之前时, 写入行号只比 V43
+    #   早 2 行, `i_write > _i_a` 不成立。但那个位置**仍然是错的**:
+    #   V41-KVOPRE 诊断与 _v42Len/_v42Now 声明都还在纠偏之前。
+    for _anchor, _why in (
+            ("let _v42Len = self.textStorage.length",
+             "KVO 闭包第一条业务语句(_v42Len 声明)"),
+            ("let _v43DirtyW = self.textContainer.size.width",
+             "V43-WIDTH 声明行(它在此读脏宽并算 dh)"),
+            ("CGSize(width: _v42TCW, height: .greatestFiniteMagnitude)).height",
+             "V42-MISS 的 sizeThatFits 调用行(它用此宽测高并刷新闩锁键)"),
+            ("[V44-TEXTFRAME]", "V44-TEXTFRAME 诊断行(它读到的 tcW 必须已纠偏)"),
+    ):
+        _i_a = t.find(_anchor)
+        if _i_a == -1:
+            raise RuntimeError(
+                "verify_kvo_container_v570: 顺序锚点缺失 —— %s\n"
+                "找不到: %s" % (_why, _anchor))
+        if i_write > _i_a:
+            raise RuntimeError(
+                "verify_kvo_container_v570: ★v57.1 顺序错★ 纠偏写在 %s **之后**\n"
+                "  纠偏行号 %d > 锚点行号 %d\n"
+                "  v57.0 只约束了「纠偏 < 早退」, 那条通过了但太弱: 早退在\n"
+                "  一帧的中段, 前面还有六条语句, 排版已按脏宽发生过一次。\n"
+                "  装机日志(len=297): usedH=258.7 needH=409.7 差 151pt(≈6 行),\n"
+                "  那 151pt 正是落屏用的按 390 排的行碎片。"
+                % (_why, i_write, _i_a))
     if "[V570-KVODIAG]" not in t:
         raise RuntimeError("verify_kvo_container_v570: 缺 [V570-KVODIAG] 纯诊断")
     if "[V570-KVOCW] dirty=%d netW=" not in t:
@@ -12240,7 +12325,46 @@ def main():
     #   只在容器偏大时改。日志证明它触发过 75 次, 却仍留下 390。
     #   => 病不在「有没有写纠正」, 在**判据只覆盖半个方向** +
     #     「写的位置在 pass 末尾, 而 SwiftUI 每个 pass 都会推回来」。
+    # ★★ v57.1 —— v57.0 装机后症状一字未改, 判据全绿, 第三次定位 ★★
+    # 装机日志 minis-2026-10-05.log(647KB) 逐毫秒对齐, len=297 那一 tick:
+    #   .543 V41-KVOPRE     sv=(16.0,79.7,358.0,297.7)
+    #   .544 V43-WIDTH      dirtyW=390.0 netW=358.0 dh=22.7
+    #   .545 V42-MISS       selfMeasured needH=409.7 tcW=358.0  <- 测高用 358(对)
+    #   .545 V41-KVOHEIGHT  fixed svH=297.7 -> needH=409.7 debt=112.0
+    #   .545 [V45]          v18W=358 kvoW=390 laidW=-1 **usedH=258.7 needH=409.7**
+    #   .545 V44-TEXTFRAME  tvW=390.0 svW=358.0 **tcW=390.0**
+    #   .546 V570-KVOCW     **dirty=1**   <- v57.0 纠偏到这里才跑
+    #   .546 V50-PINW       tcW=358.0     <- 纠偏成功, 但排版已经发生
+    #   .547 V50-LAIDW      laidW=358.0 regrabbed=1
+    # ⇒ usedH=258.7 needH=409.7 差 **151pt(≈6 行)**, 那 151pt 正是
+    #   **落屏用的按 390 排的行碎片**。v57.0 把它纠回来了, 但纠正在排版**之后**。
+    # ★v57.0 的顺序判据「纠偏行号 < 早退行号」**真的通过了** —— 它只是**太弱**:
+    #   早退本身就在一帧的中段, 前面还有六条语句。
+    # ★两条同集合读数是 v57.0 唯一被证实的部分:
+    #   dirty=1 41 帧 <-> tcW=390 41 帧(完全同集合)
+    #   dirty=0 12 帧 <-> tcW=358 12 帧(完全同集合)
+    #   ⇒ 判据本身对、写入也执行了, 唯一问题是**晚了**。
+    # ⇒ v57.1: 整块上移到 `guard cvW > 1` 之后、闭包第一条业务语句之前。
     edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_container_v570,
+        "v57.1: v57.0 纠偏**位置**错了 —— 排在 V43/V42MISS/V44 之后, "
+        "排版已按脏宽发生一次。装机日志逐毫秒对齐(len=297): "
+        ".545 V45 usedH=258.7 needH=409.7 差 151pt(≈6 行)=落屏用的按 390 排的行碎片; "
+        ".546 V570-KVOCW dirty=1 <- 纠偏才跑; .546 V50-PINW tcW=358 <- 已太晚。"
+        "★v57.0 判据『纠偏 < 早退』**通过了但太弱**(早退在帧中段, 前面六条语句)。"
+        "【旁证: 唯一被证实的部分】dirty=1(41帧) <-> tcW=390(41帧) 完全同集合, "
+        "dirty=0(12) <-> tcW=358(12) 也完全同集合 ⇒ 判据对、写入执行了, 只是晚。"
+        "【修法】整块上移到 KVO 闭包最前(guard cvW 之后第一条业务语句之前), "
+        "让本帧所有测高/排版/诊断都只看一个宽度。判据用 abs(双向)。"
+        "**只写 textContainer.size.width**, 不碰 frame/bounds/高度 "
+        "⇒ 不推翻 v41/v45 补高与 v51 钉宽。"
+        "【判据八层, 第8层是新的】前七层同 v57.0, 第8层: 纠偏必须早于**四处** "
+        "_v42Len 声明(闭包第一条业务语句)/V43 读脏宽/V42-MISS 测高/V44 诊断。"
+        "★锚点必须用 _v42Len 不能只用 V43: 锚 V43 时 reverse S10 漏过"
+        "(插在 _v42TCW 之后、V43 之前只早 2 行, 但那个位置语义上仍然错)。"
+        "【反向 12 条, 新增 S10/S11/S12】S10 = **v57.0 的真实位置**, "
+        "v57.0 判据对它完全放行, 是本版核心回归。"
+        "————————————————————————————"
+        "［以下为 v57.0 原记录, 保留以便对照被推翻的诊断］"
         "v57.0: 治「每行右端被竖直切断」+「滑动时文字整块消失」。"
         "★★★ 根因 = 装机日志时间戳 + 录屏逐帧交叉验证, 不是推断 ★★★"
         "【录屏 128s 抽 1924 帧】每行右端被**同一条固定竖直线**切断"

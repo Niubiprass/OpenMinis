@@ -1702,20 +1702,41 @@ jobs:
           #   旁证: `V41-KVOFIXH` 0 条、LASTSANE 0 条 ⇒ 修正分支一次没进过。
           #   而渲染落屏用的正是 KVO 那一刻的行碎片 ⇒ 用户看到右侧丢字。
           #
-          # 【修法】把容器宽并入 polluted, 目标净宽 max(200, cvW-32)
-          #   (与 layoutSubviews 的 _realW2 同源同值), 纠偏写在**早退之前**:
-          #   KVO 是本帧最早拿回控制权的点; 纠完后 layoutSubviews 的
-          #   v47/v48/v50 只看到已干净的容器宽(幂等, 稳态零写入)。
-          #   判据用 abs(双向)。**只写 textContainer.size.width**,
-          #   不碰 frame/bounds/高度 ⇒ 不推翻 v41/v45 补高与 v51 钉宽。
+          # 【v57.0 修法】把容器宽并入 polluted, 目标净宽 max(200, cvW-32)
+          #   (与 layoutSubviews 的 _realW2 同源同值), 纠偏写在**早退之前**。
+          #   ★但 v57.0 装机后症状一字未改, 判据全绿 —— 顺序约束太弱。
           #
-          # 【9 条 sabotage, 四条特别重要】
+          # 【★v57.1 真正的修法: 纠偏整块上移到 KVO 闭包最前 ★】
+          #   装机日志 minis-2026-10-05.log, len=297 那一 tick(4ms 内):
+          #     .543 V41-KVOPRE     sv=(16.0,79.7,358.0,297.7)
+          #     .544 V43-WIDTH      dirtyW=390.0 netW=358.0 dh=22.7
+          #     .545 V42-MISS       selfMeasured needH=409.7 tcW=358.0
+          #     .545 V41-KVOHEIGHT  fixed svH=297.7 -> needH=409.7 debt=112.0
+          #     .545 [V45]          v18W=358 kvoW=390 laidW=-1 usedH=258.7 needH=409.7
+          #     .545 V44-TEXTFRAME  tvW=390.0 svW=358.0 tcW=390.0
+          #     .546 V570-KVOCW     **dirty=1**  <- v57.0 纠偏到这里才跑
+          #     .546 V50-PINW       tcW=358.0     <- 纠偏成功, 但排版已发生
+          #     .547 V50-LAIDW      laidW=358.0 regrabbed=1
+          #   ⇒ usedH=258.7 needH=409.7 差 **151pt(≈6 行)**, 那 151pt 就是
+          #     **落屏用的按 390 排的行碎片**。v57.0 纠回来了但太晚。
+          #   旁证: dirty=1(41 帧) 与 tcW=390(41 帧) **完全同集合**,
+          #     dirty=0(12) 与 tcW=358(12) 也完全同集合
+          #     ⇒ 判据本身对、写入也执行了, 唯一问题是**晚了**。
+          #   ⇒ v57.1: 整块移到 `guard cvW > 1` 之后、闭包第一条业务语句之前。
+          #     判据用 abs(双向)。**只写 textContainer.size.width**,
+          #     不碰 frame/bounds/高度 ⇒ 不推翻 v41/v45 补高与 v51 钉宽。
+          #
+          # 【12 条 sabotage, 六条特别重要】
           #   S1 纠偏整块挪到 `if !polluted` 之后 ⇒ 声明也晚于引用,
           #      Swift 编译期 use-before-declaration; 且运行时每帧早退。
           #   S2 polluted 漏掉 _v570Dirty ⇒ 纠偏照做但仍被早退跳过。
           #   S4 净宽改成从 tcW 自己算 ⇒ 恒等于脏宽 ⇒ 判据恒假。
           #   S7 诊断回读 tcW 冒充脏值 ⇒ 语法合法、编译通过,
           #      但纠正之后回读恒等于 netW ⇒ **永远打「全绿」骗人**。
+          #   S10 把纠偏挪回 V43 之后(= **v57.0 的真实位置**) ⇒ 必须拦下。
+          #      这条是 v57.1 的核心回归: v57.0 的判据对它**完全放行**。
+          #   S11 纠偏挪到 V44 之后 ⇒ 诊断先看到脏宽。
+          #   S12 把 V43 锚点改成假满足 ⇒ 逼判据三处全查, 不许只查一处。
           if grep -q "fix_kvo_container_v570" "$SCRIPT_DIR/ios15_fallback.py" ; then
             _f570="src/ios/Views/Chat/SelectableMarkdownView.swift"
             # 第1层: 标记在位
@@ -1736,19 +1757,37 @@ jobs:
             _v570_rw=$(grep -nF 'self.textContainer.size.width = _v570NetW' "$_f570" | head -1 | cut -d: -f1 || true)
             _v570_rg=$(awk '/let _v570Dirty = abs\(self\.textContainer/{f=1} f&&/if !polluted \{/{print NR; exit}' "$_f570" || true)
             _v570_rd=${_v570_rd:-0}; _v570_rw=${_v570_rw:-0}; _v570_rg=${_v570_rg:-0}
+            # ★★v57.1 第8层★★ 纠偏必须早于「本帧第一次用宽度做决策」的四处。
+            # v57.0 只约束了「纠偏 < 早退」, 那条**通过了**但太弱: 早退在
+            # 一帧的中段, 前面还有六条语句, 排版已按脏宽发生过一次。
+            # 装机日志(len=297 那一 tick, minis-2026-10-05.log):
+            #   .545 V45 v18W=358 kvoW=390 laidW=-1 usedH=258.7 needH=409.7
+            # 那 151pt(≈6 行)就是落屏用的按 390 排的行碎片, 纠偏发生在它之后。
+            # ★锚点用「KVO 闭包第一条业务语句」而非 V43 声明行: 锚 V43 时
+            #   reverse S10 漏过(插在 _v42TCW 之后、V43 之前只早 2 行)。
+            _v570_ra=$(grep -nF 'let _v42Len = self.textStorage.length' "$_f570" | head -1 | cut -d: -f1 || true)
+            _v570_r43=$(grep -nF 'let _v43DirtyW = self.textContainer.size.width' "$_f570" | head -1 | cut -d: -f1 || true)
+            _v570_r42m=$(grep -nF 'CGSize(width: _v42TCW, height: .greatestFiniteMagnitude)).height' "$_f570" | head -1 | cut -d: -f1 || true)
+            _v570_r44=$(grep -nF '// [V44-TEXTFRAME]' "$_f570" | head -1 | cut -d: -f1 || true)
+            _v570_ra=${_v570_ra:-0}; _v570_r43=${_v570_r43:-0}
+            _v570_r42m=${_v570_r42m:-0}; _v570_r44=${_v570_r44:-0}
             if [ "$_v570_mark" -ge 1 ] && [ "$_v570_dirt" = "1" ] && [ "$_v570_poll" -ge 1 ] \
                && [ "$_v570_net" = "1" ] && [ "$_v570_diag" -ge 1 ] && [ "$_v570_old" = "0" ] \
                && [ "$_v570_rd" -gt 0 ] && [ "$_v570_rw" -gt "$_v570_rd" ] \
-               && [ "$_v570_rg" -gt 0 ] && [ "$_v570_rw" -lt "$_v570_rg" ]; then
+               && [ "$_v570_rg" -gt 0 ] && [ "$_v570_rw" -lt "$_v570_rg" ] \
+               && [ "$_v570_ra" -gt 0 ] && [ "$_v570_rw" -lt "$_v570_ra" ] \
+               && [ "$_v570_r43" -gt 0 ] && [ "$_v570_rw" -lt "$_v570_r43" ] \
+               && [ "$_v570_r42m" -gt 0 ] && [ "$_v570_rw" -lt "$_v570_r42m" ] \
+               && [ "$_v570_r44" -gt 0 ] && [ "$_v570_rw" -lt "$_v570_r44" ]; then
               if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
                  python3 "$SCRIPT_DIR/ios15_verify/reverse_v570.py" ; then
-                echo "✅ v57.0 就位 (反向 9 条全拦: 纠偏位置/polluted漏并/单向/净宽不同源/容差放大/诊断回读/复活旧假修法/只判不写)"
+                echo "✅ v57.1 就位 (反向 12 条全拦: 纠偏四处在 V42Len/V43/V42MISS/V44 之前/polluted漏并/单向/净宽不同源/容差放大/诊断回读/复活旧假修法/只判不写)"
               else
-                echo "::error::v57.0 判据被绕过 —— 容器宽纠偏没并进 polluted(每帧早退), 或纠偏写在早退之后, 或诊断回读宽度冒充脏值(永远全绿)"
+                echo "::error::v57.1 判据被绕过 —— 容器宽纠偏没并进 polluted(每帧早退), 或纠偏写得太晚(排在 V42Len/V43/V42MISS/V44 之后 ⇒ 本帧已按脏宽排版), 或诊断回读宽度冒充脏值(永远全绿)"
                 exit 1
               fi
             else
-                echo "::error::v57.0 产物不合规 mark=$_v570_mark dirty=$_v570_dirt poll=$_v570_poll net=$_v570_net diag=$_v570_diag old=$_v570_old readAt=$_v570_rd writeAt=$_v570_rw guardAt=$_v570_rg (期望 >=1,1,>=1,1,>=1,0,>0,rd<rw<rg)"
+                echo "::error::v57.1 产物不合规 mark=$_v570_mark dirty=$_v570_dirt poll=$_v570_poll net=$_v570_net diag=$_v570_diag old=$_v570_old readAt=$_v570_rd writeAt=$_v570_rw guardAt=$_v570_rg v42LenAt=$_v570_ra v43At=$_v570_r43 v42MissAt=$_v570_r42m v44At=$_v570_r44 (期望 >=1,1,>=1,1,>=1,0,>0,rd<rw<rg 且 rw<ra/r43/r42m/r44)"
                 exit 1
             fi
           else

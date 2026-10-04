@@ -127,6 +127,36 @@ def judge(t):
     if 'max(200.0, cvW - 32)' not in t[k:k + 60]:
         return False, ('净宽不是 max(200.0, cvW-32), 与 _realW2 不同源 '
                        '⇒ 又一次拉锯')
+
+    # ★★v57.1 新增: 纠偏必须早于「本帧第一次用宽度做决策」的三处 ★★
+    # v57.0 只约束「纠偏 < 早退」, 那条**通过了**但太弱 —— 早退在一帧的
+    # 中段, 前面还有六条语句, 排版已按脏宽发生过一次。装机日志(len=297):
+    #   .545 V45 v18W=358 kvoW=390 laidW=-1 usedH=258.7 needH=409.7
+    # 那 151pt(≈6 行)就是落屏用的按 390 排的行碎片, 纠偏发生在它之后。
+    #
+    # ★锚点必须用「KVO 闭包第一条业务语句」而不是 V43 声明行 ★
+    #   本条判据第一版锚 V43(`let _v43DirtyW = ...`), 结果 reverse S10
+    #   **漏过** —— 因为把纠偏插在 `let _v42TCW = _v43NetW` 之后、V43 声明
+    #   之前时, 写入行号只比 V43 早 2 行, `i_w > i_a` 不成立。
+    #   但那个位置**仍然是错的**: V41-KVOPRE 诊断、`_v42Len`/`_v42Now` 声明、
+    #   以及 V43 整块注释都还在纠偏之前, 语义上纠偏并没有到「闭包最前」。
+    #   ⇒ 锚点上移到 `_v42Len`(闭包第一条业务语句), 语义才与 v57.1 一致。
+    for _anchor, _why in (
+            ('let _v42Len = self.textStorage.length',
+             'KVO 闭包第一条业务语句(_v42Len 声明)'),
+            ('let _v43DirtyW = self.textContainer.size.width',
+             'V43-WIDTH 声明行(它在此读脏宽并算 dh)'),
+            ('CGSize(width: _v42TCW, height: .greatestFiniteMagnitude)).height',
+             'V42-MISS 的 sizeThatFits 调用行(它用此宽测高并刷新闩锁键)'),
+            ('[V44-TEXTFRAME]',
+             'V44-TEXTFRAME 诊断行(它读到的 tcW 必须已纠偏)'),
+    ):
+        i_a = t.find(_anchor)
+        if i_a < 0:
+            return False, '顺序锚点缺失 —— %s' % _why
+        if i_w > i_a:
+            return False, ('★v57.1 顺序错★ 纠偏写在「%s」之后 ⇒ '
+                           '本帧已按脏宽排版/测高/落盘, 纠偏太晚' % _why)
     return True, ''
 
 
@@ -218,6 +248,53 @@ def s9_drop_write(t):
     return out, '只判不写'
 
 
+# ★★v57.1 三条: 专测新位置约束 ★★
+# 这三条模拟的正是 v57.0 装机后的真实失败形态 —— 判据全绿、症状原样。
+def s10_move_back_before_v43(t):
+    """把纠偏整块挪回 V43 之后（= v57.0 的位置）。
+
+    ★这是 v57.0 **真实**的形态：纠偏在 `if !polluted` 之前，v57.0 的
+      「纠偏 < 早退」判据**真的通过了**，但它排在 V43/V42-MISS/V44 之后，
+      排版已按脏宽发生一次 ⇒ 屏幕仍是按 390 排的那一版。
+      本条是整个 v57.1 的核心回归: 它必须被拦下。
+    """
+    i = t.find(DIRTY)
+    if i < 0:
+        return t, '锚点缺失'
+    out = t[:i] + t[i + len(DIRTY):]
+    # 挪到 V43-WIDTH 声明行之前
+    a = out.find('let _v43DirtyW = self.textContainer.size.width')
+    if a < 0:
+        return t, 'V43 锚点缺失'
+    # 往回退到该行所属语句块的缩进起点
+    ls = out.rfind('\n', 0, a) + 1
+    return out[:ls] + DIRTY + '\n' + out[ls:], '纠偏挪到 V43 之后(= v57.0 位置)'
+
+
+def s11_move_after_v44(t):
+    """把纠偏整块挪到 V44-TEXTFRAME 诊断之后 —— 诊断先看到脏宽。"""
+    i = t.find(DIRTY)
+    if i < 0:
+        return t, '锚点缺失'
+    out = t[:i] + t[i + len(DIRTY):]
+    a = out.find('// [V44-TEXTFRAME]')
+    if a < 0:
+        return t, 'V44 锚点缺失'
+    ls = out.rfind('\n', 0, a) + 1
+    return out[:ls] + DIRTY + '\n' + out[ls:], '纠偏挪到 V44 之后'
+
+
+def s12_weaken_to_v42miss_only(t):
+    """只守住 V42-MISS 一处，放弃 V43/V44 —— 制造"部分守住"的假绿。
+
+    ★这类"改了一处漏了两处"是最常见的漏网形态：判据只要锚点选得够多
+      就容易让人误以为全覆盖。本条逼判据必须**三处全查**。
+    """
+    out = t.replace('let _v43DirtyW = self.textContainer.size.width',
+                    'let _v43DirtyW = _v570NetW  // 假装已在纠偏段内', 1)
+    return out, '把 V43 锚点改成假满足(V43 仍在纠偏之后)'
+
+
 SABOTAGE = [
     ('BASE', s_base),
     ('S1 纠偏挪到早退之后', s1_move_after_guard),
@@ -229,12 +306,15 @@ SABOTAGE = [
     ('S7 诊断回读 tcW 冒充脏值', s7_readback_diag),
     ('S8 复活旧 BIDIR 假修法', s8_keep_old_bidir),
     ('S9 只判不写', s9_drop_write),
+    ('S10 纠偏挪到 V43 之后(=v57.0 位置)', s10_move_back_before_v43),
+    ('S11 纠偏挪到 V44 之后', s11_move_after_v44),
+    ('S12 V43 锚点改假满足', s12_weaken_to_v42miss_only),
 ]
 
 
 def main():
     print('=' * 62)
-    print('v57.0 反向测试（KVO 早退前纠偏容器宽）')
+    print('v57.1 反向测试（KVO 闭包最前纠偏容器宽）')
     print('=' * 62)
     prod, origin = build_product()
     print('产物来源: %s' % origin)
@@ -263,7 +343,7 @@ def main():
 
     n = len(SABOTAGE) - 1
     print('-' * 62)
-    print('v570 反向: %d 拦下, %d 漏过（共 %d 条 sabotage）' % (caught, passed_through, n))
+    print('v571 反向: %d 拦下, %d 漏过（共 %d 条 sabotage）' % (caught, passed_through, n))
     return 0 if passed_through == 0 else 1
 
 
