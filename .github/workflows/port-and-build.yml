@@ -1267,7 +1267,7 @@ jobs:
           #   而 v52 同一位置 0 个反引号, 所以它一直没事。
           # ⇒ 纪律: **判据「全绿」不等于脚本能跑**。判据是 python, 跑在
           #   它前后的 shell 才是真正执行体; 这次红的原因不在任何判据里,
-          #   �� v52/v53 判据本地全绿也照样红。
+          #   而 v52/v53 判据本地全绿也照样红。
           # ⇒ 修法: (1) echo 文案一律用直角引号「」, 禁用反引号;
           #        (2) 提交前必须 `bash -n` 过一遍每个 run 块。
           if python3 "$SCRIPT_DIR/ios15_verify/bash_syntax_check.py" \
@@ -1536,6 +1536,64 @@ jobs:
           ./deps/prepare_alpine_rootfs.sh
           sed -i '' 's/-miphoneos-version-min=[0-9.]*/-miphoneos-version-min=${{ env.DEPLOY_TARGET }}/; s/-mios-simulator-version-min=[0-9.]*/-mios-simulator-version-min=${{ env.DEPLOY_TARGET }}/' deps/build_rclone_ios.sh
           ./deps/build_rclone_ios.sh
+
+      # ★v56.4 新增: 产物级幂等门 ——
+      #   v56.4 本地复跑时踩到一个**一直存在**的洞:
+      #   fix_markdown_layout_reconcile 的锚点是
+      #       OLD = "attrs.size.height = fittingSize.height"
+      #   而它注入出去的段**末尾仍然含这一行**(这行就是最终赋值)。
+      #   于是第二次跑 OLD 仍在 -> 又注入一份 -> `var _ios15TkSum`
+      #   声明两次 ⇒ Swift invalid redeclaration ⇒ 编译失败。
+      #   为什么 CI 从没炸: CI 每次都是干净上游重建 + 只跑一遍,
+      #   永远碰不到第二遍。
+      #   ⇒ 纪律: 幂等必须**在产物层面真跑**才算验证过;
+      #     逐个函数静态看, 永远漏「锚点被自己包含」这一类。
+      #   ★注意本步的 src/ios 是**已移植产物**(fallback 前面已跑过),
+      #     所以第 1 轮等于「跑第 2 次」, 检测的是「判据能不能挡住再注入」。
+      #     脚本另外会扫最终产物的注入变量有无重复声明, 两道一起覆盖。
+      #     从干净上游跑第一遍的幂等, 由本地同一条命令验证:
+      #       python3 scripts/ios15_verify/check_idempotent_reapply.py \
+      #         scripts/ios15_fallback.py <干净上游>/src/ios 3
+      - name: "产物级幂等门 (连跑 3 遍, 逐字节比对)"
+        run: |
+          if python3 "$SCRIPT_DIR/ios15_verify/check_idempotent_reapply.py" \
+               "$SCRIPT_DIR/ios15_fallback.py" src/ios 3 ; then
+            echo "✅ 连续 3 轮 fallback 产物完全一致"
+          else
+            echo "❌ fallback 不幂等 —— 第二次跑会往产物里再插一份同样的段"
+            echo "   后果: var/let 重复声明 ⇒ Swift invalid redeclaration ⇒ 编译失败"
+            echo "   (CI 每次干净重建只跑一遍, 所以这个洞历史上从未在 CI 暴露;"
+            echo "    它是本地复跑验幂等时才撞出来的)"
+            echo "   修法: 判据要认**插入物自身**的标记, 别认锚点 ——"
+            echo "        注入段末尾若仍含自己的锚点, 「锚点仍在」恒为真 = 没判据"
+            exit 1
+          fi
+
+      # ★v56.4 新增: 编译前的 Swift 语法门禁 ——
+      #   run#138 教训: v56.3 只改了一行表达式, 前面 15 步断言全绿,
+      #   结果第 16 步 xcodebuild 才炸:
+      #       SelectableMarkdownView.swift:6703:52:
+      #       error: expected member name following '.'
+      #   根因: `\(type(of: cur).(String(describing:)))` ——
+      #   `type(of:)` 返回**元类型**, Swift 在元类型后接 `.` 会当成
+      #   「元类型的成员访问」, 于是 `.(` 不是构造器调用而是成员名。
+      #   正确形式: `String(describing: type(of: cur))`。
+      #   ⇒ 这类错没有任何编译过的代码可照抄, 只能机器拦。
+      #   ⇒ 且它就在**字符串插值内部**, 所以检查脚本必须「只剥注释、
+      #     保留字符串」—— 剥字符串等于把案发现场清空, 脚本成废品。
+      - name: "Swift 插值语法门禁 (run#135/#138 那类, 编译前 3 秒拦下)"
+        run: |
+          if python3 "$SCRIPT_DIR/ios15_verify/check_swift_interp_syntax.py" . ; then
+            echo "✅ 无「元类型后接构造器」/ C 风格转换"
+          else
+            echo "❌ 存在 run#138 那类 Swift 语法错 —— 编译 100% 会失败(exit 65),"
+            echo "   现在拦下比等 xcodebuild 报错快两个数量级"
+            echo "   形态1: 插值里 \(type(of: x).( ... )) / \(T.self.( ... ))"
+            echo "           修法: String(describing: type(of: x))"
+            echo "   形态2: Swift 侧 C 风格转换 (unsigned long long)x (run#135)"
+            echo "           修法: UInt64(x)"
+            exit 1
+          fi
 
       - name: "编译 App (不签名)"
         run: |

@@ -6700,7 +6700,13 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             var v: UIView? = raw
             var depth = 0
             while let cur = v, depth < 6 {
-                chain += "\(depth):\(type(of: cur).(String(describing:))) "
+                // ★类型名必须用 `String(describing:)` 包整个**元类型**,
+                //   不能写 `type(of: cur).(String(describing:))` ——
+                //   `type(of:)` 返回的是元类型(Any.Type), Swift 在它后面
+                //   接 `.` 会当成元类型成员访问, run#138 报
+                //   `error: expected member name following '.'`(6703:52)。
+                //   `String(describing: type(of: cur))` 才是正确形式。
+                chain += "\(depth):\(String(describing: type(of: cur))) "
                 v = cur.superview
                 depth += 1
             }

@@ -1436,6 +1436,18 @@ def fix_markdown_layout_reconcile(t):
     (主线程卡死)。遍历 contentView 子树里的 SelectableMarkdownTextView,
     累加其 TextKit 权威高度, 取与 SwiftUI 测量值的较大者作为最终高度,
     既修裁切又让两测量路径一致 -> 循环收敛。"""
+    # ★v56.4 补幂等判据(本段一直缺, 这次才暴露)——
+    #   锚点 OLD = "attrs.size.height = fittingSize.height", 而注入后的 NEW
+    #   **末尾仍然含这一行**(它就是最终赋值)。于是第二次运行:
+    #       OLD in t 仍为真 -> 又 replace 一次 -> 变量声明重复两份
+    #   后果: `var _ios15TkSum` 重复声明 ⇒ Swift 报
+    #         invalid redeclaration of '_ios15TkSum' ⇒ 编译失败。
+    #   这个洞一直在, 只是历史上从没在同一份产物上跑过第二遍;
+    #   v56.4 为了验幂等而复跑, 立刻踩中。
+    #   ⇒ 纪律: **注入段的末尾若仍含自己的锚点, 判据必须认「插入物自身」,
+    #     而不是认锚点**。锚点在插入后依然存在, 判据锚点 = 没有判据。
+    if "_ios15Reconciled" in t:
+        return t
     OLD = "        attrs.size.height = fittingSize.height"
     NEW = '''        // [IOS15-FIX] 以 TextKit 实测高度兜底, 修正 SwiftUI 排版路径
         // 少算一行导致的末行裁切 (日志实测 cellH=256 但 TextKit 实测 273 ->
@@ -6004,7 +6016,13 @@ BLOCK_V53_C2_REPORT = """    /// [V53-C2] 把当前高度欠账上报给宿主 `
             var v: UIView? = raw
             var depth = 0
             while let cur = v, depth < 6 {
-                chain += "\\(depth):\\(type(of: cur).(String(describing:))) "
+                // ★类型名必须用 `String(describing:)` 包整个**元类型**,
+                //   不能写 `type(of: cur).(String(describing:))` ——
+                //   `type(of:)` 返回的是元类型(Any.Type), Swift 在它后面
+                //   接 `.` 会当成元类型成员访问, run#138 报
+                //   `error: expected member name following '.'`(6703:52)。
+                //   `String(describing: type(of: cur))` 才是正确形式。
+                chain += "\\(depth):\\(String(describing: type(of: cur))) "
                 v = cur.superview
                 depth += 1
             }

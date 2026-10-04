@@ -49,6 +49,11 @@ MLL_REL = "src/ios/Agent/MessageList/MessageListLayout.swift"
 # 显式报出, 不能让判据在缺料的情况下「碰巧全绿」。
 INFRA_REL = "src/ios/Agent/MessageList/MessageListInfrastructure.swift"
 
+# 干净上游的 src/ios 路径(幂等门的基线)。CI 里拿不到 —— 那里 fallback
+# 已经跑过, 产物是移植过的, 自己拷自己当基线等于永远绿。
+# 所以本地必须显式指一份没被移植过的上游, 拿不到就 SKIP。
+UPSTREAM_IOS = os.environ.get("OPENMINIS_UPSTREAM_IOS", "")
+
 # (显示名, 脚本名, 传参约定, 额外需要的产物文件)
 CHECKS = [
     ("v41 判据",         "verify_v41.py",         "swift", []),
@@ -68,6 +73,12 @@ CHECKS = [
     ("v51 判据(三层)+12 sab", "ci_assert_v51.py",  "root",  []),
     ("v52 判据(三层)+15 sab", "ci_assert_v52.py",  "root",  []),
     ("v53 判据(三层)+14 sab", "ci_assert_v53.py",  "root",  [INFRA_REL]),
+    ("Swift 插值语法",
+     "check_swift_interp_syntax.py",                  "root",  []),
+    # 幂等门要一份**干净上游**做基线(自己拷自己没意义, 那样永远绿);
+    # 拿不到干净上游就 SKIP 并显式报出, 绝不假装通过。
+    ("产物级幂等(连跑3遍)",
+     "check_idempotent_reapply.py",                   "upstream", []),
 ]
 
 # 最近四代(v50/v51/v52/v53)的判据与反向测试是当前承重墙, 必须全绿。
@@ -82,6 +93,10 @@ MANDATORY = {
     "v47 反向", "v48 反向(20 条)",
     "v49 重文本+8 sab", "v49 作用域+12 sab",
     "v47 判据", "v48 判据", "v49 判据(四层)",
+    # ★v56.4: 这两项进 MANDATORY —— run#138 是「前面全绿、编译才炸」,
+    #   而 fix_markdown_layout_reconcile 的重复注入是「CI 从不炸、
+    #   因为 CI 永远只跑一遍」。它们都不能是可选项。
+    "Swift 插值语法", "产物级幂等(连跑3遍)",
 }
 
 
@@ -130,6 +145,9 @@ def main():
             missing += [r for r in extra if not os.path.exists(os.path.join(root, r))]
         elif mode == "swift" and not sp:
             missing.append(MD_REL)
+        elif mode == "upstream":
+            if not UPSTREAM_IOS or not os.path.isdir(UPSTREAM_IOS):
+                missing.append("干净上游 src/ios(设 OPENMINIS_UPSTREAM_IOS)")
         if missing:
             print("⏭  %-22s SKIP(产物缺 %s)" % (name, ", ".join(missing)))
             skip.append(name)
@@ -141,6 +159,9 @@ def main():
             argv.append(root)
         elif mode == "swift":
             argv.append(sp)
+        elif mode == "upstream":
+            argv += [os.path.join(HERE, "..", "ios15_fallback.py"),
+                     UPSTREAM_IOS, "3"]
         if fn == "reverse_v49_heavy.py":
             argv.append("--sab")
 
