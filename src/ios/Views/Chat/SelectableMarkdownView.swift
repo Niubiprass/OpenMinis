@@ -4754,7 +4754,7 @@ final class VideoAttachment: NSTextAttachment {
 
             var thumb: UIImage?
             do {
-                let (cgImage, _) = try await generator.image(at: .zero)
+                let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
                 thumb = UIImage(cgImage: cgImage)
             } catch {
                 // Fallback: no thumbnail
@@ -10188,7 +10188,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // becomes a measurable chunk of every updateUIView pass (and
         // updateUIView runs on each SwiftUI body re-evaluation, so it
         // multiplies during streaming and self-sizing measurement loops).
-        let imageMatches = markdown.ranges(of: /!\[([^\]]*)\]\(([^)]+)\)/)
+        let imageMatches = MinisRegex.ranges(markdown, "!\\[([^\\]]*)\\]\\(([^)]+)\\)")
         if !imageMatches.isEmpty {
             for match in imageMatches {
                 let matchStr = String(markdown[match])
@@ -10637,6 +10637,26 @@ struct SelectableMarkdownView: UIViewRepresentable {
     }
 
     @available(iOS 16.0, *)
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: SelectableMarkdownTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
         // Key the size cache on the SwiftUI binding length, not
