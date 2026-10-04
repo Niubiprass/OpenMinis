@@ -4694,7 +4694,7 @@ final class VideoAttachment: NSTextAttachment {
 
             var thumb: UIImage?
             do {
-                let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+                let (cgImage, _) = try await generator.image(at: .zero)
                 thumb = UIImage(cgImage: cgImage)
             } catch {
                 // Fallback: no thumbnail
@@ -6680,8 +6680,34 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
     /// 而 `deferred debt CONSUMED` 打印了 105 次 —— 纠正动作全部空转。
     ///
     /// `debt <= 0` 表示「已清」，通知 cell 把计数复位。
+    ///
+    /// ★v56.2 装机实测: `debt` 恒为 0.0 而 `DeferDebt OWED` 却有 424 条
+    ///   —— 说明这个上报**一次都没成功**。最可能是 `findCell()` 沿 superview
+    ///   链找不到 `SelfSizingCell`(view 嵌在 hosting 里, 链上没有 cell),
+    ///   而 `guard ... else { return }` 是**静默**的, 不打任何日志 ⇒
+    ///   「欠账从不上报」这件事在日志里完全不可见。
+    ///   ⇒ 必须加 [V53-LINK] 探针: 命中打 ok=1, 未命中打 ok=0 + 链上类型。
+    ///     没有这个探针, 下一个版本只能靠猜。
     func _v53ReportDebtToCell(_ debt: CGFloat) {
-        guard let cell = findCell() as? SelfSizingCell else { return }
+        struct _V53Link { static var n: UInt = 0; static var last: CFTimeInterval = 0 }
+        let now = CACurrentMediaTime()
+        let raw = superview
+        let hit = findCell() as? SelfSizingCell
+        _V53Link.n &+= 1
+        if now - _V53Link.last > 0.5 {
+            _V53Link.last = now
+            var chain = ""
+            var v: UIView? = raw
+            var depth = 0
+            while let cur = v, depth < 6 {
+                chain += "\(depth):\(type(of: cur).(String(describing:))) "
+                v = cur.superview
+                depth += 1
+            }
+            NSLog("[V53-LINK] ok=%d debt=%.1f depth=%d chain=%@",
+                  hit == nil ? 0 : 1, Double(debt), depth, chain)
+        }
+        guard let cell = hit else { return }
         cell.v53NotePendingDebt(debt)
     }
 
@@ -10096,7 +10122,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // becomes a measurable chunk of every updateUIView pass (and
         // updateUIView runs on each SwiftUI body re-evaluation, so it
         // multiplies during streaming and self-sizing measurement loops).
-        let imageMatches = MinisRegex.ranges(markdown, "!\\[([^\\]]*)\\]\\(([^)]+)\\)")
+        let imageMatches = markdown.ranges(of: /!\[([^\]]*)\]\(([^)]+)\)/)
         if !imageMatches.isEmpty {
             for match in imageMatches {
                 let matchStr = String(markdown[match])
@@ -10545,26 +10571,6 @@ struct SelectableMarkdownView: UIViewRepresentable {
     }
 
     @available(iOS 16.0, *)
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: SelectableMarkdownTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
         // Key the size cache on the SwiftUI binding length, not
