@@ -5804,30 +5804,63 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // 重复写同一个高度」**: 值相同时这次 obj.frame 写入不会产生任何
             // 几何变化, 它的唯一作用是触发一次同步 layout —— 那是纯浪费。
             // 不同值的写入一律放行, 正确修正绝不被连坐。
-            // 判据: 本 tick 内已写过、且写的值与本次目标相同 ⇒ 跳过。
             //
-            // 【为什么键里带 tick】
-            // 跨 tick 的同值写入**必须放行**: 那说明 SwiftUI 又写回了一次,
-            // 正是需要再补的信号(实测 201.3 那个欠账跨很多 tick 反复出现)。
-            // 只压同 tick 内的重复, 恰好只切掉「一帧内双写」这一种浪费。
+            // 【为什么不能用"每次触发就 +1"当 tick —— run#135 后的自查】
+            // v56 初版写的是:
+            //     _V56KVOW.tick &+= 1
+            //     let _v56sameTick = _V56KVOW.lastTick == _V56KVOW.tick
+            // 这是**死代码**: 单次闭包调用只会走 skip 或 write 中的一个分支,
+            // 而 tick 在函数开头就 +1 了 ⇒ lastTick(上次写入时的 tick) 永远
+            // 等于上一次调用的 tick 值, 与本次 +1 后的值恒不等 ⇒ skipSame
+            // 永远不会触发。日志里 516 条短路、275 条 KVO 补高全无 V56-KVO
+            // 记录, 正是这条逻辑从未执行的直接证据。
+            //   根因: 把"每次 KVO 触发"当成了 tick。**触发 ≠ 帧**。
+            //
+            // 【真正的 runloop tick 在哪】
+            // `NSTextContainerSetSizeGuard.m` 里有 `gRunloopTick`, 由
+            // CFRunLoopObserver(BeforeWaiting/AfterWaiting) 驱动 —— 那是
+            // 真正跨文件共享的 tick。但它**没有暴露给 Swift**
+            // (.h 只导出了 +shortCircuitCount), 且该文件是**上游原生**、
+            // 不经 ios15_fallback.py 改动, 所以本补丁不能依赖它。
+            //
+            // 【本版改用什么】
+            // 日志实测形态(log(2026-10-04) 275 条 V41-KVOHEIGHT):
+            //   · 275 条只有 **30 种**不同的 (svH, needH, debt, svW) 组合;
+            //   · 最大的一组 `svH=791.0 needH=1127.0 debt=336.0` 重复 **37 次**;
+            //   · **同一秒内**同组合一字不差重复的有 **43 条**(占 15.6%),
+            //     典型如 `svH=818.7 -> needH=1087.0` 在 n=4/n=5、n=12/n=13
+            //     各出现一次 —— 同一 tick 对同一个 superview 写同一个值。
+            // ⇒ 抑制键 = (目标高度, 时间窗 0.12s)。窗内同值 ⇒ 纯重复, 跳过;
+            //   窗内不同值 ⇒ 放行(正确修正绝不被连坐); 超窗 ⇒ 放行。
+            // 选 0.12s 的理由: 一帧 @60fps ≈ 16.7ms, 一帧 @120Hz ProMotion
+            // ≈ 8.3ms; 0.12s ≈ 7~14 帧, 足以覆盖"同一 tick 内反复触发",
+            // 又远小于日志里同秒重试的 500ms~1s 周期, 不会误伤跨帧重试。
+            //
             // [V56-KVO] 拉锯抑制的跨帧状态。放闭包内的 static 结构体 ——
             // 与 v42 的 `_SelfLast` 同一理由: KVO 闭包每次触发都是新上下文,
             // 只有 static 才是跨帧的稳定存储。
-            struct _V56KVOW { static var tick: UInt64 = 0; static var lastH: CGFloat = 0
-                static var lastTick: UInt64 = 0
+            struct _V56KVOW { static var lastH: CGFloat = -1
+                static var lastAt: CFTimeInterval = -999
                 static var written: UInt = 0; static var skipped: UInt = 0 }
-            _V56KVOW.tick &+= 1
             let _v56now = CACurrentMediaTime()
-            let _v56sameTick = _V56KVOW.lastTick == _V56KVOW.tick
-            if _v56sameTick, abs(_V56KVOW.lastH - _v42Need) < 0.5 {
-                // 同 tick 同值: 跳过 obj.frame 写入(几何零变化)。
+            let _v56dup = abs(_V56KVOW.lastH - _v42Need) < 0.5
+                && (_v56now - _V56KVOW.lastAt) < 0.12
+            if _v56dup {
+                // 同窗同值: 跳过 obj.frame 写入(几何零变化)。
                 struct _V56Skip { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
                 if _v56now - _V56Skip.last > 0.5 {
                     _V56Skip.last = _v56now
                     _V56Skip.n &+= 1
-                    NSLog("[V56-KVO] skipSame svH=%.1f needH=%.1f tick=%llu n=%u",
-                          f.size.height, _v42Need,
-                          (unsigned long long)_V56KVOW.tick, _V56Skip.n)
+                    // ★整型转换必须用 UInt64(...), 不能用 (unsigned long long)。
+                    //  run#135 实测: `(unsigned long long)x` 让 Swift 词法器在
+                    //  `long long)x` 处报 `expected ',' separator`(两列都报)。
+                    //  全项目 Swift 侧此前**从未**用过 C 风格转换 —— 只有
+                    //  NSTextContainerSetSizeGuard.m 那个 .m 文件里有(ObjC 合法)。
+                    //  v53-MEM(产物 8438 行)早已编译验证的写法是 `UInt64(...)`。
+                    // ⇒ 纪律 48 扩展: **语法形式也要照抄已编译验证的代码**,
+                    //   不只是 API 名。
+                    NSLog("[V56-KVO] skipSame svH=%.1f needH=%.1f n=%u",
+                          f.size.height, _v42Need, _V56Skip.n)
                 }
                 _V56KVOW.skipped &+= 1
                 // 与下面「补完立刻交棒」同语义: 即使跳过 obj.frame 写入,
@@ -5842,8 +5875,8 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 self.ios15KvoFixing = true
                 obj.frame = _hFix
                 self.ios15KvoFixing = false
-                _V56KVOW.lastTick = _V56KVOW.tick
                 _V56KVOW.lastH = _v42Need
+                _V56KVOW.lastAt = _v56now
                 _V56KVOW.written &+= 1
                 // [V41-KVOHEIGHT-HIT] 补齐真的执行了(节流 0.5s)。v39/v40 之所以
                 // 判"补齐没跑"是因为诊断挂在结果已修好的那一层; 这里挂在
@@ -9101,7 +9134,7 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             if _svWm >= cvContentWidth - 1 { _w = max(_w - 32, 100) }  // 贴边: 视图占满, 文字区 = cvW-32
             return max(200.0, _w)
         }()
-        // [IOS15-FIX] 宽度兜底消毒: 若上面三分支仍落到离谱瞬态宽度
+        // [IOS15-FIX] [IOS15-BADWIDTH-GUARD] 宽度兜底消毒: 若上面三分支仍落到离谱瞬态宽度
         // (1e7 / 2273 / 1382 等, 来自 SwiftUI 递归排版或 widthTracksTextView
         // 把 textContainer 设到 greatestFiniteMagnitude 再经 Guard 钳到 1e7),
         // 直接放弃本次测量, 避免写出荒谬 newHeight (850/712) 触发 FIRST-MEASURE

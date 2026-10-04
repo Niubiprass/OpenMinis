@@ -1244,7 +1244,18 @@ def fix_markdown_measure_width(t):
     宽度。因此把"提议宽度"钳制到 collectionView 宽度 (解析方式与 ios15FittingSize
     一致): 正常最终宽度 (≈358) 原样使用, 离谱的临时宽度钳到 ~390。这样测量宽度
     稳定, lastComputedHeight 不再抖动, 正文正确换行对齐。
-    attachment 布局 (updateAttachmentViews) 同理钳制 containerWidth。"""
+    attachment 布局 (updateAttachmentViews) 同理钳制 containerWidth。
+
+    ★幂等: 下面四段都用 `if OLD in t` 软判断, 而四段的锚点
+    (`[JitterFix] ...` / `let containerWidth = ...` /
+    `// [TableGenDedup] Compute the sum ...` / `abs(cell.bounds.height - newHeight) > 8`)
+    **在第一次运行后依然存在** —— 前三段被替换掉了, 但 OLD3 的锚点
+    (`[TableGenDedup] Compute the sum`) 是本补丁自己新插入段落的**下一行**,
+    第一次运行后仍留在原地, 于是第二次运行会再插一份消毒段(产物出现重复块)。
+    ⇒ 统一在函数开头设产物标记判据, 且位置必须在任何注入动作之前。
+    """
+    if "IOS15-BADWIDTH-GUARD" in t:
+        return t
     # ---- invalidateCellSizeIfNeeded 的测量宽度 ----
     OLD1 = '''        // [JitterFix] Measure at the actual render width (bounds.width) when
         // available. textContainer.size.width can be transiently set to the
@@ -1296,7 +1307,7 @@ def fix_markdown_measure_width(t):
         t = t.replace(OLD2, NEW2)
     # ---- 宽度兜底消毒 (防 FIRST-MEASURE 死循环) ----
     OLD3 = "        // [TableGenDedup] Compute the sum of every TableAttachment's generation"
-    NEW3 = r'''        // [IOS15-FIX] 宽度兜底消毒: 若上面三分支仍落到离谱瞬态宽度
+    NEW3 = r'''        // [IOS15-FIX] [IOS15-BADWIDTH-GUARD] 宽度兜底消毒: 若上面三分支仍落到离谱瞬态宽度
         // (1e7 / 2273 / 1382 等, 来自 SwiftUI 递归排版或 widthTracksTextView
         // 把 textContainer 设到 greatestFiniteMagnitude 再经 Guard 钳到 1e7),
         // 直接放弃本次测量, 避免写出荒谬 newHeight (850/712) 触发 FIRST-MEASURE
@@ -2363,12 +2374,21 @@ def fix_realw2_v33(t):
     textContainer 强行撑到 358 —— 塞进 326 宽的框里, 右侧 32pt 溢出被裁 → "边框裁字/卡字";
     终端/代码框(内部再嵌一层)同理被卡。v32 已把 _realW 与测高宽改为 per-cell contentW,
     但 _realW2 是该函数最后一次赋值, 会覆盖 v32 → 必须一并改为 contentW, 三者才一致。
+
+    ★幂等判据必须认**本补丁在最终产物里的存活形态**, 不能只认自己的标记 ——
+    v34 会把 `[V33-WIDTH2]` 整段(含标记)换成 `[V34-WIDTH2]`, 于是第二次运行时
+    `V33-WIDTH2` 已不在产物里, 本补丁会**重新注入并把 v34 的成果改回 contentW**,
+    连带把 v47/v48/v51 的 `_realW2 = _realW` 锚点一起推翻(表现为 v47/v51 判据
+    突然报"找不到声明")。这是 v32 标记被 v33 改写那一类问题的翻版, 纪律同源:
+    后版扩展/替换了同一段代码时, 前版的幂等判据要跟着更新。
     """
     OLD = """            let _realW2 = _realW"""
     NEW = """            // [V33-WIDTH2] 与 _realW/测高宽 同一式子(视图宽 - 内边距): 气泡型 326、贴边型 358
             // 各取真实宽, 绝不把 326 的框撑到 358 (那会右侧溢出裁字)。不再硬编码 cvW-32。
             let _realW2 = max(200.0, min(bounds.width, _cvW) - textContainerInset.left - textContainerInset.right)"""
-    if "V33-WIDTH2" in t:
+    # v33-WIDTH2 = 本补丁自己的标记; V34-WIDTH2 = v34 改写后的存活形态。
+    # 两者任一在位即视为已注入。
+    if "V33-WIDTH2" in t or "V34-WIDTH2" in t:
         return t
     if OLD not in t:
         raise RuntimeError(
@@ -4120,6 +4140,12 @@ def fix_tvh_debt_v45(t):
     再补 self。连续多帧执行时 `tvH >= needH` 自然让本段条件转 false,
     不存在反复写入。日志按 0.5s 节流, 与 v44 同周期便于并列对照。
     """
+    # [幂等·纪律 51/52] 必须在**任何注入动作之前**检查, 且用**产物标记**。
+    # 本函数原先把判据放在注入点之后 ⇒ 第二次运行时第一处已又插了一份,
+    # verify 的「标记数==1」断言报成「实际 2」—— 报错文案指向错误方向。
+    if 'NSLog("[V45-TVHFIX]' in t:
+        return t
+
     ANCHOR = """            // [V44-TEXTFRAME] 见函数 docstring: v41/v42/v43 三轮都在猜"高度够不够",
             // 这一条把三个候选根因一次打完, 不改任何行为。
             //
@@ -4169,11 +4195,6 @@ def fix_tvh_debt_v45(t):
             }
 """ + ANCHOR
     t = t.replace(ANCHOR, NEW, 1)
-    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
-    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
-    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
-    if 'NSLog("[V45-TVHFIX]' in t:
-        return t
     verify_tvh_debt_v45(t)
     return t
 
@@ -4270,6 +4291,12 @@ def fix_diag_attachment_v46(t):
     —— 它只读 attachment 与 cachedLayout 的内部状态。挂在 v45 之后,
     同一闭包同一帧, 便于三者并列对照。
     """
+    # [幂等·纪律 51/52] 必须在**任何注入动作之前**检查, 且用**产物标记**。
+    # 本函数原先把判据放在注入点之后 ⇒ 第二次运行时第一处已又插了一份,
+    # verify 的「标记数==1」断言报成「实际 2」—— 报错文案指向错误方向。
+    if 'NSLog("[V46-ATTACH]' in t:
+        return t
+
     # 锚点 = V44 段头。v45 把自己插在 V44 段**之前**(顺序: v42 -> v44 注入 ->
     # v45 在 V44 段前插 -> v46 在 V44 段前、v45 之后插), 所以锚点取 V44 段头
     # 即可让 v46 落在 v45 之后。
@@ -4376,11 +4403,6 @@ def fix_diag_attachment_v46(t):
             }
 """ + _V44HEAD
     t = t.replace(ANCHOR, NEW, 1)
-    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
-    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
-    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
-    if 'NSLog("[V46-ATTACH]' in t:
-        return t
     verify_attachment_v46(t)
     return t
 
@@ -4675,6 +4697,12 @@ def fix_width_reflow_v47(t):
     ★只碰宽度与重排, **不碰高度逻辑** —— v45 的 tvH 补高已实测有效(debt 全 0),
     一旦在这里动高度就会把 v45 的成果推翻。校验函数硬禁任何 height 写入。
     """
+    # [幂等·纪律 51/52] 必须在**任何注入动作之前**检查, 且用**产物标记**。
+    # 本函数原先把判据放在注入点之后 ⇒ 第二次运行时第一处已又插了一份,
+    # verify 的「标记数==1」断言报成「实际 2」—— 报错文案指向错误方向。
+    if '// [V47-REWRAP]' in t:
+        return t
+
     OLD = """            let _realW2 = _realW
             var _ios15WRegrabbed = false
             if abs(textContainer.size.width - _realW2) > 0.5 {
@@ -4754,11 +4782,6 @@ def fix_width_reflow_v47(t):
             "fix_width_reflow_v47: 未找到 ios15LastSaneSVFrame 声明锚点")
     t = t.replace(DECL_OLD, DECL_NEW, 1)
 
-    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
-    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
-    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
-    if '// [V47-REWRAP]' in t:
-        return t
     verify_width_reflow_v47(t)
     return t
 
@@ -4832,6 +4855,12 @@ def fix_width_pin_v48(t):
 
     ★登记必须排在 v47 之后(锚点是 v47 注入的 `ios15LastLaidOutW` 回写)。
     """
+    # [幂等·纪律 51/52] 必须在**任何注入动作之前**检查, 且用**产物标记**。
+    # 本函数原先把判据放在注入点之后 ⇒ 第二次运行时第一处已又插了一份,
+    # verify 的「标记数==1」断言报成「实际 2」—— 报错文案指向错误方向。
+    if '// [V48-PIN]' in t:
+        return t
+
     OLD = """            if abs((self.ios15LastLaidOutW ?? -1) - _realW2) > 0.5 {
                 _ios15WRegrabbed = true
             }"""
@@ -4865,11 +4894,6 @@ def fix_width_pin_v48(t):
             "上游或 v47 结构变了, 必须更新 OLD 后再发版")
     t = t.replace(OLD, NEW, 1)
 
-    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
-    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
-    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
-    if '// [V48-PIN]' in t:
-        return t
     verify_width_pin_v48(t)
     return t
 
@@ -6265,6 +6289,12 @@ def fix_width_sane_gate_v52(t):
     B 合并后的独立价值: 与 `_svf0` 同源, 闸门判据与污染修复同字段,
     杜绝「A 读 frame / B 读 bounds」那种同帧不同值的跨字段不自洽。
     """
+    # [幂等·纪律 51/52] 必须在**任何注入动作之前**检查, 且用**产物标记**。
+    # 本函数原先把判据放在注入点之后 ⇒ 第二次运行时第一处已又插了一份,
+    # verify 的「标记数==1」断言报成「实际 2」—— 报错文案指向错误方向。
+    if 'NSLog("[V52-GATE]' in t:
+        return t
+
     if "// [V52-GATE]" in t:
         return t
 
@@ -6357,11 +6387,6 @@ def fix_width_sane_gate_v52(t):
             let _svW = _v52w
 """
     t = t.replace(ANCHOR, NEW, 1)
-    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
-    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
-    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
-    if 'NSLog("[V52-GATE]' in t:
-        return t
     verify_width_sane_gate_v52(t)
     return t
 
@@ -6630,6 +6655,12 @@ def fix_debtguard_snapshot_v52(t):
     而且这条链自带 `[V30-THROTTLE] 120ms` 与 `deferSelfSizing` 双重限流。
     再叠一层节流只会让纠正更晚, 与本版目的相反。
     """
+    # [幂等·纪律 51/52] 必须在**任何注入动作之前**检查, 且用**产物标记**。
+    # 本函数原先把判据放在注入点之后 ⇒ 第二次运行时第一处已又插了一份,
+    # verify 的「标记数==1」断言报成「实际 2」—— 报错文案指向错误方向。
+    if 'NSLog("[V52-DEBT]' in t:
+        return t
+
     if "// [V52-DEBT-PRE]" in t:
         return t
 
@@ -6693,11 +6724,6 @@ def fix_debtguard_snapshot_v52(t):
             % t.count(DEBT_OLD))
     t = t.replace(DEBT_OLD, DEBT_NEW, 1)
 
-    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
-    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
-    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
-    if 'NSLog("[V52-DEBT]' in t:
-        return t
     verify_debtguard_snapshot_v52(t)
     return t
 
@@ -9613,30 +9639,63 @@ def fix_v56_sentinel_probe(t):
             // 重复写同一个高度」**: 值相同时这次 obj.frame 写入不会产生任何
             // 几何变化, 它的唯一作用是触发一次同步 layout —— 那是纯浪费。
             // 不同值的写入一律放行, 正确修正绝不被连坐。
-            // 判据: 本 tick 内已写过、且写的值与本次目标相同 ⇒ 跳过。
             //
-            // 【为什么键里带 tick】
-            // 跨 tick 的同值写入**必须放行**: 那说明 SwiftUI 又写回了一次,
-            // 正是需要再补的信号(实测 201.3 那个欠账跨很多 tick 反复出现)。
-            // 只压同 tick 内的重复, 恰好只切掉「一帧内双写」这一种浪费。
+            // 【为什么不能用"每次触发就 +1"当 tick —— run#135 后的自查】
+            // v56 初版写的是:
+            //     _V56KVOW.tick &+= 1
+            //     let _v56sameTick = _V56KVOW.lastTick == _V56KVOW.tick
+            // 这是**死代码**: 单次闭包调用只会走 skip 或 write 中的一个分支,
+            // 而 tick 在函数开头就 +1 了 ⇒ lastTick(上次写入时的 tick) 永远
+            // 等于上一次调用的 tick 值, 与本次 +1 后的值恒不等 ⇒ skipSame
+            // 永远不会触发。日志里 516 条短路、275 条 KVO 补高全无 V56-KVO
+            // 记录, 正是这条逻辑从未执行的直接证据。
+            //   根因: 把"每次 KVO 触发"当成了 tick。**触发 ≠ 帧**。
+            //
+            // 【真正的 runloop tick 在哪】
+            // `NSTextContainerSetSizeGuard.m` 里有 `gRunloopTick`, 由
+            // CFRunLoopObserver(BeforeWaiting/AfterWaiting) 驱动 —— 那是
+            // 真正跨文件共享的 tick。但它**没有暴露给 Swift**
+            // (.h 只导出了 +shortCircuitCount), 且该文件是**上游原生**、
+            // 不经 ios15_fallback.py 改动, 所以本补丁不能依赖它。
+            //
+            // 【本版改用什么】
+            // 日志实测形态(log(2026-10-04) 275 条 V41-KVOHEIGHT):
+            //   · 275 条只有 **30 种**不同的 (svH, needH, debt, svW) 组合;
+            //   · 最大的一组 `svH=791.0 needH=1127.0 debt=336.0` 重复 **37 次**;
+            //   · **同一秒内**同组合一字不差重复的有 **43 条**(占 15.6%),
+            //     典型如 `svH=818.7 -> needH=1087.0` 在 n=4/n=5、n=12/n=13
+            //     各出现一次 —— 同一 tick 对同一个 superview 写同一个值。
+            // ⇒ 抑制键 = (目标高度, 时间窗 0.12s)。窗内同值 ⇒ 纯重复, 跳过;
+            //   窗内不同值 ⇒ 放行(正确修正绝不被连坐); 超窗 ⇒ 放行。
+            // 选 0.12s 的理由: 一帧 @60fps ≈ 16.7ms, 一帧 @120Hz ProMotion
+            // ≈ 8.3ms; 0.12s ≈ 7~14 帧, 足以覆盖"同一 tick 内反复触发",
+            // 又远小于日志里同秒重试的 500ms~1s 周期, 不会误伤跨帧重试。
+            //
             // [V56-KVO] 拉锯抑制的跨帧状态。放闭包内的 static 结构体 ——
             // 与 v42 的 `_SelfLast` 同一理由: KVO 闭包每次触发都是新上下文,
             // 只有 static 才是跨帧的稳定存储。
-            struct _V56KVOW { static var tick: UInt64 = 0; static var lastH: CGFloat = 0
-                static var lastTick: UInt64 = 0
+            struct _V56KVOW { static var lastH: CGFloat = -1
+                static var lastAt: CFTimeInterval = -999
                 static var written: UInt = 0; static var skipped: UInt = 0 }
-            _V56KVOW.tick &+= 1
             let _v56now = CACurrentMediaTime()
-            let _v56sameTick = _V56KVOW.lastTick == _V56KVOW.tick
-            if _v56sameTick, abs(_V56KVOW.lastH - _v42Need) < 0.5 {
-                // 同 tick 同值: 跳过 obj.frame 写入(几何零变化)。
+            let _v56dup = abs(_V56KVOW.lastH - _v42Need) < 0.5
+                && (_v56now - _V56KVOW.lastAt) < 0.12
+            if _v56dup {
+                // 同窗同值: 跳过 obj.frame 写入(几何零变化)。
                 struct _V56Skip { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
                 if _v56now - _V56Skip.last > 0.5 {
                     _V56Skip.last = _v56now
                     _V56Skip.n &+= 1
-                    NSLog("[V56-KVO] skipSame svH=%.1f needH=%.1f tick=%llu n=%u",
-                          f.size.height, _v42Need,
-                          (unsigned long long)_V56KVOW.tick, _V56Skip.n)
+                    // ★整型转换必须用 UInt64(...), 不能用 (unsigned long long)。
+                    //  run#135 实测: `(unsigned long long)x` 让 Swift 词法器在
+                    //  `long long)x` 处报 `expected ',' separator`(两列都报)。
+                    //  全项目 Swift 侧此前**从未**用过 C 风格转换 —— 只有
+                    //  NSTextContainerSetSizeGuard.m 那个 .m 文件里有(ObjC 合法)。
+                    //  v53-MEM(产物 8438 行)早已编译验证的写法是 `UInt64(...)`。
+                    // ⇒ 纪律 48 扩展: **语法形式也要照抄已编译验证的代码**,
+                    //   不只是 API 名。
+                    NSLog("[V56-KVO] skipSame svH=%.1f needH=%.1f n=%u",
+                          f.size.height, _v42Need, _V56Skip.n)
                 }
                 _V56KVOW.skipped &+= 1
                 // 与下面「补完立刻交棒」同语义: 即使跳过 obj.frame 写入,
@@ -9651,8 +9710,8 @@ def fix_v56_sentinel_probe(t):
                 self.ios15KvoFixing = true
                 obj.frame = _hFix
                 self.ios15KvoFixing = false
-                _V56KVOW.lastTick = _V56KVOW.tick
                 _V56KVOW.lastH = _v42Need
+                _V56KVOW.lastAt = _v56now
                 _V56KVOW.written &+= 1"""
     if MARKS[4] not in t:
         if K_OLD not in t:
