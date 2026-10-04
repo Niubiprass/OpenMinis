@@ -9452,10 +9452,14 @@ def fix_v56_sentinel_probe(t):
       (a) 采样率是多少 (b) 末尾有没有 return (c) 事件发生在用户实际操作
       的时段吗。三个都答不上来, 就不许写进归因报告。
     """
+    # ★MARKS 必须写各段在**最终产物**里的存活形态 —— 幂等判据的纪律。
+    #   v56.1 把 [V56-B] 改成 [V56-B-REVERTED] 后, 旧标记整行不再出现在产物里,
+    #   若 MARKS 仍认旧标记, 第二次运行会重复注入 B 段(而 B 段此时已无可改的
+    #   锚点, 会抛 RuntimeError)。这与 v33/V34 那次是同一类错误。
     MARKS = ("// [V56-A] 哨兵判据 v1: 与 UIKit 钳位口径对齐",
              "// [V56-A4] 哨兵判据 v1: 与 UIKit 钳位口径对齐",
              "// [V56-A5] 哨兵判据 v1: 与 UIKit 钳位口径对齐",
-             "// [V56-B] `_edgeTouch` 认 origin.x > 0.5 的贴边态",
+             "// [V56-B-REVERTED] v56.1 装机实测",
              "// [V56-KVO] 同值写入抑制")
     if all(m in t for m in MARKS):
         return t
@@ -9585,35 +9589,73 @@ def fix_v56_sentinel_probe(t):
         t = t.replace(A5_OLD, A5_NEW, 1)
 
     # ══ B: _edgeTouch 的 origin.x 死锁 ══
+    #
+    # ★★ v56.1 装机实测: 这条修复是**回归的直接原因**, 已回滚。★★
+    #
+    # 装机证据(minis-2026-10-04 8.log, run#136 包):
+    #   1. 主线程卡死: HangDetector 报 **179 次 MAIN HANG**, 时长 2044ms → 8107ms
+    #      锯齿累积(每轮约 68 次事件, 每条比上一条 +110ms), 全部落在 19:59-20:00 一分钟内。
+    #      随后 CrashLoop 触发: `foreground crash recorded` → `second foreground crash in
+    #      33.1s` → `next launch will skip session restore`, 三次启动即崩。
+    #   2. 死循环形态: 每秒精确重复同一组 7 条探针, `len=62` / `tcW=294.0` /
+    #      `regrabbed=1` **全程恒定** ⇒ 不是数据在变, 是布局在自激。
+    #   3. edge 状态与卡死时间**完全重合**:
+    #          edge=1 出现 114 次, 全部落在 19:59(16) + 20:00(98);
+    #          18:40 那段正常滑动期 edge=1 是 **0 次**(全是 edge=0)。
+    #   4. 直接因果链(实测日志对比):
+    #          edge=0 时: V55-A insetL=0.0  insetR=0.0   picked=358.0  正常
+    #          edge=1 时: V55-A insetL=16.0 insetR=16.0 picked=358.0  ← tcW 掉到 294
+    #      `_edgeTouch=true` 同时做两件事(v18 段):
+    #        (a) `textContainerInset` 16/16  ⇒ 容器净宽 326-32 = **294**
+    #        (b) `_realW = max(_realW - 32, 100)` ⇒ 渲染宽 358-32 = **326**
+    #      而 v47/v48/v50 的 `picked` 仍按 **358** 算(它们不读 _realW)。
+    #      ⇒ 358 / 326 / 294 三值分歧 ⇒ 每帧重新钳宽 ⇒ 布局重算 ⇒ 自激死循环。
+    #      这正是 v33 当年「过渡态双重扣减」的同一个坑, 只是这次扣减被打开了。
+    #
+    # ⇒ 结论: `origin.x <= 0.5` **不是 bug, 是必要的保护**。消息型 cell 恒有 16pt
+    #   左边距, 一旦认它为贴边态就会打开 inset 与 -32 双重扣减, 而下游宽度源
+    #   (v47/v48/v50) 并不同步 —— 打开它就必须同步改 4 处, 否则必自激。
+    #   v56 当时只改了判据一处, 这就是回归的机制。
+    #
+    # ⇒ 处置: 回滚到 v55-B 的原判据。inset 设不上导致的「末行裁 22.3pt」是
+    #   真实缺陷, 但它要用**不改 _edgeTouch** 的方式治(下版从 v42 latch /
+    #   测高宽同源入手), 不能靠打开贴边态。
+    #
+    # B_OLD 保留 v56 初版形态: 若产物里是那一版(例如从 v56.1 的产物继续演进),
+    # 仍要能把它改回 v55-B 形态, 否则幂等会失败。
     B_OLD = """            let _v55edgeNet = abs(_svf0.size.width - (_cvW - 32)) <= 2
-            let _edgeTouch = !_polluted && _svf0.origin.x <= 0.5
-                && (_svf0.size.width >= _cvW - 1 || _v55edgeNet)"""
-    B_NEW = """            // [V56-B] `_edgeTouch` 认 origin.x > 0.5 的贴边态
-            //
-            // v55.2 装机 107 条 V55-A **零例外**:
-            //   gateW=358.0 svFrameW=358.0 svOriginX=16.0 insetL=0.0 ok=1 mem=1
-            // `edge=` 全日志 **718/718 为 0**。逐项算:
-            //   origin.x = 16.0 → `<= 0.5` **恒假** ← 单独这一条就否掉它
-            //   |358 - (390-32)| = 0 <= 2 → v55-B 的 `_v55edgeNet` 本该为真
-            // ⇒ `_edgeTouch` 被 `origin.x <= 0.5` 单条卡死, `_v55edgeNet`
-            //   根本没机会参与判断(&& 短路)。
-            // ⇒ 连带后果: inset 16/16 永远设不上(insetL 297 条全 0.0)
-            //   → 高度按 390 算、cell 只给 26.7 → 末行裁 22.3 → 「卡一半」。
-            //   装机 V41-KVOHEIGHT 里 `debt=22.3` 恰好 15 次, 数值完全对上。
-            //
-            // ★为什么 origin.x 是 16 而不是 0: 集合视图给的消息 cell 本身就带
-            //   16pt 左边距, **贴边态的正常 origin.x 就是 16**。`origin.x <= 0.5`
-            //   是为「全宽贴边(390@0)」那种形态写的, 消息型 cell 从来不满足。
-            let _v55edgeNet = abs(_svf0.size.width - (_cvW - 32)) <= 2
             let _v56edgeOff = abs(_svf0.origin.x - 16) <= 2
             let _edgeTouch = !_polluted
                 && ((_svf0.origin.x <= 0.5
                      && (_svf0.size.width >= _cvW - 1 || _v55edgeNet))
                     || (_v55edgeNet && _v56edgeOff))"""
+    B_V55_OLD = """            let _v55edgeNet = abs(_svf0.size.width - (_cvW - 32)) <= 2
+            let _edgeTouch = !_polluted && _svf0.origin.x <= 0.5
+                && (_svf0.size.width >= _cvW - 1 || _v55edgeNet)"""
+    B_NEW = """            // [V56-B-REVERTED] v56.1 装机实测: 认 origin.x≈16 为贴边态会打开
+            // inset 16/16 + _realW-32 双重扣减, 而 v47/v48/v50 的宽度源仍按
+            // 358 算 ⇒ 三值分歧 ⇒ 每帧重钳宽 ⇒ 布局自激 ⇒ 主线程卡死 8.1s
+            // 并触发 CrashLoop(179 次 MAIN HANG, edge=1 全部落在卡死分钟内)。
+            // `origin.x <= 0.5` 是必要保护, 不是 bug。详见 ios15_fallback.py
+            // fix_v56_sentinel_probe 段内的完整证据链。
+            let _v55edgeNet = abs(_svf0.size.width - (_cvW - 32)) <= 2
+            let _edgeTouch = !_polluted && _svf0.origin.x <= 0.5
+                && (_svf0.size.width >= _cvW - 1 || _v55edgeNet)"""
     if MARKS[3] not in t:
-        if B_OLD not in t:
-            raise RuntimeError("v56-B 锚点缺失: 找不到 v55-B 注入的 `_edgeTouch` 定义")
-        t = t.replace(B_OLD, B_NEW, 1)
+        if B_OLD in t:
+            t = t.replace(B_OLD, B_NEW, 1)
+        elif B_V55_OLD in t:
+            # 已是 v55-B 形态(从 v55.2 / v56.1 的产物继续演进时会走到这里)。
+            # 仍要替换一次, 把回滚说明写进产物 —— 否则:
+            #   (1) 产物里没有 [V56-B-REVERTED], 下次运行时 MARKS 判据落空,
+            #       会再进来一次(行为无害, 但每次都白跑一趟);
+            #   (2) 更要紧: 装机后若再出 edge 相关问题, 读产物看不到这段
+            #       「v56.1 已实测回滚」的证据, 会误以为是未知故障。
+            t = t.replace(B_V55_OLD, B_NEW, 1)
+        else:
+            raise RuntimeError(
+                "v56-B 锚点缺失: 找不到 `_edgeTouch` 定义(v56 形态与 v55-B 形态都没命中)。"
+                "必须更新 B_OLD / B_V55_OLD。")
 
     # ══ C: KVO 抢帧器的高度拉锯抑制 —— 本版的核心修法 ══
     K_OLD = """            if _v42Need > 1, f.size.height + 0.5 < _v42Need {

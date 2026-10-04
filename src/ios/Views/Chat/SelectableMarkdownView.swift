@@ -4694,7 +4694,7 @@ final class VideoAttachment: NSTextAttachment {
 
             var thumb: UIImage?
             do {
-                let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+                let (cgImage, _) = try await generator.image(at: .zero)
                 thumb = UIImage(cgImage: cgImage)
             } catch {
                 // Fallback: no thumbnail
@@ -8280,28 +8280,15 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // ★放行条件取「接近 cvW-32(贴边净宽)」或「接近 cvW(全屏宽)」,
             //   371.7 两边都不接近(差 13.7 / 18.3)⇒ 仍被排除, 不引入新污染。
             // ★**只改 edge 判定, 不写任何几何** —— inset 的写入是既有代码。
-            // [V56-B] `_edgeTouch` 认 origin.x > 0.5 的贴边态
-            //
-            // v55.2 装机 107 条 V55-A **零例外**:
-            //   gateW=358.0 svFrameW=358.0 svOriginX=16.0 insetL=0.0 ok=1 mem=1
-            // `edge=` 全日志 **718/718 为 0**。逐项算:
-            //   origin.x = 16.0 → `<= 0.5` **恒假** ← 单独这一条就否掉它
-            //   |358 - (390-32)| = 0 <= 2 → v55-B 的 `_v55edgeNet` 本该为真
-            // ⇒ `_edgeTouch` 被 `origin.x <= 0.5` 单条卡死, `_v55edgeNet`
-            //   根本没机会参与判断(&& 短路)。
-            // ⇒ 连带后果: inset 16/16 永远设不上(insetL 297 条全 0.0)
-            //   → 高度按 390 算、cell 只给 26.7 → 末行裁 22.3 → 「卡一半」。
-            //   装机 V41-KVOHEIGHT 里 `debt=22.3` 恰好 15 次, 数值完全对上。
-            //
-            // ★为什么 origin.x 是 16 而不是 0: 集合视图给的消息 cell 本身就带
-            //   16pt 左边距, **贴边态的正常 origin.x 就是 16**。`origin.x <= 0.5`
-            //   是为「全宽贴边(390@0)」那种形态写的, 消息型 cell 从来不满足。
+            // [V56-B-REVERTED] v56.1 装机实测: 认 origin.x≈16 为贴边态会打开
+            // inset 16/16 + _realW-32 双重扣减, 而 v47/v48/v50 的宽度源仍按
+            // 358 算 ⇒ 三值分歧 ⇒ 每帧重钳宽 ⇒ 布局自激 ⇒ 主线程卡死 8.1s
+            // 并触发 CrashLoop(179 次 MAIN HANG, edge=1 全部落在卡死分钟内)。
+            // `origin.x <= 0.5` 是必要保护, 不是 bug。详见 ios15_fallback.py
+            // fix_v56_sentinel_probe 段内的完整证据链。
             let _v55edgeNet = abs(_svf0.size.width - (_cvW - 32)) <= 2
-            let _v56edgeOff = abs(_svf0.origin.x - 16) <= 2
-            let _edgeTouch = !_polluted
-                && ((_svf0.origin.x <= 0.5
-                     && (_svf0.size.width >= _cvW - 1 || _v55edgeNet))
-                    || (_v55edgeNet && _v56edgeOff))
+            let _edgeTouch = !_polluted && _svf0.origin.x <= 0.5
+                && (_svf0.size.width >= _cvW - 1 || _v55edgeNet)
             if _polluted, let _sv = superview {
                 var _fix = _svf0
                 if let _last = ios15LastSaneSVFrame,
@@ -10109,7 +10096,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // becomes a measurable chunk of every updateUIView pass (and
         // updateUIView runs on each SwiftUI body re-evaluation, so it
         // multiplies during streaming and self-sizing measurement loops).
-        let imageMatches = MinisRegex.ranges(markdown, "!\\[([^\\]]*)\\]\\(([^)]+)\\)")
+        let imageMatches = markdown.ranges(of: /!\[([^\]]*)\]\(([^)]+)\)/)
         if !imageMatches.isEmpty {
             for match in imageMatches {
                 let matchStr = String(markdown[match])
@@ -10558,26 +10545,6 @@ struct SelectableMarkdownView: UIViewRepresentable {
     }
 
     @available(iOS 16.0, *)
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: SelectableMarkdownTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
         // Key the size cache on the SwiftUI binding length, not
