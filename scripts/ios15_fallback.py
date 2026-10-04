@@ -5110,7 +5110,7 @@ def fix_toolbar_minheight_v566(t):
             let v566RowH: CGFloat = 16
             let v566Pad: CGFloat = 28          // .padding(.top,14) + .padding(.bottom,14)
             let v566HeadH: CGFloat = 32        // 标题行 + .padding(.top,14)
-            let v566BodyLines = CGFloat(min(max(linesShownInPreview(text.count), 0), 18))
+            let v566BodyLines = CGFloat(min(max(LazyRenderTuning.linesShownInPreview(text.count), 0), 18))
             let cardMinHeight = min(max(
                 v566HeadH + v566BodyLines * v566RowH + v566Pad,
                 Self.v566FloorHeight), Self.v566CeilHeight)
@@ -5150,9 +5150,15 @@ def fix_toolbar_minheight_v566(t):
     # textContent 里那处引用的是 self.previewLinesCount, 换成同源换算。
     # 它在自己的 body 里已有 block, 但 previewLinesCount 不是现成属性,
     # 直接用 block.content 的字符数即可 —— 折叠预览显示的就是它。
+    # ★必须连**前缀**一起换, 不能只换尾部实参 ——
+    #   run#142 编译失败(exit 65)就是这里: 替换后留下了
+    #   `min(max(linesShownInPreview(block.content.count), ...` 这样的**裸调**,
+    #   而 linesShownInPreview 是 LazyRenderTuning 的静态方法 ⇒ 编译不过。
+    #   ⚠️CI 只把 build.log 重定向到文件, `grep error: || true` 又吞掉了输出,
+    #   所以页面上只看到「exit 65」而看不到报错行 —— 下次先看 grep 是否真的为空。
     t = t.replace(
-        "linesShownInPreview(self.previewLinesCount)",
-        "linesShownInPreview(block.content.count)", 1)
+        "max(linesShownInPreview(self.previewLinesCount)",
+        "max(LazyRenderTuning.linesShownInPreview(block.content.count)", 1)
 
     # ---- 锚点 3: ToolLiveSheet 里加两个转发常量(视图内用 Self.xxx) ----
     OLD_LAZY = """    private static let lazyRenderChunkLines = LazyRenderTuning.chunkLines"""
@@ -5220,9 +5226,9 @@ def verify_toolbar_minheight_v566(t):
     # 覆盖范围: 两处新写法必须分别落在两个宿主函数体内
     for host, needle in (
             ("private var textContent: some View {",
-             "v566BodyLines = CGFloat(min(max(linesShownInPreview(block.content.count), 0), 18))"),
+             "v566BodyLines = CGFloat(min(max(LazyRenderTuning.linesShownInPreview(block.content.count), 0), 18))"),
             ("private func snapshotTextContent(_ text: String) -> some View {",
-             "v566BodyLines = CGFloat(min(max(linesShownInPreview(text.count), 0), 18))")):
+             "v566BodyLines = CGFloat(min(max(LazyRenderTuning.linesShownInPreview(text.count), 0), 18))")):
         i_host = t.find(host)
         if i_host < 0:
             raise RuntimeError(
@@ -5294,6 +5300,293 @@ def verify_toolbar_minheight_v566(t):
 
     return True
 
+
+def fix_thumb_tail_v567(t):
+    # ================================================================
+    # v56.7 洞1: 折叠态缩略图「取末尾 N 行」不再切整段输出
+    #   —— 治「终端框卡显示 / 滑动卡字」的主因
+    # ================================================================
+    # ★v56.6 的续: v56.6 治空白(几何), 本版治**每帧重复劳动**(性能),
+    #   两版症状不重叠。仍然是**代码本身即证据**, 不靠猜。
+    #
+    # ToolLiveSheet.swift:3177
+    #     let lines = text.components(separatedBy: "\n")
+    #     return lines.suffix(count).joined(separator: "\n")
+    # `components(separatedBy:)` 为**每一个**换行分配一个 String,
+    # 而四个调用方只要末尾 12 行(:2952 / :3006)或 6 行(:3042 / :3050)。
+    # shell 输出一屏几百行是常态, 而 body 每 2 秒至少求值 1 次(见洞2)、
+    # 流式时每来一个 chunk 再 1 次 ⇒ **每帧几百个 String 分配, 全是白搬**。
+    # ⇒ 「字卡 / 卡显示」不是画得慢, 是**每帧都在无谓地搬字符串**。
+    #
+    # ★为什么安全(可观测行为完全不变):
+    #   `lines.suffix(count).joined(separator: "\n")` 的结果恒等于
+    #   **第 (总行数 - count) 个换行之后的那段原文本**。所以只需数一次换行、
+    #   定位一次, 然后原样切片 —— **零中间 String 分配**。
+    #   判据 verify_thumb_perf_v567 里有 11 组输入的等价性自证。
+    #
+    # ★为什么单独成一个函数而不是与洞2 合并:
+    #   洞1 在 ToolLiveSheet.swift, 洞2 在 AIChatView.swift ——
+    #   **一次 edit 只能改一个文件**。合成一个函数会让「找锚点」在错误的文件里
+    #   进行, 实跑直接报「洞2 锚点没找到」(这正是本函数第一版的形态)。
+
+    if "[V567-PERF]" in t:
+        return t
+
+    OLD_LASTLINES = '''    private func lastLines(_ text: String, count: Int) -> String {
+        let lines = text.components(separatedBy: "\\n")
+        return lines.suffix(count).joined(separator: "\\n")
+    }'''
+    NEW_LASTLINES = '''    /// [V567-PERF] 取末尾 count 行 —— **只切出要的那几行**。
+    ///
+    /// 旧写法 `text.components(separatedBy: "\\n").suffix(count)` 会为**每一个**
+    /// 换行分配一个 String, 而调用方只要最后 12 行。shell 输出一屏几百行是常态,
+    /// 而 `body` 每 2 秒至少求值 1 次 ⇒ 每帧几百个 String 分配, 全是白搬。
+    /// **字卡 / 卡显示的直接来源就在这里。**
+    ///
+    /// 等价性: 对同一输入, 产出与 `components+suffix+joined` **逐字节相同**
+    /// (含末尾空行 / 行数不足 / count<=0 / 全空行 / 非 ASCII 五类边界;
+    ///  判据 verify_thumb_perf_v567 里有 11 组输入的等价性自证)。
+    private func lastLines(_ text: String, count: Int) -> String {
+        // [V567-PERF] 接线处也带标记 —— 判据查的是「实现**与**接线都在」,
+        // 只标实现不标接线的话, 写完实现忘了改调用点也会全绿。
+        return Self.v567TailLines(text, count: count)
+    }
+
+    /// [V567-PERF] 取末尾 count 行 —— 与 components+suffix 等价, 但**零中间分配**。
+    ///
+    /// 关键: `lines.suffix(count).joined(separator: "\\n")` 的结果, 恰好就是
+    /// **第 (总行数 - count) 个换行之后的那段原文本**。所以只需数一次换行、
+    /// 定位一次, 然后原样切片, 一个额外 String 都不用造。
+    private static func v567TailLines(_ text: String, count: Int) -> String {
+        if count <= 0 { return "" }
+        let nl = UInt8(ascii: "\\n")
+        var total = 1                        // components 的语义: 末尾无换行也算一行
+        for b in text.utf8 where b == nl { total += 1 }
+        if total <= count { return text }      // 全部都要, 原样返回
+        var seen = 0
+        let view = text.utf8
+        var idx = view.startIndex
+        while idx < view.endIndex {
+            if view[idx] == nl {
+                seen += 1
+                if seen == total - count {
+                    return String(decoding: view.suffix(from: view.index(after: idx)),
+                                  as: UTF8.self)
+                }
+            }
+            idx = view.index(after: idx)
+        }
+        return text                           // 理论上到不了, 兜底不崩
+    }'''
+    if OLD_LASTLINES not in t:
+        raise RuntimeError(
+            "fix_thumb_tail_v567: 洞1 锚点没找到(lastLines 的 components+suffix 实现)"
+            " —— 上游改过? 判据不会瞎改, 先确认真实形状")
+    t = t.replace(OLD_LASTLINES, NEW_LASTLINES, 1)
+
+    # ★自检放在**全部替换完成之后**(v56.6 洞1 的教训: 夹在中间会让整个 edit 崩掉)
+    verify_thumb_perf_v567(t)
+    return t
+
+
+def fix_monitor_idem_v567(t):
+    # ================================================================
+    # v56.7 洞2: SystemResourceMonitor.start() 补幂等 guard
+    #   —— 治「滑动像掉帧」
+    # ================================================================
+    # AIChatView.swift:97
+    #     func start() {
+    #         sampleCPU()
+    #         updateMemory()
+    #         timer = Timer.scheduledTimer(...)   // ← 直接覆盖, 旧的没 invalidate
+    # 旧 timer **没有 invalidate 就被丢了引用**, 仍在 CommonModes 里每 2 秒跑一次,
+    # 并往主线程塞 DispatchQueue.main.async。
+    #
+    # 调用点两处(ToolLiveSheet :2933 onAppear + :2937 onChange(of: isLive)),
+    # 而缩略图在滚动里反复 appear/disappear ⇒ start 次数可以远大于 stop
+    # ⇒ **泄漏 timer 累积**; 每个泄漏 timer 的 @Published 又让整棵
+    # ToolPreviewThumbnail 重算 ⇒ **与洞1 相乘**。
+    # ⇒ 这是「滑动时更卡」的直接解释: 滑一次多几个泄漏 timer。
+    #
+    # ★为什么安全: start() 变幂等(已有 timer 直接返回), stop() 语义一字未改。
+    #   纯粹「别重复起同一个表」, 不改任何读数。
+
+    if "if timer != nil { return }" in t:
+        return t
+
+    OLD_START = '''    func start() {
+        sampleCPU() // prime the previous ticks
+        updateMemory()
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in'''
+    NEW_START = '''    // [V567-PERF] 幂等: 已有 timer 就直接返回。
+    // 旧写法直接 `timer = Timer.scheduledTimer(...)` 覆盖 —— 旧 timer **没有**
+    // invalidate 就被丢了引用, 仍在 CommonModes 里每 2 秒跑一次。
+    // 调用点两处(onAppear + onChange(of: isLive)), 缩略图滚动中反复
+    // appear/disappear ⇒ start 次数可以远大于 stop ⇒ 泄漏 timer 累积,
+    // 每个都往主线程塞 DispatchQueue.main.async ⇒ 滑动时额外掉帧,
+    // 且每次 @Published 都让整棵缩略图重算 ⇒ 与洞1 相乘。
+    func start() {
+        if timer != nil { return }        // [V567-PERF] 幂等 guard
+        sampleCPU() // prime the previous ticks
+        updateMemory()
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in'''
+    if OLD_START not in t:
+        raise RuntimeError(
+            "fix_monitor_idem_v567: 洞2 锚点没找到(SystemResourceMonitor.start)"
+            " —— 上游改过? 先确认真实形状")
+    t = t.replace(OLD_START, NEW_START, 1)
+
+    # ★自检放在替换之后
+    verify_thumb_perf_v567(t)
+    return t
+
+def verify_thumb_perf_v567(t):
+    """v56.7 判据: 折叠态缩略图两处性能洞都堵上, 且 tailLines 与旧实现等价。
+
+    ★本版判据的三个要点:
+      1. **覆盖范围**: 洞1 在 ToolLiveSheet.swift, 洞2 在 AIChatView.swift ——
+         一次 edit 只碰一个文件, 所以本函数被**两个 edit 各自调用一次**,
+         每次只查自己那半(用「该半的特征是否存在」区分, 不用参数传)。
+         这是 v56.6「覆盖范围判据」在跨文件场景下的形态。
+      2. **等价性自证**: 洞1 换了实现, 必须证明**行为没变**。
+         这里不靠注释保证, 而是拿 11 组输入把新旧实现都跑一遍比对字节。
+         ⇒ 判据自己证明「这是纯优化, 不是改行为」。
+      3. **标记行数**: 查的是「该有标记的地方都有」, 与 v56.6 同纪律。
+    """
+    tc = _v566_strip_comments_only(t)
+
+    is_sheet = "private static func v567TailLines(" in tc
+    is_chat = "if timer != nil { return }" in tc
+    if not is_sheet and not is_chat:
+        raise RuntimeError(
+            "verify_thumb_perf_v567: 两处性能洞一个都没堵上 —— "
+            "v567TailLines 与 start() 幂等 guard 都没找到")
+
+    if is_sheet:
+        # 洞1: lastLines 必须已改成转发, 旧实现必须消失
+        if "let lines = text.components(separatedBy:" in tc:
+            raise RuntimeError(
+                "verify_thumb_perf_v567: lastLines 仍在用 components+suffix —— "
+                "整段输出的 String 分配还在, 卡字/卡显示没治")
+        if "return Self.v567TailLines(text, count: count)" not in tc:
+            raise RuntimeError(
+                "verify_thumb_perf_v567: lastLines 没有转发到 v567TailLines "
+                "—— 实现写了但没接上, 等于没修")
+        # ★范围失控: 全文件 components(separatedBy: "\n") 另有 1 处
+        #   (chunkedLines :2352, 它本来就要全部行), 多了少了都要红。
+        n_comp = tc.count('components(separatedBy: "\\n")')
+        if n_comp != 1:
+            raise RuntimeError(
+                "verify_thumb_perf_v567: ToolLiveSheet 里 components(separatedBy)"
+                " 剩 %d 处(应恰好 1 处: chunkedLines :2352) —— "
+                "要么 lastLines 没改干净, 要么误改了不该改的地方" % n_comp)
+        # v567TailLines 必须有三条边界分支
+        k = tc.find("private static func v567TailLines(")
+        e = tc.find("\n    }", k)
+        seg = tc[k:e if e > 0 else k + 2000]
+        for need, why in (
+                ('if count <= 0 { return "" }', "count<=0 边界"),
+                ("if total <= count { return text }", "行数不足边界"),
+                ("String(decoding: view.suffix(from:", "原样切片(不能重新拼装)")):
+            if need not in seg:
+                raise RuntimeError(
+                    "verify_thumb_perf_v567: v567TailLines 缺 %s —— %s"
+                    " 这条丢了就会和旧实现不等价" % (need, why))
+        # ★等价性自证: 11 组输入, 新旧实现必须逐字节相同
+        _v567_assert_tail_equiv()
+
+    if is_chat:
+        # 洞2: guard 必须紧跟在 func start() 之后(不能挪到别处充数)
+        k = tc.find("func start() {")
+        if k < 0:
+            raise RuntimeError("verify_thumb_perf_v567: 找不到 func start()")
+        if "if timer != nil { return }" not in tc[k:k + 240]:
+            raise RuntimeError(
+                "verify_thumb_perf_v567: SystemResourceMonitor.start() 没有幂等 "
+                "guard —— 重复 start 会泄漏 timer, 滑动时额外掉帧")
+        # 全文只能有一处这个 guard(防重复插入)
+        n_guard = tc.count("if timer != nil { return }")
+        if n_guard != 1:
+            raise RuntimeError(
+                "verify_thumb_perf_v567: 幂等 guard 出现 %d 处(应恰好 1 处) "
+                "—— 重复插入会让 stop() 之后再也起不来" % n_guard)
+
+    # ---- 标记行数: **按文件各自计数**, 不跨文件累计 ----
+    # ★实跑踩到: 洞1 与洞2 在**两个不同文件**里, 而一次 edit 只碰一个文件。
+    #   原来写「两文件合起来 >=6」⇒ 单跑任一 edit 都只有 2 处标记, 必然判红。
+    #   ⇒ 判据的阈值必须与「判据被调用的那一半」匹配, 否则就是自己拦自己。
+    #   (与 v56.6「覆盖范围按宿主函数定位」同一纪律: 阈值要跟着作用域走。)
+    n_mark = sum(1 for ln in t.split("\n") if "[V567-PERF]" in ln)
+    need = 3 if is_sheet else 2          # 洞1: 实现+接线+tailLines 声明 / 洞2: 注释块+guard 行
+    if n_mark < need:
+        raise RuntimeError(
+            "verify_thumb_perf_v567: 带 [V567-PERF] 标记的行只有 %d 处(本文件应 >=%d) "
+            "—— 标记被摘掉或本版只改了一半" % (n_mark, need))
+
+    return True
+
+
+def _v567_old_tail(text, count):
+    """旧实现(components+suffix)的 Python 等价物, 只用于判据自证。"""
+    if count <= 0:
+        return ""
+    lines = text.split("\n")
+    return "\n".join(lines[len(lines) - count:]) if count < len(lines) else "\n".join(lines)
+
+
+def _v567_new_tail(text, count):
+    """新实现(v567TailLines)的 Python 等价物, 逐行照抄 Swift 的算法。"""
+    if count <= 0:
+        return ""
+    nl = "\n"
+    total = 1
+    for b in text.encode("utf-8"):
+        if chr(b) == nl:
+            total += 1
+    if total <= count:
+        return text
+    seen = 0
+    # 逐字节扫(与 Swift 侧 String.UTF8View 一致), 定位第 (total-count) 个换行
+    for i, b in enumerate(text.encode("utf-8")):
+        if chr(b) == nl:
+            seen += 1
+            if seen == total - count:
+                return text.encode("utf-8")[i + 1:].decode("utf-8")
+    return text
+
+
+def _v567_assert_tail_equiv():
+    """等价性自证: 11 组输入, 新旧实现必须逐字节相同。
+
+    ★为什么必须有这一步:
+      v56.6 教过「判据全绿 ≠ 改对了」, 而这一版是**换实现**——
+      光判「新代码在」不能证明「行为没变」。这一层是拿数据证明的。
+      ★它已经真的抓到过一次 bug: 第一版按「跳过前 N 行再切」实现,
+        在 '\\n\\n\\n' count=2 时少切一行(返回 '' 而旧的返回 '\\n'),
+        纯靠肉眼看不出来 —— 是这一层把它逼出来的。
+    """
+    cases = [
+        ("", 12),
+        ("a", 12),
+        ("a\nb\nc", 2),
+        ("a\nb\nc", 12),          # 行数不足
+        ("a\nb\nc", 0),           # count<=0
+        ("a\nb\nc", -1),          # count<0
+        ("a\nb\nc\n", 2),         # 末尾有空行
+        ("a\n\nb", 12),           # 中间空行
+        ("\n\n\n", 2),            # 全空行 ★第一版就是在这条上错的
+        ("中文\n输出\n第三行", 2),  # 非 ASCII
+        ("a\nb\nc\nd\ne", 3),     # 中间截取
+    ]
+    for text, count in cases:
+        old = _v567_old_tail(text, count)
+        new = _v567_new_tail(text, count)
+        if old != new:
+            raise RuntimeError(
+                "verify_thumb_perf_v567: v567TailLines 与旧实现**不等价** "
+                "(input=%r count=%d old=%r new=%r) —— 这就不是纯优化了, "
+                "必须改到逐字节相同才能上线" % (text, count, old, new))
+    return True
 
 def fix_width_reflow_v47(t):
     """v47: 统一测宽源 —— 治'终端框盖住上面的字 / 定时任务字一下有一下没有'。
@@ -11042,6 +11335,31 @@ def main():
     edit("Agent/MessageList/MessageListLayout.swift", fix_flip_block, "v30-A: 双引擎测高反振荡 — 斩断 est=1176↔850 回路 (列表高度瞬间跳跃/剧烈抖动)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_measure_throttle, "v30-B: 流式测高节流至 ~8次/秒 — 主线程不再被全量 TextKit 排版占满 (卡顿/STALLED/停止迟钝)")
     edit("Views/Chat/AIChatView.swift", fix_inputbar_kick, "v30-C: 输入栏假死自愈 — STALLED 时就地重建 composer host (草稿保留)")
+    # ★v56.7 必须排在 v30-C 之后: 洞2 改的是 SystemResourceMonitor.start(),
+    #   而 v30-C 也碰 AIChatView.swift —— 登记在它前面会让后者的锚点被改过。
+    #   (与 v52 必须排在 v32 之后是同一类顺序纪律, 那次是 RENDER_OLD 锚点命中 0 处炸掉。)
+    edit("Views/Chat/ToolLiveSheet.swift", fix_thumb_tail_v567,
+        "v56.7: 折叠态缩略图「取末尾 N 行」不再切整段输出 —— 治『终端框卡显示 / 滑动卡字』。"
+        "★★这一版是 v56.6 的续: v56.6 治空白(几何), 本版治**每帧重复劳动**(性能), 两版症状不重叠。"
+        "★仍然是**代码本身即证据**, 不靠猜: ToolLiveSheet.swift:3177 的 "
+        "`text.components(separatedBy: \"\\n\").suffix(count).joined(...)` 会为**每一个**换行分配一个 "
+        "String, 而四个调用方只要末尾 12 行(:2952/:3006)或 6 行(:3042/:3050)。"
+        "shell 输出一屏几百行是常态, 而 body 每 2 秒至少求值 1 次(见洞2)、流式时每来一个 chunk 再 1 次 "
+        "⇒ **每帧几百个 String 分配, 全是白搬**。这就是「字卡 / 卡显示」: 不是画得慢, 是每帧在无谓地搬字符串。"
+        "修法: 结果恒等于「第 (总行数-count) 个换行之后的原文本」, 所以只数一次换行、定位一次、原样切片, "
+        "**零中间 String 分配**。★判据带**等价性自证**: 拿 11 组输入(含末尾空行/行数不足/count<=0/全空行/非 ASCII)"
+        "把新旧实现都跑一遍比对字节 —— 这一层已经真的抓到过新实现自己的 bug(全空行时少切一行), 纯靠肉眼看不出来。"
+        "★范围失控也钉住: ToolLiveSheet 里 components(separatedBy:) 应**恰好剩 1 处**"
+        "(chunkedLines :2352, 它本来就要全部行, **不动**)。★本版在**非 Markdown 路径**上的第二次改动")
+    edit("Views/Chat/AIChatView.swift", fix_monitor_idem_v567,
+        "v56.7 洞2: SystemResourceMonitor.start() 补幂等 guard —— 治『滑动像掉帧』。★★同样是代码即证据: "
+        "AIChatView.swift:97 的 `timer = Timer.scheduledTimer(...)` **直接覆盖**旧 timer 而**没有 invalidate** "
+        "—— 旧 timer 仍在 CommonModes 里每 2 秒跑一次, 并往主线程塞 DispatchQueue.main.async。"
+        "调用点两处(ToolLiveSheet :2933 onAppear + :2937 onChange(of: isLive)), 而缩略图在滚动里反复 "
+        "appear/disappear ⇒ start 次数可以远大于 stop ⇒ **泄漏 timer 累积**; 每个泄漏 timer 的 @Published "
+        "又让整棵 ToolPreviewThumbnail 重算 ⇒ **与洞1 相乘**。这是「滑动时更卡」的直接解释: 滑一次多几个泄漏 timer。"
+        "修法: start() 变幂等(已有 timer 直接返回), stop() 语义**一字未改** —— 纯粹「别重复起同一个表」, 不改任何读数。"
+        "★登记排在 v30-C 之后(两者都碰 AIChatView.swift)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_stabilize_v32, "v32: 渲染宽+测高宽统一 per-cell contentW(视图宽-内边距) — 消除测宽分歧与溢出裁字")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_realw2_v33, "v33: v28 遗留 _realW2 硬编码 cvW-32 改为 contentW — 修边框裁字/卡字/终端框卡内容")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_sync_v34, "v34: 渲染宽回归 superview 基准(过渡态免疫) + 渲染/测高共享 ios15LastRenderContentW — 修整体缩小/不贴边/闪屏(log10-03: tcW 390×27/326×25 交替, v33 公式过渡态双重扣减)")

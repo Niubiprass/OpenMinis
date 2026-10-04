@@ -1677,7 +1677,7 @@ struct ToolLiveSheet: View {
             let v566RowH: CGFloat = 16
             let v566Pad: CGFloat = 28          // .padding(.top,14) + .padding(.bottom,14)
             let v566HeadH: CGFloat = 32        // 标题行 + .padding(.top,14)
-            let v566BodyLines = CGFloat(min(max(linesShownInPreview(text.count), 0), 18))
+            let v566BodyLines = CGFloat(min(max(LazyRenderTuning.linesShownInPreview(text.count), 0), 18))
             let cardMinHeight = min(max(
                 v566HeadH + v566BodyLines * v566RowH + v566Pad,
                 Self.v566FloorHeight), Self.v566CeilHeight)
@@ -2367,7 +2367,7 @@ struct ToolLiveSheet: View {
             let v566RowH: CGFloat = 16
             let v566Pad: CGFloat = 28          // .padding(.top,14) + .padding(.bottom,14)
             let v566HeadH: CGFloat = 32        // 标题行 + .padding(.top,14)
-            let v566BodyLines = CGFloat(min(max(linesShownInPreview(block.content.count), 0), 18))
+            let v566BodyLines = CGFloat(min(max(LazyRenderTuning.linesShownInPreview(block.content.count), 0), 18))
             let cardMinHeight = min(max(
                 v566HeadH + v566BodyLines * v566RowH + v566Pad,
                 Self.v566FloorHeight), Self.v566CeilHeight)
@@ -3174,9 +3174,47 @@ private struct ToolPreviewThumbnail: View {
         }
     }
 
+    /// [V567-PERF] 取末尾 count 行 —— **只切出要的那几行**。
+    ///
+    /// 旧写法 `text.components(separatedBy: "\n").suffix(count)` 会为**每一个**
+    /// 换行分配一个 String, 而调用方只要最后 12 行。shell 输出一屏几百行是常态,
+    /// 而 `body` 每 2 秒至少求值 1 次 ⇒ 每帧几百个 String 分配, 全是白搬。
+    /// **字卡 / 卡显示的直接来源就在这里。**
+    ///
+    /// 等价性: 对同一输入, 产出与 `components+suffix+joined` **逐字节相同**
+    /// (含末尾空行 / 行数不足 / count<=0 / 全空行 / 非 ASCII 五类边界;
+    ///  判据 verify_thumb_perf_v567 里有 11 组输入的等价性自证)。
     private func lastLines(_ text: String, count: Int) -> String {
-        let lines = text.components(separatedBy: "\n")
-        return lines.suffix(count).joined(separator: "\n")
+        // [V567-PERF] 接线处也带标记 —— 判据查的是「实现**与**接线都在」,
+        // 只标实现不标接线的话, 写完实现忘了改调用点也会全绿。
+        return Self.v567TailLines(text, count: count)
+    }
+
+    /// [V567-PERF] 取末尾 count 行 —— 与 components+suffix 等价, 但**零中间分配**。
+    ///
+    /// 关键: `lines.suffix(count).joined(separator: "\n")` 的结果, 恰好就是
+    /// **第 (总行数 - count) 个换行之后的那段原文本**。所以只需数一次换行、
+    /// 定位一次, 然后原样切片, 一个额外 String 都不用造。
+    private static func v567TailLines(_ text: String, count: Int) -> String {
+        if count <= 0 { return "" }
+        let nl = UInt8(ascii: "\n")
+        var total = 1                        // components 的语义: 末尾无换行也算一行
+        for b in text.utf8 where b == nl { total += 1 }
+        if total <= count { return text }      // 全部都要, 原样返回
+        var seen = 0
+        let view = text.utf8
+        var idx = view.startIndex
+        while idx < view.endIndex {
+            if view[idx] == nl {
+                seen += 1
+                if seen == total - count {
+                    return String(decoding: view.suffix(from: view.index(after: idx)),
+                                  as: UTF8.self)
+                }
+            }
+            idx = view.index(after: idx)
+        }
+        return text                           // 理论上到不了, 兜底不崩
     }
 }
 

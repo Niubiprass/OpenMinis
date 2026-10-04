@@ -81,7 +81,11 @@ def case(tag, name):
 def s1(t):
     # 把 snapshotTextContent 那处新写法还原成旧的 3/4
     return t.replace(
-        "let v566BodyLines = CGFloat(min(max(linesShownInPreview(text.count), 0), 18))",
+        # ★needle 必须与 fallback 里注入的源码**逐字一致** ——
+        #   v56.7 修了 run#142 的编译失败(补 LazyRenderTuning. 前缀)后,
+        #   这里没跟着改 ⇒ S1 静默变成「锚点失效, 白测」(回归链报的正是这条)。
+        #   ⇒ 纪律: 判据与 sabotage 的 needle 都是**同一份字符串**, 改一处必须全改。
+        "let v566BodyLines = CGFloat(min(max(LazyRenderTuning.linesShownInPreview(text.count), 0), 18))",
         "let v566BodyLines = CGFloat(min(max(0, 0), 18))\n"
         "            let _unused = text", 1)
 

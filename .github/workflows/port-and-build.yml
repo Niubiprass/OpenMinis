@@ -1422,6 +1422,74 @@ jobs:
           fi
           echo "::endgroup::"
 
+          # ============================================================
+          # 断言 58: v56.6 终端框高度下限(重复代码两处同步 + 范围不外溢)
+          # ============================================================
+          # 【v56.5 装机把整条归因链推翻了】
+          #   75 条 [RND] 全部 codeBlocks=0, 而 [V565-CODEBLOCK] 0 条,
+          #   可录屏第 5/8/12 帧终端框明明在画面上 ⇒ 终端框**不走 Markdown 渲染器**,
+          #   是 FloatingToolBar 的 ToolPreviewThumbnail(tool=shell_execute 工具卡片)。
+          #   ⇒ 「空白过大」的真正来源是 textContent/snapshotTextContent 两处
+          #     `cardMinHeight = cardWidth * 3.0 / 4.0` —— 375屏上 cardWidth≈351
+          #     ⇒ **263pt 硬下限**, 一行输出也被撑到 263pt。
+          #
+          # 【这一条盯的三个翻车形态】
+          #   ① 覆盖范围: 3/4 在文件里有**三处**, 两处是终端、一处是 file_edit 的
+          #      diff 卡片。调研只报了两处 ⇒ 判据按**宿主函数**定位, 并要求
+          #      「全文件 3/4 恰好剩 1 处」防范围失控。
+          #   ② 注释不可当证据: 我在新注释里写了「旧式 cardWidth * 3.0 / 4.0 是
+          #      263pt」, 裸字符串搜索把它当残留 ⇒ 判据全文先剥注释再搜。
+          #   ③ 子串匹配: 上限 400 改成 4000 后 「= 400」 是 「= 4000」 的子串,
+          #      判据照样全绿 ⇒ 改成**整行相等**。
+          if grep -q "fix_toolbar_minheight_v566" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+               python3 "$SCRIPT_DIR/ios15_verify/reverse_v566.py" \
+                 "$SCRIPT_DIR/ios15_fallback.py" "$PWD/.upstream-ios" ; then
+              echo "✅ v56.6 就位 (反向 10 条全拦: 分叉/计数/常量/空输入/范围失控/标记行数)"
+            else
+              echo "::error::v56.6 判据被绕过 —— 终端框的 3/4 硬下限可能还在, 或两条重复路径分叉"
+              exit 1
+            fi
+          else
+            echo "::error::ios15_fallback.py 里找不到 fix_toolbar_minheight_v566"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          # ============================================================
+          # 断言 59: v56.7 缩略图两处性能洞(换实现 ⇒ 判据必须自证等价)
+          # ============================================================
+          # 【洞1: 取末尾 N 行不再切整段输出 —— 卡显示/卡字的主因】
+          #   ToolLiveSheet.swift:3177 `text.components(separatedBy:"\n").suffix(count)`
+          #   为**每一个**换行分配一个 String, 而四个调用方只要末尾 12 或 6 行;
+          #   body 每 2 秒至少求值 1 次(见洞2)、流式时每来一个 chunk 再 1 次
+          #   ⇒ 每帧几百个 String 分配, 全是白搬。
+          # 【洞2: SystemResourceMonitor.start() 没有幂等 guard ⇒ Timer 泄漏】
+          #   `timer = Timer.scheduledTimer(...)` 直接覆盖而**不 invalidate** 旧的;
+          #   调用点两处(onAppear + onChange(of: isLive)), 缩略图滚动中反复
+          #   appear/disappear ⇒ 泄漏 timer 累积, 每个都往主线程塞 async ⇒ 掉帧。
+          #
+          # 【这一条为什么必须有 12 条 sabotage 而不是 3 条】
+          #   洞1 是**换实现**而不是加新逻辑 ⇒ 最危险的形态是「优化掉了但行为变了」。
+          #   判据若只查「新代码在」照样全绿。所以 S5~S8 专门破坏**边界分支**,
+          #   逼判据的**等价性自证**(11 组输入逐字节比对新实现)必须真的会红。
+          #   ★这一层已经真的抓到过一次 bug: 第一版按「跳过前 N 行再切」实现,
+          #   在全空行输入上少切一行, 纯靠肉眼看不出来。
+          if grep -q "fix_thumb_tail_v567" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+               python3 "$SCRIPT_DIR/ios15_verify/reverse_v567.py" ; then
+              echo "✅ v56.7 就位 (反向 12 条全拦: 接线/范围失控/等价性/跨文件分半)"
+            else
+              echo "::error::v56.7 判据被绕过 —— 缩略图仍在每帧搬整段字符串, 或 start() 仍会泄漏 timer"
+              exit 1
+            fi
+          else
+            echo "::error::ios15_fallback.py 里找不到 fix_thumb_tail_v567"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+
           echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
           # 病根A 实证 (minis-2026-10-03 6.log):
           #   04:55:03.045 FIRST-MEASURE CORRECTION cellH=1591.7 newH=1748.0
@@ -1710,15 +1778,44 @@ jobs:
         run: |
           set -e
           echo "============ 编译 (Release / iOS) ============"
+          # ★不用 `set -e` 语义去吞错误码: xcodebuild 失败时要**先打印报错行再退出**。
+          #   run#142 踩过: 原来 `xcodebuild ... > build.log 2>&1` 之后紧跟
+          #   `grep -n "error:" build.log ... || true`, 但整块在 `set -e` 下 ——
+          #   xcodebuild 一退出非零, shell **当场中止**, 后面两行 grep/ echo
+          #   **根本没执行**, 页面上只剩 `Process completed with exit code 65`
+          #   而看不到任何报错行, 只能靠猜。
+          # ⇒ 改成: 关掉 set -e, 显式收 exit code, 打印诊断, 再自己 exit。
+          set +e
           xcodebuild -project src/ios/Minis.xcodeproj \
             -scheme Minis \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             -derivedDataPath DerivedData build > build.log 2>&1
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            echo "=== ❌ xcodebuild 失败 (exit $RC) —— build.log 共 $(wc -l < build.log) 行 ==="
+            echo "=== Swift/C 编译错误 (error:, 最多 60 条) ==="
+            grep -nE "\.swift:[0-9]+:[0-9]+: error:|\.m:[0-9]+:[0-9]+: error:|error: " build.log \
+              | head -60 || true
+            echo "=== 最后 40 行原始输出 ==="
+            tail -40 build.log
+            echo "=== 把 build.log 传上去, 免得再猜 ==="
+            cp build.log /tmp/build-fail.log 2>/dev/null || true
+            exit "$RC"
+          fi
           echo "=== 编译错误行 (error:, 最多 80 条) ==="
           grep -n "error:" build.log | grep -v "0 errors" | head -80 || true
           echo "编译成功"
+
+      - name: "上传失败时的 build.log"
+        if: failure()
+        run: |
+          if [ -f build.log ]; then
+            cp build.log failed-build.log
+            echo "已留存 failed-build.log ($(wc -l < build.log) 行)"
+          fi
 
       - name: "剥离 iOS 15 不可启动的扩展 (dyld 体检: 缺框架 or 部署目标过高)"
         if: success()

@@ -94,7 +94,15 @@ class SystemResourceMonitor: ObservableObject {
     private var timer: Timer?
     private var prevCPUTicks: (user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)?
 
+    // [V567-PERF] 幂等: 已有 timer 就直接返回。
+    // 旧写法直接 `timer = Timer.scheduledTimer(...)` 覆盖 —— 旧 timer **没有**
+    // invalidate 就被丢了引用, 仍在 CommonModes 里每 2 秒跑一次。
+    // 调用点两处(onAppear + onChange(of: isLive)), 缩略图滚动中反复
+    // appear/disappear ⇒ start 次数可以远大于 stop ⇒ 泄漏 timer 累积,
+    // 每个都往主线程塞 DispatchQueue.main.async ⇒ 滑动时额外掉帧,
+    // 且每次 @Published 都让整棵缩略图重算 ⇒ 与洞1 相乘。
     func start() {
+        if timer != nil { return }        // [V567-PERF] 幂等 guard
         sampleCPU() // prime the previous ticks
         updateMemory()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
