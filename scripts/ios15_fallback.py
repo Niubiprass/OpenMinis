@@ -7104,6 +7104,146 @@ def verify_zhao_compat_v60(t):
     return True
 
 
+# ============================================================
+# v61: 治「打字/滑动时整屏跳动 + 流式内容跳出而非流动」
+# ============================================================
+# 【装机证据(2026-10-05 5.log + 86s 录屏帧差分析)】
+#   ① 卡字已消失: tcW 557 次采样 100% 恒 358, 零拉锯(v60 生效确认)。
+#   ② 帧差: 43-56s 内容位移=0 但残差 0.3↔18.5 剧烈波动 = 整屏 cell
+#      原地反复重排, 非滚动。
+#   ③ 日志: 同一消息(storageLen=209, tcW=358)高度在 333↔490 间漂移
+#      (差 157pt), "large shrink -157 applies immediately"(IOS15-FIX-BLANK)
+#      反复触发 —— 每次回缩/再增长 = 一次整屏跳动。
+# 【根因】我们的 UIHostingConfiguration 替身 apply() 每次调用都
+#   全删重建 UIHostingController(subviews.removeFromSuperview + new)。
+#   UIHostingConfiguration 是值类型, 流式输出每 tick SwiftUI 都给新值
+#   ⇒ didSet ⇒ apply ⇒ 每 tick 重建 host ⇒ SwiftUI 状态/测量从零起步
+#   ⇒ 高度测量不稳定(333↔490) ⇒ cell 高度来回修正 = 跳动。
+#   zhaoxiufei 的 HostingContentView 有快速路径 `host?.rootView = ...`
+#   (3ccdff6 diff 上下文可见), 没有 rebuild 风暴。
+# 【修法两件套】
+#   A. [V61-REUSE] apply 就地更新快速路径: 同类 config 复用已有 host,
+#      只刷 rootView —— 与 zhaoxiufei 实现对齐。
+#   B. [V61-MONO] 高度单调锁: 同宽下记住历史最高, 回缩超 8pt 容差则
+#      沿用历史值(容差防字体/图片加载等合法微缩被锁死)。快速路径使
+#      apply 不再每 tick 重建后, 锁按「宽度 + apply 重建」重置即可:
+#      复用换消息走重建路径 → 锁清(不串扰); 流式 tick 走快速路径 →
+#      锁保持(同内容回缩被挡)。
+# ============================================================
+
+V61_DECL_OLD = """    private var isMeasuring: Bool = false
+    private var lastLoggedWidth: CGFloat = -1
+    private var ios15LastGoodFitH: CGFloat = 0"""
+
+V61_DECL_NEW = """    private var isMeasuring: Bool = false
+    private var lastLoggedWidth: CGFloat = -1
+    private var ios15LastGoodFitH: CGFloat = 0
+    // [V61-MONO] 高度单调锁状态: (历史最高, 绑定宽度)。宽变即重置。
+    private var ios15MonoH: CGFloat = 0
+    private var ios15MonoHW: CGFloat = 0"""
+
+V61_TAIL_OLD = """        print("[IOS15Size] out w=\\(width) h=\\(height) idealW=\\(size.width) idealH=\\(size.height)")
+        if height > 1 { ios15LastGoodFitH = max(ios15LastGoodFitH, height) }
+        return CGSize(width: width, height: max(0, height))"""
+
+V61_TAIL_NEW = """        print("[IOS15Size] out w=\\(width) h=\\(height) idealW=\\(size.width) idealH=\\(size.height)")
+        if height > 1 { ios15LastGoodFitH = max(ios15LastGoodFitH, height) }
+        // [V61-MONO] 单调锁生效点: 同宽下回缩超容差(8pt) → 沿用历史最高。
+        // 挡住「测量管道抖动」(attachment 缓存时序导致同内容两次测量差
+        // 157pt)直接上屏 —— 那就是用户看到的整屏跳动。
+        if width != ios15MonoHW { ios15MonoHW = width; ios15MonoH = 0 }
+        if ios15MonoH > 1, height > 1, height < ios15MonoH - 8 {
+            height = ios15MonoH
+        }
+        if height > ios15MonoH { ios15MonoH = height }
+        return CGSize(width: width, height: max(0, height))"""
+
+V61_APPLY_OLD = """    private func apply(_ config: UIContentConfiguration) {
+        subviews.forEach { $0.removeFromSuperview() }
+        host = nil
+        guard let config = config as? UIHostingConfiguration<Content> else { return }"""
+
+V61_APPLY_NEW = """    private func apply(_ config: UIContentConfiguration) {
+        // [V61-REUSE] 就地更新快速路径(zhaoxiufei HostingContentView 同款):
+        // 同类 config 且已有 host 时只刷 rootView, 不再全删重建 ——
+        // 流式输出每 tick 走这里, SwiftUI 就地 diff, 测量状态连续。
+        // 旧实现每 tick 重建 UIHostingController(每秒 N 次) = 高度抖动
+        // 与整屏跳动的放大器(2026-10-05 5.log 实证 333↔490 漂移)。
+        if let existing = host, let newConfig = config as? UIHostingConfiguration<Content> {
+            let _ios15ContentMaxW2 = max(UIScreen.main.bounds.width, 200)  // [V61-REUSE] 与重建路径同款上限
+            existing.rootView = AnyView(newConfig.content.frame(maxWidth: _ios15ContentMaxW2, alignment: .leading))
+            return
+        }
+        subviews.forEach { $0.removeFromSuperview() }
+        host = nil
+        guard let config = config as? UIHostingConfiguration<Content> else { return }"""
+
+V61_RESET_OLD = """        host = controller
+    }
+}"""
+
+V61_RESET_NEW = """        host = controller
+        // [V61-MONO] 走到重建路径 = 内容标识换了(新消息/复用), 锁重置。
+        ios15MonoH = 0
+        ios15MonoHW = 0
+    }
+}"""
+
+
+def fix_host_stability_v61(t):
+    """v61 注入: iOS15Compat.swift 四处(REUSE 快速路径 + MONO 单调锁)。
+
+    幂等: 已有 [V61-REUSE] 原样返回。锚点计数==1 防呆, 失配报错。
+    """
+    if "[V61-REUSE]" in t:
+        return t
+    t = _v60_replace1(t, V61_DECL_OLD, V61_DECL_NEW, "v61 锁声明")
+    t = _v60_replace1(t, V61_TAIL_OLD, V61_TAIL_NEW, "v61 锁生效点")
+    t = _v60_replace1(t, V61_APPLY_OLD, V61_APPLY_NEW, "v61 apply 快速路径")
+    t = _v60_replace1(t, V61_RESET_OLD, V61_RESET_NEW, "v61 重建路径锁重置")
+    return t
+
+
+def verify_host_stability_v61(t):
+    """v61 判据: 五层(iOS15Compat.swift)。"""
+    if t.count("[V61-REUSE]") != 2:
+        raise RuntimeError(
+            "verify_host_stability_v61: [V61-REUSE] 应恰 2 处(apply 快速路径"
+            "标记 + 尾注), 实测 %d" % t.count("[V61-REUSE]"))
+    if t.count("[V61-MONO]") != 3:
+        raise RuntimeError(
+            "verify_host_stability_v61: [V61-MONO] 应恰 3 处(声明/生效点/"
+            "重置), 实测 %d" % t.count("[V61-MONO]"))
+    # 快速路径必须带与重建路径同款的 maxWidth 修饰(否则理想宽回潮)
+    if "existing.rootView = AnyView(newConfig.content.frame(maxWidth:" not in t:
+        raise RuntimeError(
+            "verify_host_stability_v61: 快速路径 rootView 缺 maxWidth 修饰 ——"
+            "内容理想宽(100032)会从这条路径回潮")
+    # 快速路径必须在重建(subviews.forEach)之前
+    i_fast = t.find("[V61-REUSE] 就地更新快速路径")
+    i_rebuild = t.find("subviews.forEach { $0.removeFromSuperview() }")
+    if not (0 < i_fast < i_rebuild):
+        raise RuntimeError(
+            "verify_host_stability_v61: 快速路径未排在重建路径之前 —— "
+            "每次 apply 仍会先全删子视图")
+    # 锁生效点三要素
+    i_mono = t.find("ios15MonoH")
+    tail = t[i_mono:i_mono + 400]
+    if "ios15MonoHW = width" not in t or "ios15MonoH - 8" not in t:
+        raise RuntimeError("verify_host_stability_v61: 锁生效点逻辑不完整"
+                           "(缺宽绑定重置或 8pt 容差)")
+    # 重建路径必须重置锁(防复用串扰: 矮消息沿用高消息 → 大空白)
+    # 锚点用 ios15MonoHW = 0: 锁尾部含子串 "ios15MonoH = 0", find 会误命中,
+    # 而 "ios15MonoHW = 0" 全文件唯一(重建重置独有)。
+    i_reset = t.find("ios15MonoHW = 0")
+    i_hostc = t.find("host = controller")
+    if not (0 < i_hostc < i_reset):
+        raise RuntimeError(
+            "verify_host_stability_v61: 重建路径缺锁重置 —— cell 复用换消息时"
+            "会沿用上一条消息的锁定高度 → 底部大空白")
+    return True
+
+
 def fix_kvo_debt_v569(t):
     """v56.9: 修 KVO 同值抑制把欠账帧永久跳过。
 
@@ -13270,6 +13410,14 @@ def main():
         "v60: hosting 层 sizeThatFits 重写(zhaoxiufei 3ccdff6 同款) —— "
         "父视图走 sizeThatFits 路径时按真实宽向 SwiftUI 要高度+ceil 对齐; "
         "已有的两个 systemLayoutSizeFitting 重写(ios15FittingSize)不动。")
+    edit("iOS15Compat.swift", fix_host_stability_v61,
+        "v61: 治「打字/滑动整屏跳动 + 流式内容跳出」(2026-10-05 5.log + 录屏"
+        "帧差实证)。根因 = apply() 每次流式 tick 全删重建 UIHostingController"
+        " ⇒ 测量从零起步 ⇒ 同一消息高度 333↔490 反复漂移(差 157pt)。"
+        "【两件套】V61-REUSE apply 就地更新快速路径(zhaoxiufei 同款: 同类 "
+        "config 只刷 rootView, 流式 tick 不再重建); V61-MONO 高度单调锁"
+        "(同宽回缩超 8pt 容差沿用历史最高, 挡测量抖动上屏; 宽变/重建路径重置"
+        "防复用串扰)。判据 verify_host_stability_v61 五层 + 反向 reverse_v61。")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")

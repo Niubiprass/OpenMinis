@@ -413,6 +413,9 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     private var isMeasuring: Bool = false
     private var lastLoggedWidth: CGFloat = -1
     private var ios15LastGoodFitH: CGFloat = 0
+    // [V61-MONO] 高度单调锁状态: (历史最高, 绑定宽度)。宽变即重置。
+    private var ios15MonoH: CGFloat = 0
+    private var ios15MonoHW: CGFloat = 0
 
     private func ios15FittingSize(_ targetSize: CGSize) -> CGSize {
         var width = targetSize.width
@@ -470,10 +473,28 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         }
         print("[IOS15Size] out w=\(width) h=\(height) idealW=\(size.width) idealH=\(size.height)")
         if height > 1 { ios15LastGoodFitH = max(ios15LastGoodFitH, height) }
+        // [V61-MONO] 单调锁生效点: 同宽下回缩超容差(8pt) → 沿用历史最高。
+        // 挡住「测量管道抖动」(attachment 缓存时序导致同内容两次测量差
+        // 157pt)直接上屏 —— 那就是用户看到的整屏跳动。
+        if width != ios15MonoHW { ios15MonoHW = width; ios15MonoH = 0 }
+        if ios15MonoH > 1, height > 1, height < ios15MonoH - 8 {
+            height = ios15MonoH
+        }
+        if height > ios15MonoH { ios15MonoH = height }
         return CGSize(width: width, height: max(0, height))
     }
 
     private func apply(_ config: UIContentConfiguration) {
+        // [V61-REUSE] 就地更新快速路径(zhaoxiufei HostingContentView 同款):
+        // 同类 config 且已有 host 时只刷 rootView, 不再全删重建 ——
+        // 流式输出每 tick 走这里, SwiftUI 就地 diff, 测量状态连续。
+        // 旧实现每 tick 重建 UIHostingController(每秒 N 次) = 高度抖动
+        // 与整屏跳动的放大器(2026-10-05 5.log 实证 333↔490 漂移)。
+        if let existing = host, let newConfig = config as? UIHostingConfiguration<Content> {
+            let _ios15ContentMaxW2 = max(UIScreen.main.bounds.width, 200)  // [V61-REUSE] 与重建路径同款上限
+            existing.rootView = AnyView(newConfig.content.frame(maxWidth: _ios15ContentMaxW2, alignment: .leading))
+            return
+        }
         subviews.forEach { $0.removeFromSuperview() }
         host = nil
         guard let config = config as? UIHostingConfiguration<Content> else { return }
@@ -507,6 +528,9 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
                 controller.view.bottomAnchor.constraint(equalTo: bottomAnchor),
             ])
         host = controller
+        // [V61-MONO] 走到重建路径 = 内容标识换了(新消息/复用), 锁重置。
+        ios15MonoH = 0
+        ios15MonoHW = 0
     }
 }
 
