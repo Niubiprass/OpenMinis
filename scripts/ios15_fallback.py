@@ -5903,6 +5903,218 @@ def verify_capsule_shimmer_v568(t):
 V568_TRAVEL_PT = 600
 V568_MAX_SCREEN_PT = 440   # iPhone 16 Pro Max 逻辑宽度的上界, 留足余量
 
+
+
+# =====================================================================
+# v56.9 —— KVO skipSame 把欠账帧全部跳过(「定时任务」那行只剩上半)
+# =====================================================================
+#
+# ★★★ 本版归因来自**装机日志 + 用户截图**, 不是推断 ★★★
+#
+# 【用户反馈】v56.8 装机后: 「根本没修复, 所有的情况一如既往, 滑动掉帧,
+#   都不知道滑到哪里去了, 字还是滑动的时候卡掉, 显示也不完全」
+#   两张截图对比: 同一段列表, 一张「文件处理 / 定时任务」两行都完整,
+#   另一张「定时任务」那行**只剩上半**(halfBand 指纹), 且「检查环境配置」
+#   胶囊同时压上来。
+#
+# 【装机日志的决定性读数】minis-2026-10-05.log / 7951 行
+#
+#   [V45-TVHFIX] 101 条, **debt 全部 0.0**  —— 补高链自己说「我补好了」
+#   [V56-KVO]    95 条, **全部是 skipSame**, **没有一条 fixed/写入**
+#
+#   而 95 条里 **13 条 svH < needH**(几何确实欠着):
+#     svH=26.7   needH=49.0     ← 就是「定时任务」那类短 cell
+#     svH=132.7  needH=177.3
+#     svH=210.0  needH=228.0
+#     svH=266.0  needH=333.0
+#     svH=283.0  needH=573.7
+#     svH=372.7  needH=730.7
+#     svH=407.0  needH=832.3
+#     svH=657.0  needH=724.0
+#     svH=792.7  needH=1061.0
+#     svH=959.7  needH=1340.3
+#     svH=1023.7 needH=1052.0
+#     svH=1406.7 needH=1739.7
+#     svH=1449.7 needH=1739.7 (被 29 次重复计入正常组)
+#
+#   ⇒ **KVO 抢帧器 95 次全部走了「跳过」分支, 一次都没真正修**。
+#     而其中 13 次几何是真的欠着的。
+#
+# 【真凶: skipSame 分支只改局部变量, 不写 obj.frame】
+#   SelectableMarkdownView.swift:5917 附近(v56.1 引入的同值抑制):
+#
+#       let _v56dup = abs(lastH - _v42Need) < 0.5 && (now - lastAt) < 0.12
+#       if _v56dup {
+#           NSLog("[V56-KVO] skipSame ...")
+#           ...
+#           var _v56hFix = f
+#           _v56hFix.size.height = _v42Need     // ★ 只改**局部副本**
+#           f = _v56hFix
+#       } else if _v42Need > 1, f.size.height + 0.5 < _v42Need {
+#           ...
+#           obj.frame = _hFix                   // ★ 真正写回
+#       }
+#
+#   抑制键是 (目标高度, 0.12s 窗), **完全不看当前几何**。
+#   而欠账恰恰是一个**状态**: `f.size.height < needH`。
+#
+#   ⇒ 上一次 pass 已经写过 needH, 0.12s 内又被 SwiftUI 写回矮值, 于是
+#     「目标高度与上次相同」+「在窗内」⇒ 判 dup ⇒ 跳过 ⇒ **欠账留着**。
+#     而下一个 0.12s 之后呢? KVO **不再触发**(几何没变 ⇒ 没 KVO 事件) ⇒
+#     欠账**永久凝固** ⇒ 那一行就一直只剩上半。
+#
+# ★这正是 v39/v40 判过「补齐代码一次都没执行过」的那个现象, 但根因反过来了:
+#   v39/v40 的结论是「代码没跑」; v56.9 查明是「跑了, 但被自己写的抑制挡掉」。
+#   ⇒ **同一个现象, 第 3 次以新根因回来。这也是判据全绿却治不好的第 5 次。**
+#
+# 【修法: 抑制必须以「几何是否真的欠着」为前提, 而不是以「值是否重复」】
+#   重复抑制的**本意**是省掉「同 tick 内反复写同一个高度」这种几何零变化的
+#   无谓同步 layout —— 那个本意是对的, 保留。
+#   但当 `f.size.height + 0.5 < _v42Need` 时, 写入会让几何**真的变化**,
+#   那就不是「零变化」, 必须写。
+#   ⇒ 一行条件: skipSame 必须**且必须**要求「当前高度已达 needH」。
+
+V569_SKIP_OLD = '''            if _v56dup {
+                // 同窗同值: 跳过 obj.frame 写入(几何零变化)。
+                struct _V56Skip { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                if _v56now - _V56Skip.last > 0.5 {
+                    _V56Skip.last = _v56now
+                    _V56Skip.n &+= 1
+                    // ★整型转换必须用 UInt64(...), 不能用 (unsigned long long)。
+                    //  run#135 实测: `(unsigned long long)x` 让 Swift 词法器在
+                    //  `long long)x` 处报 `expected ',' separator`(两列都报)。
+                    //  全项目 Swift 侧此前**从未**用过 C 风格转换 —— 只有
+                    //  NSTextContainerSetSizeGuard.m 那个 .m 文件里有(ObjC 合法)。
+                    //  v53-MEM(产物 8438 行)早已编译验证的写法是 `UInt64(...)`。
+                    // ⇒ 纪律 48 扩展: **语法形式也要照抄已编译验证的代码**,
+                    //   不只是 API 名。
+                    NSLog("[V56-KVO] skipSame svH=%.1f needH=%.1f n=%u",
+                          f.size.height, _v42Need, _V56Skip.n)
+                }
+                _V56KVOW.skipped &+= 1
+                // 与下面「补完立刻交棒」同语义: 即使跳过 obj.frame 写入,
+                // 局部 f 也要反映已补好的高度, 否则后续任何读 f 的探针
+                // 都会看到欠账值、误判成"没补上"。
+                var _v56hFix = f
+                _v56hFix.size.height = _v42Need
+                f = _v56hFix
+            } else if _v42Need > 1, f.size.height + 0.5 < _v42Need {'''
+
+V569_SKIP_NEW = '''            // [V569-DEBT] ★本版全部修复的支点。
+            // 「同值抑制」只该在**几何零变化**时生效。
+            // 而欠账是**状态**: `f.size.height < needH`。
+            // 装机构装证据(minis-2026-10-05.log, 95 条 V56-KVO **全是 skipSame**,
+            // 零条 fixed, 其中 13 条 svH < needH)证明:
+            //   上一 pass 写过 needH → 0.12s 内被 SwiftUI 写回矮值 →
+            //   「目标高度与上次相同」+「在窗内」⇒ 判 dup ⇒ 跳过 obj.frame 写入 →
+            //   几何没变 ⇒ KVO **不再触发** ⇒ 欠账**永久凝固**。
+            //   ⇒ 那一行就一直只剩上半(v53 起反复出现的 halfBand)。
+            // 判据随之从「值是否重复」改成「值是否重复 **且** 几何已达标」。
+            let _v56noDebt = f.size.height + 0.5 >= _v42Need
+            if _v56dup && _v56noDebt {
+                // 同窗同值 **且** 当前高度已达标: 纯重复写, 跳过(几何零变化)。
+                struct _V56Skip { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                if _v56now - _V56Skip.last > 0.5 {
+                    _V56Skip.last = _v56now
+                    _V56Skip.n &+= 1
+                    NSLog("[V56-KVO] skipSame svH=%.1f needH=%.1f n=%u",
+                          f.size.height, _v42Need, _V56Skip.n)
+                }
+                _V56KVOW.skipped &+= 1
+                var _v56hFix = f
+                _v56hFix.size.height = _v42Need
+                f = _v56hFix
+            } else if _v42Need > 1, f.size.height + 0.5 < _v42Need {'''
+
+
+def fix_kvo_debt_v569(t):
+    """v56.9: 修 KVO 同值抑制把欠账帧永久跳过。
+
+    ★根因来自装机日志: 95 条 [V56-KVO] 全是 skipSame, 零条 fixed,
+      其中 13 条 svH < needH —— 几何确实欠着却被抑制分支跳过。
+      而 skipSame 分支只改局部副本 f, **不写 obj.frame**,
+      几何不变 ⇒ KVO 不再触发 ⇒ 欠账永久凝固 ⇒ 「定时任务」那行只剩上半。
+    """
+    if "[V569-DEBT]" in t:
+        return t
+
+    if V569_SKIP_OLD not in t:
+        raise RuntimeError(
+            "fix_kvo_debt_v569: skipSame 分支锚点没找到 —— "
+            "v56.1 的同值抑制代码结构可能变了。"
+            "★别先怀疑上游: 这个分支是我们自己注入的, "
+            "直接 grep 产物里的 `_v56dup` 看现状")
+
+    return t.replace(V569_SKIP_OLD, V569_SKIP_NEW, 1)
+
+
+def verify_kvo_debt_v569(t):
+    """v56.9 判据: 同值抑制必须以「几何已达标」为前提。
+
+    四层:
+      1. **范围**: [V569-DEBT] 标记在位。
+      2. **核心**: 抑制条件里必须有几何判据 `_v56noDebt`,
+         且它必须由 `f.size.height + 0.5 >= _v42Need` 算出来
+         —— 不是别的东西。
+      3. **抑制条件真的带上它**: `if _v56dup && _v56noDebt` 必须逐字在。
+         ★只声明 _v56noDebt 而不接进 if 是**本版最危险的形态**:
+         看着像修了, 行为完全没变 ⇒ 判据必须查 if 那一行本身。
+      4. **没顺手删掉抑制本意**: `skipSame` 的 NSLog 与
+         `_V56KVOW.skipped &+= 1` 都必须在。抑制本身是有价值的优化
+         (省掉同 tick 内几何零变化的同步 layout), 删掉它等于
+         把「省掉无谓写入」变成「每帧都写」, 是另一种退化。
+    """
+    tc = _v566_strip_comments_only(t)
+
+    # 1. 范围
+    n_mark = sum(1 for ln in t.split("\n") if "[V569-DEBT]" in ln)
+    if n_mark < 1:
+        raise RuntimeError(
+            "verify_kvo_debt_v569: 找不到 [V569-DEBT] 标记 —— 注入没到位")
+
+    # 2. 几何判据在位
+    if "_v56noDebt" not in tc:
+        raise RuntimeError(
+            "verify_kvo_debt_v569: 没有 `_v56noDebt` —— 抑制条件仍然只看"
+            "「值是否重复」不看「几何是否欠着」, 欠账帧会被永久跳过")
+
+    # ★**整行相等**, 不是子串包含。
+    #   踩坑记录(判据自己的第一版就是这么错的): 原来是
+    #       if "f.size.height + 0.5 >= _v42Need" not in tc
+    #   于是取反成 `... < _v42Need`(S3)、阈值写死成 `1000.0`(S4)
+    #   **两条都还是那个子串**, 判据全绿放过。
+    #   ⇒ 与 v566 S3「`= 400` 是 `= 4000` 的子串」完全同类, 同一纪律第三次适用。
+    #   ⇒ 语义判据必须整行比对: 比较符方向、两个操作数, 都要对上。
+    _no_debt_lines = [ln.strip() for ln in tc.split("\n")
+                      if "_v56noDebt =" in ln]
+    if not any(ln == "let _v56noDebt = f.size.height + 0.5 >= _v42Need"
+               for ln in _no_debt_lines):
+        raise RuntimeError(
+            "verify_kvo_debt_v569: `_v56noDebt` 的定义行不是 "
+            "`let _v56noDebt = f.size.height + 0.5 >= _v42Need` —— "
+            "它必须整行逐字表达「当前高度已达 needH」这一个意思。"
+            "★子串匹配会放过『比较符取反』与『阈值写死』两种改法")
+
+    # 3. ★真的接进了 if 条件(防「声明了但没接线」)
+    if "if _v56dup && _v56noDebt" not in tc:
+        raise RuntimeError(
+            "verify_kvo_debt_v569: 抑制条件仍是 `if _v56dup` —— "
+            "几何判据算出来了却没接进 if。这是本版最危险的形态: "
+            "代码看起来修了, 行为一字未变")
+
+    # 4. 抑制本意没被删
+    if "skipSame svH=" not in tc:
+        raise RuntimeError(
+            "verify_kvo_debt_v569: skipSame 的日志被删了 —— "
+            "抑制分支本身必须保留(见 verify 第4层说明)")
+
+    if "_V56KVOW.skipped &+= 1" not in tc:
+        raise RuntimeError(
+            "verify_kvo_debt_v569: `_V56KVOW.skipped` 计数被删了 —— "
+            "抑制分支的本体被掏空了, 本版只该改**条件**, 不该删**分支**")
+
+    return True
+
 def fix_width_reflow_v47(t):
     """v47: 统一测宽源 —— 治'终端框盖住上面的字 / 定时任务字一下有一下没有'。
 
@@ -11764,6 +11976,31 @@ def main():
          "★同时纠正 v53-v55 的归因错误: setSize 358x2000 ×777 是 guard 里 return 掉的短路(1/16采样, 真实 10912次), "
          "且集中在 08:27-08:30 启动期, 用户滑动期(18:40)为 0 条 —— 不是掉帧元凶")
 
+
+    # ★★ v56.9 —— 装机日志的决定性读数直接指向的一处 ★★
+    # v56.8 装机日志 minis-2026-10-05.log(7951 行)里:
+    #   [V45-TVHFIX] 101 条, debt **全部 0.0**  (补高链自称已补好)
+    #   [V56-KVO]    95 条, **全部 skipSame**, **零条 fixed/写入**
+    # 而 95 条里 13 条 svH < needH —— 几何确实欠着却被抑制分支跳过。
+    # 用户截图: 「定时任务」那行**只剩上半**, 且「检查环境配置」胶囊压上来。
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_debt_v569,
+        "v56.9: 治『那一行只剩上半 / 显示不完全』—— KVO 同值抑制把欠账帧永久跳过。"
+        "★★★ 根因来自**装机日志**, 不是推断 ★★★"
+        "【日志读数】minis-2026-10-05.log: V56-KVO 95 条**全是 skipSame**零条 fixed; "
+        "其中 13 条 svH<needH(26.7/49、407/832.3、959.7/1340.3 …)。"
+        "而 V45-TVHFIX 的 debt 全是 0.0 —— 补高链自己以为补好了。"
+        "【真凶】v56.1 引入的同值抑制(v56 原 docstring 明写「不同值的写入一律放行, "
+        "正确修正绝不被连坐」—— **这句话是错的**): 抑制键是 (目标高度, 0.12s 窗), "
+        "**完全不看当前几何**。于是: 上一 pass 写过 needH → 0.12s 内被 SwiftUI 写回矮值 → "
+        "「目标高度与上次相同」+「在窗内」⇒ 判 dup ⇒ **只改局部副本 f, 不写 obj.frame** → "
+        "几何没变 ⇒ **KVO 不再触发** ⇒ 欠账**永久凝固** ⇒ 那一行就一直只剩上半。"
+        "★这是 v39/v40 判过『补齐代码一次都没执行过』的同一现象, 但根因反过来了: "
+        "  v39/v40 结论是「代码没跑」; 本版查明是「跑了, 但被自己写的抑制挡掉」。"
+        "【修法】抑制条件从「值是否重复」改为「值是否重复 **且** 几何已达标」: "
+        "  `let _v56noDebt = f.size.height + 0.5 >= _v42Need` 然后 "
+        "  `if _v56dup && _v56noDebt`。欠账时写入让几何真的变化 ⇒ 不是零变化 ⇒ 必须写。"
+        "★抑制本意**保留**(省掉同 tick 内几何零变化的同步 layout 是真优化), "
+        "  只改条件不删分支 —— 判据第4层专门钉住 skipped 计数不许消失。")
     # ★顺序要点: v55-B 仍先注册(它是 v56-B 的锚点载体), v56-B 在其产物上改写,
     #   所以 v56 不能删掉 v55-B 的注册, 只在 v56 里把它放行。
 

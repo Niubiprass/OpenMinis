@@ -4754,7 +4754,7 @@ final class VideoAttachment: NSTextAttachment {
 
             var thumb: UIImage?
             do {
-                let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+                let (cgImage, _) = try await generator.image(at: .zero)
                 thumb = UIImage(cgImage: cgImage)
             } catch {
                 // Fallback: no thumbnail
@@ -5905,27 +5905,27 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             let _v56now = CACurrentMediaTime()
             let _v56dup = abs(_V56KVOW.lastH - _v42Need) < 0.5
                 && (_v56now - _V56KVOW.lastAt) < 0.12
-            if _v56dup {
-                // 同窗同值: 跳过 obj.frame 写入(几何零变化)。
+            // [V569-DEBT] ★本版全部修复的支点。
+            // 「同值抑制」只该在**几何零变化**时生效。
+            // 而欠账是**状态**: `f.size.height < needH`。
+            // 装机构装证据(minis-2026-10-05.log, 95 条 V56-KVO **全是 skipSame**,
+            // 零条 fixed, 其中 13 条 svH < needH)证明:
+            //   上一 pass 写过 needH → 0.12s 内被 SwiftUI 写回矮值 →
+            //   「目标高度与上次相同」+「在窗内」⇒ 判 dup ⇒ 跳过 obj.frame 写入 →
+            //   几何没变 ⇒ KVO **不再触发** ⇒ 欠账**永久凝固**。
+            //   ⇒ 那一行就一直只剩上半(v53 起反复出现的 halfBand)。
+            // 判据随之从「值是否重复」改成「值是否重复 **且** 几何已达标」。
+            let _v56noDebt = f.size.height + 0.5 >= _v42Need
+            if _v56dup && _v56noDebt {
+                // 同窗同值 **且** 当前高度已达标: 纯重复写, 跳过(几何零变化)。
                 struct _V56Skip { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
                 if _v56now - _V56Skip.last > 0.5 {
                     _V56Skip.last = _v56now
                     _V56Skip.n &+= 1
-                    // ★整型转换必须用 UInt64(...), 不能用 (unsigned long long)。
-                    //  run#135 实测: `(unsigned long long)x` 让 Swift 词法器在
-                    //  `long long)x` 处报 `expected ',' separator`(两列都报)。
-                    //  全项目 Swift 侧此前**从未**用过 C 风格转换 —— 只有
-                    //  NSTextContainerSetSizeGuard.m 那个 .m 文件里有(ObjC 合法)。
-                    //  v53-MEM(产物 8438 行)早已编译验证的写法是 `UInt64(...)`。
-                    // ⇒ 纪律 48 扩展: **语法形式也要照抄已编译验证的代码**,
-                    //   不只是 API 名。
                     NSLog("[V56-KVO] skipSame svH=%.1f needH=%.1f n=%u",
                           f.size.height, _v42Need, _V56Skip.n)
                 }
                 _V56KVOW.skipped &+= 1
-                // 与下面「补完立刻交棒」同语义: 即使跳过 obj.frame 写入,
-                // 局部 f 也要反映已补好的高度, 否则后续任何读 f 的探针
-                // 都会看到欠账值、误判成"没补上"。
                 var _v56hFix = f
                 _v56hFix.size.height = _v42Need
                 f = _v56hFix
@@ -10188,7 +10188,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // becomes a measurable chunk of every updateUIView pass (and
         // updateUIView runs on each SwiftUI body re-evaluation, so it
         // multiplies during streaming and self-sizing measurement loops).
-        let imageMatches = MinisRegex.ranges(markdown, "!\\[([^\\]]*)\\]\\(([^)]+)\\)")
+        let imageMatches = markdown.ranges(of: /!\[([^\]]*)\]\(([^)]+)\)/)
         if !imageMatches.isEmpty {
             for match in imageMatches {
                 let matchStr = String(markdown[match])
@@ -10637,26 +10637,6 @@ struct SelectableMarkdownView: UIViewRepresentable {
     }
 
     @available(iOS 16.0, *)
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: SelectableMarkdownTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
         // Key the size cache on the SwiftUI binding length, not

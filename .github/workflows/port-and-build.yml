@@ -1539,6 +1539,79 @@ jobs:
             exit 1
           fi
           echo "::endgroup::"
+          # ============================================================
+          # 断言 61: v56.9 KVO 同值抑制不得把欠账帧永久跳过
+          # ============================================================
+          # ★★★ 本版是**唯一由装机日志直接定罪**的一版 —— 不是推断 ★★★
+          # 【日志读数】minis-2026-10-05.log (7951 行, v56.8 装机)
+          #   [V45-TVHFIX] 101 条, debt **全部 0.0**  ← 补高链自称已补好
+          #   [V56-KVO]    95 条, **全部 skipSame**, **零条 fixed/写入**
+          #   95 条里 **13 条 svH < needH** (几何确实欠着却被跳过):
+          #     26.7/49.0 · 132.7/177.3 · 210.0/228.0 · 266.0/333.0
+          #     283.0/573.7 · 372.7/730.7 · 407.0/832.3 · 657.0/724.0
+          #     792.7/1061.0 · 959.7/1340.3 · 1023.7/1052.0 · 1406.7/1739.7
+          #
+          # 【真凶: v56.1 引入的同值抑制完全不看当前几何】
+          #   v56 的 docstring 明写「不同值的写入一律放行, 正确修正绝不被连坐」
+          #   —— **这句话是错的**。抑制键 = (目标高度, 0.12s 时间窗),
+          #   跟「当前 superview 到底欠不欠账」毫无关系。于是:
+          #     上一 pass 已写过 needH
+          #     → 0.12s 内 SwiftUI 又写回矮高度
+          #     → 目标高度与上次相同 + 仍在时间窗 ⇒ 判 dup
+          #     → **只改局部副本 f, 不写 obj.frame** (几何零变化)
+          #     → KVO 不再触发 ⇒ **欠账永久凝固** ⇒ 那一行一直只剩上半。
+          #
+          # ★与 v39/v40 是**同一现象、反向根因**:
+          #     v39/v40 结论 =「补齐代码一次都没执行过」
+          #     v56.9  结论 =「代码执行了, 但被自己写的抑制挡掉」
+          #   ⇒ 这就是为什么前四十几次「补高」全部无效: 修的是上游, 漏的是这层。
+          #
+          # 【修法: 只改抑制条件, 不删分支】
+          #   let _v56noDebt = f.size.height + 0.5 >= _v42Need
+          #   if _v56dup && _v56noDebt {
+          #   值重复 **且** 几何已达标 ⇒ 纯重复写, 可跳过;
+          #   值重复但当前仍欠账 ⇒ 写入会真正改变几何, **必须写**。
+          #   抑制本意(省掉同 tick 内几何零变化的同步 layout)是真优化, 保留。
+          #
+          # 【8 条 sabotage】
+          #   S2「声明了 _v56noDebt 但没接进 if」—— 判据第 3 层专防"判据好看但不接线"
+          #   S3/S4「几何判据取反 / 阈值写死 1000.0」—— ★第一版判据用**子串**匹配
+          #        `f.size.height + 0.5 >= _v42Need`, 改成 `<`、改成 `>= 1000.0`
+          #        都仍包含这个子串 ⇒ **两条全漏过**。修法: 改成**整行逐字相等**。
+          #   S5/S6「删 skipped 计数 / 改掉 skipSame 日志」—— 分支不许被掏空
+          #   S8「整个 skipSame 分支被删」—— 优化不许整体消失
+          if grep -q "fix_kvo_debt_v569" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            _f569="src/ios/Views/Chat/SelectableMarkdownView.swift"
+            # 第1层: 标记在位
+            _v569_mark=$(grep -c "\[V569-DEBT\]" "$_f569" || true)
+            # 第2层: _v56noDebt 必须**整行逐字**是这一行(子串匹配会被取反/换阈值绕过)
+            _v569_def=$(grep -cF 'let _v56noDebt = f.size.height + 0.5 >= _v42Need' "$_f569" || true)
+            # 第3层: 必须真的接进抑制条件(防"声明了但没接线")
+            _v569_wire=$(grep -cF 'if _v56dup && _v56noDebt {' "$_f569" || true)
+            # 第4层: 分支本体不许被掏空
+            _v569_log=$(grep -cF '[V56-KVO] skipSame' "$_f569" || true)
+            _v569_cnt=$(grep -cF '_V56KVOW.skipped &+= 1' "$_f569" || true)
+            # 反向: 旧的无条件抑制必须消失, 残留 = 只声明没改
+            _v569_old=$(grep -cF 'if _v56dup {' "$_f569" || true)
+            if [ "$_v569_mark" -ge 1 ] && [ "$_v569_def" = "1" ] && [ "$_v569_wire" = "1" ] \
+               && [ "$_v569_log" -ge 1 ] && [ "$_v569_cnt" -ge 1 ] && [ "$_v569_old" = "0" ]; then
+              if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+                 python3 "$SCRIPT_DIR/ios15_verify/reverse_v569.py" ; then
+                echo "✅ v56.9 就位 (反向 8 条全拦: 声明未接线/取反/写死阈值/掏空分支/删优化)"
+              else
+                echo "::error::v56.9 判据被绕过 —— 同值抑制仍不看当前几何(欠账帧被永久跳过), 或 _v56noDebt 未真正接入 if"
+                exit 1
+              fi
+            else
+                echo "::error::v56.9 产物不合规 mark=$_v569_mark def=$_v569_def wire=$_v569_wire log=$_v569_log cnt=$_v569_cnt old=$_v569_old (期望 >=1,1,1,>=1,>=1,0)"
+                exit 1
+            fi
+          else
+            echo "::error::ios15_fallback.py 里找不到 fix_kvo_debt_v569"
+            exit 1
+          fi
+          echo "::endgroup::"
+
 
 
           echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
