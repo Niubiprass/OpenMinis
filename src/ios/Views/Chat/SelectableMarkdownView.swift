@@ -4754,7 +4754,7 @@ final class VideoAttachment: NSTextAttachment {
 
             var thumb: UIImage?
             do {
-                let (cgImage, _) = try await generator.image(at: .zero)
+                let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
                 thumb = UIImage(cgImage: cgImage)
             } catch {
                 // Fallback: no thumbnail
@@ -6183,11 +6183,11 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 self.textContainer.size.width = _v570NetW
             }
             // [V570-KVODIAG] 纯诊断, 一行几何都不碰。装机后判定:
-            //   dirty=1 且 wide=1 => 证实「KVO 早退前容器是脏的」= 本版假设成立
-            //   dirty=1 且 wide=0 => 偏小方向, v570 双向判据的增量收益生效
-            //   dirty=0           => 已是目标宽, 本版无事可做(则病根在别处)
-            // 纪律42: 探针必须打在**被修改之前**的状态上, 所以此处读的是
-            // `_v570Dirty` 这个判据结果, 而不是纠正后的宽度(那恒等于 netW)。
+            //   dirty=1 => 证实「KVO 早退前容器是脏的」= 本版假设成立
+            //   dirty=0 => 已是目标宽, 本版无事可做(则病根在别处)
+            // 纪律42: 探针必须打在**被修改之前**的状态上, 所以此处用判据
+            // 结果 _v570Dirty 表示"是否动过手", 不回读宽度冒充脏值
+            // (纠正已发生, 回读恒等于 netW, 那种读数永远"全绿"骗人)。
             do {
                 struct _V570Log { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
                 let _v570Now = CACurrentMediaTime()
@@ -10245,7 +10245,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // becomes a measurable chunk of every updateUIView pass (and
         // updateUIView runs on each SwiftUI body re-evaluation, so it
         // multiplies during streaming and self-sizing measurement loops).
-        let imageMatches = markdown.ranges(of: /!\[([^\]]*)\]\(([^)]+)\)/)
+        let imageMatches = MinisRegex.ranges(markdown, "!\\[([^\\]]*)\\]\\(([^)]+)\\)")
         if !imageMatches.isEmpty {
             for match in imageMatches {
                 let matchStr = String(markdown[match])
@@ -10694,6 +10694,26 @@ struct SelectableMarkdownView: UIViewRepresentable {
     }
 
     @available(iOS 16.0, *)
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: SelectableMarkdownTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
         // Key the size cache on the SwiftUI binding length, not
