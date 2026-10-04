@@ -164,6 +164,12 @@ def judge(md, compat):
     # L7 CB 阈值
     if 'lineFrag.width < 100_000' not in md:
         return False, 'CB 三级 fallback 阈值被动过'
+    # L8 悬空引用清零(CI 152 编译错误 1575:30 的回归防线)
+    if 'Double(width),' in md:
+        return False, ("v565 诊断段仍引用已删除的 width 变量"
+                       "(cannot find 'width' in scope)")
+    if md.count('Double(effectiveWidth),') != 1:
+        return False, '诊断段实参未指向 effectiveWidth'
     # compat 三层
     if compat.count(MK_HOST) != 1:
         return False, 'compat 缺 %s' % MK_HOST
@@ -305,6 +311,18 @@ def s10_drop_min50(x):
         'makeView 去掉 min-50'
 
 
+def s11_dangling_width(x):
+    """S11: v565 诊断段改回引用已删除的 width —— 悬空引用编译失败
+    (CI 152 的真实事故: 1575:30 cannot find 'width' in scope)。"""
+    a, b = x
+    key = 'Double(effectiveWidth), Double(attV565ViewH), Double(attV565ViewW),'
+    if a.count(key) != 1:
+        return (a, b), '锚点缺失'
+    return (a.replace(key,
+            'Double(width), Double(attV565ViewH), Double(attV565ViewW),', 1), b), \
+        '诊断段改回悬空 width 引用'
+
+
 SABOTAGE = [
     ('BASE 基线', lambda x: (x, '')),
     ('S1 摘 TextView sizeThatFits', s1_drop_stf_override),
@@ -317,6 +335,7 @@ SABOTAGE = [
     ('S8 漂移重置改 500', s8_kill_drift_reset),
     ('S9 CB 裸 width', s9_bare_cb_width),
     ('S10 makeView 去 min-50', s10_drop_min50),
+    ('S11 悬空 width 引用(152 事故)', s11_dangling_width),
 ]
 
 

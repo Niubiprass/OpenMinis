@@ -6876,6 +6876,13 @@ V60_CB_HEAD_NEW = """    override func attachmentBounds(for textContainer: NSTex
 V60_CB_RET_OLD = "        return CGRect(x: 0, y: 0, width: width, height: height)"
 V60_CB_RET_NEW = "        return CGRect(x: 0, y: 0, width: effectiveWidth, height: height)"
 
+# v565 诊断段的实参引用 —— attachmentBounds 里 `let width` 被本版替换后,
+# 诊断段的 `Double(width)` 会悬空(CI 152 编译错误 1575:30 cannot find
+# 'width' in scope)。effectiveWidth 就是本函数最终采用的宽, 语义更准。
+# 锚点用「Double(width), Double(attV565ViewH)」组合, 全文件唯一。
+V60_V565_ARG_OLD = "Double(width), Double(attV565ViewH), Double(attV565ViewW),"
+V60_V565_ARG_NEW = "Double(effectiveWidth), Double(attV565ViewH), Double(attV565ViewW),"
+
 V60_MV_OLD = """        let inset = leftInset
         let contentWidth = width - inset"""
 
@@ -6953,7 +6960,8 @@ def _v60_replace1(t, old, new, what):
 
 
 def fix_zhao_md_v60(t):
-    """v60 注入: SelectableMarkdownView.swift 八处(zhaoxiufei 3ccdff6 同款)。
+    """v60 注入: SelectableMarkdownView.swift 九处(zhaoxiufei 3ccdff6 同款
+    + v565 诊断段悬空引用适配)。
 
     幂等: 产物里已有 [V60-ZHAO-INIT] 时原样返回。
     每个子注入独立锚点 + 计数==1 防呆; 失配**报错**而不是静默跳过
@@ -6965,6 +6973,7 @@ def fix_zhao_md_v60(t):
     t = _v60_replace1(t, V60_V21_OLD, V60_FIT_NEW, "intrinsic 替换+sizeThatFits")
     t = _v60_replace1(t, V60_CB_HEAD_OLD, V60_CB_HEAD_NEW, "CB attachmentBounds 头")
     t = _v60_replace1(t, V60_CB_RET_OLD, V60_CB_RET_NEW, "CB return effectiveWidth")
+    t = _v60_replace1(t, V60_V565_ARG_OLD, V60_V565_ARG_NEW, "v565 诊断段悬空 width 引用")
     t = _v60_replace1(t, V60_MV_OLD, V60_MV_NEW, "CB makeView usableWidth")
     t = _v60_replace1(t, V60_SC_OLD, V60_SC_NEW, "CB scrollWidth 兜底")
     t = _v60_replace1(t, V60_MK_OLD, V60_MK_NEW, "makeUIView 初值")
@@ -7056,6 +7065,15 @@ def verify_zhao_md_v60(t):
     # L7
     if "lineFrag.width < 100_000" not in t:
         raise RuntimeError("verify_zhao_md_v60 L7: CB 三级 fallback 阈值被动过")
+    # L8 悬空引用清零(CI 152 编译错误 1575:30 的回归防线):
+    #    attachmentBounds 里 let width 已被本版删除, 任何残余的裸
+    #    `Double(width),` 引用 = 编译失败。
+    if "Double(width)," in t:
+        raise RuntimeError(
+            "verify_zhao_md_v60 L8: v565 诊断段仍引用已删除的 width 变量"
+            "(cannot find 'width' in scope) —— 应改为 Double(effectiveWidth)")
+    if t.count("Double(effectiveWidth),") != 1:
+        raise RuntimeError("verify_zhao_md_v60 L8: 诊断段实参未指向 effectiveWidth")
     return True
 
 

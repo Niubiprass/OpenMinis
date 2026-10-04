@@ -2074,7 +2074,7 @@ jobs:
                && grep -q "\[V60-ZHAO-HOST\]" src/ios/iOS15Compat.swift ; then
               if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
                  python3 "$SCRIPT_DIR/ios15_verify/reverse_v60.py" ; then
-                echo "✅ v60 就位 (反向 10 条全拦: 摘 override/v21 复辟/v59 残魂/删兜底/阈值失效/裸宽)"
+                echo "✅ v60 就位 (反向 11 条全拦: 摘 override/v21 复辟/v59 残魂/删兜底/阈值失效/裸宽/悬空引用)"
               else
                 echo "::error::v60 判据异常 —— zhaoxiufei 方案注入不完整"
                 echo "   —— 报「跟随宽 N 处」: v59 残魂(init 必须是 true)或范围失控"

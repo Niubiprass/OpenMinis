@@ -1572,7 +1572,7 @@ final class CodeBlockAttachment: NSTextAttachment {
                       Double(height), Double(contentHeight), Double(maxCodeHeight),
                       contentHeight > maxCodeHeight ? 1 : 0,
                       self.attV565LineCount, code.count,
-                      Double(width), Double(attV565ViewH), Double(attV565ViewW),
+                      Double(effectiveWidth), Double(attV565ViewH), Double(attV565ViewW),
                       Double(self.attV565CachedRaw), _V565Log.n)
             }
         }
