@@ -9263,21 +9263,35 @@ def fix_v55_b_edgetouch(t):
 
 
 def fix_v55_c_sentinel_gate(t):
-    """v55-C: 哨兵判据不得依赖它自己要设置的状态（治自我循环）。
+    """[V55-C] 哨兵判据不得依赖它自己要设置的状态（治 v54 的自我循环）。
 
-    v54 实测 `setSize(358x2000)` 524 次 / 跨 415 tick（v53 是 314 / 251）
-    ⇒ **比不判更差**。病因: 判据读 `bounds.height`, 而 bounds 在哨兵态
-    (`1.79e80`)下恒远大于 newHeight ⇒ 判据恒真 ⇒ 每帧都设哨兵 ⇒ 自我放大。
-    ⇒ 纪律 44: 判据的输入必须来自被修改之前的状态。
+    v54 装机实测: `setSize(358x2000)` **524 次 / 跨 415 unique tick**
+    （v53 是 314 次 / 251 tick）⇒ **比不判更差**。
 
-    ★改用 `textContainer.size.height`（本函数内我们自己最后写的那个值）。
+    病因: v54 的判据读 `bounds.height`, 而 bounds 在哨兵态（`1.79e80`）下
+    恒远大于 newHeight ⇒ 判据恒真 ⇒ 每帧都设哨兵 ⇒ 自我放大。
+    ⇒ 纪律 44: **判据的输入必须来自被修改之前的状态。**
+    改法: 改读 `textContainer.size.height`（本函数内我们自己最后写的那个值）。
+
+    ★锚点用**上游源码里本来就有的四行**（被钳了就恢复那段）, 不用 v54-C
+      注入后的 `_v54needUnbound2` —— 后者只在 v54-C 跑过之后才存在, 而 CI
+      是从上游源码起注入的 ⇒ run#132 报 `RuntimeError: v55-C 锚点缺失`。
+    ⇒ 纪律 45: 补丁锚点必须能在**上游原始源码**上命中, 否则它隐式依赖
+      注册顺序; 而顺序依赖在本地（从上一版产物起测）测不出来。
     """
     MARK = "// [V55-C] v54 的判据在哨兵态下自我循环"
     if MARK in t:
         return t
-    OLD = """        let _v54needUnbound2: Bool = newHeight + 2 > max(bounds.height, 1)"""
+    OLD = """        let newHeight = sizeThatFits(CGSize(width: measureWidth, height: .greatestFiniteMagnitude)).height
+        // sizeThatFits clamps textContainer.size.height — restore it (only
+        // when actually clamped, to avoid a redundant setSize: → fillLayoutHole).
+        if textContainer.size.height < CGFloat.greatestFiniteMagnitude {
+            textContainer.size.height = CGFloat.greatestFiniteMagnitude
+        }"""
     if OLD not in t:
-        raise RuntimeError("v55-C 锚点缺失: 找不到 _v54needUnbound2 判据行")
+        raise RuntimeError(
+            "v55-C 锚点缺失: 上游原始源码里找不到「sizeThatFits 之后那段"
+            "被钳了就恢复」的四行 —— 上游结构可能已变, 需重新定位。")
     return t.replace(OLD, """        // [V55-C] v54 的判据在哨兵态下自我循环, 必须改。
         //
         // v54 装机实测: `setSize(358x2000)` 524 次 / 跨 415 unique tick
@@ -9290,7 +9304,6 @@ def fix_v55_c_sentinel_gate(t):
         let _v55tcH = textContainer.size.height
         let _v55needUnbound2: Bool = newHeight + 2 > max(_v55tcH, 1)
         let _v54needUnbound2 = _v55needUnbound2""", 1)
-
 
 def fix_v54_c1_gate(t):
     """[V54-C1] 宽度闸门承认「贴边净宽」，破 C-1 记忆位死锁。
@@ -9684,18 +9697,24 @@ def main():
          MSG_V53_FIRST)
 
     # ---- v54: 三处修法 (装机日志 minis-2026-10-04 5.log 实证) ----
-    edit("Views/Chat/SelectableMarkdownView.swift", fix_v55_a_probe,
-         "v55-A: 宽高分源纯诊断(只打一行不写几何) —— v54 的 picked 打在回落**之后**恒为 358, 而闸门实读 371.7, 11/11 帧证实")
-    edit("Views/Chat/SelectableMarkdownView.swift", fix_v55_b_edgetouch,
-         "v55-B: _edgeTouch 认出贴边净宽 —— 治 edge=0 导致 inset 16/16 没设上、cell 只给 26.7、末行裁 22.3(卡一半), 补高 103 次被改回")
-    edit("Views/Chat/SelectableMarkdownView.swift", fix_v55_c_sentinel_gate,
-         "v55-C: 哨兵判据改用 textContainer.size.height —— 治 v54 判据自我循环(setSize 524次/415tick 比 v53 的 314/251 更差)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_v54_c1_gate,
          "v54-C1: 闸门承认贴边净宽, 破 C-1 记忆位死锁(memHit 136/136 全 0)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_v54_b_debt_report,
          "v54-B: SKIPPED 分支也上报欠账, 破 dedup 短路死锁(dedup=2307/live=0)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_v54_c_probe_roundtrip,
          "v54-C: 消哨兵高度每帧往返(setSize 358x2000 × 314 跨 251 tick = 掉帧)")
+    # ★v55 三个补丁必须排在 v54 之后: v55-C 的锚点 `_v54needUnbound2`
+    #   是 **v54-C 注入的那一行**, CI 从上游源码起注入时, v54-C 还没跑
+    #   ⇒ 锚点不存在 ⇒ run#132 `RuntimeError: v55-C 锚点缺失`。
+    # ★本地测不出来: 本地是从 v54 产物出发(已含 v54-C), 而 CI 从上游出发。
+    #   ⇒ 纪律 45: **补丁的注册顺序必须在 CI 的注入顺序下验证**, 不能只
+    #     在「上一版产物」上验。
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_v55_a_probe,
+         "v55-A: 宽高分源纯诊断(只打一行不写几何) —— v54 的 picked 打在回落**之后**恒为 358, 而闸门实读 371.7, 11/11 帧证实")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_v55_b_edgetouch,
+         "v55-B: _edgeTouch 认出贴边净宽 —— 治 edge=0 导致 inset 16/16 没设上、cell 只给 26.7、末行裁 22.3(卡一半), 补高 103 次被改回")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_v55_c_sentinel_gate,
+         "v55-C: 哨兵判据改用 textContainer.size.height —— 治 v54 判据自我循环(setSize 524次/415tick 比 v53 的 314/251 更差)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
