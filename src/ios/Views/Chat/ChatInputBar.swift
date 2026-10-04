@@ -277,7 +277,7 @@ private struct AttachmentChip: View {
         .onAppear { loadThumbnailIfNeeded() }
         .onTapGesture { showPreview = true }
         .sheet(isPresented: $showPreview) {
-            NavigationStack {
+            CompatNavigationStack {
                 AttachmentPreviewView(url: attachment.cacheURL)
                     .navigationTitle(attachment.fileName)
                     .navigationBarTitleDisplayMode(.inline)
@@ -549,7 +549,7 @@ struct PastedTextChipRow: View {
             .padding(.trailing, 4)
         }
         .sheet(item: $previewEntry) { entry in
-            NavigationStack {
+            CompatNavigationStack {
                 ScrollView {
                     // Read-only by construction: selectable text (copyable),
                     // deliberately NOT a TextEditor.

@@ -50,14 +50,18 @@ struct HelperSheetTarget: Identifiable, Equatable {
 /// Three detents so the height is adjustable, opening at `.medium` so the
 /// opener stays visible behind it.
 struct HelperTranscriptSheetStyle: ViewModifier {
-    @State private var detent: PresentationDetent = .medium
+    // `CompatPresentationDetent` / `CompatDetentSelection` rather than the
+    // iOS 16+ `PresentationDetent`: this type is declared unconditionally, so
+    // referencing a 16-only type in a stored property would fail to compile
+    // against a 15.0 deployment target. See Shared/iOS15Compat.swift.
+    @State private var detent: CompatDetentSelection = .medium
 
-    static let detents: Set<PresentationDetent> = [.fraction(0.35), .medium, .large]
+    static let detents: Set<CompatPresentationDetent> = [.fraction(0.35), .medium, .large]
 
     func body(content: Content) -> some View {
         let base = content
-            .presentationDetents(Self.detents, selection: $detent)
-            .presentationDragIndicator(.visible)
+            .compatPresentationDetents(Self.detents, selection: $detent)
+            .compatPresentationDragIndicator(.visible)
             .interactiveDismissDisabled()
         if #available(iOS 16.4, *) {
             base.presentationContentInteraction(.scrolls)
@@ -107,7 +111,7 @@ struct HelperTranscriptPage: View {
     private let clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        NavigationStack {
+        CompatNavigationStack {
             // [T-agent-transcript-navbar-lost] The ZStack is load-bearing, not
             // cosmetic: everything below — the nav bar style and, critically,
             // the `.background` toolbar host — must attach to a node whose

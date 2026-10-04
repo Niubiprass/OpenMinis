@@ -253,6 +253,8 @@
 		E5FPBH02 /* FileProviderBootHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FPBH03 /* FileProviderBootHealth.swift */; };
 		E5G000001 /* BackgroundKeepAliveManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5G000011 /* BackgroundKeepAliveManager.swift */; };
 		E5G000002 /* AgentLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5G000012 /* AgentLiveActivityManager.swift */; };
+		E5C15BF001 /* iOS15Compat.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5C15BF002 /* iOS15Compat.swift */; };
+		E5C15BF003 /* AgentLiveActivityManager+iOS15.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5C15BF004 /* AgentLiveActivityManager+iOS15.swift */; };
 		E5G000003 /* EnhancedBackgroundSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5G000013 /* EnhancedBackgroundSettingsView.swift */; };
 		E5G000004 /* AgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5G000014 /* AgentActivityAttributes.swift */; };
 		E5GWF0003 /* GeminiWireFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5GWF0013 /* GeminiWireFormat.swift */; };
@@ -940,6 +942,8 @@
 		E5FPBH03 /* FileProviderBootHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderBootHealth.swift; sourceTree = "<group>"; };
 		E5G000011 /* BackgroundKeepAliveManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundKeepAliveManager.swift; sourceTree = "<group>"; };
 		E5G000012 /* AgentLiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentLiveActivityManager.swift; sourceTree = "<group>"; };
+		E5C15BF002 /* iOS15Compat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = iOS15Compat.swift; sourceTree = "<group>"; };
+		E5C15BF004 /* AgentLiveActivityManager+iOS15.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AgentLiveActivityManager+iOS15.swift"; sourceTree = "<group>"; };
 		E5G000013 /* EnhancedBackgroundSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnhancedBackgroundSettingsView.swift; sourceTree = "<group>"; };
 		E5G000014 /* AgentActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentActivityAttributes.swift; sourceTree = "<group>"; };
 		E5GWF0013 /* GeminiWireFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiWireFormat.swift; sourceTree = "<group>"; };
@@ -1846,6 +1850,7 @@
 				E5AT00011 /* AudioTogglePlaybackIntent.swift */,
 				E5Q000013 /* AppLogger.swift */,
 				LOC00002 /* AppLocalization.swift */,
+				E5C15BF002 /* iOS15Compat.swift */,
 				E5Q000011 /* BPETokenizer.swift */,
 				E5MDS0013 /* MarkdownStripper.swift */,
 				E5Q000012 /* cl100k_base.tiktoken */,
@@ -2173,6 +2178,7 @@
 			isa = PBXGroup;
 			children = (
 				E5G000012 /* AgentLiveActivityManager.swift */,
+				E5C15BF004 /* AgentLiveActivityManager+iOS15.swift */,
 				E5G000011 /* BackgroundKeepAliveManager.swift */,
 				E53000016 /* CacheKeepAliveManager.swift */,
 			);
@@ -3086,6 +3092,7 @@
 				E5E0000A1 /* ExternalFileImporter.swift in Sources */,
 				E5G000001 /* BackgroundKeepAliveManager.swift in Sources */,
 				E5G000002 /* AgentLiveActivityManager.swift in Sources */,
+				E5C15BF003 /* AgentLiveActivityManager+iOS15.swift in Sources */,
 				E5G000003 /* EnhancedBackgroundSettingsView.swift in Sources */,
 				E5G000004 /* AgentActivityAttributes.swift in Sources */,
 				E5AT00004 /* AudioTogglePlaybackIntent.swift in Sources */,
@@ -3156,6 +3163,7 @@
 				E5MDS0003 /* MarkdownStripper.swift in Sources */,
 				E5Q000003 /* AppLogger.swift in Sources */,
 				LOC00001 /* AppLocalization.swift in Sources */,
+				E5C15BF001 /* iOS15Compat.swift in Sources */,
 				F1S00012 /* ChatSessionIdEnvironment.swift in Sources */,
 				E5Q000004 /* FontSettings.swift in Sources */,
 				E5R000001 /* ICloudBackupManager.swift in Sources */,
@@ -3810,7 +3818,7 @@
 				INFOPLIST_FILE = AgentWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Agent Activity";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -3837,7 +3845,7 @@
 				INFOPLIST_FILE = AgentWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Agent Activity";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

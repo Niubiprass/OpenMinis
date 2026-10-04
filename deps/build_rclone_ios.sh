@@ -22,6 +22,15 @@ BUILD="$ROOT/deps/build/rclone"
 
 command -v go >/dev/null || { echo "error: go toolchain not found" >&2; exit 1; }
 
+# Skip when the XCFramework is already present. CI restores deps/frameworks
+# from a cache before running this script; without this check both Go slices
+# would be rebuilt on every cached build.
+if [ -d "$OUT/Rclone.xcframework" ]; then
+  echo "==> $OUT/Rclone.xcframework already built, skipping"
+  du -sh "$OUT/Rclone.xcframework" | awk '{print "    size:", $1}'
+  exit 0
+fi
+
 mkdir -p "$BUILD" "$OUT"
 cd "$SRC"
 

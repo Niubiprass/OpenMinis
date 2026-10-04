@@ -34,6 +34,14 @@ FRAMEWORKS_BASE="$SCRIPT_DIR/frameworks"
 
 IOS_DEPLOYMENT_TARGET="14.0"
 
+# Skip the whole build when the frameworks are already present. CI restores
+# deps/frameworks from a cache before running this script; without this check
+# the ~40-minute FFmpeg compile would run again on every cached build.
+if [ -d "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/FFmpeg" ]; then
+    echo "ℹ️  $FRAMEWORK_DIR already built, skipping"
+    exit 0
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'

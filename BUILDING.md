@@ -76,7 +76,7 @@ without setting this.
 | Tool | Version / notes |
 |---|---|
 | macOS | Apple Silicon strongly recommended (see the simulator note below) |
-| Xcode | With the iOS SDK; the project targets **iOS 26.2** and **Swift 6.0** |
+| Xcode | With the iOS SDK; the project targets **iOS 15.0** and **Swift 6.0** (the `AgentWidget` extension stays at **iOS 16.2** — Live Activity requires it) |
 | Metal Toolchain | `xcodebuild -downloadComponent MetalToolchain` — recent Xcode ships it as a separate component |
 | Homebrew packages | `brew install ninja llvm libarchive pkg-config` |
 | Python 3 + Meson | `pip3 install meson` |

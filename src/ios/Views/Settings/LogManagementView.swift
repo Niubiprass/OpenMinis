@@ -239,7 +239,7 @@ struct LogDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                ShareLink(item: url)
+                CompatShareLink(item: url)
             }
         }
         .task {

@@ -227,33 +227,33 @@ struct UsageStatsView: View {
                 // Grand totals
                 Section("Total Usage") {
                     let grandTotalAllInput = vm.grandTotalInput + vm.grandTotalCacheRead + vm.grandTotalCacheCreation
-                    LabeledContent("Total Input (incl. Cache)", value: formatCount(grandTotalAllInput))
-                    LabeledContent("Output Tokens", value: formatCount(vm.grandTotalOutput))
+                    CompatLabeledContent("Total Input (incl. Cache)", value: formatCount(grandTotalAllInput))
+                    CompatLabeledContent("Output Tokens", value: formatCount(vm.grandTotalOutput))
                     if vm.grandTotalCacheRead > 0 {
-                        LabeledContent("Cache Read", value: formatCount(vm.grandTotalCacheRead))
+                        CompatLabeledContent("Cache Read", value: formatCount(vm.grandTotalCacheRead))
                     }
                     if vm.grandTotalCacheCreation > 0 {
-                        LabeledContent("Cache Creation", value: formatCount(vm.grandTotalCacheCreation))
+                        CompatLabeledContent("Cache Creation", value: formatCount(vm.grandTotalCacheCreation))
                     }
                     if grandTotalAllInput > 0 && vm.grandTotalCacheRead > 0 {
                         let grandHitRate = Double(vm.grandTotalCacheRead) / Double(grandTotalAllInput) * 100
-                        LabeledContent("Cache Hit Rate", value: String(format: "%.1f%%", grandHitRate))
+                        CompatLabeledContent("Cache Hit Rate", value: String(format: "%.1f%%", grandHitRate))
                     }
                 }
 
                 // [T-p2-helper-usage] Helpers — only once there is something to show.
                 if let h = vm.helperStats, h.delegateCalls > 0 || h.childSessions > 0 {
                     Section(AppLocalized("Agents")) {
-                        LabeledContent(AppLocalized("Delegations"), value: "\(h.delegateCalls)")
-                        LabeledContent(AppLocalized("Primary / Sub tier"), value: "\(h.primaryRuns) / \(h.subRuns)")
+                        CompatLabeledContent(AppLocalized("Delegations"), value: "\(h.delegateCalls)")
+                        CompatLabeledContent(AppLocalized("Primary / Sub tier"), value: "\(h.primaryRuns) / \(h.subRuns)")
                         if h.escalations > 0 {
-                            LabeledContent(AppLocalized("Escalation requests"), value: "\(h.escalations)")
+                            CompatLabeledContent(AppLocalized("Escalation requests"), value: "\(h.escalations)")
                         }
                         if h.cancelledOrFailed > 0 {
-                            LabeledContent(AppLocalized("Stopped or failed"), value: "\(h.cancelledOrFailed)")
+                            CompatLabeledContent(AppLocalized("Stopped or failed"), value: "\(h.cancelledOrFailed)")
                         }
-                        LabeledContent(AppLocalized("Agent input tokens"), value: formatCount(h.helperInputTokens))
-                        LabeledContent(AppLocalized("Agent output tokens"), value: formatCount(h.helperOutputTokens))
+                        CompatLabeledContent(AppLocalized("Agent input tokens"), value: formatCount(h.helperInputTokens))
+                        CompatLabeledContent(AppLocalized("Agent output tokens"), value: formatCount(h.helperOutputTokens))
                     }
                 }
 
@@ -300,23 +300,23 @@ struct UsageStatsView: View {
     @ViewBuilder
     private func modelDetailRows(_ model: UsageStatsViewModel.ModelStats) -> some View {
         Group {
-            LabeledContent("Input", value: formatCount(model.inputTokens))
-            LabeledContent("Output", value: formatCount(model.outputTokens))
+            CompatLabeledContent("Input", value: formatCount(model.inputTokens))
+            CompatLabeledContent("Output", value: formatCount(model.outputTokens))
             if model.cacheReadTokens > 0 {
-                LabeledContent("Cache Read", value: formatCount(model.cacheReadTokens))
+                CompatLabeledContent("Cache Read", value: formatCount(model.cacheReadTokens))
             }
             if model.cacheCreationTokens > 0 {
-                LabeledContent("Cache Creation", value: formatCount(model.cacheCreationTokens))
+                CompatLabeledContent("Cache Creation", value: formatCount(model.cacheCreationTokens))
             }
             let totalInputForRate = model.inputTokens + model.cacheReadTokens + model.cacheCreationTokens
             if totalInputForRate > 0 && model.cacheReadTokens > 0 {
                 let hitRate = Double(model.cacheReadTokens) / Double(totalInputForRate) * 100
-                LabeledContent("Cache Hit Rate", value: String(format: "%.1f%%", hitRate))
+                CompatLabeledContent("Cache Hit Rate", value: String(format: "%.1f%%", hitRate))
             }
-            LabeledContent("Daily Avg", value: formatCount(model.dailyAvgTokens))
-            LabeledContent("Per-Session Avg", value: formatCount(model.sessionAvgTokens))
-            LabeledContent("Sessions", value: "\(model.distinctSessions.count)")
-            LabeledContent("Active Days", value: "\(model.distinctDays.count)")
+            CompatLabeledContent("Daily Avg", value: formatCount(model.dailyAvgTokens))
+            CompatLabeledContent("Per-Session Avg", value: formatCount(model.sessionAvgTokens))
+            CompatLabeledContent("Sessions", value: "\(model.distinctSessions.count)")
+            CompatLabeledContent("Active Days", value: "\(model.distinctDays.count)")
         }
         .font(.subheadline)
     }

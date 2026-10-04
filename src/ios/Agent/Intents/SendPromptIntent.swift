@@ -1,4 +1,15 @@
+// [iOS15-compat] `import AppIntents` is itself an iOS 16+ declaration and an
+// `import` cannot be guarded by @available — at a 15.0 deployment target it
+// is a compile-time error. `canImport` is evaluated at compile time, so on
+// iOS 15 the `AppIntent` type below compiles away and the Shortcut entry
+// point is absent (AppIntents does not exist below iOS 16). Everything
+// AFTER this block — `extractShortcutResponseText`, `ShortcutNotification`,
+// `NotificationNavigationStore`, `ShortcutNotificationDelegate` — is plain
+// app code with no AppIntents dependency and stays available on iOS 15;
+// `HelperRunner` calls the extractor for progress text on every OS version.
+#if canImport(AppIntents)
 import AppIntents
+
 import Foundation
 import UniformTypeIdentifiers
 import UserNotifications
@@ -354,20 +365,40 @@ struct SendPromptIntent: AppIntent {
     }
 
     /// Extracts the full response text from the last assistant message in the VM.
+    ///
+    /// [iOS15-compat] Delegates to the file-level `extractShortcutResponseText`
+    /// so callers outside this file (HelperRunner's progress sampler) do not
+    /// have to be inside an `if #available(iOS 16, *)` block just to read a
+    /// chat's last message. `AppIntent` is iOS 16+, so anything reached
+    /// through this type is unavailable on iOS 15.
     @MainActor
     static func extractResponseText(from vm: AIChatViewModel) -> String {
-        // [T-bgnotif-internal-text-leak] Skip internal bridge turns — they are
-        // instructions addressed to the model, not a response, and returning one
-        // to a Shortcut (or any intent caller) leaks prompt text verbatim.
-        guard let lastAssistant = vm.messages.last(where: { $0.role == .assistant && !$0.isInternalBridge }) else {
-            return "No response."
-        }
-        let textBlocks = lastAssistant.blocks
-            .filter { $0.kind == .text }
-            .map { $0.content }
-        let text = textBlocks.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? "Task completed." : text
+        extractShortcutResponseText(from: vm)
     }
+}
+
+#endif // canImport(AppIntents)
+
+/// File-level twin of `SendPromptIntent.extractResponseText`.
+///
+/// Deliberately NOT inside the `AppIntent` type: this is plain chat
+/// bookkeeping with no dependency on AppIntents, and `HelperRunner` needs it
+/// on every OS version. Keeping it at file scope means the iOS 15 build can
+/// call it without any availability guard.
+///
+/// [T-bgnotif-internal-text-leak] Skip internal bridge turns — they are
+/// instructions addressed to the model, not a response, and returning one
+/// to a Shortcut (or any intent caller) leaks prompt text verbatim.
+@MainActor
+func extractShortcutResponseText(from vm: AIChatViewModel) -> String {
+    guard let lastAssistant = vm.messages.last(where: { $0.role == .assistant && !$0.isInternalBridge }) else {
+        return "No response."
+    }
+    let textBlocks = lastAssistant.blocks
+        .filter { $0.kind == .text }
+        .map { $0.content }
+    let text = textBlocks.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    return text.isEmpty ? "Task completed." : text
 }
 
 /// Helper for posting local notifications from Shortcuts intents.

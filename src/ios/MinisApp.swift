@@ -283,7 +283,7 @@ struct MinisApp: App {
                     get: { sessionLockStore.appIsLocked ? nil : openRouter.pendingPackage },
                     set: { openRouter.pendingPackage = $0 }
                 )) { pending in
-                    NavigationStack {
+                    CompatNavigationStack {
                         // Opens on the RESTORE tab with the package already
                         // loaded. Someone who just tapped a .minisbak is mid
                         // device-migration — landing them on the backup form
@@ -358,9 +358,16 @@ struct MinisApp: App {
                     // Register notification delegate for shortcut task tap-to-open
                     ShortcutNotificationDelegate.shared.register()
                     // Register App Shortcuts with the system so Siri and Spotlight discover them
+                    // [iOS15-compat] Two guards, both required: the `canImport`
+                    // because `MinisShortcutsProvider` lives in a file that
+                    // compiles away entirely when AppIntents is unavailable, and
+                    // the `canImport` is what makes the symbol exist at all — an
+                    // `if #available` alone still needs the type to resolve.
+                    #if canImport(AppIntents)
                     if #available(iOS 17.0, *) {
                         MinisShortcutsProvider.updateAppShortcutParameters()
                     }
+                    #endif
                     // Start logging if previously enabled
                     LoggingManager.shared.startIfEnabled()
                     // HangFix(2026-05-14) — always-on hang detector. Was

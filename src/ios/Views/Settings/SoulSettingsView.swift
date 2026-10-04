@@ -46,13 +46,13 @@ struct SoulSettingsView: View {
             }
 
             Section(AppLocalized("Identity")) {
-                LabeledContent(AppLocalized("Name")) {
+                CompatLabeledContent(AppLocalized("Name")) {
                     TextField("Minis", text: $name)
                         .multilineTextAlignment(.trailing)
                         .textInputAutocapitalization(.words)
                         .submitLabel(.done)
                 }
-                LabeledContent(AppLocalized("Style")) {
+                CompatLabeledContent(AppLocalized("Style")) {
                     TextField(AppLocalized("e.g. Warm, direct, opinionated"), text: $style)
                         .multilineTextAlignment(.trailing)
                 }
@@ -423,7 +423,7 @@ private struct SoulEmojiPickerSheet: View {
     ]
 
     var body: some View {
-        NavigationStack {
+        CompatNavigationStack {
             VStack(spacing: 20) {
                 // Live preview at the size the chat header actually uses, so
                 // the user judges the glyph at its real scale rather than at
@@ -494,7 +494,7 @@ private struct SoulEmojiPickerSheet: View {
                 }
             }
         }
-        .presentationDetents([.height(380)])
+        .compatPresentationDetents([.height(380)])
     }
 
     /// Keep at most one emoji, preferring whatever the user just added.

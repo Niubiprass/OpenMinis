@@ -363,6 +363,14 @@ main() {
     print_summary
 }
 
+# Skip when the rootfs archive is already present. CI restores deps/resources
+# from a cache before running this script; without this check the Alpine
+# minirootfs download and the fakefs conversion would run again every time.
+if [ -f "$OUTPUT_DIR/alpine-rootfs.zip" ]; then
+    log_info "alpine-rootfs.zip already built, skipping"
+    exit 0
+fi
+
 # Parse arguments
 case "${1:-}" in
     clean)

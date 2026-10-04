@@ -1,3 +1,12 @@
+// [iOS15-compat] ActivityKit is iOS 16.1+ and an `import` cannot be guarded by
+// @available — at a 15.0 deployment target it is a compile-time error. The real
+// manager compiles only where ActivityKit exists; AgentLiveActivityManager+iOS15.swift
+// supplies an identical public surface everywhere else, so the 21 call sites
+// across the app need no availability guards of their own.
+//
+// If you add a member here, add it to the iOS 15 twin as well — the compiler
+// cannot catch the drift, because only one of the two is ever visible.
+#if canImport(ActivityKit)
 import ActivityKit
 import Foundation
 import UIKit
@@ -1054,3 +1063,6 @@ final class AgentLiveActivityManager {
         carouselIndex = 0
     }
 }
+
+
+#endif // canImport(ActivityKit)

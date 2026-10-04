@@ -821,7 +821,7 @@ struct AIChatView: View {
         }
         .sheet(item: $locateDownloadTarget) { target in
             if let sid = vm.sessionId {
-                NavigationStack {
+                CompatNavigationStack {
                     FileBrowserView(
                         rootPath: AIChatViewModel.minisWorkspacePersistentDir(for: sid),
                         rootLabel: "/var/minis/workspace",
@@ -962,8 +962,8 @@ struct AIChatView: View {
         }
         .sheet(item: $previewAudioFile) { fileURL in
             MinisAudioPreviewView(fileURL: fileURL)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.hidden)
+                .compatPresentationDetents([.large])
+                .compatPresentationDragIndicator(.hidden)
         }
         .sheet(item: $previewTextFile) { fileURL in
             MinisTextPreviewView(fileURL: fileURL)
@@ -1047,7 +1047,7 @@ struct AIChatView: View {
             })
         }
         .sheet(isPresented: $showFileBrowser) {
-            NavigationStack {
+            CompatNavigationStack {
                 let base = RootfsManager.shared.dataPath
                 FileBrowserView(rootPath: base, initialPath: base.appendingPathComponent("var/minis"), rootLabel: "/")
             }
@@ -1058,16 +1058,16 @@ struct AIChatView: View {
             })
         }
         .sheet(isPresented: $showModelPicker) {
-            NavigationStack {
+            CompatNavigationStack {
                 SessionModelPicker(sessionId: vm.sessionId) {
                     await vm.ensureSessionReturningId()
                 }
             }
-            .presentationDetents([.large])
+            .compatPresentationDetents([.large])
         }
         .sheet(isPresented: $showTokenUsage) {
             TokenUsageSheet(vm: cached.vm)
-                .presentationDetents([.fraction(0.8), .large])
+                .compatPresentationDetents([.fraction(0.8), .large])
         }
         .sheet(item: $screenshotPreview) { preview in
             ChatScreenshotPreviewSheet(image: preview.image)
@@ -1154,7 +1154,7 @@ struct AIChatView: View {
         .fullScreenCover(isPresented: $showTerminal) {
             terminalInitCommand = nil
         } content: {
-            NavigationStack {
+            CompatNavigationStack {
                 ISHTerminalView(sessionId: vm.sessionId, showCloseButton: true, initCommand: terminalInitCommand)
                     .onAppear {
                         if let sid = vm.sessionId {
@@ -2562,7 +2562,7 @@ struct AIChatView: View {
                     showThinkingLevelSheet = false
                 }
             )
-            .presentationDetents([.medium])
+            .compatPresentationDetents([.medium])
         }
     }
 
@@ -2911,7 +2911,7 @@ struct AIChatView: View {
                 // layout and trips a precondition on the iOS 18 async renderer
                 // (ViewGraphGeometryObservers.needsUpdate SIGTRAP). The action
                 // also fires with the initial value, covering the old onAppear.
-                .onGeometryChange(for: CGFloat.self) { proxy in
+                .compatOnGeometryChange(for: CGFloat.self) { proxy in
                     proxy.size.height
                 } action: { newH in
                     floatingBarHeight = newH
@@ -3875,7 +3875,7 @@ struct AIChatView: View {
                     // [T-ios-geometry-observer-crash] traced an async-renderer
                     // SIGTRAP to that scaffold, and this file already
                     // standardised on the observer for exactly that reason.
-                    .onGeometryChange(for: CGFloat.self) { proxy in
+                    .compatOnGeometryChange(for: CGFloat.self) { proxy in
                         proxy.size.width
                     } action: { w in
                         guard w > 0, abs(w - inputBottomRowWidth) > 0.5 else { return }
@@ -3936,7 +3936,7 @@ struct AIChatView: View {
             // floating-bar site). Fires with the initial value too, so the
             // old onAppear seeding AND its diagnostic log are preserved as
             // a single unified line.
-            .onGeometryChange(for: CGRect.self) { proxy in
+            .compatOnGeometryChange(for: CGRect.self) { proxy in
                 proxy.frame(in: .global)
             } action: { frame in
                 let newH = frame.size.height
@@ -5232,8 +5232,8 @@ private struct ProviderImportSheet: View {
             }
         }
         .padding(24)
-        .presentationDetents([.height(360), .medium])
-        .presentationDragIndicator(.visible)
+        .compatPresentationDetents([.height(360), .medium])
+        .compatPresentationDragIndicator(.visible)
         // Swipe-to-dismiss without tapping a button still needs cleanup.
         .onDisappear { if !chose { onCancel() } }
     }
@@ -5345,7 +5345,7 @@ struct NavBarStyleModifier: ViewModifier {
                         // before, and the action's initial fire covers the old
                         // onAppear seed.
                         Color.clear
-                            .onGeometryChange(for: CGFloat.self) { proxy in
+                            .compatOnGeometryChange(for: CGFloat.self) { proxy in
                                 proxy.safeAreaInsets.top
                             } action: { topSafeAreaInset = $0 }
                             .ignoresSafeArea()
@@ -6032,7 +6032,7 @@ private struct MoveToSessionSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        CompatNavigationStack {
             List {
                 if !isSearching {
                     Button {
@@ -6448,7 +6448,7 @@ private struct SpeechLanguagePickerSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        CompatNavigationStack {
             List {
                 let preferred = filteredLocales.filter { preferredCodes.contains($0.language.languageCode?.identifier ?? "") }
                 let others = filteredLocales.filter { !preferredCodes.contains($0.language.languageCode?.identifier ?? "") }
@@ -6480,7 +6480,7 @@ private struct SpeechLanguagePickerSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .compatPresentationDetents([.medium, .large])
     }
 
     private func languageRow(_ loc: Locale) -> some View {
@@ -6520,7 +6520,7 @@ struct CompactSummarySheet: View {
     @State private var showRevertConfirm = false
 
     var body: some View {
-        NavigationStack {
+        CompatNavigationStack {
             VStack(spacing: 0) {
                 SelectableTextView(text: summary)
                     .padding(.horizontal, 16)
@@ -6573,7 +6573,7 @@ struct CompactSummarySheet: View {
                 Text("The summary will be discarded and the messages it covered will become active again. This may push the conversation past the model's context window — if that happens, long-press a message to re-compact from that point.")
             }
         }
-        .presentationDetents([.large])
+        .compatPresentationDetents([.large])
     }
 }
 
@@ -6616,7 +6616,7 @@ private struct TokenUsageSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
+        CompatNavigationStack {
             List {
                 let s = vm.sessionTokenStats
 

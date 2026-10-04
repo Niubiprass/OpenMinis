@@ -1,4 +1,3 @@
-import ActivityKit
 import Foundation
 
 struct LiveSessionSnapshot: Codable, Hashable {
@@ -17,6 +16,14 @@ struct LiveSessionSnapshot: Codable, Hashable {
     var lastMessage: String = ""
 }
 
+
+// [iOS15-compat] `import ActivityKit` is iOS 16.1+ and an `import` cannot be
+// guarded by @available. `LiveSessionSnapshot` above is plain Codable and
+// stays available; the ActivityAttributes type below compiles away on iOS 15,
+// which also disables the Live Activity (there is no such thing as a Live
+// Activity below iOS 16.1 — system limit, not a regression).
+#if canImport(ActivityKit)
+import ActivityKit
 @available(iOS 16.2, *)
 struct AgentActivityAttributes: ActivityAttributes {
     var startDate: Date
@@ -78,3 +85,6 @@ struct AgentActivityAttributes: ActivityAttributes {
         var privacyMode: Bool = false
     }
 }
+
+
+#endif // canImport(ActivityKit)

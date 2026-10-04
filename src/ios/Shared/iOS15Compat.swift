@@ -44,7 +44,11 @@ import SwiftUI
 ///
 /// IMPORTANT: this shim does NOT cover `NavigationStack(path:)`, which has no
 /// iOS 15 equivalent because `NavigationPath` is itself an iOS 16 type. The two
-/// path-driven call sites in ContentView.swift branch on availability directly.
+/// path-driven call sites in ContentView.swift go through `CompatPathStack`
+/// instead, which drives the same destination closure from a
+/// `CompatNavigationPath` on iOS 15. `CompatNavigationLink` below is the other
+/// half of that pair: it is what makes a value-based link actually push on
+/// iOS 15, where plain `NavigationLink(value:)` does not exist.
 @available(iOS 15.0, *)
 @ViewBuilder
 public func CompatNavigationStack<Content: View>(
@@ -60,6 +64,40 @@ public func CompatNavigationStack<Content: View>(
     }
 }
 
+/// `NavigationSplitViewVisibility` stand-in (the real one is iOS 16+).
+///
+/// Held in a `@State` that is declared unconditionally, so it cannot mention
+/// the iOS 16 type. On iOS 15 the sidebar-collapse state is simply never
+/// driven — see `compatNavigationSplitView`.
+@available(iOS 15.0, *)
+public enum CompatSplitViewVisibility: Hashable {
+    case automatic
+    case all
+    case doubleColumn
+    case detailOnly
+
+    @available(iOS 16.0, *)
+    var toSystemVisibility: NavigationSplitViewVisibility {
+        switch self {
+        case .automatic: return .automatic
+        case .all: return .all
+        case .doubleColumn: return .doubleColumn
+        case .detailOnly: return .detailOnly
+        }
+    }
+
+    @available(iOS 16.0, *)
+    init(_ system: NavigationSplitViewVisibility) {
+        switch system {
+        case .automatic: self = .automatic
+        case .all: self = .all
+        case .doubleColumn: self = .doubleColumn
+        case .detailOnly: self = .detailOnly
+        default: self = .automatic
+        }
+    }
+}
+
 /// `NavigationSplitView` (iOS 16+) fallback to `NavigationView`.
 ///
 /// The one call site (ContentView's iPad regular-width layout) already switches
@@ -67,17 +105,232 @@ public func CompatNavigationStack<Content: View>(
 /// fallback renders the same hierarchy the stack layout would.
 @available(iOS 15.0, *)
 @ViewBuilder
-public func CompatNavigationSplitView<Sidebar: View, Detail: View>(
+public func compatNavigationSplitView<Sidebar: View, Detail: View>(
+    columnVisibility: Binding<CompatSplitViewVisibility>,
     @ViewBuilder sidebar: () -> Sidebar,
     @ViewBuilder detail: () -> Detail
 ) -> some View {
     if #available(iOS 16.0, *) {
-        NavigationSplitView(sidebar: sidebar, detail: detail)
+        NavigationSplitView(
+            columnVisibility: Binding<NavigationSplitViewVisibility>(
+                get: { columnVisibility.wrappedValue.toSystemVisibility },
+                set: { columnVisibility.wrappedValue = CompatSplitViewVisibility($0) }
+            ),
+            sidebar: sidebar,
+            detail: detail
+        )
     } else {
         NavigationView {
             sidebar()
         }
         .navigationViewStyle(.stack)
+    }
+}
+
+// MARK: - Navigation path
+
+/// Drop-in replacement for SwiftUI's `NavigationPath` (iOS 16+).
+///
+/// WHY THIS EXISTS
+/// `NavigationPath` is an opaque iOS 16 type with no iOS 15 counterpart, and it
+/// cannot be shimmed by `NavigationView` — that view has no bindable path at
+/// all. But every operation this app performs on its path is plain array
+/// semantics:
+///
+///     NavigationPath([id])   .append(x)   .isEmpty   .count
+///     whole-value assignment (`path = NavigationPath()`)
+///     `onChange(of: path)`
+///
+/// so a thin wrapper over `[Element]` reproduces all of it. The public surface
+/// below is intentionally identical to `NavigationPath`'s, which means the
+/// ~65 call sites in ContentView.swift that manipulate `navigationPath` keep
+/// compiling unchanged — the migration is confined to the type name.
+///
+/// Conforms to `Equatable` so `onChange(of:)` keeps working; `NavigationPath`
+/// itself is Equatable for the same reason.
+@available(iOS 15.0, *)
+public struct CompatNavigationPath<Element: Hashable>: Equatable {
+    public private(set) var elements: [Element] = []
+
+    public init() {}
+
+    public init<S: Sequence>(_ elements: S) where S.Element == Element {
+        self.elements = Array(elements)
+    }
+
+    public var count: Int { elements.count }
+    public var isEmpty: Bool { elements.isEmpty }
+    public var first: Element? { elements.first }
+    public var last: Element? { elements.last }
+
+    public mutating func append(_ element: Element) {
+        elements.append(element)
+    }
+
+    public mutating func removeLast() {
+        guard !elements.isEmpty else { return }
+        elements.removeLast()
+    }
+
+    public mutating func removeLast(_ k: Int) {
+        guard k > 0, !elements.isEmpty else { return }
+        elements.removeLast(min(k, elements.count))
+    }
+
+    public mutating func removeAll() {
+        elements.removeAll()
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.elements == rhs.elements
+    }
+}
+
+/// A path-driven navigation container that works on iOS 15.
+///
+/// iOS 16+ branch: the real `NavigationStack(path:)` with the caller's
+/// `navigationDestination` modifier applied inside, whose resolution and
+/// identity semantics are what the app's transition-race workarounds (see the
+/// `[T-ios-stacknav-transition-attributegraph-race]` notes in ContentView.swift)
+/// were written against — so behaviour there is unchanged.
+///
+/// iOS 15 branch: `NavigationView` cannot host a bindable path, so the stack is
+/// rendered manually — the element at the top of `path` determines the pushed
+/// view. `NavigationStack` on iOS 15 does not exist, so `destinationView` is
+/// supplied explicitly by the caller instead of being discovered via
+/// `navigationDestination` (also iOS 16+). When a call site does not supply it,
+/// the fallback shows the element's `String(describing:)` so the navigation is
+/// still functional and obviously incomplete rather than silently empty.
+///
+/// This is a genuine behavioural reduction on iOS 15: no interactive
+/// back-swipe, no native push animation, no `navigationDestination` lookup.
+@available(iOS 15.0, *)
+public struct CompatPathStack<Element: Hashable, Content: View>: View {
+    private let pathBinding: Binding<CompatNavigationPath<Element>>
+    private let content: () -> Content
+    private let destinationView: ((Element) -> AnyView)?
+
+    public init(
+        path: Binding<CompatNavigationPath<Element>>,
+        @ViewBuilder content: @escaping () -> Content,
+        @ViewBuilder destination: @escaping (Element) -> some View
+    ) {
+        self.pathBinding = path
+        self.content = content
+        self.destinationView = { AnyView(destination($0)) }
+    }
+
+    /// Variant for call sites that only have a `navigationDestination` chain
+    /// (iOS 16+ only). On iOS 15 there is nothing to resolve it from, so the
+    /// fallback renders a placeholder for the top element.
+    public init(
+        path: Binding<CompatNavigationPath<Element>>,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.pathBinding = path
+        self.content = content
+        self.destinationView = nil
+    }
+
+    public var body: some View {
+        if #available(iOS 16.0, *) {
+            NavigationStack(path: NavigationPath(path.elements)) {
+                content()
+            }
+        } else {
+            legacyStack
+        }
+    }
+
+    /// iOS 15 fallback: root, plus the element currently on top of the path.
+    @ViewBuilder
+    private var legacyStack: some View {
+        if let top = pathBinding.wrappedValue.last, let destinationView {
+            // Key on the element so SwiftUI builds a fresh destination view per
+            // path entry. Without a stable identity SwiftUI would reuse the
+            // outgoing view's @StateObject, which is the exact bug the
+            // `[T-ios-stacknav-transition-attributegraph-race]` notes describe.
+            destinationView(top)
+                .id(top)
+                .transition(.move(edge: .trailing))
+        } else if let top = pathBinding.wrappedValue.last {
+            Text(String(describing: top))
+                .id(top)
+                .transition(.move(edge: .trailing))
+        } else {
+            content()
+                .transition(.move(edge: .leading))
+        }
+    }
+}
+
+// MARK: - Value-based navigation link
+
+/// Drop-in replacement for SwiftUI's value-based `NavigationLink(value:)`
+/// (iOS 16+).
+///
+/// WHY THIS EXISTS
+/// The compact-width session row in ContentView.swift drives navigation with a
+/// zero-opacity `NavigationLink(value: session.id) { EmptyView() }` layered
+/// over the row's own background. The row itself is not tappable, so that link
+/// IS the tap target — the whole "tap a session to open it" interaction on
+/// iPhone hangs off it. Nothing else in the compact layout appends to the path
+/// on a user gesture; every other write is programmatic (deep links, quick
+/// actions, the background watchdog), so without a working link the iPhone
+/// session list would be completely inert on iOS 15.
+///
+/// `NavigationView` on iOS 15 has no value-based link at all: it only offers
+/// `NavigationLink(destination:isActive:)` and `NavigationLink(destination:tag:)`
+/// driven by a selection binding. Rather than route a whole `String` through a
+/// selection `Binding`, the iOS 15 branch appends to the same
+/// `CompatNavigationPath` the stack renders from, which keeps one source of
+/// truth for "what is on the navigation stack" across both OS versions.
+///
+/// On iOS 16+ this IS `NavigationLink(value:)`, so identity, transition and the
+/// zero-opacity hit-testing behaviour are all unchanged.
+@available(iOS 15.0, *)
+public struct CompatNavigationLink<Label: View>: View {
+    private let value: String?
+    private let label: Label
+
+    /// iOS 15 only: the path to append to on tap. Nil on iOS 16+, where the real
+    /// link writes to the stack itself.
+    private let path: Binding<CompatNavigationPath<String>>?
+
+    public init(
+        value: String,
+        path: Binding<CompatNavigationPath<String>>? = nil,
+        @ViewBuilder label: () -> Label
+    ) {
+        self.value = value
+        self.label = label()
+        self.path = path
+    }
+
+    public var body: some View {
+        if #available(iOS 16.0, *) {
+            NavigationLink(value: value ?? "") { label }
+        } else if let path {
+            // The iOS 15 stack (`CompatPathStack.legacyStack`) re-renders from
+            // the path, so appending is all a push needs. Animations are left
+            // to the destination's own `.transition` — driving an explicit
+            // animation here would fight the transaction the caller may already
+            // be running (ContentView commits programmatic pushes with
+            // `disablesAnimations`).
+            Button {
+                var next = path.wrappedValue
+                next.append(value ?? "")
+                path.wrappedValue = next
+            } label: {
+                label
+            }
+            .buttonStyle(.plain)
+        } else {
+            // No path bound (split layout, or a call site outside a
+            // CompatPathStack): fall back to a non-navigating label so the
+            // content still renders.
+            label
+        }
     }
 }
 
@@ -174,6 +427,46 @@ public enum CompatPresentationDetent: Hashable {
     }
 }
 
+/// Which detent a sheet is currently resting at, in a deployment-target-safe
+/// type. Stands in for `PresentationDetent` in stored properties
+/// (`@State private var detent: …`) that are declared unconditionally and
+/// therefore cannot mention an iOS 16+ type.
+@available(iOS 15.0, *)
+public enum CompatDetentSelection: Hashable {
+    case large
+    case medium
+    case small
+    case fraction(CGFloat)
+    case height(CGFloat)
+
+    @available(iOS 16.0, *)
+    var toSystemDetent: PresentationDetent {
+        switch self {
+        case .large: return .large
+        case .medium: return .medium
+        case .small: return .small
+        case .fraction(let value): return .fraction(value)
+        case .height(let value): return .height(value)
+        }
+    }
+
+    /// Round trip used by the `selection:` bridging binding.
+    /// `PresentationDetent` is a struct with exactly these five cases, so the
+    /// mapping is exhaustive; the `default` arm only keeps this compiling if
+    /// Apple ever adds a case.
+    @available(iOS 16.0, *)
+    init(_ system: PresentationDetent) {
+        switch system {
+        case .large: self = .large
+        case .medium: self = .medium
+        case .small: self = .small
+        case .fraction(let value): self = .fraction(value)
+        case .height(let value): self = .height(value)
+        default: self = .medium
+        }
+    }
+}
+
 /// Drop-in replacement for `.presentationDetents(_:)` (iOS 16+).
 ///
 /// iOS 15 has no detent system: a sheet is always presented at its natural
@@ -191,6 +484,63 @@ public extension View {
             presentationDetents(Set(detents.map(\.toSystemDetent)))
         } else {
             self
+        }
+    }
+
+    /// Selection-aware variant. iOS 15 has no detent selection, so the binding
+    /// is simply not driven there — the sheet still opens and dismisses, it
+    /// just does not rest at a user-chosen height.
+    func compatPresentationDetents(
+        _ detents: Set<CompatPresentationDetent>,
+        selection: Binding<CompatDetentSelection>
+    ) -> some View {
+        if #available(iOS 16.0, *) {
+            presentationDetents(
+                Set(detents.map(\.toSystemDetent)),
+                selection: Binding<PresentationDetent>(
+                    get: { selection.wrappedValue.toSystemDetent },
+                    set: { selection.wrappedValue = CompatDetentSelection($0) }
+                )
+            )
+        } else {
+            self
+        }
+    }
+}
+
+// MARK: - Sheet chrome
+
+/// Drop-in replacement for `.presentationDragIndicator(_:)` (iOS 16+).
+///
+/// iOS 15 sheets have no drag indicator and no way to show one, so this is a
+/// documented no-op there: the sheet presents and dismisses exactly as before,
+/// it just lacks the grabber. The enum is redeclared rather than reusing
+/// SwiftUI's `Visibility` so the parameter type stays iOS 15-legal.
+@available(iOS 15.0, *)
+public enum CompatDragIndicatorVisibility {
+    case automatic
+    case visible
+    case hidden
+}
+
+@available(iOS 15.0, *)
+public extension View {
+    func compatPresentationDragIndicator(_ visibility: CompatDragIndicatorVisibility) -> some View {
+        if #available(iOS 16.0, *) {
+            presentationDragIndicator(visibility.systemValue)
+        } else {
+            self
+        }
+    }
+}
+
+@available(iOS 16.0, *)
+private extension CompatDragIndicatorVisibility {
+    var systemValue: Visibility {
+        switch self {
+        case .automatic: return .automatic
+        case .visible: return .visible
+        case .hidden: return .hidden
         }
     }
 }
@@ -274,5 +624,83 @@ public extension CompatShareLink where Label == Text {
         self.init(item: item) {
             Label("Share Item", systemImage: "square.and.arrow.up")
         }
+    }
+}
+
+// MARK: - Geometry observation
+
+/// Version-safe stand-in for `View.onGeometryChange(for:of:action:)` (iOS 18+).
+///
+/// WHY THIS EXISTS
+/// `onGeometryChange` is the modern replacement for the
+/// `GeometryReader` + `onAppear` + `onChange(of:)` scaffold, and this codebase
+/// standardised on it after an iOS 18 async-renderer SIGTRAP
+/// (`[T-ios-geometry-observer-crash]`, `ViewGraphGeometryObservers.needsUpdate`).
+/// It is iOS 18+, so the deployment-target lowering to 15.0 would not compile.
+/// Rather than reverting those five call sites to the scaffold that previously
+/// crashed, the version check is centralised here.
+///
+/// The iOS 15–17 branch uses a zero-impact `GeometryReader` background plus
+/// `onAppear` / `onChange`. Two deliberate differences from iOS 18+:
+///
+///   * The action fires on appear with the initial value, matching
+///     `onGeometryChange`'s documented initial-fire behaviour. Call sites rely
+///     on this to seed state that used to be seeded in `onAppear`.
+///   * `GeometryReader` fills its parent, so the reader is confined to a
+///     `Color.clear` background layer that does not affect layout — the same
+///     containment the call sites already used around the observer.
+///
+/// The `transform` closure receives a `GeometryProxy` in both branches so the
+/// call sites' measurement expressions are unchanged.
+@available(iOS 15.0, *)
+public struct CompatGeometryObserver<Value: Equatable, Transform: @Sendable (GeometryProxy) -> Value>: ViewModifier {
+    private let transform: Transform
+    private let action: (Value) -> Void
+
+    public init(
+        for type: Value.Type,
+        transform: @escaping @Sendable (GeometryProxy) -> Value,
+        action: @escaping (Value) -> Void
+    ) {
+        self.transform = transform
+        self.action = action
+    }
+
+    @ViewBuilder
+    public func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onGeometryChange(for: Value.self, of: transform, action: action)
+        } else {
+            legacyObserver(content: content)
+        }
+    }
+
+    /// iOS 15–17 measurement path. See the type comment for why the reader is
+    /// confined to a `Color.clear` background and why the action also fires
+    /// from `onAppear`.
+    @ViewBuilder
+    private func legacyObserver(content: Content) -> some View {
+        content
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { action(transform(proxy)) }
+                        .onChange(of: transform(proxy)) { newValue in
+                            action(newValue)
+                        }
+                }
+            }
+    }
+}
+
+@available(iOS 15.0, *)
+public extension View {
+    /// See `CompatGeometryObserver`.
+    func compatOnGeometryChange<Value: Equatable>(
+        for type: Value.Type,
+        of transform: @escaping @Sendable (GeometryProxy) -> Value,
+        action: @escaping (Value) -> Void
+    ) -> some View {
+        modifier(CompatGeometryObserver(for: type, of: transform, action: action))
     }
 }

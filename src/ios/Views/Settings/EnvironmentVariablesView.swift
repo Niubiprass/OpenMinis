@@ -228,7 +228,7 @@ private struct EnvVarFormSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        CompatNavigationStack {
             Form {
                 Section {
                     TextField("NAME", text: Binding(
@@ -308,7 +308,7 @@ private struct EnvVarFormSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .compatPresentationDetents([.medium, .large])
         .alert(
             AppLocalized("Delete this variable?"),
             isPresented: $showingDeleteConfirm
