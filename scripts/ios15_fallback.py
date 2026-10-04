@@ -4959,6 +4959,342 @@ def verify_diag_codeblock_v565(t):
 
 
 
+def _v566_strip_comments_only(text):
+    """只剥 Swift 注释, **保留字符串字面量**, 行数不变。
+
+    ★为什么要专门写这个而不是用 `_strip_swift_noise`:
+      v56.4 的教训 —— `_strip_swift_noise` 连字符串一起剥, 而 v566 的判据
+      要查的 `cardWidth * 3.0 / 4.0` 恰好**出现在我新写的注释里**
+      (「旧式 cardWidth * 3.0 / 4.0 在 375 屏上是 263pt」)。
+      裸字符串搜索会把注释当代码 ⇒ 自己写的说明文字把自己判红了。
+      ⇒ 判据查「代码」时就必须只看代码。
+
+    用 in_string 状态位让 `//` 与 `/*` 只在代码区生效(否则 `https://` 误判),
+    注释一律替换成等量换行以保持行号不变。
+    """
+    out = []
+    i = 0
+    n = len(text)
+    in_str = False
+    in_line = False
+    in_block = False
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if in_line:
+            if c == "\n":
+                in_line = False
+                out.append(c)
+            i += 1
+            continue
+        if in_block:
+            if c == "*" and nxt == "/":
+                in_block = False
+                i += 2
+                continue
+            out.append(c if c == "\n" else " ")
+            i += 1
+            continue
+        if in_str:
+            if c == "\\":
+                out.append(c)
+                if nxt:
+                    out.append(nxt)
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            out.append(c)
+            i += 1
+            continue
+        # 代码区
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and nxt == "/":
+            in_line = True
+            i += 2
+            out.append("  ")
+            continue
+        if c == "/" and nxt == "*":
+            in_block = True
+            i += 2
+            out.append("  ")
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def fix_toolbar_minheight_v566(t):
+    # ================================================================
+    # v56.6: 终端框高度下限改成「按内容」而不是「按宽度乘 3/4」
+    # ================================================================
+    # ★v56.5 装机日志(1791122354995860829, PID 1441)把整条归因链推翻了:
+    #
+    #   1) 全部 75 条渲染日志都是 `codeBlocks=0` —— **一个 Markdown 代码块都没有**;
+    #      而录屏第5 帧终端框明明在画面上。
+    #   2) [V565-CODEBLOCK] 0 条 —— 探针没坏, 是 CodeBlockAttachment
+    #      在这条路径上**从来没被创建过**。
+    #   ⇒ 「终端框」根本不是 Markdown 代码块, 是 FloatingToolBar 的
+    #     ToolPreviewThumbnail(工具输出卡片, tool=shell_execute)。
+    #     v56.5 之前的全部归因(含 v46/v47/v48/v50 一系列)都建立在
+    #     「终端框 = 代码块」这个**从未被验证过**的前提上。
+    #
+    # 【本版修的东西 —— 不依赖任何探针, 代码本身就是证据】
+    #   ToolLiveSheet.swift:2335 与 :1654(两条重复路径)都有:
+    #       let cardMinHeight = cardWidth * 3.0 / 4.0
+    #   375 屏上 cardWidth≈351 ⇒ cardMinHeight≈263pt。
+    #   **只有一行输出的终端也被强撑到 263pt**, 而
+    #   `.frame(..., minHeight: cardMinHeight, alignment: .topLeading)`
+    #   把多余空间全堆在内容下方 ⇒ 这就是「终端输出与终端之间空白过大」。
+    #
+    #   为什么上游敢这么写: 它假定卡片里总有几百行输出, 4:3 只是个兜底。
+    #   但折叠态预览 / 短输出场景下, 兜底就变成了正文里最大的视觉 bug。
+    #
+    # 【修法: 下限按内容行数给, 不再按宽度乘常数】
+    #   minHeight = 标题行 + 可见输出行 * 行高 + 上下padding, 再夹到
+    #   [最小 88pt, 最大 400pt]。88pt 是一行标题 + 两行输出的合理下限;
+    #   400pt 是 v46 时代就存在的上限口径, 不放宽以免一口气撑满整屏。
+    #   ★不设「无输出时的 263pt 兜底」—— 空卡片就该是空的,
+    #     空白过大的根源正是那个兜底。
+    #
+    # 【为什么两条路径都要改】
+    #   textContent(:2333) 与 snapshotTextContent(:1653) 是**逐字重复**的
+    #   两份布局代码(有持久化 snapshot 时走后者)。只改一处会让两个入口
+    #   行为分叉 —— 这是本项目吃过教训的形态(v13/v34 抢宽分叉)。
+    #   ⇒ 判据硬性要求两条都改, 且都带 [V566-MINH] 标记。
+
+    if "[V566-MINH]" in t:
+        return t
+
+    # ---- 锚点 1: 两处 cardMinHeight 的声明 ----
+    OLD_DECL = """    private var textContent: some View {
+        GeometryReader { geo in
+            let cardWidth = geo.size.width - 24 // 12pt horizontal padding each side
+            let cardMinHeight = cardWidth * 3.0 / 4.0
+"""
+    NEW_DECL = """    private var textContent: some View {
+        GeometryReader { geo in
+            let cardWidth = geo.size.width - 24 // 12pt horizontal padding each side
+            // [V566-MINH] 下限按**内容行数**给, 不再按宽度乘 3/4。
+            // 旧式 `cardWidth * 3.0 / 4.0` 在 375 屏上是 263pt:
+            // 一行输出也被撑到 263pt, alignment:.topLeading 把余量全堆在下方
+            // ⇒ 用户看到的「终端输出与终端之间空白过大」。
+            let v566RowH: CGFloat = 16
+            let v566Pad: CGFloat = 28          // .padding(.top,14) + .padding(.bottom,14)
+            let v566HeadH: CGFloat = 32        // 标题行 + .padding(.top,14)
+            let v566BodyLines = CGFloat(min(max(linesShownInPreview(self.previewLinesCount), 0), 18))
+            let cardMinHeight = min(max(
+                v566HeadH + v566BodyLines * v566RowH + v566Pad,
+                Self.v566FloorHeight), Self.v566CeilHeight)
+"""
+    if OLD_DECL not in t:
+        raise RuntimeError(
+            "fix_toolbar_minheight_v566: textContent 锚点不在 —— "
+            "上游 ToolLiveSheet.swift 的 textContent 结构变了")
+    t = t.replace(OLD_DECL, NEW_DECL, 1)
+
+    OLD_DECL2 = """    private func snapshotTextContent(_ text: String) -> some View {
+        GeometryReader { geo in
+            let cardWidth = geo.size.width - 24 // 12pt horizontal padding each side
+            let cardMinHeight = cardWidth * 3.0 / 4.0
+"""
+    NEW_DECL2 = """    private func snapshotTextContent(_ text: String) -> some View {
+        GeometryReader { geo in
+            let cardWidth = geo.size.width - 24 // 12pt horizontal padding each side
+            // [V566-MINH] 与 textContent 逐字同款 —— 见那里的说明。
+            // ★必须同步: 两条是重复代码, 只改一处会让两个入口行为分叉。
+            let v566RowH: CGFloat = 16
+            let v566Pad: CGFloat = 28          // .padding(.top,14) + .padding(.bottom,14)
+            let v566HeadH: CGFloat = 32        // 标题行 + .padding(.top,14)
+            let v566BodyLines = CGFloat(min(max(linesShownInPreview(text.count), 0), 18))
+            let cardMinHeight = min(max(
+                v566HeadH + v566BodyLines * v566RowH + v566Pad,
+                Self.v566FloorHeight), Self.v566CeilHeight)
+"""
+    if OLD_DECL2 not in t:
+        raise RuntimeError(
+            "fix_toolbar_minheight_v566: snapshotTextContent 锚点不在 —— "
+            "两条重复路径必须同步修改, 只改一处就是分叉")
+    t = t.replace(OLD_DECL2, NEW_DECL2, 1)
+
+    # ---- 锚点 2: 加常量与行数换算 ----
+    OLD_TUNE = """fileprivate enum LazyRenderTuning {
+    /// Lines per chunk — must match chunkedLines' default.
+    static let chunkLines = 40"""
+    NEW_TUNE = """fileprivate enum LazyRenderTuning {
+    /// Lines per chunk — must match chunkedLines' default.
+    static let chunkLines = 40
+    /// [V566-MINH] 终端卡片高度下限/上限(与旧 3/4 口径的替代物)。
+    /// 下限 88pt ≈ 标题 + 两行输出; 上限 400pt 沿用 v46 以来的口径,
+    /// 不放宽 —— 免得一张长输出卡片吃掉整屏。
+    static let cardFloorHeight: CGFloat = 88
+    static let cardCeilHeight: CGFloat = 400
+    /// [V566-MINH] 字符数 → 行数的粗估(等宽 13pt, 约 76 字符/行)。
+    /// ★刻意不做精确测量: 精确排版正是本项目反复踩坑的地方
+    ///   (v47 的宽度不��源、v48 的碎片不重排), 而下限只需要「大概有几行」。
+    static func linesShownInPreview(_ charCount: Int) -> Int {
+        guard charCount > 0 else { return 0 }
+        let perLine = 76
+        var lines = charCount / perLine
+        if charCount % perLine != 0 { lines += 1 }
+        return lines
+    }"""
+    if OLD_TUNE not in t:
+        raise RuntimeError("fix_toolbar_minheight_v566: LazyRenderTuning 锚点不在")
+    t = t.replace(OLD_TUNE, NEW_TUNE, 1)
+
+    # textContent 里那处引用的是 self.previewLinesCount, 换成同源换算。
+    # 它在自己的 body 里已有 block, 但 previewLinesCount 不是现成属性,
+    # 直接用 block.content 的字符数即可 —— 折叠预览显示的就是它。
+    t = t.replace(
+        "linesShownInPreview(self.previewLinesCount)",
+        "linesShownInPreview(block.content.count)", 1)
+
+    # ---- 锚点 3: ToolLiveSheet 里加两个转发常量(视图内用 Self.xxx) ----
+    OLD_LAZY = """    private static let lazyRenderChunkLines = LazyRenderTuning.chunkLines"""
+    NEW_LAZY = """    /// [V566-MINH] 转发到底层 tuning —— 视图体内用 `Self.v566FloorHeight`。
+    private static let v566FloorHeight = LazyRenderTuning.cardFloorHeight
+    private static let v566CeilHeight = LazyRenderTuning.cardCeilHeight
+    private static let lazyRenderChunkLines = LazyRenderTuning.chunkLines"""
+    if OLD_LAZY not in t:
+        raise RuntimeError("fix_toolbar_minheight_v566: lazyRender 常量锚点不在")
+    t = t.replace(OLD_LAZY, NEW_LAZY, 1)
+
+    # ★自检放在**全部替换完成之后**再跑。
+    #   v56.6 实跑踩到: 自检放在锚点3之前时它立刻报「仍残留 3/4」——
+    #   因为那时候 OLD_LAZY 那处还没替换。那不是判据错, 是**顺序错**:
+    #   判据提前跑 ⇒ 后面真正的修改永远跑不到 ⇒ 整个 edit 崩掉,
+    #   与 run#37118226923(v44 登记排在 v42 之前导致 fallback 抛异常、
+    #   后面编译/打包一步都跑不到)是同一类形态。
+    #   ⇒ 纪律: **判据只能放在所有替换之后**, 绝不能夹在中间。
+    verify_toolbar_minheight_v566(t)
+
+    return t
+
+
+def verify_toolbar_minheight_v566(t):
+    """v56.6 判据: 高度下限不再按宽度乘 3/4, 且两条重复路径同步。
+
+    ★这一版判据的重点不是「新代码写对了吗」, 而是**覆盖范围**:
+      3/4 这个写法在文件里有**两份**(textContent / snapshotTextContent),
+      而历史上这个项目反复出现的形态就是「只改了一处, 另一个入口继续错」
+      —— v13/v34 的宽度分叉、v48 的碎片只在一处重排。
+      ⇒ 判据硬性要求: 带标记的 cardMinHeight **必须恰好两份**,
+        且两份都在各自的宿主函数里。少一份 = 分叉 = 判据红。
+    """
+    # ★按「含标记的行数」查, 不按「文件里有没有出现过标记」——
+    #   反向测试 S8 实跑抓到: 只查 `"[V566-MINH]" in t` 时,
+    #   把前三处标记换成别的词就再也拦不住了(第 4 处还在, `in` 仍为真)。
+    #   ⇒ 判据要的是「该有标记的地方都有标记」, 不是「某处有过标记」。
+    #   本版共4 处标记: 两处 cardMinHeight 注释 + 两处 LazyRenderTuning/常量注释。
+    n_mark = sum(1 for ln in t.split("\n") if "[V566-MINH]" in ln)
+    if n_mark < 4:
+        raise RuntimeError(
+            "verify_toolbar_minheight_v566: 带 [V566-MINH] 标记的行只有 %d 处"
+            "(应 >=4) —— 标记被摘掉或版本只改了一部分, 3/4 硬比例可能还在"
+            % n_mark)
+
+    # ★全文先剥掉注释再查 ——
+    #   实跑踩到: 我在新注释里写了「旧式 `cardWidth * 3.0 / 4.0` 在 375 屏上是
+    #   263pt」这句说明, 裸字符串搜索把它当成残留代码, 判据**把自己写的
+    #   说明当成了罪证**。
+    #   ⇒ 判据一旦开始搜代码, 就必须先剥注释, 否则任何带解释的修复都会被自己判红。
+    #   这与 v56.4 的 `_strip_swift_noise` 是两回事: 那个连字符串一起剥,
+    #   而这里要保留字符串(万一 needle 出现在字符串字面量里也要能看到)。
+    tc = _v566_strip_comments_only(t)
+
+    n_mark = t.count("[V566-MINH]")
+    # 标记出现 4 次: 两处 cardMinHeight 注释 + 两处 LazyRenderTuning 注释。
+    # 不硬编这个数(会随注释调整而脆), 只查「cardMinHeight 的新写法恰好两份」。
+    n_new = tc.count("v566BodyLines * v566RowH + v566Pad")
+    if n_new != 2:
+        raise RuntimeError(
+            "verify_toolbar_minheight_v566: 新写法出现 %d 次(应为 2)—— "
+            "textContent 与 snapshotTextContent 是**重复的两份代码**, "
+            "只改一处会让两个入口高度行为分叉" % n_new)
+
+    # 覆盖范围: 两处新写法必须分别落在两个宿主函数体内
+    for host, needle in (
+            ("private var textContent: some View {",
+             "v566BodyLines = CGFloat(min(max(linesShownInPreview(block.content.count), 0), 18))"),
+            ("private func snapshotTextContent(_ text: String) -> some View {",
+             "v566BodyLines = CGFloat(min(max(linesShownInPreview(text.count), 0), 18))")):
+        i_host = t.find(host)
+        if i_host < 0:
+            raise RuntimeError(
+                "verify_toolbar_minheight_v566: 找不到宿主 %s —— "
+                "上游结构变了, 判据的覆盖范围锚点失效" % host.split("{")[0].strip())
+        i_next = t.find("\n    private ", i_host + 10)
+        seg = t[i_host:i_next] if i_next > 0 else t[i_host:]
+        if needle not in seg:
+            raise RuntimeError(
+                "verify_toolbar_minheight_v566: %s 里没有它自己那行 —— "
+                "两份重复路径只改了一处, 两个入口会分叉"
+                % host.split("{")[0].strip())
+
+    # 旧写法在**目标两处**必须消失。
+    # ★实测踩到: 全文件其实有**三处** `cardWidth * 3.0 / 4.0` ——
+    #   :1657 snapshotTextContent(终端)
+    #   :2337 textContent(终端)
+    #   :1809 file_edit 的 diff 卡片(**不是终端框**)
+    #   调研只报了前两处, 判据若写成「全文件不得残留」就会要求连diff 卡片
+    #   一起改 —— 那是扩大范围, 会动到本版根本没证据的路径。
+    #   ⇒ 判据必须**按宿主函数定位**, 而不是全文件搜字符串。
+    #   这也是「覆盖范围」的正向形态: 不只说「哪里不该有」, 还要说「哪里该有」。
+    for host in ("private func snapshotTextContent(_ text: String) -> some View {",
+                 "private var textContent: some View {"):
+        i_host = tc.find(host)
+        if i_host < 0:
+            continue
+        i_next = tc.find("\n    private ", i_host + 10)
+        seg = tc[i_host:i_next] if i_next > 0 else tc[i_host:]
+        if "cardWidth * 3.0 / 4.0" in seg:
+            raise RuntimeError(
+                "verify_toolbar_minheight_v566: %s 里仍残留 3/4 硬比例 —— "
+                "375 屏上就是 263pt 硬下限, 空白过大的根源没去掉"
+                % host.split("{")[0].strip())
+    # 第三处(file_edit diff 卡片)必须**保持原样** —— 本版没有证据说它有问题,
+    # 顺手改它就是把「有据可改」变成「顺手重构」, 那是本项目最常见的翻车方式。
+    if tc.count("cardWidth * 3.0 / 4.0") != 1:
+        raise RuntimeError(
+            "verify_toolbar_minheight_v566: 全文件 3/4 应恰好剩 1 处(file_edit "
+            "diff 卡片, 本版不动它), 实测 %d 处 —— 多改或漏改都会让范围失控"
+            % tc.count("cardWidth * 3.0 / 4.0"))
+
+    # 上下限常量必须在
+    # ★必须带**行尾锚点**(换行/空白) —— 反向测试 S3 实跑抓到:
+    #   `... = 400` 是 `... = 4000` 的**子串**, 裸 `in` 判据在 4000 时照样成立
+    #   ⇒ 上限被改成 4000(卡片吃掉整屏)而判据全绿。
+    #   这是「子串匹配」这一类洞的典型形态: 判据看起来在查某个值,
+    #   实际只查了那个值的**前缀**。
+    #   ⇒ 纪律: 查数值必须连着它的**终止符**一起查。
+    for need in ("static let cardFloorHeight: CGFloat = 88",
+                 "static let cardCeilHeight: CGFloat = 400"):
+        if not any(ln.strip() == need for ln in tc.split("\n")):
+            raise RuntimeError(
+                "verify_toolbar_minheight_v566: 缺(或被改) `%s` —— "
+                "没有上下限的话长输出会撑爆整屏/短输出会被撑出大片空白" % need)
+
+    # 换算函数必须在, 且要有空输入分支(空卡片就该是空的)
+    if "static func linesShownInPreview(_ charCount: Int) -> Int" not in t:
+        raise RuntimeError(
+            "verify_toolbar_minheight_v566: 缺 linesShownInPreview —— "
+            "高度下限无从计算")
+    i_fn = t.find("static func linesShownInPreview(_ charCount: Int) -> Int")
+    i_end = t.find("\n    }", i_fn)
+    seg_fn = t[i_fn:i_end] if i_end > 0 else t[i_fn:i_fn + 400]
+    if "charCount > 0" not in seg_fn:
+        raise RuntimeError(
+            "verify_toolbar_minheight_v566: linesShownInPreview 没有空输入分支 —— "
+            "空卡片会被算出 0 行下限, 退回固定高度, 等于绕回原来的 bug")
+
+    return True
+
+
 def fix_width_reflow_v47(t):
     """v47: 统一测宽源 —— 治'终端框盖住上面的字 / 定时任务字一下有一下没有'。
 
@@ -10689,6 +11025,8 @@ def main():
     # ---- v46: 表格附件排版链归因(纯诊断, 一行几何都不碰) ----
     edit("Views/Chat/SelectableMarkdownView.swift", fix_diag_attachment_v46, "v46: 【纯诊断, 不改任何行为】V46-ATTACH — 治'终端框盖住上面的字/定时任务字一下有一下没有'。log15 硬证据: needH=304.3 而 usedH=114.3(差 190pt), 表格 7x2 附件占的高度完全不在 usedRect 里; 111 条 V44 里 71 条 needH-usedH>8.5(中位 55.6 最大 190.0), 另 40 条 <=8.5(纯文字, 差额就是 textContainerInset 的 8.1~8.3) —— **差额与'有没有附件'完全同构**, 这是 v44 假设 C 的首次真实命中。len=49 那组更直白: 唯一一组 usedH 恒为 99.9 而 needH 在 182<->236 之间跳的样本, 附件高度反复切换 = 文字忽隐忽现。链路上四个候选根因一次性打完: D1 缓存未失效(computeLayout 开头 cachedLayout 命中即返回, update() 的 structureChanged||contentGrew 若为 false 就留着旧 rowHeights) / D2 探针宽度(isOversizedProbe 时高度按 containerRealWidth 算但返回宽度是 clampedWidth) / D3 失效信号未消费(needsLayoutInvalidation 置位但 invalidate 路径没跑到) / D4 容器被 TextContainerGuard 短路(log15 累计 3617 次, 高度出现 2000.0/1057.3/18.7 等与真实需求无关的值)。**为什么不盲修**: D1 要放宽缓存失效判据, 而那正是 HangFix 2026-05-14 治'流式每 token 全量重测致主线程卡死数秒'故意保留的; D4 要放宽 guard, 而 guard 是治 fillLayoutHole 11918ms 卡死的 —— 两处都是拿性能换正确性的历史 trade-off, 盲修任一处都可能把卡死放回来。校验函数硬禁段内一切赋值与 invalidate*/computeLayout 调用(用剥注释去字符串后的语义级赋值识别, 不靠逐行白名单), 并硬禁访问器带 setter; 另注入 TableAttachment.attV46CachedTotalH/attV46CachedWidth 两个**只读 getter**(cachedLayout 是 private, 不加就读不到, D1 就无法验证)。0.5s 节流与 V41-KVOPRE/V44-TEXTFRAME/V45-TVHFIX 同周期。★登记必须排在 v45 之后(同一闭包同帧, 三者并列对照)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_diag_codeblock_v565, "v56.5: 【纯诊断, 不改任何行为】V565-CODEBLOCK — 治「终端框卡显示 + 环境配置终端输出与终端之间空白过大」。★★这版的价值首先在于**修一个认知错误**: 此前判读说「终端框问题数据不够, 需要更多日志」—— **不对, 是探针结构上就看不见**。v46 的 [V46-ATTACH] 只 `as? TableAttachment` 取值, 而终端框是 CodeBlockAttachment, 两者是平级兄弟(都直接继承 NSTextAttachment, 产物 1405 / 1776)。v56.2 装机日志(PID 43107)72 条 V46-ATTACH 里 **31 条是 attWant=0.0 attCached=-1.0** —— 累计高 0、缓存 -1, 说明那些帧的附件**全是代码块**, v46 两个计数器恒为初值; 且这 31 条 nGlyph 恒 228 / usedH 恒 477.6 / tcW 恒 390.0 ⇒ 是另一个独立视图。⇒ 判据第一条就钉死宿主类名(CodeBlockAttachment), 这类「装在错误的类里、所有判据照样全绿」的洞只有覆盖范围判据能发现, 标记唯一性永远发现不了。四个量各证伪一个修法: cH=attachmentBounds 给排版留的位置 / raw=measureCodeHeight 自然高 / cap=400-topOffset-12 硬上限 / viewH+viewW=makeView 出来的真实框架(由 makeView 侧回写, 本探针唯一写入点, 只写自己字段不改几何)。判读: raw>cap ⇒ 内容超上限被截进内部滚动区(卡显示); viewH>=0 且 viewH!=cH ⇒ 框架与排版两个高度来源打架(空白过大); viewH<0 ⇒ 排版问过高度但从未建视图。已核实的边界(不猜): attachmentBounds 与 makeView 都用 sizeThatFits(greatestFiniteMagnitude) 即**不限宽测量**, 终端输出永不折行 —— 两路径同源, 所以 v46 里 attWant!=attCached 那 17 条属 Table, 与终端框无关。判据: 日志点唯一 + **宿主类名** + 四量齐全 + 访问器只读无 setter + 段内零赋值 + 硬禁 invalidate/frame=/computeLayout 等 + 0.5s 节流 + 花括号平衡。不测「帧有没有被复用」—— 那归 v56 的 [V56-*] 与 view cache, 混进来会让 4 个量变 8 个, 反而看不出因果")
+    edit("Views/Chat/ToolLiveSheet.swift", fix_toolbar_minheight_v566,
+        "v56.6: 终端框高度下限不再按宽度乘 3/4 —— 治『终端输出与终端之间空白过大』。★★这版第一件事是**推翻自己的归因**: v56.5 装机日志(PID 1441)里 75 条渲染日志**全部 codeBlocks=0** —— 一个 Markdown 代码块都没有, 而录屏里终端框明明在画面上; [V565-CODEBLOCK] 0 条 ⇒ CodeBlockAttachment 在这条路径上**从未被创建**。⇒ 「终端框」根本不是代码块, 是 FloatingToolBar 的 ToolPreviewThumbnail(工具输出卡片, tool=shell_execute); v56.5 之前的全部归因(含 v46/v47/v48/v50 一系列)都建立在「终端框=代码块」这个**从未验证过**的前提上。★★本版修的东西**不依赖任何探针, 代码本身就是证据**: textContent:2335 与 snapshotTextContent:1654 两处都是 `cardMinHeight = cardWidth * 3.0 / 4.0` —— 375屏上 cardWidth≈351 ⇒ **263pt 硬下限**, 一行输出也被撑到 263pt, 而 `.frame(..., alignment: .topLeading)` 把余量全堆在内容下方。修法: 下限改按**内容行数**给(标题32 + 行数*16 + padding28), 夹在 [88, 400]。★上限 400 沿用 v46 以来的口径不放宽 —— 否则一张长输出卡片吃掉整屏。★**刻意不做精确测量**: 精确排版正是本项目反复翻车之处(v47 宽度不同源 / v48 碎片不重排), 而下限只需要「大概有几行」。空卡片就该是空的 —— 空白过大的根源正是那个 3/4 兜底。★两条重复路径(textContent 与 snapshotTextContent)**必须同步**: 它们逐字重复, 只改一处会让「有snapshot」与「无snapshot」两个入口高度分叉 —— 判据硬性要求新写法恰好两份且各自落在自己宿主函数内。本版**不碰卡显示/滑动卡顿**, 那两条要等真探针数据(见下一版)")
     # ---- v47: 统一测宽源(排版宽与目标宽同步) ----
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_reflow_v47, "v47: 统一测宽源 — 治'终端框盖住上面的字/定时任务字一下有一下没有'(v46 纯诊断归因, log16 45 条: **D1/D2/D3 三个候选全排除** —— `attWant==attCached` 45/45 缓存新鲜, `cachedW` 与 `tcW` 恒差 1.0 不是陈旧值, `attNVI=1` 0/45 失效信号从未置位。真凶是**排版宽与测高宽不同源**: `tcH-needH=-8.0` 恒定证明容器高度没问题, `V43-WIDTH dirtyW=390 netW=358 dh=0.0` 证明测高用的净宽 358 也没问题, 但 `tcW` 实测恒为 390 且 `tcH-usedH` 在异常组达 44~67pt —— **同一段文字在 390/358 两个宽度下排出的行数不同**, 行碎片停在旧宽而 needH 恒按新宽算, 差出的就是空壳(终端框于是画在空壳上)。根因是 `_ios15WRegrabbed` 由 `abs(tcW-_realW2)>0.5` 决定, 它只表示'有没有改过容器宽'而不表示'碎片有没有按目标宽重排过' —— 而 `invalidateLayout` 才是让碎片重排的那一步。修法: 新增 `ios15LastLaidOutW` 记住上次排版宽, 与目标宽不等就补一次 invalidateLayout。**不新增任何宽度写入点**(仍只有 v18 那两处)、**不碰高度**(v45 成果保护), 稳态下零额外开销且幂等。v13/v34 曾因抢宽引起闪屏与整体缩小, 那是改钳宽翻的车, 本版只加同宽重排。★登记必须排在 v46 之后")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_pin_v48, "v48: 排版宽钉回目标宽 — 收口 log17 实测的「v47 只治了一半」。log17 对比 log16: tcW=390 的帧 69→48(v47 的重排确实触发了), 但仍有 48/56 帧 tcW 是 390 —— 因为 v47 只调 invalidateLayout **不写 textContainer.size.width**, TextKit 的 ensureLayout 只在当前容器宽下重排, 容器还是 390 时重排出来的仍是 390 宽的行数, 与按 358 算的 _needH 依旧不同源。**log17 里 tcW 与 gap 完全同构、零例外**: tcW=358.0 → tvH-usedH 恒 8.0~8.3(= textContainerInset 上下之和, 正常态), tcW=390.0 → gap 为 30.5(len=229)/117.5(len=839, 连续 26 条一模一样)。len=229 那组最直接: 同一段文字, 358 宽 gap=8.1, 390 宽 gap=30.5, 差值就是 390 宽排不下的那几行。tvH-needH 全部 56 条为 0.0, v45 补高依然完美, 问题**只在宽度不在高度**。修法: 碎片与目标宽不一致时, **连容器宽一起钉回 _realW2**, 两者合起来才是完整条件(容器宽==目标宽 且 碎片按目标宽重排过); v47 的 ios15LastLaidOutW 判据保留不动, 两个判据正交。**这不是新的抢宽时机**: 写在 v18 段内, 复用 v18 已算好的 _realW2(与 sizeThatFits 测高同一个值), 不引入第三方宽度; 判据 abs(tcW-_realW2)>0.5 保证幂等(已在 358 不写不重排, 稳态零开销; 被推回 390 才纠偏一次, 是**纠偏**不是**竞争**)。v13/v34 翻车是因为在布局 pass外无条件抢宽、与 SwiftUI 竞争, 本版恰好相反; 只写 size.width, **不碰 frame/bounds/origin/高度**, 不会引起「整体缩小」那类几何漂移, 也不推翻 v45。**不做常驻钳宽**: 每帧无条件写 358 正是 v13/v34 的翻车形态。校验用**白名单**(只许 textContainer.size.width = _realW2, 精确等值)而非黑名单 —— 多写一个 frame.origin 就足以让整棵 cell 重新布局。★登记必须排在 v47 之后(锚点是 v47 注入的判据块)")

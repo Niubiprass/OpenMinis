@@ -194,6 +194,21 @@ fileprivate func attributedShellLine(_ text: String) -> AttributedString {
 fileprivate enum LazyRenderTuning {
     /// Lines per chunk — must match chunkedLines' default.
     static let chunkLines = 40
+    /// [V566-MINH] 终端卡片高度下限/上限(与旧 3/4 口径的替代物)。
+    /// 下限 88pt ≈ 标题 + 两行输出; 上限 400pt 沿用 v46 以来的口径,
+    /// 不放宽 —— 免得一张长输出卡片吃掉整屏。
+    static let cardFloorHeight: CGFloat = 88
+    static let cardCeilHeight: CGFloat = 400
+    /// [V566-MINH] 字符数 → 行数的粗估(等宽 13pt, 约 76 字符/行)。
+    /// ★刻意不做精确测量: 精确排版正是本项目反复踩坑的地方
+    ///   (v47 的宽度不��源、v48 的碎片不重排), 而下限只需要「大概有几行」。
+    static func linesShownInPreview(_ charCount: Int) -> Int {
+        guard charCount > 0 else { return 0 }
+        let perLine = 76
+        var lines = charCount / perLine
+        if charCount % perLine != 0 { lines += 1 }
+        return lines
+    }
     /// Initial reveal: ~200 lines = 5 chunks.
     static let initialChunks = 5
     /// Each subsequent batch: 200 more lines = 5 chunks.
@@ -918,6 +933,9 @@ struct ToolLiveSheet: View {
 
     /// Aliases into the shared tuning (see LazyRenderTuning) so the sheet's
     /// own textContent window and LazyRevealChunks can never drift apart.
+    /// [V566-MINH] 转发到底层 tuning —— 视图体内用 `Self.v566FloorHeight`。
+    private static let v566FloorHeight = LazyRenderTuning.cardFloorHeight
+    private static let v566CeilHeight = LazyRenderTuning.cardCeilHeight
     private static let lazyRenderChunkLines = LazyRenderTuning.chunkLines
     private static let lazyRenderInitialChunks = LazyRenderTuning.initialChunks
     private static let lazyRenderBatchChunks = LazyRenderTuning.batchChunks
@@ -1037,6 +1055,7 @@ struct ToolLiveSheet: View {
         .onReceive(block.objectWillChange) { _ in
             blockUpdateTick += 1
         }
+        .presentationDragIndicator(.hidden)
         // Tapping a URL in shell output (underlined via attributedShellLine)
         // routes through `activeSheet` so it shares one `.sheet(item:)`
         // modifier with the browser takeover below.
@@ -1512,11 +1531,11 @@ struct ToolLiveSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 10)
                         .stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5))
                     .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 3)
-                    .contextMenu (menuItems: {
+                    .contextMenu {
                         Button { UIPasteboard.general.image = image } label: {
                             Label("Copy Image", systemImage: "doc.on.doc")
                         }
-                    })
+                    }
                     .padding(.horizontal, 12)
                     .padding(.top, action.isEmpty && url.isEmpty ? 12 : 0)
 
@@ -1543,7 +1562,7 @@ struct ToolLiveSheet: View {
                             // sanitized: this path used to feed raw text
                             // (ANSI codes, unbounded line length) straight
                             // into CoreText.
-                            LazyVStack(alignment: .leading, spacing: 0) {
+                            VStack(alignment: .leading, spacing: 0) {
                                 LazyRevealChunks(chunks: Self.chunkedLines(text), resetKey: block.id) { t in
                                     Text(t)
                                         .font(.system(size: 13, design: .monospaced))
@@ -1622,7 +1641,7 @@ struct ToolLiveSheet: View {
 
                         // Result content — chunked + windowed (was one Text
                         // holding the whole result).
-                        LazyVStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 0) {
                             LazyRevealChunks(chunks: Self.chunkedLines(text), resetKey: block.id) { t in
                                 Text(t)
                                     .font(.system(size: 13, design: .monospaced))
@@ -1653,7 +1672,15 @@ struct ToolLiveSheet: View {
     private func snapshotTextContent(_ text: String) -> some View {
         GeometryReader { geo in
             let cardWidth = geo.size.width - 24 // 12pt horizontal padding each side
-            let cardMinHeight = cardWidth * 3.0 / 4.0
+            // [V566-MINH] 与 textContent 逐字同款 —— 见那里的说明。
+            // ★必须同步: 两条是重复代码, 只改一处会让两个入口行为分叉。
+            let v566RowH: CGFloat = 16
+            let v566Pad: CGFloat = 28          // .padding(.top,14) + .padding(.bottom,14)
+            let v566HeadH: CGFloat = 32        // 标题行 + .padding(.top,14)
+            let v566BodyLines = CGFloat(min(max(linesShownInPreview(text.count), 0), 18))
+            let cardMinHeight = min(max(
+                v566HeadH + v566BodyLines * v566RowH + v566Pad,
+                Self.v566FloorHeight), Self.v566CeilHeight)
             Group {
                 if case .shellTool(let cmd) = block.kind {
                     // Shell: command header + chunked output. Chunking avoids the
@@ -1662,7 +1689,7 @@ struct ToolLiveSheet: View {
                     let output = text.hasPrefix(cmdPrefix) ? String(text.dropFirst(cmdPrefix.count)) : text
                     let chunks = Self.chunkedLines(output.isEmpty ? " " : output)
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 0) {
                             Text("$ \(cmd)")
                                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                                 .foregroundColor(.white)
@@ -1690,7 +1717,7 @@ struct ToolLiveSheet: View {
                     }
                 } else {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 0) {
                             if !contentHeader.isEmpty {
                                 Text(contentHeader)
                                     .font(.system(size: 12, weight: .medium))
@@ -1807,7 +1834,7 @@ struct ToolLiveSheet: View {
                     let cardWidth = geo.size.width - 24 // 12pt horizontal padding each side
                     let cardMinHeight = cardWidth * 3.0 / 4.0
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 0) {
                             // Diff card
                             VStack(spacing: 0) {
                             // Title bar — filename + byte size only
@@ -2031,7 +2058,7 @@ struct ToolLiveSheet: View {
 
             // Script content — chunked + windowed; execute_js scripts are
             // usually small but nothing bounds them.
-            LazyVStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 LazyRevealChunks(chunks: Self.chunkedLines(script), resetKey: block.id) { t in
                     Text(t)
                         .font(.system(size: 12, design: .monospaced))
@@ -2057,7 +2084,7 @@ struct ToolLiveSheet: View {
             : Self.formatBytes(byteCount)
 
         return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 VStack(spacing: 0) {
                     // Title bar
                     HStack(spacing: 6) {
@@ -2131,7 +2158,7 @@ struct ToolLiveSheet: View {
             : Self.chunkedLines(fileContent.isEmpty ? " " : fileContent)
 
         return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 // Editor card
                 VStack(spacing: 0) {
                     // Title bar
@@ -2333,7 +2360,17 @@ struct ToolLiveSheet: View {
     private var textContent: some View {
         GeometryReader { geo in
             let cardWidth = geo.size.width - 24 // 12pt horizontal padding each side
-            let cardMinHeight = cardWidth * 3.0 / 4.0
+            // [V566-MINH] 下限按**内容行数**给, 不再按宽度乘 3/4。
+            // 旧式 `cardWidth * 3.0 / 4.0` 在 375 屏上是 263pt:
+            // 一行输出也被撑到 263pt, alignment:.topLeading 把余量全堆在下方
+            // ⇒ 用户看到的「终端输出与终端之间空白过大」。
+            let v566RowH: CGFloat = 16
+            let v566Pad: CGFloat = 28          // .padding(.top,14) + .padding(.bottom,14)
+            let v566HeadH: CGFloat = 32        // 标题行 + .padding(.top,14)
+            let v566BodyLines = CGFloat(min(max(linesShownInPreview(block.content.count), 0), 18))
+            let cardMinHeight = min(max(
+                v566HeadH + v566BodyLines * v566RowH + v566Pad,
+                Self.v566FloorHeight), Self.v566CeilHeight)
             ScrollViewReader { proxy in
             ScrollView {
                 if case .shellTool(let cmd) = block.kind {
@@ -2354,7 +2391,7 @@ struct ToolLiveSheet: View {
                     // [T-ios-tool-result-lazy-render] In the detail (non-live)
                     // view reveal only an initial window and grow on scroll.
                     let chunks = isLive ? allChunks : Array(allChunks.prefix(max(revealedChunkCount, 1)))
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
                         Text("$ \(cmd)")
                             .font(.system(size: 13, weight: .bold, design: .monospaced))
                             .foregroundColor(.white)
@@ -2402,7 +2439,7 @@ struct ToolLiveSheet: View {
                     .padding(.bottom, 16)
                 } else {
                     // Non-shell: header + chunked content card
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
                         if !contentHeader.isEmpty {
                             Text(contentHeader)
                                 .font(.system(size: 12, weight: .medium))
@@ -2510,11 +2547,11 @@ struct ToolLiveSheet: View {
                             .overlay(RoundedRectangle(cornerRadius: 10)
                                 .stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5))
                             .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 3)
-                            .contextMenu (menuItems: {
+                            .contextMenu {
                                 Button { UIPasteboard.general.image = img } label: {
                                     Label("Copy Image", systemImage: "doc.on.doc")
                                 }
-                            })
+                            }
                             .padding(.horizontal, 12)
                     }
                     .padding(.bottom, 16)
@@ -2903,7 +2940,7 @@ private struct ToolPreviewThumbnail: View {
 
     /// Text preview from snapshot data (persisted last N lines).
     private func snapshotTextPreview(_ text: String) -> some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             Text(previewHeader)
                 .font(.system(size: 6, weight: .bold, design: isShell ? .monospaced : .default))
                 .foregroundStyle(isShell ? .white : .white.opacity(0.45))
@@ -2957,7 +2994,7 @@ private struct ToolPreviewThumbnail: View {
             }
             return block.content
         }()
-        return LazyVStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 0) {
             Text(previewHeader)
                 .font(.system(size: 6, weight: .bold, design: isShell ? .monospaced : .default))
                 .foregroundStyle(isShell ? .white : .white.opacity(0.45))
@@ -2992,7 +3029,7 @@ private struct ToolPreviewThumbnail: View {
         let oldText = editStrings?.oldString ?? block.streamingFileContent ?? ""
         let newText = editStrings?.newString ?? ""
 
-        return LazyVStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 0) {
             Text(previewHeader)
                 .font(.system(size: 6, weight: .bold))
                 .foregroundStyle(.white.opacity(0.45))

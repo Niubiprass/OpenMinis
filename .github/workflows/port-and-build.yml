@@ -1382,6 +1382,46 @@ jobs:
           fi
           echo "::endgroup::"
 
+          # ★v56.6 新增: 断言58 —— 终端框高度下限不得再按宽度乘 3/4
+          #
+          # 【为什么这条必须存在】
+          #   v56.5 的归因被装机日志推翻了: 75 条渲染日志全部 codeBlocks=0,
+          #   而录屏里终端框在画面上⇒ 「终端框」根本不是 Markdown 代码块,
+          #   是 FloatingToolBar 的 ToolPreviewThumbnail(工具输出卡片)。
+          #   本项目**第一次在非 Markdown 路径上修东西**, 所以必须有专门判据,
+          #   否则这条修复会在下一次上游同步时悄悄消失。
+          #
+          # 【判据盯的三件事, 每件都对应一种真实翻车形态】
+          #   1) 覆盖范围: 新写法必须**恰好两份**且各自落在自己的宿主函数里
+          #      —— ToolLiveSheet.swift 里 textContent 与 snapshotTextContent
+          #      是逐字重复的两份代码, 只改一处 = 两个入口高度分叉。
+          #   2) 范围失控: file_edit 的 diff 卡片那处 3/4 **必须保持原样**
+          #      —— 本版没有证据说它有问题, 顺手改它就是扩大范围。
+          #      实测文件里其实有**三处** 3/4, 调研只报了两处。
+          #   3) 注释不可当证据: 判据全文先剥注释再搜
+          #      —— 实跑时我自己在新注释里写了「旧式 cardWidth * 3.0 / 4.0」,
+          #      裸字符串搜索把它当成残留代码, 判据把自己的说明当成了罪证。
+          echo "::group::断言58: v56.6 终端框高度下限(重复代码两处同步 + 范围不外溢)"
+          if grep -q "fix_toolbar_minheight_v566" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+               python3 "$SCRIPT_DIR/ios15_verify/reverse_v566.py" \
+                    "$SCRIPT_DIR/ios15_fallback.py" "$PWD/.upstream-ios" ; then
+              echo "✅ v56.6 就位 (反向 10 条全拦: 分叉/计数/常量/空输入/范围失控/标记)"
+            else
+              echo "❌ v56.6 判据异常 —— 终端框空白过大的修法没就位或判据有洞"
+              echo "   —— 反向测试漏过 ⇒ 判据拦不住任何东西, 等于没人看守"
+              echo "   —— 若报的是「产物里没有标记」, 说明fallback 没注入成功"
+              exit 1
+            fi
+          else
+            echo "❌ v56.6 缺失 —— 终端框高度下限仍是 cardWidth * 3.0 / 4.0"
+            echo "   (375 屏上 cardWidth≈351 ⇒ 263pt 硬下限, 一行输出也被撑到"
+            echo "    263pt, alignment:.topLeading 把余量全堆在内容下方"
+            echo "    ⇒ 用户看到的「终端输出与终端之间空白过大」)"
+            exit 1
+          fi
+          echo "::endgroup::"
+
           echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
           # 病根A 实证 (minis-2026-10-03 6.log):
           #   04:55:03.045 FIRST-MEASURE CORRECTION cellH=1591.7 newH=1748.0
