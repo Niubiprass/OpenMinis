@@ -9273,37 +9273,140 @@ def fix_v55_c_sentinel_gate(t):
     ⇒ 纪律 44: **判据的输入必须来自被修改之前的状态。**
     改法: 改读 `textContainer.size.height`（本函数内我们自己最后写的那个值）。
 
-    ★锚点用**上游源码里本来就有的四行**（被钳了就恢复那段）, 不用 v54-C
-      注入后的 `_v54needUnbound2` —— 后者只在 v54-C 跑过之后才存在, 而 CI
-      是从上游源码起注入的 ⇒ run#132 报 `RuntimeError: v55-C 锚点缺失`。
-    ⇒ 纪律 45: 补丁锚点必须能在**上游原始源码**上命中, 否则它隐式依赖
-      注册顺序; 而顺序依赖在本地（从上一版产物起测）测不出来。
+    定位: v54-C 一共改了**三处**哨兵点(attachmentBounds / invalidateCellSizeIfNeeded
+    / updateUIView), **漏掉了 layoutSubviews 里那处** —— 而 v54-C 自己的注释
+    却写着「第二处/第三处哨兵点见 layoutSubviews 与 updateUIView」, 注释与
+    实现不符。⇒ 实测 524 次里有一份来自这处从未被门控的哨兵。
+
+    ─────────────────────────────────────────────────────────────
+    ★本版推翻了 v55 初版的病因假设(那一版是错的, 已被 v54 装机数据否证):
+      初版猜「bounds 在哨兵态下变成 1.79e80 ⇒ 判据恒真」。
+      **实测否证**: v54 全日志 `tvH` 最大只到 1631.0, `bounds=` 读数无一
+      接近 1.79e80 —— 设哨兵写的是 textContainer.size.height, 它**不会**
+      反向污染 UIView 的 bounds.height。该假设不成立。
+    ✔ 真正的病因(纯算术可证, 不需要猜):
+      v54 写下的判据是 `newHeight + 2 > max(bounds.height, 1)`。
+      而 sizeThatFits 返回的 newHeight **就是**当前布局应有的高度, 稳态下
+      `bounds.height == newHeight` ⇒ `newHeight + 2 > newHeight` **恒真**。
+      ⇒ 判据在**每一个**稳态帧都为真 ⇒ 每帧必设哨兵 ⇒ 每帧一次 setSize
+        ⇒ 每帧一次 CoreText 全量排版(358x2000)。
+      与观测完全吻合: v53 无条件设是 314 次/251 tick, v54 加了判据反而涨到
+      524 次/415 tick —— 不是判据不准, 是**判据恒真, 等于没加**。
+    ✔ 换比较方向也救不了: `bounds.height + 2 < newHeight` 与原式等价, 稳态
+      同样恒真。必须引入**第三个量**: 容器当前高度是否已经是哨兵。
+
+    修法(两处):
+      a3(改写): 判据加 `&& 容器当前高度尚未是哨兵`。已经解开约束的帧不再
+        重复解 —— 这才是真正切断自循环的那一刀。
+      a5(补漏): 把 layoutSubviews 里那处**无条件**设哨兵也门控掉, 条件用
+        `usedRect`(真实排版需求)与容器高比较 —— 这是上游 attachmentBounds
+        已有的成熟写法, 不发明新口径。
+    ★锚点纪律(修正 v55 初版对纪律 45 的误用):
+      纪律 45 说的是「锚点不得**隐式**依赖注册顺序」, 不是「锚点必须能在
+      上游原文命中」。本补丁改的正是 **v54-C 注入的那几行**, 依赖是**显式**
+      的: main() 里 v55-C 排在 v54-C 之后。
+      → 用「v54-C 产物」作锚点, 并额外断言上游原文里该处**确实存在**,
+        两头都锁死: 顺序一旦被动过就立刻报错, 而不是静默失效。
     """
-    MARK = "// [V55-C] v54 的判据在哨兵态下自我循环"
-    if MARK in t:
+    # 幂等判据必须用**注入产物的标记**, 不能用 OLD3 —— OLD3 是「注入前」的
+    # 文本, 一旦注入完成它就消失了, 于是第二次运行会误判成「没注入过」而
+    # 重新走替换, 结果把 a5 段重复插一遍 / 把 a3 段的注释重复堆叠。
+    # (实测踩过: 首次 ✅, 第二次直接抛锚点缺失。)
+    MARK3 = "let _v55notUnbound = _v55tcH < CGFloat.greatestFiniteMagnitude"
+    MARK5 = "// [V55-C] layoutSubviews 哨兵点(v54-C 漏掉的那处)"
+    if MARK3 in t and MARK5 in t:
         return t
-    OLD = """        let newHeight = sizeThatFits(CGSize(width: measureWidth, height: .greatestFiniteMagnitude)).height
-        // sizeThatFits clamps textContainer.size.height — restore it (only
-        // when actually clamped, to avoid a redundant setSize: → fillLayoutHole).
+
+    # ── 上游原文断言 ──
+    # a3 处: v54-C 已经把上游原文替换掉了, 所以这里**只能**锚 v54-C 产物
+    #        (下面的 OLD3 断言)。它对上游的依赖由 v54-C 自己保证 —— v54-C 的
+    #        a3 锚点就是上游原文, v54-C 跑不出来时早就报错了。
+    # a5 处: v54-C **没有碰**这里, 上游原文原样保留 ⇒ 可以直接断言上游,
+    #        这样「v54-C 漏掉的那处」这件事本身也被锁住(若哪天 v54-C 补上了
+    #        这处, 这里的断言会先失败, 提醒把 v55-C 的 a5 段删掉)。
+    #
+    # ★锚点为什么不能带 `let currentWidth = textContainer.size.width`:
+    #   实测(全链重放踩到) —— 历史补丁 `fix_markdown_render_width` 会**删掉**
+    #   紧跟哨兵之后的那一行, 换成 `[IOS15-FIX] Render-path width clamp` 段。
+    #   ⇒ 拿它当锚点, 在「v54-C 之后」这个真实语境下必然找不到(run#133 那次
+    #   的报错文案碰巧指向了这个原因, 但当时我归因成「上游结构变了」)。
+    #   ⇒ 改用**哨兵上方那段上游注释的尾部 + 哨兵三行**: 这段注释属于上游
+    #     原文, 历史补丁不碰它, 因此在全链语境下仍然唯一。
+    UP_A5 = """        // recursion seed for the watchdog hang seen in
+        // Minis-2026-05-13-084827.ips: every layout pass re-triggers a full
+        // fillLayoutHole on tables, which calls back into attachmentBounds,
+        // which re-enters typesetting.
         if textContainer.size.height < CGFloat.greatestFiniteMagnitude {
             textContainer.size.height = CGFloat.greatestFiniteMagnitude
         }"""
-    if OLD not in t:
+    if UP_A5 not in t:
         raise RuntimeError(
-            "v55-C 锚点缺失: 上游原始源码里找不到「sizeThatFits 之后那段"
-            "被钳了就恢复」的四行 —— 上游结构可能已变, 需重新定位。")
-    return t.replace(OLD, """        // [V55-C] v54 的判据在哨兵态下自我循环, 必须改。
+            "v55-C 上游断言失败: layoutSubviews 里那处哨兵(紧跟 "
+            "「which re-enters typesetting.」注释之后)在当前源码里已不存在 —— "
+            "要么上游结构变了, 要么 v54-C 已经补上了这处。"
+            "后者的话请把 v55-C 的 a5 段删掉。")
+
+    # ── a3: 改写 v54-C 注入的判据, 切断自循环 ──
+    OLD3 = """        // [V54-C] 但「被钳了就恢复」这一条挡不住**每帧往返**: sizeThatFits 每次
+        // 都会把高度钳回, 于是本行下一帧又恒真 ⇒ 每帧一次 setSize ⇒ 每帧一次
+        // CoreText 全量排版(装机 setSize(358x2000) 跨 251 tick × 314 次)。
+        // 判据: sizeThatFits 刚返回的 newHeight 已是**真实需求高**, 拿它跟
+        // 容器高比 —— 装得下就没有容器外内容, 不需要解除约束。
+        let _v54needUnbound2: Bool = newHeight + 2 > max(bounds.height, 1)"""
+    NEW3 = """        // [V54-C] 但「被钳了就恢复」这一条挡不住**每帧往返**: sizeThatFits 每次
+        // 都会把高度钳回, 于是本行下一帧又恒真 ⇒ 每帧一次 setSize ⇒ 每帧一次
+        // CoreText 全量排版(装机 setSize(358x2000) 跨 251 tick × 314 次)。
+        // 判据: sizeThatFits 刚返回的 newHeight 已是**真实需求高**, 拿它跟
+        // 容器高比 —— 装得下就没有容器外内容, 不需要解除约束。
         //
-        // v54 装机实测: `setSize(358x2000)` 524 次 / 跨 415 unique tick
-        // (v53 是 314 次 / 251 tick)⇒ **比不判更差**。
-        // 病因: 判据读 `bounds.height`, 而 bounds 在哨兵态(`1.79e80`)下
-        // 恒远大于 newHeight ⇒ 判据恒真 ⇒ 每帧都设哨兵 ⇒ 自我放大。
-        //⇒ 纪律 44: **判据的输入必须来自被修改之前的状态。**
-        // ★改用 `textContainer.size.height`(本函数内**我们自己**最后写的那个值,
-        //   不是 UIKit 可能已改写的外层 bounds) + 「本次尚未设过哨兵」。
+        // [V55-C] v54 这条判据**在稳态下恒真**, 所以它等于没加 —— 这就是
+        // v54 的 setSize 不降反升(314/251tick → 524/415tick)的真因。
+        // 算术: 稳态下 `bounds.height == newHeight`(sizeThatFits 返回的就是
+        // 当前布局应有的高度), 于是 `newHeight + 2 > bounds.height`
+        //        == `newHeight + 2 > newHeight` == **恒真**。
+        // ⇒ 每个稳态帧都设哨兵 ⇒ 每帧一次全量排版。
+        // ⚠ v55 初版猜的是「bounds 在哨兵态下变成 1.79e80」, **已被否证**:
+        //    v54 全日志 tvH 最大 1631.0, bounds 读数无一接近 1.79e80 ——
+        //    设哨兵写的是 textContainer.size.height, 不会反向污染 bounds。
+        // ✔ 真正要引入的第三个量是「容器当前高度是否**已经是**哨兵」:
+        //    已经解开的帧不再重复解, 这才切得断自循环。
+        //    (换比较方向没用: `bounds.height + 2 < newHeight` 与原式等价。)
         let _v55tcH = textContainer.size.height
-        let _v55needUnbound2: Bool = newHeight + 2 > max(_v55tcH, 1)
-        let _v54needUnbound2 = _v55needUnbound2""", 1)
+        let _v55notUnbound = _v55tcH < CGFloat.greatestFiniteMagnitude
+        let _v54needUnbound2: Bool = _v55notUnbound
+            && newHeight + 2 > max(bounds.height, 1)"""
+    if OLD3 not in t:
+        raise RuntimeError(
+            "v55-C 锚点缺失: 找不到 v54-C 注入的 `_v54needUnbound2` 判据行 —— "
+            "v54-C 的产物形态变了, 或本补丁注册顺序被动过(main() 里 v55-C "
+            "必须排在 fix_v54_c_probe_roundtrip 之后)。")
+    t = t.replace(OLD3, NEW3, 1)
+
+    # ── a5: 补上 v54-C 漏掉的 layoutSubviews 哨兵点 ──
+    NEW5 = """        // [V55-C] layoutSubviews 哨兵点(v54-C 漏掉的那处)
+        //
+        // v54-C 改了三处哨兵(attachmentBounds / invalidateCellSizeIfNeeded /
+        // updateUIView), 唯独漏了这里, 而它自己的注释还写着
+        // 「第二处/第三处哨兵点见 layoutSubviews 与 updateUIView」——
+        // 注释与实现不符。layoutSubviews **每帧都跑**, 这处无条件设哨兵
+        // ⇒ 每帧一次 setSize(358x2000) ⇒ 每帧一次 CoreText 全量排版。
+        // 门控口径与 attachmentBounds 已有的成熟写法同源(用 usedRect 真实
+        // 排版需求比容器高), 不发明新口径; 阈值 2pt 吸收亚像素噪声。
+        let _v55lsNeed: Bool = {
+            guard textStorage.length > 0 else { return false }
+            let _need = layoutManager.usedRect(for: textContainer).height
+            return _need + 2 > textContainer.size.height
+        }()
+        if _v55lsNeed, textContainer.size.height < CGFloat.greatestFiniteMagnitude {
+            textContainer.size.height = CGFloat.greatestFiniteMagnitude
+        }"""
+    # ★NEW5 末尾**不能**再补回 `let currentWidth = ...`:
+    #   全链语境下 `fix_markdown_render_width` 已经把那行删掉并换成
+    #   `[IOS15-FIX]` 段了, 这里补回去等于凭空多出一个变量声明(要么编译
+    #   报「未使用」, 要么与后面 `[IOS15-FIX]` 段自己声明的同名变量冲突)。
+    #   本补丁只负责把哨兵那段替换掉, 不碰它后面的任何内容。
+    t = t.replace(UP_A5, NEW5, 1)
+    return t
 
 def fix_v54_c1_gate(t):
     """[V54-C1] 宽度闸门承认「贴边净宽」，破 C-1 记忆位死锁。
