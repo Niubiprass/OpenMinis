@@ -493,9 +493,21 @@ jobs:
             # 因为v42 改了写法就删掉 v41 断言(那会让高度补齐彻底无人看守)。
             _v41_needle=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); print('_v42Need' if '_hFix.size.height = _v42Need' in t else 'self.ios15LastNeededH')")
             echo "v41 判据 needle = $_v41_needle"
-            _v41_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); n='_v42Need' if '_hFix.size.height = _v42Need' in t else 'self.ios15LastNeededH'; a=t.index('_hFix.size.height = '+n); h=t.index(chr(10)+'                f = _hFix'); p=t.index('let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt'); r=t.index(chr(10)+'                fix.size.height = '+n); w=t.index(chr(10)+'            obj.frame = fix', r); print('OK' if a<h<p<r<w else 'BAD')")
+            # ★v57.0 加固: 锚点从"整行逐字"改成"前半句 + 表达式全文"。
+            #   v57.0 给 polluted 加了第四个维度 || _v570Dirty, 该行因此拆成两行
+            #   —— 语义是**加强**, 但整行匹配会 ValueError: substring not found
+            #   (run#37223103334 就是这么红的)。
+            #   两条纪律:
+            #     ① 锚 `let polluted = f.size.width > cvW + 1` 前半句即可定位,
+            #        它在拆行前后都成立;
+            #     ② 判"含 _hDebt"必须取到 `if !polluted {` 为止的**表达式全文**,
+            #        不能用固定 120 字符窗口 —— 拆行后窗口会截断。
+            #   ★另: 文件里有**两处**同形的 `let polluted = ...`(另一处在别的函数),
+            #     所以必须从 `let _hDebt` 声明**之后**再找, 否则命中错的那处。
+            _v41_pos=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); n='_v42Need' if '_hFix.size.height = _v42Need' in t else 'self.ios15LastNeededH'; a=t.index('_hFix.size.height = '+n); h=t.index(chr(10)+'                f = _hFix'); hd=t.index('let _hDebt = _v42Need > 1'); p=t.index('let polluted = f.size.width > cvW + 1', hd); r=t.index(chr(10)+'                fix.size.height = '+n); w=t.index(chr(10)+'            obj.frame = fix', r); print('OK' if a<h<p<r<w else 'BAD')")
             # 判据必须含高度维度, 否则"宽度正常+高度欠账"仍被 !polluted 放过。
-            _v41_dim=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); p=t.index('let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt'); print('OK' if '_hDebt' in t[p:p+120] else 'BAD')")
+            # ★表达式全文 = 从 `let polluted` 到 `if !polluted {`（不含）。
+            _v41_dim=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); hd=t.index('let _hDebt = _v42Need > 1'); p=t.index('let polluted = f.size.width > cvW + 1', hd); print('OK' if '_hDebt' in t[p:t.index('if !polluted {', p)] else 'BAD')")
             # 编译正确性: KVO 闭包内必须 var f(v41 要f = _hFix 重新赋值), 且三元表达式
             # 两侧必须同类型(CGFloat vs Int 会直接编译失败)。
             _v41_swift=$(python3 -c "t=open('src/ios/Views/Chat/SelectableMarkdownView.swift',encoding='utf-8').read(); s=t.index('ios15KvoToken = sv.observe'); e=t.index('private var attachmentViews', s); g=t[s:e]; a='var f = obj.frame' in g; b=chr(10)+'            let f = obj.frame' not in g; c='CGFloat(0),' in t; print('OK' if a and b and c else 'BAD')")
@@ -1091,6 +1103,29 @@ jobs:
             echo "   ⚠️ 同一判据若有**多份副本**(fallback 内 + 独立 ci_assert + "
             echo "     反向测试基线), 改务必一次全改 —— 该坑已翻版三次"
             echo "     (run#37133557819 / 37133885324 / 37137912522)。"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          # ============================================================
+          # 断言 52b: 本地全量门禁自检 —— 把 workflow 里**所有**判据跑一遍
+          # ============================================================
+          # ★★ run#37223103334 的直接教训 ★★
+          #   v57.0 首次推送红了, 根因是 workflow 里**第三处** `polluted`
+          #   整行匹配的硬编码内联判据(断言 43, `python3 -c "..."` 形式)
+          #   没跟着改 —— 我改了 verify_v41.py, 但 CI 执行的是 workflow 里
+          #   那段**内联复制品**。
+          #   ⇒ CI 门禁**散落在三处**: ① scripts/ios15_verify/*.py
+          #     ② workflow 里内联的 python3 -c(无名字的复制品)
+          #     ③ regress_all_v.py 的汇总表。改一处不等于改全部。
+          # 本 step 让"散落三处"变成**一处可本地复现**: 抽出全部判据在本地跑。
+          # 它自己也必须绿 —— 若它在这里红, 说明抽取逻辑与 workflow 脱节。
+          echo "::group::断言52b: 本地全量门禁自检 (workflow 里所有判据本地复现)"
+          if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+             python3 "$SCRIPT_DIR/ios15_verify/local_all_gates.py" . ; then
+            echo "✅ workflow 内所有判据在本地全部复现通过"
+          else
+            echo "::error::本地全量门禁有红项 —— 推送前就该发现, 不要等 CI"
             exit 1
           fi
           echo "::endgroup::"
