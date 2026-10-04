@@ -1490,6 +1490,57 @@ jobs:
           echo "::endgroup::"
 
 
+          # ============================================================
+          # 断言 60: v56.8 消息流终端胶囊「卡一半一半显示」
+          # ============================================================
+          # ★★★ 本项目**第四次**「对象选错」的纠正版 ★★★
+          # 【前三次为什么全错】
+          #   v46    探针装在 TableAttachment      —— 装错类
+          #   v565   scope 只数槽位、不校验值        —— 测得太浅
+          #   v565收官 探针整个对象选错              —— 终端框不走 Markdown
+          #   v56.5~v56.7 三版都在改**折叠态缩略图**   —— 而用户指的是**消息流**
+          #
+          # 【对象由用户 2026-10-04 23:56 的截图直接确定】
+          #   绿色 terminal 图标 + 标题 + 等宽耗时(2s/1s/0.8s)
+          #   ⇒ ToolCapsuleView(AssistantBlockView.swift:218, 由 :42 构造)
+          #
+          # ★AssistantBlockView.swift **零历史注入标记** ——
+          #   v41~v53 的整条补高链(V41-KVOPRE / V44-TEXTFRAME / V45-TVHFIX /
+          #   V53 debt)**全部挂在 SelectableMarkdownView.swift 上**, 只管
+          #   Markdown 文本视图, 概念上就够不着这个卡片。
+          #   ⇒ 之前一路在「卡字」上打了十几次, 治的一直是另一条路。
+          #
+          # 【病根: 动画目标和布局量绑死】
+          #   ShimmerOverlay(同文件 :161):
+          #       .offset(x: offsetX * geo.size.width)   ← 目标里含 geo.size
+          #   offsetX 是 @State, SwiftUI 对 @State animation 是
+          #   「从当前呈现值 ease 到新目标」⇒ body 每重算一次(流式 chunk /
+          #   UICollectionView 滚动中 cell 复用 → onAppear 反复触发),
+          #   geo.size 变 → 目标变 → 正在跑的 repeatForever **被打断**
+          #   ⇒ 亮条停在半路或跳到另一半 = 用户说的「卡一半一半显示」。
+          #
+          # 【为什么要有 9 条 sabotage】
+          #   S4/S5 专门防「为了不卡就把动画删了」这种**假修复** ——
+          #   症状会消失, 但产品行为被悄悄改掉, 且没有任何日志能暴露。
+          #   ★这两条第一版还**漏过**: 判据当时全文件搜 repeatForever,
+          #   而本文件本来就有另外 3 处动画 ⇒ 删掉 Shimmer 那处也搜得到。
+          #   修法: 判据先切出 ShimmerOverlay 函数体, 只在体内查动画。
+          #   S8 防覆盖失控(别处再引入一处同类耦合); S9 防对象被整个删掉。
+          if grep -q "fix_capsule_shimmer_v568" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+               python3 "$SCRIPT_DIR/ios15_verify/reverse_v568.py" ; then
+              echo "✅ v56.8 就位 (反向 9 条全拦: 解耦/防假修复/覆盖失控/对象存在)"
+            else
+              echo "::error::v56.8 判据被绕过 —— 终端胶囊的 offset 目标仍挂在布局量上(动画会被 body 重算打断), 或动画被顺手删了"
+              exit 1
+            fi
+          else
+            echo "::error::ios15_fallback.py 里找不到 fix_capsule_shimmer_v568"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+
           echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
           # 病根A 实证 (minis-2026-10-03 6.log):
           #   04:55:03.045 FIRST-MEASURE CORRECTION cellH=1591.7 newH=1748.0

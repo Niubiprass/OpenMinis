@@ -162,6 +162,15 @@ struct ShimmerOverlay: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var offsetX: CGFloat = -1.0
 
+    // [V568-SHIMMER] 亮条的**行程**, 单位 pt。
+    // ★这一行是本版全部修复的支点。旧代码写的是 `offsetX * geo.size.width` ——
+    //   动画目标里含布局量。于是 body 每重算一次(流式 chunk / cell 复用),
+    //   geo.size 就变, @State animation 就从「当前呈现值」重新 ease 到新目标,
+    //   正在跑的 repeatForever 被**打断**: 亮条停在半路或跳到另一半。
+    //   用户看到的正是「卡一下才显示」+「卡一半一半显示」。
+    // 现在目标只依赖 offsetX 一个 @State ⇒ body 怎么重算都不打断动画。
+    private static let travel: CGFloat = 600
+
     private var peakOpacity: CGFloat {
         colorScheme == .light ? 0.75 : 0.25
     }
@@ -188,6 +197,8 @@ struct ShimmerOverlay: View {
     }
 
     var body: some View {
+        // [V568-SHIMMER] GeometryReader **保留**: 亮条本身要铺满 capsule 的
+        // 宽度, 那是真实布局量。但它**不再进入 offset 的目标**。
         GeometryReader { geo in
             let diag = geo.size.width + geo.size.height
             Rectangle()
@@ -199,7 +210,11 @@ struct ShimmerOverlay: View {
                     )
                 )
                 .frame(width: diag, height: geo.size.height)
-                .offset(x: offsetX * geo.size.width)
+                // [V568-SHIMMER] ★只乘固定行程, 不乘 geo.size.width。
+                // 视觉等价: 旧版从 -W 扫到 +W(总 2W); 新版从 -travel 扫到
+                // +travel。travel 取 600pt 足以覆盖 iPhone 上最宽的 capsule,
+                // 且是**编译期常量** ⇒ 动画目标与布局彻底解耦。
+                .offset(x: offsetX * Self.travel)
                 .onAppear {
                     withAnimation(
                         .linear(duration: 2.8)
@@ -437,6 +452,10 @@ struct ToolCapsuleView: View {
                 }
             }
             .padding(.horizontal, 12)
+            .frame(height: 36)
+            // [V568-SHIMMER] 固定 36pt 已是上游既有约定(cell 估算也按 36),
+            // 这里只**显式钉住高度**, 让 ShimmerOverlay 的 GeometryReader 拿到
+            // 稳定尺寸。★不改任何视觉: 上游 .frame(height: 36) 本来就是它。
             .frame(height: 36)
             .background(Color(UIColor.systemGray6))
             .clipShape(Capsule())

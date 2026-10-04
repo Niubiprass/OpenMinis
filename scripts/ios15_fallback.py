@@ -5588,6 +5588,321 @@ def _v567_assert_tail_equiv():
                 "必须改到逐字节相同才能上线" % (text, count, old, new))
     return True
 
+
+
+# =====================================================================
+# v56.8 —— ToolCapsuleView「卡一半一半显示」/「卡一下才显示」
+# =====================================================================
+#
+# ★★★ 这一切入点是用户 2026-10-04 23:56 的截图直接给出的, 不是推断 ★★★
+# 截图内容: 三行 `>_ 检查系统环境信息 2s` / `>_ 检查常用工具与运行时 1s` /
+#          `>_ 检查 Minis 目录结构 0.8s`
+# 绿色 terminal 图标 + 标题 + 等宽耗时  ⇒  **ToolCapsuleView**
+# (AssistantBlockView.swift:218, 由 :42 的
+#  `ToolCapsuleView(block:block, icon:"terminal", accentColor:.green, ...)` 构造)
+#
+# ★★ 关键事实: AssistantBlockView.swift **零历史注入标记** ——
+#   `grep -oE "\[V[0-9]+...\]" AssistantBlockView.swift` 结果为空。
+#   v41~v53 那整条高度补高链(V41-KVOPRE / V44-TEXTFRAME / V45-TVHFIX /
+#   V53 的 debt 记账)**全部挂在 SelectableMarkdownView.swift 上**, 只管
+#   Markdown 文本视图, **从不覆盖这个文件**。
+#   ⇒ 之前 v38~v56 一路在「卡字」上反复打转(改了十几次宽度/高度/去重),
+#     治的一直是 Markdown 那条路, 而用户指的终端框是这条路上的**另一个对象**。
+#   这是本项目第四次「探针/修法装错对象」(见 MSG_V568 顶部铁律)。
+#
+# 【病根: ShimmerOverlay 把动画目标和布局量绑死】
+#
+#   AssistantBlockView.swift:161 ShimmerOverlay.body:
+#       GeometryReader { geo in
+#           Rectangle().frame(width: diag, height: geo.size.height)
+#                      .offset(x: offsetX * geo.size.width)   ← ★这里
+#                      .onAppear { withAnimation(.linear(2.8)
+#                                   .repeatForever(...)) { offsetX = 1.0 } }
+#       }.clipped()
+#
+#   offsetX 是 @State, 动画目标是 `offsetX * geo.size.width`。
+#   **目标里含 geo.size** ⇒ 每次 body 重算出新的 geo.size, 动画目标就变。
+#   SwiftUI 对 @State 的 animation 是「从当前呈现值 ease 到新目标」——
+#   于是一个跑到一半的 repeatForever 被**打断并重新 ease**,
+#   闪光的亮条就**停在半路 / 跳到另一半**, 用户看到的就是:
+#       「卡一下才显示」+「卡一半一半显示」。
+#
+#   为什么会重算: 这个 capsule 在消息流里, block 是 @ObservedObject,
+#   流式输出时每来一个 chunk 就重算; 且 UICollectionView 滚动中 cell
+#   反复 prepareForReuse → onAppear 反复触发 → 动画反复重启。
+#
+# 【修法: 把动画目标从「乘 geo.size」改成「乘固定常数」】
+#   offset 的目标只依赖 offsetX 这一个 @State, 与任何布局量解耦。
+#   亮条扫过的距离用 diag(几何常量) 换算一次即可, 之后 body 怎么重算
+#   动画目标都不变 ⇒ repeatForever 不再被打断。
+#
+# ★为什么不用 GeometryReader 也不用 TimelineView:
+#   - GeometryReader 在 overlay 里会引入一次额外的布局 pass;
+#   - TimelineView(.animation) 每帧给新值, 在 UICollectionView 里逐帧
+#     驱动 body 是掉帧的主要来源(见 MSG_V53: 滚动一停 halfBands 就归零);
+#   两者都会把「修一处」变成「加一处」。
+
+SHIMMER_OLD = '''struct ShimmerOverlay: View {
+    @Environment(\\.colorScheme) private var colorScheme
+    @State private var offsetX: CGFloat = -1.0
+
+    private var peakOpacity: CGFloat {
+        colorScheme == .light ? 0.75 : 0.25
+    }
+
+    private func bell(_ x: CGFloat) -> CGFloat {
+        exp(-4.5 * x * x)
+    }
+
+    private var stableStops: [Gradient.Stop] {
+        let stepCount = 12
+        let bandRadius: CGFloat = 0.40
+        let center: CGFloat = 0.5
+        var stops: [Gradient.Stop] = []
+        stops.append(.init(color: .white.opacity(0), location: 0))
+        for i in 0...stepCount {
+            let frac = CGFloat(i) / CGFloat(stepCount)
+            let pos = center - bandRadius + frac * bandRadius * 2.0
+            let dist = (pos - center) / bandRadius
+            let alpha = bell(dist) * peakOpacity
+            stops.append(.init(color: .white.opacity(Double(alpha)), location: pos))
+        }
+        stops.append(.init(color: .white.opacity(0), location: 1))
+        return stops
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let diag = geo.size.width + geo.size.height
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        stops: stableStops,
+                        startPoint: UnitPoint(x: 0, y: 1),
+                        endPoint: UnitPoint(x: 1, y: 0)
+                    )
+                )
+                .frame(width: diag, height: geo.size.height)
+                .offset(x: offsetX * geo.size.width)
+                .onAppear {
+                    withAnimation(
+                        .linear(duration: 2.8)
+                        .repeatForever(autoreverses: false)
+                    ) {
+                        offsetX = 1.0
+                    }
+                }
+        }
+        .clipped()
+    }
+}'''
+
+SHIMMER_NEW = '''struct ShimmerOverlay: View {
+    @Environment(\\.colorScheme) private var colorScheme
+    @State private var offsetX: CGFloat = -1.0
+
+    // [V568-SHIMMER] 亮条的**行程**, 单位 pt。
+    // ★这一行是本版全部修复的支点。旧代码写的是 `offsetX * geo.size.width` ——
+    //   动画目标里含布局量。于是 body 每重算一次(流式 chunk / cell 复用),
+    //   geo.size 就变, @State animation 就从「当前呈现值」重新 ease 到新目标,
+    //   正在跑的 repeatForever 被**打断**: 亮条停在半路或跳到另一半。
+    //   用户看到的正是「卡一下才显示」+「卡一半一半显示」。
+    // 现在目标只依赖 offsetX 一个 @State ⇒ body 怎么重算都不打断动画。
+    private static let travel: CGFloat = 600
+
+    private var peakOpacity: CGFloat {
+        colorScheme == .light ? 0.75 : 0.25
+    }
+
+    private func bell(_ x: CGFloat) -> CGFloat {
+        exp(-4.5 * x * x)
+    }
+
+    private var stableStops: [Gradient.Stop] {
+        let stepCount = 12
+        let bandRadius: CGFloat = 0.40
+        let center: CGFloat = 0.5
+        var stops: [Gradient.Stop] = []
+        stops.append(.init(color: .white.opacity(0), location: 0))
+        for i in 0...stepCount {
+            let frac = CGFloat(i) / CGFloat(stepCount)
+            let pos = center - bandRadius + frac * bandRadius * 2.0
+            let dist = (pos - center) / bandRadius
+            let alpha = bell(dist) * peakOpacity
+            stops.append(.init(color: .white.opacity(Double(alpha)), location: pos))
+        }
+        stops.append(.init(color: .white.opacity(0), location: 1))
+        return stops
+    }
+
+    var body: some View {
+        // [V568-SHIMMER] GeometryReader **保留**: 亮条本身要铺满 capsule 的
+        // 宽度, 那是真实布局量。但它**不再进入 offset 的目标**。
+        GeometryReader { geo in
+            let diag = geo.size.width + geo.size.height
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        stops: stableStops,
+                        startPoint: UnitPoint(x: 0, y: 1),
+                        endPoint: UnitPoint(x: 1, y: 0)
+                    )
+                )
+                .frame(width: diag, height: geo.size.height)
+                // [V568-SHIMMER] ★只乘固定行程, 不乘 geo.size.width。
+                // 视觉等价: 旧版从 -W 扫到 +W(总 2W); 新版从 -travel 扫到
+                // +travel。travel 取 600pt 足以覆盖 iPhone 上最宽的 capsule,
+                // 且是**编译期常量** ⇒ 动画目标与布局彻底解耦。
+                .offset(x: offsetX * Self.travel)
+                .onAppear {
+                    withAnimation(
+                        .linear(duration: 2.8)
+                        .repeatForever(autoreverses: false)
+                    ) {
+                        offsetX = 1.0
+                    }
+                }
+        }
+        .clipped()
+    }
+}'''
+
+CAPSULE_FRAME_OLD = '''            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .background(Color(UIColor.systemGray6))
+            .clipShape(Capsule())'''
+
+CAPSULE_FRAME_NEW = '''            .padding(.horizontal, 12)
+            .frame(height: 36)
+            // [V568-SHIMMER] 固定 36pt 已是上游既有约定(cell 估算也按 36),
+            // 这里只**显式钉住高度**, 让 ShimmerOverlay 的 GeometryReader 拿到
+            // 稳定尺寸。★不改任何视觉: 上游 .frame(height: 36) 本来就是它。
+            .frame(height: 36)
+            .background(Color(UIColor.systemGray6))
+            .clipShape(Capsule())'''
+
+
+def fix_capsule_shimmer_v568(t):
+    """v56.8: 治 ToolCapsuleView 的「卡一下才显示 / 卡一半一半显示」。
+
+    ★★★ 本版对象由用户截图直接确定, 不是推断 ★★★
+    见 MSG_V568 顶部: 绿色 terminal 图标 + 标题 + 等宽耗时 = ToolCapsuleView,
+    位于 AssistantBlockView.swift:218; 该文件**零历史注入标记**。
+
+    两处改动:
+      1. ShimmerOverlay 的 offset 目标 `offsetX * geo.size.width`
+         → `offsetX * Self.travel`(固定 600pt), 动画与布局解耦。
+         这是「卡一半」的真正病根。
+      2. capsule 的 .frame(height: 36) 显式钉住(幂等加固), 让 GeometryReader
+         拿到稳定高度。只钉不缩, 不改视觉。
+
+    ★为什么 2 不是多余的: UICollectionView 滚动中 cell prepareForReuse
+      后 onAppear 反复触发, 若此时高度仍在变化, 新版 offset 虽然不被
+      布局量打断, 但亮条的高度仍会跟着跳 —— 视觉上还是「跳一下」。
+      钉死高度让亮条尺寸也稳定。
+    """
+    if "[V568-SHIMMER]" in t:
+        return t
+
+    if SHIMMER_OLD not in t:
+        raise RuntimeError(
+            "fix_capsule_shimmer_v568: ShimmerOverlay 的 body 锚点没找到 —— "
+            "上游结构可能变了, 需重新定位(不要先怀疑上游, 先 grep 干净副本)")
+
+    if CAPSULE_FRAME_OLD not in t:
+        raise RuntimeError(
+            "fix_capsule_shimmer_v568: capsule 的 .frame(height: 36) 锚点"
+            "没找到 —— 上游可能改了胶囊的高度或 padding 顺序")
+
+    t = t.replace(SHIMMER_OLD, SHIMMER_NEW, 1)
+    t = t.replace(CAPSULE_FRAME_OLD, CAPSULE_FRAME_NEW, 1)
+    return t
+
+
+def verify_capsule_shimmer_v568(t):
+    """v56.8 判据: ShimmerOverlay 的 offset 已与 geo.size 解耦, 且旧耦合零残留。
+
+    四层:
+      1. **范围**: 两处 [V568-SHIMMER] 都在(ShimmerOverlay + capsule frame)。
+      2. **旧耦合零残留**: 全文件**剥注释后**不得再出现
+         `offsetX * geo.size.width`。这是本版唯一真正要治的东西,
+         残留一处就等于没修。
+      3. **新耦合在位**: 必须有 `offsetX * Self.travel`, 且 `travel`
+         是编译期常量(static let), 不是 var 也不是从 geo 算出来的。
+      4. **动画没被顺手删掉**: withAnimation + repeatForever 必须在 ——
+         防止「为了不卡就把动画删了」这种假修复(会静默改变产品观感)。
+    """
+    tc = _v566_strip_comments_only(t)
+
+    # ★先把 ShimmerOverlay 的**函数体**单独切出来。
+    #   踩坑记录(判据自己的第一版就是这么错的): 判据第4层查
+    #   「repeatForever / withAnimation 还在不在」, 但本文件**本来就有另外
+    #   3 处动画**(ShimmerOverlay 之外的弹跳点 dotsActive、:990、:1126)。
+    #   于是一条「删掉 ShimmerOverlay 的 repeatForever」的 sabotage
+    #   依然能在文件别处找到 repeatForever ⇒ **判据全绿放过了删动画的假修复**。
+    #   ⇒ 动画检查必须**限定在 ShimmerOverlay 函数体内**, 不能全文件搜。
+    i0 = tc.find("struct ShimmerOverlay")
+    if i0 < 0:
+        raise RuntimeError(
+            "verify_capsule_shimmer_v568: 找不到 struct ShimmerOverlay —— "
+            "对象本身没了(是删了? 还是上游改名了?)")
+    i1 = tc.find("\nstruct ", i0 + 1)
+    if i1 < 0:
+        i1 = len(tc)
+    shimmer = tc[i0:i1]
+
+    # 1. 范围(★按本次注入实际产生的标记数 4 处钉死, 少一处就是漏改)
+    n_mark = sum(1 for ln in t.split("\n") if "[V568-SHIMMER]" in ln)
+    if n_mark < 4:
+        raise RuntimeError(
+            "verify_capsule_shimmer_v568: 带 [V568-SHIMMER] 标记的行只有 %d 处"
+            "(应 >=4 —— travel 声明 1 / offset 换算 1 / GeometryReader 保留说明 1 / "
+            "capsule 高度钉死 1。少一处说明本次注入被部分回退或截断)" % n_mark)
+
+    # 3. 新耦合在位且是编译期常量
+    if "offsetX * Self.travel" not in tc:
+        raise RuntimeError(
+            "verify_capsule_shimmer_v568: 没有 `offsetX * Self.travel` —— "
+            "offset 目标必须只依赖 @State offsetX, 与任何布局量解耦")
+
+    if "static let travel: CGFloat" not in tc:
+        raise RuntimeError(
+            "verify_capsule_shimmer_v568: travel 不是 static let 常量 —— "
+            "若它是 var 或从 geo 算出来, 就等于把耦合换了个地方, 没真解耦")
+
+    # 4. 动画必须还在 —— ★**只查 ShimmerOverlay 函数体**(见上方 i0/i1 的说明)
+    if "repeatForever" not in shimmer:
+        raise RuntimeError(
+            "verify_capsule_shimmer_v568: ShimmerOverlay 里的 repeatForever "
+            "消失了 —— 本版是**解耦**, 不是删动画。删掉虽然不卡了, 但产品观感"
+            "变了, 属于未经用户确认的行为改变(假修复)")
+
+    if "withAnimation" not in shimmer:
+        raise RuntimeError(
+            "verify_capsule_shimmer_v568: ShimmerOverlay 里的 withAnimation "
+            "消失了 —— 同上, 动画被删")
+
+    # 5. 覆盖失控: 全文件**剥注释后**的旧耦合必须恰好 0 处。
+    #    数量判据比"至少0处"严 —— 别人再引入一处同类耦合会被抓住。
+    n_old = tc.count("offsetX * geo.size.width")
+    if n_old != 0:
+        raise RuntimeError(
+            "verify_capsule_shimmer_v568: 剥注释后仍有 %d 处 "
+            "`offsetX * geo.size.width`(应为 0) —— 动画目标还挂在布局量上, "
+            "body 一重算就打断 repeatForever, 「卡一半一半显示」没治" % n_old)
+
+    return True
+
+
+# 供反向测试 import: v56.8 的「新旧行为」等价性自证。
+# 旧版 offset 目标 = offsetX * geo.size.width
+# 新版 offset 目标 = offsetX * 600
+# 视觉上都要「从卡片左侧外扫到右侧外」, 所以只要 travel 覆盖最宽卡片即可。
+# 这里钉的是**几何覆盖判据**: 375pt 屏上最宽的 capsule 不会超过屏宽,
+# travel=600 足够从 -600 扫到 +600。
+V568_TRAVEL_PT = 600
+V568_MAX_SCREEN_PT = 440   # iPhone 16 Pro Max 逻辑宽度的上界, 留足余量
+
 def fix_width_reflow_v47(t):
     """v47: 统一测宽源 —— 治'终端框盖住上面的字 / 定时任务字一下有一下没有'。
 
@@ -11360,6 +11675,34 @@ def main():
         "又让整棵 ToolPreviewThumbnail 重算 ⇒ **与洞1 相乘**。这是「滑动时更卡」的直接解释: 滑一次多几个泄漏 timer。"
         "修法: start() 变幂等(已有 timer 直接返回), stop() 语义**一字未改** —— 纯粹「别重复起同一个表」, 不改任何读数。"
         "★登记排在 v30-C 之后(两者都碰 AIChatView.swift)")
+    # ★★ v56.8 —— 第四次「对象选错」的纠正版 ★★
+    # 用户 2026-10-04 23:56 给的截图(绿色 terminal 图标 + 标题 + 等宽耗时)
+    # 直接指出对象是 ToolCapsuleView, 不是折叠态缩略图, 也不是全屏 sheet。
+    # ★AssistantBlockView.swift **零历史注入标记** —— v41~v53 的整条补高链
+    #   (V41-KVOPRE / V44-TEXTFRAME / V45-TVHFIX / V53 debt) 全挂在
+    #   SelectableMarkdownView.swift 上, 只管 Markdown 文本视图。
+    #   之前一路在「卡字」上打转(改了十几次), 治的一直是**另一条路**。
+    edit("Views/Chat/AssistantBlockView.swift", fix_capsule_shimmer_v568,
+        "v56.8: 治消息流里终端胶囊『卡一下才显示 / 卡一半一半显示』。"
+        "★★对象由用户截图直接确定: 绿色 terminal 图标 + 标题 + 等宽耗时 = "
+        "ToolCapsuleView(AssistantBlockView.swift:218, 由 :42 构造)。"
+        "★这是本项目**第四次**装错对象(v46 装错类 / v565 scope 只数槽位 / "
+        "v565收官 整个对象选错 / **v56.5-v56.7 三版都在改折叠态缩略图, 而用户指消息流**)。"
+        "★该文件零历史注入标记 —— v41~v53 的补高链全在 SelectableMarkdownView, "
+        "只管 Markdown 文本, 概念上就够不着这个卡片。"
+        "【病根】ShimmerOverlay(同文件 :161) 的 `.offset(x: offsetX * geo.size.width)` "
+        "—— **动画目标里含布局量**。offsetX 是 @State, SwiftUI 对 @State animation "
+        "是「从当前呈现值 ease 到新目标」, 于是 body 每重算一次(流式 chunk / "
+        "UICollectionView 滚动中 cell prepareForReuse → onAppear 反复触发), "
+        "geo.size 变 → 目标变 → 正在跑的 repeatForever **被打断**, 亮条停在半路 "
+        "或跳到另一半 ⇒ 用户看到的『卡一下才显示』『卡一半一半显示』。"
+        "【修法】offset 目标改成 `offsetX * Self.travel`(static let 600pt 编译期常量), "
+        "只依赖 offsetX 一个 @State ⇒ **动画与布局彻底解耦**, 亮条尺寸也不再跟着跳。"
+        "★GeometryReader **保留**(亮条要铺满卡片宽度, 那是真实布局量), "
+        "只是不再进入 offset 的目标 —— 不是把耦合搬到别处。"
+        "★**不删动画**: 判据第4层专门钉住 withAnimation + repeatForever 必须在。"
+        "删掉虽然不卡了, 但那是未经用户确认的行为改变(假修复)。")
+
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_stabilize_v32, "v32: 渲染宽+测高宽统一 per-cell contentW(视图宽-内边距) — 消除测宽分歧与溢出裁字")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_realw2_v33, "v33: v28 遗留 _realW2 硬编码 cvW-32 改为 contentW — 修边框裁字/卡字/终端框卡内容")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_sync_v34, "v34: 渲染宽回归 superview 基准(过渡态免疫) + 渲染/测高共享 ios15LastRenderContentW — 修整体缩小/不贴边/闪屏(log10-03: tcW 390×27/326×25 交替, v33 公式过渡态双重扣减)")
