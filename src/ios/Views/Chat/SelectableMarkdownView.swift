@@ -8243,11 +8243,16 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                 // 375.7 仍会被拦：它既不等于 358 也不等于 390，而记忆位在它之前
                 // 是 -1（首次）/ 358（之后）⇒ 三条全不成立。
                 //
-                // ★复用同段已算好的 `_realW`（本帧真正写进 textContainer 的那个
-                // 宽度，8271 行定义，早于此处），**不独立算 cvW-32**：v28 教训过
-                // 「独立算 cvW-32 会把 326 气泡撑爆」；且 `_realW2` 此刻尚未定义
-                // （8338 行），用它会编译不过。
-                if !_v52ok, abs(_v52w - _realW) <= 2 {
+                // ★用 `_cvW - 32` 而**不是**同段后面才声明的 `_realW`：run#130
+                // 就是这么红的 —— `error: use of local variable '_realW' before
+                // its declaration`（CI 上游 8236 用了、8321 才声明）。
+                // 我本地那句「`_realW` 8271 行定义、早于此处」是**看错了行号**
+                // （8271 附近是 `_realW2 = _realW` 的取值，真正声明在 8335，
+                // 仍在使用点之后）。⇒ 教训见纪律 36。
+                // 口径与上面贴边分支的 `_cvW - 32` 完全一致（同为 inset 16/16），
+                // 不会把 326 气泡撑爆：`_cvW` 是集合视图宽，两种cell 都是
+                // 「集合视图宽 - 32」，差别只在上游给的候选值是否等于它。
+                if !_v52ok, abs(_v52w - (_cvW - 32)) <= 2 {
                     _v52ok = true
                 }
                 if !_v52ok {
