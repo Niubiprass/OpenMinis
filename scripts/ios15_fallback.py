@@ -6497,7 +6497,10 @@ def verify_width_sane_gate_v52(t):
                 "占位符一少, 后面实参整体左移错位(varargs UB), "
                 "装机日志是乱码; 格式串在 ≠ 那个读数还在, 两者都要查" % f)
     _n_v52_nslog = code.count("NSLog(")
-    for _pk in ("[V53-MEM]", "[V53-HOLD]"):
+    # ★v55 补: v55-A 的宽高分源探针物理上同样落在本段区间内(它插在 v52 探针
+    #   之后), 不剔除会把计数算成 2 条。按标记文本剔除, 不靠位置 ——
+    #   与上面 v53 的处理同一个理由(位置会随新版插代码漂移, 标记不会)。
+    for _pk in ("[V53-MEM]", "[V53-HOLD]", "[V55-A]"):
         if 'NSLog("%s' % _pk in seg:
             _n_v52_nslog -= 1
     if _n_v52_nslog != 1:
@@ -9162,6 +9165,133 @@ def fix_inputbar_kick(t):
 
 
 # ==================== v54: 三处修法 ====================
+
+# ============ v55: 治 v54 装机复盘抓到的真凶 ============
+def fix_v55_a_probe(t):
+    """v55-A: 宽高分源纯诊断探针（只打一行, 不写几何）。
+
+    v54 装机日志 11/11 帧: rawW=371.7 frmW=371.7 cvW=390.0 edge=0 picked=358.0
+    ⇒ picked 打在**回落之后**恒为 358, 而闸门实读的是 371.7。
+    v54 一直在治一个已被回落治好的问题。本探针把「闸门实读值」「上游 frame
+    宽」「inset」放在同一帧同一行, 装机一次就能判定 v55-B/C 对不对。
+    ⇒纪律 42: 探针必须打在**被修改之前**的状态上。
+    """
+    MARK = "// [V55-A] 宽高分源纯诊断"
+    if MARK in t:
+        return t
+    OLD = """            // [V52-PROBE] 宽度来源诊断 —— 见 MSG_V52_C。
+            do {
+                struct _GLog { static var last: CFTimeInterval = 0 }
+                let _gn = CACurrentMediaTime()
+                if _gn - _GLog.last > 0.5 {
+                    _GLog.last = _gn
+                    NSLog("[V52-GATE] rawW=%.1f frmW=%.1f cvW=%.1f edge=%d sane=%d picked=%.1f len=%d",
+                          superview?.bounds.width ?? -1, _v52frmW, _cvW,
+                          _edgeTouch ? 1 : 0, _v52sane, _v52w, self.textStorage.length)
+                }
+            }"""
+    if OLD not in t:
+        raise RuntimeError("v55-A 锚点缺失: 找不到 [V52-GATE] 探针段")
+    return t.replace(OLD, OLD + "\n" + """            // [V55-A] 宽高分源纯诊断 —— **只打一行, 不写任何几何**。
+            //
+            // v54 装机复盘的硬发现(日志 11/11 帧):
+            //   rawW=371.7 frmW=371.7 cvW=390.0 edge=0 sane=0 picked=358.0
+            // `picked`(= _v52w, 探针打在**回落之后**)恒为 358, 而 `rawW/frmW`
+            // 恒为 371.7 ⇒ **v54 一直在治一个已经被回落治好”的问题**。
+            // 真正卡住的是 371.7 这个**上游 frame 宽**本身, 它让
+            //   _edgeTouch = !polluted && origin.x<=0.5 && width>=cvW-1  == 0
+            // ⇒ inset 16/16 没被设上(仍是 0/0) ⇒ 高度按 390 算、cell 只给 26.7
+            // ⇒ 末行裁掉 22.3 ⇒ 「卡一半」。补高 103 次也被改回。
+            //
+            // ★本行存在的唯一目的: 把「闸门实读值」「上游 frame 宽」「inset」
+            // 三者放在**同一帧同一行**, 装机后一次就能判定 v55-B/C 的修法对不对。
+            // ★纪律 42 的教训: 探针必须打在**被修改之前**的状态上,
+            //   否则打出来的永远是修复后的值, 拿它验证修复必然"全绿"。
+            do {
+                struct _SALog { static var last: CFTimeInterval = 0 }
+                let _san = CACurrentMediaTime()
+                if _san - _SALog.last > 0.5 {
+                    _SALog.last = _san
+                    NSLog("[V55-A] gateW=%.1f svFrameW=%.1f svOriginX=%.1f insetL=%.1f insetR=%.1f picked=%.1f ok=%d mem=%d len=%d",
+                          _v52frmW, superview?.frame.size.width ?? -1,
+                          superview?.frame.origin.x ?? -1,
+                          Double(self.textContainerInset.left), Double(self.textContainerInset.right),
+                          Double(_v52w), _v52ok ? 1 : 0,
+                          ios15LastSaneContentW == nil ? 0 : 1, Int(self.textStorage.length))
+                }
+            }""", 1)
+
+
+def fix_v55_b_edgetouch(t):
+    """v55-B: `_edgeTouch` 必须认出「贴边净宽」, 治 inset 没设上。
+
+    v54 日志: rawW=371.7 cvW=390.0 edge=0 而 picked=358.0(已回落)。
+    `_edgeTouch` 的判据是 `width >= _cvW - 1`(要接近全屏宽 390),
+    而上游这一帧给 371.7(过渡态)⇒ 差 18.3 ⇒ edge=0
+    ⇒ 走不进贴边分支 ⇒ **inset 16/16 根本没被设上**(仍 0/0)
+    ⇒ 高度按 390 算、cell 只给 26.7 ⇒ 末行裁 22.3 ⇒「卡一半」。
+    补高 103 次(n=66→103)每次都被按 371.7 重算回去。
+
+    ★放行条件「接近 cvW-32 或接近 cvW」, 371.7 两边都不接近
+      (差 13.7 / 18.3)⇒ 仍被排除, 不引入新污染。
+    ★**只改 edge 判定, 不写任何几何** —— inset 写入是既有代码。
+    """
+    MARK = "// [V55-B] `_edgeTouch` 必须认出"
+    if MARK in t:
+        return t
+    OLD = """            let _edgeTouch = !_polluted && _svf0.origin.x <= 0.5 && _svf0.size.width >= _cvW - 1"""
+    if OLD not in t:
+        raise RuntimeError("v55-B 锚点缺失: 找不到 _edgeTouch 单行定义")
+    return t.replace(OLD, """            // [V55-B] `_edgeTouch` 必须认出**贴边净宽**这一态。
+            //
+            // v54 装机日志铁证(11/11 帧): rawW=371.7 cvW=390.0 edge=0
+            // 而同一帧 `picked=358.0`(已回落)⇒ 净宽明明是 358, 但 `edge=0`。
+            // 原因: 判据是 `width >= _cvW - 1`(要接近**全屏宽** 390),
+            // 而上游这一帧给的是 371.7(过渡态)⇒ 差 18.3 ⇒ edge=0
+            // ⇒ 走不进贴边分支 ⇒ **inset 16/16 根本没被设上**(仍 0/0)
+            // ⇒ 高度按 390 算、cell 只给 26.7 ⇒ 末行裁 22.3 ⇒ 「卡一半」。
+            // 补高 103 次(`V41-KVOHEIGHT n=66→103`)每次都被按 371.7 重算回去。
+            //
+            // ★v52 当年只认全屏宽, 是因为那时「过渡宽度」只出现在 bounds 上;
+            //   v52-B 已把判据改读 frame, 但 `>= _cvW - 1` 这个阈值没跟着放宽。
+            // ★放行条件取「接近 cvW-32(贴边净宽)」或「接近 cvW(全屏宽)」,
+            //   371.7 两边都不接近(差 13.7 / 18.3)⇒ 仍被排除, 不引入新污染。
+            // ★**只改 edge 判定, 不写任何几何** —— inset 的写入是既有代码。
+            let _v55edgeNet = abs(_svf0.size.width - (_cvW - 32)) <= 2
+            let _edgeTouch = !_polluted && _svf0.origin.x <= 0.5
+                && (_svf0.size.width >= _cvW - 1 || _v55edgeNet)""", 1)
+
+
+def fix_v55_c_sentinel_gate(t):
+    """v55-C: 哨兵判据不得依赖它自己要设置的状态（治自我循环）。
+
+    v54 实测 `setSize(358x2000)` 524 次 / 跨 415 tick（v53 是 314 / 251）
+    ⇒ **比不判更差**。病因: 判据读 `bounds.height`, 而 bounds 在哨兵态
+    (`1.79e80`)下恒远大于 newHeight ⇒ 判据恒真 ⇒ 每帧都设哨兵 ⇒ 自我放大。
+    ⇒ 纪律 44: 判据的输入必须来自被修改之前的状态。
+
+    ★改用 `textContainer.size.height`（本函数内我们自己最后写的那个值）。
+    """
+    MARK = "// [V55-C] v54 的判据在哨兵态下自我循环"
+    if MARK in t:
+        return t
+    OLD = """        let _v54needUnbound2: Bool = newHeight + 2 > max(bounds.height, 1)"""
+    if OLD not in t:
+        raise RuntimeError("v55-C 锚点缺失: 找不到 _v54needUnbound2 判据行")
+    return t.replace(OLD, """        // [V55-C] v54 的判据在哨兵态下自我循环, 必须改。
+        //
+        // v54 装机实测: `setSize(358x2000)` 524 次 / 跨 415 unique tick
+        // (v53 是 314 次 / 251 tick)⇒ **比不判更差**。
+        // 病因: 判据读 `bounds.height`, 而 bounds 在哨兵态(`1.79e80`)下
+        // 恒远大于 newHeight ⇒ 判据恒真 ⇒ 每帧都设哨兵 ⇒ 自我放大。
+        //⇒ 纪律 44: **判据的输入必须来自被修改之前的状态。**
+        // ★改用 `textContainer.size.height`(本函数内**我们自己**最后写的那个值,
+        //   不是 UIKit 可能已改写的外层 bounds) + 「本次尚未设过哨兵」。
+        let _v55tcH = textContainer.size.height
+        let _v55needUnbound2: Bool = newHeight + 2 > max(_v55tcH, 1)
+        let _v54needUnbound2 = _v55needUnbound2""", 1)
+
+
 def fix_v54_c1_gate(t):
     """[V54-C1] 宽度闸门承认「贴边净宽」，破 C-1 记忆位死锁。
 
@@ -9554,6 +9684,12 @@ def main():
          MSG_V53_FIRST)
 
     # ---- v54: 三处修法 (装机日志 minis-2026-10-04 5.log 实证) ----
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_v55_a_probe,
+         "v55-A: 宽高分源纯诊断(只打一行不写几何) —— v54 的 picked 打在回落**之后**恒为 358, 而闸门实读 371.7, 11/11 帧证实")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_v55_b_edgetouch,
+         "v55-B: _edgeTouch 认出贴边净宽 —— 治 edge=0 导致 inset 16/16 没设上、cell 只给 26.7、末行裁 22.3(卡一半), 补高 103 次被改回")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_v55_c_sentinel_gate,
+         "v55-C: 哨兵判据改用 textContainer.size.height —— 治 v54 判据自我循环(setSize 524次/415tick 比 v53 的 314/251 更差)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_v54_c1_gate,
          "v54-C1: 闸门承认贴边净宽, 破 C-1 记忆位死锁(memHit 136/136 全 0)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_v54_b_debt_report,

@@ -163,7 +163,11 @@ def _scan_nslog_args(code, decls, seg_name):
             n_arity += 1
         # ---- B. 逐实参查类型 ----
         for a in args:
-            if "??" in a or a.strip().endswith("!"):
+            # ★v55 补: `x == nil ? 0 : 1` 也是解包(产出非Optional), 变参能桥接。
+            #   与已有的 `??` / 后缀 `!` 同一类合法写法, 判据必须认得它 ——
+            #   否则 v55-A 探针(`ios15LastSaneContentW == nil ? 0 : 1`)会被误报。
+            if "??" in a or a.strip().endswith("!") \
+               or re.search(r"[=!]=\s*nil", a) or re.search(r"nil\s*[=!]=", a):
                 continue          # 已在解包, 合法
             if "?." in a:
                 # 含 `?.` 的实参本身即 Optional, 除非已 `??` 解包

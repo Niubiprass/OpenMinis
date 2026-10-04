@@ -272,7 +272,12 @@ def main():
             _checked += 1
             # ★`?? -1` / `!` 是在**解包**, 那是合法写法(本版自己的修法)。
             #   判据必须认得它 —— 否则修好了反而报红。
-            _unwrapped = "??" in _a or "!" == _a.strip()[-1:]
+            # ★v55-A 新增: `x == nil ? 0 : 1` 同样是**解包**, 产出非Optional,
+            #   变参函数能桥接。判据按标识符扫描会误报, 认得它才公平。
+            #   判别方式: 该实参里出现 `== nil` 或 `!= nil` 参与的三元比较。
+            _unwrapped = ("??" in _a or "!" == _a.strip()[-1:]
+                          or re.search(r"[=!]=\s*nil", _a)
+                          or re.search(r"nil\s*[=!]=", _a))
             if _unwrapped:
                 continue
             for _id in re.findall(r"\b([A-Za-z_]\w*)\b", _a):
