@@ -445,8 +445,8 @@ struct ChatMessageRow: View {
             // otherwise the lifted preview shows square corners while the bubble
             // is RoundedRectangle(cornerRadius: 18). iOS 16+ lets us specify the
             // preview clip shape independently from the interaction shape.
-            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18))
-            .contextMenu {
+            .contentShape(RoundedRectangle(cornerRadius: 18))
+            .contextMenu (menuItems: {
                 Button {
                     UIPasteboard.general.string = message.content
                 } label: {
@@ -490,11 +490,7 @@ struct ChatMessageRow: View {
                         Label("Compact Above", systemImage: "arrow.down.right.and.arrow.up.left")
                     }
                 }
-            } preview: {
-                // [T-ios-longpress-menu-preview-background] Opaque card so the
-                // long-press preview isn't transparent (see MessageContextMenuPreview).
-                MessageContextMenuPreview(text: message.content)
-            }
+            }) 
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
@@ -619,7 +615,7 @@ struct ChatMessageRow: View {
         // (ViewGraphGeometryObservers.needsUpdate SIGTRAP). onGeometryChange
         // measures the same row bounds the background GeometryReader did,
         // and its initial fire covers the old onAppear seed.
-        .onGeometryChange(for: CGRect.self) { proxy in
+        .onGeometryChange15(for: CGRect.self) { proxy in
             proxy.frame(in: .global)
         } action: { rowFrameInWindow = $0 }
         .background {
@@ -627,7 +623,7 @@ struct ChatMessageRow: View {
             // blank areas — UITextView link taps in the foreground take priority.
             Color.clear
                 .contentShape(Rectangle())
-                .contextMenu {
+                .contextMenu (menuItems: {
                     // [T-ios-msg-contextmenu-recursion-crash] Gate the eager menu
                     // tree behind an Equatable key so the cell body churn during
                     // `gh`/shell streaming output doesn't rebuild + re-diff the
@@ -681,12 +677,7 @@ struct ChatMessageRow: View {
                         }
                     }
                     .equatable()
-                } preview: {
-                    // [T-ios-longpress-menu-preview-background] Opaque card for
-                    // this Color.clear-attached contextMenu (see
-                    // MessageContextMenuPreview).
-                    MessageContextMenuPreview(text: fullReplyText)
-                }
+                }) 
         }
         .sheet(item: $detailBlock) { block in
             // [T-agent-tool-sheet-unified] The agent block takes the same
@@ -798,13 +789,13 @@ struct ChatMessageRow: View {
                     .textSelection(.enabled)
             }
             .contentShape(Rectangle())
-            .contextMenu {
+            .contextMenu (menuItems: {
                 Button {
                     UIPasteboard.general.string = error
                 } label: {
                     Label(AppLocalized("Copy Error"), systemImage: "doc.on.doc")
                 }
-            }
+            })
 
             Spacer()
 

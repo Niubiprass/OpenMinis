@@ -119,12 +119,12 @@ struct RcloneAddServerView: View {
                 // of a long directory listing it moved with the scroll and
                 // could sit off-screen entirely in a folder with many
                 // entries — the one control the screen exists to offer.
-                if connectedRemote != nil {
+
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Save Here") { saveHere() }
                             .disabled(isListing)
                     }
-                }
+                
             }
             .alert("New Folder", isPresented: $showNewFolder) {
                 TextField("Folder name", text: $newFolderName)
@@ -289,9 +289,9 @@ struct RcloneAddServerView: View {
                 Label {
                     // [T-connect-and-save] "Connect" alone did not say what
                     // happens next, and what happened next differed by caller.
-                    Text(isConnecting ? String(localized: "Connecting…")
-                         : picksFolder ? String(localized: "Connect")
-                                       : String(localized: "Connect & Save"))
+                    Text(isConnecting ? "Connecting…"
+                         : picksFolder ? "Connect"
+                                       : "Connect & Save")
                         .foregroundStyle(isConnecting ? AnyShapeStyle(.secondary)
                                                       : AnyShapeStyle(.tint))
                 } icon: {

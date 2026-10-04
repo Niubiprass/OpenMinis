@@ -300,6 +300,7 @@ final class AppGroupChangeWatcher {
     }
 
     private func deliverSignal(itemID: NSFileProviderItemIdentifier) {
+        guard #available(iOS 16.0, *) else { return }
         pendingSignals.removeValue(forKey: itemID)
         let domainID = domainIdentifier
         NSFileProviderManager.getDomainsWithCompletionHandler { [logger] domains, error in

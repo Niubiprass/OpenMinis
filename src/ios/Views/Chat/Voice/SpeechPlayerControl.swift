@@ -159,7 +159,7 @@ struct SpeechPlayerControl: View {
     private func scheduleRecompute() {
         recomputeTask?.cancel()
         recomputeTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(250))
+            try? await Task.sleep(nanoseconds: UInt64(250) * 1_000_000)
             guard !Task.isCancelled else { return }
             recompute()
         }
@@ -229,7 +229,7 @@ struct SpeechPlayerControl: View {
             } else if descentTask == nil {
                 VoiceLog.log("[capsule] descent \(Int(avoidLift)) → \(Int(newLift)) ARMED — applying after \(Self.descentSettleMillis)ms of stability")
                 descentTask = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(Self.descentSettleMillis))
+                    try? await Task.sleep(nanoseconds: UInt64(Self.descentSettleMillis) * 1_000_000)
                     guard !Task.isCancelled else { return }
                     descentTask = nil
                     // Re-evaluate from a FRESH requiredLift at fire time — the
@@ -421,7 +421,7 @@ struct SpeechPlayerControl: View {
     private func scheduleReclamp() {
         reclampTask?.cancel()
         reclampTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(150))
+            try? await Task.sleep(nanoseconds: UInt64(150) * 1_000_000)
             guard !Task.isCancelled, !isDragging else { return }
             let clamped = clampedOffset(dragOffset)
             if abs(clamped.width - dragOffset.width) > 0.5 || abs(clamped.height - dragOffset.height) > 0.5 {
@@ -466,7 +466,7 @@ struct SpeechPlayerControl: View {
         ZStack(alignment: .bottomTrailing) {
             // No shadow — a faint border instead, matching the scroll-to-bottom pill.
             Circle()
-                .fill(.ultraThinMaterial)
+                .fill(Color(UIColor.tertiarySystemFill))
                 .frame(width: 40, height: 40)
                 .overlay(Circle().stroke(Color.gray.opacity(0.25), lineWidth: 0.5))
             speakerGlyph(size: 15, ring: 40).frame(width: 40, height: 40)
@@ -551,7 +551,7 @@ struct SpeechPlayerControl: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         // No shadow — a faint border instead, matching the scroll-to-bottom pill.
-        .background(Capsule().fill(.ultraThinMaterial))
+        .background(Capsule().fill(Color(UIColor.tertiarySystemFill)))
         .overlay(Capsule().stroke(Color.gray.opacity(0.25), lineWidth: 0.5))
         // Drag to reposition. Highest priority so the outer tap-to-dismiss layer
         // doesn't steal it.

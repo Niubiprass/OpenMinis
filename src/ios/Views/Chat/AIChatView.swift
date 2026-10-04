@@ -175,6 +175,87 @@ class SystemResourceMonitor: ObservableObject {
 // MARK: - Main View
 
 struct AIChatView: View {
+
+    // MARK: iOS 15 UIKit pickers (port strips .photosPicker)
+
+    private func presentPhotoPicker() {
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter = .any(of: [.images, .videos])
+        config.selectionLimit = 0
+        config.preferredAssetRepresentationMode = .current
+        let picker = PHPickerViewController(configuration: config)
+        attachmentPickerCoordinator.onPhotos = { [self] results in
+            handlePHPickerResults(results)
+        }
+        picker.delegate = attachmentPickerCoordinator
+        UIKitPickerPresenter.present(picker)
+    }
+
+    private func presentDocumentPicker() {
+        let types: [UTType] = [.image, .pdf, .plainText, .json, .sourceCode, .presentation, .spreadsheet, .data]
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+        picker.allowsMultipleSelection = true
+        attachmentPickerCoordinator.onFiles = { [self] urls in
+            for url in urls { vm.addFileAttachment(from: url) }
+        }
+        picker.delegate = attachmentPickerCoordinator
+        UIKitPickerPresenter.present(picker)
+    }
+
+    private func handlePHPickerResults(_ results: [PHPickerResult]) {
+        guard !results.isEmpty else { return }
+        let kinds: [InputAttachment.Kind] = results.map { r in
+            r.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) ? .video : .image
+        }
+        let placeholderIDs = vm.addLoadingPlaceholders(kinds: kinds)
+        let jobs = zip(placeholderIDs, results).map { (id: $0, result: $1,
+            isVideo: $1.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)) }
+
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                for job in jobs {
+                    group.addTask {
+                        let provider = job.result.itemProvider
+                        if job.isVideo {
+                            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                                provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
+                                    defer { cont.resume() }
+                                    guard let exported = url,
+                                          let tmpDir = try? FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: exported, create: true),
+                                          let tmp = try? tmpDir.appendingPathComponent("picked-\(UUID().uuidString).\(exported.pathExtension)"),
+                                          (try? FileManager.default.copyItem(at: exported, to: tmp)) != nil
+                                    else {
+                                        Task { @MainActor in vm.markPlaceholderFailed(id: job.id) }
+                                        return
+                                    }
+                                    Task { @MainActor in vm.finalizeVideoPlaceholder(id: job.id, from: tmp) }
+                                }
+                            }
+                        } else {
+                            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                                    if let data = data {
+                                        Task { @MainActor in vm.finalizeImagePlaceholder(id: job.id, data: data, fileExtension: nil) }
+                                        cont.resume()
+                                        return
+                                    }
+                                    provider.loadObject(ofClass: UIImage.self) { obj, _ in
+                                        defer { cont.resume() }
+                                        if let img = obj as? UIImage, let png = img.pngData() ?? img.jpegData(compressionQuality: 0.9) {
+                                            Task { @MainActor in vm.finalizeImagePlaceholder(id: job.id, data: png, fileExtension: nil) }
+                                        } else {
+                                            Task { @MainActor in vm.markPlaceholderFailed(id: job.id) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     var sessionId: String? = nil
     /// The draft ID from the parent (e.g. "__new__<UUID>") for notification correlation.
     var draftId: String? = nil
@@ -273,6 +354,8 @@ struct AIChatView: View {
     @State private var inputBarGeometryTick: Int = 0
     @State private var inputBarLastGeometryAt: CFAbsoluteTime?
     @State private var inputBarHealthProbe: Task<Void, Never>?
+    // [V30-INPUTBAR-KICK] STALLED 自愈: bump 此值重建 composer 子树身份
+    @State private var composerRebuildTick: Int = 0
     /// [T-voice-inputbar-stale-height] False until the FIRST non-zero
     /// inputBarHeight lands. The first write (session open / initial composer
     /// layout) is applied IMMEDIATELY (leading edge) so the message list computes
@@ -352,6 +435,7 @@ struct AIChatView: View {
     @State private var isDropTargeted = false
     @State private var showCamera = false
     @State private var showPhotoPicker = false
+    @State private var attachmentPickerCoordinator = AttachmentPickerCoordinator()
     @State private var showDocumentPicker = false
     @State private var showMoveToSheet = false
     @State private var showClearChatConfirm = false
@@ -979,8 +1063,6 @@ struct AIChatView: View {
         }
         .sheet(item: $previewAudioFile) { fileURL in
             MinisAudioPreviewView(fileURL: fileURL)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.hidden)
         }
         .sheet(item: $previewTextFile) { fileURL in
             MinisTextPreviewView(fileURL: fileURL)
@@ -1082,11 +1164,9 @@ struct AIChatView: View {
                     await vm.ensureSessionReturningId()
                 }
             }
-            .presentationDetents([.large])
         }
         .sheet(isPresented: $showTokenUsage) {
             TokenUsageSheet(vm: cached.vm)
-                .presentationDetents([.fraction(0.8), .large])
         }
         .sheet(item: $screenshotPreview) { preview in
             ChatScreenshotPreviewSheet(image: preview.image)
@@ -1219,8 +1299,6 @@ struct AIChatView: View {
                 }
             )
         }
-        .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotoItems,
-                      maxSelectionCount: 50, matching: .any(of: [.images, .videos]))
         .onChange(of: selectedPhotoItems) { items in
             guard !items.isEmpty else { return }
             // [T-ios-photo-pick-placeholder] 1) Insert a loading placeholder chip
@@ -1297,11 +1375,11 @@ struct AIChatView: View {
         // adopt it as the frontmost one here — this view being mounted IS the
         // "user is looking at it" signal that ensureSessionReturningId (also
         // reachable from RPC/share/intents) can no longer provide.
-
-        let _ios15Seg7 = _ios15Seg6
         .onChange(of: vm.sessionId) { newId in
             if let newId { AIChatViewModel.activeSessionId = newId }
         }
+
+        let _ios15Seg7 = _ios15Seg6
         .onAppear {
             wireComposerActions()
             let sinceInit = (CFAbsoluteTimeGetCurrent() - AIChatViewModel.onAppearTimestamp) * 1000
@@ -1501,11 +1579,11 @@ struct AIChatView: View {
             .keyboard,
             edges: (voiceInputActive && !voiceVM.isEditingTranscript) ? .bottom : []
         )
-
-_ios15Seg7
         .onChange(of: scenePhase) { phase in
             handleScenePhaseChange(phase)
         }
+
+_ios15Seg7
         .onChange(of: deepLink.showTerminal) { show in
             if show {
                 terminalInitCommand = deepLink.terminalInitCommand
@@ -2388,7 +2466,6 @@ _ios15Seg7
                     showThinkingLevelSheet = false
                 }
             )
-            .presentationDetents([.medium])
         }
     }
 
@@ -2737,7 +2814,7 @@ _ios15Seg7
                 // layout and trips a precondition on the iOS 18 async renderer
                 // (ViewGraphGeometryObservers.needsUpdate SIGTRAP). The action
                 // also fires with the initial value, covering the old onAppear.
-                .onGeometryChange(for: CGFloat.self) { proxy in
+                .onGeometryChange15(for: CGFloat.self) { proxy in
                     proxy.size.height
                 } action: { newH in
                     floatingBarHeight = newH
@@ -2816,7 +2893,7 @@ _ios15Seg7
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(.ultraThinMaterial)
+            .background(Color(UIColor.tertiarySystemFill))
         }
     }
     #endif
@@ -3123,8 +3200,8 @@ _ios15Seg7
         if #available(iOS 17, *) {
             Menu {
                 Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
-                Button { showPhotoPicker = true } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
-                Button { showDocumentPicker = true } label: { Label("Add File", systemImage: "doc") }
+                Button { presentPhotoPicker() } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
+                Button { presentDocumentPicker() } label: { Label("Add File", systemImage: "doc") }
             } label: {
                 icon
             }
@@ -3134,8 +3211,8 @@ _ios15Seg7
             }
             .confirmationDialog("Add Attachment", isPresented: $showAttachmentMenu) {
                 Button { showCamera = true } label: { Label("Take Photo", systemImage: "camera") }
-                Button { showPhotoPicker = true } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
-                Button { showDocumentPicker = true } label: { Label("Add File", systemImage: "doc") }
+                Button { presentPhotoPicker() } label: { Label("Choose Photos & Videos", systemImage: "photo.on.rectangle") }
+                Button { presentDocumentPicker() } label: { Label("Add File", systemImage: "doc") }
             }
         }
     }
@@ -3701,7 +3778,7 @@ _ios15Seg7
                     // [T-ios-geometry-observer-crash] traced an async-renderer
                     // SIGTRAP to that scaffold, and this file already
                     // standardised on the observer for exactly that reason.
-                    .onGeometryChange(for: CGFloat.self) { proxy in
+                    .onGeometryChange15(for: CGFloat.self) { proxy in
                         proxy.size.width
                     } action: { w in
                         guard w > 0, abs(w - inputBottomRowWidth) > 0.5 else { return }
@@ -3739,7 +3816,7 @@ _ios15Seg7
                             .foregroundStyle(ChatColors.secondaryText)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(.ultraThinMaterial)
+                            .background(Color(UIColor.tertiarySystemFill))
                             .clipShape(Capsule())
                     }
                     .padding(.top, 6)
@@ -3762,7 +3839,10 @@ _ios15Seg7
             // floating-bar site). Fires with the initial value too, so the
             // old onAppear seeding AND its diagnostic log are preserved as
             // a single unified line.
-            .onGeometryChange(for: CGRect.self) { proxy in
+            // [V30-INPUTBAR-KICK] composer 死亡自愈的重建开关: tick 变化
+            // 即换 identity → SwiftUI 重建 hosting 视图 (等价退出重进会话)。
+            .id(composerRebuildTick)
+            .onGeometryChange15(for: CGRect.self) { proxy in
                 proxy.frame(in: .global)
             } action: { frame in
                 let newH = frame.size.height
@@ -3843,7 +3923,7 @@ _ios15Seg7
                     // is taken; we only re-read what onGeometryChange reported.
                     let voiceAtSeed = voiceInputActive
                     inputBarHeightDebounce = Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 380000000)
+                        try? await Task.sleep(nanoseconds: UInt64(380) * 1_000_000)
                         guard !Task.isCancelled, voiceAtSeed == voiceInputActive else { return }
                         let settled = latestInputBarFrameH
                         if settled > 0, abs(settled - newH) > 0.5 {
@@ -3874,7 +3954,7 @@ _ios15Seg7
                     // 200ms, which is stale), so the timer routinely expired
                     // while the panel was still moving and SwiftUI's final
                     // geometry callback had not landed yet.
-                    try? await Task.sleep(nanoseconds: 380000000)
+                    try? await Task.sleep(nanoseconds: UInt64(380) * 1_000_000)
                     guard !Task.isCancelled else { return }
                     // [T-voice-inputbar-branch-swap] During rapid streaming
                     // re-renders, voiceInputActive can glitch for one frame,
@@ -3901,7 +3981,7 @@ _ios15Seg7
                     // height, which is the bottom-gap symptom. No new
                     // measurement is taken: we only re-read what
                     // onGeometryChange already reported.
-                    try? await Task.sleep(nanoseconds: 320000000)
+                    try? await Task.sleep(nanoseconds: UInt64(320) * 1_000_000)
                     guard !Task.isCancelled else { return }
                     guard voiceAtCapture == voiceInputActive else { return }
                     let settled = latestInputBarFrameH
@@ -4250,7 +4330,6 @@ _ios15Seg7
                 // reserves the top/bottom share.
                 .padding(Self.popupRowInset)
             }
-            .scrollIndicators(.visible)
             .frame(height: Self.slashPickerFixedHeight)
         }
     }
@@ -4321,7 +4400,6 @@ _ios15Seg7
                         // [T-slash-picker-fixed-height] Match slash popup:
                         // exactly 4 rows tall, scrolls on overflow with the
                         // visible indicator above.
-                        .scrollIndicators(.visible)
                         .frame(height: Self.slashPickerFixedHeight)
                         .onChange(of: vm.mentionSelectedIndex) { newIndex in
                             guard newIndex >= 0, newIndex < rows.count else { return }
@@ -4395,7 +4473,7 @@ _ios15Seg7
                     .clipShape(shape)
             } else {
                 content
-                    .background(.regularMaterial, in: shape)
+                    .background(Color(UIColor.secondarySystemBackground), in: shape)
                     .clipShape(shape)
                     .overlay(
                         shape.strokeBorder(Self.edgeHighlight, lineWidth: 0.5)
@@ -5058,8 +5136,6 @@ private struct ProviderImportSheet: View {
             }
         }
         .padding(24)
-        .presentationDetents([.height(360), .medium])
-        .presentationDragIndicator(.visible)
         // Swipe-to-dismiss without tapping a button still needs cleanup.
         .onDisappear { if !chose { onCancel() } }
     }
@@ -5159,8 +5235,6 @@ struct NavBarStyleModifier: ViewModifier {
         } else {
             // iOS 16–18: opaque navbar background
             content
-                .toolbarBackground(ChatColors.background, for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
                 .overlay(alignment: .top) {
                     if measuresSafeArea {
                         // [T-ios-geometry-observer-crash] onGeometryChange
@@ -5171,7 +5245,7 @@ struct NavBarStyleModifier: ViewModifier {
                         // before, and the action's initial fire covers the old
                         // onAppear seed.
                         Color.clear
-                            .onGeometryChange(for: CGFloat.self) { proxy in
+                            .onGeometryChange15(for: CGFloat.self) { proxy in
                                 proxy.safeAreaInsets.top
                             } action: { topSafeAreaInset = $0 }
                             .ignoresSafeArea()
@@ -5680,6 +5754,26 @@ private struct ChatTrailingMenuButton: UIViewRepresentable {
     /// icon-sized footprint and the system wraps it in the same round glass
     /// as a plain toolbar icon (a representable otherwise accepts the full
     /// proposed width -> stretched capsule, the 2026-07-17 regression).
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
+    @available(iOS 16.0, *) // ios15-port
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIButton, context: Context) -> CGSize? {
         uiView.intrinsicContentSize
     }
@@ -5968,7 +6062,7 @@ private struct MoveToSessionSheet: View {
                     .font(font).foregroundColor(color)
             }
             result = result + Text(text[range])
-                .font(font).foregroundColor(.accentColor).bold()
+                .font(font).foregroundColor(.accentColor)
             current = range.upperBound
         }
         if current < text.endIndex {
@@ -6088,7 +6182,7 @@ private struct SessionLockGateOverlay: View {
     private var gateView: some View {
         ZStack {
             Rectangle()
-                .fill(.regularMaterial)
+                .fill(Color(UIColor.secondarySystemBackground))
                 .ignoresSafeArea()
                 .overlay {
                     Color(UIColor.systemBackground).opacity(0.4)
@@ -6270,14 +6364,14 @@ private struct SpeechLanguagePickerSheet: View {
 
     /// Indices where the preferred/non-preferred boundary lies for section headers.
     private var preferredCodes: Set<String> {
-        Set(Locale.preferredLanguages.map { Locale(identifier: $0).language.languageCode?.identifier ?? "" })
+        Set(Locale.preferredLanguages.map { Locale(identifier: $0).languageCode ?? "" })
     }
 
     var body: some View {
         NavigationStack {
             List {
-                let preferred = filteredLocales.filter { preferredCodes.contains($0.language.languageCode?.identifier ?? "") }
-                let others = filteredLocales.filter { !preferredCodes.contains($0.language.languageCode?.identifier ?? "") }
+                let preferred = filteredLocales.filter { preferredCodes.contains($0.languageCode ?? "") }
+                let others = filteredLocales.filter { !preferredCodes.contains($0.languageCode ?? "") }
 
                 if !preferred.isEmpty {
                     Section(AppLocalized("Preferred", comment: "Section header for preferred speech languages")) {
@@ -6306,7 +6400,6 @@ private struct SpeechLanguagePickerSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
     }
 
     private func languageRow(_ loc: Locale) -> some View {
@@ -6326,7 +6419,6 @@ private struct SpeechLanguagePickerSheet: View {
                 if loc.identifier == speechManager.locale.identifier {
                     Image(systemName: "checkmark")
                         .foregroundStyle(Color.accentColor)
-                        .fontWeight(.semibold)
                 }
             }
         }
@@ -6399,7 +6491,6 @@ struct CompactSummarySheet: View {
                 Text("The summary will be discarded and the messages it covered will become active again. This may push the conversation past the model's context window — if that happens, long-press a message to re-compact from that point.")
             }
         }
-        .presentationDetents([.large])
     }
 }
 
@@ -6904,7 +6995,7 @@ private extension AIChatView {
                 inputBarHealthProbe?.cancel()
                 let probeBaseline = inputBarGeometryTick
                 inputBarHealthProbe = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 900000000)
+                    try? await Task.sleep(nanoseconds: UInt64(900) * 1_000_000)
                     guard !Task.isCancelled else { return }
                     let ticked = inputBarGeometryTick != probeBaseline
                     let age = inputBarLastGeometryAt.map { CFAbsoluteTimeGetCurrent() - $0 } ?? -1
@@ -6913,6 +7004,14 @@ private extension AIChatView {
                     } else {
                         let _stallMsg = "[InputBarHealth] STALLED — no geometry callback 900ms after foreground. committed=\(inputBarHeight) latest=\(latestInputBarFrameH) lastReport=\(String(format: "%.1f", age))s ago voice=\(voiceInputActive) editing=\(voiceVM.isEditingTranscript) seeded=\(didSeedInputBarHeight). The composer host is not laying out; expect a blank bottom area. Leaving and re-entering the session rebuilds it."
                     AppLogger(category: "InputBarLayout").error(_stallMsg)
+                    // [V30-INPUTBAR-KICK] 不再只报错等待用户退出重进 — 就地重建:
+                    // 重置种子 + bump .id, composer host 复活后 geometry 回调
+                    // 恢复, 种子重新落地。草稿在 vm.inputText, 重建不丢。
+                    if !voiceInputActive && !voiceVM.isEditingTranscript {
+                        didSeedInputBarHeight = false
+                        composerRebuildTick &+= 1
+                        AppLogger(category: "InputBarLayout").error("[InputBarHealth][V30-KICK] rebuilding composer host (tick=\(composerRebuildTick)) — draft preserved in vm.inputText")
+                    }
                     }
                 }
                 // [T-voice-bg-fg-gap] Foreground reseal: if we return to a

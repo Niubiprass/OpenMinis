@@ -16,7 +16,7 @@ struct AIDataSharingConsentView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("AI Data Sharing Notice", systemImage: "hand.raised.fill")
-                            .font(.title2.bold())
+                            .font(.title2)
                         Text("Please review how your data is handled before adding an AI provider.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)

@@ -471,7 +471,7 @@ extension WebViewHolder: WKUIDelegate {
         guard let presenter = dialogPresenter() else { reply.send(()); return }
 
         let alert = UIAlertController(title: dialogTitle, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default) { _ in
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
             reply.send(())
         })
         presenter.present(alert, animated: true)
@@ -485,10 +485,10 @@ extension WebViewHolder: WKUIDelegate {
         guard let presenter = dialogPresenter() else { reply.send(false); return }
 
         let alert = UIAlertController(title: dialogTitle, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel) { _ in
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
             reply.send(false)
         })
-        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default) { _ in
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
             reply.send(true)
         })
         presenter.present(alert, animated: true)
@@ -507,10 +507,10 @@ extension WebViewHolder: WKUIDelegate {
             field.text = defaultText
             field.clearButtonMode = .whileEditing
         }
-        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel) { _ in
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
             reply.send(nil)
         })
-        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default) { [weak alert] _ in
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak alert] _ in
             // JS distinguishes "" (user confirmed an empty box) from nil
             // (cancelled), so an empty field must still come back as "".
             reply.send(alert?.textFields?.first?.text ?? "")
@@ -745,7 +745,6 @@ struct MinisSafariView: View {
                 .padding(.bottom, 18) // clears the home-indicator gutter
         }
         .statusBarHidden(true)
-        .persistentSystemOverlays(.hidden)
         .preferredColorScheme(appearanceMode == 1 ? .light : appearanceMode == 2 ? .dark : nil)
         .sheet(isPresented: $showShareSheet) {
             MinisShareSheet(url: shareURL)
@@ -793,7 +792,7 @@ struct MinisSafariView: View {
                 .frame(width: 44, height: 44)
                 .background(
                     Circle()
-                        .fill(.ultraThinMaterial)
+                        .fill(Color(UIColor.tertiarySystemFill))
                 )
                 .overlay(
                     Circle()
@@ -884,8 +883,6 @@ struct MinisLinkPreviewView: View {
                 .ignoresSafeArea(.keyboard)
                 .navigationTitle(holder.pageTitle.isEmpty ? (url.host ?? url.absoluteString) : holder.pageTitle)
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button { dismiss() } label: {
@@ -904,13 +901,11 @@ struct MinisLinkPreviewView: View {
                     }
                 }
         }
-        .presentationDetents([.large])
         // [T-ios-html-preview-wide-sheet] Widen to a page-style sheet on
         // iPad/Mac, reusing the shared modifier from AIChatView.swift. iPhone
         // unaffected (presentationSizing is iOS18+ and .page only affects
         // iPad/Mac form sheets).
         .modifier(WideSheetSizingModifier())
-        .presentationDragIndicator(.hidden)
         // [T-webview-preview-swipe-dismiss] Interactive-dismiss arbitration is
         // now done at the gesture layer by WebViewDismissArbiterGate (above),
         // which vetoes the sheet dismiss pan synchronously when the touch is on

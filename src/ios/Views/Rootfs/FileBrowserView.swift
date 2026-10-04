@@ -488,7 +488,7 @@ private struct MarkdownFilePreview: View {
             }
         }
         .toolbar {
-            if case .loaded = loadState {
+
                 ToolbarItem(placement: .topBarLeading) {
                     // Single toggle button, NOT a segmented Picker.
                     //
@@ -517,7 +517,7 @@ private struct MarkdownFilePreview: View {
                                         ? Text("Show Source")
                                         : Text("Show Rendered"))
                 }
-            }
+            
         }
         .task { await load() }
     }
@@ -751,7 +751,7 @@ private struct FileBrowserRow: View {
 
     var body: some View {
         FileItemRow(item: item, onTap: onTap, onExport: onExport)
-            .contextMenu {
+            .contextMenu (menuItems: {
                 Button {
                     // [T-ios-file-context-copy-abs-path] Copy the file's guest
                     // absolute path (e.g. /var/minis/workspace/.../L3_0001.png)
@@ -791,7 +791,7 @@ private struct FileBrowserRow: View {
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
-            }
+            })
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) {
                     itemToDelete = item
@@ -1091,6 +1091,7 @@ class FileBrowserViewModel: ObservableObject {
     ]
 
     private static func signalFileProviderParent(forLinuxPath linux: String) {
+        guard #available(iOS 16.0, *) else { return }
         var parentID: NSFileProviderItemIdentifier? = nil
         for (linuxRoot, rootID) in fileProviderExposedRoots {
             // Exact match: deleting the top-level folder itself signals the root.

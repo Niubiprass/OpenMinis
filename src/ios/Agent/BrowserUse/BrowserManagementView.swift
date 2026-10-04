@@ -100,13 +100,13 @@ struct BrowserManagementView: View {
                 }
             }
         }
-        .contextMenu {
+        .contextMenu (menuItems: {
             Button {
                 UIPasteboard.general.string = displayUA(for: profile)
             } label: {
                 Label("Copy User Agent", systemImage: "doc.on.doc")
             }
-        }
+        })
     }
 
     private var customUserAgentRow: some View {
@@ -128,10 +128,10 @@ struct BrowserManagementView: View {
                     }
                 }
             }
-            TextField("Enter custom user agent...", text: $customUA, axis: .vertical)
+            TextField("Enter custom user agent...", text: $customUA)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .lineLimit(2...4)
+                .lineLimit(4)
                 .onSubmit {
                     pool.customUserAgentString = customUA
                     pool.setUserAgentProfile(.custom)
@@ -140,7 +140,7 @@ struct BrowserManagementView: View {
         .onAppear {
             customUA = pool.customUserAgentString
         }
-        .contextMenu {
+        .contextMenu (menuItems: {
             if !customUA.isEmpty {
                 Button {
                     UIPasteboard.general.string = customUA
@@ -148,7 +148,7 @@ struct BrowserManagementView: View {
                     Label("Copy User Agent", systemImage: "doc.on.doc")
                 }
             }
-        }
+        })
     }
 
     // MARK: - Viewport Section

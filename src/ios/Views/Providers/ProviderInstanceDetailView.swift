@@ -152,7 +152,6 @@ struct ProviderInstanceDetailView: View {
                     }
                 }
             }
-            .presentationDetents([.medium])
         }
         .alert("Delete Provider", isPresented: $showDeleteConfirm) {
             Button("Delete", role: .destructive) {
@@ -436,11 +435,9 @@ struct ProviderInstanceDetailView: View {
                 let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(label).json")
                 let _ = try? json.write(to: tempURL, atomically: true, encoding: .utf8)
                 ProviderShareSheet(url: tempURL)
-                    .presentationDetents([.medium])
             } else {
                 Text("Failed to export provider configuration.")
                     .foregroundStyle(.secondary)
-                    .presentationDetents([.medium])
             }
         }
     }
@@ -524,7 +521,7 @@ struct ProviderInstanceDetailView: View {
             }
             .buttonStyle(.plain)
         }
-        .contextMenu {
+        .contextMenu (menuItems: {
             if let key = rawKey {
                 Button {
                     UIPasteboard.general.string = key
@@ -532,7 +529,7 @@ struct ProviderInstanceDetailView: View {
                     Label("Copy API Key", systemImage: "doc.on.doc")
                 }
             }
-        }
+        })
     }
 
     @ViewBuilder
@@ -898,14 +895,14 @@ struct ProviderInstanceDetailView: View {
         .onTapGesture {
             editingModelEntry = entry
         }
-        .contextMenu {
+        .contextMenu (menuItems: {
             Button {
                 UIPasteboard.general.string = "entry:\(entry.compositeKey)"
                 MinisToast.show(AppLocalized("Copied: \(entry.model.displayName)"))
             } label: {
                 Label(AppLocalized("Copy Shortcut Model ID"), systemImage: "link")
             }
-        }
+        })
     }
 
     private func modalityIcons(for model: LLMModel) -> some View {
@@ -1435,7 +1432,7 @@ struct ModelEntryDetailSheet: View {
                             // stays visible while editing. Single-line +
                             // trailing alignment lost the cursor past the row
                             // edge with no horizontal autoscroll.
-                            TextField("model-id", text: $modelId, axis: .vertical)
+                            TextField("model-id", text: $modelId)
                                 .font(.system(.body, design: .monospaced))
                                 .multilineTextAlignment(.trailing)
                                 .textInputAutocapitalization(.never)
@@ -1598,7 +1595,6 @@ struct ModelEntryDetailSheet: View {
             }
             .navigationTitle("Model Details")
             .navigationBarTitleDisplayMode(.inline)
-            .scrollDismissesKeyboard(.interactively)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
@@ -1616,8 +1612,6 @@ struct ModelEntryDetailSheet: View {
                 // pin a stale TestSession.
                 ModelQuickTestSheet(entry: entry)
                     .id(entry.id)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
             }
             .alert(
                 AppLocalized("Force Enable Thinking"),

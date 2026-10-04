@@ -194,7 +194,7 @@ struct LogManagementView: View {
             }
         }
         .toolbar {
-            if !vm.logFiles.isEmpty && tab == "logs" {
+
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showShareSheet = true
@@ -202,7 +202,7 @@ struct LogManagementView: View {
                         Image(systemName: "square.and.arrow.up")
                     }
                 }
-            }
+            
         }
         .sheet(isPresented: $showShareSheet) {
             LogShareSheet(urls: vm.logFiles.map(\.url))
@@ -239,7 +239,7 @@ struct LogDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                ShareLink(item: url)
+                MinisShareLinkButton(item: url)
             }
         }
         .task {
@@ -259,7 +259,7 @@ private struct LogTextView: UIViewRepresentable {
     let text: String
 
     func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView(usingTextLayoutManager: true)
+        let textView = UITextView()
         textView.isEditable = false
         textView.isSelectable = true
         textView.backgroundColor = .clear

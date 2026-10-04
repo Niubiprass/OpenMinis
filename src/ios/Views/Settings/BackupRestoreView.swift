@@ -489,7 +489,6 @@ struct BackupRestoreView: View {
                     } else {
                         BackupActionIcon(systemName: "arrow.down.doc.fill", tint: .indigo)
                         Text("Start Restore")
-                            .fontWeight(.semibold)
                     }
                     Spacer(minLength: 0)
                 }
@@ -1342,7 +1341,6 @@ struct ServerPackageListView: View {
             .disabled(cancelFlag.value)
         }
         .padding(24)
-        .presentationDetents([.height(240)])
         // No swipe-to-dismiss: leaving the sheet would hide a transfer that is
         // still running, which is how the concurrency problem started.
         .interactiveDismissDisabled(true)

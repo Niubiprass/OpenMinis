@@ -2770,7 +2770,7 @@ final class DebugJSONRPC: @unchecked Sendable {
     /// rows (they miss the hit-test), and a coordinate tap opens whichever
     /// row happens to be at that point — not the session under test.
     ///
-    /// This posts the SAME `.openSessionFromIntent` notification that Siri
+    /// This posts the SAME `Notification.Name("openSessionFromIntent")` notification that Siri
     /// intents, deep links and the sessions offload already use, so it drives
     /// the app's real navigation path (including the iPhone
     /// `switchToSession` vs iPad `openSession` split) rather than a
@@ -2855,7 +2855,7 @@ final class DebugJSONRPC: @unchecked Sendable {
         }
         await MainActor.run {
             NotificationCenter.default.post(
-                name: .openSessionFromIntent,
+                name: Notification.Name("openSessionFromIntent"),
                 object: nil,
                 userInfo: ["sessionId": sessionId]
             )

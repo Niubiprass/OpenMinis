@@ -57,8 +57,6 @@ struct HelperTranscriptSheetStyle: ViewModifier {
 
     func body(content: Content) -> some View {
         let base = content
-            .presentationDetents(Self.detents, selection: $detent)
-            .presentationDragIndicator(.visible)
             .interactiveDismissDisabled()
         if #available(iOS 16.4, *) {
             base.presentationContentInteraction(.scrolls)
@@ -153,7 +151,6 @@ struct HelperTranscriptPage: View {
             // the nested tool-sheet host re-bridges an EMPTY state to this same
             // navigation controller when its sheet dismisses, and the bar is
             // hidden with animated:false and never restored.
-            .toolbar(.visible, for: .navigationBar)
             .toolbar {
                 // [T-agent-transcript-navbar-lost] Declared INLINE, not from a
                 // `.background` host.

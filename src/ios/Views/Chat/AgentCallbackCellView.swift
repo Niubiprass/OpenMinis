@@ -282,7 +282,7 @@ struct AgentCallbackCellView: View {
             if let sessionId { info["sessionId"] = sessionId }
             NotificationCenter.default.post(name: .openAgentCallback, object: nil, userInfo: info)
         }
-        .contextMenu {
+        .contextMenu (menuItems: {
             // [T-scheduled-cancel-from-card] Cancelling a timer required asking
             // the model to run `minis-scheduled delete --id …`; the card the
             // task fired into had no way to stop it. Shown only while the job is
@@ -307,7 +307,7 @@ struct AgentCallbackCellView: View {
                         : AppLocalized("Copy result"),
                       systemImage: "doc.on.doc")
             }
-        }
+        })
         // [T-agent-callback-card-width] Horizontal inset deliberately NOT applied
         // here — see `AgentCallbackCellView.horizontalInset` and the call site in
         // ChatMessageViews. Applying it inside the 900pt content cap made the

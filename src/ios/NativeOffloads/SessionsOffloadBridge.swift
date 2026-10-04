@@ -467,7 +467,7 @@ private let logger = AppLogger(category: "SessionsOffload")
             }
             await MainActor.run {
                 NotificationCenter.default.post(
-                    name: .openSessionFromIntent,
+                    name: Notification.Name("openSessionFromIntent"),
                     object: nil,
                     userInfo: ["sessionId": session.id]
                 )

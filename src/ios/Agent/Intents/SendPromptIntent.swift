@@ -5,6 +5,7 @@ import UserNotifications
 
 /// Sends a prompt to the Minis AI agent and returns immediately with structured session info.
 /// The agent continues running in the background — use Get Session Status to poll for completion.
+@available(iOS 16.0, *) // ios15-port
 struct SendPromptIntent: AppIntent {
     static var title: LocalizedStringResource = "Send Prompt"
     static var description = IntentDescription("Sends a prompt to the Minis AI agent. Returns session info immediately while the task runs in the background.")
@@ -372,6 +373,7 @@ struct SendPromptIntent: AppIntent {
 
 /// Helper for posting local notifications from Shortcuts intents.
 /// Tapping the notification opens the associated session.
+@available(iOS 16.0, *) // ios15-port
 enum ShortcutNotification {
     /// Category ID for shortcut task notifications — enables tap-to-open-session.
     static let categoryId = "SHORTCUT_TASK"
@@ -430,7 +432,7 @@ enum ShortcutNotification {
 
 /// [T-notification-tap-vs-launch-session] Cold-launch handoff for a
 /// notification-tap navigation. On a cold launch the delegate's `didReceive`
-/// fires before ContentView has mounted its `.onReceive(.openSessionFromIntent)`
+/// fires before ContentView has mounted its `.onReceive(Notification.Name("openSessionFromIntent"))`
 /// subscriber, so the posted NotificationCenter event is simply lost — and the
 /// Launch Session preference (e.g. "New Chat") then opens a fresh session
 /// instead of the tapped one. The delegate buffers the target here;
@@ -438,6 +440,7 @@ enum ShortcutNotification {
 /// path (`.onReceive` did navigate) marks it handled so the launch-screen
 /// logic yields either way.
 @MainActor
+@available(iOS 16.0, *) // ios15-port
 final class NotificationNavigationStore {
     static let shared = NotificationNavigationStore()
 
@@ -480,6 +483,7 @@ final class NotificationNavigationStore {
 }
 
 /// Handles notification tap → navigates to the session.
+@available(iOS 16.0, *) // ios15-port
 final class ShortcutNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     static let shared = ShortcutNotificationDelegate()
 
@@ -507,7 +511,7 @@ final class ShortcutNotificationDelegate: NSObject, UNUserNotificationCenterDele
                 // consumer). Whichever runs marks the other's copy dead.
                 NotificationNavigationStore.shared.setPending(sessionId)
                 NotificationCenter.default.post(
-                    name: .openSessionFromIntent,
+                    name: Notification.Name("openSessionFromIntent"),
                     object: nil,
                     userInfo: ["sessionId": sessionId]
                 )

@@ -1105,7 +1105,5 @@ private struct PauseSyncSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium])
-        .presentationDragIndicator(.visible)
     }
 }

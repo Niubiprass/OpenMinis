@@ -291,7 +291,7 @@ private struct ImportSkillSheet: View {
                 if isImporting {
                     ProgressView("Importing…")
                         .padding()
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .background(Color(UIColor.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12))
                 }
             }
             .sheet(isPresented: $showFilePicker) {
@@ -874,18 +874,18 @@ private struct SkillFileDetailView: View {
                         .foregroundStyle(.red)
                         .font(.caption)
                         .padding(8)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color(UIColor.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8))
                         .padding()
                 }
             }
             .navigationTitle(fileName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if hasChanges {
+
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(AppLocalized("Save")) { save() }
                     }
-                }
+                
             }
             .onAppear {
                 content = store.readSkillFile(skillId, relativePath: relativePath) ?? ""

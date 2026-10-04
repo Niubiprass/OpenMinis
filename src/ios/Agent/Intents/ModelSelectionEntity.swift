@@ -3,6 +3,7 @@ import Foundation
 
 /// Represents a selectable model target in Shortcuts:
 /// either a ModelGroup (e.g. "Agent Loop") or a specific ModelEntry (e.g. "claude-opus-4-5").
+@available(iOS 16.0, *) // ios15-port
 struct ModelSelectionEntity: AppEntity {
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Default Model")
     static var defaultQuery = ModelSelectionEntityQuery()
@@ -12,6 +13,7 @@ struct ModelSelectionEntity: AppEntity {
     var subtitle: String
     var kind: Kind
 
+    @available(iOS 16.0, *) // ios15-port
     enum Kind: String {
         case group
         case entry
@@ -57,6 +59,7 @@ struct ModelSelectionEntity: AppEntity {
     }
 }
 
+@available(iOS 16.0, *) // ios15-port
 struct ModelSelectionEntityQuery: EntityQuery, EntityStringQuery {
     typealias Result = IntentItemCollection<ModelSelectionEntity>
 
