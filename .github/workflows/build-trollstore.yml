@@ -1,0 +1,103 @@
+name: Build OpenMinis TrollStore IPA
+
+# 在 GitHub 的 macOS runner 上编译 OpenMinis，产出一个已用 ldid 伪签名、
+# 注入 JIT entitlements 的 IPA，供 TrollStore（巨魔）直接侧载安装。
+#
+# 为什么要自己编译：iOS 应用只能在 macOS + Xcode 上构建，而使用者可能
+# 只有手机和 GitHub 账号。macOS runner 自带 Xcode 与完整的包管理环境，
+# 是这种情况下唯一可行的构建路径。
+#
+# 与仓库里另一个 `iOS Build (unsigned IPA)` 的区别：那个产出未签名 IPA，
+# 不带 JIT 声明，iSH 设备内 Linux 沙盒无法运行；本工作流额外做了
+#   1. ldid 伪签名（ldid -S Minis-TrollStore.entitlements）
+#   2. 注入 JIT 三件套（allow-jit / allow-unsigned-executable-memory /
+#      allow-dyld-environment-variables）
+# TrollStore 接受这种 IPA，并会用自身的 vdtool 重新伪签名。
+#
+# 用法：Actions → Build OpenMinis TrollStore IPA → Run workflow
+# 完成后从该次运行的 Artifacts 下载 openminis-trollstore-ipa.zip
+
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Build configuration'
+        type: choice
+        options:
+          - Release
+          - Debug
+        default: Release
+
+concurrency:
+  group: trollstore-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build IPA
+    # macos-15 自带 Xcode 16，含支持 deployment target 15.0 的 iOS SDK。
+    runs-on: macos-15
+
+    env:
+      CONFIGURATION: ${{ inputs.configuration || 'Release' }}
+
+    steps:
+      - name: Checkout (含子模块 iSH / PRoot fork)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: 安装构建依赖
+        run: |
+          brew install ninja llvm libarchive pkg-config ldid
+          pip3 install --break-system-packages meson
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin"  >> "$GITHUB_PATH"
+
+      - name: 安装 Go（rclone 用）
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          check-latest: true
+
+      - name: 缓存原生依赖
+        # 原生依赖从源码构建需要 60–100 分钟，是全流程唯一值得缓存的部分。
+        # 这一步必须排在 build_* 之前 —— 命中时会把上次产物还原到 deps/ 下，
+        # 各脚本检测到产物已存在就会跳过编译（本次改动已加上该判断）。
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps/lame-build
+            deps/frameworks
+            deps/libs
+            deps/include
+            deps/resources
+          key: ios15-native-deps-${{ hashFiles('deps/build_*.sh', 'deps/prepare_alpine_rootfs.sh') }}
+          restore-keys: ios15-native-deps-
+
+      - name: 构建并伪签名
+        run: ./scripts/build_trollstore_ipa.sh
+
+      - name: 收集产物
+        run: |
+          mkdir -p artifact
+          cp build-trollstore/OpenMinis-TrollStore.ipa artifact/
+          # 同时保留归档，便于排查启动闪退
+          cp build-trollstore/xcodebuild.log artifact/ 2>/dev/null || true
+          ls -lh artifact/
+
+      - name: 上传 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: openminis-trollstore-ipa
+          path: artifact/OpenMinis-TrollStore.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 上传构建日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build-trollstore/xcodebuild.log
+          retention-days: 7

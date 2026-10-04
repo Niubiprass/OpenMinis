@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  TrollStore (巨魔) 侧载用 entitlements。
+
+	  与 Minis.entitlements 的差异及原因：
+
+	  1) 移除 NFC (`com.apple.developer.nfc.readersession.formats`)
+	     NFC 是 Apple 的受限能力，需要真开发者账号授权。侧载 IPA 带 NFC
+	     entitlement 会导致 TrollStore 伪签名失败或安装后 NFC 不可用。
+	     侧载场景下 NFC 本就不可用，故直接移除。
+
+	  2) 移除 health-records (`com.apple.developer.healthkit.access`)
+	     同为受限 entitlement；保留基础 HealthKit 读写即可。
+
+	  3) 新增 JIT 三件套
+	     iSH 沙盒用 ARM64 JIT 在设备内跑 Linux（deps/ish + proot）。
+	     TrollStore 侧载的 App 默认没有 JIT 权限，必须显式声明。
+	     声明之后仍需在 TrollStore 里对该 App 点「Enable JIT」才会生效。
+	-->
+	<key>aps-environment</key>
+	<string>development</string>
+
+	<key>com.apple.developer.healthkit</key>
+	<true/>
+
+	<key>com.apple.developer.homekit</key>
+	<true/>
+
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.com.openminis.app</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<key>com.apple.developer.ubiquity-container-identifiers</key>
+	<array>
+		<string>iCloud.com.openminis.app</string>
+	</array>
+
+	<key>com.apple.developer.weatherkit</key>
+	<true/>
+
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.openminis.app</string>
+	</array>
+
+	<!-- JIT 三件套：iSH 设备内 Linux 沙盒必需 -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<true/>
+</dict>
+</plist>
