@@ -179,6 +179,18 @@ jobs:
           cp -R "$SRC/src/ios" src/ios
           echo "=== src/ios 文件数 ==="
           find src/ios -name '*.swift' | wc -l
+          # ★v56.5 新增: 另存一份**干净上游**。
+          #   后面 fallback 会把 src/ios 改成已移植产物, 到那时再想拿
+          #   干净基线就来不及了。而下面三处都要它:
+          #     (1) 产物级幂等门 —— 「从干净上游跑第一遍」这一半,
+          #         此前只能拿已移植产物当输入, 测的是「能不能挡住再注入」;
+          #     (2) reverse_v565.py —— 9 条 sabotage 都要重跑一遍干净基线,
+          #         拿已移植产物当基线等于自己拷自己, 永远绿;
+          #     (3) 断言57 的 sab 层。
+          #   ⇒ 判据的基线必须在**判据要跑之前**就存好。
+          rm -rf .upstream-ios
+          cp -R "$SRC/src/ios" .upstream-ios
+          echo "干净上游已另存: $(find .upstream-ios -name '*.swift' | wc -l) 个 swift"
 
       - name: "源码移植到 iOS 15 (第一阶段: 导航/弹窗)"
         run: python3 "$SCRIPT_DIR/ios15_port.py" src/ios
@@ -1315,6 +1327,61 @@ jobs:
           fi
           echo "::endgroup::"
 
+          # ★v56.5 新增: 断言57 —— 终端框 [V565-CODEBLOCK] 探针就位
+          #
+          # 【为什么这一条不能省】
+          #   v46 的 [V46-ATTACH] 装在 TableAttachment 里, 而终端框是
+          #   CodeBlockAttachment —— 两者是**平级兄弟类**(都直接继承
+          #   NSTextAttachment), 所以 v46 对终端框**完全失明**。
+          #   而它的全部判据(标记唯一 / 段内零赋值 / 花括号平衡)一直全绿。
+          #   ⇒ 「判据全绿」与「探针在测正确的东西」没有任何蕴含关系。
+          #
+          # 【v56.2 装机日志的直接证据】
+          #   103 条 V46-ATTACH 里 31 条恒为 attWant=0.0 attCached=-1.0
+          #   (累计高 0、缓存 -1 = 两个计数器从未被代码块写过),
+          #   且那 31 条的 nGlyph=228 / usedH=477.6 / tcW=390.0 恒定
+          #   ⇒ 是另一个独立视图。attN 在 1↔2 之间翻转 20 次。
+          #
+          # 【本条断言含本项目第一条「覆盖范围」判据】
+          #   日志点必须落在 final class CodeBlockAttachment 与下一个顶层
+          #   final class 之间。装到别的类里立即报错。
+          #   而且这一条本身也被反向测试(SA1 故意挪进 TableAttachment 必须红)。
+          #
+          # ★CI 上 sab 需要干净上游 —— fallback 跑过之后 src/ios 已被移植,
+          #   自己拷自己当基线等于永远绿。所以本步在 fallback **之前**把
+          #   上游另存一份到构建目录, 供幂等门/reverse 用。
+          #   (幂等门此前只能拿已移植产物当输入, 测的是「能不能挡住再注入」,
+          #    覆盖不到「从干净上游跑第一遍」这一半 —— 现在两半都覆盖。)
+          echo "::group::断言57: v565 终端框探针就位 (本项目第一条覆盖范围判据)"
+          if grep -q "fix_diag_codeblock_v565" "$SCRIPT_DIR/ios15_fallback.py" \
+             && grep -q "verify_diag_codeblock_v565" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+               python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v565.py" . ; then
+              echo "✅ v565 就位 (core 覆盖范围+结构 / scope 编译级 / scope自证 7 条 / sab 反向 9 条 —— 四层全绿)"
+            else
+              echo "❌ v565 异常 (见上方 ci_assert_v565.py 的四行)"
+              echo "   —— ★core BAD: 最可能是**覆盖范围**判据红 —— 日志点不在"
+              echo "      CodeBlockAttachment 里。这正是 v46 探针的失败形态:"
+              echo "      标记在、判据全绿、却测不到终端框。"
+              echo "      其余可能: 诊断段内改了 height/width、访问器带了 setter、"
+              echo "      节流被去掉、日志点与 return 之间夹了逻辑"
+              echo "   —— ★scope BAD: **编译会失败**。字段类型写错; 或 NSLog 的"
+              echo "      槽位数与实参个数不等; 或 %.1f 的实参没包 Double();"
+              echo "      或浮点槽位精度不是 %.1f(丢小数 = 探针白写)"
+              echo "   —— ★scope自证 BAD: scope 层是新写的, 反向测试拦不住任何东西"
+              echo "      ⇒ 它和 v46 那些一直全绿的判据是同一种东西, 不可信"
+              echo "   —— ★sab BAD: 反向测试没拦下 9 条 sabotage ⇒ 判据是废的"
+              exit 1
+            fi
+          else
+            echo "❌ v565 缺失 —— 终端框将再次完全没有数据可查"
+            echo "   (v46 只 as? TableAttachment, 对同为 NSTextAttachment 子类的"
+            echo "    CodeBlockAttachment 完全失明; 而终端框卡显示与空白过大这两个"
+            echo "    症状正好都在代码块上, 没有探针就只能靠猜)"
+            exit 1
+          fi
+          echo "::endgroup::"
+
           echo "::group::断言38: v38-A 高度欠账自愈必须就位 (末行整段不显示 = 448pt 被clipsToBounds 裁掉)"
           # 病根A 实证 (minis-2026-10-03 6.log):
           #   04:55:03.045 FIRST-MEASURE CORRECTION cellH=1591.7 newH=1748.0
@@ -1554,11 +1621,15 @@ jobs:
       #     从干净上游跑第一遍的幂等, 由本地同一条命令验证:
       #       python3 scripts/ios15_verify/check_idempotent_reapply.py \
       #         scripts/ios15_fallback.py <干净上游>/src/ios 3
-      - name: "产物级幂等门 (连跑 3 遍, 逐字节比对)"
+      #   ★v56.5 补: 基线换成 .upstream-ios(干净上游), 「从零跑第一遍」这一半
+      #     也在覆盖范围内了。此前拿已移植产物当输入, 只能测「能不能挡住
+      #     再注入」; 那正好是漏掉 fix_markdown_layout_reconcile 重复注入的
+      #     那一半 —— 它在干净基线上第一次跑时根本不会重复。
+      - name: "产物级幂等门 (干净上游起跑, 连跑 3 遍, 逐字节比对)"
         run: |
           if python3 "$SCRIPT_DIR/ios15_verify/check_idempotent_reapply.py" \
-               "$SCRIPT_DIR/ios15_fallback.py" src/ios 3 ; then
-            echo "✅ 连续 3 轮 fallback 产物完全一致"
+               "$SCRIPT_DIR/ios15_fallback.py" .upstream-ios 3 ; then
+            echo "✅ 从干净上游连跑 3 轮, 产物完全一致"
           else
             echo "❌ fallback 不幂等 —— 第二次跑会往产物里再插一份同样的段"
             echo "   后果: var/let 重复声明 ⇒ Swift invalid redeclaration ⇒ 编译失败"

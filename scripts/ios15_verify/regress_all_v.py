@@ -83,6 +83,13 @@ CHECKS = [
     # ★它是本项目第一条「覆盖范围」判据 —— v46 探针装错类却全绿的教训。
     ("v565 反向(9条含覆盖范围)",
      "reverse_v565.py",                              "upstream", []),
+    # v565 的 CI 入口: core(覆盖范围+结构) + scope(编译级) + scope自证(7 条)。
+    # ★scope 自证不是凑数 —— 它抓出了第一版 scope 的真洞:
+    #   只数格式串槽位个数 ⇒ `%.1f` 改成 `%.0f` 槽位数不变, 直接漏过,
+    #   而丢小数对 v565 是致命的(它存在的意义就是读小数高度账)。
+    #   逐槽位类型对齐就是被这条逼出来的。
+    ("v565 判据(四层含scope自证)",
+     "ci_assert_v565.py",                            "root",  []),
 ]
 
 # 最近四代(v50/v51/v52/v53)的判据与反向测试是当前承重墙, 必须全绿。
@@ -102,6 +109,10 @@ MANDATORY = {
     #   因为 CI 永远只跑一遍」。它们都不能是可选项。
     "Swift 插值语法", "产物级幂等(连跑3遍)",
     "v565 反向(9条含覆盖范围)",
+    # ★v56.5: v565 判据必须进 MANDATORY —— 它是**唯一**盯住终端框的判据。
+    #   v46 那条对 CodeBlockAttachment 失明已经证明过一次「判据全绿但探针
+    #   测不到东西」; 缺了这条, 终端框就又回到只能靠猜的状态。
+    "v565 判据(四层含scope自证)",
 }
 
 
@@ -173,6 +184,13 @@ def main():
                          UPSTREAM_IOS, "3"]
         if fn == "reverse_v49_heavy.py":
             argv.append("--sab")
+        elif fn == "ci_assert_v565.py":
+            # ★必须降级为不跑 sab: ci_assert_v565 内部会调 reverse_v565.py,
+            #   而本链里 reverse_v565.py 本身就是一项 —— 不加会跑两遍,
+            #   时间翻倍(它要重跑 9 遍 fallback)。
+            # ★v51 踩过递归的坑(进程树指数膨胀, CI 挂死), 这里是同一个坑的
+            #   轻量版: 不是递归, 是重复。方向仍须单向: 链跑入口, 入口自己跑 sab。
+            argv.append("--no-sab")
 
         try:
             r = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
