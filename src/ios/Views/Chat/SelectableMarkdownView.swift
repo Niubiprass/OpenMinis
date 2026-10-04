@@ -4754,7 +4754,7 @@ final class VideoAttachment: NSTextAttachment {
 
             var thumb: UIImage?
             do {
-                let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+                let (cgImage, _) = try await generator.image(at: .zero)
                 thumb = UIImage(cgImage: cgImage)
             } catch {
                 // Fallback: no thumbnail
@@ -6143,7 +6143,64 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // [V41-POLLED] polluted 判据增加**高度维度**: 宽度正常但高度欠账的帧
             // 也必须进修正分支, 不能被 `if !polluted { return }` 放过。
             let _hDebt = _v42Need > 1 && f.size.height + 0.5 < _v42Need
-            let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt
+            // [V570-KVOCW] ★v57.0 全部修复的支点★（装机日志交叉验证，见 edit() 理由）
+            //
+            // 【旧判据为什么漏】`polluted` 三项**全都只看 superview 的 frame**：
+            //     f.size.width > cvW + 1  ||  f.origin.x < -0.5  ||  _hDebt
+            // 而 SwiftUI 每帧推脏的是 **`textContainer.size.width`**（不是 superview.frame）。
+            // 装机日志(minis-2026-10-05 2.log)实测：
+            //     V41-KVOPRE sv=(16.0,188.7,358.0,994.3) cvW=390.0
+            //     V44-TEXTFRAME tvW=390.0 svW=358.0 tcW=390.0
+            // superview 宽 358 完全正常 ⇒ 三项全假 ⇒ `polluted = false`
+            // ⇒ `if !polluted { return }` **每帧早退** ⇒ 脏容器宽从 KVO 这条
+            // 路径永远没人纠正，只有 layoutSubviews 在事后纠 —— 而 KVO 闭包
+            // 里排版已经按 390 发生过一次（行尾多排/少排都算在这个宽上）。
+            // 旁证：`V41-KVOFIXH` 0 条、`LASTSANE` 0 条 ⇒ 修正分支一次没进过。
+            //
+            // 【为什么必须在这里、而不是只依赖 layoutSubviews】
+            // 时间戳证明纠偏晚了整整一拍：
+            //     01:19:10.524  V44      tcW=390.0   <- KVO 闭包内
+            //     01:19:10.526  V50-PINW tcW=358.0   <- layoutSubviews 内已纠
+            // 同一帧 KVO 读 390、layout 读 358。而**渲染落屏用的是 KVO
+            // 那一刻的行碎片** ⇒ 用户看到的就是「每行右端被竖直切断」。
+            //
+            // 【修法】把容器宽纳入 polluted, 且用**净宽**(cvW-32) 当目标:
+            // 1) 判据双向(abs>1)—— 任何非目标宽都算脏, 不只偏大;
+            // 2) 纠偏写在**早退之前**—— KVO 是本帧最早拿回控制权的点,
+            //    这里纠完, 后面 layoutSubviews 的 v47/v48/v50 只会看到已干净的
+            //    容器宽(它们是幂等纠偏, 已达标时零写入, 不产生额外排版);
+            // 3) 只写 textContainer.size.width, **不碰 frame/bounds/高度**,
+            //    所以不推翻 v41 的 KVO 补高、也不引入新的抢宽时机。
+            //
+            // 【为什么不会与 SwiftUI 形成竞争】这是**纠偏**不是抢宽:
+            // 目标是本帧由 superview 宽算出的权威净宽, 与 layoutSubviews 的
+            // _realW2 同源同值(v43 起两者都是 max(200, cvW-32)); 稳态下
+            // abs<=1 不写 ⇒ 零写入零排版。v13/v34 翻车是因为在 pass 外
+            // 无条件抢一个**第三方**宽度, 这里不是。
+            let _v570NetW = max(200.0, cvW - 32)
+            let _v570Dirty = abs(self.textContainer.size.width - _v570NetW) > 1
+            if _v570Dirty {
+                self.textContainer.size.width = _v570NetW
+            }
+            // [V570-KVODIAG] 纯诊断, 一行几何都不碰。装机后判定:
+            //   dirty=1 且 wide=1 => 证实「KVO 早退前容器是脏的」= 本版假设成立
+            //   dirty=1 且 wide=0 => 偏小方向, v570 双向判据的增量收益生效
+            //   dirty=0           => 已是目标宽, 本版无事可做(则病根在别处)
+            // 纪律42: 探针必须打在**被修改之前**的状态上, 所以此处读的是
+            // `_v570Dirty` 这个判据结果, 而不是纠正后的宽度(那恒等于 netW)。
+            do {
+                struct _V570Log { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                let _v570Now = CACurrentMediaTime()
+                if _v570Now - _V570Log.last > 0.5 {
+                    _V570Log.last = _v570Now
+                    _V570Log.n &+= 1
+                    NSLog("[V570-KVOCW] dirty=%d netW=%.1f svW=%.1f cvW=%.1f len=%d n=%u",
+                          _v570Dirty ? 1 : 0, _v570NetW,
+                          f.size.width, cvW, _v42Len, _V570Log.n)
+                }
+            }
+            let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
+                || _hDebt || _v570Dirty
             if !polluted {
                 if f.size.width > 200, f.origin.x > 0.5, f.size.width < cvW - 0.5 {
                     self.ios15LastSaneSVFrame = f
@@ -10188,7 +10245,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // becomes a measurable chunk of every updateUIView pass (and
         // updateUIView runs on each SwiftUI body re-evaluation, so it
         // multiplies during streaming and self-sizing measurement loops).
-        let imageMatches = MinisRegex.ranges(markdown, "!\\[([^\\]]*)\\]\\(([^)]+)\\)")
+        let imageMatches = markdown.ranges(of: /!\[([^\]]*)\]\(([^)]+)\)/)
         if !imageMatches.isEmpty {
             for match in imageMatches {
                 let matchStr = String(markdown[match])
@@ -10637,26 +10694,6 @@ struct SelectableMarkdownView: UIViewRepresentable {
     }
 
     @available(iOS 16.0, *)
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: SelectableMarkdownTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
         // Key the size cache on the SwiftUI binding length, not

@@ -127,8 +127,18 @@ i_asg = t.index(N + "                _hFix.size.height = _v42Need")
 i_poll = t.index("let _hDebt = _v42Need > 1")
 ck("补齐在 polluted 判据之前", i_asg < i_poll, f"{i_asg} vs {i_poll}")
 ck("_hDebt 用 _v42Need", "let _hDebt = _v42Need > 1 && f.size.height + 0.5 < _v42Need" in t)
-ck("polluted 含 _hDebt",
-   "let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt" in t)
+# 【v57.0 加固】同样从"整行逐字"改成"**表达式全文**"：
+#   v57.0 给 polluted 加了 || _v570Dirty 并把该行拆成两行 ——
+#   语义是加强，但整行匹配失效。取 `let polluted` 到 `if !polluted {` 之间。
+# ★锚点必须用 `let _hDebt` 声明**之后**再找：文件里另有一处同形的
+#   `let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5`
+#   (在别的函数里、后面直接跟 `|| <别的条件>`)，全局 index 会命中那处，
+#   表达式里当然没有 _hDebt ⇒ 假红(本版实测踩到)。
+_i_hd = t.index("let _hDebt = _v42Need > 1")
+_i_p0 = t.index("let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5",
+                _i_hd)
+_polluted_expr = t[_i_p0:t.index("if !polluted {", _i_p0)]
+ck("polluted 含 _hDebt", "_hDebt" in _polluted_expr)
 ck("兜底补高用 _v42Need",
    "if _v42Need > 1, fix.size.height + 0.5 < _v42Need {" in t)
 ck("兜底补高赋值用 _v42Need", "fix.size.height = _v42Need" in t)

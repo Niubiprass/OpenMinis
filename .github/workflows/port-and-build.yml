@@ -1054,9 +1054,22 @@ jobs:
 
           echo "::group::断言52: 全版本判据回归 (v41~v53 判据 + v47/v48 反向 + v49~v53 sabotage)"
           set +e
-          python3 "$SCRIPT_DIR/ios15_verify/regress_all_v.py" . 2>&1 | tee /tmp/regress_all_v.out
+          # ★必须传 OPENMINIS_UPSTREAM_IOS（run#146 实测漏掉 ⇒ 5 项被 SKIP）:
+          #   regress_all_v.py 里的"产物级幂等"与 v565~v568 反向测试都靠它
+          #   从干净上游重跑生成产物；不给就退化成读 src/ios，几项直接跳过。
+          #   断言 58~62 各自传了，唯独这个汇总回归没传 —— 汇总才是门禁。
+          OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+            python3 "$SCRIPT_DIR/ios15_verify/regress_all_v.py" . 2>&1 | tee /tmp/regress_all_v.out
           _rc=${PIPESTATUS[0]}
           set -e
+          # ★跳过项也要红: 判据没跑 == 没人看守, 绝不能当通过。
+          #   run#146 的教训是"20 通过 0 失败 5 跳过"被读成了干净通过。
+          #   ★前缀是 regress_all_v.py 实际输出的 "⏭ "（行 215/259），不是 "SKIP("。
+          if grep -q "SKIP(" /tmp/regress_all_v.out; then
+            echo "❌ 回归存在 SKIP 项 —— 判据没跑就等于没人看守"
+            grep "SKIP(" /tmp/regress_all_v.out | head -20
+            exit 1
+          fi
           if [ "$_rc" -eq 0 ]; then
             echo "✅ 全版本判据回归通过 —— 历史版本的加法保护都没被本版破坏"
           elif [ "$_rc" -eq 3 ]; then
@@ -1611,6 +1624,104 @@ jobs:
             exit 1
           fi
           echo "::endgroup::"
+          # ============================================================
+          # 断言 62: v57.0 KVO 早退前必须纠正 textContainer 宽
+          # ============================================================
+          # ★★★ 装机日志时间戳 + **录屏逐帧**交叉定罪 ★★★
+          # 【录屏】224x480, 128s, 抽 1924 帧逐帧看 + 帧差定位 4 个突变簇:
+          #   每行右端被**同一条固定竖直线**切断, 典型如
+          #     「跑 PythonShe」后本该是「ll、处理数据」, 下一行从断点续排。
+          #   该切线在**静止帧与滑动帧位置完全相同** => **稳定裁切**,
+          #   不是滑动瞬时故障。(用户口述「下半部分」, 录屏证明是**右侧**丢字)
+          #   另: 帧 1280(空) -> 1281(loading 圈) -> 1282(回来)
+          #       => 滑动中触发同步重排版, 文字被清空重画 = 「滑动字消失」来源。
+          #
+          # 【★ 本版最初的修法被自己的行为对比当场推翻 ★】
+          #   最初只把单向判据 `>` 改成 `abs(...)` 双向化。行为对比:
+          #       tcW=390  旧=True  新=True    <- 旧判据本来就成立, 行为**不变**
+          #       tcW=358  旧=False 新=False
+          #       tcW=326  旧=False 新=True   <- 旧漏过(唯一增量)
+          #   即双向化只新增了对偏小值的覆盖, **压根没解释 390 为什么留下**。
+          #   这是本项目第五次「已识别但没修掉」(v47/v48/v50 早已识别
+          #   「按 390 排、按 358 算」, 也早已写了纠正代码与判据)。
+          #
+          # 【★ 真正的根因 A: 纠偏成功, 但晚了一整个 KVO tick ★】
+          #   装机日志(minis-2026-10-05 2.log, 5575 行)按时间戳对齐:
+          #       01:19:10.524  V44-TEXTFRAME tcW=390.0   <- KVO 闭包内
+          #       01:19:10.526  V50-PINW       tcW=358.0   <- layoutSubviews 已纠回
+          #       01:19:10.530  V50-LAIDW      laidW=358.0 regrabbed=1
+          #   同一帧 KVO 读 390、layout 读 358 ⇒ 「regrabbed=1 与 tvW=390
+          #   完全同集合」只能说明 KVO 那拍看到的是脏宽, **推不出
+          #   layoutSubviews 的纠正无效**。(这直接推翻了 v57.0 初版假设。)
+          #
+          # 【★ 真正的根因 B: KVO 的早退判据根本看不见容器脏宽 ★】
+          #   KVO 闭包(ios15InstallKVO)里:
+          #       let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt
+          #       if !polluted { ...; return }
+          #   三项**全都只看 superview.frame**, 而 SwiftUI 每帧推脏的是
+          #   **textContainer.size.width**。实测:
+          #       V41-KVOPRE     sv=(16.0,188.7,358.0,994.3) cvW=390.0
+          #       V44-TEXTFRAME  tvW=390.0 svW=358.0 tcW=390.0
+          #   superview 宽 358 完全正常 ⇒ 三项全假 ⇒ polluted=false
+          #   ⇒ **每帧早退** ⇒ 脏容器宽从 KVO 这条路径永远没人纠。
+          #   旁证: `V41-KVOFIXH` 0 条、LASTSANE 0 条 ⇒ 修正分支一次没进过。
+          #   而渲染落屏用的正是 KVO 那一刻的行碎片 ⇒ 用户看到右侧丢字。
+          #
+          # 【修法】把容器宽并入 polluted, 目标净宽 max(200, cvW-32)
+          #   (与 layoutSubviews 的 _realW2 同源同值), 纠偏写在**早退之前**:
+          #   KVO 是本帧最早拿回控制权的点; 纠完后 layoutSubviews 的
+          #   v47/v48/v50 只看到已干净的容器宽(幂等, 稳态零写入)。
+          #   判据用 abs(双向)。**只写 textContainer.size.width**,
+          #   不碰 frame/bounds/高度 ⇒ 不推翻 v41/v45 补高与 v51 钉宽。
+          #
+          # 【9 条 sabotage, 四条特别重要】
+          #   S1 纠偏整块挪到 `if !polluted` 之后 ⇒ 声明也晚于引用,
+          #      Swift 编译期 use-before-declaration; 且运行时每帧早退。
+          #   S2 polluted 漏掉 _v570Dirty ⇒ 纠偏照做但仍被早退跳过。
+          #   S4 净宽改成从 tcW 自己算 ⇒ 恒等于脏宽 ⇒ 判据恒假。
+          #   S7 诊断回读 tcW 冒充脏值 ⇒ 语法合法、编译通过,
+          #      但纠正之后回读恒等于 netW ⇒ **永远打「全绿」骗人**。
+          if grep -q "fix_kvo_container_v570" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            _f570="src/ios/Views/Chat/SelectableMarkdownView.swift"
+            # 第1层: 标记在位
+            _v570_mark=$(grep -c "\[V570-KVOCW\]" "$_f570" || true)
+            # 第2层: 双向判据**整行逐字**相等
+            #   (子串匹配会被"再加一个 ||"或"改成 < 1"绕过 —— v569 的 S3/S4 同教训)
+            _v570_dirt=$(grep -cF 'let _v570Dirty = abs(self.textContainer.size.width - _v570NetW) > 1' "$_f570" || true)
+            # 第3层: polluted 必须真的并入 _v570Dirty(整段逐字, 防"声明了没接线")
+            _v570_poll=$(grep -cF '|| _hDebt || _v570Dirty' "$_f570" || true)
+            # 第4层: 净宽来源必须与 _realW2 同源
+            _v570_net=$(grep -cF 'let _v570NetW = max(200.0, cvW - 32)' "$_f570" || true)
+            # 第5层: 纯诊断必须是 dirty 标记式(回读宽度 = 永远全绿骗人)
+            _v570_diag=$(grep -cF '[V570-KVOCW] dirty=%d netW=' "$_f570" || true)
+            # 第6层: 旧的 [V570-BIDIR] 假修法必须已移除
+            _v570_old=$(grep -c "\[V570-BIDIR\]" "$_f570" || true)
+            # 顺序: 判据行 < 写入行 < 早退行
+            _v570_rd=$(grep -nF 'let _v570Dirty = abs(self.textContainer.size.width - _v570NetW) > 1' "$_f570" | head -1 | cut -d: -f1 || true)
+            _v570_rw=$(grep -nF 'self.textContainer.size.width = _v570NetW' "$_f570" | head -1 | cut -d: -f1 || true)
+            _v570_rg=$(awk '/let _v570Dirty = abs\(self\.textContainer/{f=1} f&&/if !polluted \{/{print NR; exit}' "$_f570" || true)
+            _v570_rd=${_v570_rd:-0}; _v570_rw=${_v570_rw:-0}; _v570_rg=${_v570_rg:-0}
+            if [ "$_v570_mark" -ge 1 ] && [ "$_v570_dirt" = "1" ] && [ "$_v570_poll" -ge 1 ] \
+               && [ "$_v570_net" = "1" ] && [ "$_v570_diag" -ge 1 ] && [ "$_v570_old" = "0" ] \
+               && [ "$_v570_rd" -gt 0 ] && [ "$_v570_rw" -gt "$_v570_rd" ] \
+               && [ "$_v570_rg" -gt 0 ] && [ "$_v570_rw" -lt "$_v570_rg" ]; then
+              if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+                 python3 "$SCRIPT_DIR/ios15_verify/reverse_v570.py" ; then
+                echo "✅ v57.0 就位 (反向 9 条全拦: 纠偏位置/polluted漏并/单向/净宽不同源/容差放大/诊断回读/复活旧假修法/只判不写)"
+              else
+                echo "::error::v57.0 判据被绕过 —— 容器宽纠偏没并进 polluted(每帧早退), 或纠偏写在早退之后, 或诊断回读宽度冒充脏值(永远全绿)"
+                exit 1
+              fi
+            else
+                echo "::error::v57.0 产物不合规 mark=$_v570_mark dirty=$_v570_dirt poll=$_v570_poll net=$_v570_net diag=$_v570_diag old=$_v570_old readAt=$_v570_rd writeAt=$_v570_rw guardAt=$_v570_rg (期望 >=1,1,>=1,1,>=1,0,>0,rd<rw<rg)"
+                exit 1
+            fi
+          else
+            echo "::error::ios15_fallback.py 里找不到 fix_kvo_container_v570"
+            exit 1
+          fi
+          echo "::endgroup::"
+
 
 
 

@@ -51,7 +51,22 @@ for m in ["V41-KVOPRE","V41-KVOHEIGHT","V41-KVOPOST","V41-KVOFIXH","V41-DEBT"]:
 # 时, 这些锚点跟着一起挪, 位置判据形同虚设(7/10 里漏了这项)。
 # 必须锚**真正执行赋值的语句**: `fix.size.height = self.ios15LastNeededH`
 # 出现在被补齐的那段里, 以及 `f = _hFix` 交棒语句。
-i_p = t.index("let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt")
+# 【v57.0 加固】锚点从"整行逐字"改成"**表达式全文**"：
+#   v57.0 给 polluted 加了第四个维度 || _v570Dirty（容器脏宽），
+#   于是这一行被拆成两行 —— 语义是**加强**，但整行匹配会失效。
+#   这与 run#37124793234 的教训同源：判据要锚**要达成的效果**，
+#   不能锚某个旧实现的字面形态。
+#   ★但也不能放得太松：仍必须包含原有的 _hDebt —— 真删掉高度维度要红。
+# ★锚点必须从 `let _hDebt` 声明**之后**再找：文件里另有一处同形的
+#   `let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5`
+#   (别的函数内、后面直接跟别的条件)，全局 index 会命中那处，
+#   取到的表达式里没有 _hDebt ⇒ 假红(本版实测踩到)。
+_i_hd = t.index("let _hDebt = _v42Need > 1")
+i_p = t.index("let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5",
+              _i_hd)
+# 取 polluted 表达式全文：从 `let polluted` 到 `if !polluted {`（不含）。
+i_guard = t.index("if !polluted {", i_p)
+line = t[i_p:i_guard]
 _assign = "_hFix.size.height = " + NEED
 i_asg = t.index(_assign)
 i_handoff = t.index(chr(10) + "                f = _hFix")
@@ -59,7 +74,8 @@ chk("补高度赋值在 polluted 判据之前", i_asg < i_p)
 chk("交棒赋值在 polluted 判据之前", i_handoff < i_p)
 
 # 3. polluted 判据含高度维度
-line = t[i_p:i_p+120]
+#  ★line 已在上面按"表达式全文"取好(到 `if !polluted {` 为止)，
+#    这里不要再用 t[i_p:i_p+120] 覆盖 —— 拆行后 120 字符窗口会截断。
 chk("polluted 含高度维度 _hDebt", "_hDebt" in line)
 
 # 4. 兜底补高在 obj.frame = fix 之前

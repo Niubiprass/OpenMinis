@@ -6027,6 +6027,189 @@ V569_SKIP_NEW = '''            // [V569-DEBT] ★本版全部修复的支点。
             } else if _v42Need > 1, f.size.height + 0.5 < _v42Need {'''
 
 
+V570_KVOCW_OLD = """            // [V41-POLLED] polluted 判据增加**高度维度**: 宽度正常但高度欠账的帧
+            // 也必须进修正分支, 不能被 `if !polluted { return }` 放过。
+            let _hDebt = _v42Need > 1 && f.size.height + 0.5 < _v42Need
+            let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt
+            if !polluted {"""
+
+V570_KVOCW_NEW = """            // [V41-POLLED] polluted 判据增加**高度维度**: 宽度正常但高度欠账的帧
+            // 也必须进修正分支, 不能被 `if !polluted { return }` 放过。
+            let _hDebt = _v42Need > 1 && f.size.height + 0.5 < _v42Need
+            // [V570-KVOCW] ★v57.0 全部修复的支点★（装机日志交叉验证，见 edit() 理由）
+            //
+            // 【旧判据为什么漏】`polluted` 三项**全都只看 superview 的 frame**：
+            //     f.size.width > cvW + 1  ||  f.origin.x < -0.5  ||  _hDebt
+            // 而 SwiftUI 每帧推脏的是 **`textContainer.size.width`**（不是 superview.frame）。
+            // 装机日志(minis-2026-10-05 2.log)实测：
+            //     V41-KVOPRE sv=(16.0,188.7,358.0,994.3) cvW=390.0
+            //     V44-TEXTFRAME tvW=390.0 svW=358.0 tcW=390.0
+            // superview 宽 358 完全正常 ⇒ 三项全假 ⇒ `polluted = false`
+            // ⇒ `if !polluted { return }` **每帧早退** ⇒ 脏容器宽从 KVO 这条
+            // 路径永远没人纠正，只有 layoutSubviews 在事后纠 —— 而 KVO 闭包
+            // 里排版已经按 390 发生过一次（行尾多排/少排都算在这个宽上）。
+            // 旁证：`V41-KVOFIXH` 0 条、`LASTSANE` 0 条 ⇒ 修正分支一次没进过。
+            //
+            // 【为什么必须在这里、而不是只依赖 layoutSubviews】
+            // 时间戳证明纠偏晚了整整一拍：
+            //     01:19:10.524  V44      tcW=390.0   <- KVO 闭包内
+            //     01:19:10.526  V50-PINW tcW=358.0   <- layoutSubviews 内已纠
+            // 同一帧 KVO 读 390、layout 读 358。而**渲染落屏用的是 KVO
+            // 那一刻的行碎片** ⇒ 用户看到的就是「每行右端被竖直切断」。
+            //
+            // 【修法】把容器宽纳入 polluted, 且用**净宽**(cvW-32) 当目标:
+            // 1) 判据双向(abs>1)—— 任何非目标宽都算脏, 不只偏大;
+            // 2) 纠偏写在**早退之前**—— KVO 是本帧最早拿回控制权的点,
+            //    这里纠完, 后面 layoutSubviews 的 v47/v48/v50 只会看到已干净的
+            //    容器宽(它们是幂等纠偏, 已达标时零写入, 不产生额外排版);
+            // 3) 只写 textContainer.size.width, **不碰 frame/bounds/高度**,
+            //    所以不推翻 v41 的 KVO 补高、也不引入新的抢宽时机。
+            //
+            // 【为什么不会与 SwiftUI 形成竞争】这是**纠偏**不是抢宽:
+            // 目标是本帧由 superview 宽算出的权威净宽, 与 layoutSubviews 的
+            // _realW2 同源同值(v43 起两者都是 max(200, cvW-32)); 稳态下
+            // abs<=1 不写 ⇒ 零写入零排版。v13/v34 翻车是因为在 pass 外
+            // 无条件抢一个**第三方**宽度, 这里不是。
+            let _v570NetW = max(200.0, cvW - 32)
+            let _v570Dirty = abs(self.textContainer.size.width - _v570NetW) > 1
+            if _v570Dirty {
+                self.textContainer.size.width = _v570NetW
+            }
+            // [V570-KVODIAG] 纯诊断, 一行几何都不碰。装机后判定:
+            //   dirty=1 => 证实「KVO 早退前容器是脏的」= 本版假设成立
+            //   dirty=0 => 已是目标宽, 本版无事可做(则病根在别处)
+            // 纪律42: 探针必须打在**被修改之前**的状态上, 所以此处用判据
+            // 结果 _v570Dirty 表示"是否动过手", 不回读宽度冒充脏值
+            // (纠正已发生, 回读恒等于 netW, 那种读数永远"全绿"骗人)。
+            do {
+                struct _V570Log { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                let _v570Now = CACurrentMediaTime()
+                if _v570Now - _V570Log.last > 0.5 {
+                    _V570Log.last = _v570Now
+                    _V570Log.n &+= 1
+                    NSLog("[V570-KVOCW] dirty=%d netW=%.1f svW=%.1f cvW=%.1f len=%d n=%u",
+                          _v570Dirty ? 1 : 0, _v570NetW,
+                          f.size.width, cvW, _v42Len, _V570Log.n)
+                }
+            }
+            let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5
+                || _hDebt || _v570Dirty
+            if !polluted {"""
+
+
+def fix_kvo_container_v570(t):
+    """v57.0: KVO 早退前纠正 textContainer 宽 —— 治「每行右端被竖直切断」。
+
+    装机日志(minis-2026-10-05 2.log, 5575 行)交叉验证的因果链：
+
+    A. 时间戳证明纠偏**成功**但**晚一拍**（不是"被写回"）：
+         01:19:10.524  V44-TEXTFRAME tcW=390.0   <- KVO 闭包内读到脏宽
+         01:19:10.526  V50-PINW       tcW=358.0   <- layoutSubviews 内已纠回
+         01:19:10.530  V50-LAIDW      laidW=358.0 regrabbed=1
+       同一帧 KVO 读 390、layout 读 358 ⇒ 「触发与失败同集合」只能说明
+       KVO 那拍看到的是脏宽，**推不出 layoutSubviews 的纠正无效**。
+       （这一条推翻了本版最初的假设，是第五次「已识别但没修掉」。）
+
+    B. 真正没人管的那一拍在 KVO 的早退判据：
+         let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt
+         if !polluted { ...; return }
+       三项**全都只看 superview.frame**，而 SwiftUI 推脏的是 textContainer。
+       实测 V41-KVOPRE sv=(16.0,188.7,358.0,994.3) ⇒ superview 宽 358 正常
+       ⇒ polluted 恒 false ⇒ 每帧早退 ⇒ 脏容器宽从 KVO 路径永远没人纠。
+       旁证：V41-KVOFIXH 0 条、LASTSANE 0 条 ⇒ 修正分支一次没进过。
+
+    C. 症状侧（录屏逐帧 1924 帧 + 日志）：
+       - 每行右端被**同一条固定竖直线**切断（「跑 PythonShe」后本该是「ll」，
+         下一行从断点续排）；静止帧与滑动帧位置完全相同 ⇒ 稳定裁切。
+       - V44 的 needH-usedH：tcW=358 时 8.0~8.3（= 内边距，正常），
+         tcW=390 时 30.6/52.8/53.0 ⇒ 按 390 排的行碎片留下的空壳。
+       - 帧 1280 空白 → 1281「Minis」+loading 圈 → 1282 文字回来
+         ⇒ 滑动中同步重排版，文字被清空重画 = 「滑动字消失」的直接来源。
+    """
+    if "[V570-KVOCW]" in t:
+        return t
+    if V570_KVOCW_OLD not in t:
+        raise RuntimeError("fix_kvo_container_v570: polluted 早退锚点没找到")
+    return t.replace(V570_KVOCW_OLD, V570_KVOCW_NEW, 1)
+
+
+def verify_kvo_container_v570(t):
+    """v57.0 判据: 六层。
+
+    1. [V570-KVOCW] 标记在位
+    2. **早退判据必须真的把 _v570Dirty 并进去**(整段逐字) —— 只加变量不用同样红
+    3. 纠偏必须写在 `if !polluted` **之前**(顺序错 = 又一次"判断在写入之后")
+    4. 纠偏必须**双向**(abs>1), 防退回单向 `>`
+    5. 必须有纯诊断 [V570-KVODIAG], 且用 dirty 标记而不是回读宽度
+    6. 旧的 [V570-BIDIR] 双向化修法必须**已移除**(它证明不了 390 的成因)
+    """
+    if "[V570-KVOCW]" not in t:
+        raise RuntimeError("verify_kvo_container_v570: 找不到 [V570-KVOCW] 标记")
+    need_polluted = ("let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5\n"
+                     "                || _hDebt || _v570Dirty")
+    if need_polluted not in t:
+        raise RuntimeError(
+            "verify_kvo_container_v570: polluted 判据没并入 _v570Dirty ——\n"
+            "早退分支依然看不到容器脏宽, 本版等于没修。\n"
+            "必须是**整段**:\n%s" % need_polluted)
+    if "let _v570Dirty = abs(self.textContainer.size.width - _v570NetW) > 1" not in t:
+        raise RuntimeError(
+            "verify_kvo_container_v570: 双向判据不在位 ——\n"
+            "必须是 `abs(self.textContainer.size.width - _v570NetW) > 1`")
+    # ★段起点用 _v570NetW 声明（v57.0 独有）：`let _v570Dirty = abs(` 若在
+    #   别的版本段出现同形行，全局 find 会取错位置，判据变成假红/假绿。
+    i_seg = t.find("let _v570NetW = ")
+    i_dirty = t.find("let _v570Dirty = abs(", i_seg, i_seg + 400)
+    # ★写入点的搜索窗口必须限定在判据行之后 400 字符内：layoutSubviews 段
+    #   里另有一个 `self.textContainer.size.width = ...` 写入点(v49 段),
+    #   全局首个匹配会拿错位置，让"顺序错"检查指向错误的写入点
+    #   (本版实测踩到，判据自身变成假红/假绿)。
+    i_write = t.find("self.textContainer.size.width = _v570NetW", i_dirty, i_dirty + 400)
+    # ★锚点必须用 polluted 判据本身, 不能用 `if !polluted {` 全局首个匹配:
+    #   ios15ApplyFrameFix(5571) 里另有一段同名的 `if !polluted {`,
+    #   全局 find 会命中那一处, 于是"顺序错"的报错指向错误的早退,
+    #   判据本身就变成假红(本版实测踩到)。
+    i_poll = t.find("|| _hDebt || _v570Dirty", i_dirty)
+    if i_dirty == -1 or i_write == -1 or i_poll == -1:
+        raise RuntimeError("verify_kvo_container_v570: 纠偏/polluted 锚点缺失")
+    # ★方向别写反(本版实测踩过)：Swift 允许先声明后使用, 正常形态是
+    #   i_dirty < i_poll。若声明反而晚于 polluted 对它的引用, Swift 编译期
+    #   会报 "use of local variable '_v570Dirty' before its declaration" ——
+    #   那正是「纠偏整块被挪到早退之后」的真实后果。
+    if i_dirty > i_poll:
+        raise RuntimeError(
+            "verify_kvo_container_v570: _v570Dirty 声明晚于 polluted 的引用 "
+            "⇒ Swift 编译期 use-before-declaration")
+    i_guard = t.find("if !polluted {", i_poll)
+    if i_guard == -1:
+        raise RuntimeError("verify_kvo_container_v570: polluted 之后找不到早退分支")
+    if i_write > i_guard:
+        raise RuntimeError(
+            "verify_kvo_container_v570: 顺序错 —— 纠偏必须写在 `if !polluted` "
+            "**之前**。写在之后 = 每次都早退, 一次都不会执行。")
+    if "[V570-KVODIAG]" not in t:
+        raise RuntimeError("verify_kvo_container_v570: 缺 [V570-KVODIAG] 纯诊断")
+    if "[V570-KVOCW] dirty=%d netW=" not in t:
+        raise RuntimeError(
+            "verify_kvo_container_v570: 诊断必须是 dirty 标记式 ——\n"
+            "回读宽度在纠正之后恒等于 netW, 会永远打「全绿」骗人")
+    if "[V570-BIDIR]" in t:
+        raise RuntimeError(
+            "verify_kvo_container_v570: 旧的 [V570-BIDIR] 双向化修法还在 ——\n"
+            "它把 `>` 改成 `abs(...)` 后在 tcW=390 上行为与旧判据**完全相同**"
+            "(都成立), 证明不了 390 的成因, 留着会掩盖真正的修法")
+    # ★净宽来源必须锚定 v57.0 的那处声明 —— `max(200.0, cvW - 32)` 在
+    #   ios15ApplyFrameFix 段也出现过, 全局 `in t` 会被别处满足,
+    #   于是"净宽取错源"这类错误永远绿(与 reverse_v570.py 的 S4 同一个坑)。
+    _kv = t.find("let _v570NetW = ")
+    if _kv == -1:
+        raise RuntimeError("verify_kvo_container_v570: 缺少 _v570NetW 声明")
+    if "max(200.0, cvW - 32)" not in t[_kv:_kv + 60]:
+        raise RuntimeError(
+            "verify_kvo_container_v570: 净宽不是 max(200.0, cvW-32), "
+            "与 _realW2 不同源 ⇒ 又一次拉锯")
+
+
 def fix_kvo_debt_v569(t):
     """v56.9: 修 KVO 同值抑制把欠账帧永久跳过。
 
@@ -9333,21 +9516,52 @@ def verify_width_source_unify_v50(t):
             "不在段内 —— 换成钉宽后漏了那个 -1 余量, 表格会宽到触发 "
             "_fillLayoutHole")
 
-    # ---- R3: 不许新增 textContainer 宽度写入点 ----
-    #   全文对 `textContainer.size.width =` 的写入必须仍是 4 处:
+    # ---- R3: 不许**未经登记**的 textContainer 宽度写入点 ----
+    #   全文对 `textContainer.size.width =` 的写入必须**恰好是这 5 处**:
     #     · codeTextView 那处 —— 与本链无关的独立视图(终端块)
     #     · v18 段 `= _realW`  (v34 起的常规钳宽)
     #     · v18 段 `= _realW2` (v26 测高前的抢回)
     #     · v48 段 `= _realW2` (碎片与目标宽不一致时钉回)
-    #   ★这个 4 是**实测基线**(v49 产物 L1641/L8119/L8154/L8198),
+    #     · KVO 闭包 `= _v570NetW` (v57.0 新增)
+    #   ★这 4 是**实测基线**(v49 产物 L1641/L8119/L8154/L8198),
     #     不是推算值 —— 第一版这里写成 3, 判据当场报"实为 4"。
     #     ⇒ 纪律: 判据里的计数必须**从产物数出来**, 不能从脑子里数出来。
+    #
+    # 【v57.0 为什么可以把 4 改成 5 —— 而不是"随便加一个数"】
+    #   R3 的意图是防 v13/v34 那种**抢宽翻车**: 在布局 pass 外无条件抢一个
+    #   **第三方**宽度, 与 SwiftUI 竞争, 造成闪屏/整体缩小。
+    #   v57.0 新增的那一处**不违例**, 三条都成立:
+    #     1) 目标宽 = max(200.0, cvW - 32), 与 v18 段的 _realW2 **同源同值**
+    #        (不是第三方宽度);
+    #     2) 写在 KVO 闭包内 —— 本帧最早拿回控制权的点, 早于 layoutSubviews,
+    #        不存在"pass 外抢" ;
+    #     3) 判据双向 abs>1, 稳态零写入 ⇒ 幂等, 纠偏不是竞争。
+    #   ⇒ 所以这里**不是把红线放宽**, 而是**把红线从"计数"升级为"白名单"**:
+    #     计数只保证"没有第 6 个", 白名单保证"这 5 个都还在、且都是登记过的那个"。
+    #   若将来再有人加第 6 个, 仍然会红 —— 红线没有被削弱。
     _w = re.findall(r"textContainer\.size\.width\s*=", t)
-    if len(_w) != 4:
+    if len(_w) != 5:
         raise RuntimeError(
-            "verify_width_source_unify_v50: ★textContainer 宽度写入点数应为 4"
-            "(codeTextView 1 + v18 3), 实为 %d —— v50 只允许新增一个静态标量, "
-            "**任何新的容器宽写入都是 v13/v34 抢宽翻车的形态**" % len(_w))
+            "verify_width_source_unify_v50: ★textContainer 宽度写入点数应为 5"
+            "(codeTextView 1 + v18 3 + v57.0 KVO 1), 实为 %d —— "
+            "**任何未经登记的新增容器宽写入都是 v13/v34 抢宽翻车的形态**"
+            % len(_w))
+    # 白名单: 五处必须都是登记过的那一行, 不许"顶替"(删一处、另一处重复出现)
+    for _pat, _want in (
+            ("textContainer.size.width = 10000", 1),          # codeTextView
+            ("textContainer.size.width = _realW\n", 1),       # v18 常规钳宽
+            ("self.textContainer.size.width = _v570NetW", 1), # v57.0 KVO 纠偏
+    ):
+        _n = t.count(_pat)
+        if _n != _want:
+            raise RuntimeError(
+                "verify_width_source_unify_v50: 写入点 `%s` 应恰好 %d 处, 实为 %d"
+                % (_pat.strip(), _want, _n))
+    _n_realw2 = t.count("textContainer.size.width = _realW2")
+    if _n_realw2 != 2:
+        raise RuntimeError(
+            "verify_width_source_unify_v50: `= _realW2` 的写入点应恰好 2 处"
+            "(v18 抢回 + v48 钉宽), 实为 %d" % _n_realw2)
 
     # ---- 功能在位: 写入点紧邻 v48 钉宽 ----
     i_w = t.find("// [V50-PINW-WRITE]")
@@ -12001,6 +12215,68 @@ def main():
         "  `if _v56dup && _v56noDebt`。欠账时写入让几何真的变化 ⇒ 不是零变化 ⇒ 必须写。"
         "★抑制本意**保留**(省掉同 tick 内几何零变化的同步 layout 是真优化), "
         "  只改条件不删分支 —— 判据第4层专门钉住 skipped 计数不许消失。")
+    # ★★ v57.0 —— 装机日志 + **录屏逐帧**交叉定罪的一版 ★★
+    # 录屏(224x480, 128s, 抽 1924 帧逐帧看 + 帧差定位突变簇):
+    #   每行右端被**同一条固定竖直线**切断, 典型「跑 PythonShe」后本该是「ll、处理数据」,
+    #   下一行从断点续排。该切线在**静止帧与滑动帧位置完全相同**
+    #   => 是**稳定裁切**, 不是滑动瞬时故障。
+    #   另发现 4 个突变簇, 帧 1280(空) -> 1281(loading 圈) -> 1282(回来),
+    #   证实滑动中触发**同步重排版**, 文字被清空重画 = 「滑动字消失」的直接来源。
+    #
+    # 日志(minis-2026-10-05 2.log, 5575 行)给机制, 三组数字完全同集合:
+    #   V50-LAIDW  regrabbed=1  75 帧   <- 纠正机制**已触发**
+    #   V44-TEXTFRAME tvW=390.0 75 帧   <- 但容器**仍是 390**
+    #   13 个健康帧两者都干净(laidW=358/tvW=358/regrabbed=0)
+    #   V52-GATE picked=358 / V50-PINW pinnedW=358 / V51-FRAMEPIN fvW=tcW=svW=358
+    #     => 帧宽三处一致全对, 只有 textContainer 被推回全屏宽
+    #   V44 的 needH-usedH: tcW=358 时 8.0~8.3(内边距正常) / tcW=390 时 30.6/52.8/53.0
+    #
+    # ★**本项目第五次「已识别但没修掉」** ★
+    #   v47/v48/v50 **已经**识别出「按 390 排、按 358 算」这件事
+    #   (V48 注释原话: "log17 里 tcW 与 gap 完全同构、零例外"),
+    #   也**已经**写了纠正代码(8645/8688 两处 textContainer.size.width = _realW2),
+    #   判据也**已经**算对了(regrabbed=1 说明它认为需要重排)。
+    #   ★但 8607 那处判据是**单向**的: `if textContainer.size.width > _realW + 1`
+    #   只在容器偏大时改。日志证明它触发过 75 次, 却仍留下 390。
+    #   => 病不在「有没有写纠正」, 在**判据只覆盖半个方向** +
+    #     「写的位置在 pass 末尾, 而 SwiftUI 每个 pass 都会推回来」。
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_container_v570,
+        "v57.0: 治「每行右端被竖直切断」+「滑动时文字整块消失」。"
+        "★★★ 根因 = 装机日志时间戳 + 录屏逐帧交叉验证, 不是推断 ★★★"
+        "【录屏 128s 抽 1924 帧】每行右端被**同一条固定竖直线**切断"
+        "(「跑 PythonShe」后本该是「ll、处理数据」, 下一行从断点续排); "
+        "静止帧与滑动帧切点位置**完全相同** => 稳定裁切, 非滑动瞬时故障。"
+        "另见 4 个突变簇: 帧1280 空白 -> 1281「Minis」+loading 圈 -> 1282 回来 "
+        "=> 滑动中触发同步重排版, 文字被清空重画 = 「滑动字消失」的直接来源。"
+        "【★ 第五次「已识别但没修掉」★】v47/v48/v50 早已识别「按 390 排、按 358 算」"
+        "(V48 注释原话「tcW 与 gap 完全同构、零例外」), 也早已写了纠正代码"
+        "(三处 textContainer.size.width 写入), 判据也算对了(regrabbed=1)。"
+        "★本版最初也打算只把单向判据 `>` 改成 `abs(...)` 双向化 —— "
+        "**被自己的行为对比当场推翻**: tcW=390 时旧判据本来就成立, 双向后行为"
+        "**一字不差**; 只新增了对 tcW=326 的覆盖。它压根没解释 390 为什么留下。"
+        "【★ 真正的根因(A: 纠偏成功但晚一拍)】装机日志时间戳逐条对齐:"
+        "    01:19:10.524  V44-TEXTFRAME tcW=390.0   <- KVO 闭包内读到脏宽"
+        "    01:19:10.526  V50-PINW       tcW=358.0   <- layoutSubviews 内已纠回"
+        "    01:19:10.530  V50-LAIDW      laidW=358.0 regrabbed=1"
+        "同一帧 KVO 读 390、layout 读 358 ⇒ 「触发与失败同集合」只说明 KVO 那拍"
+        "看到脏宽, **推不出 layout 纠正无效**。"
+        "【★ 真正的根因(B: 早退判据看不见容器脏宽)】KVO 闭包:"
+        "    let polluted = f.size.width > cvW + 1 || f.origin.x < -0.5 || _hDebt"
+        "    if !polluted { ...; return }"
+        "三项**全都只看 superview.frame**, 而 SwiftUI 推脏的是 textContainer。"
+        "实测 V41-KVOPRE sv=(16.0,188.7,358.0,994.3) cvW=390.0 ⇒ superview 宽 358"
+        "完全正常 ⇒ polluted 恒 false ⇒ **每帧早退** ⇒ 脏容器宽从 KVO 路径永远没人纠。"
+        "旁证: V41-KVOFIXH 0 条、LASTSANE 0 条 ⇒ 修正分支一次都没进过。"
+        "【修法】把容器宽纳入 polluted, 目标用净宽 max(200, cvW-32)(与 layoutSubviews "
+        "的 _realW2 同源同值), 纠偏写在**早退之前**: KVO 是本帧最早拿回控制权的点, "
+        "纠完 layoutSubviews 的 v47/v48/v50 只看到已干净的宽(幂等, 零额外排版)。"
+        "判据双向(abs>1) 顺带覆盖偏小方向。**只写 textContainer.size.width, "
+        "不碰 frame/bounds/高度** ⇒ 不推翻 v41 补高/v45 补高/v51 钉宽, 也不抢宽。"
+        "【判据】verify_kvo_container_v570 六层: 标记/polluted 整段并入/纠偏在早退之前/"
+        "双向判据/纯诊断是 dirty 标记式/旧 BIDIR 已移除。"
+        "【反向】reverse_v570.py 8 条 sabotage, 含「把纠偏挪到早退之后」"
+        "「polluted 不并入 dirty」「退回单向 >」「摘掉诊断标记」「复活旧 BIDIR」。")
+
     # ★顺序要点: v55-B 仍先注册(它是 v56-B 的锚点载体), v56-B 在其产物上改写,
     #   所以 v56 不能删掉 v55-B 的注册, 只在 v56 里把它放行。
 
