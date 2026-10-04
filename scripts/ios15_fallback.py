@@ -7155,11 +7155,25 @@ def verify_debtgate_release_v53(t, infra):
     # 新探针
     if "[V53-MEM]" not in t:
         raise RuntimeError("%s: 缺 [V53-MEM] 探针" % F)
-    for f in ("saneHit=", "memHit=", "mem=", "picked="):
-        if f not in t:
+    # [V54-D] ★必须锁 **NSLog 格式串本身**，不能只查全文子串。
+    #
+    # 旧判据只查 "memHit=" 在不在文件里 —— 而 S9 破坏把格式串的
+    # `memHit=%llu` 改成了 `x=%llu`，判据却仍然全绿：变量声明行
+    # `static var memHit: UInt` 里的 `memHit` 子串还在，**13/14 拦成 12/14**。
+    # 教训与 v53 的S13 同源：**字段「出现在文件里」≠ 字段「出现在日志里」**。
+    # 装机读日志看到的是 NSLog 的输出，判据就必须对着那一行查。
+    _v54m = re.search(r'\[V53-MEM\]\s*saneHit=.*?len=%d', t, re.S)
+    if not _v54m:
+        raise RuntimeError(
+            "%s: ★找不到 [V53-MEM] 的 NSLog 格式串 —— 装机日志靠它判读"
+            "C1 是否生效(见 MSG_V54_D1)" % F)
+    _v54fmt = _v54m.group(0)
+    for f in ("saneHit=%llu", "memHit=%llu", "mem=%.1f", "picked=%.1f"):
+        if f not in _v54fmt:
             raise RuntimeError(
-                "%s: [V53-MEM] 缺字段 %r —— saneHit/memHit 必须能分别"
-                "证明「闸门放行过」与「记忆位写入过」" % (F, f))
+                "%s: [V53-MEM] 格式串缺字段 %r —— saneHit/memHit 必须能分别"
+                "证明「闸门放行过」与「记忆位写入过」(实际格式串: %r)"
+                % (F, f, _v54fmt[:120]))
 
     # ================= C2: 三条短路放行 =================
     if "// [V53-C2]" not in infra:
@@ -9146,6 +9160,247 @@ def fix_inputbar_kick(t):
     return t.replace(OLD_STALL, NEW_STALL, 1)
 
 
+
+# ==================== v54: 三处修法 ====================
+def fix_v54_c1_gate(t):
+    """[V54-C1] 宽度闸门承认「贴边净宽」，破 C-1 记忆位死锁。
+
+    装机铁证(minis-2026-10-04 5.log, 08:27:21 起 272/272 条):
+        V52-GATE rawW=358.0 frmW=358.0 cvW=390.0 edge=0 sane=0 picked=358.0
+        V53-MEM  saneHit=0 memHit=0 mem=-1.0 picked=358.0
+    `picked` 恒 358.0(= cvW-32, **正确的净宽**), 但 `_v52ok` 恒 false ⇒
+    `_v53memW` 的 `guard _v52ok` 永不放行 ⇒ memHit 136 次全 0、记忆位恒 -1.0。
+
+    机理: 闸门只认「等于全屏宽」或「等于上次记忆位」。358 与 390 差 32 > 2,
+    记忆位初始 nil ⇒ 两条全不成立。**358 明明是这一帧唯一正确的净宽,
+    却因为「不等于全屏宽」被否** —— v53 修C-1 时加的防污染守卫
+    (guard _v52ok) 顺带把正常值也否了, 修死锁的守卫成了新死锁。
+
+    修法: 语义改成「不是 SwiftUI 递归排版给出的过渡宽度」。第三条:
+    等于本段权威净宽 `_realW`(贴边态它就是 cvW-32)。
+    375.7 仍被拦: 既不等于 358 也不等于 390, 记忆位在它之前是
+    -1(首次)/358(之后) ⇒ 三条全不成立。
+    ★复用同段已算好的 `_realW`(8271 行定义, 早于此处), 不独立算
+    cvW-32 —— v28 教训过「独立算 cvW-32 会把 326 气泡撑爆」。
+    """
+    a = """                if !_v52ok, let _v52last = ios15LastSaneContentW, _v52last > 100 {
+                    _v52ok = abs(_v52w - _v52last) <= 2
+                }
+"""
+    b = """                if !_v52ok, let _v52last = ios15LastSaneContentW, _v52last > 100 {
+                    _v52ok = abs(_v52w - _v52last) <= 2
+                }
+                // [V54-C1] 补上「贴边净宽」这一类。
+                //
+                // v53 装机日志(minis-2026-10-04 5.log, 08:27:21 起 272/272 条)：
+                //   V52-GATE rawW=358.0 frmW=358.0 cvW=390.0 edge=0 sane=0 picked=358.0
+                //   V53-MEM  saneHit=0 memHit=0 mem=-1.0 picked=358.0
+                // `picked` 恒为 358.0(= cvW-32, **正确的净宽**), 但 `_v52ok`
+                // 恒为 false ⇒ `_v53memW` 的 `guard _v52ok` 永远不放行 ⇒
+                // `memHit` 136 次全为 0、记忆位 `mem` 恒 -1.0(从未写入)。
+                //
+                // 机理: 上面两条要求「等于全屏宽」或「等于上次记忆位」。358 与
+                // 390 差 32 > 2, 而记忆位初始 nil ⇒ 两条全不成立 ⇒ 判不合理。
+                // **358 明明是这一帧唯一正确的净宽, 却因为「不等于全屏宽」被否。**
+                // v53 修 C-1 时把 `guard _v52ok` 当成防污染的**必要**约束
+                // (375.7 的 dev=14.3 落在区间内, 光靠区间判据拦不住), 结果这条
+                // 约束顺带把**正常值**也一起否了 —— 修死锁的守卫本身成了新死锁。
+                //
+                // 修法: `_v52ok` 的语义应是「这个宽度**不是** SwiftUI 递归排版
+                // 给出的过渡宽度」, 而不是「必须等于全屏宽或上次记忆位」。
+                // 第三条: 等于本段权威净宽 `_realW`(贴边态它就是 cvW-32)。
+                // 375.7 仍会被拦: 它既不等于 358 也不等于 390, 而记忆位在它之前
+                // 是 -1(首次)/358(之后) ⇒ 三条全不成立。
+                //
+                // ★复用同段已算好的 `_realW`(本帧真正写进 textContainer 的那个
+                // 宽度, 8271 行定义, 早于此处), **不独立算 cvW-32**: v28 教训过
+                // 「独立算 cvW-32 会把 326 气泡撑爆」; 且 `_realW2` 此刻尚未定义
+                // (8338 行), 用它会编译不过。
+                if !_v52ok, abs(_v52w - _realW) <= 2 {
+                    _v52ok = true
+                }
+"""
+    if "[V54-C1] 补上" in t:
+        return t
+    if a not in t:
+        raise RuntimeError("v54-C1 锚点缺失(闸门 `!_v52ok, let _v52last` 段)")
+    return t.replace(a, b, 1)
+
+
+def fix_v54_b_debt_report(t):
+    """[V54-B] SKIPPED 早退分支也上报欠账, 让 C-2 的三条短路能放行。
+
+    装机铁证:
+        V53-SHORT dedup=29 … debt=0.0     ← 恒为 0.0, 123/123 条
+        V52-DEBT  preSVH=818.7 needH=1087.0 debt=268.3   ← 真有 268.3
+    v53 的上报点只有一处(settle 侧), 而 deferSelfSizing 的 SKIPPED 分支
+    **在它之前就 return 了** ⇒ 差值算得出来却送不出去 ⇒
+    `v53PendingHeightDebt` 恒 0 ⇒ `v53NotePendingDebt` 走复位分支 ⇒
+    `v53DebtSeenCount` 恒 0 ⇒ `v53DebtIsRipe` 恒 false ⇒ 三条短路后面
+    的 `!v53DebtIsRipe` 守卫全部放行不了。装机 dedup=2307/window=0/live=0。
+
+    ★为什么必须补在滚动期: 滚动期恰恰是欠账最大的时候(容器被拉高但cell
+    高度没跟上), 也恰恰是唯一需要「放行真实测量」的时候。补在 settle 侧
+    等于永远错过滚动期。
+    """
+    a = """                let wasPending = deferredCorrectionPending
+                cellSizeLogger.info("[DeferDebt] OWED delta=\\(String(format: "%+.1f", delta)) attached=\\(self.window != nil) reOwed=\\(wasPending)")
+                deferredCorrectionPending = true"""
+    b = """                let wasPending = deferredCorrectionPending
+                cellSizeLogger.info("[DeferDebt] OWED delta=\\(String(format: "%+.1f", delta)) attached=\\(self.window != nil) reOwed=\\(wasPending)")
+                // [V54-B] 这里也把欠账上报给 cell。
+                //
+                // v53 的上报点只有一处(`[V53-C2]` 那行, 在 settle 侧), 而**本
+                // 分支在它之前就 return 了**。装机日志铁证:
+                //   V53-SHORT dedup=29 … debt=0.0     ← 恒为 0.0, 123/123 条
+                //   V52-DEBT  preSVH=818.7 needH=1087.0 debt=268.3   ← 真有 268.3
+                // 差值算得出来、却送不出去 ⇒ `v53PendingHeightDebt` 恒 0 ⇒
+                // `v53NotePendingDebt` 走 `debt <= 1` 的复位分支 ⇒
+                // `v53DebtSeenCount` 永远是 0 ⇒ `v53DebtIsRipe` 恒 false ⇒
+                // 三条短路后面的 `!v53DebtIsRipe` 守卫**全部放行不了**。
+                // 结果 A 路 dedup 独吞(装机 dedup=2307 / window=0 / live=0)
+                // ⇒ C-2 完全没生效, `preSVH` 继续卡在 818.7。
+                //
+                // ★为什么这里必须补: 滚动期恰恰是欠账最大的时候(容器被拉高但
+                // cell 高度没跟上), 也恰恰是唯一需要「放行真实测量」的时候。
+                // 补在 settle 侧等于永远错过滚动期。
+                _v53ReportDebtToCell(delta)
+                deferredCorrectionPending = true"""
+    if "_v53ReportDebtToCell(delta)" in t:
+        return t
+    if a not in t:
+        raise RuntimeError("v54-B 锚点缺失(`[DeferDebt] OWED` 那三行)")
+    return t.replace(a, b, 1)
+
+
+def fix_v54_c_probe_roundtrip(t):
+    """[V54-C] 消掉哨兵高度的每帧往返 —— 掉帧的真凶。
+
+    装机铁证(minis-2026-10-04 5.log, 08:27:17 → 08:30:28):
+        [V38C] probe-height 1.7976931348623157e80 -> 2000
+        short-circuited setSize: size=358.0x2000.0  × 314, 跨 **251 个 tick**
+        totalShortCircuits 累计 10945, WARN 597 条, 持续整整 3 分钟
+
+    1.79e80 就是 `CGFloat.greatestFiniteMagnitude` 的实际位模式。这三处赋值
+    都是**每帧 layoutSubviews / 测高 / updateUIView 都执行**的, 于是每帧
+    一对 setSize(设哨兵 → 恢复真实高), 每次都让 CoreText 在 358x2000 上
+    真排一遍版。251 帧 ≈ 502 次全量排版 ⇒ 主线程吃满 ⇒ 用户说的
+    「滑动像掉帧」「终端框永远卡画面」: 终端内容算不过来就停在旧画面。
+
+    ★为什么 2000 不是真实需求: 同日志 `needH` / FIRST-MEASURE newH 的
+    实测上限是 1631.0, 2000 是 V38C 钳位后的哨兵值。v40 当年(真实上限
+    2002.3)判定「2000 是真实上限不能再收紧」, 本轮实测上限已降到 1631 ——
+    但那不是本层该动的旋钮: 钳位高度只是**症状**, 真正的病是**每帧往返**。
+    哪怕钳到 1631, 每帧两次全量排版照样掉帧。所以这里不碰
+    kProbeHeightCeiling, 只消往返。
+
+    判据: `usedRect` 装得下就没有容器外内容 ⇒ 跳过哨兵, 零 setSize。
+    装不下时(长表格/图片撑出)行为与今天完全一致 —— 安全性不降。
+    阈值 2pt: 吸收 TextKit 的亚像素噪声, 避免「差 0.3pt 也要往返」的抖动。
+    """
+    # --- 1) attachmentBounds: 哨兵 + 恢复 ---
+    a1 = """        let savedContainerHeight = self.textContainer.size.height
+        if savedContainerHeight < CGFloat.greatestFiniteMagnitude {
+            self.textContainer.size.height = CGFloat.greatestFiniteMagnitude
+        }"""
+    b1 = """        let savedContainerHeight = self.textContainer.size.height
+        // [V54-C] 只在**真的可能有容器外内容**时才做哨兵往返。
+        //
+        // 装机日志(minis-2026-10-04 5.log, 08:27:17 → 08:30:28)铁证:
+        //   [V38C] probe-height 1.7976931348623157e80 -> 2000
+        //   short-circuited setSize: size=358.0x2000.0  × 314, 跨 251 个 tick
+        //   totalShortCircuits 累计 10945, WARN 597 条, 持续整整 3 分钟
+        //
+        // 1.79e80 就是 `CGFloat.greatestFiniteMagnitude` 的实际位模式 —— 这两
+        // 个赋值点每帧 layoutSubviews 都执行, 于是每帧一对 setSize, 每次都
+        // 让 CoreText 在 358x2000 上真排一遍版。251 帧 ≈ 502 次全量排版
+        // ⇒ 主线程吃满 ⇒「滑动像掉帧」「终端框永远卡画面」。
+        // (第二处/第三处哨兵点见 layoutSubviews 与 updateUIView。)
+        let _v54needProbe: Bool = {
+            guard textStorage.length > 0 else { return false }
+            let _need = layoutManager.usedRect(for: textContainer).height
+            return _need + 2 > savedContainerHeight
+        }()
+        var _v54probeApplied = false
+        if _v54needProbe, savedContainerHeight < CGFloat.greatestFiniteMagnitude {
+            self.textContainer.size.height = CGFloat.greatestFiniteMagnitude
+            _v54probeApplied = true
+        }"""
+    a2 = """        if self.textContainer.size.height != savedContainerHeight {
+            self.textContainer.size.height = savedContainerHeight
+        }"""
+    b2 = """        // [V54-C] 并且只在**本帧真的设过哨兵**时才恢复。没设哨兵的帧恢复它
+        // 是纯浪费: 一次 setSize = 一次 CoreText 全量排版。
+        if _v54probeApplied, self.textContainer.size.height != savedContainerHeight {
+            self.textContainer.size.height = savedContainerHeight
+        }"""
+
+    # --- 2) invalidateCellSizeIfNeeded ---
+    # a3 必须带上 `newHeight` 那一行做前缀 —— 否则三处相同的三行会让它
+    # 命中 layoutSubviews 里那处（实测踩过）。
+    a3 = """        let newHeight = sizeThatFits(CGSize(width: measureWidth, height: .greatestFiniteMagnitude)).height
+        // sizeThatFits clamps textContainer.size.height — restore it (only
+        // when actually clamped, to avoid a redundant setSize: → fillLayoutHole).
+        if textContainer.size.height < CGFloat.greatestFiniteMagnitude {
+            textContainer.size.height = CGFloat.greatestFiniteMagnitude
+        }"""
+    b3 = """        let newHeight = sizeThatFits(CGSize(width: measureWidth, height: .greatestFiniteMagnitude)).height
+        // sizeThatFits clamps textContainer.size.height — restore it (only
+        // when actually clamped, to avoid a redundant setSize: → fillLayoutHole).
+        // [V54-C] 但「被钳了就恢复」这一条挡不住**每帧往返**: sizeThatFits 每次
+        // 都会把高度钳回, 于是本行下一帧又恒真 ⇒ 每帧一次 setSize ⇒ 每帧一次
+        // CoreText 全量排版(装机 setSize(358x2000) 跨 251 tick × 314 次)。
+        // 判据: sizeThatFits 刚返回的 newHeight 已是**真实需求高**, 拿它跟
+        // 容器高比 —— 装得下就没有容器外内容, 不需要解除约束。
+        let _v54needUnbound2: Bool = newHeight + 2 > max(bounds.height, 1)
+        if _v54needUnbound2, textContainer.size.height < CGFloat.greatestFiniteMagnitude {
+            textContainer.size.height = CGFloat.greatestFiniteMagnitude
+        }"""
+
+    # --- 3) updateUIView ---
+    a4 = """        // Only assign when it's actually clamped — see layoutSubviews.
+        if textView.textContainer.size.height < CGFloat.greatestFiniteMagnitude {
+            textView.textContainer.size.height = CGFloat.greatestFiniteMagnitude
+        }"""
+    b4 = """        // Only assign when it's actually clamped — see layoutSubviews.
+        // [V54-C] 同上: 只在真的有容器外内容时才解除高度约束。光靠「被钳就
+        // 恢复」会每帧往返一次 setSize。判据与前两处同源。
+        let _v54needUnbound3: Bool = {
+            guard textView.textStorage.length > 0 else { return false }
+            let _need = textView.layoutManager.usedRect(for: textView.textContainer).height
+            return _need + 2 > max(textView.bounds.height, 1)
+        }()
+        if _v54needUnbound3, textView.textContainer.size.height < CGFloat.greatestFiniteMagnitude {
+            textView.textContainer.size.height = CGFloat.greatestFiniteMagnitude
+        }"""
+
+    # ★必须**逐处按上下文定位**，不能用「相同锚点 + replace(...,1)」：
+    # 三处待改代码的锚点文本**完全一样**（都是那三行 setSize），
+    # 第一次调用 replace(a, b, 1) 会命中 layoutSubviews 里那处，
+    # 把依赖 `newHeight` 的判据插进没有该变量的函数 ⇒ 编译不过。
+    #   实测: 这样插出来的产物 `_v54needUnbound2` 落在 layoutSubviews 的
+    #   `super.layoutSubviews()` 之后，而 `newHeight` 只存在于
+    #   invalidateCellSizeIfNeeded ⇒ 作用域错误。
+    MARK = {"a1": "[V54-C] 只在**真的可能有容器外内容**时才做哨兵往返",
+            "a2": "// [V54-C] 并且只在**本帧真的设过哨兵**时才恢复",
+            "a3": "let _v54needUnbound2: Bool =",
+            "a4": "let _v54needUnbound3: Bool = {"}
+    for key, a, b, tag in (
+            ("a1", a1, b1, "attachmentBounds 设哨兵"),
+            ("a2", a2, b2, "attachmentBounds 恢复"),
+            ("a3", a3, b3, "invalidateCellSizeIfNeeded"),
+            ("a4", a4, b4, "updateUIView")):
+        # 幂等判据必须用**该处独有的标记**，不能用 b 的末行 ——
+        # a3/a4 的末行（`textContainer.size.height = ...`）与 a1 的几乎
+        # 相同，会误判成「已应用」而跳过（实测 C 整段未命中）。
+        if MARK[key] in t:
+            continue
+        if a not in t:
+            raise RuntimeError("v54-C 锚点缺失(%s)" % tag)
+        t = t.replace(a, b, 1)
+    return t
+
+
 def main():
     print("== iOS 15 兜底修复 v2 (ROOT=%s) ==" % ROOT)
     print("-- 文件指纹/结构自检 --")
@@ -9292,6 +9547,14 @@ def main():
          MSG_V53_C2)
     edit("Views/Chat/SelectableMarkdownView.swift", fix_first_para_settle_v53,
          MSG_V53_FIRST)
+
+    # ---- v54: 三处修法 (装机日志 minis-2026-10-04 5.log 实证) ----
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_v54_c1_gate,
+         "v54-C1: 闸门承认贴边净宽, 破 C-1 记忆位死锁(memHit 136/136 全 0)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_v54_b_debt_report,
+         "v54-B: SKIPPED 分支也上报欠账, 破 dedup 短路死锁(dedup=2307/live=0)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_v54_c_probe_roundtrip,
+         "v54-C: 消哨兵高度每帧往返(setSize 358x2000 × 314 跨 251 tick = 掉帧)")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
