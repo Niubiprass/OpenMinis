@@ -678,19 +678,48 @@ public struct CompatGeometryObserver<Value: Equatable, Transform: @Sendable (Geo
     /// iOS 15–17 measurement path. See the type comment for why the reader is
     /// confined to a `Color.clear` background and why the action also fires
     /// from `onAppear`.
+    ///
+    /// PERFORMANCE. The iOS 18 `onGeometryChange` is an *observer*: it runs the
+    /// action only when the measured value actually changes. The obvious
+    /// `GeometryReader` + `onChange(of: transform(proxy))` port is not — the
+    /// `GeometryReader` is itself a content view, so its body (and therefore
+    /// `transform`) is re-evaluated on every layout pass. In a scrolling
+    /// message list that means the measurement runs per frame, and because the
+    /// call sites debounce via `Task` inside the action, a fresh `Task` is
+    /// allocated per frame too. That is a per-frame allocation + measurement
+    /// cost on the hottest path in the app, and it shows up as dropped frames
+    /// and stutter while scrolling.
+    ///
+    /// The fix is to move the *comparison* out of the per-frame path: the
+    /// reader publishes into `@State`, the state drives `.onChange`, and the
+    /// action fires only on a genuine transition. `transform` still runs once
+    /// per layout pass (unavoidable — that is how `GeometryReader` works), but
+    /// nothing downstream of it allocates or re-runs unless the value moved.
     @ViewBuilder
     private func legacyObserver(content: Content) -> some View {
         content
             .background {
                 GeometryReader { proxy in
                     Color.clear
-                        .onAppear { action(transform(proxy)) }
+                        .onAppear {
+                            let value = transform(proxy)
+                            lastValue = value
+                            action(value)
+                        }
                         .onChange(of: transform(proxy)) { newValue in
+                            // Skip the write when the measurement is unchanged:
+                            // this is what keeps a scrolling list from firing
+                            // the action on every frame.
+                            guard newValue != lastValue else { return }
+                            lastValue = newValue
                             action(newValue)
                         }
                 }
             }
     }
+
+    /// Mirrors the last measured value. `nil` until the first layout pass.
+    @State private var lastValue: Value?
 }
 
 @available(iOS 15.0, *)
