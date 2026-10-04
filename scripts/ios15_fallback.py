@@ -6295,6 +6295,219 @@ def verify_kvo_container_v570(t):
             "与 _realW2 不同源 ⇒ 又一次拉锯")
 
 
+# =====================================================================
+# v58 —— 纠偏之后必须**重排**, 否则新宽只是"写在容器上", 不会落到行碎片上。
+# =====================================================================
+V58_ANCHOR_OLD = """            let _v570NetW = max(200.0, cvW - 32)
+            let _v570Dirty = abs(self.textContainer.size.width - _v570NetW) > 1
+            if _v570Dirty {
+                self.textContainer.size.width = _v570NetW
+            }
+"""
+
+V58_ANCHOR_NEW = """            let _v570NetW = max(200.0, cvW - 32)
+            let _v570Dirty = abs(self.textContainer.size.width - _v570NetW) > 1
+            if _v570Dirty {
+                self.textContainer.size.width = _v570NetW
+                // [V58-REFLOW] ★v58 全部修复的支点★ 纠偏后**立刻重排**。
+                //
+                // 【v57.1 为什么 100% 无效 —— 这次不是"位置"问题, 是"只写不排"】
+                // v57.1 把纠偏整块搬到了 KVO 闭包最前, 判据八层全绿,
+                // 装机日志里 dirty=1 也确实每帧都在改写宽度 —— **但症状一字未改**。
+                // 逐毫秒对齐(minis-2026-10-05 3.log, 04:32:41, len=288):
+                //   41.372 V51-FRAMEPIN  fvW=358.0 tcW=358.0 svW=358.0  <- 干净
+                //   41.595 V570-KVOCW    dirty=1 netW=358.0               <- 纠偏执行
+                //   41.598 V49-WWRITER   kvoW=390.0 laidW=-1.0            <- 读回又是 390
+                //   41.599 V44-TEXTFRAME tvW=390.0 svW=358.0 tcW=390.0   <- 落屏那版就是 390
+                //   41.599 V41-KVOHEIGHT usedH=258.7 needH=387.0        <- 欠 128.3pt
+                // ⇒ **纠偏写进去了, 但同一 tick 再读回来还是 390**。
+                //
+                // 【机理: `textContainer.size.width = ` 只改容器, 不动行碎片】
+                // 这是 v48 自己的注释里已经写明的事实(原文: "textContainer.size.width
+                // = 只改容器不重排既有碎片"), v47/v48/v50/v51 全都靠紧邻的
+                // `layoutManager.invalidateLayout(...)` 才真正生效。
+                // ★而 v57.1 的纠偏块里**没有那一行 invalidateLayout** ——
+                //   它只写了宽度。于是: 容器宽写成 358 ✓, 行碎片仍停在 390 那版,
+                //   下一趟布局再读 textContainer 时又按旧碎片走 ⇒ 读回 390。
+                // 这是 v47/v48/v50 三代都写了 invalidate 而 v57.1 唯独漏掉的
+                // **唯一一个环节** —— 也是三十余版修复反复失败的共同原因:
+                // **每版都在"写宽度", 却没人保证"写完的宽度被排版采纳"。**
+                //
+                // 【为什么必须在这一处(而不是 v18 段)】
+                // v18 段的 invalidateLayout 被 `if _ios15WRegrabbed` 包着, 而
+                // _ios15WRegrabbed 依赖 `ios15LastLaidOutW`, 装机日志里 laidW
+                // **恒为 -1.0** ⇒ 那个 if 的判据在真机上从未成立 ⇒ v47/v48/v50
+                // 的重排**全是死代码**。日志实证: V50-LAIDW 只在 layoutSubviews
+                // 那趟打成 358, KVO 这趟读到的永远是上一帧的残留 -1。
+                // 这里不依赖任何记忆变量, 只看"本帧有没有动过手"(_v570Dirty),
+                // 写完就排, 幂等, 稳态零开销。
+                //
+                // 【为什么用 invalidateLayout(forCharacterRange:) 而不是 ensureLayout】
+                // 与 v28 段(第 8835 行)已验证合法的签名完全一致, 不引入
+                // 编译器未验证过的 API(纪律 4)。只重排全文行碎片, 不碰高度、
+                // 不碰 frame/bounds/origin ⇒ 不推翻 v41/v45/v51 任何成果。
+                //
+                // 【为什么不会每帧重排 → 不会掉帧加重】
+                // 整块被 `if _v570Dirty` 包着。稳态下 tcW 已是 358, abs<=1 ⇒
+                // 判据恒 false ⇒ 一次写入、一次重排都没有。只有 SwiftUI 真的
+                // 把宽度推回 390 时才动手, 而那正是必须重排的时刻。
+                if self.textStorage.length > 0 {
+                    layoutManager.invalidateLayout(
+                        forCharacterRange: NSMakeRange(0, self.textStorage.length),
+                        actualCharacterRange: nil)
+                }
+            }
+            // [V58-REFLOW-DIAG] 纯诊断, 一行几何都不碰。装机判据:
+            //   reflow=1 => 本帧纠偏且已重排 = 修复链闭合
+            //   reflow=0 => 稳态(容器已是 358), 无需重排
+            // 纪律42: 用判据结果表示"是否动过手", 不回读宽度冒充脏值。
+            do {
+                struct _V58Log { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                let _v58Now = CACurrentMediaTime()
+                if _v58Now - _V58Log.last > 0.5 {
+                    _V58Log.last = _v58Now
+                    _V58Log.n &+= 1
+                    NSLog("[V58-REFLOW] reflow=%d netW=%.1f tcW=%.1f usedH=%.1f needH=%.1f len=%d n=%u",
+                          _v570Dirty ? 1 : 0, _v570NetW,
+                          self.textContainer.size.width,
+                          self.textContainer.size.height,
+                          self.ios15LastNeededH, self.textStorage.length,
+                          _V58Log.n)
+                }
+            }
+"""
+
+
+def fix_kvo_reflow_v58(t):
+    """v58: 纠偏后强制重排 —— v57.1 的位置已对, 缺的是"写完要排"。
+
+    装机日志(minis-2026-10-05 3.log, 04:32:41, len=288)证明 v57.1 全绿而症状不变:
+        41.372 V51-FRAMEPIN  tcW=358.0        <- layoutSubviews 那趟干净
+        41.595 V570-KVOCW    dirty=1           <- 纠偏执行了
+        41.598 V49-WWRITER   kvoW=390.0       <- 同一 tick 读回还是 390
+        41.599 V44-TEXTFRAME tcW=390.0        <- 落屏就是 390 那版
+        41.599 V41-KVOHEIGHT usedH=258.7 needH=387.0  欠 128.3pt
+
+    ⇒ v57.1 不是"位置错"(位置确实改对了), 而是**只写宽度不重排**。
+    v48 的注释早已写明 `textContainer.size.width = ` 只改容器不重排既有碎片,
+    v47/v48/v50 各自紧邻一行 `layoutManager.invalidateLayout(...)` 才生效,
+    唯独 v57.1 的纠偏块漏了这一环 ⇒ 容器宽写成 358 但行碎片仍停在 390 那版,
+    下一趟布局读回又是 390。这是三十余版反复失败的共同根因。
+
+    ★另一条独立证据★: V50-LAIDW 只在 layoutSubviews 那趟打成 358,
+    而 V49-WWRITER 在 KVO 那趟读到的 laidW **恒为 -1.0** ⇒ v47/v48/v50 的
+    `if _ios15WRegrabbed` 判据依赖的 `ios15LastLaidOutW` 在真机上从未被赋值,
+    那三代重排**全是死代码**。v58 不依赖任何记忆变量, 只看 _v570Dirty。
+
+    只在 `if _v570Dirty` 内动手 ⇒ 稳态零写入零重排, 不加重掉帧。
+    """
+    if "[V58-REFLOW]" in t:
+        return t
+    if V58_ANCHOR_OLD not in t:
+        raise RuntimeError(
+            "fix_kvo_reflow_v58: v57.1 纠偏块锚点没找到 ——\n"
+            "必须是 v57.1 的原文形态:\n%s" % V58_ANCHOR_OLD)
+    return t.replace(V58_ANCHOR_OLD, V58_ANCHOR_NEW, 1)
+
+
+def verify_kvo_reflow_v58(t):
+    """v58 判据: 四层。
+
+    1. [V58-REFLOW] 标记在位
+    2. invalidateLayout 必须**在** `if _v570Dirty {` 块内 —— 写在外面的
+       恒重排(掉帧), 写在后面的永不执行(v57.1 的病)
+    3. invalidateLayout 的签名必须是 v28 段已验证的合法形式
+       (纪律4: 判据里只允许出现编译器已验证存在的 API)
+    4. 必须有纯诊断 [V58-REFLOW-DIAG], 且用 reflow 标记而非回读宽度
+    """
+    if "[V58-REFLOW]" not in t:
+        raise RuntimeError("verify_kvo_reflow_v58: 缺 [V58-REFLOW] 标记")
+    if "[V58-REFLOW-DIAG]" not in t:
+        raise RuntimeError("verify_kvo_reflow_v58: 缺 [V58-REFLOW-DIAG] 纯诊断")
+    if "[V58-REFLOW] reflow=%d netW=" not in t:
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: 诊断必须是 reflow 标记式 ——\n"
+            "回读宽度在纠正之后恒等于 netW, 会永远打「全绿」骗人")
+
+    # ---- 2. invalidateLayout 必须在 _v570Dirty 的 if 块内 ----
+    i_seg = t.find("let _v570NetW = ")
+    if i_seg == -1:
+        raise RuntimeError("verify_kvo_reflow_v58: 缺少 _v570NetW 声明")
+    i_inv = t.find("layoutManager.invalidateLayout(", i_seg)
+    if i_inv == -1:
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: 纠偏块里没有 invalidateLayout ——\n"
+            "这正是 v57.1 的病: 只写 textContainer.size.width 而不重排,\n"
+            "容器宽改了但行碎片仍停在 390 那版, 下一趟读回又是 390。")
+    # ★块范围必须按**缩进**收尾, 不能按文本找 `\n            }` ★
+    #   纪律53(本版实测踩到): 按文本找收尾会被**注释里出现的 `}`** 误导,
+    #   也会被 sabotage 里人为插入的多余 `{` 带偏 —— 判据因此假绿。
+    #   正确做法: 锚 `if _v570Dirty {` 所在行的**缩进**, 找第一条缩进**相同**
+    #   且以 `}` 开头的行, 那是块的真收尾。
+    i_blk = t.find("if _v570Dirty {", i_seg)
+    if i_blk == -1:
+        raise RuntimeError("verify_kvo_reflow_v58: 找不到 `if _v570Dirty {`")
+    if i_blk > i_inv:
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: 顺序错 —— invalidateLayout 写在 "
+            "`if _v570Dirty {` **之前**\n"
+            "  那样每帧都会重排(稳态也排) ⇒ 掉帧加重, 且与纠偏不同源。")
+    _ln_start = t.rfind("\n", 0, i_blk) + 1
+    _indent = t[_ln_start:i_blk]
+    if _indent.strip():
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: `if _v570Dirty {` 不在行首(缩进异常) —— "
+            "块边界判据依赖行首缩进, 锚点已漂移")
+    i_end = -1
+    for _ln in t[i_inv:].split("\n"):
+        if _ln.startswith(_indent + "}"):
+            i_end = i_inv + len(_ln)
+            break
+    if i_end == -1:
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: 找不到 `_v570Dirty` 块的收尾(按缩进 %r 找)"
+            % _indent)
+    if i_inv > i_end:
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: ★核心错★ invalidateLayout 在 "
+            "`if _v570Dirty {` 块**之外**\n"
+            "  块外重排 = 每帧全量重排(掉帧);\n"
+            "  块内才正确: 只在 SwiftUI 真的推脏了宽度时才排。")
+
+    # ---- 3. 签名必须与 v28 段已验证的形式一致 ----
+    _sig = ("layoutManager.invalidateLayout(\n"
+            "                        forCharacterRange: NSMakeRange(0, self.textStorage.length),\n"
+            "                        actualCharacterRange: nil)")
+    if _sig not in t:
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: invalidateLayout 签名与 v28 段已验证的合法形式\n"
+            "不一致(纪律4: 判据里只允许出现编译器已验证存在的 API)。\n"
+            "必须是:\n%s" % _sig)
+
+    # ---- 4. 不得引入额外几何写入(只许宽 + 重排) ----
+    _i_diag = t.find("[V58-REFLOW-DIAG]", i_seg)
+    if _i_diag == -1:
+        raise RuntimeError("verify_kvo_reflow_v58: 找不到诊断块")
+    _blk = t[i_seg:_i_diag]
+    import re as _re
+    _code = _re.sub(r"//[^\n]*", "",
+                    _re.sub(r"/\*.*?\*/", "", _blk, flags=_re.S))
+    for _ln in _code.split("\n"):
+        _m = _re.match(r"\s*([\w.]+)\s*=(?!=)", _ln)
+        if not _m:
+            continue
+        _lhs = _m.group(1)
+        if _lhs == "self.textContainer.size.width":
+            continue
+        if _lhs.endswith(".width") or _lhs.endswith(".height"):
+            continue
+        raise RuntimeError(
+            "verify_kvo_reflow_v58: v58 段内出现非白名单写入 `%s`(行: %s)\n"
+            "  v58 只许写 textContainer.size.width + 调 invalidateLayout,\n"
+            "  碰 frame/bounds/height 会推翻 v41/v45/v51 的成果。"
+            % (_lhs, _ln.strip()))
+
+
 def fix_kvo_debt_v569(t):
     """v56.9: 修 KVO 同值抑制把欠账帧永久跳过。
 
@@ -12400,6 +12613,41 @@ def main():
         "双向判据/纯诊断是 dirty 标记式/旧 BIDIR 已移除。"
         "【反向】reverse_v570.py 8 条 sabotage, 含「把纠偏挪到早退之后」"
         "「polluted 不并入 dirty」「退回单向 >」「摘掉诊断标记」「复活旧 BIDIR」。")
+
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_reflow_v58,
+        "v58: 纠偏后强制重排 —— v57.1 的**位置**已对, 缺的是「写完要排」。"
+        "★★★ 本项目第六次「已识别但没修掉」, 但这次是**不同的环节** ★★★"
+        "【装机日志 minis-2026-10-05 3.log, 04:32:41, len=288 逐毫秒对齐】"
+        "  41.372 V51-FRAMEPIN  fvW=358.0 tcW=358.0 svW=358.0  <- layoutSubviews 那趟干净"
+        "  41.595 V570-KVOCW    dirty=1 netW=358.0               <- v57.1 纠偏**确实执行了**"
+        "  41.598 V49-WWRITER   kvoW=390.0 laidW=-1.0            <- 同一 tick 读回**还是 390**"
+        "  41.599 V44-TEXTFRAME tvW=390.0 svW=358.0 tcW=390.0   <- 落屏那版就是 390"
+        "  41.599 V41-KVOHEIGHT usedH=258.7 needH=387.0        <- 欠 128.3pt(≈6 行)"
+        "⇒ v57.1 八层判据全绿、dirty 每帧都在改宽度, 但**症状一字未改**。"
+        "【★ 真正的根因: 只写宽度, 不重排行碎片 ★】"
+        "`textContainer.size.width = ` **只改容器, 不动既有行碎片** —— 这是 v48 "
+        "自己注释里已写明的事实(原文: 'textContainer.size.width = 只改容器不重排"
+        "既有碎片')。v47/v48/v50 各自紧邻一行 layoutManager.invalidateLayout(...) "
+        "才真正生效; ★唯独 v57.1 的纠偏块里**没有那一行** ★ ⇒ 容器宽写成 358 ✓ "
+        "但行碎片仍停在 390 那版, 下一趟布局读回又是 390。"
+        "★这是三十余版反复失败的共同根因: 每版都在「写宽度」, 却没人保证"
+        "「写完的宽度被排版采纳」。★"
+        "【★ 独立第二证据: v47/v48/v50 的重排全是死代码 ★】"
+        "那三代的 invalidateLayout 被 `if _ios15WRegrabbed` 包着, 而它依赖 "
+        "`ios15LastLaidOutW` —— 装机日志 V49-WWRITER 里 laidW **恒为 -1.0** "
+        "(V50-LAIDW 只在 layoutSubviews 那趟打成 358, KVO 这趟永远读到残留 -1) "
+        "⇒ 那个判据在真机上从未成立 ⇒ 三代重排都没执行过。v58 不依赖任何记忆变量。"
+        "【修法】在 v57.1 的 `if _v570Dirty {` 块内、宽度写入之后**紧跟一行** "
+        "layoutManager.invalidateLayout(forCharacterRange:actualCharacterRange:) "
+        "—— 与 v28 段(第 8835 行)已验证合法的签名**逐字一致**, 不引入编译器未验证过 "
+        "的 API(纪律4)。整块被 if 包着 ⇒ 稳态 tcW 已是 358 时 abs<=1 判据恒 false "
+        "⇒ **零写入零重排**, 不会加重掉帧; 只在 SwiftUI 真的把宽度推回 390 时动手。"
+        "**只重排行碎片, 不碰 frame/bounds/height/origin** ⇒ 不推翻 "
+        "v41/v45 补高与 v51 钉宽。"
+        "【判据四层】标记在位/invalidateLayout 必须在 if _v570Dirty 块内"
+        "(写在外=每帧重排掉帧, 写在块外=永不执行即 v57.1 的病)/签名须与 v28 段一致/"
+        "纯诊断存在且用 reflow 标记(不靠回读宽度, 那永远全绿骗人)。"
+        "另加白名单: v58 段内只许 textContainer.size.width 写入。")
 
     # ★顺序要点: v55-B 仍先注册(它是 v56-B 的锚点载体), v56-B 在其产物上改写,
     #   所以 v56 不能删掉 v55-B 的注册, 只在 v56 里把它放行。
