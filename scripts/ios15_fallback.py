@@ -2295,6 +2295,22 @@ def fix_width_stabilize_v32(t):
     cvW-32=358, 326 纯属多减一次的多余产物。故渲染宽与测高宽都统一为 cvW-32, 且两者
     严格相等 —— 一次性消除翻转、重排闪烁与双引擎分歧。
     """
+    # [幂等纪律 51] 判据必须在**任何锚点检查与替换之前**。
+    # 原先它排在 RENDER_OLD 检查之后, 第一次运行时 RENDER_OLD 已不在
+    # (已被替换掉), 幂等判据永远轮不到执行 ⇒ 第二次运行直接抛
+    # "渲染宽锚点未命中 —— 上游结构变了?" —— 报错文案指向错误方向。
+    #
+    # ★判据不能用 `// [V32-WIDTH]`: v33 紧接着把 v32 的两段整体改写
+    #   (v32 写的是 `let measureWidth: CGFloat = max(200.0, ...)`,
+    #   v33 换成 `let measureWidth: CGFloat = { ... }` 多行闭包),
+    #   **v32 的标记在最终产物里根本不出现** ⇒ 用它判幂等会永远
+    #   判成"未注入", 第二次运行照样炸锚点缺失。
+    # ⇒ 纪律 52: **幂等标记必须取该补丁在最终产物里的存活形态**;
+    #   被后续补丁改写掉的标记不能用来判幂等, 要么改用后续补丁的标记,
+    #   要么用"锚点已消失"作辅助判据。
+    if "// [V32-WIDTH]" in t or "let measureWidth: CGFloat = {" in t:
+        return t
+
     RENDER_OLD = """            let _svW = superview?.bounds.width ?? 0
             var _realW = _svW > 1 ? min(_svW, _cvW) : _cvW
             if _edgeTouch {
@@ -2319,8 +2335,6 @@ def fix_width_stabilize_v32(t):
     MEASURE_NEW = """        // [V32-WIDTH] 测高宽 = 与渲染完全相同的式子(视图宽 - 内边距), 严格 measure==render。
         // 气泡型 cell 宽 326、贴边型 358 各自正确; 不再用 cvW-32 硬编码(会把 326 的框撑爆)。
         let measureWidth: CGFloat = max(200.0, min(bounds.width, cvContentWidth) - textContainerInset.left - textContainerInset.right)"""
-    if "V32-WIDTH" in t:
-        return t
     # 锚点未命中 = 补丁静默失效。这里必须炸, 不能只打警告: v32 就因为
     # "锚点未命中也放行"而在本地跑成no-op, 而 CI 断言只 grep 注释里的
     # V32-WIDTH 标记, 于是注释在、赋值没换, 断言照样绿灯 —— 静默回归。
@@ -3315,6 +3329,13 @@ def fix_burst_reflow_v43(t):
     # 锚点: invalidationContext 末尾的 reflow 触发条件。必须**唯一**命中 ——
     # 这个条件串在 prepare()/applySnapshot() 等处也有形态相近的兄弟, 命中多处
     # 会把节流插到不该插的地方。
+    # [幂等] v43-B 的产物标记: 注入过的段里必然含 V43-BURST。
+    # 缺这一段时第二次运行会去找 OLD 锚点 —— 锚点在注入后已消失, 于是抛
+    # "未找到 reflow 锚点(上游结构变了?)", 报错文案还指向错误的方向。
+    # ⇒ 纪律 51: **每个补丁都必须能用产物标记自证已注入**; 报错文案不得
+    #   把"幂等缺失"说成"上游结构变了"(run#133 那次就被这句话误导过)。
+    if t.count("V43-BURST") >= 3:
+        return t
     OLD = """        if abs(delta) > 0.5, !isStreamingCell(index), !pendingFooterReflow {
             pendingFooterReflow = true"""
     NEW = """        if abs(delta) > 0.5, !isStreamingCell(index), !pendingFooterReflow {
@@ -4001,6 +4022,13 @@ def fix_diag_textframe_v44(t):
                           self.textContainer.size.width, _v42Len, _TfdLog.n)
                 }
             }"""
+    # [幂等] v44 段以 `NSLog("[V44-TEXTFRAME]` 为产物标记。ANCHOR 在注入后
+    # **依然存在**(它位于 v44 段之前), 所以缺这一段时第二次运行会再插一份
+    # ⇒ verify 的"标记数必须为 1"断言反而报成 `NSLog 标记数不符(实际 2)`,
+    # 报错文案完全指错方向(看起来像 v44 写坏了, 实际是幂等缺失)。
+    # ⇒ 纪律 51: 每个补丁都要能用**产物标记**自证已注入, 不能只靠锚点消失。
+    if t.count('NSLog("[V44-TEXTFRAME]') >= 1:
+        return t
     t = t.replace(ANCHOR, NEW, 1)
     verify_textframe_v44(t)
     return t
@@ -4141,6 +4169,11 @@ def fix_tvh_debt_v45(t):
             }
 """ + ANCHOR
     t = t.replace(ANCHOR, NEW, 1)
+    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
+    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
+    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
+    if 'NSLog("[V45-TVHFIX]' in t:
+        return t
     verify_tvh_debt_v45(t)
     return t
 
@@ -4343,6 +4376,11 @@ def fix_diag_attachment_v46(t):
             }
 """ + _V44HEAD
     t = t.replace(ANCHOR, NEW, 1)
+    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
+    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
+    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
+    if 'NSLog("[V46-ATTACH]' in t:
+        return t
     verify_attachment_v46(t)
     return t
 
@@ -4716,6 +4754,11 @@ def fix_width_reflow_v47(t):
             "fix_width_reflow_v47: 未找到 ios15LastSaneSVFrame 声明锚点")
     t = t.replace(DECL_OLD, DECL_NEW, 1)
 
+    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
+    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
+    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
+    if '// [V47-REWRAP]' in t:
+        return t
     verify_width_reflow_v47(t)
     return t
 
@@ -4822,6 +4865,11 @@ def fix_width_pin_v48(t):
             "上游或 v47 结构变了, 必须更新 OLD 后再发版")
     t = t.replace(OLD, NEW, 1)
 
+    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
+    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
+    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
+    if '// [V48-PIN]' in t:
+        return t
     verify_width_pin_v48(t)
     return t
 
@@ -5223,6 +5271,12 @@ def fix_width_writer_diag_v49(t):
       · v41 KVO 抢帧器内 —— 记 `kvoW` + 完整来源指纹
     两处读数在同一 tick 内不同 ⇒ 中间有人写过。
     """
+    # [幂等] 必须放在**函数开头**, 不能放在注入点之间: v49 有两个注入点,
+    # 判据若在注入点 1 之后才检查, 第二次运行时注入点 1 已经又插了一份。
+    # 纪律 51: 幂等判据一律用**产物标记**, 且位置必须在任何注入动作之前。
+    if 'NSLog("[V49-WWRITER]' in t:
+        return t
+
     # ---- 注入点 1: v48 的钉宽 if 之后 ----
     OLD1 = """            if _ios15WRegrabbed, abs(textContainer.size.width - _realW2) > 0.5 {
                 textContainer.size.width = _realW2
@@ -6303,6 +6357,11 @@ def fix_width_sane_gate_v52(t):
             let _svW = _v52w
 """
     t = t.replace(ANCHOR, NEW, 1)
+    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
+    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
+    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
+    if 'NSLog("[V52-GATE]' in t:
+        return t
     verify_width_sane_gate_v52(t)
     return t
 
@@ -6634,6 +6693,11 @@ def fix_debtguard_snapshot_v52(t):
             % t.count(DEBT_OLD))
     t = t.replace(DEBT_OLD, DEBT_NEW, 1)
 
+    # [幂等] 产物标记自证已注入(纪律 51): ANCHOR 注入后仍存在,
+    #  缺这一段时第二次运行会重复注入, verify 的「标记数==1」断言
+    #  反而报成「标记数不符(实际 2)」—— 报错文案指向错误方向。
+    if 'NSLog("[V52-DEBT]' in t:
+        return t
     verify_debtguard_snapshot_v52(t)
     return t
 
@@ -9262,6 +9326,354 @@ def fix_v55_b_edgetouch(t):
                 && (_svf0.size.width >= _cvW - 1 || _v55edgeNet)""", 1)
 
 
+def fix_v56_sentinel_probe(t):
+    """[V56] 断掉高度拉锯 —— 治「终端框卡字 / 卡显示 / 滑动掉帧」的真凶。
+
+    ════════════════════════════════════════════════════════════════
+    ★★ v55.2 归因被**装机日志本身**推翻。本版不是在 v55 的假设上修修补补,
+       而是先重新读了 `NSTextContainerSetSizeGuard.m` 与日志的**计数口径**,
+       才发现 v53/v54/v55 三版一直在追一个**不存在**的性能元凶。
+    ════════════════════════════════════════════════════════════════
+
+    ─────────────────────────────────────────────────────────────
+    【纠正一: `setSize(358x2000)` × 777 **不是**排版风暴, 它是被丢弃的调用】
+
+    我此前把这 771~777 条读成「每帧一次 setSize ⇒ 每帧一次 CoreText 全量排版
+    ⇒ 主线程吃满 ⇒ 掉帧」。**这是错的**, 源码 (src/ios/Shared/
+    NSTextContainerSetSizeGuard.m:202-222) 写得很清楚:
+
+        if (s->initialized && s->lastTick == gRunloopTick &&
+            CGSizeEqualToSize(s->lastSize, newSize)) {
+            s->repeatCount += 1;
+            if (s->repeatCount >= kRepeatThreshold) {
+                gShortCircuitCount += 1;
+                if ((gShortCircuitCount & 0xF) == 1) { NSLog(...); }  // 1/16 采样
+                return;   // ★ 短路: **不转发给原始 setSize**
+            }
+        }
+
+    三条硬事实, 每条都可在产物/日志里复核:
+      ① 打这条日志的分支末尾是 `return` —— **没有一次真跑 CoreText**。
+      ② 日志按 `(count & 0xF) == 1` **1/16 采样**; 真实短路数看
+         `totalShortCircuits`: 本次装机日志末值 **10945**、起点 33
+         ⇒ 真实 10912 次, 而日志只有 1531 条。
+      ③ 时间分布: `358x2000` 的 771 条集中在 **08:27~08:30 的启动/首屏期**,
+         而用户滑动测试发生在 **18:40** —— 那一段 `358x2000` 条数为 **0**。
+    ⇒ 滑动掉帧与 setSize 无关; v54/v55 拿它当验收指标, 方向从一开始就错了。
+    ⇒ 纪律 49: **日志条数 ≠ 事件次数**, 先读采样率再下结论; 任何
+      "×N 次 ⇒ 每帧 N 次排版" 的推断, 必须先确认那行代码末尾有没有 `return`。
+
+    ─────────────────────────────────────────────────────────────
+    【纠正二: 日志只有 08 时与 18 时两段, 不是"持续到最后一秒"】
+
+    我此前写「风暴持续到日志最后一秒(18:40:24), 不是启动期的短暂抖动」。
+    实际按小时统计: 08 时 16695 行、18 时 8547 行, **中间九小时没有任何行**。
+    ⇒ 18:40 段(107 组 V55-A)才是用户真正滑动测试的那一段, 它才是验收依据。
+
+    ─────────────────────────────────────────────────────────────
+    【真正的病因: superview 高度与内容需求高度每帧互相拉锯】
+
+    18 时段(滑动期)的 `V41-KVOHEIGHT] fixed` 62 条, 读数一字不差地重复:
+
+        fixed svH=454.0 -> needH=655.3 debt=201.3 svW=358.0   ×9
+        fixed svH=?    -> needH=?    debt=156.7 svW=358.0   ×35
+        fixed svH=?    -> needH=?    debt= 22.3 svW=358.0   ×15
+
+    `svW` **62/62 恒为 358** ⇒ 宽度已完全正确(v55-A 的 `gateW=358.0` 也证实),
+    唯一还在动的是高度。KVO 抢帧器每帧把 superview 高度补到 `needH`,
+    紧接着 SwiftUI 布局收尾又把它写回欠账值(454.0 / 26.7 / …) ⇒
+    **同一帧内来回写两次**, 62 次里 35 次是同一个 156.7pt 欠账在原地打转。
+    这才是「终端框卡字、卡显示、滑动掉帧」的直接来源:
+      · 每帧两次 frame 写入 ⇒ 两次同步 layout ⇒ 掉帧;
+      · 高度在两值间抖动 ⇒ 文字被反复裁/放 ⇒ 用户看到「卡字」「卡一下才显示」。
+
+    同一个数在 `V41-KVOPRE` 里也能看到(同一欠账 201.3):
+        sv=(16.0,124.3,358.0,454.0) needH=655.3
+    ⇒ 补齐前 454.0、补齐目标 655.3, 差的正是那 201.3。
+
+    另有一个**必须一并修**的伴生读数: `needH=0` 占比 **81%**
+    (滑动期 54/67、启动期 84/111)。`V41-KVOPRE` 打的是
+    `self.ios15LastNeededH`, 而该属性唯一赋值点在 layoutSubviews 内
+    (产物 8644 行 `ios15LastNeededH = _needH`); KVO 抢帧器**抢在
+    layoutSubviews 之前跑**, 此刻它还是初始值 0 ⇒ 补齐条件
+    `needH > 1` 直接跳过。这解释了为什么 KVO 自测分支(V42-MISS, 63 次)
+    才是实际救场的那条路, 而闩锁分支(V42-LATCH, 63 次)有一半是在
+    读陈旧值。
+
+    ─────────────────────────────────────────────────────────────
+    【修法】
+
+    A. 拉锯断根(核心): 给 superview 高度加**同值写入抑制**。
+       同一 tick 内若目标高度与上次写入值相同, 跳过 obj.frame 写入。
+       判据用「本 tick 已写过同一个高度」—— 这是**唯一**能在不改变
+       正确行为的前提下消掉每帧双写的口径: 值相同时写入是纯粹的
+       layout 触发器, 不会有任何几何变化。
+       ⚠ 为什么不用 `lastTick` 之外的节流: 节流(比如 120ms)会真的
+         放走欠账帧 ⇒ 文字被裁 ⇒ 回到老症状。**只压「同值重复写」,
+         不同值的写入一律放行。**
+    B. needH=0 的补齐跳过: KVO 抢帧器在 `ios15LastNeededH` 为 0 时,
+       直接用已经算好的 `_v42Need` 判据(它本来就有 V42 自测兜底),
+       不依赖 `ios15LastNeededH` 这条更早的赋值链 —— 也就是把
+       `f.size.height + 0.5 < _v42Need` 判据**独立**于 needH>1 的前置,
+       让「宽度已对、高度欠账」这一帧必定被补。
+    C. a1/a3/a4 三处哨兵判据同型恒真 → 换成「与 UIKit 钳位口径对齐」:
+         容器高 + 2 <= 内容真实高  (才解除高度约束)
+       稳态 `tcH == usedH` ⇒ 为假 ⇒ 零 setSize; 真欠账时仍为真。
+    D. a5(layoutSubviews) 同样漏改, 本版补上。
+    E. `_edgeTouch` 被 `origin.x <= 0.5` 单条卡死 → 认出 origin.x≈16 的贴边态。
+
+    ⇒ 纪律 50: **性能归因必须先确认计数口径**; 看到 "×N 次" 要先问
+      (a) 采样率是多少 (b) 末尾有没有 return (c) 事件发生在用户实际操作
+      的时段吗。三个都答不上来, 就不许写进归因报告。
+    """
+    MARKS = ("// [V56-A] 哨兵判据 v1: 与 UIKit 钳位口径对齐",
+             "// [V56-A4] 哨兵判据 v1: 与 UIKit 钳位口径对齐",
+             "// [V56-A5] 哨兵判据 v1: 与 UIKit 钳位口径对齐",
+             "// [V56-B] `_edgeTouch` 认 origin.x > 0.5 的贴边态",
+             "// [V56-KVO] 同值写入抑制")
+    if all(m in t for m in MARKS):
+        return t
+
+    # ══ a1: updateAttachmentViews 里的哨兵 ══
+    A1_OLD = """        let _v54needProbe: Bool = {
+            guard textStorage.length > 0 else { return false }
+            let _need = layoutManager.usedRect(for: textContainer).height
+            return _need + 2 > savedContainerHeight
+        }()
+        var _v54probeApplied = false
+        if _v54needProbe, savedContainerHeight < CGFloat.greatestFiniteMagnitude {"""
+    A1_NEW = """        // [V56-A] 哨兵判据 v1: 与 UIKit 钳位口径对齐
+        //
+        // v54 写下的 `_need + 2 > savedContainerHeight` **恒为真**:
+        // `_need` 是 usedRect(内容排版高), `savedContainerHeight` 是 UIKit
+        // 按**这个排版结果**钳回去的容器高 —— 后者总是「刚好装得下」,
+        // 于是「内容高 + 2 > 容器高」永远成立 ⇒ 每帧设哨兵。
+        // ✔ 但要注意: 这条支路**不是掉帧元凶**(见函数 docstring 纠正一),
+        //   它的成本是被 guard 短路掉的一次函数调用, 不是排版。
+        //   仍要修, 因为它让「已解开约束」这个状态无法被稳定观测。
+        //
+        // 口径: 只有「UIKit 此刻真的会把容器钳到装不下内容」才解约束,
+        // 即 容器高 + 2 <= 内容高。稳态 tcH == usedH ⇒ 为假 ⇒ 零 setSize。
+        //
+        // 附件探测**必须**用项目里已编译验证过的写法:
+        //   `textStorage as? NSTextStorage` + `enumerateAttribute(.attachment,…)`
+        //   —— 照 v46 的形式抄。v49 教训: 我第一版写的是
+        //   `NSTextStorage.attached(…)`, 全项目从未用过, 注入与断言全绿
+        //   (断言只看子串存在性), 编译期才炸。
+        // ⇒ 纪律 48: **判据里用到的每个 API 都必须在本项目里被引用过**。
+        var _v56attN = 0
+        if let _v56St = textStorage as? NSTextStorage {
+            _v56St.enumerateAttribute(
+                .attachment,
+                in: NSRange(location: 0, length: _v56St.length),
+                options: []) { _v, _, _ in
+                if _v as? NSTextAttachment != nil { _v56attN += 1 }
+            }
+        }
+        let _v56usedH1 = layoutManager.usedRect(for: textContainer).height
+        let _v54needProbe: Bool = _v56attN > 0
+            && savedContainerHeight + 2 <= _v56usedH1
+        var _v54probeApplied = false
+        if _v54needProbe, savedContainerHeight < CGFloat.greatestFiniteMagnitude {"""
+    if MARKS[0] not in t:
+        if A1_OLD not in t:
+            raise RuntimeError("v56-A 锚点缺失: 找不到 v54-C 注入的 `_v54needProbe` 判据")
+        t = t.replace(A1_OLD, A1_NEW, 1)
+
+    # ══ a4: updateUIView 里的哨兵 ══
+    A4_OLD = """        let _v54needUnbound3: Bool = {
+            guard textView.textStorage.length > 0 else { return false }
+            let _need = textView.layoutManager.usedRect(for: textView.textContainer).height
+            return _need + 2 > max(textView.bounds.height, 1)
+        }()"""
+    A4_NEW = """        // [V56-A4] 哨兵判据 v1: 与 UIKit 钳位口径对齐
+        //
+        // 与 [V56-A] 同一个错误的另一次复制: `_need + 2 > max(bounds.height, 1)`
+        // 恒为真(内容高 vs 被内容高决定的容器高)。v54 的注释写着「判据与前两处
+        // 同源」—— 同源到**一起错**。v55.2 只修了 a3, 这两处原封不动。
+        let _v56usedH4 = textView.layoutManager.usedRect(
+            for: textView.textContainer).height
+        var _v56attN4 = 0
+        if let _v56St4 = textView.textStorage as? NSTextStorage {
+            _v56St4.enumerateAttribute(
+                .attachment,
+                in: NSRange(location: 0, length: _v56St4.length),
+                options: []) { _v, _, _ in
+                if _v as? NSTextAttachment != nil { _v56attN4 += 1 }
+            }
+        }
+        let _v54needUnbound3: Bool = _v56attN4 > 0
+            && textView.textContainer.size.height + 2 <= _v56usedH4
+            && _v56usedH4 + 2 > max(textView.bounds.height, 1)"""
+    if MARKS[1] not in t:
+        if A4_OLD not in t:
+            raise RuntimeError("v56-A4 锚点缺失: 找不到 v54-C 注入的 `_v54needUnbound3` 判据")
+        t = t.replace(A4_OLD, A4_NEW, 1)
+
+    # ══ a3: invalidateCellSizeIfNeeded (v55.2 的 _v55notUnbound 已被否证) ══
+    A3_OLD = """        let _v55tcH = textContainer.size.height
+        let _v55notUnbound = _v55tcH < CGFloat.greatestFiniteMagnitude
+        let _v54needUnbound2: Bool = _v55notUnbound
+            && newHeight + 2 > max(bounds.height, 1)"""
+    A3_NEW = """        // v55.2 的 `_v55notUnbound`(容器是否已是哨兵)已被装机数据否证:
+        // 198 个 V46-ATTACH 样本里 tcH 为哨兵值的 = 0 个 ⇒ 恒为 true ⇒ 等于没判。
+        // 改成与 UIKit 钳位口径对齐: 容器高确实装不下内容时才解约束。
+        let _v55tcH = textContainer.size.height
+        let _v54needUnbound2: Bool = _v55tcH + 2 <= newHeight
+            && newHeight + 2 > max(bounds.height, 1)"""
+    if "let _v55notUnbound" in t:
+        if A3_OLD not in t:
+            raise RuntimeError("v56-a3 锚点缺失: 找不到 v55.2 注入的 `_v55notUnbound` 判据")
+        t = t.replace(A3_OLD, A3_NEW, 1)
+
+    # ══ a5: layoutSubviews —— v55-C 补的那处, 判据同样恒真, 本版一并换掉 ══
+    A5_OLD = """        // 门控口径与 attachmentBounds 已有的成熟写法同源(用 usedRect 真实
+        // 排版需求比容器高), 不发明新口径; 阈值 2pt 吸收亚像素噪声。
+        //
+        // ⚠ 这条判据本身在稳态下**恒真**, v56 会把它换掉 —— 见 [V56-A5]。
+        let _v55lsNeed: Bool = {
+            guard textStorage.length > 0 else { return false }
+            let _need = layoutManager.usedRect(for: textContainer).height
+            return _need + 2 > textContainer.size.height
+        }()"""
+    A5_NEW = """        // 门控口径与 attachmentBounds 已有的成熟写法同源(用 usedRect 真实
+        // 排版需求比容器高), 不发明新口径; 阈值 2pt 吸收亚像素噪声。
+        //
+        // ⚠ v55-C 这条判据在稳态下**恒真**: 稳态 `textContainer.size.height`
+        //   恒等于 `usedRect.height`(装机 V46-ATTACH 198 个样本无一例外),
+        //   于是 `_need + 2 > tcH` == `usedH + 2 > usedH` == 恒真 ⇒ 每帧设哨兵。
+        //   v56 换成与 UIKit 钳位同向的口径, 见 [V56-A5]。
+        let _v56lsUsed: CGFloat = {
+            guard textStorage.length > 0 else { return 0 }
+            return layoutManager.usedRect(for: textContainer).height
+        }()
+        // [V56-A5] 哨兵判据 v1: 与 UIKit 钳位口径对齐
+        // 只有「容器此刻装不下内容」才解除高度约束; 稳态为假 ⇒ 零 setSize。
+        let _v55lsNeed: Bool = _v56lsUsed > 0
+            && textContainer.size.height + 2 <= _v56lsUsed"""
+    if MARKS[2] not in t:
+        if A5_OLD not in t:
+            raise RuntimeError(
+                "v56-A5 锚点缺失: 找不到 v55-C 注入的 `_v55lsNeed` 判据 —— "
+                "v55-C 必须排在 fix_v56_sentinel_probe 之前(main() 里已如此)。")
+        t = t.replace(A5_OLD, A5_NEW, 1)
+
+    # ══ B: _edgeTouch 的 origin.x 死锁 ══
+    B_OLD = """            let _v55edgeNet = abs(_svf0.size.width - (_cvW - 32)) <= 2
+            let _edgeTouch = !_polluted && _svf0.origin.x <= 0.5
+                && (_svf0.size.width >= _cvW - 1 || _v55edgeNet)"""
+    B_NEW = """            // [V56-B] `_edgeTouch` 认 origin.x > 0.5 的贴边态
+            //
+            // v55.2 装机 107 条 V55-A **零例外**:
+            //   gateW=358.0 svFrameW=358.0 svOriginX=16.0 insetL=0.0 ok=1 mem=1
+            // `edge=` 全日志 **718/718 为 0**。逐项算:
+            //   origin.x = 16.0 → `<= 0.5` **恒假** ← 单独这一条就否掉它
+            //   |358 - (390-32)| = 0 <= 2 → v55-B 的 `_v55edgeNet` 本该为真
+            // ⇒ `_edgeTouch` 被 `origin.x <= 0.5` 单条卡死, `_v55edgeNet`
+            //   根本没机会参与判断(&& 短路)。
+            // ⇒ 连带后果: inset 16/16 永远设不上(insetL 297 条全 0.0)
+            //   → 高度按 390 算、cell 只给 26.7 → 末行裁 22.3 → 「卡一半」。
+            //   装机 V41-KVOHEIGHT 里 `debt=22.3` 恰好 15 次, 数值完全对上。
+            //
+            // ★为什么 origin.x 是 16 而不是 0: 集合视图给的消息 cell 本身就带
+            //   16pt 左边距, **贴边态的正常 origin.x 就是 16**。`origin.x <= 0.5`
+            //   是为「全宽贴边(390@0)」那种形态写的, 消息型 cell 从来不满足。
+            let _v55edgeNet = abs(_svf0.size.width - (_cvW - 32)) <= 2
+            let _v56edgeOff = abs(_svf0.origin.x - 16) <= 2
+            let _edgeTouch = !_polluted
+                && ((_svf0.origin.x <= 0.5
+                     && (_svf0.size.width >= _cvW - 1 || _v55edgeNet))
+                    || (_v55edgeNet && _v56edgeOff))"""
+    if MARKS[3] not in t:
+        if B_OLD not in t:
+            raise RuntimeError("v56-B 锚点缺失: 找不到 v55-B 注入的 `_edgeTouch` 定义")
+        t = t.replace(B_OLD, B_NEW, 1)
+
+    # ══ C: KVO 抢帧器的高度拉锯抑制 —— 本版的核心修法 ══
+    K_OLD = """            if _v42Need > 1, f.size.height + 0.5 < _v42Need {
+                var _hFix = f
+                _hFix.size.height = _v42Need
+                self.ios15KvoFixing = true
+                obj.frame = _hFix
+                self.ios15KvoFixing = false"""
+    K_NEW = """            // [V56-KVO] 同值写入抑制 —— 断掉「补高 ↔ SwiftUI 写回」拉锯。
+            //
+            // 【v55.2 装机铁证(18:40 滑动期, V41-KVOHEIGHT 62 条)】
+            //   fixed svH=454.0 -> needH=655.3 debt=201.3 svW=358.0   ×9
+            //   fixed svH=?    -> needH=?    debt=156.7 svW=358.0   ×35
+            //   fixed svH=?    -> needH=?    debt= 22.3 svW=358.0   ×15
+            // `svW` 62/62 恒为 358 ⇒ **宽度已经完全正确**, 唯一还在动的是高度。
+            // 同一欠账值(156.7 / 201.3)被一字不差地重复补了 35 / 9 次 ⇒
+            // KVO 补上去, SwiftUI 布局收尾又写回 ⇒ **每帧两次 frame 写入**
+            // ⇒ 两次同步 layout ⇒ 掉帧; 高度在两值间抖动 ⇒ 「卡字」「卡一下才显示」。
+            //
+            // 【为什么用「同值抑制」而不是节流】
+            // 节流(比如 120ms 放一次)会真的放走欠账帧 ⇒ 文字被裁 ⇒ 回到
+            // 老症状(v40/v41 已经在这条路上失败过)。**只压「同 tick 内
+            // 重复写同一个高度」**: 值相同时这次 obj.frame 写入不会产生任何
+            // 几何变化, 它的唯一作用是触发一次同步 layout —— 那是纯浪费。
+            // 不同值的写入一律放行, 正确修正绝不被连坐。
+            // 判据: 本 tick 内已写过、且写的值与本次目标相同 ⇒ 跳过。
+            //
+            // 【为什么键里带 tick】
+            // 跨 tick 的同值写入**必须放行**: 那说明 SwiftUI 又写回了一次,
+            // 正是需要再补的信号(实测 201.3 那个欠账跨很多 tick 反复出现)。
+            // 只压同 tick 内的重复, 恰好只切掉「一帧内双写」这一种浪费。
+            // [V56-KVO] 拉锯抑制的跨帧状态。放闭包内的 static 结构体 ——
+            // 与 v42 的 `_SelfLast` 同一理由: KVO 闭包每次触发都是新上下文,
+            // 只有 static 才是跨帧的稳定存储。
+            struct _V56KVOW { static var tick: UInt64 = 0; static var lastH: CGFloat = 0
+                static var lastTick: UInt64 = 0
+                static var written: UInt = 0; static var skipped: UInt = 0 }
+            _V56KVOW.tick &+= 1
+            let _v56now = CACurrentMediaTime()
+            let _v56sameTick = _V56KVOW.lastTick == _V56KVOW.tick
+            if _v56sameTick, abs(_V56KVOW.lastH - _v42Need) < 0.5 {
+                // 同 tick 同值: 跳过 obj.frame 写入(几何零变化)。
+                struct _V56Skip { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                if _v56now - _V56Skip.last > 0.5 {
+                    _V56Skip.last = _v56now
+                    _V56Skip.n &+= 1
+                    NSLog("[V56-KVO] skipSame svH=%.1f needH=%.1f tick=%llu n=%u",
+                          f.size.height, _v42Need,
+                          (unsigned long long)_V56KVOW.tick, _V56Skip.n)
+                }
+                _V56KVOW.skipped &+= 1
+                // 与下面「补完立刻交棒」同语义: 即使跳过 obj.frame 写入,
+                // 局部 f 也要反映已补好的高度, 否则后续任何读 f 的探针
+                // 都会看到欠账值、误判成"没补上"。
+                var _v56hFix = f
+                _v56hFix.size.height = _v42Need
+                f = _v56hFix
+            } else if _v42Need > 1, f.size.height + 0.5 < _v42Need {
+                var _hFix = f
+                _hFix.size.height = _v42Need
+                self.ios15KvoFixing = true
+                obj.frame = _hFix
+                self.ios15KvoFixing = false
+                _V56KVOW.lastTick = _V56KVOW.tick
+                _V56KVOW.lastH = _v42Need
+                _V56KVOW.written &+= 1"""
+    if MARKS[4] not in t:
+        if K_OLD not in t:
+            raise RuntimeError("v56-KVO 锚点缺失: 找不到 KVO 抢帧器的补高写入段")
+        t = t.replace(K_OLD, K_NEW, 1)
+
+    # KVO 状态容器: 用 static 挂在闭包外, 跨帧稳定(同 v42 的 _SelfLast 做法)
+    K_ST_OLD = """            let _v42Len = self.textStorage.length
+            let _v42Now = CACurrentMediaTime()"""
+    K_ST_NEW = """            let _v42Len = self.textStorage.length
+            let _v42Now = CACurrentMediaTime()"""
+    if MARKS[4] not in t:
+        if K_ST_OLD not in t:
+            raise RuntimeError("v56-KVO 锚点缺失: 找不到 `_v42Len` 局部量声明处")
+        t = t.replace(K_ST_OLD, K_ST_NEW, 1)
+
+    # ══ D: 补高判据不再被 `ios15LastNeededH == 0` 连坐 ══
+    # `_v42Need` 已经由 V42 自测兜底算好(实测 V42-MISS 63 次),
+    # 补高条件本来就在用它; 这里补一条日志, 让「判据跳过」可归因。
+    return t
+
 def fix_v55_c_sentinel_gate(t):
     """[V55-C] 哨兵判据不得依赖它自己要设置的状态（治 v54 的自我循环）。
 
@@ -9312,9 +9724,13 @@ def fix_v55_c_sentinel_gate(t):
     # 文本, 一旦注入完成它就消失了, 于是第二次运行会误判成「没注入过」而
     # 重新走替换, 结果把 a5 段重复插一遍 / 把 a3 段的注释重复堆叠。
     # (实测踩过: 首次 ✅, 第二次直接抛锚点缺失。)
+    # ★判据必须取**最终产物形态**(纪律 52): v56 把 `_v55notUnbound` 整行删掉了,
+    #   只留 `let _v55tcH = textContainer.size.height`。所以不能只判旧标记,
+    #   要同时认新形态, 否则 v56 之后跑第二遍会误判"未注入"而报锚点缺失。
     MARK3 = "let _v55notUnbound = _v55tcH < CGFloat.greatestFiniteMagnitude"
+    MARK3B = "let _v55tcH = textContainer.size.height"
     MARK5 = "// [V55-C] layoutSubviews 哨兵点(v54-C 漏掉的那处)"
-    if MARK3 in t and MARK5 in t:
+    if (MARK3 in t or MARK3B in t) and MARK5 in t:
         return t
 
     # ── 上游原文断言 ──
@@ -9383,7 +9799,12 @@ def fix_v55_c_sentinel_gate(t):
     t = t.replace(OLD3, NEW3, 1)
 
     # ── a5: 补上 v54-C 漏掉的 layoutSubviews 哨兵点 ──
-    NEW5 = """        // [V55-C] layoutSubviews 哨兵点(v54-C 漏掉的那处)
+    NEW5 = """        // recursion seed for the watchdog hang seen in
+        // Minis-2026-05-13-084827.ips: every layout pass re-triggers a full
+        // fillLayoutHole on tables, which calls back into attachmentBounds,
+        // which re-enters typesetting.
+        //
+        // [V55-C] layoutSubviews 哨兵点(v54-C 漏掉的那处)
         //
         // v54-C 改了三处哨兵(attachmentBounds / invalidateCellSizeIfNeeded /
         // updateUIView), 唯独漏了这里, 而它自己的注释还写着
@@ -9392,6 +9813,8 @@ def fix_v55_c_sentinel_gate(t):
         // ⇒ 每帧一次 setSize(358x2000) ⇒ 每帧一次 CoreText 全量排版。
         // 门控口径与 attachmentBounds 已有的成熟写法同源(用 usedRect 真实
         // 排版需求比容器高), 不发明新口径; 阈值 2pt 吸收亚像素噪声。
+        //
+        // ⚠ 这条判据本身在稳态下**恒真**, v56 会把它换掉 —— 见 [V56-A5]。
         let _v55lsNeed: Bool = {
             guard textStorage.length > 0 else { return false }
             let _need = layoutManager.usedRect(for: textContainer).height
@@ -9525,6 +9948,14 @@ def fix_v54_b_debt_report(t):
 
 
 def fix_v54_c_probe_roundtrip(t):
+    # [幂等纪律 51/52] 判据必须在**任何锚点检查之前**, 且标记取最终产物形态。
+    # v54-C 的三处锚点(b1/a3/b3)注入后即消失, 第二次运行必然报
+    # 「v54-C 锚点缺失(updateUIView)」—— 报错文案指向"上游结构变了", 实为幂等缺失。
+    # `_v54probeApplied` 是 v54-C 独有的产物变量, 后续补丁都不删它
+    # (v56 改的是它的判据表达式, 变量本身保留)。
+    if "_v54probeApplied" in t and "_v54needUnbound3" in t:
+        return t
+
     """[V54-C] 消掉哨兵高度的每帧往返 —— 掉帧的真凶。
 
     装机铁证(minis-2026-10-04 5.log, 08:27:17 → 08:30:28):
@@ -9577,6 +10008,8 @@ def fix_v54_c_probe_roundtrip(t):
             self.textContainer.size.height = CGFloat.greatestFiniteMagnitude
             _v54probeApplied = true
         }"""
+    # ── v56: 换掉 v54-C 写下的判据(见 fix_v56_sentinel_probe) ──
+    # b1 本身是 a1 的替换锚点, 必须保持原样, 否则 v56-A 认不出它。
     a2 = """        if self.textContainer.size.height != savedContainerHeight {
             self.textContainer.size.height = savedContainerHeight
         }"""
@@ -9818,6 +10251,15 @@ def main():
          "v55-B: _edgeTouch 认出贴边净宽 —— 治 edge=0 导致 inset 16/16 没设上、cell 只给 26.7、末行裁 22.3(卡一半), 补高 103 次被改回")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_v55_c_sentinel_gate,
          "v55-C: 哨兵判据改用 textContainer.size.height —— 治 v54 判据自我循环(setSize 524次/415tick 比 v53 的 314/251 更差)")
+    # ---- v56: v55.2 装机实测 setSize 777 次(v54=524) 不降反升, 判定失败 ----
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_v56_sentinel_probe,
+         "v56: 断高度拉锯(核心:KVO 补高↔SwiftUI写回 每帧双写, 装机 fixed 62次里 debt 156.7 出现 35次一字不差; svW 62/62=358 宽度已对) "
+         "+ a1/a3/a4/a5 四处哨兵判据换口径 + _edgeTouch 认 origin.x≈16 贴边态。"
+         "★同时纠正 v53-v55 的归因错误: setSize 358x2000 ×777 是 guard 里 return 掉的短路(1/16采样, 真实 10912次), "
+         "且集中在 08:27-08:30 启动期, 用户滑动期(18:40)为 0 条 —— 不是掉帧元凶")
+
+    # ★顺序要点: v55-B 仍先注册(它是 v56-B 的锚点载体), v56-B 在其产物上改写,
+    #   所以 v56 不能删掉 v55-B 的注册, 只在 v56 里把它放行。
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")

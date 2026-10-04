@@ -4694,7 +4694,7 @@ final class VideoAttachment: NSTextAttachment {
 
             var thumb: UIImage?
             do {
-                let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+                let (cgImage, _) = try await generator.image(at: .zero)
                 thumb = UIImage(cgImage: cgImage)
             } catch {
                 // Fallback: no thumbnail
@@ -5787,12 +5787,64 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             if _v42Need > 1 {
                 self.ios15LastNeededH = _v42Need
             }
-            if _v42Need > 1, f.size.height + 0.5 < _v42Need {
+            // [V56-KVO] 同值写入抑制 —— 断掉「补高 ↔ SwiftUI 写回」拉锯。
+            //
+            // 【v55.2 装机铁证(18:40 滑动期, V41-KVOHEIGHT 62 条)】
+            //   fixed svH=454.0 -> needH=655.3 debt=201.3 svW=358.0   ×9
+            //   fixed svH=?    -> needH=?    debt=156.7 svW=358.0   ×35
+            //   fixed svH=?    -> needH=?    debt= 22.3 svW=358.0   ×15
+            // `svW` 62/62 恒为 358 ⇒ **宽度已经完全正确**, 唯一还在动的是高度。
+            // 同一欠账值(156.7 / 201.3)被一字不差地重复补了 35 / 9 次 ⇒
+            // KVO 补上去, SwiftUI 布局收尾又写回 ⇒ **每帧两次 frame 写入**
+            // ⇒ 两次同步 layout ⇒ 掉帧; 高度在两值间抖动 ⇒ 「卡字」「卡一下才显示」。
+            //
+            // 【为什么用「同值抑制」而不是节流】
+            // 节流(比如 120ms 放一次)会真的放走欠账帧 ⇒ 文字被裁 ⇒ 回到
+            // 老症状(v40/v41 已经在这条路上失败过)。**只压「同 tick 内
+            // 重复写同一个高度」**: 值相同时这次 obj.frame 写入不会产生任何
+            // 几何变化, 它的唯一作用是触发一次同步 layout —— 那是纯浪费。
+            // 不同值的写入一律放行, 正确修正绝不被连坐。
+            // 判据: 本 tick 内已写过、且写的值与本次目标相同 ⇒ 跳过。
+            //
+            // 【为什么键里带 tick】
+            // 跨 tick 的同值写入**必须放行**: 那说明 SwiftUI 又写回了一次,
+            // 正是需要再补的信号(实测 201.3 那个欠账跨很多 tick 反复出现)。
+            // 只压同 tick 内的重复, 恰好只切掉「一帧内双写」这一种浪费。
+            // [V56-KVO] 拉锯抑制的跨帧状态。放闭包内的 static 结构体 ——
+            // 与 v42 的 `_SelfLast` 同一理由: KVO 闭包每次触发都是新上下文,
+            // 只有 static 才是跨帧的稳定存储。
+            struct _V56KVOW { static var tick: UInt64 = 0; static var lastH: CGFloat = 0
+                static var lastTick: UInt64 = 0
+                static var written: UInt = 0; static var skipped: UInt = 0 }
+            _V56KVOW.tick &+= 1
+            let _v56now = CACurrentMediaTime()
+            let _v56sameTick = _V56KVOW.lastTick == _V56KVOW.tick
+            if _v56sameTick, abs(_V56KVOW.lastH - _v42Need) < 0.5 {
+                // 同 tick 同值: 跳过 obj.frame 写入(几何零变化)。
+                struct _V56Skip { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+                if _v56now - _V56Skip.last > 0.5 {
+                    _V56Skip.last = _v56now
+                    _V56Skip.n &+= 1
+                    NSLog("[V56-KVO] skipSame svH=%.1f needH=%.1f tick=%llu n=%u",
+                          f.size.height, _v42Need,
+                          (unsigned long long)_V56KVOW.tick, _V56Skip.n)
+                }
+                _V56KVOW.skipped &+= 1
+                // 与下面「补完立刻交棒」同语义: 即使跳过 obj.frame 写入,
+                // 局部 f 也要反映已补好的高度, 否则后续任何读 f 的探针
+                // 都会看到欠账值、误判成"没补上"。
+                var _v56hFix = f
+                _v56hFix.size.height = _v42Need
+                f = _v56hFix
+            } else if _v42Need > 1, f.size.height + 0.5 < _v42Need {
                 var _hFix = f
                 _hFix.size.height = _v42Need
                 self.ios15KvoFixing = true
                 obj.frame = _hFix
                 self.ios15KvoFixing = false
+                _V56KVOW.lastTick = _V56KVOW.tick
+                _V56KVOW.lastH = _v42Need
+                _V56KVOW.written &+= 1
                 // [V41-KVOHEIGHT-HIT] 补齐真的执行了(节流 0.5s)。v39/v40 之所以
                 // 判"补齐没跑"是因为诊断挂在结果已修好的那一层; 这里挂在
                 // "即将写入欠账值"的那一刻, 只要欠账被补就必定打出来。
@@ -7365,11 +7417,37 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         // 让 CoreText 在 358x2000 上真排一遍版。251 帧 ≈ 502 次全量排版
         // ⇒ 主线程吃满 ⇒「滑动像掉帧」「终端框永远卡画面」。
         // (第二处/第三处哨兵点见 layoutSubviews 与 updateUIView。)
-        let _v54needProbe: Bool = {
-            guard textStorage.length > 0 else { return false }
-            let _need = layoutManager.usedRect(for: textContainer).height
-            return _need + 2 > savedContainerHeight
-        }()
+        // [V56-A] 哨兵判据 v1: 与 UIKit 钳位口径对齐
+        //
+        // v54 写下的 `_need + 2 > savedContainerHeight` **恒为真**:
+        // `_need` 是 usedRect(内容排版高), `savedContainerHeight` 是 UIKit
+        // 按**这个排版结果**钳回去的容器高 —— 后者总是「刚好装得下」,
+        // 于是「内容高 + 2 > 容器高」永远成立 ⇒ 每帧设哨兵。
+        // ✔ 但要注意: 这条支路**不是掉帧元凶**(见函数 docstring 纠正一),
+        //   它的成本是被 guard 短路掉的一次函数调用, 不是排版。
+        //   仍要修, 因为它让「已解开约束」这个状态无法被稳定观测。
+        //
+        // 口径: 只有「UIKit 此刻真的会把容器钳到装不下内容」才解约束,
+        // 即 容器高 + 2 <= 内容高。稳态 tcH == usedH ⇒ 为假 ⇒ 零 setSize。
+        //
+        // 附件探测**必须**用项目里已编译验证过的写法:
+        //   `textStorage as? NSTextStorage` + `enumerateAttribute(.attachment,…)`
+        //   —— 照 v46 的形式抄。v49 教训: 我第一版写的是
+        //   `NSTextStorage.attached(…)`, 全项目从未用过, 注入与断言全绿
+        //   (断言只看子串存在性), 编译期才炸。
+        // ⇒ 纪律 48: **判据里用到的每个 API 都必须在本项目里被引用过**。
+        var _v56attN = 0
+        if let _v56St = textStorage as? NSTextStorage {
+            _v56St.enumerateAttribute(
+                .attachment,
+                in: NSRange(location: 0, length: _v56St.length),
+                options: []) { _v, _, _ in
+                if _v as? NSTextAttachment != nil { _v56attN += 1 }
+            }
+        }
+        let _v56usedH1 = layoutManager.usedRect(for: textContainer).height
+        let _v54needProbe: Bool = _v56attN > 0
+            && savedContainerHeight + 2 <= _v56usedH1
         var _v54probeApplied = false
         if _v54needProbe, savedContainerHeight < CGFloat.greatestFiniteMagnitude {
             self.textContainer.size.height = CGFloat.greatestFiniteMagnitude
@@ -8040,6 +8118,11 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         // CharacterRange:` → `_fillLayoutHoleAtIndex:` even when the value
         // is identical, because UIKit doesn't equality-check size on
         // NSTextContainer. In the BoundsChangeFading path that's the
+        // recursion seed for the watchdog hang seen in
+        // Minis-2026-05-13-084827.ips: every layout pass re-triggers a full
+        // fillLayoutHole on tables, which calls back into attachmentBounds,
+        // which re-enters typesetting.
+        //
         // [V55-C] layoutSubviews 哨兵点(v54-C 漏掉的那处)
         //
         // v54-C 改了三处哨兵(attachmentBounds / invalidateCellSizeIfNeeded /
@@ -8049,11 +8132,19 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         // ⇒ 每帧一次 setSize(358x2000) ⇒ 每帧一次 CoreText 全量排版。
         // 门控口径与 attachmentBounds 已有的成熟写法同源(用 usedRect 真实
         // 排版需求比容器高), 不发明新口径; 阈值 2pt 吸收亚像素噪声。
-        let _v55lsNeed: Bool = {
-            guard textStorage.length > 0 else { return false }
-            let _need = layoutManager.usedRect(for: textContainer).height
-            return _need + 2 > textContainer.size.height
+        //
+        // ⚠ v55-C 这条判据在稳态下**恒真**: 稳态 `textContainer.size.height`
+        //   恒等于 `usedRect.height`(装机 V46-ATTACH 198 个样本无一例外),
+        //   于是 `_need + 2 > tcH` == `usedH + 2 > usedH` == 恒真 ⇒ 每帧设哨兵。
+        //   v56 换成与 UIKit 钳位同向的口径, 见 [V56-A5]。
+        let _v56lsUsed: CGFloat = {
+            guard textStorage.length > 0 else { return 0 }
+            return layoutManager.usedRect(for: textContainer).height
         }()
+        // [V56-A5] 哨兵判据 v1: 与 UIKit 钳位口径对齐
+        // 只有「容器此刻装不下内容」才解除高度约束; 稳态为假 ⇒ 零 setSize。
+        let _v55lsNeed: Bool = _v56lsUsed > 0
+            && textContainer.size.height + 2 <= _v56lsUsed
         if _v55lsNeed, textContainer.size.height < CGFloat.greatestFiniteMagnitude {
             textContainer.size.height = CGFloat.greatestFiniteMagnitude
         }
@@ -8156,9 +8247,28 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // ★放行条件取「接近 cvW-32(贴边净宽)」或「接近 cvW(全屏宽)」,
             //   371.7 两边都不接近(差 13.7 / 18.3)⇒ 仍被排除, 不引入新污染。
             // ★**只改 edge 判定, 不写任何几何** —— inset 的写入是既有代码。
+            // [V56-B] `_edgeTouch` 认 origin.x > 0.5 的贴边态
+            //
+            // v55.2 装机 107 条 V55-A **零例外**:
+            //   gateW=358.0 svFrameW=358.0 svOriginX=16.0 insetL=0.0 ok=1 mem=1
+            // `edge=` 全日志 **718/718 为 0**。逐项算:
+            //   origin.x = 16.0 → `<= 0.5` **恒假** ← 单独这一条就否掉它
+            //   |358 - (390-32)| = 0 <= 2 → v55-B 的 `_v55edgeNet` 本该为真
+            // ⇒ `_edgeTouch` 被 `origin.x <= 0.5` 单条卡死, `_v55edgeNet`
+            //   根本没机会参与判断(&& 短路)。
+            // ⇒ 连带后果: inset 16/16 永远设不上(insetL 297 条全 0.0)
+            //   → 高度按 390 算、cell 只给 26.7 → 末行裁 22.3 → 「卡一半」。
+            //   装机 V41-KVOHEIGHT 里 `debt=22.3` 恰好 15 次, 数值完全对上。
+            //
+            // ★为什么 origin.x 是 16 而不是 0: 集合视图给的消息 cell 本身就带
+            //   16pt 左边距, **贴边态的正常 origin.x 就是 16**。`origin.x <= 0.5`
+            //   是为「全宽贴边(390@0)」那种形态写的, 消息型 cell 从来不满足。
             let _v55edgeNet = abs(_svf0.size.width - (_cvW - 32)) <= 2
-            let _edgeTouch = !_polluted && _svf0.origin.x <= 0.5
-                && (_svf0.size.width >= _cvW - 1 || _v55edgeNet)
+            let _v56edgeOff = abs(_svf0.origin.x - 16) <= 2
+            let _edgeTouch = !_polluted
+                && ((_svf0.origin.x <= 0.5
+                     && (_svf0.size.width >= _cvW - 1 || _v55edgeNet))
+                    || (_v55edgeNet && _v56edgeOff))
             if _polluted, let _sv = superview {
                 var _fix = _svf0
                 if let _last = ios15LastSaneSVFrame,
@@ -9063,9 +9173,11 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         // ✔ 真正要引入的第三个量是「容器当前高度是否**已经是**哨兵」:
         //    已经解开的帧不再重复解, 这才切得断自循环。
         //    (换比较方向没用: `bounds.height + 2 < newHeight` 与原式等价。)
+        // v55.2 的 `_v55notUnbound`(容器是否已是哨兵)已被装机数据否证:
+        // 198 个 V46-ATTACH 样本里 tcH 为哨兵值的 = 0 个 ⇒ 恒为 true ⇒ 等于没判。
+        // 改成与 UIKit 钳位口径对齐: 容器高确实装不下内容时才解约束。
         let _v55tcH = textContainer.size.height
-        let _v55notUnbound = _v55tcH < CGFloat.greatestFiniteMagnitude
-        let _v54needUnbound2: Bool = _v55notUnbound
+        let _v54needUnbound2: Bool = _v55tcH + 2 <= newHeight
             && newHeight + 2 > max(bounds.height, 1)
         if _v54needUnbound2, textContainer.size.height < CGFloat.greatestFiniteMagnitude {
             textContainer.size.height = CGFloat.greatestFiniteMagnitude
@@ -9964,7 +10076,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // becomes a measurable chunk of every updateUIView pass (and
         // updateUIView runs on each SwiftUI body re-evaluation, so it
         // multiplies during streaming and self-sizing measurement loops).
-        let imageMatches = MinisRegex.ranges(markdown, "!\\[([^\\]]*)\\]\\(([^)]+)\\)")
+        let imageMatches = markdown.ranges(of: /!\[([^\]]*)\]\(([^)]+)\)/)
         if !imageMatches.isEmpty {
             for match in imageMatches {
                 let matchStr = String(markdown[match])
@@ -10269,11 +10381,25 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // Only assign when it's actually clamped — see layoutSubviews.
         // [V54-C] 同上: 只在真的有容器外内容时才解除高度约束。光靠「被钳就
         // 恢复」会每帧往返一次 setSize。判据与前两处同源。
-        let _v54needUnbound3: Bool = {
-            guard textView.textStorage.length > 0 else { return false }
-            let _need = textView.layoutManager.usedRect(for: textView.textContainer).height
-            return _need + 2 > max(textView.bounds.height, 1)
-        }()
+        // [V56-A4] 哨兵判据 v1: 与 UIKit 钳位口径对齐
+        //
+        // 与 [V56-A] 同一个错误的另一次复制: `_need + 2 > max(bounds.height, 1)`
+        // 恒为真(内容高 vs 被内容高决定的容器高)。v54 的注释写着「判据与前两处
+        // 同源」—— 同源到**一起错**。v55.2 只修了 a3, 这两处原封不动。
+        let _v56usedH4 = textView.layoutManager.usedRect(
+            for: textView.textContainer).height
+        var _v56attN4 = 0
+        if let _v56St4 = textView.textStorage as? NSTextStorage {
+            _v56St4.enumerateAttribute(
+                .attachment,
+                in: NSRange(location: 0, length: _v56St4.length),
+                options: []) { _v, _, _ in
+                if _v as? NSTextAttachment != nil { _v56attN4 += 1 }
+            }
+        }
+        let _v54needUnbound3: Bool = _v56attN4 > 0
+            && textView.textContainer.size.height + 2 <= _v56usedH4
+            && _v56usedH4 + 2 > max(textView.bounds.height, 1)
         if _v54needUnbound3, textView.textContainer.size.height < CGFloat.greatestFiniteMagnitude {
             textView.textContainer.size.height = CGFloat.greatestFiniteMagnitude
         }
@@ -10399,26 +10525,6 @@ struct SelectableMarkdownView: UIViewRepresentable {
     }
 
     @available(iOS 16.0, *)
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: SelectableMarkdownTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
         // Key the size cache on the SwiftUI binding length, not
