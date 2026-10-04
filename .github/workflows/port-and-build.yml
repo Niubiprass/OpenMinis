@@ -380,11 +380,23 @@ jobs:
           else
             echo "❌ 测量宽钳制缺失 —— 测高宽未与渲染宽共享同一值, 高度对不上!"; exit 1
           fi
-          echo "::group::断言14: v21 intrinsicContentSize 理想宽钳制必须就位 (堵住 1e5 泄露 → 污染帧 x=-49805)"
-          if grep -q "override var intrinsicContentSize" src/ios/Views/Chat/SelectableMarkdownView.swift && grep -q "cvW > 33 ? cvW - 32 : sz.width" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            echo "✅ 理想宽已钳到真实可用宽 (污染源 1e5 不再进入布局)"
+          echo "::group::断言14: v60 intrinsicContentSize 重写必须就位 (替换 v21 钳宽版, 宽退出协商 noIntrinsicMetric)"
+          if grep -q "override var intrinsicContentSize" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "noIntrinsicMetric" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && ! grep -q "let sz = super.intrinsicContentSize" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && [ "$(grep -c 'override var intrinsicContentSize' src/ios/Views/Chat/SelectableMarkdownView.swift | tr -d ' ')" = "1" ] ; then
+            echo "✅ intrinsic 已换 zhaoxiufei 版 (宽退出协商 + 高度按 sane 宽现算; v21 旧版已替换, 无重复声明)"
           else
-            echo "❌ intrinsicContentSize 钳制缺失 —— 气泡仍会被布局成宽 100000 / x=-49805, 闪字与空白复发!"
+            echo "❌ intrinsicContentSize 重写缺失/重复/v21 旧版仍在 —— 重复声明会编译失败; 旧版先按 1e5 排再钳=白排+理想宽泄漏, 闪字空白复发!"
+            exit 1
+          fi
+          echo "::group::断言63: v60 hosting 层 sizeThatFits 重写必须就位 (zhaoxiufei 3ccdff6: 父视图走 sizeThatFits 路径时按真实宽协商)"
+          if grep -q "\[V60-ZHAO-HOST\]" src/ios/iOS15Compat.swift \
+             && grep -q "override func sizeThatFits(_ size: CGSize) -> CGSize" src/ios/iOS15Compat.swift \
+             && grep -q "ceil(fitSize.height)" src/ios/iOS15Compat.swift ; then
+            echo "✅ hosting sizeThatFits 重写就位 (测量宽==渲染宽, 高度不再错位)"
+          else
+            echo "❌ hosting sizeThatFits 重写缺失 —— 父视图走 sizeThatFits 路径时报垃圾理想宽, cell 高度错位!"
             exit 1
           fi
           echo "::group::断言37: v37 attachmentBounds probe 宽全局钳位必须就位 (9 处泄漏 → superview 撑到 817/1077/100000)"
@@ -2046,41 +2058,36 @@ jobs:
           echo "::endgroup::"
 
           # ============================================================
-          # 断言 62: v59 关闭主 Markdown 视图容器宽跟随
-          #          —— v31~v58 全部改动真正失效的机制性原因
+          # 断言 62: v60 采用 zhaoxiufei/OpenMinis 3ccdff6 已验证方案
+          #          (宽跟随保留 + sane 宽推导链) —— 取代 v59 断源版
           # ============================================================
-          # 【装机日志(v57.1, 04:32 段)的完整证据链】
-          #   superview 宽 358(SwiftUI inset 16/16 已生效, svOriginX=16 证明),
-          #   但 SelectableMarkdownTextView 自己的 frame 被上游布局撑到 390
-          #   ⇒ widthTracksTextView=true 让 UIKit 每趟布局从 frame(390)
-          #   派生容器宽并覆盖 ⇒ v31~v58 每一版写入的 358 都被顶回:
-          #   41.595 写 358 → 41.598(3 毫秒后)读回 390 —— 「改了等于没改」。
-          # 【为什么不更早修】v9/v9.1/v10 曾在 setSize swizzle 层面对抗,
-          #   44131 次死循环 + 508 次 10s 卡死; Guard 注释结论:
-          #   「widthTracksTextView=true 时宽度由 UIKit 从 frame 派生,
-          #     要修就修产生它的源头」。关掉派生 = 断源, 不是又一层对抗。
-          # 【关掉之后谁管宽】v18 渲染段 + v57.0 KVO 纠偏(netW=cvW-32,
-          #   collectionView 干净源)独占维护; v58 的重排随之真正生效。
-          # 【范围红线】TableScrollView 的内联代码 TextView 保持 true
-          #   (表格用, frame 干净, 不是病灶) —— reverse_v59 的 S3 专打这条。
-          if grep -q "fix_md_notrack_v59" "$SCRIPT_DIR/ios15_fallback.py" \
-             && grep -q "verify_md_notrack_v59" "$SCRIPT_DIR/ios15_fallback.py" ; then
-            if grep -q "\[V59-NOTRACK\]" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+          # 【出处】用户截图实证 zhaoxiufei 的包在 iOS 15.1.1/15.4.1 真机
+          #   上聊天渲染无卡字; v31~v59 的容器层对抗 30 余版从未被真机
+          #   验证成功(41.595 写 358 → 41.598 被 frame(390) 顶回)。
+          # 【哲学】不再对抗宽跟随: 保留上游 true, 用 hosting 层 +
+          #   TextView 四层重写保证 frame 恒 sane, 跟随自然得到净宽。
+          # 【核账】跟随宽应恰 2(init+表格内联); 关闭跟随应恰 1(codeTextView
+          #   v4); v59 的 [V59-NOTRACK] 必须 0 —— 断源与宽跟随不能并存。
+          if grep -q "fix_zhao_md_v60" "$SCRIPT_DIR/ios15_fallback.py" \
+             && grep -q "fix_zhao_compat_v60" "$SCRIPT_DIR/ios15_fallback.py" ; then
+            if grep -q "\[V60-ZHAO-INIT\]" src/ios/Views/Chat/SelectableMarkdownView.swift \
+               && grep -q "\[V60-ZHAO-HOST\]" src/ios/iOS15Compat.swift ; then
               if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
-                 python3 "$SCRIPT_DIR/ios15_verify/reverse_v59.py" ; then
-                echo "✅ v59 就位 (反向 5 条全拦: 改回 true/删兜底/范围失控/摘标记/1e7 兜底)"
+                 python3 "$SCRIPT_DIR/ios15_verify/reverse_v60.py" ; then
+                echo "✅ v60 就位 (反向 10 条全拦: 摘 override/v21 复辟/v59 残魂/删兜底/阈值失效/裸宽)"
               else
-                echo "::error::v59 判据异常 —— 容器宽跟随还开着 = 纠偏写入每趟都被覆盖"
-                echo "   —— 报「跟随宽 N 处」: 0=表格那处也被改(范围失控); >1=上游新增视图"
-                echo "   —— 报「缺兜底」: 容器默认 1e7, 首趟排版排成一行超长(历史 1e7 污染)"
+                echo "::error::v60 判据异常 —— zhaoxiufei 方案注入不完整"
+                echo "   —— 报「跟随宽 N 处」: v59 残魂(init 必须是 true)或范围失控"
+                echo "   —— 报「缺 override」: sizeThatFits/intrinsic 重写块被破坏"
+                echo "   —— 报「v21 特征仍在」: 旧钳宽版没替换干净=重复声明编译失败"
                 exit 1
               fi
             else
-              echo "::error::产物里没有 [V59-NOTRACK] —— v59 注入没生效(上游 init 可能变了)"
+              echo "::error::产物里没有 [V60-ZHAO-INIT]/[V60-ZHAO-HOST] —— v60 注入没生效(上游结构可能变了)"
               exit 1
             fi
           else
-            echo "::error::ios15_fallback.py 里找不到 fix_md_notrack_v59 / verify_md_notrack_v59"
+            echo "::error::ios15_fallback.py 里找不到 fix_zhao_md_v60 / fix_zhao_compat_v60"
             exit 1
           fi
           echo "::endgroup::"

@@ -1536,7 +1536,18 @@ final class CodeBlockAttachment: NSTextAttachment {
     var attV565ViewW: CGFloat = -1
 
     override func attachmentBounds(for textContainer: NSTextContainer?, proposedLineFragment lineFrag: CGRect, glyphPosition position: CGPoint, characterIndex charIndex: Int) -> CGRect {
-        let width = lineFrag.width
+        // [V60-ZHAO-CB] 代码块宽三级 fallback(zhaoxiufei 3ccdff6 同款):
+        // lineFrag 垃圾宽(0 或 1e5+)时退到容器宽, 再退到屏宽-32,
+        // 代码块不再按垃圾宽量高 → 末行裁断/大空白随之消失。
+        let containerWidth = textContainer?.size.width ?? 0
+        let effectiveWidth: CGFloat
+        if lineFrag.width > 0 && lineFrag.width < 100_000 {
+            effectiveWidth = lineFrag.width
+        } else if containerWidth > 0 && containerWidth < 100_000 {
+            effectiveWidth = containerWidth
+        } else {
+            effectiveWidth = UIScreen.main.bounds.width - 32
+        }
         let topOffset: CGFloat = (language != nil && !language!.isEmpty) ? 28 : 12
         let contentHeight = measureCodeHeight()
         let bottomPadding: CGFloat = 12
@@ -1566,7 +1577,7 @@ final class CodeBlockAttachment: NSTextAttachment {
             }
         }
 
-        return CGRect(x: 0, y: 0, width: width, height: height)
+        return CGRect(x: 0, y: 0, width: effectiveWidth, height: height)
     }
 
     // [V565-CODEBLOCK] 只读诊断量: 缓存里的自然高(判断缓存是否过期)
@@ -1633,8 +1644,10 @@ final class CodeBlockAttachment: NSTextAttachment {
         let wrapper = UIView()
         wrapper.backgroundColor = .clear
 
+        // [V60-ZHAO-CB] 实参宽 sane 化 + 最小 50 兜底(zhaoxiufei 3ccdff6 同款)
+        let usableWidth = width > 0 && width < 100_000 ? width : (UIScreen.main.bounds.width - 32)
         let inset = leftInset
-        let contentWidth = width - inset
+        let contentWidth = max(usableWidth - inset, 50)
 
         let container = UIView()
         container.backgroundColor = theme.codeBlockBackground
@@ -1824,7 +1837,9 @@ final class CodeBlockAttachment: NSTextAttachment {
         let maxCodeHeight: CGFloat = 400 - topOffset - 12
         let scrollHeight = min(fitting.height, maxCodeHeight)
         let bottomPadding: CGFloat = 12
-        let newScrollFrame = CGRect(x: 0, y: topOffset, width: container.frame.width, height: scrollHeight + bottomPadding)
+        // [V60-ZHAO-CB] 流式增高时容器宽最小 50 兜底(zhaoxiufei 3ccdff6 同款)
+        let scrollWidth = max(container.frame.width, 50)
+        let newScrollFrame = CGRect(x: 0, y: topOffset, width: scrollWidth, height: scrollHeight + bottomPadding)
         let totalHeight = topOffset + scrollHeight + bottomPadding
 
         // [CodeBlockGrow] Animate the visible code-frame growing taller as more
@@ -5461,12 +5476,35 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
     // 上下空白 / 输出衔接不上 / 部分字不显示。
     // 这里把对外报告的"理想宽"钳到真实可用宽, 1e5 不再泄露进布局, 污染帧从根本上
     // 不再产生 (抢帧/KVO 只留作兜底)。
+    // [V60-ZHAO-FIT] 采用 zhaoxiufei/OpenMinis 3ccdff6 已验证方案
+    // (替换 v21 钳宽版 intrinsic —— 见上)。sizeThatFits 的 sane 宽推导链:
+    // 实参 → 容器宽 → bounds → 屏宽-32, 任何一级 sane 就用; 容器宽偏离
+    // 推导宽超过半点即重置 —— 宽跟随保留, 但 frame 恒 sane, 跟随派生
+    // 不再产出 390/1e5 污染宽。逐字对齐他们的真机验证版。
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        let width = size.width > 1 && size.width < 100_000 ? size.width : (textContainer.size.width > 1 && textContainer.size.width < 100_000 ? textContainer.size.width : (bounds.width > 1 ? bounds.width : UIScreen.main.bounds.width - 32))
+        guard textStorage.length > 0 else {
+            return super.sizeThatFits(CGSize(width: width, height: size.height > 0 ? size.height : 4))
+        }
+        let oldWidth = textContainer.size.width
+        let oldHeight = textContainer.size.height
+        if abs(textContainer.size.width - width) > 0.5 {
+            textContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
+        }
+        let fit = super.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        if oldHeight < .greatestFiniteMagnitude {
+            textContainer.size.height = oldHeight
+        }
+        return CGSize(width: width, height: ceil(fit.height))
+    }
+
     override var intrinsicContentSize: CGSize {
-        let sz = super.intrinsicContentSize
-        let cvW = findCollectionView()?.bounds.width ?? 0
-        let cap = cvW > 33 ? cvW - 32 : sz.width
-        let w = (cap > 1 && sz.width > cap) ? cap : sz.width
-        return CGSize(width: w, height: sz.height)
+        let width = textContainer.size.width > 1 && textContainer.size.width < 100_000 ? textContainer.size.width : (bounds.width > 1 ? bounds.width : UIScreen.main.bounds.width - 32)
+        guard width > 1, textStorage.length > 0 else {
+            return CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
+        }
+        let fit = sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: UIView.noIntrinsicMetric, height: ceil(fit.height))
     }
 
     // [IOS15-FIX-CLIP v23] 帧同步修正: v22 的 frame(maxWidth:) 把 77% 的理想宽压到了
@@ -6541,19 +6579,13 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         let layoutManager = MinisLayoutManager()
         let textContainer = NSTextContainer()
         textContainer.lineFragmentPadding = 0
-        textContainer.widthTracksTextView = false
-        // [V59-NOTRACK] ★v59 关闭容器宽跟随★ 上游默认 true = 每趟布局从
-        // frame 派生并覆盖容器宽。装机日志(v57.1, 04:32 段)实证: superview
-        // 宽 358(SwiftUI inset 16/16 已生效), 但本视图 frame 被上游布局撑到
-        // 390 => 派生容器宽 = 390 => v31~v58 每一版写入的净宽都在下一趟布局
-        // 被系统覆盖回 390(41.595 写 358 -> 41.598 读回 390) —— 这就是
-        // 「改了等于没改」的机制。关掉跟随后, 容器宽由 v18 渲染段与 v57.0 KVO
-        // 纠偏(netW = cvW - 32, 来自 collectionView 干净源)独占维护, v58 的
-        // invalidateLayout 重排随之生效。旋转/resize 后 KVO 亦会重写。
-        // 首帧兜底: NSTextContainer 默认 1e7 x 1e7(项目日志里的 1e7 污染值
-        // 就是它), 关掉跟随后的首趟排版会按 1e7 排成一行超长 —— 压一个
-        // 保守初值, KVO 纠偏一跑就以真实净宽覆盖。SetSizeGuard 仍兜底风暴。
-        textContainer.size = CGSize(width: 320, height: 2000)
+        textContainer.widthTracksTextView = true
+        // [V60-ZHAO-INIT] 采用 zhaoxiufei/OpenMinis 3ccdff6 已验证方案:
+        // 保留宽跟随, 但压 sane 初值 —— NSTextContainer 默认 1e7 x 1e7,
+        // 首趟排版会按 1e7 排成一行超长(历史装机日志里的 1e7 污染宽就是它)。
+        // 初值屏宽-32 与真实净宽一致, 首帧即 sane。
+        let defaultWidth = UIScreen.main.bounds.width - 32
+        textContainer.size = CGSize(width: defaultWidth, height: .greatestFiniteMagnitude)
         layoutManager.addTextContainer(textContainer)
         textStorage.addLayoutManager(layoutManager)
 
@@ -10047,6 +10079,10 @@ struct SelectableMarkdownView: UIViewRepresentable {
         textView.delegate = context.coordinator
         textView.setContentHuggingPriority(.required, for: .vertical)
         textView.setContentCompressionResistancePriority(.required, for: .vertical)
+        // [V60-ZHAO-MAKE] 初建即 sane(zhaoxiufei 3ccdff6 同款):
+        // SwiftUI 首趟布局问尺寸时容器宽已是净宽, 不再从 1e7 初值起步。
+        let defaultWidth = UIScreen.main.bounds.width - 32
+        textView.textContainer.size = CGSize(width: defaultWidth, height: .greatestFiniteMagnitude)
         context.coordinator.lastMarkdown = ""
         context.coordinator.openURL = openURL
         textView.onTapBlank = onTapBlank
@@ -10076,6 +10112,14 @@ struct SelectableMarkdownView: UIViewRepresentable {
 
         let currentFontSize = FontSettings.shared.scaledMessage(16.5)
         let fontChanged = context.coordinator.lastFontSize != currentFontSize
+
+        // [V60-ZHAO-UPD] 每次更新前容器宽 sane 兜底(zhaoxiufei 3ccdff6 同款):
+        // 上一趟若有任何路径把容器宽写成垃圾值(<=1 或 >=100_000),
+        // 在本轮排版前用 bounds/屏宽-32 拉回, 不让垃圾宽进排版。
+        if textView.textContainer.size.width <= 1 || textView.textContainer.size.width >= 100_000 {
+            let fallbackW = textView.bounds.width > 1 && textView.bounds.width < 100_000 ? textView.bounds.width : (UIScreen.main.bounds.width - 32)
+            textView.textContainer.size = CGSize(width: fallbackW, height: .greatestFiniteMagnitude)
+        }
 
         // [AttachHotPath] updateUIView entry — only log when this textView has
         // image attachments in its renderer's cache (the only scenario that can

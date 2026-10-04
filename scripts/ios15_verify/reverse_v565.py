@@ -176,10 +176,15 @@ def main():
             return t.replace("_v565now - _V565Log.last > 0.5", "true", 1)
 
         # ---- S7 do 块与 return 之间夹逻辑 ----
+        # ★v60 起 CB return 的宽是 effectiveWidth(zhaoxiufei 3ccdff6 方案),
+        #   锚点跟着换; 保留旧形态兜底(防判据跑在未注入 v60 的基线上)。
         def s7(t):
-            return t.replace("\n\n        return CGRect(x: 0, y: 0, width: width, height: height)",
-                             "\n\n        let _v565Probe = 1\n\n"
-                             "        return CGRect(x: 0, y: 0, width: width, height: height)", 1)
+            for ret in ("        return CGRect(x: 0, y: 0, width: effectiveWidth, height: height)",
+                        "        return CGRect(x: 0, y: 0, width: width, height: height)"):
+                if "\n\n" + ret in t:
+                    return t.replace("\n\n" + ret,
+                                     "\n\n        let _v565Probe = 1\n\n" + ret, 1)
+            return t
 
         # ---- S8 删掉整个日志点 ----
         def s8(t):

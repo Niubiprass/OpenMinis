@@ -6759,6 +6759,333 @@ def verify_md_notrack_v59(t):
             "  1 处 = 注入没生效; >2 处 = 别处新关了跟随但没登记, 风险未知。" % n_false)
 
 
+# ============================================================
+# v60: 采用 zhaoxiufei/OpenMinis 3ccdff6 已验证方案 —— 取代 v59
+# ============================================================
+# 【出处与验证状态】zhaoxiufei/OpenMinis(非 fork, 基于上游的 iOS 15.8.8
+#   移植)提交 3ccdff6 "fix: resolve markdown rendering collapse and add
+#   iOS 15 hosting sizing"。该作者已发布可装的 IPA, 用户提供的截图实证
+#   其包在 iOS 15.1.1 / 15.4.1 真机上聊天渲染无卡字 —— 这是本项目
+#   v31~v59 一直没有的「真机已验证」。
+# 【哲学差异】v31~v59 全部在「容器宽」层面与系统对抗(写 358 → 被跟随
+#   派生顶回 390, 改了等于没改)。zhaoxiufei 反其道: **保留
+#   widthTracksTextView=true(上游默认)**, 通过
+#     ① hosting 层 sizeThatFits 重写(本文件 fix_zhao_compat_v60)
+#     ② TextView 的 sizeThatFits/intrinsicContentSize 重写
+#        (sane 宽推导链: 实参→容器宽→bounds→屏宽-32; 漂移>0.5 即重置)
+#     ③ init/makeUIView/updateUIView 三处 sane 宽兜底
+#     ④ CodeBlockAttachment 三级 fallback + 最小 50 兜底
+#   —— 保证 frame 永远 sane, 宽跟随自然得到 sane 宽。
+#   v59 的「断源」(false + 兜底 320)整体退场: v59 的 edit 注册已被本版
+#   取代, 产物回到上游 init 形态后由本版注入。
+# 【与既有补丁链的关系】v57.0 KVO 纠偏/v58 重排保留 —— frame 恒 sane
+#   的新世界里它们退化为观察者(读到 sane 宽即不写), 方向一致不打架。
+# ============================================================
+
+_V60_TRUE = "textContainer.widthTracksTextView = true"
+_V60_FALSE = "widthTracksTextView = false"
+
+# init 锚点 = 上游原文(v59 退场后产物即此形态); super.init + isEditable
+# 用于与 TableScrollView 的 TableCellTextView.init 区分(两处 true 逐字同)。
+V60_INIT_OLD = """        textContainer.widthTracksTextView = true
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+
+        super.init(frame: .zero, textContainer: textContainer)
+
+        isEditable = false"""
+
+V60_INIT_NEW = """        textContainer.widthTracksTextView = true
+        // [V60-ZHAO-INIT] 采用 zhaoxiufei/OpenMinis 3ccdff6 已验证方案:
+        // 保留宽跟随, 但压 sane 初值 —— NSTextContainer 默认 1e7 x 1e7,
+        // 首趟排版会按 1e7 排成一行超长(历史装机日志里的 1e7 污染宽就是它)。
+        // 初值屏宽-32 与真实净宽一致, 首帧即 sane。
+        let defaultWidth = UIScreen.main.bounds.width - 32
+        textContainer.size = CGSize(width: defaultWidth, height: .greatestFiniteMagnitude)
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+
+        super.init(frame: .zero, textContainer: textContainer)
+
+        isEditable = false"""
+
+# v21 注入的 intrinsicContentSize 钳宽块(v60 运行时它在产物里, 精确文本)。
+# 替换理由: 旧版依赖 super.intrinsicContentSize —— 容器宽 1e5 时它先按
+# 1e5 排版再钳(白排一次), 且对外仍报一个"理想宽"参与 SwiftUI 协商 =
+# 污染残留通道。新版宽彻底不参与(noIntrinsicMetric), 高度按 sane 宽现算。
+V60_V21_OLD = """    override var intrinsicContentSize: CGSize {
+        let sz = super.intrinsicContentSize
+        let cvW = findCollectionView()?.bounds.width ?? 0
+        let cap = cvW > 33 ? cvW - 32 : sz.width
+        let w = (cap > 1 && sz.width > cap) ? cap : sz.width
+        return CGSize(width: w, height: sz.height)
+    }"""
+
+V60_FIT_NEW = """    // [V60-ZHAO-FIT] 采用 zhaoxiufei/OpenMinis 3ccdff6 已验证方案
+    // (替换 v21 钳宽版 intrinsic —— 见上)。sizeThatFits 的 sane 宽推导链:
+    // 实参 → 容器宽 → bounds → 屏宽-32, 任何一级 sane 就用; 容器宽偏离
+    // 推导宽超过半点即重置 —— 宽跟随保留, 但 frame 恒 sane, 跟随派生
+    // 不再产出 390/1e5 污染宽。逐字对齐他们的真机验证版。
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        let width = size.width > 1 && size.width < 100_000 ? size.width : (textContainer.size.width > 1 && textContainer.size.width < 100_000 ? textContainer.size.width : (bounds.width > 1 ? bounds.width : UIScreen.main.bounds.width - 32))
+        guard textStorage.length > 0 else {
+            return super.sizeThatFits(CGSize(width: width, height: size.height > 0 ? size.height : 4))
+        }
+        let oldWidth = textContainer.size.width
+        let oldHeight = textContainer.size.height
+        if abs(textContainer.size.width - width) > 0.5 {
+            textContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
+        }
+        let fit = super.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        if oldHeight < .greatestFiniteMagnitude {
+            textContainer.size.height = oldHeight
+        }
+        return CGSize(width: width, height: ceil(fit.height))
+    }
+
+    override var intrinsicContentSize: CGSize {
+        let width = textContainer.size.width > 1 && textContainer.size.width < 100_000 ? textContainer.size.width : (bounds.width > 1 ? bounds.width : UIScreen.main.bounds.width - 32)
+        guard width > 1, textStorage.length > 0 else {
+            return CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
+        }
+        let fit = sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: UIView.noIntrinsicMetric, height: ceil(fit.height))
+    }"""
+
+# CodeBlockAttachment.attachmentBounds 头部(签名+裸宽行+topOffset 行,
+# 上游 1.13/1.14 一致; 该签名全文件 5 处, 本组合唯一)。
+V60_CB_HEAD_OLD = """    override func attachmentBounds(for textContainer: NSTextContainer?, proposedLineFragment lineFrag: CGRect, glyphPosition position: CGPoint, characterIndex charIndex: Int) -> CGRect {
+        let width = lineFrag.width
+        let topOffset: CGFloat = (language != nil && !language!.isEmpty) ? 28 : 12"""
+
+V60_CB_HEAD_NEW = """    override func attachmentBounds(for textContainer: NSTextContainer?, proposedLineFragment lineFrag: CGRect, glyphPosition position: CGPoint, characterIndex charIndex: Int) -> CGRect {
+        // [V60-ZHAO-CB] 代码块宽三级 fallback(zhaoxiufei 3ccdff6 同款):
+        // lineFrag 垃圾宽(0 或 1e5+)时退到容器宽, 再退到屏宽-32,
+        // 代码块不再按垃圾宽量高 → 末行裁断/大空白随之消失。
+        let containerWidth = textContainer?.size.width ?? 0
+        let effectiveWidth: CGFloat
+        if lineFrag.width > 0 && lineFrag.width < 100_000 {
+            effectiveWidth = lineFrag.width
+        } else if containerWidth > 0 && containerWidth < 100_000 {
+            effectiveWidth = containerWidth
+        } else {
+            effectiveWidth = UIScreen.main.bounds.width - 32
+        }
+        let topOffset: CGFloat = (language != nil && !language!.isEmpty) ? 28 : 12"""
+
+V60_CB_RET_OLD = "        return CGRect(x: 0, y: 0, width: width, height: height)"
+V60_CB_RET_NEW = "        return CGRect(x: 0, y: 0, width: effectiveWidth, height: height)"
+
+V60_MV_OLD = """        let inset = leftInset
+        let contentWidth = width - inset"""
+
+V60_MV_NEW = """        // [V60-ZHAO-CB] 实参宽 sane 化 + 最小 50 兜底(zhaoxiufei 3ccdff6 同款)
+        let usableWidth = width > 0 && width < 100_000 ? width : (UIScreen.main.bounds.width - 32)
+        let inset = leftInset
+        let contentWidth = max(usableWidth - inset, 50)"""
+
+V60_SC_OLD = "        let newScrollFrame = CGRect(x: 0, y: topOffset, width: container.frame.width, height: scrollHeight + bottomPadding)"
+
+V60_SC_NEW = """        // [V60-ZHAO-CB] 流式增高时容器宽最小 50 兜底(zhaoxiufei 3ccdff6 同款)
+        let scrollWidth = max(container.frame.width, 50)
+        let newScrollFrame = CGRect(x: 0, y: topOffset, width: scrollWidth, height: scrollHeight + bottomPadding)"""
+
+V60_MK_OLD = """        textView.setContentHuggingPriority(.required, for: .vertical)
+        textView.setContentCompressionResistancePriority(.required, for: .vertical)
+        context.coordinator.lastMarkdown = \"\""""
+
+V60_MK_NEW = """        textView.setContentHuggingPriority(.required, for: .vertical)
+        textView.setContentCompressionResistancePriority(.required, for: .vertical)
+        // [V60-ZHAO-MAKE] 初建即 sane(zhaoxiufei 3ccdff6 同款):
+        // SwiftUI 首趟布局问尺寸时容器宽已是净宽, 不再从 1e7 初值起步。
+        let defaultWidth = UIScreen.main.bounds.width - 32
+        textView.textContainer.size = CGSize(width: defaultWidth, height: .greatestFiniteMagnitude)
+        context.coordinator.lastMarkdown = \"\""""
+
+V60_UP_OLD = """        let currentFontSize = FontSettings.shared.scaledMessage(16.5)
+        let fontChanged = context.coordinator.lastFontSize != currentFontSize"""
+
+V60_UP_NEW = """        let currentFontSize = FontSettings.shared.scaledMessage(16.5)
+        let fontChanged = context.coordinator.lastFontSize != currentFontSize
+
+        // [V60-ZHAO-UPD] 每次更新前容器宽 sane 兜底(zhaoxiufei 3ccdff6 同款):
+        // 上一趟若有任何路径把容器宽写成垃圾值(<=1 或 >=100_000),
+        // 在本轮排版前用 bounds/屏宽-32 拉回, 不让垃圾宽进排版。
+        if textView.textContainer.size.width <= 1 || textView.textContainer.size.width >= 100_000 {
+            let fallbackW = textView.bounds.width > 1 && textView.bounds.width < 100_000 ? textView.bounds.width : (UIScreen.main.bounds.width - 32)
+            textView.textContainer.size = CGSize(width: fallbackW, height: .greatestFiniteMagnitude)
+        }"""
+
+# iOS15Compat.swift: 在 isMeasuring 声明前插 hosting sizeThatFits 重写。
+# 我们已有两个 systemLayoutSizeFitting 重写(ios15FittingSize, 更精细:
+# 压缩哨兵拦截 + v17 钳宽 + 历史好值兜底), 不重复加; 缺的是 sizeThatFits
+# 这条不经过布局引擎的路径 —— 父视图走它时我们报的是垃圾理想宽。
+V60_HOST_OLD = "    private var isMeasuring: Bool = false"
+
+V60_HOST_NEW = """    // [V60-ZHAO-HOST] 采用 zhaoxiufei/OpenMinis 3ccdff6 已验证方案:
+    // SwiftUI hosting 层直接尺寸协商入口 —— 父视图走 sizeThatFits 路径
+    // (不经过 systemLayoutSizeFitting)时也按传入真实宽向 SwiftUI 要高度,
+    // 并 ceil 对齐像素。测量宽 == 渲染宽 → 高度不再错位。
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        guard let host = host else { return super.sizeThatFits(size) }
+        let width = size.width > 0 ? size.width : (bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width)
+        let fitSize: CGSize
+        if #available(iOS 16.0, *) {
+            fitSize = host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
+        } else {
+            fitSize = host.view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        }
+        return CGSize(width: width, height: ceil(fitSize.height))
+    }
+
+    private var isMeasuring: Bool = false"""
+
+
+def _v60_replace1(t, old, new, what):
+    """单锚点替换: 计数必须恰好 1, 失配报错(不静默跳过)。"""
+    n = t.count(old)
+    if n != 1:
+        raise RuntimeError(
+            "fix_zhao_md_v60: %s 锚点出现 %d 次(应为 1) ——\n"
+            "  上游/前版补丁结构可能变了, 人工确认后再动。\n"
+            "  锚点开头: %s" % (what, n, old.split(chr(10))[0][:80]))
+    return t.replace(old, new, 1)
+
+
+def fix_zhao_md_v60(t):
+    """v60 注入: SelectableMarkdownView.swift 八处(zhaoxiufei 3ccdff6 同款)。
+
+    幂等: 产物里已有 [V60-ZHAO-INIT] 时原样返回。
+    每个子注入独立锚点 + 计数==1 防呆; 失配**报错**而不是静默跳过
+    (v31~v58 最大的教训: 静默跳过 = 看似修复实则没进包)。
+    """
+    if "[V60-ZHAO-INIT]" in t:
+        return t
+    t = _v60_replace1(t, V60_INIT_OLD, V60_INIT_NEW, "init sane 初值")
+    t = _v60_replace1(t, V60_V21_OLD, V60_FIT_NEW, "intrinsic 替换+sizeThatFits")
+    t = _v60_replace1(t, V60_CB_HEAD_OLD, V60_CB_HEAD_NEW, "CB attachmentBounds 头")
+    t = _v60_replace1(t, V60_CB_RET_OLD, V60_CB_RET_NEW, "CB return effectiveWidth")
+    t = _v60_replace1(t, V60_MV_OLD, V60_MV_NEW, "CB makeView usableWidth")
+    t = _v60_replace1(t, V60_SC_OLD, V60_SC_NEW, "CB scrollWidth 兜底")
+    t = _v60_replace1(t, V60_MK_OLD, V60_MK_NEW, "makeUIView 初值")
+    t = _v60_replace1(t, V60_UP_OLD, V60_UP_NEW, "updateUIView 兜底")
+    return t
+
+
+def verify_zhao_md_v60(t):
+    """v60 判据: 七层(SelectableMarkdownView.swift)。
+
+    L1 init 标记 + sane 初值窗口
+    L2 sizeThatFits/intrinsic 重写块窗口(sane 推导链 + 漂移重置 + noIntrinsic)
+    L3 intrinsic 恰好 1 处 override; v21 旧版特征清零
+    L4 makeUIView/updateUIView 兜底在位
+    L5 v59 退场核账: 跟随宽 2 / 关闭跟随 1 / v59 标记 0
+    L6 CodeBlock 三处(effectiveWidth / usableWidth / scrollWidth)
+    L7 值域纪律: 垃圾宽拦截阈值必须是 100_000(S7 改 1e9 即红)
+    """
+    # L1
+    if t.count("[V60-ZHAO-INIT]") != 1:
+        raise RuntimeError("verify_zhao_md_v60 L1: 缺 [V60-ZHAO-INIT](应恰 1)")
+    i = t.find("[V60-ZHAO-INIT]")
+    tail = t[i:i + 600]
+    if "defaultWidth" not in tail or ".greatestFiniteMagnitude" not in tail:
+        raise RuntimeError("verify_zhao_md_v60 L1: init 窗口缺 sane 初值两行")
+    # L2
+    if t.count("[V60-ZHAO-FIT]") != 1:
+        raise RuntimeError("verify_zhao_md_v60 L2: 缺 [V60-ZHAO-FIT](应恰 1)")
+    i = t.find("[V60-ZHAO-FIT]")
+    tail = t[i:i + 3500]
+    if "override func sizeThatFits(_ size: CGSize) -> CGSize" not in tail:
+        raise RuntimeError("verify_zhao_md_v60 L2: 窗口内无 sizeThatFits 重写")
+    if "override var intrinsicContentSize" not in tail:
+        raise RuntimeError("verify_zhao_md_v60 L2: 窗口内无 intrinsicContentSize 重写")
+    if "size.width > 1 && size.width < 100_000" not in tail:
+        raise RuntimeError("verify_zhao_md_v60 L2: 推导链缺垃圾宽拦截(100_000)")
+    if "> 0.5 {" not in tail:
+        raise RuntimeError("verify_zhao_md_v60 L2: 缺漂移重置(>0.5)分支")
+    if "ceil(fit.height)" not in tail:
+        raise RuntimeError("verify_zhao_md_v60 L2: 缺 ceil 高度对齐")
+    if "noIntrinsicMetric" not in tail:
+        raise RuntimeError("verify_zhao_md_v60 L2: 宽未退出协商(noIntrinsicMetric)")
+    # L3
+    n_intr = t.count("override var intrinsicContentSize")
+    if n_intr != 1:
+        raise RuntimeError(
+            "verify_zhao_md_v60 L3: intrinsicContentSize override 出现 %d 处"
+            "(应为 1) —— v21 旧版没被替换干净会重复声明编译失败" % n_intr)
+    if "let sz = super.intrinsicContentSize" in t:
+        raise RuntimeError(
+            "verify_zhao_md_v60 L3: v21 旧版特征仍在(super.intrinsicContentSize "
+            "先按 1e5 排版再钳) —— 替换没生效")
+    if t.count("noIntrinsicMetric") < 2:
+        raise RuntimeError("verify_zhao_md_v60 L3: noIntrinsicMetric 应 ≥2(宽+高)")
+    # L4
+    if t.count("[V60-ZHAO-MAKE]") != 1:
+        raise RuntimeError("verify_zhao_md_v60 L4: 缺 [V60-ZHAO-MAKE]")
+    if t.count("[V60-ZHAO-UPD]") != 1:
+        raise RuntimeError("verify_zhao_md_v60 L4: 缺 [V60-ZHAO-UPD]")
+    i = t.find("[V60-ZHAO-UPD]")
+    if "fallbackW" not in t[i:i + 500]:
+        raise RuntimeError("verify_zhao_md_v60 L4: updateUIView 兜底体缺失")
+    # L5
+    n_true = t.count(_V60_TRUE)
+    n_false = t.count(_V60_FALSE)
+    if n_true != 2:
+        raise RuntimeError(
+            "verify_zhao_md_v60 L5: 跟随宽 %d 处(应为 2: init+表格) ——\n"
+            "  0/1 = v59 残魂或 init 没恢复 true; >2 = 上游新增视图未登记" % n_true)
+    if n_false != 1:
+        raise RuntimeError(
+            "verify_zhao_md_v60 L5: 关闭跟随 %d 处(应为 1: codeTextView v4) ——\n"
+            "  >1 = v59 断源残魂(主视图 false 会退化回 v31~v58 的对抗态)" % n_false)
+    if "[V59-NOTRACK]" in t:
+        raise RuntimeError(
+            "verify_zhao_md_v60 L5: [V59-NOTRACK] 仍在 —— v59 必须整体退场,"
+            " 不能与 v60 的宽跟随方案并存(容器宽会两个主子抢写)")
+    # L6
+    if t.count("[V60-ZHAO-CB]") != 3:
+        raise RuntimeError(
+            "verify_zhao_md_v60 L6: [V60-ZHAO-CB] 应恰 3 处(attachmentBounds/"
+            "makeView/scrollWidth), 实测 %d" % t.count("[V60-ZHAO-CB]"))
+    if t.count("width: effectiveWidth") != 1:
+        raise RuntimeError("verify_zhao_md_v60 L6: CB return 未改 effectiveWidth")
+    if "max(usableWidth - inset, 50)" not in t:
+        raise RuntimeError("verify_zhao_md_v60 L6: makeView 缺 min-50 兜底")
+    if "max(container.frame.width, 50)" not in t:
+        raise RuntimeError("verify_zhao_md_v60 L6: scrollWidth 缺 min-50 兜底")
+    # L7
+    if "lineFrag.width < 100_000" not in t:
+        raise RuntimeError("verify_zhao_md_v60 L7: CB 三级 fallback 阈值被动过")
+    return True
+
+
+def fix_zhao_compat_v60(t):
+    """v60 注入: iOS15Compat.swift 的 hosting sizeThatFits 重写(同款)。"""
+    if "[V60-ZHAO-HOST]" in t:
+        return t
+    n = t.count(V60_HOST_OLD)
+    if n != 1:
+        raise RuntimeError(
+            "fix_zhao_compat_v60: isMeasuring 声明锚点出现 %d 次(应为 1) —— "
+            "兼容层结构可能变了" % n)
+    return t.replace(V60_HOST_OLD, V60_HOST_NEW, 1)
+
+
+def verify_zhao_compat_v60(t):
+    """v60 判据: 三层(iOS15Compat.swift)。"""
+    if t.count("[V60-ZHAO-HOST]") != 1:
+        raise RuntimeError("verify_zhao_compat_v60: 缺 [V60-ZHAO-HOST]")
+    if t.count("override func sizeThatFits(_ size: CGSize) -> CGSize") != 1:
+        raise RuntimeError(
+            "verify_zhao_compat_v60: hosting sizeThatFits 重写缺失/重复 "
+            "(systemLayoutSizeFitting 两个已有重写不受影响, 签名不同)")
+    i = t.find("[V60-ZHAO-HOST]")
+    tail = t[i:i + 1200]
+    if "ceil(fitSize.height)" not in tail or "host.view.sizeThatFits" not in tail:
+        raise RuntimeError("verify_zhao_compat_v60: 重写体不完整(缺 ceil/host 调用)")
+    return True
+
+
 def fix_kvo_debt_v569(t):
     """v56.9: 修 KVO 同值抑制把欠账帧永久跳过。
 
@@ -12903,27 +13230,28 @@ def main():
     # ★顺序要点: v55-B 仍先注册(它是 v56-B 的锚点载体), v56-B 在其产物上改写,
     #   所以 v56 不能删掉 v55-B 的注册, 只在 v56 里把它放行。
 
-    edit("Views/Chat/SelectableMarkdownView.swift", fix_md_notrack_v59,
-        "v59: 关闭主 Markdown 视图容器宽跟随 —— v31~v58 全部改动的真正天花板。"
-        "【上游代码 SelectableMarkdownTextView.init() 里 widthTracksTextView=true】"
-        "  意思是「容器宽每趟布局自动从 frame 派生」。装机日志(v57.1, 04:32 段)"
-        "  实证: SwiftUI inset 后 superview 宽 358, 但本视图 frame 被上游布局"
-        "  撑到 390 ⇒ 派生容器宽 = 390。"
-        "【为什么 30 多版全白改】v31~v58 每一版都在往容器里写 358, 而系统每趟"
-        "  布局都用 frame(390)把它覆盖回去: 41.595 写入 358 → 41.598(3 毫秒后)"
-        "  读回 390。NSTextContainerSetSizeGuard.m 的注释早就写着这个结论"
-        "  (v9/v9.1/v10 三版试图在容器层面对抗, 44131 次死循环 + 508 次 10s 卡死):"
-        "  「widthTracksTextView=true 时宽度由 UIKit 从 frame 派生, 要修就修源头」。"
-        "  本版就是修源头: 关掉派生。"
-        "【关掉之后谁管宽】v18 渲染段 + v57.0 KVO 纠偏(netW = cvW - 32, 来自 "
-        "  collectionView 干净源) 独占维护; 旋转/resize 后 KVO 亦会重写。"
-        "  v58 的 invalidateLayout 重排随之真正生效(此前排完又被覆盖回 390 的"
-        "  行碎片, 现在不会再被顶回)。"
-        "【首帧兜底】NSTextContainer 默认 1e7 x 1e7(项目日志里的 1e7 污染值就是"
-        "  它), 关掉跟随后的首趟排版会按 1e7 排成一行超长 —— 压一个保守初值 320, "
-        "  KVO 纠偏一跑就以真实净宽覆盖。"
-        "【范围红线】TableScrollView 的内联代码 TextView(表格用, frame 干净)保持 "
-        "  true 不动 —— 它不是病灶, 顺手改它就是范围失控(v56.6 纪律)。")
+    # ★v60 取代 v59★: v59 的断源方案(false+兜底320)整体退场 —— 用户截图
+    # 实证 zhaoxiufei/OpenMinis 的宽跟随保留方案在 iOS 15.1.1/15.4.1 真机
+    # 上无卡字, 而 v31~v59 的容器层对抗 30 余版从未被真机验证成功。
+    # v59 的 fix_md_notrack_v59 函数保留在文件里仅作历史记录, 不再注册。
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_zhao_md_v60,
+        "v60: 采用 zhaoxiufei/OpenMinis 3ccdff6 已验证方案(真机 iOS 15.1.1/"
+        "15.4.1 无卡字)取代 v59 断源版。"
+        "【八处注入】init sane 初值 / sizeThatFits+intrinsicContentSize 重写"
+        "(sane 宽推导链+漂移重置+宽退出协商) / CodeBlockAttachment 三处"
+        "(attachmentBounds 三级 fallback+makeView min-50+scrollWidth min-50) / "
+        "makeUIView 初值 / updateUIView 垃圾宽兜底。"
+        "【哲学】不再与宽跟随对抗: 保留上游 true, 通过四层重写保证 frame 恒 "
+        "sane, 跟随派生自然得到净宽 —— v31~v59 的「写 358 被 frame(390) 顶回」"
+        "天花板从机制上消失。"
+        "【共存】v57.0 KVO 纠偏/v58 重排保留, 在 frame sane 后退化为观察者; "
+        "v21 intrinsic 钳宽被本版替换(旧版先按 1e5 排再钳=白排+理想宽泄漏)。"
+        "【判据七层+hosting 三层】见 verify_zhao_md_v60/verify_zhao_compat_v60; "
+        "反向 10 条见 ios15_verify/reverse_v60.py。")
+    edit("iOS15Compat.swift", fix_zhao_compat_v60,
+        "v60: hosting 层 sizeThatFits 重写(zhaoxiufei 3ccdff6 同款) —— "
+        "父视图走 sizeThatFits 路径时按真实宽向 SwiftUI 要高度+ceil 对齐; "
+        "已有的两个 systemLayoutSizeFitting 重写(ios15FittingSize)不动。")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")

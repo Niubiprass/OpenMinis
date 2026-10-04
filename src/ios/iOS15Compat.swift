@@ -394,6 +394,22 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     /// 栈溢出 EXC_BAD_ACCESS（实测崩溃栈: ios15FittingSize ↔
     /// _systemLayoutSizeFittingSize 反复嵌套）。所以这里只用
     /// `sizeThatFits` 这条不经过布局引擎的路径。
+    // [V60-ZHAO-HOST] 采用 zhaoxiufei/OpenMinis 3ccdff6 已验证方案:
+    // SwiftUI hosting 层直接尺寸协商入口 —— 父视图走 sizeThatFits 路径
+    // (不经过 systemLayoutSizeFitting)时也按传入真实宽向 SwiftUI 要高度,
+    // 并 ceil 对齐像素。测量宽 == 渲染宽 → 高度不再错位。
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        guard let host = host else { return super.sizeThatFits(size) }
+        let width = size.width > 0 ? size.width : (bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width)
+        let fitSize: CGSize
+        if #available(iOS 16.0, *) {
+            fitSize = host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
+        } else {
+            fitSize = host.view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        }
+        return CGSize(width: width, height: ceil(fitSize.height))
+    }
+
     private var isMeasuring: Bool = false
     private var lastLoggedWidth: CGFloat = -1
     private var ios15LastGoodFitH: CGFloat = 0
