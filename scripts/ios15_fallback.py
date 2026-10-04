@@ -4598,6 +4598,367 @@ def verify_attachment_v46(t):
         raise RuntimeError("verify_attachment_v46: 访问器不得带 setter")
 
 
+def fix_diag_codeblock_v565(t):
+    # ================================================================
+    # v56.5: CodeBlockAttachment 高度诊断 (纯只读, 一行几何都不碰)
+    # ================================================================
+    # 【为什么 v46 探针查不到终端框】
+    #   v46 的 [V46-ATTACH] 只对 `TableAttachment` 取值:
+    #       if let _t = _a as? TableAttachment { ... }
+    #   而终端框是 **CodeBlockAttachment**, 两者是**平级的兄弟类**
+    #   (都直接继承 NSTextAttachment, 行 1405 / 1776)。
+    #   ⇒ 探针的 `attWant/attCached` 从来不含代码块。
+    #   装机日志证据(v56.2, PID 43107): 72 条 V46-ATTACH 里,
+    #   **31 条是 attWant=0.0 attCached=-1.0** —— 累计高 0、缓存 -1,
+    #   说明那一帧的附件**全是 CodeBlockAttachment**, 一个 TableAttachment
+    #   都没有, 于是两个计数器恒为初值。那 31 条的 nGlyph 恒 228、
+    #   usedH 恒 477.6、tcW 恒 390.0 ⇒ 是**另一个独立的视图**。
+    #   结论: 「终端框卡显示 + 终端输出与终端之间空白过大」这条线,
+    #   v46 探针**结构上就看不见**, 不是数据不够, 是压根没测。
+    #
+    # 【v56.2 日志里已能确定的边界条件(不需要猜的部分)】
+    #   · attachmentBounds 与 makeView 两条路径都用
+    #       sizeThatFits(CGSize(width: .greatestFiniteMagnitude, ...))
+    #     即**不限宽测量** ⇒ 终端输出永不折行, contentHeight 是"一行/多行"的
+    #     自然高度。两条路径同源, 所以 attWant==attCached 本该成立 ——
+    #     V46 里 attWant!=attCached 的那 17 条是 Table 的问题, 与终端框无关。
+    #   · maxCodeHeight = 400 - topOffset - bottomPadding 是**硬上限**,
+    #     contentHeight 超过就被截断进内部滚动区。此时 attachmentBounds
+    #     返回的高度 **小于**真实内容高度, 而 makeView 里
+    #     `scrollView.frame.height = scrollHeight + bottomPadding` 用的是
+    #     同一个 scrollHeight —— 两边一致, 但**外部排版给它的位置只按
+    #     截断后的高度**, 于是"终端框画出来了、框内的输出被滚动区吃掉"。
+    #     这与用户看到的「终端框卡显示」方向一致, 但**是同一现象还是两回事
+    #     必须由日志回答**, 不能靠推断。
+    #
+    # 【所以这一版只加探针, 不改行为】
+    #   要测的四个量, 每一个都对应一个可证伪的修法分支:
+    #     cH  = attachmentBounds 返回的总高(排版给它留的位置)
+    #     raw = measureCodeHeight() 的原始自然高
+    #     cap = maxCodeHeight 的硬上限
+    #     vcH = 已 makeView 出来的真实视图高度(框架/容器)
+    #   判读:
+    #     · raw > cap  ⇒ 内容超上限被截 ⇒ 修法在"截断策略"(上限或改折叠)
+    #     · raw <= cap 但 vcH != cH ⇒ 视图与排版给的位置不一致
+    #       ⇒ 空白来自**框架高度与排版高度两个来源打架**
+    #     · cH 远小于 usedH 的可用量 ⇒ 排版没给它留够位置 ⇒ 下游消费问题
+    #   ★不测「帧有没有被复用」—— 那要看 v56 的 [V56-*] 与 view cache,
+    #     混进本探针会让 4 个量变成 8 个量, 判读时反而看不出因果。
+    V565_OLD = """    override func attachmentBounds(for textContainer: NSTextContainer?, proposedLineFragment lineFrag: CGRect, glyphPosition position: CGPoint, characterIndex charIndex: Int) -> CGRect {
+        let width = lineFrag.width
+        let topOffset: CGFloat = (language != nil && !language!.isEmpty) ? 28 : 12
+        let contentHeight = measureCodeHeight()
+        let bottomPadding: CGFloat = 12
+        let maxCodeHeight: CGFloat = 400 - topOffset - bottomPadding
+        let scrollHeight = min(contentHeight, maxCodeHeight)
+        let totalHeight = topOffset + scrollHeight + bottomPadding
+        let height = totalHeight + Self.topMargin + Self.bottomMargin
+        return CGRect(x: 0, y: 0, width: width, height: height)
+    }"""
+
+    V565_NEW = """    // [V565-CODEBLOCK] 终端框高度账 —— 纯诊断, 一行几何都不碰。
+    //
+    // 【v46 探针为什么测不到这里】v46 只 as? TableAttachment, 而本类是
+    // CodeBlockAttachment, 二者是平级兄弟(都直接继承 NSTextAttachment)。
+    // v56.2 装机日志里那 31 条 `attWant=0.0 attCached=-1.0` 就是证据:
+    // 累计高 0、缓存 -1 ⇒ 该帧附件全是代码块, v46 计数器恒为初值。
+    // ⇒ 之前说"终端框问题数据不够"是错的, 准确说法是**根本没测**。
+    //
+    // 【四个量各自能证伪一个修法】
+    //   cH  = 本方法返回的总高 —— 排版在文本流里给它留的位置
+    //   raw = measureCodeHeight() 自然高(不限宽测量, 故永不折行)
+    //   cap = 400 - topOffset - 12 的硬上限
+    //   vcH = makeView 出来的容器真实高(框架层), -1 = 还没 makeView
+    //   判读:
+    //     raw > cap          ⇒ 内容超上限被截进内部滚动区(终端框"卡显示")
+    //     vcH >= 0 且 vcH != cH ⇒ 框架高度与排版高度两个来源打架(空白过大)
+    //     vcH < 0            ⇒ 排版问过高度但从未建视图 ⇒ 建视图路径没跑到
+    //   0.5s 节流, 与 V41/V44/V45/V46 同周期。
+    var attV565ViewH: CGFloat = -1
+    var attV565ViewW: CGFloat = -1
+
+    override func attachmentBounds(for textContainer: NSTextContainer?, proposedLineFragment lineFrag: CGRect, glyphPosition position: CGPoint, characterIndex charIndex: Int) -> CGRect {
+        let width = lineFrag.width
+        let topOffset: CGFloat = (language != nil && !language!.isEmpty) ? 28 : 12
+        let contentHeight = measureCodeHeight()
+        let bottomPadding: CGFloat = 12
+        let maxCodeHeight: CGFloat = 400 - topOffset - bottomPadding
+        let scrollHeight = min(contentHeight, maxCodeHeight)
+        let totalHeight = topOffset + scrollHeight + bottomPadding
+        let height = totalHeight + Self.topMargin + Self.bottomMargin
+
+        // ---- [V565-CODEBLOCK] 诊断段: 纯读 + 打日志, 零赋值影响 ----
+        // ★不得改 height/width —— 判据会校验本段零赋值, 改了就失去意义。
+        do {
+            struct _V565Log { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+            let _v565now = CACurrentMediaTime()
+            if _v565now - _V565Log.last > 0.5 {
+                _V565Log.last = _v565now
+                _V565Log.n &+= 1
+                // 真实视图高度: 从 keyWindow 沿子树上溯找本 attachment 建的
+                // wrapper 代价太高且会强引用视图, 改为由 makeView 侧写入
+                // attV565ViewH(见下), 这里只读。
+                NSLog("[V565-CODEBLOCK] cH=%.1f raw=%.1f cap=%.1f clip=%d lines=%d "
+                      + "chars=%d fragW=%.1f viewH=%.1f viewW=%.1f cachedRaw=%.1f n=%u",
+                      Double(height), Double(contentHeight), Double(maxCodeHeight),
+                      contentHeight > maxCodeHeight ? 1 : 0,
+                      self.attV565LineCount, code.count,
+                      Double(width), Double(attV565ViewH), Double(attV565ViewW),
+                      Double(self.attV565CachedRaw), _V565Log.n)
+            }
+        }
+
+        return CGRect(x: 0, y: 0, width: width, height: height)
+    }
+
+    // [V565-CODEBLOCK] 只读诊断量: 缓存里的自然高(判断缓存是否过期)
+    // 与行数(把 raw 换算成"几行"才能和 cap 比)。
+    var attV565CachedRaw: CGFloat { cachedContentHeight?.height ?? -1 }
+    /// 终端输出的行数 = 自然高 / 单行行高, 由 topOffset 的 28/12 反推不稳,
+    /// 这里直接数换行符 + 1, 语义明确且不依赖字体度量。
+    var attV565LineCount: Int {
+        var n = 1
+        for ch in code.unicodeScalars where ch == "\\n" { n += 1 }
+        return n
+    }"""
+
+    # [幂等·纪律 51/52] 判据必须在**任何注入动作之前**, 且认**产物标记**。
+    # 锚点 V565_OLD 在注入后消失, 但仍按「插入物自身」判定, 与 v56.4
+    # 修 fix_markdown_layout_reconcile 时立的纪律一致。
+    if "V565-CODEBLOCK" in t:
+        return t
+
+    if V565_OLD not in t:
+        raise RuntimeError(
+            "fix_diag_codeblock_v565: CodeBlockAttachment.attachmentBounds "
+            "锚点不唯一或已变(命中 %d 处)。上游结构变了, 先重新核对再注入 —— "
+            "★绝不能靠改 needle 硬凑, 那会让探针插到错误的类上, 测出来的数"
+            "全无意义(这是 v46 探针结构上看不到代码块的根本教训)。"
+            % t.count(V565_OLD))
+
+    t = t.replace(V565_OLD, V565_NEW, 1)
+
+    # ---- 由 makeView 侧写入真实视图高度(唯一一处必要的赋值) ----
+    # 放在 container.frame 赋值之后: 那是「框架层最终高度」的唯一来源。
+    MV_OLD = """        let totalHeight = topOffset + scrollHeight + bottomPadding
+        container.frame = CGRect(x: inset, y: 0, width: contentWidth, height: totalHeight)"""
+    MV_NEW = """        let totalHeight = topOffset + scrollHeight + bottomPadding
+        container.frame = CGRect(x: inset, y: 0, width: contentWidth, height: totalHeight)
+        // [V565-CODEBLOCK] 把框架层真实高度回报给 attachmentBounds 的诊断段,
+        // 好让日志并排打出「排版给的位置 cH」与「实际画的框 viewH」。
+        // ★这是本探针**唯一**的写入点, 且写的是本对象自己的字段 ——
+        //   不改任何几何、不触发任何 invalidate。
+        attV565ViewH = wrapper.frame.height
+        attV565ViewW = container.frame.width"""
+    if MV_OLD not in t:
+        raise RuntimeError(
+            "fix_diag_codeblock_v565: makeView 的 container.frame 锚点缺失 —— "
+            "探针的 viewH 会永远是 -1, 白测。命中 %d 处。" % t.count(MV_OLD))
+    t = t.replace(MV_OLD, MV_NEW, 1)
+
+    verify_diag_codeblock_v565(t)
+    return t
+
+
+def verify_diag_codeblock_v565(t):
+    """V565 探针的结构校验。判据顺序: 先语义后计数, 计数放最后当总兜底。
+
+    判据设计的核心教训(v46 探针): **判据必须盯住"它测的是不是我要测的东西"**。
+    v46 只 as? TableAttachment, 于是对同为 NSTextAttachment 子类的
+    CodeBlockAttachment 完全失明 —— 探针存在、一直绿、却测不到终端框。
+    纯检查「标记在不在、括号平不平」永远发现不了这件事, 那是**覆盖范围**
+    判据, 只能靠人写下来。所以本函数的第 2 条显式钉死类名。
+    """
+    import re as _re
+
+    # ---- 1. 日志点唯一 ----
+    _i0 = t.find('NSLog("[V565-CODEBLOCK]')
+    if _i0 < 0:
+        raise RuntimeError("verify_diag_codeblock_v565: 未找到 V565 日志点")
+    if t.count('NSLog("[V565-CODEBLOCK]') != 1:
+        raise RuntimeError("verify_diag_codeblock_v565: V565 日志点必须唯一")
+
+    # ---- 2. ★覆盖范围: 必须挂在 CodeBlockAttachment 里, 不是 TableAttachment ----
+    # 【v46 的教训】探针装在错误的类里, 全部判据照样全绿, 而测的是别的东西。
+    # 只查「标记唯一」发现不了这件事 —— 必须正向钉死宿主类名。
+    _icb = t.find("final class CodeBlockAttachment")
+    if _icb < 0:
+        raise RuntimeError(
+            "verify_diag_codeblock_v565: 未找到 CodeBlockAttachment 类 —— "
+            "上游结构变了, 重新核对宿主类再注入(绝不能改 needle 硬凑)")
+    _iend_cb = t.find("\nfinal class ", _icb + 10)
+    if _iend_cb < 0:
+        _iend_cb = len(t)
+    if not (_icb < _i0 < _iend_cb):
+        raise RuntimeError(
+            "verify_diag_codeblock_v565: V565 日志点不在 CodeBlockAttachment 内 "
+            "(类区间 %d..%d, 日志点 %d) —— ★这正是 v46 探针的失败形态: "
+            "装在 TableAttachment 里, 对代码块完全失明。"
+            % (_icb, _iend_cb, _i0))
+
+    # ---- 3. 四个诊断量齐全(少一个就少一条可证伪分支) ----
+    for _need, _why in (
+        ("attV565ViewH", "makeView 侧必须写入真实框高, 否则 viewH 恒 -1"),
+        ("attV565ViewW", "必须写入真实框宽, 否则无法判左右被裁"),
+        ("attV565CachedRaw", "必须读缓存自然高, 否则判不出缓存是否过期"),
+        ("attV565LineCount", "必须有行数, raw/cap 的比值才有物理意义"),
+        ("contentHeight > maxCodeHeight", "必须打 clip 标志 —— "
+         "「内容超上限被截」是终端框卡显示的头号候选"),
+    ):
+        if _need not in t:
+            raise RuntimeError(
+                "verify_diag_codeblock_v565: 缺少 %s —— %s" % (_need, _why))
+
+    # ---- 3b. ★makeView 侧的回写必须**真的存在**(不是只有字段声明) ----
+    # 【反向测试 S2 实跑发现的洞】只查 "attV565ViewH" 在文件里出现过,
+    #   删掉 makeView 里那两行**赋值**后, 字段声明(var attV565ViewH: CGFloat = -1)
+    #   与诊断段里的**读**都还在, 判据照样全绿 —— 而 viewH 会恒为 -1,
+    #   探针测不出任何东西。**声明 ≠ 写入。**
+    #   ⇒ 判据必须查**赋值语句**, 且必须落在 makeView 方法体里。
+    _mv_anchor = "container.frame = CGRect(x: inset, y: 0, width: contentWidth, height: totalHeight)"
+    _imv = t.find(_mv_anchor)
+    if _imv < 0:
+        raise RuntimeError(
+            "verify_diag_codeblock_v565: 未找到 makeView 的 container.frame 锚点 —— "
+            "探针的 viewH 回报点没了")
+    _tail = t[_imv:_imv + 400]
+    for _wr in ("attV565ViewH =", "attV565ViewW ="):
+        if _wr not in _tail:
+            raise RuntimeError(
+                "verify_diag_codeblock_v565: makeView 的 container.frame 之后必须回写 %s "
+                "—— 反向测试 S2 实测: 只留字段声明而删掉赋值, 判据会全绿放行, "
+                "而 viewH 恒 -1 等于探针没测(声明 ≠ 写入)" % _wr)
+
+    # ---- 4. 访问器必须是无 setter 的只读 getter ----
+    # ★必须扫**整段**而不是第一行: 只读 getter 常写成多行
+    #   (var x: Int {\n    ...\n  }), 只看首行会误判"没有 {" 而报死。
+    #   这是本函数第一次跑就踩到的错 —— 判据自己写错, 报出的却是
+    #   "产物有问题", 方向完全相反。判据的假红比假绿更费时间。
+    for _acc in ("var attV565CachedRaw", "var attV565LineCount"):
+        _i = t.find(_acc)
+        if _i < 0:
+            raise RuntimeError("verify_diag_codeblock_v565: 只读访问器缺失: %s" % _acc)
+        # 从声明行起到第一个只含 "}" 的行为止
+        _e = t.find("\n", _i)
+        _j = _e
+        while _j < len(t):
+            _nxt_eol = t.find("\n", _j + 1)
+            if _nxt_eol < 0:
+                break
+            _seg_line = t[_j + 1:_nxt_eol].strip()
+            if _seg_line == "}":          # 单行 getter: "var x: T { expr }"
+                _j = _nxt_eol
+                break
+            _j = _nxt_eol
+        _blk = t[_i:_j + 1]
+        if "{" not in _blk or "}" not in _blk:
+            raise RuntimeError(
+                "verify_diag_codeblock_v565: %s 必须是只读 getter(结构上不可写): %r"
+                % (_acc, _blk.strip()[:120]))
+        _no_set = _re.sub(r"//[^\n]*", "", _blk)
+        if _re.search(r"\bset\b\s*\{", _no_set) or _re.search(r"\bset\s*\{", _no_set):
+            raise RuntimeError(
+                "verify_diag_codeblock_v565: %s 不得带 setter" % _acc)
+
+    # ---- 5. ★诊断段零赋值(纯诊断的生命线) ----
+    # 段内除节流计数器(_V565Log)外不得对任何已有状态赋值; 一旦改了高度,
+    # 装机日志的四个量就全部不可信, 归因链断掉。
+    # ★日志点**在** do 块内部, 所以 do 必须**向前**找; 向前找会命中
+    #   attachmentBounds 方法体里更早的 do(如 for-in 之外的), 因此取
+    #   "最后一个出现在 _i0 之前、且其后到 _i0 之间没有别的 do {" 的那个。
+    #   最稳的定位: 从 _i0 往前找最近的 "do {"。
+    _i_do = t.rfind("do {", 0, _i0)
+    if _i_do < 0:
+        raise RuntimeError("verify_diag_codeblock_v565: 诊断段没有 do { 块")
+    # ★必须用**花括号配平**切到 do 块的闭合, 不能用固定缩进找 "\n            }" ——
+    #   固定缩进的写法在别的缩进层上会切飞, 把 do 块**后面**的 makeView 代码
+    #   一并切进来, 于是 syncScrollability 里的
+    #   `scrollView.showsVerticalScrollIndicator = canScrollV`
+    #   被当成"探针改了状态"而报死。
+    #   ⇒ 判据自己的切片错, 报出的却是"产物违规", 方向完全相反。
+    #   ⇒ 这是本轮第二次被自己的判据骗到(第一次是多行 getter 只看首行)。
+    #   **纪律: 判据的切片必须按结构配平, 不能按缩进猜。**
+    _depth2 = 0
+    _k = _i_do + len("do {") - 1
+    _end = -1
+    while _k < len(t):
+        if t[_k] == "{":
+            _depth2 += 1
+        elif t[_k] == "}":
+            _depth2 -= 1
+            if _depth2 == 0:
+                _end = _k + 1
+                break
+        _k += 1
+    if _end < 0:
+        raise RuntimeError("verify_diag_codeblock_v565: do 块未闭合")
+    # ★切片必须从 **do 块**起, 不能从日志点起 ——
+    #   反向测试 S4/S5 实跑发现: 从日志点切的话, 「写在 do 开头、日志点之前」
+    #   的违规代码落在切片之外, 判据全绿放行。所以切片起点是 _i_do。
+    #   日志点在块内, 故下界用 do、上界用 do 的闭合 —— 正好是整个诊断块。
+    _seg = t[_i_do:_end]
+    _code = _strip_swift_noise(_seg)
+    for _ln in _code.splitlines():
+        _s = _ln.strip()
+        if not _s:
+            continue
+        if _s.startswith("let ") or _s.startswith("var ") or _s.startswith("struct "):
+            continue
+        if "&+=" in _s or "struct _V565Log" in _s:
+            continue
+        if _s.startswith("return "):
+            continue
+        _m = _re.search(
+            r"(?<![\w.\]\)])\b([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*"
+            r"(?:\[[^\]]*\])?)\s*=(?!=)", _s)
+        if _m:
+            _lhs = _m.group(1)
+            if not _lhs.startswith("_V565Log"):
+                raise RuntimeError(
+                    "verify_diag_codeblock_v565: ★纯诊断违规 —— 段内出现赋值 %r: %r "
+                    "(探针必须只读; 改几何会让四个量的归因全部失效)"
+                    % (_lhs, _s[:70]))
+
+    # ---- 6. 硬禁危险调用: 段内不得触发任何重排/失效 ----
+    for _bad in ("invalidateLayout", "invalidateDisplay", "invalidateIntrinsic",
+                 "invalidateSize", "ensureLayout", "setNeedsDisplay",
+                 "computeLayout(", "textContainer.size =", ".frame =",
+                 "contentGeneration", "needsLayoutInvalidation",
+                 "measureCodeHeight() ="):
+        if _bad in _code:
+            raise RuntimeError(
+                "verify_diag_codeblock_v565: 段内出现禁用项 %r —— "
+                "★纯诊断违规: 探针里偷偷做修法, 装机数据失去归因价值" % _bad)
+
+    # ---- 7. 诊断块必须紧贴在 return CGRect 之前 ----
+    # 裸块会被吸成 trailing closure(v42 首次推送就栽在这), 所以必须 do { }。
+    # 「紧贴」的判据: do 块闭合到 return CGRect 之间只允许空白 ——
+    # 中间插任何逻辑都意味着 cH 的计算可能已经变了, 探针测的不是同一个值。
+    _after = t[_end:_end + 200]
+    _gap = _after.lstrip()
+    if not _gap.startswith("return CGRect"):
+        raise RuntimeError(
+            "verify_diag_codeblock_v565: do 块必须紧贴 return CGRect 之前 "
+            "(实际其后是 %r) —— 中间夹逻辑会让 cH 与被测表达式脱钩"
+            % _gap[:60])
+
+    # ---- 8. 节流必须 0.5s, 与其余诊断同周期 ----
+    if "_v565now - _V565Log.last > 0.5" not in t:
+        raise RuntimeError(
+            "verify_diag_codeblock_v565: 必须 0.5s 节流"
+            "(与 V41-KVOPRE/V44/V45/V46 同周期)")
+
+    # ---- 9. 花括号平衡(总兜底, 放最后) ----
+    _depth, _low = _brace_balance(t)
+    if _depth != 0:
+        raise RuntimeError(
+            "verify_diag_codeblock_v565: 花括号不平衡(净 %+d 处)" % _depth)
+    if _low < 0:
+        raise RuntimeError(
+            "verify_diag_codeblock_v565: 花括号中途变负(最深 %d) —— 有未闭合结构" % _low)
+
+
+
 def fix_width_reflow_v47(t):
     """v47: 统一测宽源 —— 治'终端框盖住上面的字 / 定时任务字一下有一下没有'。
 
@@ -10327,6 +10688,7 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_tvh_debt_v45, "v45: 补高**补到画字的那个视图上** — 治'下面一小片空白 + 字卡一半'(v44 纯诊断归因, log13 53 条零例外: 假设 A 命中 44/53, 假设 B 彻底排除 —— svAfter == needH 53/53 全成立, 补高从来没被挡掉过。真凶是**补错了对象**: v41~v44 一路补 superview 的 sv.frame, 而画字的是 UITextView 自己的 self.frame。实测 tvH=912.7 而 svAfter=needH=1136.3 —— 外层补到位了, 内层矮 223.6pt, 多出来的是空壳(所以有空白), 有字的地方被自己的 bounds 裁断(所以卡一半)。44 条样本的 usedH-tvH 恒为负(-8.0~-44.7 均值 -34.5) 从不转正, 证明不是随机拉锯而是两个来源各写一次高度。修法: 在 KVO 补高路径里把 needH 同时写进 self.frame。**只动 size.height, 绝不碰 origin/width** —— 宽度由 v18/v34 经 ios15LastSaneSVFrame 维护, 在这里碰它等于绕过那套状态机(v13/v34 都因抢宽引起过闪屏/整体缩小), 校验函数硬禁非高度改动。needH 是本闭包按抢回后净宽算出的权威需求高, 补到它即同时覆盖 v44 假设 C 的虚高差额(30~268pt), C 无需单独代码; 连续多帧时 tvH >= needH 让条件自然转 false, 幂等不反复写。★登记必须排在 v42 与 v44 之后")
     # ---- v46: 表格附件排版链归因(纯诊断, 一行几何都不碰) ----
     edit("Views/Chat/SelectableMarkdownView.swift", fix_diag_attachment_v46, "v46: 【纯诊断, 不改任何行为】V46-ATTACH — 治'终端框盖住上面的字/定时任务字一下有一下没有'。log15 硬证据: needH=304.3 而 usedH=114.3(差 190pt), 表格 7x2 附件占的高度完全不在 usedRect 里; 111 条 V44 里 71 条 needH-usedH>8.5(中位 55.6 最大 190.0), 另 40 条 <=8.5(纯文字, 差额就是 textContainerInset 的 8.1~8.3) —— **差额与'有没有附件'完全同构**, 这是 v44 假设 C 的首次真实命中。len=49 那组更直白: 唯一一组 usedH 恒为 99.9 而 needH 在 182<->236 之间跳的样本, 附件高度反复切换 = 文字忽隐忽现。链路上四个候选根因一次性打完: D1 缓存未失效(computeLayout 开头 cachedLayout 命中即返回, update() 的 structureChanged||contentGrew 若为 false 就留着旧 rowHeights) / D2 探针宽度(isOversizedProbe 时高度按 containerRealWidth 算但返回宽度是 clampedWidth) / D3 失效信号未消费(needsLayoutInvalidation 置位但 invalidate 路径没跑到) / D4 容器被 TextContainerGuard 短路(log15 累计 3617 次, 高度出现 2000.0/1057.3/18.7 等与真实需求无关的值)。**为什么不盲修**: D1 要放宽缓存失效判据, 而那正是 HangFix 2026-05-14 治'流式每 token 全量重测致主线程卡死数秒'故意保留的; D4 要放宽 guard, 而 guard 是治 fillLayoutHole 11918ms 卡死的 —— 两处都是拿性能换正确性的历史 trade-off, 盲修任一处都可能把卡死放回来。校验函数硬禁段内一切赋值与 invalidate*/computeLayout 调用(用剥注释去字符串后的语义级赋值识别, 不靠逐行白名单), 并硬禁访问器带 setter; 另注入 TableAttachment.attV46CachedTotalH/attV46CachedWidth 两个**只读 getter**(cachedLayout 是 private, 不加就读不到, D1 就无法验证)。0.5s 节流与 V41-KVOPRE/V44-TEXTFRAME/V45-TVHFIX 同周期。★登记必须排在 v45 之后(同一闭包同帧, 三者并列对照)")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_diag_codeblock_v565, "v56.5: 【纯诊断, 不改任何行为】V565-CODEBLOCK — 治「终端框卡显示 + 环境配置终端输出与终端之间空白过大」。★★这版的价值首先在于**修一个认知错误**: 此前判读说「终端框问题数据不够, 需要更多日志」—— **不对, 是探针结构上就看不见**。v46 的 [V46-ATTACH] 只 `as? TableAttachment` 取值, 而终端框是 CodeBlockAttachment, 两者是平级兄弟(都直接继承 NSTextAttachment, 产物 1405 / 1776)。v56.2 装机日志(PID 43107)72 条 V46-ATTACH 里 **31 条是 attWant=0.0 attCached=-1.0** —— 累计高 0、缓存 -1, 说明那些帧的附件**全是代码块**, v46 两个计数器恒为初值; 且这 31 条 nGlyph 恒 228 / usedH 恒 477.6 / tcW 恒 390.0 ⇒ 是另一个独立视图。⇒ 判据第一条就钉死宿主类名(CodeBlockAttachment), 这类「装在错误的类里、所有判据照样全绿」的洞只有覆盖范围判据能发现, 标记唯一性永远发现不了。四个量各证伪一个修法: cH=attachmentBounds 给排版留的位置 / raw=measureCodeHeight 自然高 / cap=400-topOffset-12 硬上限 / viewH+viewW=makeView 出来的真实框架(由 makeView 侧回写, 本探针唯一写入点, 只写自己字段不改几何)。判读: raw>cap ⇒ 内容超上限被截进内部滚动区(卡显示); viewH>=0 且 viewH!=cH ⇒ 框架与排版两个高度来源打架(空白过大); viewH<0 ⇒ 排版问过高度但从未建视图。已核实的边界(不猜): attachmentBounds 与 makeView 都用 sizeThatFits(greatestFiniteMagnitude) 即**不限宽测量**, 终端输出永不折行 —— 两路径同源, 所以 v46 里 attWant!=attCached 那 17 条属 Table, 与终端框无关。判据: 日志点唯一 + **宿主类名** + 四量齐全 + 访问器只读无 setter + 段内零赋值 + 硬禁 invalidate/frame=/computeLayout 等 + 0.5s 节流 + 花括号平衡。不测「帧有没有被复用」—— 那归 v56 的 [V56-*] 与 view cache, 混进来会让 4 个量变 8 个, 反而看不出因果")
     # ---- v47: 统一测宽源(排版宽与目标宽同步) ----
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_reflow_v47, "v47: 统一测宽源 — 治'终端框盖住上面的字/定时任务字一下有一下没有'(v46 纯诊断归因, log16 45 条: **D1/D2/D3 三个候选全排除** —— `attWant==attCached` 45/45 缓存新鲜, `cachedW` 与 `tcW` 恒差 1.0 不是陈旧值, `attNVI=1` 0/45 失效信号从未置位。真凶是**排版宽与测高宽不同源**: `tcH-needH=-8.0` 恒定证明容器高度没问题, `V43-WIDTH dirtyW=390 netW=358 dh=0.0` 证明测高用的净宽 358 也没问题, 但 `tcW` 实测恒为 390 且 `tcH-usedH` 在异常组达 44~67pt —— **同一段文字在 390/358 两个宽度下排出的行数不同**, 行碎片停在旧宽而 needH 恒按新宽算, 差出的就是空壳(终端框于是画在空壳上)。根因是 `_ios15WRegrabbed` 由 `abs(tcW-_realW2)>0.5` 决定, 它只表示'有没有改过容器宽'而不表示'碎片有没有按目标宽重排过' —— 而 `invalidateLayout` 才是让碎片重排的那一步。修法: 新增 `ios15LastLaidOutW` 记住上次排版宽, 与目标宽不等就补一次 invalidateLayout。**不新增任何宽度写入点**(仍只有 v18 那两处)、**不碰高度**(v45 成果保护), 稳态下零额外开销且幂等。v13/v34 曾因抢宽引起闪屏与整体缩小, 那是改钳宽翻的车, 本版只加同宽重排。★登记必须排在 v46 之后")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_width_pin_v48, "v48: 排版宽钉回目标宽 — 收口 log17 实测的「v47 只治了一半」。log17 对比 log16: tcW=390 的帧 69→48(v47 的重排确实触发了), 但仍有 48/56 帧 tcW 是 390 —— 因为 v47 只调 invalidateLayout **不写 textContainer.size.width**, TextKit 的 ensureLayout 只在当前容器宽下重排, 容器还是 390 时重排出来的仍是 390 宽的行数, 与按 358 算的 _needH 依旧不同源。**log17 里 tcW 与 gap 完全同构、零例外**: tcW=358.0 → tvH-usedH 恒 8.0~8.3(= textContainerInset 上下之和, 正常态), tcW=390.0 → gap 为 30.5(len=229)/117.5(len=839, 连续 26 条一模一样)。len=229 那组最直接: 同一段文字, 358 宽 gap=8.1, 390 宽 gap=30.5, 差值就是 390 宽排不下的那几行。tvH-needH 全部 56 条为 0.0, v45 补高依然完美, 问题**只在宽度不在高度**。修法: 碎片与目标宽不一致时, **连容器宽一起钉回 _realW2**, 两者合起来才是完整条件(容器宽==目标宽 且 碎片按目标宽重排过); v47 的 ios15LastLaidOutW 判据保留不动, 两个判据正交。**这不是新的抢宽时机**: 写在 v18 段内, 复用 v18 已算好的 _realW2(与 sizeThatFits 测高同一个值), 不引入第三方宽度; 判据 abs(tcW-_realW2)>0.5 保证幂等(已在 358 不写不重排, 稳态零开销; 被推回 390 才纠偏一次, 是**纠偏**不是**竞争**)。v13/v34 翻车是因为在布局 pass外无条件抢宽、与 SwiftUI 竞争, 本版恰好相反; 只写 size.width, **不碰 frame/bounds/origin/高度**, 不会引起「整体缩小」那类几何漂移, 也不推翻 v45。**不做常驻钳宽**: 每帧无条件写 358 正是 v13/v34 的翻车形态。校验用**白名单**(只许 textContainer.size.width = _realW2, 精确等值)而非黑名单 —— 多写一个 frame.origin 就足以让整棵 cell 重新布局。★登记必须排在 v47 之后(锚点是 v47 注入的判据块)")

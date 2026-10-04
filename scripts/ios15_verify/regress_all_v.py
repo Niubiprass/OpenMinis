@@ -79,6 +79,10 @@ CHECKS = [
     # 拿不到干净上游就 SKIP 并显式报出, 绝不假装通过。
     ("产物级幂等(连跑3遍)",
      "check_idempotent_reapply.py",                   "upstream", []),
+    # v565 的 9 条反向: 覆盖范围/只读/零赋值/禁用项/节流/紧贴/回写存在性。
+    # ★它是本项目第一条「覆盖范围」判据 —— v46 探针装错类却全绿的教训。
+    ("v565 反向(9条含覆盖范围)",
+     "reverse_v565.py",                              "upstream", []),
 ]
 
 # 最近四代(v50/v51/v52/v53)的判据与反向测试是当前承重墙, 必须全绿。
@@ -97,6 +101,7 @@ MANDATORY = {
     #   而 fix_markdown_layout_reconcile 的重复注入是「CI 从不炸、
     #   因为 CI 永远只跑一遍」。它们都不能是可选项。
     "Swift 插值语法", "产物级幂等(连跑3遍)",
+    "v565 反向(9条含覆盖范围)",
 }
 
 
@@ -160,8 +165,12 @@ def main():
         elif mode == "swift":
             argv.append(sp)
         elif mode == "upstream":
-            argv += [os.path.join(HERE, "..", "ios15_fallback.py"),
-                     UPSTREAM_IOS, "3"]
+            if fn == "reverse_v565.py":
+                argv += [os.path.join(HERE, "..", "ios15_fallback.py"),
+                         UPSTREAM_IOS]
+            else:
+                argv += [os.path.join(HERE, "..", "ios15_fallback.py"),
+                         UPSTREAM_IOS, "3"]
         if fn == "reverse_v49_heavy.py":
             argv.append("--sab")
 

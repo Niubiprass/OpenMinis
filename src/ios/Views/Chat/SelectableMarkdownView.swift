@@ -1514,6 +1514,27 @@ final class CodeBlockAttachment: NSTextAttachment {
         return h
     }
 
+    // [V565-CODEBLOCK] 终端框高度账 —— 纯诊断, 一行几何都不碰。
+    //
+    // 【v46 探针为什么测不到这里】v46 只 as? TableAttachment, 而本类是
+    // CodeBlockAttachment, 二者是平级兄弟(都直接继承 NSTextAttachment)。
+    // v56.2 装机日志里那 31 条 `attWant=0.0 attCached=-1.0` 就是证据:
+    // 累计高 0、缓存 -1 ⇒ 该帧附件全是代码块, v46 计数器恒为初值。
+    // ⇒ 之前说"终端框问题数据不够"是错的, 准确说法是**根本没测**。
+    //
+    // 【四个量各自能证伪一个修法】
+    //   cH  = 本方法返回的总高 —— 排版在文本流里给它留的位置
+    //   raw = measureCodeHeight() 自然高(不限宽测量, 故永不折行)
+    //   cap = 400 - topOffset - 12 的硬上限
+    //   vcH = makeView 出来的容器真实高(框架层), -1 = 还没 makeView
+    //   判读:
+    //     raw > cap          ⇒ 内容超上限被截进内部滚动区(终端框"卡显示")
+    //     vcH >= 0 且 vcH != cH ⇒ 框架高度与排版高度两个来源打架(空白过大)
+    //     vcH < 0            ⇒ 排版问过高度但从未建视图 ⇒ 建视图路径没跑到
+    //   0.5s 节流, 与 V41/V44/V45/V46 同周期。
+    var attV565ViewH: CGFloat = -1
+    var attV565ViewW: CGFloat = -1
+
     override func attachmentBounds(for textContainer: NSTextContainer?, proposedLineFragment lineFrag: CGRect, glyphPosition position: CGPoint, characterIndex charIndex: Int) -> CGRect {
         let width = lineFrag.width
         let topOffset: CGFloat = (language != nil && !language!.isEmpty) ? 28 : 12
@@ -1523,7 +1544,40 @@ final class CodeBlockAttachment: NSTextAttachment {
         let scrollHeight = min(contentHeight, maxCodeHeight)
         let totalHeight = topOffset + scrollHeight + bottomPadding
         let height = totalHeight + Self.topMargin + Self.bottomMargin
+
+        // ---- [V565-CODEBLOCK] 诊断段: 纯读 + 打日志, 零赋值影响 ----
+        // ★不得改 height/width —— 判据会校验本段零赋值, 改了就失去意义。
+        do {
+            struct _V565Log { static var last: CFTimeInterval = 0; static var n: UInt = 0 }
+            let _v565now = CACurrentMediaTime()
+            if _v565now - _V565Log.last > 0.5 {
+                _V565Log.last = _v565now
+                _V565Log.n &+= 1
+                // 真实视图高度: 从 keyWindow 沿子树上溯找本 attachment 建的
+                // wrapper 代价太高且会强引用视图, 改为由 makeView 侧写入
+                // attV565ViewH(见下), 这里只读。
+                NSLog("[V565-CODEBLOCK] cH=%.1f raw=%.1f cap=%.1f clip=%d lines=%d "
+                      + "chars=%d fragW=%.1f viewH=%.1f viewW=%.1f cachedRaw=%.1f n=%u",
+                      Double(height), Double(contentHeight), Double(maxCodeHeight),
+                      contentHeight > maxCodeHeight ? 1 : 0,
+                      self.attV565LineCount, code.count,
+                      Double(width), Double(attV565ViewH), Double(attV565ViewW),
+                      Double(self.attV565CachedRaw), _V565Log.n)
+            }
+        }
+
         return CGRect(x: 0, y: 0, width: width, height: height)
+    }
+
+    // [V565-CODEBLOCK] 只读诊断量: 缓存里的自然高(判断缓存是否过期)
+    // 与行数(把 raw 换算成"几行"才能和 cap 比)。
+    var attV565CachedRaw: CGFloat { cachedContentHeight?.height ?? -1 }
+    /// 终端输出的行数 = 自然高 / 单行行高, 由 topOffset 的 28/12 反推不稳,
+    /// 这里直接数换行符 + 1, 语义明确且不依赖字体度量。
+    var attV565LineCount: Int {
+        var n = 1
+        for ch in code.unicodeScalars where ch == "\n" { n += 1 }
+        return n
     }
 
     /// [T-codeblock-hide-idle-scrollbars] Turn each scroll axis' indicator —
@@ -1679,6 +1733,12 @@ final class CodeBlockAttachment: NSTextAttachment {
 
         let totalHeight = topOffset + scrollHeight + bottomPadding
         container.frame = CGRect(x: inset, y: 0, width: contentWidth, height: totalHeight)
+        // [V565-CODEBLOCK] 把框架层真实高度回报给 attachmentBounds 的诊断段,
+        // 好让日志并排打出「排版给的位置 cH」与「实际画的框 viewH」。
+        // ★这是本探针**唯一**的写入点, 且写的是本对象自己的字段 ——
+        //   不改任何几何、不触发任何 invalidate。
+        attV565ViewH = wrapper.frame.height
+        attV565ViewW = container.frame.width
 
         // Copy button — 44x44 hit area per Apple HIG, icon stays small visually
         let iconConfig = UIImage.SymbolConfiguration(pointSize: 9, weight: .medium)
@@ -4694,7 +4754,7 @@ final class VideoAttachment: NSTextAttachment {
 
             var thumb: UIImage?
             do {
-                let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
+                let (cgImage, _) = try await generator.image(at: .zero)
                 thumb = UIImage(cgImage: cgImage)
             } catch {
                 // Fallback: no thumbnail
@@ -10128,7 +10188,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         // becomes a measurable chunk of every updateUIView pass (and
         // updateUIView runs on each SwiftUI body re-evaluation, so it
         // multiplies during streaming and self-sizing measurement loops).
-        let imageMatches = MinisRegex.ranges(markdown, "!\\[([^\\]]*)\\]\\(([^)]+)\\)")
+        let imageMatches = markdown.ranges(of: /!\[([^\]]*)\]\(([^)]+)\)/)
         if !imageMatches.isEmpty {
             for match in imageMatches {
                 let matchStr = String(markdown[match])
@@ -10577,26 +10637,6 @@ struct SelectableMarkdownView: UIViewRepresentable {
     }
 
     @available(iOS 16.0, *)
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
-    @available(iOS 16.0, *) // ios15-port
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: SelectableMarkdownTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? UIScreen.main.bounds.width
         // Key the size cache on the SwiftUI binding length, not
