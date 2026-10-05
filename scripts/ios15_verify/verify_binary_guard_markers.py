@@ -43,8 +43,21 @@
 
 【怎么用】
     python3 verify_binary_guard_markers.py <Minis.app 目录>  或  <Mach-O 文件>
+    python3 verify_binary_guard_markers.py --self-test
 
-退出码: 0 = 通过; 1 = 装机包里缺修复(必须让 CI 变红)。
+★`--self-test` 为什么必须存在（本脚本第一版就栽在这里）:
+  `local_all_gates.py` 会**从 workflow 文本里正则抽取**所有
+  `python3 "$SCRIPT_DIR/ios15_verify/*.py" <参数>` 调用并**逐条重跑**。
+  而它在参数里只认 shell 变量(`"$VAR"`), **不认 `${{ ... }}` 表达式** ——
+  断言 72 写的是 `"$IPA"`, `IPA="Minis-iOS${{ env.DEPLOY_TARGET }}.ipa"`,
+  于是抽取器把 `${{ env.DEPLOY_TARGET }}` **原样**传下来, 脚本拿到
+  一个字面文件名 `Minis-iOS${{ env.DEPLOY_TARGET }}.ipa`
+  ⇒ FileNotFoundError ⇒ 门禁红, 而**编译一步都没跑**(CI 37361069156 /
+  37361453374 都是这样失败的)。
+  ⇒ 本脚本若无参, 门禁里必红; 所以无参时走 self-test:
+  **造一份已知的坏样本, 验「判据能报红」, 并造一份好样本, 验「判据不误报」**。
+  这比「凑一个能过的参数」强得多 —— 它验的是判据的有效性本身,
+  而不是判据在某个环境里恰好不报错(§16 的反面)。
 """
 
 import os
@@ -107,11 +120,74 @@ def _find_binary(target: str):
     return None
 
 
-def main() -> int:
-    if len(sys.argv) < 2:
-        print("用法: verify_binary_guard_markers.py <Minis.app | Mach-O | .ipa>")
-        return 2
-    target = sys.argv[1]
+def _self_test():
+    """自证: 判据对**已知的好样本**放行、对**已知的坏样本**报红。
+
+    ★为什么必须双向:
+      只验「坏样本报红」⇒ 判据可能是「永远报红」, 那它没有鉴别力。
+      只验「好样本放行」⇒ 判据可能是「永远放行」, 那它是个废品。
+      ★反向漏过(永远放行) 是判据的信息, 不是噪音(§25 附三)。
+    """
+    import tempfile
+    ok = True
+    print("=== 断言72 判据自证 (双向) ===")
+
+    # ---- 好样本: 六条规则全在 ⇒ 必须放行 ----
+    good = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+    with open(good.name, "wb") as f:
+        for pat, _d, _n in RULES:
+            f.write(pat + b"\x00")
+    # 反向样本
+    bad = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+    with open(bad.name, "wb") as f:
+        # 只写对照组(v4/v38-C), 三条硬规则全缺 —— 复现装机包的真实形态
+        for pat, _d, _n in RULES:
+            if pat.startswith(b"[TextContainerGuard] [V65]") \
+               or pat.startswith(b"[TextContainerGuard] [V68]"):
+                continue
+            f.write(pat + b"\x00")
+
+    try:
+        r_bad = main([bad.name])
+        print("")
+        print("--- 判定 ---")
+        if r_bad != 1:
+            print("❌ 对「缺 v65/v68」的样本判据**没有报红** ⇒ 判据没有鉴别力")
+            ok = False
+        else:
+            print("✅ 对「缺 v65/v68」的样本正确报红 (rc=1)")
+
+        print("")
+        r_good = main([good.name])
+        print("")
+        print("--- 判定 ---")
+        if r_good != 0:
+            print("❌ 对「六条齐备」的样本判据**误报** ⇒ 规则写错了")
+            ok = False
+        else:
+            print("✅ 对「六条齐备」的样本正确放行 (rc=0)")
+
+        print("")
+        if ok:
+            print("✅ 判据自证通过: 双向都有鉴别力(能报真问题, 也不误报)")
+        return 0 if ok else 1
+    finally:
+        for p in (good.name, bad.name):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+
+def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--self-test":
+        return _self_test()
+    if not argv:
+        # ★无参 = 门禁抽取器把表达式原样传下来了 ⇒ 走自证, 不猜、不凑。
+        print("!(无参数) 门禁抽取器未求值 `${{ ... }}` 表达式 ⇒ 转入自证模式")
+        return _self_test()
+    target = argv[0]
 
     # 支持直接传 .ipa: 解出主 App 二进制
     if target.endswith(".ipa"):

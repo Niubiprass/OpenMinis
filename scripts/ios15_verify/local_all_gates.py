@@ -54,6 +54,19 @@ FALLBACK = 'scripts/ios15_fallback.py'
 NEEDS_ARGS = {
     'ios15_verify/reverse_v566.py': lambda: [FALLBACK, UPSTREAM],
     'ios15_verify/check_idempotent_reapply.py': lambda: [FALLBACK, UPSTREAM, '3'],
+    # ★断言72 的判据(CI 里读打包好的 IPA 二进制)。
+    #   本地**不能**照搬 CI 的参数:
+    #     CI 里  IPA="Minis-iOS${{ env.DEPLOY_TARGET }}.ipa"
+    #   而上面的 parse_shell_vars 只认 `VAR=字面量`, **不认 `${{ ... }}` 表达式**
+    #   ⇒ 抽取时 IPA 被求成 `Minis-iOS${{ env.DEPLOY_TARGET }}.ipa`
+    #   ⇒ 脚本收到一个**字面文件名** ⇒ FileNotFoundError
+    #   ⇒ CI 37361069156 / 37361453374 两个 run 都死在这一步,
+    #      **编译一步都没跑**(这正是"判据自己把流水线掐死"的反面教训:
+    #      新加的判据不但没抓到问题, 还先把构建堵住了)。
+    #   ⇒ 传 --self-test: 造好/坏两份样本, **双向**验判据有鉴别力。
+    #     这比凑一个"能过的参数"强: 它验的是判据的有效性本身,
+    #     而不是判据在某个环境里恰好不报错(§16 的反面)。
+    'ios15_verify/verify_binary_guard_markers.py': lambda: ['--self-test'],
 }
 
 # ★workflow 里 `VAR=value` 形式的赋值(引号可有可无)。用于把判据参数里的
