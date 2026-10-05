@@ -558,7 +558,33 @@ class SelfSizingCell: UICollectionViewCell {
         // kept it alive. Walk the whole contentView subtree and pin every view
         // for the duration of the measure so no descendant's refcount can hit
         // zero mid-measurement while AsyncRenderer iterates the same observers.
-        var fittingSize = CGSize(width: targetSize.width, height: attrs.size.height)
+        // [V64-DESEED] 不播种 —— 切断「测量自激」的自我反馈。
+        //
+        // 【为什么必须】上一行 `targetSize` 声明了
+        // `verticalFittingPriority: .fittingSizeLevel`(压缩语义 = 从内容重算),
+        // 这里却把 super 刚返回的、**已经膨胀过**的 `attrs.size.height` 当作
+        // 测量初值喂回去。iOS 16+ 上 SwiftUI 遵守压缩优先级, 无害;
+        // iOS 15 上不遵守, 播种值胜出 ⇒ 写进 lastComputedHeight/heightCache
+        // ⇒ 下一轮 UIKit 把这个值当 est 递回来(实测严格相等:
+        // est_{n+1} == pref_n) ⇒ 再播种 ⇒ H_{n+1} = H_n + 170 发散。
+        //
+        // 【装机铁证】idx=9 六拍, delta 恒 +144~+205,
+        // 11:07:52.403 → 53.981 全在 1.58s 内, 形态是单调累加、只涨不跌。
+        // 20pt 行高下 170pt ≈ 8~9 行, 与 storageLen=851 的表格消息吻合。
+        //
+        // 【v60/v63 的关系】v60 把 intrinsicContentSize 高度也清成
+        // noIntrinsicMetric, 于是播种值恒为死的 0, 环转不起来 —— 代价是高度
+        // 永远锁死(v53/v62 看到的"稳定")。v63 恢复高度上报是**必须保留的
+        // 正确修复**(iOS 15 感知 SwiftUI 内容尺寸变化的唯一通道), 恢复后
+        // 播种值变"活", 这个存在了 30 余版的底层 bug 才显形。
+        // ⇒ 本条只断反馈, 不动 v63 的高度上报。
+        //
+        // 【为什么不锁 invalidate 次数】限流是症状层补丁: 它假设"重排太频繁",
+        // 于是数次数。但病根是"每次重排的输入里混进了上一次的输出" ⇒
+        // 就算只重排一次, 那一次也可能返回偏大的值并永久留在缓存里。
+        // 断反馈, 一次都不需要限。
+        var fittingSize = CGSize(width: targetSize.width,
+                                 height: UIView.layoutFittingCompressedSize.height)
         // `hostingSubtree` was already collected and pinned around the super
         // call above; reuse it here so the explicit measure runs under the same
         // lifetime guarantee without walking the subtree a second time.
@@ -713,6 +739,30 @@ class SelfSizingCell: UICollectionViewCell {
         // → 主线程 15s 卡死。TextKit 是权威测量 (源码注释自认), 放宽到 2500。
         if _ios15Found, _ios15TkSum > _ios15Reconciled, _ios15TkSum < _ios15Reconciled + 2500 {
             _ios15Reconciled = _ios15TkSum
+        }
+        // [V64-CONVERGE] 收敛闸 —— 断掉反馈之后的兜底。
+        //
+        // 断掉播种后, 理论上 `fittingSize.height` 只能由内容决定。但 iOS 15
+        // 的 SwiftUI 是否真的遵守 .fittingSizeLevel 无法在编译期确认 ——
+        // 若它仍把上一轮的值赢回来, 累加会**换一条路复发**。
+        //
+        // 【判据】重算结果 ≥ 上一轮 est, 且宽度没变 ⇒ 判定为"没真的重算,
+        //   只是把旧值带了回来"。此时**保留 est**, 不许再往上加。
+        //   累加的数学结构(H → H+170)在这里被直接截断: 不加就不发散。
+        //
+        // 【为什么不会误杀真实增长】真实内容变高时, 权威测量是 TextKit 那一路
+        // (`_ios15TkSum`, 来自 SelectableMarkdownTextView.lastComputedHeight,
+        // 是 sizeThatFits 的实测值)。闸门只在上报值 ≥ est 时收紧; 若 Tk 实测
+        // 确实更高, `_ios15Reconciled` 会高于 est, 但那说明 SwiftUI 这次**真的
+        // 重算了**(est 已被重算结果取代) —— 所以判据里再要求
+        // 「Tk 实测没有超出 est」, 只有"两边都没给出更新的信息"才拦。
+        let _v64est = attrs.size.height
+        let _v64tk = _ios15TkSum
+        let _v64grew = _ios15Reconciled >= _v64est - 0.5
+        let _v64tkFresh = _ios15Found && _v64tk > _v64est + 0.5
+        if _v64grew && !_v64tkFresh, _v64est > 4 {
+            Self.sizingLogger.info("[CellSizing][V64-CONVERGE] hold est=\(String(format: "%.1f", _v64est)) recomputed=\(String(format: "%.1f", _ios15Reconciled)) tk=\(String(format: "%.1f", _v64tk)) — 未真重算, 保留 est 阻断累加")
+            _ios15Reconciled = _v64est
         }
         fittingSize.height = _ios15Reconciled
         attrs.size.height = fittingSize.height
