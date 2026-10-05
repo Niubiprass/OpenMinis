@@ -944,3 +944,76 @@ tar xzf om.tar.gz && cd OpenMinis-main && bash scripts/verify_v63.sh
 
 `/tmp/up_1_14/src/ios`（从 tag 1.14 经 API 下载）
 设置：`export OPENMINIS_UPSTREAM_IOS=/tmp/up_1_14/src/ios`
+
+## §4.12 CI#161 失败定位：坏的不是判据，是**门禁的抽取器**（2026-10-05）
+
+v65 已推送（`main@49f8007926`），CI #161 红了一项。日志里最显眼的一行是：
+
+```
+❌ script ios15_verify/verify_guard_v65.py
+     ❌ [Errno 2] No such file or directory: '"$GUARD_V65"'
+```
+
+**这行字具有很强的误导性** —— 它长得很像「v65 守卫判据坏了」。
+但同一份日志里，全版本回归是 **37 通过 / 0 失败 / 0 跳过**，
+其中 `v65 守卫判据(5层含作用域自证)` 与 `v65 反向(10条)` **都绿**。
+⇒ 判据没坏，坏的是**把判据拉起来的那段代码**。
+
+### 4.12.1 根因
+
+`scripts/ios15_verify/local_all_gates.py`（CI 断言 52b「本地全量门禁自检」的主体）
+用一个正则从 workflow 里抽判据调用的参数：
+
+```python
+pat = re.compile(r'python3 "\$SCRIPT_DIR/(ios15_verify/...\.py)"((?:\s+[^\s;\\]+)*)')
+```
+
+而 v65 断言 69 里参数写的是 **shell 变量**：
+
+```bash
+GUARD_V65="src/ios/Shared/NSTextContainerSetSizeGuard.m"
+if python3 "$SCRIPT_DIR/ios15_verify/verify_guard_v65.py" "$GUARD_V65" ; then
+```
+
+正则把 `"$GUARD_V65"` **原样**抽成字面量 `'"$GUARD_V65"'`（连引号一起），
+`args.split()` 后递下去，于是脚本 `open('"$GUARD_V65"')` → `[Errno 2]`。
+
+⇒ **CI#161 是「判据体系里第一次出现用 shell 变量传参的判据」**，
+抽取器此前只处理过字面量参数（`NEEDS_ARGS` 那两条是硬编码的），从来没遇到过 `$`。
+
+### 4.12.2 修法（两处，同族）
+
+| 缺陷 | 现象 | 修法 |
+|---|---|---|
+| ① shell 变量未求值 | `'"$VAR"'` 被当文件名递下去 | 收整份 workflow 的 `VAR=value`（`parse_shell_vars`），`expand_args` 先求值再传；**求不出就抛「抽取故障」并由 main() 记成独立红项**，绝不静默传字面量 |
+| ② 管道/重定向吞进参数 | `regress_all_v.py . 2>&1 \| tee f` 的 `2>&1 \| tee f` 也被当参数 | 按 **token** 判：含 `\| & ; < > ( ) \` 或**纯数字**（FD）即截断 |
+
+★ ② 是顺手发现的同族隐患：它当前**无害**（`regress_all_v.py` 只用 `argv[1]`），
+但只要哪天哪个判据多读一个 `argv`，就会拿到 `|` 当文件名。
+★ ① 的正则修法踩了一次坑：先按**字符**截断，结果 `2>&1` 的 `2` 留了下来变成 `['.', '2']`。
+**FD 是独立 token，必须单独判 `^\d+$`**。
+
+### 4.12.3 为什么把抽取器也纳入反向测试
+
+「判据全绿」这个前提，一直是靠**人相信判据被正确调用**支撑的。
+CI#161 证明这个前提也会悄悄失效。所以新增：
+
+* `scripts/ios15_verify/reverse_local_all_gates.py` —— 9 条 sabotage，
+  S1 就是 CI#161 的原样故障；已进 `regress_all_v.py` 的 `CHECKS`（mode=`self`，不依赖产物）
+  与 `MANDATORY`。
+* workflow **断言 70**：单列一条，不与其它判据混在一起。
+* `docs/verify-discipline.md §22`：写下这一整类错误的教训。
+
+★ 这条反向测试**自己也翻了三次车**（monkeypatch 改不到被 exec 的模块、
+`exec` 的 dict 当模块用导致 8 条假绿、观测点够不着被改的路径），
+三条都写进 §22.4 —— 「崩溃暴露了故障」不等于「测到了那一处能力」。
+
+### 4.12.4 本地验证口径
+
+| 场景 | 结果 |
+|---|---|
+| `regress_all_v.py /tmp/v65check`（带干净上游） | **38 通过 / 0 失败 / 0 跳过**（比 v64 轮多 1 项：门禁抽取器反向） |
+| `reverse_local_all_gates.py` | **9 拦下 / 0 漏过 / 0 空测** |
+| `local_all_gates.py`（v65check 树 + `.upstream-ios`） | 修正前 63/3（1 条真红 + 2 条环境），**修正后需复跑确认** |
+| `bash_syntax_check.py` | 21 个 run 块 0 语法错 |
+| `yaml.safe_load` | OK |

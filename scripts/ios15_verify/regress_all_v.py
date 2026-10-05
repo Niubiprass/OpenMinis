@@ -203,6 +203,13 @@ CHECKS = [
         "reverse_v62.py",                              "upstream", []),
     ("v60 反向(11条含v59退场)",
         "reverse_v60.py",                              "upstream", []),
+    # ★门禁工具自身的反向(CI#161): local_all_gates.py 把 workflow 里的
+    #   "$GUARD_V65" 原样抽成字面量 '"$GUARD_V65"' 递给判据, 判据报
+    #   `[Errno 2] No such file...` —— 那条错**伪装成判据坏了**, 实际坏的是
+    #   抽取器。mode=self: 它只看自己的源码与 workflow, 不需要移植产物。
+    #   必须进 MANDATORY —— 它是「判据全绿」这个前提本身的看守。
+    ("门禁抽取器反向(9条含CI#161原样故障)",
+        "reverse_local_all_gates.py",                 "self",    []),
 ]
 
 # 最近四代(v50/v51/v52/v53)的判据与反向测试是当前承重墙, 必须全绿。
@@ -263,6 +270,17 @@ MANDATORY = {
     #   若哪天有人把判据改松以让 CI 过, 这条会立刻红 —— 这正是它存在的意义。
     "v63 判据(两条真实判据)", "v63 反向(14条含探针与转义)",
     "v63 几何基准(绝对基准+定型稳定)",
+    # ★★ v64/v65 两项进 MANDATORY —— 它们是**当前唯二**直接对应用户
+    #   症状(卡字/抖动)的判据, 却一度不在承重墙里, 意味着「产物缺失 →
+    #   判 SKIP」时 CI 仍会绿。而 SKIP 项在 CI 里是**被 grep 出来报红的**
+    #   (regress_all_v 里有专门那段), 两头都堵死才安全。
+    "v64 判据(不播种+收敛闸+数据流)", "v64 反向(10条含S6换名/S8顺序/S10标识符)",
+    "v65 守卫判据(5层含作用域自证)", "v65 反向(10条含S2块内return/S5顺序/S9作用域/S10标识符)",
+    # ★★ 门禁抽取器自身进 MANDATORY —— CI#161 的教训:
+    #   「判据全绿」这个前提本身需要有人看守。抽取器坏了的时候, 全部
+    #   判据都会以「[Errno 2] No such file or directory: '"$VAR"'」这种
+    #   **看不出真因**的形态报出来, 排错方向会被直接带偏。
+    "门禁抽取器反向(9条含CI#161原样故障)",
 }
 
 
@@ -317,6 +335,11 @@ def main():
         elif mode == "upstream":
             if not UPSTREAM_IOS or not os.path.isdir(UPSTREAM_IOS):
                 missing.append("干净上游 src/ios(设 OPENMINIS_UPSTREAM_IOS)")
+        elif mode == "self":
+            # ★不依赖任何产物 —— 判据/工具只看自己的源码与 workflow 文本。
+            #   CI#161 的红就属这类: local_all_gates 的**抽取器**坏了, 与
+            #   移植产物无关, 却因为它是门禁而把整轮 CI 拉红。
+            pass
         if missing:
             print("⏭  %-22s SKIP(产物缺 %s)" % (name, ", ".join(missing)))
             skip.append(name)

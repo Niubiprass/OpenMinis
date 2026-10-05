@@ -1344,6 +1344,31 @@ jobs:
           fi
           echo "::endgroup::"
 
+          # ---- 断言 70: 门禁抽取器自身必须扛得住 sabotage (CI#161 的直接教训)----
+          # 【CI#161(run 37271671515) 的红项就是这一条】
+          #   上面那个 52b 门禁红了, 报的是:
+          #       ❌ script ios15_verify/verify_guard_v65.py
+          #          ❌ [Errno 2] No such file or directory: '"$GUARD_V65"'
+          #   ★★看起来像"v65 守卫判据坏了", 实际坏的是**抽取器**: 它把
+          #   workflow 里的 "$GUARD_V65" 原样抽成字面量 '"$GUARD_V65"'
+          #   递下去。判据本身在同一次运行的全版本回归里是绿的(37/0/0)。
+          #   ⇒ 这类错**伪装成判据报红**, 排错方向会被直接带偏:
+          #     我先去看 v65 判据的逻辑, 而不是看抽取器。
+          #   ⇒ 所以抽取器必须有**自己的**反向测试, 不能靠"下次小心点"。
+          echo "::group::断言70: 门禁抽取器反向 (9条含CI#161原样故障/管道吞参/静默通过)"
+          if python3 "$SCRIPT_DIR/ios15_verify/reverse_local_all_gates.py" ; then
+            echo "✅ 抽取器反向 9 条全拦 (S1 变量未求值 / S5 管道吞参 / S9 抽取故障被当通过)"
+          else
+            echo "::error::门禁抽取器反向未全拦 —— 抽取器有盲区"
+            echo "   —— 若它坏着, 上面所有判据的绿都是不可信的:"
+            echo "      故障会以 '[Errno 2] ... '\"\$VAR\"'' 的形态冒出来, 伪装成判据坏了"
+            echo "   —— 若报「BASE 未把 \$GUARD_V65 求值」: 抽取器没做 shell 变量求值(CI#161 原样)"
+            echo "   —— 若报「BASE 未把未定义变量报成抽取故障」: 抽取故障被静默吞掉了"
+            echo "   —— 若报「漏过」: 对应能力的观测点没接上, 反向等于没测"
+            exit 1
+          fi
+          echo "::endgroup::"
+
           # ---- 断言 54: v51 就位 (A 钉 textView 自身 frame 宽 + C 探针挪出补高 if)----
           # 【这事为什么还轮得到 v51 —— minis-2026-10-04 3.log 的硬反面据】
           #   v50 的三层判据**全部达标**: V50-UNIFY 36/36 used=357、
