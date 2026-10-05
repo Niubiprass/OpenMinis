@@ -9858,9 +9858,14 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         let _cellH = superview?.frame.size.height ?? 0
         let _debt = _need - _cellH
         let _stillOwing = _cellH > 1 && _need > 1 && _debt > 1
-        guard deferredCorrectionPending || _stillOwing else { return }
+        // [V62-SURPLUS] 盈余(cell 比 need 高 40pt+)同样触发 settle 纠正 ——
+        // 收缩没有欠账通道那样的撑高驱动, 没有这条 invalidate 就没人重问
+        // cell 高度, 三条短路返回的 337/384 会永远留在布局里(空白留存)。
+        let _v62oversized = _cellH > 1 && _need > 1 && (_cellH - _need) > 40
+        guard deferredCorrectionPending || _stillOwing || _v62oversized else { return }
         // [V53-DEBT] 把欠账告诉 cell, 逼它的滑动期短路放行(见 _v53ReportDebtToCell)。
-        _v53ReportDebtToCell(_stillOwing ? _debt : 0)
+        // [V62-SURPLUS] 盈余时上报负 debt, 喂给 cell 的盈余镜像计数走向「熟」。
+        _v53ReportDebtToCell(_stillOwing || _v62oversized ? _debt : 0)
         cellSizeLogger.info("[DeferDebt] CONSUME — paying deferred correction attached=\(self.window != nil) stillOwing=\(_stillOwing) cellH=\(String(format: "%.1f", _cellH)) need=\(String(format: "%.1f", _need))")
         invalidateCellSizeIfNeeded()
     }

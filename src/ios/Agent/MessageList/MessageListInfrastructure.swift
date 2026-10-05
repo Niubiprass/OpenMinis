@@ -175,16 +175,44 @@ class SelfSizingCell: UICollectionViewCell {
     /// 三处短路统一读它，避免各自重复计数导致不同步。
     var v53DebtIsRipe: Bool { v53DebtSeenCount >= 2 }
 
+    // [V62-SURPLUS] 盈余镜像状态(v53-C2 只有「太矮」半边, 这里补「太高」):
+    // 装机铁证(v61): 工具卡片收起 live terminal 后内容 337→47pt, E 判据
+    // 上报 -290 被 `debt <= 1` 吞掉复位, 三条短路继续返回 337/384 ⇒
+    // 卡片间 ~250pt 空白终态留存。
+    var v53SurplusSeenCount: Int = 0
+    var v53SurplusHeightDebt: CGFloat = 0
+    /// 盈余已「熟」(连续观测两拍以上) ⇒ 三条短路放行真实测量。
+    var v53SurplusIsRipe: Bool { v53SurplusSeenCount >= 2 }
+
     /// [V53-C2] 记录一次欠账观测，返回是否应当绕过滑动期短路。
     @inline(__always)
     @discardableResult
     func v53NotePendingDebt(_ debt: CGFloat) -> Bool {
+        // [V62-SURPLUS] 盈余观测: debt < -40 = cell 比 need 高出 40pt 以上
+        // (工具卡片收起 live terminal 实测上报 -290)。阈值 40pt 排除行高/
+        // 间距级噪声; 与欠账同款两拍设计 —— 首帧仍走短路, 第二拍放行。
+        if debt < -40 {
+            v53DebtSeenCount = 0
+            v53PendingHeightDebt = 0
+            v53SurplusHeightDebt = -debt
+            v53SurplusSeenCount += 1
+            return v53SurplusIsRipe
+        }
+        if debt < -1 {
+            // [V62-SURPLUS] ≤40pt 的小幅收缩是排版噪声, 盈余复位。
+            v53SurplusSeenCount = 0
+            v53SurplusHeightDebt = 0
+        }
         // 欠账被清掉（<=1pt）时立刻复位，下一次真欠账重新计两拍。
         if debt <= 1 {
             v53DebtSeenCount = 0
             v53PendingHeightDebt = 0
             return false
         }
+        // [V62-SURPLUS] 欠账与盈余互斥: 转入欠账态时清盈余计数,
+        // 避免两个镜像计数同时「熟」导致短路判据语义含糊。
+        v53SurplusSeenCount = 0
+        v53SurplusHeightDebt = 0
         v53PendingHeightDebt = debt
         v53DebtSeenCount += 1
         return v53DebtSeenCount >= 2
@@ -294,7 +322,7 @@ class SelfSizingCell: UICollectionViewCell {
            // [V53-C2] 已知欠账且已持续一帧以上 ⇒ 不得返回这个欠账高度。
            // 见 `v53NotePendingDebt` 的 docstring：不清这一条，`preSVH` 会永远
            // 停在首次提交时的欠账值上（实测 1004.0，欠 268.3pt ≈ 8 行）。
-           !v53DebtIsRipe {
+           !v53DebtIsRipe, !v53SurplusIsRipe {
             let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
             copy.size.width = cachedW
             copy.size.height = cached
@@ -387,7 +415,7 @@ class SelfSizingCell: UICollectionViewCell {
                // 这条短路是滑动期「一下卡字一下不卡字」的直接开关 ——
                // 滚动中它返回 1004（尾部裁掉），滚动停止它失效、真实测量
                // 把高度修对，文字又完整。用户的观感就是来回闪。
-               !v53DebtIsRipe {
+               !v53DebtIsRipe, !v53SurplusIsRipe {
                 let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
                 copy.size.width = cachedW
                 copy.size.height = cached
@@ -427,7 +455,7 @@ class SelfSizingCell: UICollectionViewCell {
            // [V53-C2] 同 A/B 路：种子高度若是欠账的那个值，不能再种回去。
            // 实测这条是「清缓存后旧高又回来了」的第二个来源 ——
            // configureCell 会把 memo 里的 1004 再写一次 seededHeight。
-           !v53DebtIsRipe {
+           !v53DebtIsRipe, !v53SurplusIsRipe {
             seededHeight = nil
             seededWidth = nil
             lastComputedHeight = sh

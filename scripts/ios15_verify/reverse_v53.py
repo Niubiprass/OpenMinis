@@ -46,7 +46,8 @@ def _load_fb(root):
 # ★原串必须与产物**逐字一致**(含缩进), 由 `_check_anchors` 在开跑前逐条断言。
 SABS = [
     ("S1", "三条短路只改两条(留一退化)", "I",
-     "!v53DebtIsRipe {", "!v53DebtIsRipe || false {", "C2"),
+     # ★v62 适配: 守卫形态扩为盈余镜像 `!v53DebtIsRipe, !v53SurplusIsRipe {`
+     "!v53DebtIsRipe, !v53SurplusIsRipe {", "!v53DebtIsRipe || false {", "C2"),
     ("S2", "CONSUMED 又改回只信返回值", "T",
      "let _settled = _cellH > 1 && _cellH >= newHeight - 1",
      "let _settled = true", "C2"),
@@ -54,14 +55,19 @@ SABS = [
      "guard _v52ok else { return nil }",
      "// sabotage: 无污染守卫", "C2"),
     ("S4", "欠账清掉不复位计数(短路永久失效)", "I",
-     "v53DebtSeenCount = 0", "// sabotage: 不复位", "C2"),
+     # ★v62 适配: note 函数里 `v53DebtSeenCount = 0` 有两处(盈余分支 +
+     #   欠账复位), 裸串会错破坏盈余分支 → 用欠账复位分支特有上下文精确定位
+     "if debt <= 1 {\n            v53DebtSeenCount = 0",
+     "if debt <= 1 {\n            // sabotage: 不复位", "C2"),
     ("S5", "settle 入口改回 flag-only(首段被挡)", "T",
-     "guard deferredCorrectionPending || _stillOwing else { return }",
+     # ★v62 适配: guard 形态扩为盈余感知
+     "guard deferredCorrectionPending || _stillOwing || _v62oversized else { return }",
      "guard deferredCorrectionPending else { return }", "FIRST"),
     ("S6", "首段欠账阈值放到 0(亚像素噪声也算欠账)", "T",
      "_debt > 1", "_debt > -1", "FIRST"),
     ("S7", "首段不把欠账报给 cell(新入口空转)", "T",
-     "_v53ReportDebtToCell(_stillOwing ? _debt : 0)",
+     # ★v62 适配: 上报形态扩为盈余感知
+     "_v53ReportDebtToCell(_stillOwing || _v62oversized ? _debt : 0)",
      "_ = _stillOwing", "FIRST"),
     ("S8", "B 路探针错标成 A 路(装机日志来源错乱)", "I",
      "// [V53-PROBE] B 路", "// [V53-PROBE] A 路", "P"),

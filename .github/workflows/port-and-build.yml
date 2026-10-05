@@ -417,6 +417,25 @@ jobs:
             exit 1
           fi
           echo "::endgroup::"
+          echo "::group::断言65: v62 工具卡片空白修复必须就位 (V62-SURPLUS 盈余镜像)"
+          if grep -q "\[V62-SURPLUS\]" src/ios/Agent/MessageList/MessageListInfrastructure.swift \
+             && grep -q "\[V62-SURPLUS\]" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "v53SurplusIsRipe" src/ios/Agent/MessageList/MessageListInfrastructure.swift ; then
+            if OPENMINIS_UPSTREAM_IOS="$PWD/.upstream-ios" \
+               python3 "$SCRIPT_DIR/ios15_verify/reverse_v62.py" ; then
+              echo "✅ v62 就位 (反向 7 条全拦: 摘盈余分支/阈值改死/守卫摘除/驱动摘除/上报不喂负值/互斥删除/ripe 不喂)"
+            else
+              echo "::error::v62 判据异常 —— 盈余镜像注入不完整(卡片间大空白会复发)"
+              echo "   —— 报「盈余分支缺失」: E 判据的 -290 上报被 debt<=1 吞掉, 空白留存"
+              echo "   —— 报「守卫缺失」: 三短路继续返回 live terminal 旧高(337/384)"
+              echo "   —— 报「驱动缺失」: 收缩没有 invalidate 驱动源, 布局永不收缩"
+              exit 1
+            fi
+          else
+            echo "::error::产物缺 [V62-SURPLUS] —— v62 注入没生效(上游/兼容层结构可能变了)"
+            exit 1
+          fi
+          echo "::endgroup::"
           echo "::group::断言37: v37 attachmentBounds probe 宽全局钳位必须就位 (9 处泄漏 → superview 撑到 817/1077/100000)"
           if grep -q "private func ios15ClampProbeWidth" src/ios/Views/Chat/SelectableMarkdownView.swift \
              && grep -q "guard proposed >= 100_000 else { return proposed }" src/ios/Views/Chat/SelectableMarkdownView.swift ; then

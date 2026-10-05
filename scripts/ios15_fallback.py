@@ -7244,6 +7244,162 @@ def verify_host_stability_v61(t):
     return True
 
 
+# ============================================================
+# v62: V62-SURPLUS —— 盈余镜像(治「工具卡片间大空白」)
+#
+# 【装机铁证】minis-2026-10-05.log(v61, 07:42-07:43):
+#   用户截图/录屏: 三个工具卡片之间各 ~250pt 空白, 且为终态留存。
+#   IOS15Size 测量全部真实(h==idealH, 卡片 46.7pt) ⇒ 测量层清白;
+#   V53-SHORT 反复报 last h=337/384(live terminal 时代的高度);
+#   FIX-BLANK 只漏出 2 次 -112 部分收缩, -290 的完整收缩从未发生。
+#
+# 【根因链】v53 体系是「欠账」单极的:
+#   1. 工具执行中: live terminal block, cell 被撑到 337/384pt;
+#   2. 工具完成: SwiftUI 内容收缩为纯卡片(46.7pt);
+#   3. E 判据上报 `_needH - _v52PreSVH` = -290 → `v53NotePendingDebt`
+#      的 `if debt <= 1` 把负值**直接吞掉复位** —— 盈余零动作;
+#   4. v18 撑高路径只撑不缩; A/B/C 三条短路继续返回
+#      lastComputedHeight(337/384) ⇒ cell 停在高值;
+#   5. 没有任何通道为收缩触发 invalidate ⇒ 空隙永久留存。
+#   即: v53-C2 治「太矮」(裁字)却没有「太高」(空白)的镜像检测。
+#
+# 【修法】镜像欠账机制补全盈余半边:
+#   · v53NotePendingDebt 加盈余分支: debt < -40 计两拍 → v53SurplusIsRipe;
+#     (-40, -1] 的小幅收缩视为排版噪声复位; 欠账态互斥清盈余。
+#   · 三条短路守卫 `!v53DebtIsRipe` 扩为 `!v53DebtIsRipe, !v53SurplusIsRipe`。
+#   · v53-FIRST settle 入口(_stillOwing guard)扩 _v62oversized:
+#     盈余同样触发真实测量 + invalidate —— 收缩从此有驱动源;
+#     且盈余时上报负 debt 喂给镜像计数(否则盈余永远熟不了)。
+# 【收敛】cell 落到 need 高后 _v62oversized 恒假, 稳态零开销;
+#   流式再增长走原欠账通道, 与盈余互斥, 无振荡回路。
+# ============================================================
+
+V62_FIELD_ANCHOR = """    var v53DebtIsRipe: Bool { v53DebtSeenCount >= 2 }"""
+
+V62_FIELD_NEW = """    var v53DebtIsRipe: Bool { v53DebtSeenCount >= 2 }
+
+    // [V62-SURPLUS] 盈余镜像状态(v53-C2 只有「太矮」半边, 这里补「太高」):
+    // 装机铁证(v61): 工具卡片收起 live terminal 后内容 337→47pt, E 判据
+    // 上报 -290 被 `debt <= 1` 吞掉复位, 三条短路继续返回 337/384 ⇒
+    // 卡片间 ~250pt 空白终态留存。
+    var v53SurplusSeenCount: Int = 0
+    var v53SurplusHeightDebt: CGFloat = 0
+    /// 盈余已「熟」(连续观测两拍以上) ⇒ 三条短路放行真实测量。
+    var v53SurplusIsRipe: Bool { v53SurplusSeenCount >= 2 }"""
+
+V62_NOTE_ANCHOR = """    func v53NotePendingDebt(_ debt: CGFloat) -> Bool {
+"""
+
+V62_NOTE_NEW = """    func v53NotePendingDebt(_ debt: CGFloat) -> Bool {
+        // [V62-SURPLUS] 盈余观测: debt < -40 = cell 比 need 高出 40pt 以上
+        // (工具卡片收起 live terminal 实测上报 -290)。阈值 40pt 排除行高/
+        // 间距级噪声; 与欠账同款两拍设计 —— 首帧仍走短路, 第二拍放行。
+        if debt < -40 {
+            v53DebtSeenCount = 0
+            v53PendingHeightDebt = 0
+            v53SurplusHeightDebt = -debt
+            v53SurplusSeenCount += 1
+            return v53SurplusIsRipe
+        }
+        if debt < -1 {
+            // [V62-SURPLUS] ≤40pt 的小幅收缩是排版噪声, 盈余复位。
+            v53SurplusSeenCount = 0
+            v53SurplusHeightDebt = 0
+        }
+"""
+
+V62_MUTEX_ANCHOR = """        v53PendingHeightDebt = debt
+        v53DebtSeenCount += 1"""
+
+V62_MUTEX_NEW = """        // [V62-SURPLUS] 欠账与盈余互斥: 转入欠账态时清盈余计数,
+        // 避免两个镜像计数同时「熟」导致短路判据语义含糊。
+        v53SurplusSeenCount = 0
+        v53SurplusHeightDebt = 0
+        v53PendingHeightDebt = debt
+        v53DebtSeenCount += 1"""
+
+V62_GUARDS_OLD = "!v53DebtIsRipe {"
+
+V62_FIRST_OLD = """        guard deferredCorrectionPending || _stillOwing else { return }
+        // [V53-DEBT] 把欠账告诉 cell, 逼它的滑动期短路放行(见 _v53ReportDebtToCell)。
+        _v53ReportDebtToCell(_stillOwing ? _debt : 0)"""
+
+V62_FIRST_NEW = """        // [V62-SURPLUS] 盈余(cell 比 need 高 40pt+)同样触发 settle 纠正 ——
+        // 收缩没有欠账通道那样的撑高驱动, 没有这条 invalidate 就没人重问
+        // cell 高度, 三条短路返回的 337/384 会永远留在布局里(空白留存)。
+        let _v62oversized = _cellH > 1 && _need > 1 && (_cellH - _need) > 40
+        guard deferredCorrectionPending || _stillOwing || _v62oversized else { return }
+        // [V53-DEBT] 把欠账告诉 cell, 逼它的滑动期短路放行(见 _v53ReportDebtToCell)。
+        // [V62-SURPLUS] 盈余时上报负 debt, 喂给 cell 的盈余镜像计数走向「熟」。
+        _v53ReportDebtToCell(_stillOwing || _v62oversized ? _debt : 0)"""
+
+
+def fix_surplus_mirror_v62_infra(t):
+    """v62 注入①: MessageListInfrastructure.swift(SelfSizingCell)三处。
+
+    字段三件套 / note 函数盈余分支 + 互斥 / 三条短路守卫扩展。
+    幂等: 已有 [V62-SURPLUS] 原样返回。锚点计数防呆。
+    """
+    if "[V62-SURPLUS]" in t:
+        return t
+    t = _v60_replace1(t, V62_FIELD_ANCHOR, V62_FIELD_NEW, "v62 盈余字段")
+    t = _v60_replace1(t, V62_NOTE_ANCHOR, V62_NOTE_NEW, "v62 note 盈余分支")
+    t = _v60_replace1(t, V62_MUTEX_ANCHOR, V62_MUTEX_NEW, "v62 欠账互斥清盈余")
+    n = t.count(V62_GUARDS_OLD)
+    if n != 3:
+        raise RuntimeError(
+            "fix_surplus_mirror_v62_infra: 短路守卫 `!v53DebtIsRipe {{}}` 应恰 3 处"
+            "(A/B/C), 实测 %d —— v53 形态变了, 必须更新锚点" % n)
+    t = t.replace(V62_GUARDS_OLD, "!v53DebtIsRipe, !v53SurplusIsRipe {")
+    return t
+
+
+def fix_surplus_mirror_v62_md(t):
+    """v62 注入②: SelectableMarkdownView.swift 的 v53-FIRST settle 入口。
+
+    guard 扩 _v62oversized + 盈余时上报负 debt。
+    """
+    if "[V62-SURPLUS]" in t:
+        return t
+    t = _v60_replace1(t, V62_FIRST_OLD, V62_FIRST_NEW, "v62 settle 盈余入口")
+    return t
+
+
+def verify_surplus_mirror_v62(infra, md):
+    """v62 判据: 五层(两文件)。"""
+    F = "verify_surplus_mirror_v62"
+    # ① 字段三件套 + ripe 声明
+    for key in ("var v53SurplusSeenCount: Int = 0",
+                "var v53SurplusHeightDebt: CGFloat = 0",
+                "var v53SurplusIsRipe: Bool { v53SurplusSeenCount >= 2 }"):
+        if key not in infra:
+            raise RuntimeError("%s: 盈余字段缺失 %r" % (F, key))
+    # ② note 函数盈余分支(阈值 + 计数递增 + 喂还 ripe)
+    i = infra.find("func v53NotePendingDebt(")
+    if i < 0:
+        raise RuntimeError("%s: note 函数缺失" % F)
+    seg = infra[i:i + 2200]
+    for key in ("if debt < -40 {", "v53SurplusSeenCount += 1",
+                "return v53SurplusIsRipe", "v53SurplusSeenCount = 0"):
+        if key not in seg:
+            raise RuntimeError("%s: note 函数盈余分支不完整(缺 %r)" % (F, key))
+    # ③ 三条短路守卫各带盈余条件
+    n = infra.count("!v53DebtIsRipe, !v53SurplusIsRipe {")
+    if n != 3:
+        raise RuntimeError("%s: 三守卫应恰 3 处带 `!v53SurplusIsRipe`, 实测 %d"
+                           % (F, n))
+    # ④ settle 入口: guard 扩盈余 + 上报喂负值
+    for key in ("let _v62oversized = _cellH > 1 && _need > 1 && (_cellH - _need) > 40",
+                "guard deferredCorrectionPending || _stillOwing || _v62oversized else { return }",
+                "_v53ReportDebtToCell(_stillOwing || _v62oversized ? _debt : 0)"):
+        if key not in md:
+            raise RuntimeError("%s: settle 入口缺 %r" % (F, key))
+    # ⑤ 互斥复位(欠账态清盈余)
+    if "v53SurplusSeenCount = 0\n        v53SurplusHeightDebt = 0\n        v53PendingHeightDebt = debt" not in infra:
+        raise RuntimeError("%s: 欠账态互斥清盈余缺失" % F)
+    return True
+
+
 def fix_kvo_debt_v569(t):
     """v56.9: 修 KVO 同值抑制把欠账帧永久跳过。
 
@@ -10059,12 +10215,14 @@ def verify_debtgate_release_v53(t, infra):
             raise RuntimeError("%s: ★%s —— %s" % (F, pat, why))
 
     # 三条短路各加一个 !v53DebtIsRipe —— 少加一条就有一路仍能挡住真实测量
-    n_guard = infra.count("!v53DebtIsRipe {")
+    # ★v62 适配: 守卫形态扩为 `!v53DebtIsRipe, !v53SurplusIsRipe {`(盈余镜像),
+    #   语义仍是「欠账守卫挂在每条短路上」, 认新形态。
+    n_guard = infra.count("!v53DebtIsRipe, !v53SurplusIsRipe {")
     if n_guard != 3:
         raise RuntimeError(
-            "%s: ★`!v53DebtIsRipe` 守卫应出现 **3** 次(A/B/C 三条短路各一), "
-            "实为 %d —— 少一条则该路仍能把欠账高度返回回去, "
-            "preSVH 会继续卡在首次提交的值上(实测 1004.0, 欠 268.3pt)"
+            "%s: ★`!v53DebtIsRipe, !v53SurplusIsRipe` 守卫应出现 **3** 次"
+            "(A/B/C 三条短路各一), 实为 %d —— 少一条则该路仍能把欠账高度"
+            "返回回去, preSVH 会继续卡在首次提交的值上(实测 1004.0, 欠 268.3pt)"
             % (F, n_guard))
 
     # ★S14 补漏: 光数「`!v53DebtIsRipe {` 出现 3 次」是不够的。
@@ -10087,7 +10245,7 @@ def verify_debtgate_release_v53(t, infra):
             raise RuntimeError(
                 "%s: ★找不到短路 if 头 %r —— 判据已对不上产物结构"
                 % (F, head_anchor))
-        k = infra.find("!v53DebtIsRipe {", i)
+        k = infra.find("!v53DebtIsRipe, !v53SurplusIsRipe {", i)
         if k < 0 or k - i > 900:
             raise RuntimeError(
                 "%s: ★短路 %s 的 if 头之后 900 字符内没有 `!v53DebtIsRipe` —— "
@@ -10114,9 +10272,12 @@ def verify_debtgate_release_v53(t, infra):
             "%s: ★欠账清掉(debt<=1)时必须复位计数 —— 否则 v53DebtSeenCount "
             "永远停在 >=2, 三条短路对该 cell 永久失效, 退化成每帧全量重测"
             % F)
-    if "v53DebtSeenCount = 0" not in seg:
+    # ★v62 适配: note 函数里 `v53DebtSeenCount = 0` 有两处(盈余分支/欠账
+    #   复位), 裸串检查会被盈余分支顶掉 —— 复位必须精确绑定 debt<=1 分支。
+    if "if debt <= 1 {\n            v53DebtSeenCount = 0" not in infra:
         raise RuntimeError(
-            "%s: ★复位语句 `v53DebtSeenCount = 0` 缺失" % F)
+            "%s: ★复位语句 `v53DebtSeenCount = 0` 缺失(或未绑定在 "
+            "debt<=1 分支内)" % F)
 
     # ================= C2: CONSUMED 判据可验证 =================
     if "_cellH >= newHeight - 1" not in t:
@@ -10224,7 +10385,8 @@ def verify_first_para_settle_v53(t):
                 "%s: 诊断缺字段 %r —— 装机要靠 stillOwing=1 确认首段走了新入口"
                 % (F, f))
     # 欠账要上报给 cell, 否则首段同样被短路挡住
-    if "_v53ReportDebtToCell(_stillOwing ? _debt : 0)" not in seg:
+    # ★v62 适配: 上报形态扩为盈余感知 `_stillOwing || _v62oversized ? _debt : 0`。
+    if "_v53ReportDebtToCell(_stillOwing || _v62oversized ? _debt : 0)" not in seg:
         raise RuntimeError(
             "%s: 首段欠账必须上报给 cell —— 否则 C2 的三条短路仍会挡住它, "
             "新入口等于空转" % F)
@@ -13418,6 +13580,17 @@ def main():
         "config 只刷 rootView, 流式 tick 不再重建); V61-MONO 高度单调锁"
         "(同宽回缩超 8pt 容差沿用历史最高, 挡测量抖动上屏; 宽变/重建路径重置"
         "防复用串扰)。判据 verify_host_stability_v61 五层 + 反向 reverse_v61。")
+    edit("Agent/MessageList/MessageListInfrastructure.swift", fix_surplus_mirror_v62_infra,
+        "v62①: V62-SURPLUS 盈余镜像(SelfSizingCell 侧) —— 治「工具卡片间"
+        "~250pt 空白终态留存」(v61 装机 2026-10-05.log 实证)。根因: v53 欠账"
+        "体系只有「太矮」半边, 内容收缩(工具收起 live terminal, 337→47pt)时"
+        "E 判据上报 -290 被 `debt <= 1` 吞掉, A/B/C 三短路继续返回旧高。"
+        "本条: 字段三件套 + note 函数盈余分支(-40 阈值两拍) + 欠账互斥 + "
+        "三守卫扩 `!v53SurplusIsRipe`。")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_surplus_mirror_v62_md,
+        "v62②: V62-SURPLUS settle 入口(v53-FIRST guard 处) —— 盈余同样触发"
+        "真实测量 + invalidate(收缩的驱动源), 且盈余时上报负 debt 喂镜像计数。"
+        "判据 verify_surplus_mirror_v62 五层 + 反向 reverse_v62。")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")
