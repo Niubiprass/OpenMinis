@@ -355,6 +355,22 @@ public struct NavigationSplitView<Sidebar: View, Detail: View>: View {
 /// 遵守 `UIContentConfiguration`，所以项目里的
 /// `cell.applyContentConfiguration(config)` 一行都不用改：cell 拿到的是
 /// 一个普通的 content configuration，内部用 `UIHostingController` 渲染。
+// [V63-PROBE] 装机可观测性计数器。★必须是**非泛型**类型: Swift 禁止在
+// 泛型类型里声明静态存储属性, 放进去 Release 编译直接失败(run#157)。
+private final class _V63Probe {
+    static var fastHit: UInt = 0
+    static var rebuildHit: UInt = 0
+    static var lastPrint: CFTimeInterval = 0
+    static func hitFast() { fastHit &+= 1; maybePrint() }
+    static func hitRebuild() { rebuildHit &+= 1; maybePrint() }
+    private static func maybePrint() {
+        let now = CACurrentMediaTime()
+        guard now - lastPrint > 0.5 else { return }
+        lastPrint = now
+        print("[V63-PROBE] fast=\(fastHit) rebuild=\(rebuildHit)")
+    }
+}
+
 private final class _HostingContentCellView<Content: View>: UIView, UIContentView {
     private var host: UIHostingController<AnyView>?
     var configuration: UIContentConfiguration {
@@ -411,6 +427,17 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     }
 
     private var isMeasuring: Bool = false
+    // [V63-CFG] apply 世代号(见 apply 入口) 与 host 身份戳。
+    private var _ios15ApplyGen: UInt = 0
+    private var _v63ConfigGen: UInt = 0
+    // [V63-PROBE] 装机探针: 快速路径/重建路径各计一次, 每 0.5s 打一行。
+    // ★为什么必须有: v53/v62 都没带探针, 于是「零输出」这个一眼可辨的
+    // 信号被连续两版忽略 —— 判据全绿而代码从未在真机执行。
+    // ★计数器在 _V63Probe(非泛型) 上, 不在本格里 —— 泛型类型禁 static 存储属性。
+    private func _v63ProbeIncr() {
+        if _v63ConfigGen == _ios15ApplyGen { _V63Probe.hitFast() }
+        else { _V63Probe.hitRebuild() }
+    }
     private var lastLoggedWidth: CGFloat = -1
     private var ios15LastGoodFitH: CGFloat = 0
     // [V61-MONO] 高度单调锁状态: (历史最高, 绑定宽度)。宽变即重置。
@@ -485,14 +512,29 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     }
 
     private func apply(_ config: UIContentConfiguration) {
+        // [V63-CFG] 每次 apply 自增世代号。fast path 的判等条件
+        // `_v63ConfigGen == _ios15ApplyGen` 意为"host 就是上一次 apply
+        // 建/刷的那个"; 一旦中间走过重建, 世代号就变了 ⇒ 下次走重建,
+        // 不会拿已经属于别的消息的 host 去就地刷 rootView。
+        _ios15ApplyGen &+= 1
         // [V61-REUSE] 就地更新快速路径(zhaoxiufei HostingContentView 同款):
         // 同类 config 且已有 host 时只刷 rootView, 不再全删重建 ——
         // 流式输出每 tick 走这里, SwiftUI 就地 diff, 测量状态连续。
         // 旧实现每 tick 重建 UIHostingController(每秒 N 次) = 高度抖动
         // 与整屏跳动的放大器(2026-10-05 5.log 实证 333↔490 漂移)。
-        if let existing = host, let newConfig = config as? UIHostingConfiguration<Content> {
+        if let existing = host, let newConfig = config as? UIHostingConfiguration<Content>, _v63ConfigGen == _ios15ApplyGen {
             let _ios15ContentMaxW2 = max(UIScreen.main.bounds.width, 200)  // [V61-REUSE] 与重建路径同款上限
             existing.rootView = AnyView(newConfig.content.frame(maxWidth: _ios15ContentMaxW2, alignment: .leading))
+            // [V63-UPDATE] iOS 15 没有 sizingOptions(iOS 16 才有), 所以
+            // rootView 换完之后**必须**显式 invalidateIntrinsicContentSize(),
+            // 否则 UIKit 收不到"内容变了"的信号 —— 高度锁死在上一次的值,
+            // 流式输出表现为「一下跳出一大段」而不是逐行流动。
+            // 依据: Mozilla Firefox iOS HostingTableViewCell.host() 每次
+            // rootView 赋值后都跟这一行; vbat.dev 与 StackOverflow 77027194
+            // 同结论(后者明确说 setNeedsLayout/layoutIfNeeded 都无效)。
+            existing.view.invalidateIntrinsicContentSize()
+            // [V63-PROBE] 每 0.5s 汇总一行: 装机若为 0 ⇒ 这段快速路径没被执行。
+            _v63ProbeIncr()
             return
         }
         subviews.forEach { $0.removeFromSuperview() }
@@ -531,6 +573,11 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         // [V61-MONO] 走到重建路径 = 内容标识换了(新消息/复用), 锁重置。
         ios15MonoH = 0
         ios15MonoHW = 0
+        // [V63-CFG] 重建即换身份: 记下本次 apply 的世代号, 让下一次 apply
+        // 能判出"host 还是上次的那个"而不是无脑就地刷。
+        _v63ConfigGen = _ios15ApplyGen
+        // [V63-PROBE] 重建路径计数(与快速路径分开统计, 便于装机分辨走哪条)。
+        _v63ProbeIncr()
     }
 }
 

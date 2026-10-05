@@ -5504,6 +5504,23 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             return CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
         }
         let fit = sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        // [V63-INTSIZE] 恢复**高度**上报(宽仍 noIntrinsicMetric)。
+        //
+        // 【为什么必须恢复】v60 把 height 也改成 noIntrinsicMetric(退出协商),
+        // 理由是"intrinsicContentSize 直接把容器宽当理想宽上报 100032 污染布局"
+        // —— 那个理由对**宽度**成立, 但把高度也一并关掉是误伤:
+        //   · iOS 16 起 UIHostingController 有 sizingOptions;
+        //     **iOS 15 没有**(部署目标就是 15.5) ⇒ 它的 intrinsicContentSize
+        //     是 SwiftUI 内容尺寸的唯一对外信号;
+        //   · 本项目以 UITextView 为承载(v60 自己的注释写着
+        //     "UITextView.intrinsicContentSize 直接把容器宽当理想宽报给 SwiftUI"),
+        //     而 UITextView 恰恰**以 intrinsicContentSize 参与 Auto Layout**;
+        //   · 外部四个独立来源(Mozilla Firefox iOS HostingTableViewCell、
+        //     vbat.dev、StackOverflow 77027194、Apple FB9641883 社区解法)
+        //     全部指向"iOS 15 靠 intrinsic + invalidate 协商尺寸"。
+        // 装机实证: 关掉之后 live=0/debt=0.0/cached=true×44, 高度锁死旧值
+        // (798→903→1057→1205→1336→1518), 表现为空白 + 突现 + 整屏跳。
+        // 宽的污染另由 v60 的 sane 推导链治, 两件事不混。
         return CGSize(width: UIView.noIntrinsicMetric, height: ceil(fit.height))
     }
 
@@ -9862,7 +9879,22 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         // 收缩没有欠账通道那样的撑高驱动, 没有这条 invalidate 就没人重问
         // cell 高度, 三条短路返回的 337/384 会永远留在布局里(空白留存)。
         let _v62oversized = _cellH > 1 && _need > 1 && (_cellH - _need) > 40
-        guard deferredCorrectionPending || _stillOwing || _v62oversized else { return }
+        // [V63-UNCYCLE] 打破 v53/v62 的循环依赖, 让「第二拍」真的能到来。
+        //
+        // 【实测铁证】装机日志 debt= 唯一取值 {0.0}, live= 唯一取值 {0}:
+        //   debt 只在本函数(settle 时刻)上报, 而本函数的 guard 又依赖欠账
+        //   是否成立 ⇒ 要放行测量需 debt 熟, debt 熟需 settle, settle 需先
+        //   放行测量 —— 环。v53DebtSeenCount 因此永远停在 1, 第二拍从未到来,
+        //   三条短路永远命中 ⇒ 高度锁死旧值(798→903→1057→1205→1336→1518,
+        //   6 次全 cached=true)。
+        //
+        // 【本条做什么】_v63drift 不看 debt 计数, 只看**当前 cell 高与真实
+        // 测量之差**是否够大(>8pt, 8 = 排除行高/间距级噪声)。够大就直接
+        // 放行, 不等计数成熟。根因 A(V63-INTSIZE/V63-UPDATE)把 invalidate
+        // 通道修好后, 这里再给一把不依赖计数的兜底 —— 双管齐下。
+        // 阈值 8pt 故意小于 v61-MONO 的 8pt 容差同量级: 只拦"真的差很多"。
+        let _v63drift = _cellH > 1 && _need > 1 && abs(_cellH - _need) > 8
+        guard deferredCorrectionPending || _stillOwing || _v62oversized || _v63drift else { return }
         // [V53-DEBT] 把欠账告诉 cell, 逼它的滑动期短路放行(见 _v53ReportDebtToCell)。
         // [V62-SURPLUS] 盈余时上报负 debt, 喂给 cell 的盈余镜像计数走向「熟」。
         _v53ReportDebtToCell(_stillOwing || _v62oversized ? _debt : 0)
