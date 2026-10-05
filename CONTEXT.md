@@ -1372,3 +1372,100 @@ if depth > 0:
 ★ 同时拦下 **pbxproj 部署目标回退**险情：`rm -rf src/ios && cp -r .upstream-ios`
 重建会把上游原版 26.2/16.0/16.2 带回产物（CI 有 sed 改写，本地四步链没有）
 ⇒ `git checkout HEAD -- pbxproj` 恢复（10×15.5 + 2×16.0 + 2×17.0，diff 0 行）。
+
+---
+
+## §4.16 装机包里没有 v68 —— 第九次「验证手段骗了自己」（最隐蔽的一次）
+
+### 发生了什么
+
+v68 提交（`e72f6b6`）后 CI run `37357375487` **全绿**：
+编译成功、IPA 71MB、dyld 体检通过、断言 71 真跑过、
+守卫 9 层全过、反向 **17 拦下 / 0 漏过 / 0 空测**、幂等门逐字节一致。
+
+从**该 run 自己的 artifact**（ID `11365677748`）下载 IPA、挖出主 App
+二进制（121 114 464 字节，Mach-O arm64，`__LLVM_COV` 段存在，段表覆盖率
+100%），逐字节搜 `NSLog` 格式串：
+
+| 源码里应有 | 二进制里 |
+|---|---|
+| `... REJECT-NAN-INF ...` | 在（v4） |
+| `[V65] FIXED-NONPOSITIVE` | **缺失** |
+| `[V38C] probe-height` | 在（v38-C） |
+| `[WARN] storm-breaker SKIP` | 在（v4） |
+| `... short-circuited setSize: size=` | 在（v4） |
+| `[V68] NONPOSITIVE-STREAK` | **缺失** |
+| `[V68] NONPOSITIVE-DOWNFREQ` | **缺失** |
+| `[INFO] installed (threshold=%ld` | 在（v4） |
+
+⇒ **装机包里跑的是 v38-C 那一代的守卫。v65 与 v68 都不在。**
+
+### 排除过程（每一步都查过，都不是）
+
+1. **搜索方法错？** 不是。同一个文件里 `V63` 24 次、`V64` 3 次、
+   `storm-breaker` 1 次都能搜到；`__TEXT` 等全部 6 个段都扫过；
+   `bytes.count()` 精确匹配，不是正则切片。
+2. **注入没生效？** 不是。CI 日志里 `fix_textcontainer_guard_stormbreaker` /
+   `fix_setsize_storm_clamp_v38c` / `fix_guard_fixsize_v65` /
+   `fix_nonpositive_downfreq_v68` 四步全是 `EDIT ✅`，
+   且 v65 与 v68 之间没有任何别的步骤碰这个文件。
+3. **本地复现也失败？** 不是。从真实上游 1.14（193 行，
+   md5 `42d4d6eead81a3141e72a6f3b8978bd9`，与 `.upstream-ios` 副本一致）
+   跑完整四步注入链 → 四步全部 CHANGED → 597 行、8 条 NSLog 齐全。
+4. **编译的不是这份文件？** 不是。build.log 里
+   `CompileC .../src/ios/Shared/NSTextContainerSetSizeGuard.m` 存在，
+   零诊断（干净编译）；且它排在
+   `grep -oE "CompileC [^ ]+ [^ ]+\.m " build.log` 的列表里。
+5. **编了但没链进去？** 不是。该 `.o` 在 build.log 里出现 5 次，
+   `Ld .../Minis.app/Minis` 正常。
+6. **IPA 是旧产物？** 不是。artifact ID `11365677748`、创建时间
+   `18:53:36`、二进制 mtime `02:53:27`（= 打包时刻），全部对上；
+   且与 v67b 的 artifact（ID `11360974362`）**md5 不同**
+   ⇒ 确实是两次独立构建，但**两者都缺 v65**。
+7. **打包的是别的 .app？** 不是。`DerivedData/Build/Products/Release-iphoneos/Minis.app`
+   唯一；`Info.plist` 的 `CFBundleExecutable = Minis` 正是我检查的那个文件；
+   `MinimumOSVersion = 15.5` 也对。
+8. **`#if` 把代码编译掉了？** 不是。v65/v68 段落在源码里没有任何
+   `#if`/`#ifdef` 包裹（`_rel_depth` 深度 0，判据 ⑧层也是这么查的）。
+
+**结论：所有环节都正确，而产物就是没有。**
+这本身就是发现——它说明**「源码判据 → 装机效果」这条链上，
+有一处结构性缺口没人验过。**
+
+### 修法：断言 72 产物二进制级守卫校验
+
+新增 `scripts/ios15_verify/verify_binary_guard_markers.py`，
+CI 第 23/25 步（dyld 体检之后、IPA 上传之前）执行。
+
+三条硬规则 + 三条对照组：
+
+```
+❌ v68(1) streak 跨 tick 累加            count=0
+❌ v68(2) 降频放行                      count=0
+❌ v65    非正尺寸就地修正转发            count=0
+✅ v4     storm-breaker                 count=1   ← 对照组
+✅ v38-C  probe-height                  count=1   ← 对照组
+✅ v4     REJECT-NAN-INF                count=1   ← 对照组
+```
+
+**对照组是关键设计**：它们在 ⇒「查对了二进制」，
+于是报红信息能区分两种成因（真缺 vs 读错文件），不重演 §16「报错本身
+是一次假绿」。
+
+支持 `.app` / `.ipa` / Mach-O 直传，能处理 fat 二进制切片。
+本地对 v68 的 IPA 实测 rc=1 且报错准确。
+
+### 纪律
+
+`docs/verify-discipline.md` §26（861 行）：
+**判据必须验交付物本身，不能只验交付物的原料。**
+grep 源码查「我有没有写这段代码」，验二进制查「链接器有没有把它放进 App」，
+中间隔着编译器与链接器 —— 这是结构性缺口，必须独立成层。
+
+第九次的通用形态（前八次都是「隔了一层没被跨越的语义」）：
+
+| 次 | 隔的那一层 |
+|---|---|
+| §19 | 标识符**存在** ≠ **可见** |
+| §25 | **会被清零** ≠ **会被累加** |
+| §26 | **源码里有** ≠ **二进制里有** |

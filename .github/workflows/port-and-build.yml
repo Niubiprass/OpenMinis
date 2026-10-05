@@ -2731,6 +2731,51 @@ jobs:
           echo "--- IPA 内剩余 appex (应为空或仅 15.5 可加载者) ---"
           unzip -l "$IPA" | grep '\.appex/' | awk '{print $4}' || echo "(无)"
 
+      # ================= 断言 72: 产物二进制级守卫校验 =================
+      # ★ 本项目**第九次**「验证手段骗了自己」—— 最隐蔽的一次。
+      #   前八次是「判据问错了问题」; 这一次是**判据根本没看最终产物**。
+      #
+      # 【装机铁证】run 37357375487 (e72f6b6, v68) 全绿:
+      #   - 编译成功 / IPA 71MB / dyld 体检通过
+      #   - 断言 71 真跑了(累加在门槛外 + 降频游标 + lastGoodHeight 既读又写)
+      #   - 反向 17 条逐条拦下(S14 死代码 / S15 永久冻结 / S16 裸1.0 / S17 字段没人写)
+      #   而从该 run 的 artifact 里挖出主 App 二进制(121MB Mach-O arm64),
+      #   逐字节搜 NSLog 格式串:
+      #     [V65] FIXED-NONPOSITIVE     ❌ 缺失
+      #     [V68] NONPOSITIVE-STREAK    ❌ 缺失
+      #     [V68] NONPOSITIVE-DOWNFREQ  ❌ 缺失
+      #     storm-breaker SKIP / probe-height / REJECT-NAN-INF  ✅ 在(v4/v38-C 那一代)
+      #   ⇒ **装机包里是 v38-C 那一代的守卫, v65 与 v68 都不在。**
+      #   同 run 的幂等门 / 语法门 / 9 层判据 / 17 条反向 **全部全绿**。
+      #
+      # ★为什么前八次都没抓到: 判据全部作用在 `src/ios/**.m` **源码**上,
+      #   而「装机包里到底有没有这段代码」这件事**从来没被问过**。
+      #   源码正确 + 编译成功 + 打包成功 ⇒ 三件事同时成立,
+      #   **仍不能推出「修复进了二进制」**。
+      #   ★判据必须验**交付物本身**, 而不是交付物的**原料**。
+      #     grep 源码查的是「我有没有写这段代码」;
+      #     本步查的是「链接器有没有把它放进 App」。中间隔着编译器与链接器,
+      #     这是**结构性缺口**, 所以它必须独立成一步、且放在最后。
+      - name: "断言72: 产物二进制级守卫校验 (v65/v68 必须真在 App 里)"
+        if: success()
+        run: |
+          set -e
+          IPA="Minis-iOS${{ env.DEPLOY_TARGET }}.ipa"
+          echo "::group::断言72: 装机包二进制里必须真的有v65/v68 修复 (第九次假绿的修法)"
+          if python3 "$SCRIPT_DIR/ios15_verify/verify_binary_guard_markers.py" "$IPA" ; then
+            echo "✅ 二进制里 v65/v68 修复全部就位 —— 装机包确实带上了"
+          else
+            echo "::error::★装机包里缺守卫修复★ 源码判据全绿也没用 —— 修复没进二进制"
+            echo "   —— 装机后跑的是旧守卫, 症状与「没打这个补丁」完全一致, 而 CI 全绿"
+            echo "   —— 对照组(storm-breaker/probe-height)还在 ⇒ 查对了二进制,"
+            echo"      所以是v65/v68 这两段没被链进去, 不是脚本读错了文件"
+            echo "   —— 排查: ①注入是否真生效 ②编译的 .m 是否就是被注入那份"
+            echo "           ③该 .m 是否在 target Sources 里 ④打包的 .app 是否就是"
+            echo"           本次编译的 .app(DerivedData 复用?) ⑤有无 #if 把代码编译掉"
+            exit 1
+          fi
+          echo "::endgroup::"
+
       - name: "上传 IPA"
         if: success()
         uses: actions/upload-artifact@v4
