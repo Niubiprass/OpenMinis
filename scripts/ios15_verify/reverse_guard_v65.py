@@ -215,12 +215,29 @@ def s12_fabs_noop(t):
     ★只改这一处(保留 fabs 调用本身, 免得先撞上第②层的 fabs 检查),
       于是只有第⑦层会红 —— 拦下 ≠ 测到(同 §21/§22.4)。
     """
-    old = ("            CGFloat _ah = fabs(newSize.height);\n"
-           "            if (!(_ah > 1.0)) { _ah = 1.0; }      // 0 / -0 / 亚 1pt 一律抬到 1")
-    if old not in t:
-        raise AssertionError("锚点12: fabs+钳制那两行没找到")
-    bad = "            newSize.height = fabs(newSize.height);"
-    return t.replace(old, bad)
+    # ★[v68] 锚点改成**只匹配代码本身**, 不匹配注释文字。
+    #   原锚点把 `// 0 / -0 / 亚 1pt 一律抬到 1` 这句注释也写死了, 而 v68
+    #   把这一行展开成了多行(要读 lastGoodHeight) ⇒ 锚点失配 ⇒
+    #   **sabotage 自身空测**(纪律 §16: 空测必须独立计, 不能算漏过)。
+    #   ★这本身就是 §17「换个名字继续错」的第四种形态:
+    #     **上游改注释, 判据就静默失效** —— 注释是最容易变的部分,
+    #     拿它当锚点等于把判据绑在注释上。
+    #   修正: 用正则定位「fabs 调用 + 下界钳制」的**代码骨架**, 注释一律不管。
+    pat = re.compile(
+        r"[ \t]*CGFloat _ah = fabs\(newSize\.height\);\n"
+        r"(?:[^\n]*\n)*?"                      # v68 插入的注释与 _prev 取值
+        r"[ \t]*if \(!\(_ah > 1\.0\)\) \{\n"
+        r"(?:[^\n]*\n)*?"                      # 钳制体(v68 是多行, v66 是单行)
+        r"[ \t]*\}\n")
+    m = pat.search(t)
+    if not m:
+        raise AssertionError(
+            "锚点12: 「fabs 调用 + 下界钳制」的代码骨架没找到\n"
+            "  ★这个锚点必须只匹配代码, 不能匹配注释 —— v68 把钳制体展开成"
+            "多行后, 写死注释的锚点会静默空测(§16/§17)。")
+    # 整块替换成 v65 的空操作写法: fabs 结果直接赋回(对 height==0 是空操作)
+    bad = "            newSize.height = fabs(newSize.height);\n"
+    return t[:m.start()] + bad + t[m.end():]
 
 
 def s13_drop_hardstop(t):
@@ -243,6 +260,103 @@ def s13_drop_hardstop(t):
     return t.replace(old, bad)
 
 
+
+# ---------------- v68: 4 条 sabotage ----------------
+def s14_streak_back_inside_gate(t):
+    """★把 streak 累加**塞回** per-tick 门槛里 —— 精确复现 v66 的死代码。
+
+    问: 判据能不能识破「累加存在但永远执行不到」?
+    这正是 v66/v67b 装机的形态:
+      · 197 万次修正 / 11 秒 / 单容器 / 内存 +1.4GB ⇒ SIGKILL
+      · 而 NONPOSITIVE-STORM / NONPOSITIVE-HARDSTOP 日志**各 0 次**
+    ⇒ 语法合法、编译通过、第 ⑦ 层全绿, 而运行时那行是死代码。
+    ★本项目**第八次**「验证手段骗了自己」:
+      ⑦层问"streak 会不会被清零"(恒真), 病根是"会不会被累加"(恒假)。
+    ⇒ 第 ⑧ 层必须直接断言累加语句的花括号深度为 0。
+    """
+    old = """        s->nonPositiveStreak += 1;
+        if ((s->nonPositiveStreak & 0x3F) == 1) {"""
+    if old not in t:
+        raise AssertionError("锚点14: streak 累加那行没找到")
+    new = ("""        if (s->commitCount > kStormForwardLimit) {
+          s->nonPositiveStreak += 1;
+        }
+        if ((s->nonPositiveStreak & 0x3F) == 1) {""")
+    return t.replace(old, new, 1)
+
+
+def s15_hardstop_back_to_permanent(t):
+    """★硬闸门退回 v66 的「永久停止转发」 —— 断内存换来空白。
+
+    问: 判据能不能识破「闸门太狠」?
+    v66 写的是 `if (streak > 400) { return; }` —— 命中即**永久**停止。
+    后果: 上游持续算崩时该容器再也收不到 setSize ⇒ 高度永久冻结
+    ⇒ 屏幕保留一整块旧几何 ⇒ **巨大空白**(v61 刚修掉的症状换个形态回来),
+    而且把「上游万一自愈」的可能性一并删掉了。
+    ⇒ 第 ⑨ 层必须要求降频游标 + 步长常量。
+    """
+    old = """        s->nonPositiveSkipTick += 1;
+        if (s->nonPositiveSkipTick < kNonPositiveSkipStride) {
+            return;   // 本次丢弃: 只丢这一次, 不是永久
+        }
+        s->nonPositiveSkipTick = 0;   // 本次放行"""
+    if old not in t:
+        raise AssertionError("锚点15: 降频放行那几行没找到")
+    new = """        return;   // [S15] 退回 v66 的永久停止转发"""
+    return t.replace(old, new, 1)
+
+
+def s16_floor_back_to_bare_one(t):
+    """★修正值退回**裸 1.0** —— 活锁的燃料。
+
+    问: 判据能不能识破「修正值上游仍然不满意」?
+    v66 把 0.0 抬到 1.0 **确实生效了**(日志实测 326.0x1.0), 但:
+      197 万次修正的结果**全是同一个值 1.0**
+      ⇒ 上游收到 1.0 与收到 0.0 是同一件事(1pt 装不下任何一行, 回报 0 行)
+      ⇒ 自反馈回路一秒都没被断掉 ⇒ 活锁 ⇒ 11 秒吃掉 1.4GB
+    ★ v65 的病是"修正成和原来一样的值"(空操作);
+      v66 的病是"修正成上游仍不满意的值"(活锁) —— 断的位置不同。
+    ⇒ 第 ⑨ 层必须要求下界钳制块里出现 lastGoodHeight。
+    """
+    old = re.search(
+        r"            if \(!\(_ah > 1\.0\)\) \{.*?\n            \}\n", t, re.S)
+    if not old:
+        raise AssertionError("锚点16: 下界钳制块没找到")
+    new = "            if (!(_ah > 1.0)) { _ah = 1.0; }   // [S16] 裸 1.0\n"
+    return t[:old.start()] + new + t[old.end():]
+
+
+def s17_drop_goodh_recording(t):
+    """★去掉 lastGoodHeight 的**记录**, 让字段永远是 0。
+
+    问: 判据能不能识破「字段存在但没人写」?
+    这是 §19「标识符存在 != 可见」的变体 —— 这次是
+    「字段存在 != **被赋值**」。字段在 GuardState 里, lastGoodHeight = 0,
+    而非正高度的修正值依赖它 ⇒ 每次都退回 1.0 ⇒ 活锁照旧,
+    而所有"字段存在"类断言全绿。
+    ⇒ 第 ⑨ 层必须检查记录语句本身。
+    """
+    old = """    if (newSize.height > 0.0 && isfinite(newSize.height) &&
+        newSize.height <= kMaxContainerHeight) {
+        s->lastGoodHeight = newSize.height;
+    }"""
+    if old not in t:
+        raise AssertionError("锚点17: lastGoodHeight 记录段没找到")
+    return t.replace(old, "    // [S17] 不记录 lastGoodHeight(字段永远为 0)", 1)
+
+
+SABS_V68 = [
+    ("S14", "streak 累加塞回 per-tick 门槛(v66 死代码原样)",
+     s14_streak_back_inside_gate),
+    ("S15", "硬闸门退回永久停止(断内存→换空白)",
+     s15_hardstop_back_to_permanent),
+    ("S16", "修正值退回裸 1.0(活锁燃料)",
+     s16_floor_back_to_bare_one),
+    ("S17", "不记录 lastGoodHeight(字段存在但没人写)",
+     s17_drop_goodh_recording),
+]
+
+
 SABS = [
     ("S1", "恢复合并式丢弃(NaN/inf/负一个if全丢)", s1_restore_merged_reject),
     ("S2", "修正分支末尾加 return(改回丢弃)", s2_put_back_return),
@@ -260,7 +374,7 @@ SABS = [
      s12_fabs_noop),
     ("S13", "跨 tick 累加退回 per-tick(风暴永不熔断)",
      s13_drop_hardstop),
-]
+] + SABS_V68
 
 
 def main():

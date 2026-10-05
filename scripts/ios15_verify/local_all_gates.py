@@ -112,6 +112,31 @@ def expand_args(args, shvars, where):
 
 
 
+# [v68] 需要放宽超时的聚合型脚本(理由见执行处注释)。
+# ★ 绝不用"删掉它"来让门禁变绿 —— 那是把验证手段关掉(§16 的反面)。
+SLOW_SCRIPTS = {
+    # 聚合型: 内部串行跑 27 个 reverse, 多个要重建完整产物
+    # (reverse_v62.py 实测 97s), 400s 仍不够(total 6:40 / CPU 仅 27.69s ⇒ 等子进程)
+    'ios15_verify/regress_all_v.py': 1500,
+    # ★ [v68] 下面这些**单个跑很快**, 但在 regress_all_v 的紧邻子进程压力下
+    #   会被挤过 180s 阈值。实测证据:
+    #     reverse_v61.py 单独跑 = **15.8 秒**(rc=0, 5/5 全拦)
+    #   而门禁里同一项 = TIMEOUT >180s
+    #   ⇒ 这不是判据卡住, 是**资源竞争**(§21: 工具的坏法会伪装成判据报红)。
+    #   统一放宽而不是逐条追查 —— 逐条追查只会把"这次刚好快了"当成"修好了"。
+    'ios15_verify/reverse_v61.py': 900,
+    'ios15_verify/reverse_v62.py': 900,
+    'ios15_verify/reverse_v565.py': 900,
+    'ios15_verify/reverse_v566.py': 900,
+    'ios15_verify/reverse_v567.py': 900,
+    'ios15_verify/reverse_v568.py': 900,
+    'ios15_verify/reverse_v569.py': 900,
+    'ios15_verify/reverse_v570.py': 900,
+    'ios15_verify/reverse_v53.py': 900,
+    'ios15_verify/check_idempotent_reapply.py': 900,
+}
+
+
 def sh(cmd, cwd=ROOT, timeout=180):
     """跑一条判据。**必须带超时** —— 递归或死循环会让整轮门禁永久挂住,
     而 CI 上表现为「无输出直到 job 超时」，比直接红更难查。"""
@@ -251,7 +276,23 @@ def main():
             checks.append(('script ' + rel, True,
                            'SKIP(需干净上游，设 OPENMINIS_UPSTREAM_IOS)'))
             continue
-        r = sh([sys.executable, 'scripts/' + rel] + args)
+        # [v68] 聚合型脚本单独放宽超时阈值。
+        #
+        # 【为什么必须放宽, 而不是把它从清单里删掉】
+        # regress_all_v.py 要串行跑 **27 个 reverse 脚本**, 其中多个标了
+        # "upstream" ⇒ 每个都要重建完整产物(四步注入链), 单个实测 ~97 秒
+        # (reverse_v62.py)。180 秒的通用阈值下它**必然**超时。
+        # 实测: 400 秒仍不够(total 6:40, 但 CPU 只有 27.69s user / 8%
+        # ⇒ 不是死循环, 纯粹是等子进程)。
+        #
+        # ★这条红**不是 v68 引入的**: 该脚本最后一次改动是 v67b(2f1ecc1),
+        #   本轮 v68 对它零改动(git diff 为空)。它是 v54(3403c94)起的
+        #   历史结构性问题, 之前 CI 上跑所以没暴露。
+        # ⇒ 处理: 放宽阈值到 1500s, 并把**超时与判据失败严格区分**:
+        #   超时**不算通过**(仍记红), 但文案必须说清是超时而非判据坏了 ——
+        #   否则又会走上 CI#161 那条"坏的是抽取器不是判据"的老路。
+        _tmo = SLOW_SCRIPTS.get(rel, 180)
+        r = sh([sys.executable, 'scripts/' + rel] + args, timeout=_tmo)
         checks.append(('script ' + rel, r.returncode == 0,
                        (r.stdout + r.stderr)[-400:]))
 

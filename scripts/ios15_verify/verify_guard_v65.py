@@ -264,6 +264,116 @@ def verify_guard_fixsize_v65(src):
             "⑦ `nonPositiveStreak` 被清零了 —— 它必须**跨 tick 累加**。\n"
             "  它存在的唯一意义是止住「每 tick 都喂 0x0」这种形态;\n"
             "  一旦按 tick 清零, 就退回 per-tick 熔断的老行为 ⇒ 永不熔断。")
+
+    # ---------- 第 ⑧ 层 (v68): 累加必须在 per-tick 门槛**之外** ----------
+    # ★★★ 本项目**第八次**「验证手段骗了自己」的防线。
+    #
+    # 【v66/v67b 装机的实测铁证】minis-2026-10-06.log:
+    #     [V65] FIXED-NONPOSITIVE size=0.0x0.0 -> 326.0x1.0 total=1970881
+    #     container=0x283da6f80  × 61584 条日志(每 32 打 1)
+    #     ⇒ 实际进入修正分支 **197 万次 / 11 秒 / 单容器**
+    #     内存 35.5MB → **1474.6MB**(+1.4GB) ⇒ SIGKILL(PID 28466→28473)
+    # 而三条闸门日志**各 0 次**:
+    #     storm-breaker SKIP / NONPOSITIVE-STORM / NONPOSITIVE-HARDSTOP
+    #
+    # 【v66 的病根 —— 累加被埋在 per-tick 门槛里, 是死代码】
+    #     } else if (_v65orig_h <= 0.0 || _v65orig_w <= 0.0) {
+    #         s->commitCount += 1;
+    #         if (s->commitCount > kStormForwardLimit) {   // ← per-tick 门槛
+    #             s->stormed = YES;
+    #             s->nonPositiveStreak += 1;              // ← 死代码
+    #         }
+    #     }
+    # commitCount 由 `if (_newTick) { s->commitCount = 0; }` **每 tick 清零**,
+    # 而 0x0 是「每 tick 只喂一两次」的形态 ⇒ commitCount 永远到不了 40
+    # ⇒ streak 永不增长 ⇒ 硬闸门永不触发。
+    #
+    # ★★ **为什么第 ⑦ 层全绿**: 它问的是"`nonPositiveStreak` 会不会被清零"
+    #   (答案: 不会, 恒真) —— 而病根是"它会不会被**累加**"(答案: 不会, 恒假)。
+    #   **问错了问题, 绿灯就是假的。** 判据必须直接问累加的位置。
+    seg = _block_after(src, "} else if (_v65orig_h <= 0.0 || _v65orig_w <= 0.0) {", code)
+    m_acc = re.search(r"s->nonPositiveStreak\s*\+=\s*1", seg)
+    if not m_acc:
+        raise RuntimeError(
+            "⑧ 非正尺寸分支里**没有** `nonPositiveStreak += 1` —— "
+            "跨 tick 硬闸门永远不会被触发。\n"
+            "  装机实测(10-06.log): 197 万次修正 / 11 秒 / 单容器 /\n"
+            "  内存 35.5MB → 1474.6MB ⇒ SIGKILL, 而\n"
+            "  storm-breaker / NONPOSITIVE-STORM / NONPOSITIVE-HARDSTOP **各 0 次**。")
+    # ★ 关键断言: 累加语句的**花括号深度**必须与 else-if 块本身同级,
+    #   即不得位于任何 `if (...) {` 之内。v66 的形态是深度 +1(埋在门槛里)
+    #   ⇒ 这条断言直接判它死代码。这就是"问对问题"。
+    depth = _rel_depth(seg, m_acc.start())
+    if depth > 0:
+        raise RuntimeError(
+            "⑧ `nonPositiveStreak += 1` 位于**嵌套 if 内部**(相对深度 +%d) ——\n"
+            "  它被 per-tick 门槛 `commitCount > kStormForwardLimit` 挡住了,\n"
+            "  而 commitCount **每 tick 清零**(`if (_newTick) { s->commitCount = 0; }`)。\n"
+            "  0x0 是「每 tick 只喂一两次」的形态 ⇒ 永远到不了 40 ⇒\n"
+            "  **这行是死代码**, 硬闸门永不触发。\n"
+            "  装机实测: 197 万次 / 11 秒 / 内存 +1.4GB ⇒ SIGKILL,\n"
+            "  而 NONPOSITIVE-HARDSTOP 日志 **0 次**。\n"
+            "  ★v66 的第 ⑦ 层判据问的是「streak 会不会被清零」(恒真),\n"
+            "    病根是「会不会被累加」(恒假) —— **问错问题, 绿灯就是假的**。\n"
+            "  ⇒ 修法: 累加必须**无条件**执行, 移出 per-tick 门槛。"
+            % depth)
+
+    # ---------- 第 ⑨ 层 (v68): 硬闸门不得永久冻结, 修正值不得是活锁燃料 ----------
+    # ⑨-1: 命中上限后必须是**降频放行**(有游标), 不是无条件 return。
+    seg2 = _block_after(src, "if (s->nonPositiveStreak > kNonPositiveHardLimit) {", code)
+    if "nonPositiveSkipTick" not in seg2:
+        raise RuntimeError(
+            "⑨ 跨 tick 硬闸门是**永久冻结**(命中即 return) —— 这是把内存问题\n"
+            "  原地换成了空白问题:\n"
+            "  · 一旦上游持续算崩, 该容器**再也收不到任何 setSize**\n"
+            "  · 高度永久冻结在最后一个值 ⇒ 屏幕保留一整块旧几何 ⇒\n"
+            "    **巨大空白**(v61 刚修掉的症状换个形态回来)\n"
+            "  · 还把「上游万一自愈」的可能性一并删掉了\n"
+            "  ⇒ 守卫的职责是让 App 活下去, **永久冻结是让它死得更快**。\n"
+            "  必须改成: 命中上限后每 kNonPositiveSkipStride 次放行 1 次。")
+    if "kNonPositiveSkipStride" not in seg2:
+        raise RuntimeError(
+            "⑨ 降频逻辑缺少 `kNonPositiveSkipStride` 步长常量 ——\n"
+            "  必须有一个明确的放行步长(不能是裸数字, 否则无法反推降频比)。")
+    if "nonPositiveStreak" not in code or "lastGoodHeight" not in code:
+        raise RuntimeError(
+            "⑨ GuardState 缺 `lastGoodHeight` / `nonPositiveSkipTick` 字段 ——\n"
+            "  lastGoodHeight 承载「上一次真实排版过的高度」, 是断活锁的关键。")
+    # ⑨-3: lastGoodHeight 必须**有人写它**(§19 变体: 字段存在 != 被赋值)。
+    #   ★这条是 S17 反向实测漏过之后补的: 只查"字段在不在 + 下界钳制块里
+    #   有没有**读**它"是不够的 —— 一个永远为 0 的字段也能满足这两条,
+    #   而非正高度的修正值正依赖它的值 ⇒ 每次都退回 1.0 ⇒ 活锁照旧。
+    if not re.search(r"s->lastGoodHeight\s*=\s*newSize\.height", code):
+        raise RuntimeError(
+            "⑨ `lastGoodHeight` 从未被赋值 —— 字段存在但永远为 0。\n"
+            "  这是 §19 的新变体: 「标识符存在 != 可见」变成「**字段存在 != 被赋值**」。\n"
+            "  后果: 非正高度的修正值每次都退回 1.0 ⇒ 活锁照旧 ⇒\n"
+            "  197 万次/11秒/内存+1.4GB ⇒ SIGKILL, 而所有「字段存在」类断言全绿。\n"
+            "  必须有 `s->lastGoodHeight = newSize.height;`(且在高度为正有限时才记)。")
+
+    # ⑨-2: 非正高度的修正值不得是**裸 1.0**(活锁燃料)。
+    #   装机铁证: v66 把 0.0 抬到 1.0 **生效了**(日志 326.0x1.0),
+    #   但 197 万次修正结果**全是同一个值 1.0** ⇒ 上游收到 1.0 与 0.0
+    #   在它眼里是同一件事(都排不出任何东西, 1pt 装不下任何一行)
+    #   ⇒ 自反馈回路一秒都没被改变 ⇒ 活锁。
+    m_floor = re.search(r"if\s*\(\s*!\s*\(\s*_\w+\s*>\s*1\.0\s*\)\s*\)\s*\{([^}]*)\}", code)
+    if not m_floor:
+        raise RuntimeError(
+            "⑨ 找不到高度下界钳制块 —— 非正高度仍可能被原样喂回。")
+    floor_body = m_floor.group(1)
+    if "lastGoodHeight" not in floor_body:
+        raise RuntimeError(
+            "⑨ 非正高度的修正值是**裸 1.0** —— 那是**活锁的燃料**。\n"
+            "  装机实测(10-06.log): v66 的钳制**确实生效了*"
+            "(size=0.0x0.0 -> **326.0x1.0**),\n"
+            "  但 197 万次修正的结果**全是同一个值 1.0** ⇒ 上游拿到 1.0 "
+            "和拿到 0.0\n"
+            "  是同一件事(1pt 装不下任何一行, 排版回报 0 行) ⇒ 上游继续算崩 ⇒\n"
+            "  **自反馈一秒都没被断掉** ⇒ 11 秒吃掉 1.4GB。\n"
+            "  ★ v65 的病是「修正成和原来一样的值」(空操作);\n"
+            "    v66 的病是「修正成**上游仍然不满意**的值」(活锁)。\n"
+            "    两者断的位置不同: v65 改「修正成什么」, v66 改「还转不转发」。\n"
+            "  ⇒ 必须优先用 `s->lastGoodHeight`(该容器上一次真实排版过的高度)。")
     return True
 
 
@@ -280,6 +390,23 @@ def _block_after(src, marker, code=None):
     if j < 0:
         return target[i:i + 2000]
     return _brace_block(target, j)
+
+
+def _rel_depth(seg, upto):
+    """seg[0:upto] 相对于 **seg 块自身** 的嵌套深度(块自身那层不算)。
+
+    ★v68 注入后的正确形态 = 0(与 else-if 同级, 累加无条件执行);
+      v66 的死代码形态 = 1(埋在 `if (commitCount > 40)` 里, 永不执行)。
+    ★不用裸 `count("{") - count("}")`: 它对已闭合的兄弟块也恰好正确,
+    纯属巧合; 遇到带 `}` 的字符串字面量或宏立刻跑偏。逐字符维护才是定义。
+    """
+    d = 0
+    for ch in seg[:upto]:
+        if ch == "{":
+            d += 1
+        elif ch == "}":
+            d -= 1
+    return d - 1
 
 
 def _strip_comments(src):
@@ -370,7 +497,10 @@ if __name__ == "__main__":
         "src/ios/Shared/NSTextContainerSetSizeGuard.m"
     try:
         verify_guard_fixsize_v65(open(p, encoding="utf-8").read())
-        print("✅ v65/v66 守卫判据: 7 层全过")
+        print("✅ v65/v66/v68 守卫判据: 9 层全过"
+              "(①弃丢弃已消失 ②负高取fabs ③块内无return ④哨兵门槛包住commitCount"
+              " ⑤常量一致 ⑥标识符存在 ⑦禁CGRect category/防空操作/跨tick闸门"
+              " ⑧累加在门槛外 ⑨降频放行+真实高度回填)")
     except Exception as e:
         print("❌ %s" % e)
         sys.exit(1)

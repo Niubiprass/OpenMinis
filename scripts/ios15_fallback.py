@@ -1742,6 +1742,347 @@ V65_STORM_NEW = """    // [V65-STORM] 只有**哨兵**尺寸才计入风暴预�
     }"""
 
 
+# =====================================================================
+# F7c. v68: 非正尺寸风暴的**真闸门** + 死锁断供
+# ---------------------------------------------------------------------
+# 【用户反馈】v66/v67b 装机后仍然"卡死" —— 这次日志把三件事全钉死了
+#   (minis-2026-10-06.log, 63379 行, 时间窗 01:45:48-01:46:16):
+#
+#   ① **风暴规模翻了 3.7 倍, 而且闸门一条都没开**
+#        [TextContainerGuard] [V65] FIXED-NONPOSITIVE
+#            size=0.0x0.0 -> 326.0x1.0  total=1970881
+#            container=0x283da6f80   × 61584 条(每 32 次打 1 条)
+#        ⇒ 实际进入修正分支 **197 万次**, 11 秒(01:45:56.615→01:46:07.224),
+#          **全部集中在同一个容器**。
+#        而三条闸门日志全部 **0 次**:
+#            storm-breaker SKIP        0
+#            NONPOSITIVE-STORM         0
+#            NONPOSITIVE-HARDSTOP      0
+#
+#   ② **内存 35.5MB → 1474.6MB(+1.4GB), 然后进程消失**
+#        footprint=35.5 → 54.3 → 73.1 → 250.6 → 422.9 → 563.0
+#                 → 742.6 → 873.0 → 1005.4 → 1128.0 → 1345.4 → 1474.6
+#        PID 28466 之后日志直接换成 28473 ⇒ 又一次 SIGKILL。
+#
+#   ③ v66 的下界钳制**确实生效了**(0.0 -> 1.0, 不是 v65 的 0.0)
+#      ⇒ v66 的 ① 修对了; 但整机还是崩 ⇒ 病在别处。
+#
+# =====================================================================
+# 【根因 A: nonPositiveStreak 是**死代码** —— v66 修法的三处里有一处是空转】
+#
+# v66 注入的原文(src/ios/Shared/NSTextContainerSetSizeGuard.m):
+#
+#     } else if (_v65orig_h <= 0.0 || _v65orig_w <= 0.0) {
+#         s->commitCount += 1;
+#         if (s->commitCount > kStormForwardLimit) {   // ← 门槛在这里
+#             s->stormed = YES;
+#             s->nonPositiveStreak += 1;              // ← 累加埋在门槛里
+#             ...
+#         }
+#     }
+#
+# ★★ `nonPositiveStreak += 1` 被放在 `commitCount > 40` 的**里面**。
+#   而 commitCount 是 **per-tick** 的, 由这里清零:
+#       if (_newTick) { s->commitCount = 0; s->stormed = NO; }
+#   0x0 恰恰是"**每个 tick 只喂一两次**"的形态(它不集中在一个 tick 里,
+#   它跟着上游每次排版请求来一次) ⇒ commitCount 永远到不了 40
+#   ⇒ `stormed` 永不置位 ⇒ **streak 永不增长** ⇒ 硬闸门永不触发。
+#
+# ⇒ 这正是 v66 提交说明自己写下的那句话的**反面**:
+#     "per-tick 熔断每换 tick 就清零, 而上游每个 tick 都在喂 ⇒ 永远到不了 40
+#      ⇒ **永不熔断**"
+#   v66 认出了这个病, 却没有把 streak 的累加**搬出**那个门槛。
+# ⇒ 结果: 判据第 ⑦ 层(查 `kNonPositiveHardLimit` 存在 + streak 未被清零)
+#   **全绿**, 语法合法、编译通过、13 条反向全拦下,
+#   而运行时那行 `+= 1` 是**永远执行不到的死代码**。
+#   ★这是本项目**第八次**「验证手段骗了自己」:
+#     判据问的是"streak 会不会被清零", 病根是"streak 会不会被累加"。
+#     前者永远为真, 后者永远为假 —— **问错了问题, 绿灯就是假的**。
+#
+# =====================================================================
+# 【根因 B: 修正值 1.0 是**活锁的燃料** —— 修正本身喂着风暴】
+#
+# v66 把 `fabs(0.0)==0.0` 抬到了 1.0, 日志确认它生效了
+# (size=0.0x0.0 -> **326.0x1.0**)。但 1.0 **没有断掉自反馈**:
+#
+#   上游算崩 -> 喂 0x0 -> 我们抬成 1.0 -> TextKit 在 1pt 容器上排版
+#   -> **放不下任何一行 => 回报 0 行** -> 上游看到"还是 0 行"
+#   -> 认为容器该是 0 高 -> **下一帧又喂 0x0** -> ...
+#
+# 197 万次/11 秒/单容器, 而这 197 万次的**修正结果全是同一个值**(1.0):
+# 上游收到 1.0 和收到 0.0 在它眼里是**同一件事**(都是"排不出东西"),
+# 于是它的反馈回路一秒都没被改变 ⇒ 风暴以原速跑完 11 秒、吃掉 1.4GB。
+#
+# ★ 关键区别: v65 的病是"修正成了和原来一样的值"(空操作);
+#   v66 的病是"修正成了一个**上游仍然不满意**的值"(活锁)。
+#   两者都需要断供, 但断供的**位置**完全不同 ——
+#   v65 要改"修正成什么", v66 要改"到底还转不转发"。
+#
+# =====================================================================
+# 【v68 三处修法】
+#
+# ① **把 streak 累加搬出 per-tick 门槛** —— 直取根因 A。
+#    `nonPositiveStreak += 1` 无条件执行(不再以 commitCount 为前提),
+#    并保留 per-tick 的 commitCount 熔断不动(那是另一件事, v65 的行为)。
+#    ⇒ 0x0 每来一次就记一笔, 跨 tick 累加, 401 次即触发硬闸门。
+#
+# ② **硬闸门改为"降频放行"而非"永久停止"** —— 治根因 A 的副作用。
+#    v66 的 `if (streak > 400) return;` 是**永久**停止转发: 一旦上游
+#    持续喂 0x0, 容器高度就永久冻结在最后一个值上 ⇒ **屏幕上一片空白**
+#    (这恰恰就是 v61 修掉的"巨大空白"症状的另一种形态)。
+#    v68 改成: 命中上限后, **每 kNonPositiveSkipStride 次才放行 1 次**
+#    (降频 1/64), 既把 197 万次压到 ~3 万次(止住内存暴涨),
+#    又保留"上游万一自愈, 高度还能慢慢追回来"的通道。
+#    ★ 这是本条与 v66 的**根本分歧**: v66 认为"停得越彻底越安全",
+#      但守卫的唯一职责是让 App 活下去, 不是让它死得更快 ——
+#      **永久冻结 = 把内存问题换成空白问题**。
+#
+# ③ **非正高度的修正值改为"容器上一次的真实高度"** —— 治根因 B。
+#    1.0 这个值是猜的; 唯一**已知可用**的高度是**该容器上一次被转发的
+#    正高度**(lastGoodHeight, 由本函数在每次转发正高度时记录)。
+#    用它代替 1.0: 上游收到的是一个**真实排版过的几何**
+#    ⇒ 即使上游继续算崩, 屏幕上也保留着崩溃前的内容(不空白、不闪)，
+#    而 197 万次里每次都喂 1.0 只会让 TextKit 反复在 1pt 上排版。
+#    无历史(首次就是 0x0)时才退回 1.0 —— 那时至少不是空容器。
+#
+# 【为什么 ①②③ 必须同版本落地】
+#   只做 ①: 闸门能关, 但关的是"永久冻结" ⇒ 空白回来了(回到 v61 症状)。
+#   只做 ②: 降频但仍喂 1.0 ⇒ 内存从 1.4GB 降到 ~20MB, 但内容不恢复。
+#   只做 ③: 内容保住了, 但每次仍然真转发 197 万次 ⇒ 内存照旧 1.4GB。
+#   三条各自都能独立"看起来有效", 这正是必须同版本的判据。
+
+V68_HOIST_OLD = """    CGFloat _v65orig_w = newSize.width;
+    CGFloat _v65orig_h = newSize.height;
+    if (!isfinite(newSize.width) || !isfinite(newSize.height)) {"""
+
+V68_HOIST_NEW = """    CGFloat _v65orig_w = newSize.width;
+    CGFloat _v65orig_h = newSize.height;
+    // [V68-HOIST] 容器状态**提前到函数体开头**取。
+    //
+    // 【为什么必须提升 —— §19「标识符存在 != 可见」同族第五次】
+    // v68 要在**非正高度修正段**里读 `s->lastGoodHeight`(用上一次真实高度
+    // 代替猜出来的 1.0), 而原来 `holder`/`s` 的获取在那个段**之后**
+    // (实测产物: 非正修正段 idx=6644, `GuardState *s` idx=13695)
+    // ⇒ 修正段里写 `s->...` 会 clang 报 "use of undeclared identifier"。
+    // 与其把 lastGoodHeight 再提升成一个全局/静态变量(多容器会串),
+    // 不如把 s 的获取整体前移 —— objc_getAssociatedObject 无副作用,
+    // 前移只影响"state 对象创建得早一点", 不改变任何判定语义。
+    _NSTextContainerGuardState *holder = objc_getAssociatedObject(self, kGuardStateKey);
+    if (!holder) {
+        holder = [_NSTextContainerGuardState new];
+        objc_setAssociatedObject(self, kGuardStateKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    GuardState *s = &holder->state;
+
+    if (!isfinite(newSize.width) || !isfinite(newSize.height)) {"""
+
+V68_ORIGIN_DUP = """    _NSTextContainerGuardState *holder = objc_getAssociatedObject(self, kGuardStateKey);
+    if (!holder) {
+        holder = [_NSTextContainerGuardState new];
+        objc_setAssociatedObject(self, kGuardStateKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    GuardState *s = &holder->state;
+"""
+
+V68_ORIGIN_NEW = """    // [V68-HOIST] holder / s 已在本函数**开头**取好(见上方 [V68-HOIST]),
+    // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
+"""
+
+V68_ELSEIF_OLD = """        s->commitCount += 1;
+        if (s->commitCount > kStormForwardLimit) {
+            s->stormed = YES;
+            s->nonPositiveStreak += 1;
+            if ((s->nonPositiveStreak & 0xF) == 1) {
+                NSLog(@"[TextContainerGuard] [WARN] [V65] NONPOSITIVE-STORM "
+                      @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f "
+                      @"commit=%llu — 非正高度反复喂, 已熔断",
+                      (__bridge void *)self, _v65orig_w, _v65orig_h,
+                      newSize.width, newSize.height,
+                      (unsigned long long)s->commitCount);
+            }
+        }
+    }"""
+
+V68_ELSEIF_NEW = """        s->commitCount += 1;
+        if (s->commitCount > kStormForwardLimit) {
+            s->stormed = YES;
+        }
+        // [V68-STREAK] **跨 tick 累加必须无条件执行**。
+        //
+        // 【v68 装机铁证 —— v66 把这一行埋进了 per-tick 门槛里, 它从未执行】
+        // minis-2026-10-06.log (iOS 15.5):
+        //   size=0.0x0.0 -> 326.0x1.0  total=1970881  container=0x283da6f80
+        //   × 61584 条日志(每 32 打 1) ⇒ 实际 **197 万次 / 11 秒 / 单容器**
+        //   内存 35.5MB → **1474.6MB**(+1.4GB) ⇒ SIGKILL(PID 28466→28473)
+        //   storm-breaker / NONPOSITIVE-STORM / NONPOSITIVE-HARDSTOP **各 0 次**
+        //
+        // v66 写的是:
+        //     if (s->commitCount > kStormForwardLimit) {   // per-tick 门槛
+        //         s->stormed = YES;
+        //         s->nonPositiveStreak += 1;              // ← 死代码
+        //     }
+        // 而 commitCount 由 `if (_newTick) { s->commitCount = 0; }` **每 tick 清零**;
+        // 0x0 是"每 tick 只喂一两次"的形态 ⇒ commitCount 永远到不了 40
+        // ⇒ streak 永不增长 ⇒ 硬闸门永不触发 ⇒ 197 万次全部真转发。
+        //
+        // ★ 本项目**第八次**「验证手段骗了自己」:
+        //   v66 的第 ⑦ 层判据问的是"`nonPositiveStreak` 会不会被清零",
+        //   而病根是"它会不会被**累加**"。前者恒真、后者恒假 ——
+        //   **问错了问题, 绿灯就是假的**。判据必须问"累加是否在门槛之外"。
+        s->nonPositiveStreak += 1;
+        if ((s->nonPositiveStreak & 0x3F) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V68] NONPOSITIVE-STREAK "
+                  @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f "
+                  @"streak=%ld tickCommit=%lld — 非正尺寸跨 tick 累加中",
+                  (__bridge void *)self, _v65orig_w, _v65orig_h,
+                  newSize.width, newSize.height,
+                  (long)s->nonPositiveStreak,
+                  (long long)s->commitCount);
+        }
+    }"""
+
+V68_HARDSTOP_OLD = """    if (s->nonPositiveStreak > kNonPositiveHardLimit) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V65] NONPOSITIVE-HARDSTOP "
+                  @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f streak=%ld "
+                  @"— 停止转发(容器已有合法几何)",
+                  (__bridge void *)self, newSize.width, newSize.height,
+                  newSize.width, newSize.height,
+                  (long)s->nonPositiveStreak);
+        }
+        return;
+    }"""
+
+V68_HARDSTOP_NEW = """    // [V68-DOWNFREQ] 命中上限后**降频放行**, 不是永久停止转发。
+    //
+    // 【为什么必须改 v66 的"永久停止"】
+    // v66 是 `if (streak > 400) { return; }` —— 一旦触发, 该容器**再也收不到
+    // 任何 setSize**。若上游持续算崩(而它正是这么崩了 197 万次), 高度就永久
+    // 冻结在最后一个值上 ⇒ 屏幕保留一整块旧几何 ⇒ **巨大空白**。
+    // ★ 这就是 v61 刚修掉的症状换了个形态回来: v66 用"永久冻结"止住了内存,
+    //   却把内存问题原地换成了空白问题 —— 守卫的职责是让 App 活下去,
+    //   **永久冻结是让 App 死得更快**: 它连"上游万一自愈"的可能性都一并删掉了。
+    //
+    // v68 改成: 上限之后每 kNonPositiveSkipStride 次才真转发 1 次(1/64 降频)。
+    //   · 197 万次 → 约 3 万次 ⇒ 内存增速降到 1/64(1.4GB → 约 20MB 量级)
+    //   · 上游一旦自愈(哪怕很慢), 高度仍能一帧一帧追回来
+    //   · 容器不会失去合法几何: 上一次放行的值本身就是合法的
+    if (s->nonPositiveStreak > kNonPositiveHardLimit) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V68] NONPOSITIVE-DOWNFREQ "
+                  @"container=%p streak=%ld — 降频 1/%d 放行(保留上行通道)",
+                  (__bridge void *)self, (long)s->nonPositiveStreak,
+                  (int)kNonPositiveSkipStride);
+        }
+        s->nonPositiveSkipTick += 1;
+        if (s->nonPositiveSkipTick < kNonPositiveSkipStride) {
+            return;   // 本次丢弃: 只丢这一次, 不是永久
+        }
+        s->nonPositiveSkipTick = 0;   // 本次放行
+    }
+    // [V68-GOODH] 转发一个**真实排版过的高度**, 记进 lastGoodHeight。
+    // 只在高度为正且有限时记录 —— 负值/0 不是"排版过的高度"。
+    if (newSize.height > 0.0 && isfinite(newSize.height) &&
+        newSize.height <= kMaxContainerHeight) {
+        s->lastGoodHeight = newSize.height;
+    }"""
+
+# ---- ③ 修正值: 1.0 -> lastGoodHeight ----
+V68_FIXH_OLD = """            CGFloat _ah = fabs(newSize.height);
+            if (!(_ah > 1.0)) { _ah = 1.0; }      // 0 / -0 / 亚 1pt 一律抬到 1
+            if (_ah > kMaxContainerHeight) { _ah = kMaxContainerHeight; }
+            newSize.height = _ah;"""
+
+V68_FIXH_NEW = """            CGFloat _ah = fabs(newSize.height);
+            // [V68-GOODH] 修正值**优先用该容器上一次真实排版过的高度**。
+            //
+            // 【为什么 1.0 反而是活锁的燃料 —— v66 装机日志实证】
+            // v66 把 fabs(0.0)==0.0 抬到 1.0, 生效了
+            // (日志实测 size=0.0x0.0 -> **326.0x1.0**), 但整机仍然崩:
+            //   · 197 万次修正的**结果全是同一个值 1.0**
+            //   · 上游收到 1.0 和收到 0.0 在它眼里是同一件事:
+            //     **都排不出任何东西**(1pt 装不下任何一行)
+            //   · 于是它的自反馈回路一秒都没被改变:
+            //     算崩→喂0→抬成1→排0行→上游仍算崩→再喂0 ...
+            //   风暴以原速跑完 11 秒、吃掉 1.4GB。
+            //
+            // ★ v65 的病是"修正成了和原来一样的值"(空操作);
+            //   v66 的病是"修正成了一个**上游仍然不满意**的值"(活锁)。
+            //   两者要断的位置不同: v65 改"修正成什么", v66 改"还转不转发"。
+            //
+            // 唯一**已知可用**的高度是本容器上一次被转发的正高度
+            // (lastGoodHeight, 由下面 [V68-GOODH] 在每次转发正高度时记录)。
+            // 用它: 上游即便继续崩, 屏幕上仍保留崩溃前的真实几何
+            //       (不空白、不闪), 而不是反复让 TextKit 在 1pt 上空排。
+            // 无历史(首次就是 0x0)时才退回 1.0 —— 那时至少不是空容器。
+            if (!(_ah > 1.0)) {
+                CGFloat _prev = s->lastGoodHeight;
+                _ah = (_prev > 1.0 && isfinite(_prev) &&
+                       _prev <= kMaxContainerHeight) ? _prev : 1.0;
+            }
+            if (_ah > kMaxContainerHeight) { _ah = kMaxContainerHeight; }
+            newSize.height = _ah;"""
+
+V68_CONST_OLD = """static const NSInteger kNonPositiveHardLimit = 400;"""
+
+V68_CONST_NEW = """static const NSInteger kNonPositiveHardLimit = 400;
+
+// [V68-DOWNFREQ] 命中 kNonPositiveHardLimit 之后的**放行步长**: 每 64 次里放 1 次。
+// v66 是"永久停止转发", 代价是容器高度永久冻结 ⇒ 屏幕保留一整块旧几何
+// ⇒ 巨大空白(v61 刚修掉的症状换个形态回来)。
+// 降频 1/64 把 197 万次压到约 3 万次(内存增速 1.4GB → 20MB 量级),
+// 同时**保留上行通道**: 上游一旦自愈, 高度仍能一帧一帧追回来。
+static const NSInteger kNonPositiveSkipStride = 64;"""
+
+V68_FIELD_OLD = """    NSInteger nonPositiveStreak;
+    BOOL initialized;
+} GuardState;"""
+
+V68_FIELD_NEW = """    NSInteger nonPositiveStreak;
+    // [V68-GOODH] 该容器**上一次被转发的真实高度** (>0)。非正高度修正时优先用它,
+    // 而不是猜一个 1.0 —— 1.0 装不下任何一行, 上游会继续算崩(活锁)。
+    CGFloat lastGoodHeight;
+    // [V68-DOWNFREQ] 降频丢弃的游标: 每 kNonPositiveSkipStride 次放行 1 次。
+    NSInteger nonPositiveSkipTick;
+    BOOL initialized;
+} GuardState;"""
+
+
+def fix_nonpositive_downfreq_v68(t):
+    """v68 注入: 非正尺寸风暴的真闸门 + 降频放行 + 真实高度回填。
+
+    幂等: 已有 [V68-STREAK] 原样返回。
+    """
+    if "[V68-STREAK]" in t:
+        return t
+    # 顺序要紧: 先改 else-if 里的 streak 累加, 再改硬闸门。
+    # ★顺序要紧: **先删原处, 再 hoist**。
+    #   反过来(先 hoist 后删)会让 ORIGIN_DUP 锚点在文件里出现 **2 次**
+    #   (新插入的那份与原处那份逐字相同) ⇒ _v60_replace1 的 count==1
+    #   防呆立刻报错(实测首次跑就撞上了)。防呆本身是对的, 错的是顺序。
+    t = _v60_replace1(t, V68_ORIGIN_DUP, V68_ORIGIN_NEW,
+                       "v68⓪ 原处二次获取改为注释(否则重复声明 holder/s 编译红)")
+    t = _v60_replace1(t, V68_HOIST_OLD, V68_HOIST_NEW,
+                       "v68⓪ holder/s 提升到函数体开头(修正段要读 lastGoodHeight)")
+    t = _v60_replace1(t, V68_ELSEIF_OLD, V68_ELSEIF_NEW,
+                       "v68① streak 累加搬出 per-tick 门槛(旧版是死代码)")
+    t = _v60_replace1(t, V68_HARDSTOP_OLD, V68_HARDSTOP_NEW,
+                       "v68② 硬闸门改降频放行 + ③ 记录 lastGoodHeight")
+    t = _v60_replace1(t, V68_FIXH_OLD, V68_FIXH_NEW,
+                       "v68③ 非正高度修正值改用 lastGoodHeight(1.0 是活锁燃料)")
+    # 常量与结构体字段要放在**注入点之后**: v65/v66 是先注入 stormbreaker
+    # (它创建 kNonPositiveHardLimit 与 nonPositiveStreak 字段), v68 才能改它们。
+    t = _v60_replace1(t, V68_CONST_OLD, V68_CONST_NEW,
+                       "v68② 新增降频步长 kNonPositiveSkipStride")
+    t = _v60_replace1(t, V68_FIELD_OLD, V68_FIELD_NEW,
+                       "v68②③ GuardState 新增 lastGoodHeight / nonPositiveSkipTick")
+    return t
+
+
 def fix_guard_fixsize_v65(t):
     """v65 注入: 守卫不再丢弃有限非正尺寸, 且熔断只对哨兵生效。
 
@@ -14326,6 +14667,24 @@ def main():
         "哨兵风暴, 却在吞真实排版。两条必须同版落地, 否则症状互相掩盖。"
         "★熔断判据写死字面量 2000 而不引用 kProbeHeightCeiling: 那个 const "
         "声明在函数内另一段作用域, 引用会编译失败(run#159/run#157 同类错误第四次)。")
+    edit("Shared/NSTextContainerSetSizeGuard.m", fix_nonpositive_downfreq_v68,
+        "v68: v66/v67b 装机仍卡死(10-06 日志: 197 万次修正 / 11 秒 / 单容器 / "
+        "内存 35.5→**1474.6MB** ⇒ SIGKILL), 而 storm-breaker / NONPOSITIVE-STORM "
+        "/ NONPOSITIVE-HARDSTOP **各 0 次** —— 三道闸门一道都没开。⓪holder/s "
+        "提升到函数体开头(修正段要读 lastGoodHeight, 否则 §19 第五次)。"
+        "①**streak 累加搬出 per-tick 门槛**: v66 把它埋在 "
+        "`commitCount > 40` 里面, 而 commitCount 每 tick 清零且 0x0 是"
+        "「每 tick 只喂一两次」的形态 ⇒ streak 永不增长 ⇒ 硬闸门是**死代码**"
+        "(★第八次「验证手段骗了自己」: ⑦层判据问的是「streak 会不会被清零」"
+        "[恒真], 病根是「会不会被累加」[恒假] —— **问错问题绿灯就是假的**)。"
+        "②硬闸门 `return` 改**降频放行**(每 64 次放 1 次): v66 是永久冻结 ⇒ "
+        "高度永久停住 ⇒ **巨大空白**(v61 刚修掉的症状换个形态回来), "
+        "197 万→约 3 万次(1.4GB→20MB 量级)且保留自愈通道。③非正高度的修正值"
+        "改用 **lastGoodHeight**(上一次真实排版过的高度)而不是 1.0: "
+        "1pt 装不下任何一行, 上游收到 1.0 和 0.0 同样算崩 ⇒ **活锁**, "
+        "197 万次修正全是同一个值 1.0 ⇒ 自反馈一秒没断。"
+        "★v65 的病是「修正成和原来一样的值」(空操作), v66 是「修正成上游仍"
+        "不满意的值」(活锁) —— 断的位置不同。")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_clamp_v39, "v39: 帧同步补上高度 — 治'字显示不全/排版不对'(v23 帧同步只修宽度不修高度, 每帧把 v18 撑好的高度改回去 → svH 恒为 needH 的 0.50~0.74, 37/37)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_unconditional_v40, "v40: 高度补齐挪出 polluted 分支 — 治'块重叠/字只剩一半'(v39 实测: textView 自身 frameH==needH 已 52/52 全对, 但 superview 52/52 仍欠 23.7~476pt。根因: polluted 判据只看宽度, 宽度修好后早退, v39 的高度代码一行没跑 → 宽度修好反而挡住了高度)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_height_clamp_v41, "v41: KVO 抢帧器补高度 — 治'字只剩一半/终端框不接结果'(推翻 v39/v40 的诊断: log9 同一毫秒同一 layoutSubviews 内 DIAG2 读到 358x2000.33 而开头快照是 100000x1455.33 → v18+v40 在 pass 内**确实修好了**, 欠账是 pass 结束后 SwiftUI 写回的。真凶: KVO 抢帧器只修x/width 从不写高度, 且 polluted 判据只看宽度 → '宽度正常+高度欠账'的帧被 if !polluted { return } 放过 → 末行被裁。v41: KVO 内无条件补高度 + polluted 增加高度维度 + 提交前兜底 + pass 末尾 V41-DEBT 回写侦测)")

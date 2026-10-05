@@ -32,6 +32,13 @@ static const NSInteger kStormForwardLimit = 40;
 // 意味着上游已经进入死循环, 此时停止转发是唯一正确的选择。
 static const NSInteger kNonPositiveHardLimit = 400;
 
+// [V68-DOWNFREQ] 命中 kNonPositiveHardLimit 之后的**放行步长**: 每 64 次里放 1 次。
+// v66 是"永久停止转发", 代价是容器高度永久冻结 ⇒ 屏幕保留一整块旧几何
+// ⇒ 巨大空白(v61 刚修掉的症状换个形态回来)。
+// 降频 1/64 把 197 万次压到约 3 万次(内存增速 1.4GB → 20MB 量级),
+// 同时**保留上行通道**: 上游一旦自愈, 高度仍能一帧一帧追回来。
+static const NSInteger kNonPositiveSkipStride = 64;
+
 // [IOS15-FIX-STORM] 容器高度上限。源码用 .greatestFiniteMagnitude 关掉高度钳制;
 // 旧 guard 钳到 1e7 (仍近乎无限)。iOS 15 上近乎无限的容器让 fillLayoutHole 对长
 // 流式消息病态循环。1e5(≈100000pt ≈ 16× 最高真实气泡) 既保留"足够高不裁真实
@@ -57,6 +64,11 @@ typedef struct {
     // 装机实测 0x0 在每个 tick 都被反复喂, 只按 tick 清零 ⇒ 永不熔断 ⇒
     // 单容器 14 秒 264 万次 ⇒ 内存 +470MB ⇒ SIGKILL。跨 tick 累加才能拦住它。
     NSInteger nonPositiveStreak;
+    // [V68-GOODH] 该容器**上一次被转发的真实高度** (>0)。非正高度修正时优先用它,
+    // 而不是猜一个 1.0 —— 1.0 装不下任何一行, 上游会继续算崩(活锁)。
+    CGFloat lastGoodHeight;
+    // [V68-DOWNFREQ] 降频丢弃的游标: 每 kNonPositiveSkipStride 次放行 1 次。
+    NSInteger nonPositiveSkipTick;
     BOOL initialized;
 } GuardState;
 
@@ -115,6 +127,24 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // "use of undeclared identifier"), 本项目 §19 同族第四次。
     CGFloat _v65orig_w = newSize.width;
     CGFloat _v65orig_h = newSize.height;
+    // [V68-HOIST] 容器状态**提前到函数体开头**取。
+    //
+    // 【为什么必须提升 —— §19「标识符存在 != 可见」同族第五次】
+    // v68 要在**非正高度修正段**里读 `s->lastGoodHeight`(用上一次真实高度
+    // 代替猜出来的 1.0), 而原来 `holder`/`s` 的获取在那个段**之后**
+    // (实测产物: 非正修正段 idx=6644, `GuardState *s` idx=13695)
+    // ⇒ 修正段里写 `s->...` 会 clang 报 "use of undeclared identifier"。
+    // 与其把 lastGoodHeight 再提升成一个全局/静态变量(多容器会串),
+    // 不如把 s 的获取整体前移 —— objc_getAssociatedObject 无副作用,
+    // 前移只影响"state 对象创建得早一点", 不改变任何判定语义。
+    _NSTextContainerGuardState *holder = objc_getAssociatedObject(self, kGuardStateKey);
+    if (!holder) {
+        holder = [_NSTextContainerGuardState new];
+        objc_setAssociatedObject(self, kGuardStateKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    GuardState *s = &holder->state;
+
     if (!isfinite(newSize.width) || !isfinite(newSize.height)) {
         // [V65] NaN/inf 仍然硬拒 —— 它们会触发 CoreText fillLayoutHole 病态循环
         // (v4 实证 11918ms 主线程卡死), 且 TextKit 无法表示, 无从"修正"。
@@ -222,7 +252,32 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
             // 必须夹到一个**能跑排版的最小合法高度**。用 1.0 而不是 0:
             // TextKit 对 height<=0 视为无容器可用, 对极小正高仍会排版。
             CGFloat _ah = fabs(newSize.height);
-            if (!(_ah > 1.0)) { _ah = 1.0; }      // 0 / -0 / 亚 1pt 一律抬到 1
+            // [V68-GOODH] 修正值**优先用该容器上一次真实排版过的高度**。
+            //
+            // 【为什么 1.0 反而是活锁的燃料 —— v66 装机日志实证】
+            // v66 把 fabs(0.0)==0.0 抬到 1.0, 生效了
+            // (日志实测 size=0.0x0.0 -> **326.0x1.0**), 但整机仍然崩:
+            //   · 197 万次修正的**结果全是同一个值 1.0**
+            //   · 上游收到 1.0 和收到 0.0 在它眼里是同一件事:
+            //     **都排不出任何东西**(1pt 装不下任何一行)
+            //   · 于是它的自反馈回路一秒都没被改变:
+            //     算崩→喂0→抬成1→排0行→上游仍算崩→再喂0 ...
+            //   风暴以原速跑完 11 秒、吃掉 1.4GB。
+            //
+            // ★ v65 的病是"修正成了和原来一样的值"(空操作);
+            //   v66 的病是"修正成了一个**上游仍然不满意**的值"(活锁)。
+            //   两者要断的位置不同: v65 改"修正成什么", v66 改"还转不转发"。
+            //
+            // 唯一**已知可用**的高度是本容器上一次被转发的正高度
+            // (lastGoodHeight, 由下面 [V68-GOODH] 在每次转发正高度时记录)。
+            // 用它: 上游即便继续崩, 屏幕上仍保留崩溃前的真实几何
+            //       (不空白、不闪), 而不是反复让 TextKit 在 1pt 上空排。
+            // 无历史(首次就是 0x0)时才退回 1.0 —— 那时至少不是空容器。
+            if (!(_ah > 1.0)) {
+                CGFloat _prev = s->lastGoodHeight;
+                _ah = (_prev > 1.0 && isfinite(_prev) &&
+                       _prev <= kMaxContainerHeight) ? _prev : 1.0;
+            }
             if (_ah > kMaxContainerHeight) { _ah = kMaxContainerHeight; }
             newSize.height = _ah;
         }
@@ -291,13 +346,8 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // 和 UIKit 对抗(widthTracksTextView=true 时宽度由 UIKit 从 frame 派生), 要修
     // 就修产生它的 frame 源头。此处回退到已验证最好的 v8 行为。
 
-    _NSTextContainerGuardState *holder = objc_getAssociatedObject(self, kGuardStateKey);
-    if (!holder) {
-        holder = [_NSTextContainerGuardState new];
-        objc_setAssociatedObject(self, kGuardStateKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-
-    GuardState *s = &holder->state;
+    // [V68-HOIST] holder / s 已在本函数**开头**取好(见上方 [V68-HOIST]),
+    // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
 
     // [IOS15-FIX-STORM] 风暴熔断: 本 tick 已经触发过熔断后, 只丢弃"同尺寸重复"
     // (自旋源); 不同尺寸的调用仍有限放行 —— v9 实证: 无差别丢弃会把正确的宽度
@@ -406,15 +456,38 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
         s->commitCount += 1;
         if (s->commitCount > kStormForwardLimit) {
             s->stormed = YES;
-            s->nonPositiveStreak += 1;
-            if ((s->nonPositiveStreak & 0xF) == 1) {
-                NSLog(@"[TextContainerGuard] [WARN] [V65] NONPOSITIVE-STORM "
-                      @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f "
-                      @"commit=%llu — 非正高度反复喂, 已熔断",
-                      (__bridge void *)self, _v65orig_w, _v65orig_h,
-                      newSize.width, newSize.height,
-                      (unsigned long long)s->commitCount);
-            }
+        }
+        // [V68-STREAK] **跨 tick 累加必须无条件执行**。
+        //
+        // 【v68 装机铁证 —— v66 把这一行埋进了 per-tick 门槛里, 它从未执行】
+        // minis-2026-10-06.log (iOS 15.5):
+        //   size=0.0x0.0 -> 326.0x1.0  total=1970881  container=0x283da6f80
+        //   × 61584 条日志(每 32 打 1) ⇒ 实际 **197 万次 / 11 秒 / 单容器**
+        //   内存 35.5MB → **1474.6MB**(+1.4GB) ⇒ SIGKILL(PID 28466→28473)
+        //   storm-breaker / NONPOSITIVE-STORM / NONPOSITIVE-HARDSTOP **各 0 次**
+        //
+        // v66 写的是:
+        //     if (s->commitCount > kStormForwardLimit) {   // per-tick 门槛
+        //         s->stormed = YES;
+        //         s->nonPositiveStreak += 1;              // ← 死代码
+        //     }
+        // 而 commitCount 由 `if (_newTick) { s->commitCount = 0; }` **每 tick 清零**;
+        // 0x0 是"每 tick 只喂一两次"的形态 ⇒ commitCount 永远到不了 40
+        // ⇒ streak 永不增长 ⇒ 硬闸门永不触发 ⇒ 197 万次全部真转发。
+        //
+        // ★ 本项目**第八次**「验证手段骗了自己」:
+        //   v66 的第 ⑦ 层判据问的是"`nonPositiveStreak` 会不会被清零",
+        //   而病根是"它会不会被**累加**"。前者恒真、后者恒假 ——
+        //   **问错了问题, 绿灯就是假的**。判据必须问"累加是否在门槛之外"。
+        s->nonPositiveStreak += 1;
+        if ((s->nonPositiveStreak & 0x3F) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V68] NONPOSITIVE-STREAK "
+                  @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f "
+                  @"streak=%ld tickCommit=%lld — 非正尺寸跨 tick 累加中",
+                  (__bridge void *)self, _v65orig_w, _v65orig_h,
+                  newSize.width, newSize.height,
+                  (long)s->nonPositiveStreak,
+                  (long long)s->commitCount);
         }
     }
     // [V65-FIXSIZE-S] **跨 tick 硬闸门**: 非正高度连续命中超限后, 停止转发。
@@ -431,17 +504,39 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // 现在非正高度**先被修正成合法尺寸**(高度抬到 1.0), 连续命中到上限后
     // 才停止转发 —— 此时容器已经拿到过一个**合法几何**, 保留它即可,
     // 不是"从未更新过的过期几何"。⇒ 与 v65 的修正转发不冲突。
+    // [V68-DOWNFREQ] 命中上限后**降频放行**, 不是永久停止转发。
+    //
+    // 【为什么必须改 v66 的"永久停止"】
+    // v66 是 `if (streak > 400) { return; }` —— 一旦触发, 该容器**再也收不到
+    // 任何 setSize**。若上游持续算崩(而它正是这么崩了 197 万次), 高度就永久
+    // 冻结在最后一个值上 ⇒ 屏幕保留一整块旧几何 ⇒ **巨大空白**。
+    // ★ 这就是 v61 刚修掉的症状换了个形态回来: v66 用"永久冻结"止住了内存,
+    //   却把内存问题原地换成了空白问题 —— 守卫的职责是让 App 活下去,
+    //   **永久冻结是让 App 死得更快**: 它连"上游万一自愈"的可能性都一并删掉了。
+    //
+    // v68 改成: 上限之后每 kNonPositiveSkipStride 次才真转发 1 次(1/64 降频)。
+    //   · 197 万次 → 约 3 万次 ⇒ 内存增速降到 1/64(1.4GB → 约 20MB 量级)
+    //   · 上游一旦自愈(哪怕很慢), 高度仍能一帧一帧追回来
+    //   · 容器不会失去合法几何: 上一次放行的值本身就是合法的
     if (s->nonPositiveStreak > kNonPositiveHardLimit) {
         gShortCircuitCount += 1;
         if ((gShortCircuitCount & 0xFF) == 1) {
-            NSLog(@"[TextContainerGuard] [WARN] [V65] NONPOSITIVE-HARDSTOP "
-                  @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f streak=%ld "
-                  @"— 停止转发(容器已有合法几何)",
-                  (__bridge void *)self, newSize.width, newSize.height,
-                  newSize.width, newSize.height,
-                  (long)s->nonPositiveStreak);
+            NSLog(@"[TextContainerGuard] [WARN] [V68] NONPOSITIVE-DOWNFREQ "
+                  @"container=%p streak=%ld — 降频 1/%d 放行(保留上行通道)",
+                  (__bridge void *)self, (long)s->nonPositiveStreak,
+                  (int)kNonPositiveSkipStride);
         }
-        return;
+        s->nonPositiveSkipTick += 1;
+        if (s->nonPositiveSkipTick < kNonPositiveSkipStride) {
+            return;   // 本次丢弃: 只丢这一次, 不是永久
+        }
+        s->nonPositiveSkipTick = 0;   // 本次放行
+    }
+    // [V68-GOODH] 转发一个**真实排版过的高度**, 记进 lastGoodHeight。
+    // 只在高度为正且有限时记录 —— 负值/0 不是"排版过的高度"。
+    if (newSize.height > 0.0 && isfinite(newSize.height) &&
+        newSize.height <= kMaxContainerHeight) {
+        s->lastGoodHeight = newSize.height;
     }
     ((void (*)(id, SEL, CGSize))gOriginalSetSize)(self, _cmd, newSize);
 }

@@ -581,7 +581,7 @@ jobs:
             exit 1
           fi
           if python3 "$SCRIPT_DIR/ios15_verify/verify_guard_v65.py" "$GUARD_V65" ; then
-            echo "✅ v65/v66 判据就位 (拆分丢弃/修正转发/无 return/哨兵门槛包住自增/常量一致/标识符存在/禁 CGRect category/防空操作+跨tick闸门, 共 7 层)"
+            echo "✅ v65/v66/v68 判据就位 (共 9 层: 拆分丢弃/修正转发/无return/哨兵门槛包住自增/常量一致/标识符存在/禁CGRect category/防空操作+跨tick闸门/**累加在门槛外**/降频放行+真实高度回填)"
           else
             echo "::error::v65 守卫判据异常 —— 上面列出的那一层没过, 按提示对症"
             echo "   —— 若报「未找到 NaN/inf 硬拒分支」: NaN/inf 会进 TextKit ⇒ CoreText fillLayoutHole 病态循环(v4 实证 12s 卡死)"
@@ -593,13 +593,95 @@ jobs:
             echo "   —— 若报「引用了 kProbeHeightCeiling」: 它是函数内局部 const, 作用域外 ⇒ 编译红"
             echo "   —— 若报「用到了 CGRect 的 category 成员」: CI#162 那类编译红, CGRect.width 是 category 不是字段 ⇒ 改走 KVC"
             echo "   —— 若报「高度修正写成了 fabs」或「nonPositiveStreak 被清零」: v65 装机的真实缺陷 ⇒ fabs(0.0)==0.0 是空操作, 且 per-tick 熔断拦不住每 tick 都喂的 0x0"
+            echo "   —— 若报「⑧ 位于嵌套 if 内部」: ★v66 装机的真实缺陷 ⇒ streak 累加埋在 per-tick 门槛里, 197 万次/11秒/+1.4GB/SIGKILL 而闸门 0 次"
+            echo "   —— 若报「⑨ 永久冻结」或「裸 1.0」: 闸门太狠(高度冻死⇒空白) 或 修正值是活锁燃料(1pt 排不出行⇒自反馈不断)"
             exit 1
           fi
           echo "---"
           if python3 "$SCRIPT_DIR/ios15_verify/reverse_guard_v65.py" . ; then
-            echo "✅ v65/v66 反向 13 条全拦 (含 S2 块内return / S5 顺序 / S9 作用域 / S10 标识符不存在 / S11 CGRect category / S12 fabs空操作 / S13 跨tick闸门)"
+            echo "✅ v65/v66/v68 反向 17 条全拦 (含 S2 块内return / S5 顺序 / S9 作用域 / S10 标识符不存在 / S11 CGRect category / S12 fabs空操作 / S13 跨tick闸门 / S14 死代码复现 / S15 永久冻结 / S16 裸1.0活锁 / S17 字段没人写)"
           else
             echo "::error::v65 反向未全拦 —— 判据存在盲区, 上面的绿灯不可信(见 verify-discipline §16/§17)"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          # ---- 断言71: v68 非正尺寸风暴的**真闸门**(第八次假绿的修法) ----
+          # ★v66/v67b 装机的实测铁证 (minis-2026-10-06.log, iOS 15.5):
+          #   [V65] FIXED-NONPOSITIVE size=0.0x0.0 -> 326.0x1.0 total=1970881
+          #   container=0x283da6f80 × 61584 条日志(每 32 打 1)
+          #   ⇒ 实际进入修正分支 **197 万次 / 11 秒 / 单容器**
+          #   内存 35.5MB → 54.3 → 250.6 → 563.0 → 1128.0 → **1474.6MB**
+          #   然后 PID 28466 消失、28473 出现 ⇒ 又一次 **SIGKILL**
+          # 而三条闸门日志 **各 0 次**:
+          #   storm-breaker SKIP / NONPOSITIVE-STORM / NONPOSITIVE-HARDSTOP
+          #
+          # 【v66 的病根 = streak 累加是死代码】
+          #   } else if (_v65orig_h <= 0.0 || _v65orig_w <= 0.0) {
+          #       s->commitCount += 1;
+          #       if (s->commitCount > kStormForwardLimit) {  // ← per-tick 门槛
+          #           s->nonPositiveStreak += 1;             // ← 埋在里面, 永不执行
+          #       }
+          #   }
+          #   commitCount 由 `if (_newTick) { s->commitCount = 0; }` 每 tick 清零,
+          #   而 0x0 是「每 tick 只喂一两次」的形态 ⇒ 永远到不了 40 ⇒ streak 永不增长。
+          # ★ 这是本项目**第八次**「验证手段骗了自己」:
+          #   v66 的第 ⑦ 层判据问「streak 会不会被**清零**」(恒真),
+          #   病根是「会不会被**累加**」(恒假) —— **问错问题, 绿灯就是假的**。
+          # ⇒ 断言必须直接验: 累加语句不在任何嵌套 if 内 + 降频游标 + lastGoodHeight。
+          echo "::group::断言71: v68 非正尺寸风暴真闸门必须就位 (streak 累加在门槛外 + 降频放行 + 真实高度回填)"
+          if ! grep -q "V68-STREAK" "$GUARD_V65" ; then
+            echo "::error::v68 streak 累加(V68-STREAK)缺失 —— 跨 tick 硬闸门仍是死代码"
+            echo "   —— 装机实测: 197 万次修正 / 11 秒 / 内存 35.5→1474.6MB ⇒ SIGKILL"
+            echo "   —— 而 NONPOSITIVE-STORM / NONPOSITIVE-HARDSTOP 日志**各 0 次**"
+            exit 1
+          fi
+          if ! grep -q "V68-DOWNFREQ" "$GUARD_V65" ; then
+            echo "::error::v68 降频放行(V68-DOWNFREQ)缺失 —— 硬闸门退回「永久停止转发」"
+            echo "   —— 命中即 return ⇒ 高度永久冻结 ⇒ **巨大空白**(v61 症状换个形态回来)"
+            echo "   —— 守卫的职责是让 App 活下去, 永久冻结是让它死得更快"
+            exit 1
+          fi
+          if ! grep -q "V68-GOODH" "$GUARD_V65" ; then
+            echo "::error::v68 真实高度回填(V68-GOODH)缺失 —— 修正值仍是裸 1.0, 活锁照旧"
+            echo "   —— 装机实测: v66 的 1.0 钳制**确实生效了**(326.0x1.0),"
+            echo "      但 197 万次修正结果全是同一个值 ⇒ 上游继续算崩 ⇒ 自反馈一秒没断"
+            exit 1
+          fi
+          if ! grep -q "V68-HOIST" "$GUARD_V65" ; then
+            echo "::error::v68 holder/s 提升(V68-HOIST)缺失 —— 修正段读 s->lastGoodHeight 会编译红"
+            echo "   —— §19「标识符存在 != 可见」同族第五次: s 的声明在修正段之后"
+            exit 1
+          fi
+          # 反向断言: streak 累加**不得**位于任何嵌套 if 内(花括号深度必须为 0)。
+          # 这是「问对问题」的核心断言 —— v66 的死代码恰好在这里被抓住。
+          # ★ 单独成文件而不是内联 heredoc: Actions 的 YAML 会把内联 python
+          #   折行撕碎(实测报 "expected <block end>"), 且判据必须能本地逐字复现
+          #   (v67b 已因"基线解析散落 11 处"吃过一次亏)。
+          if python3 "$SCRIPT_DIR/ios15_verify/assert_v68_streak_reachable.py" "$GUARD_V65" ; then
+            echo "✅ v68 判据就位 (累加在门槛外 + 降频游标 + 步长常量 + lastGoodHeight 既读又写)"
+          else
+            echo "::error::v68 判据异常 —— 按提示对症"
+            echo "   —— 若报「花括号深度 +1」: streak 累加又埋回 per-tick 门槛里了 ⇒ v66 死代码复现"
+            echo "   —— 若报「永久冻结」: 硬闸门命中即 return ⇒ 高度冻死 ⇒ 巨大空白"
+            echo "   —— 若报「从未被赋值」: lastGoodHeight 字段在但没人写 ⇒ 仍退回 1.0 活锁"
+            exit 1
+          fi
+          # 作用域结构自检: v66 在这一段踩了两次编译红(§19 同族 5 次),
+          # 都是**作用域**错而不是语法错 ⇒ 等 Xcode 报红太晚, 本地/CI 先验。
+          if python3 "$SCRIPT_DIR/ios15_verify/guard_scope_check.py" "$GUARD_V65" ; then
+            echo "✅ guard 作用域结构自检通过 (s 声明顺序 / 括号配平 / holder 唯一 / 字段有赋值)"
+          else
+            echo "::error::guard 作用域结构异常 —— 真实编译会红, 按提示对症"
+            echo "   —— 若报「s 声明在非正修正段之后」: hoist 失效 ⇒ use of undeclared identifier"
+            echo "   —— 若报「声明了 N 次」: hoist 后原处忘删 ⇒ 重复定义"
+            echo "   —— 若报「从未被赋值」: §19 变体「字段存在 != 被赋值」"
+            exit 1
+          fi
+          if python3 "$SCRIPT_DIR/ios15_verify/reverse_guard_v65.py" . ; then
+            echo "✅ v65/v66/v68 反向 17 条全拦 (含 S14 死代码复现 / S15 永久冻结 / S16 裸 1.0 / S17 字段没人写)"
+          else
+            echo "::error::反向未全拦 —— 判据存在盲区, 上面的绿灯不可信(见 verify-discipline §16/§17)"
             exit 1
           fi
           echo "::endgroup::"
