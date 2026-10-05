@@ -99,17 +99,100 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     //      treats it as unbounded just like .greatestFiniteMagnitude
     //      would. dedup below still collapses repeat probes within the
     //      same runloop tick, preserving the race-mitigation effect.
-    if (!isfinite(newSize.width) || !isfinite(newSize.height) ||
-        newSize.width < 0 || newSize.height < 0) {
+    if (!isfinite(newSize.width) || !isfinite(newSize.height)) {
+        // [V65] NaN/inf 仍然硬拒 —— 它们会触发 CoreText fillLayoutHole 病态循环
+        // (v4 实证 11918ms 主线程卡死), 且 TextKit 无法表示, 无从"修正"。
         gShortCircuitCount += 1;
         if ((gShortCircuitCount & 0x1F) == 1) {
             NSLog(@"[TextContainerGuard] [WARN] short-circuited setSize: "
-                  @"REJECT-NAN-INF-NEG size=%.1fx%.1f total=%llu container=%p",
+                  @"REJECT-NAN-INF size=%.1fx%.1f total=%llu container=%p",
                   newSize.width, newSize.height,
                   (unsigned long long)gShortCircuitCount,
                   (__bridge void *)self);
         }
         return;
+    }
+    // [V65-FIXSIZE] 有限但非正的尺寸: **就地修正后转发, 不再丢弃**。
+    //
+    // 【装机铁证】v64 之后 (minis-2026-10-05 13:21) 这个分支命中 61 次:
+    //   size=0.0x-8.0  ×43
+    //   size=0.0x-16.0 ×18
+    // 宽 0 + 负高 = 宽度算崩了、高度算成了 -inset/2。旧代码在这里 `return`
+    // ⇒ **TextKit 容器尺寸一次都没被更新** ⇒ 排版停在上一帧 ⇒ 屏幕上的字
+    // 被上一帧的旧高度裁掉一半。旁证: tk=27.0 ×83 / est=31.0 ×96,
+    // 31pt 就是一行 —— 「卡字」不是布局算错, 是排版压根没跑。
+    //
+    // 【为什么必须修正而不是丢弃】丢弃看起来"安全"(不把脏值喂给 TextKit),
+    // 但它恰恰是卡字的直接原因: 丢弃 = 保留过期几何 = 排版结果永远滞后。
+    // 而这些值是**有限**的, 数值上完全可以变成一个合法尺寸 —— 不存在
+    // "喂进去会病态循环"的风险(那是 inf/NaN 的问题, 上面已硬拒)。
+    //
+    // 【修正规则, 逐条都有装机依据】
+    //   宽 <= 0 → 用容器**自己当前的宽**(它是上一次排版的正确答案);
+    //            拿不到就退回屏宽-32(358, 日志实测的真实排版宽度)。
+    //            ★不用 UIScreen 满宽 390: v13/v34 已实证 390 排版/358 显示
+    //              会导致末行裁断与拉锯闪字(REVERTED-v11 注释详述)。
+    //   高 <= 0 → 取绝对值。8/16 正好是 textContainerInset 的量级, 说明
+    //            上游算的是 "容器高 - inset", inset 被减了两遍。
+    //            取绝对值后 8/16 是一个合法的最小容器高, 排版能正常跑。
+    if (newSize.width <= 0 || newSize.height <= 0) {
+        CGSize _v65orig = newSize;
+        if (newSize.width <= 0) {
+            // [V65] 取容器自己当前的宽。走 KVC 而不是 `[(id)self width]`:
+            // NSTextContainer 是私有类, 直接发消息在 ARC 下要求编译器知道该
+            // selector 声明, 会报 "no visible @interface" —— 这正是我担心的
+            // 又一处编译红(run#157/run#159 同类)。KVC 纯运行期查找, 无声明依赖。
+            CGFloat _w = 0;
+            @try {
+                NSValue *_wv = [(id)self valueForKey:@"size"];
+                if (_wv) _w = (CGFloat)[_wv CGSizeValue].width;
+            } @catch (__unused NSException *_e) {
+                _w = 0;
+            }
+            if (!(_w > 1) || !isfinite(_w) || _w > 1e5) {
+                // ★★必须走 KVC 而不是 `[UIScreen mainScreen].bounds.width`:
+                //   CGRect 的 `.width` / `.height` **不是 struct 成员**, 而是
+                //   CoreGraphics 里 `CGGeometry` 这个 **category**(NSGeometry on
+                //   macOS / CoreGraphics on iOS)提供的。UIKit 的模块化导入
+                //   **不 re-export 它**, 所以本文件写了 `#import <UIKit/UIKit.h>`
+                //   仍然报 (CI#162 / run 37275980272 实测):
+                //       NSTextContainerSetSizeGuard.m:153:51:
+                //       error: no member named 'width' in 'struct CGRect'
+                //   ⇒ 走 KVC `valueForKey:@"bounds"` 拿 NSValue 再取 CGSizeValue,
+                //     纯运行期查找, 不需要编译器认识任何 category 声明。
+                //   ★这也是本项目**第六次**「本地验证手段骗了自己」:
+                //     上轮我自建 UIKit 桩做 clang 检查, 桩里给 CGRect 加了
+                //     .width 访问器 ⇒ 0 error 的**假绿**。桩比真实 SDK 宽松,
+                //     它给不了的保证它会假装能给。
+                _w = 0;
+                @try {
+                    NSValue *_bv = [[UIScreen mainScreen] valueForKey:@"bounds"];
+                    if (_bv) _w = (CGFloat)[_bv CGSizeValue].width;
+                } @catch (__unused NSException *_e) {
+                    _w = 0;
+                }
+                // 358 = 日志实测的真实排版宽度(iPhone 14/15 屏宽 390 - 32)。
+                // ★不用 390 满宽: v13/v34 已实证 390 排版/358 显示会导致
+                //   末行裁断与拉锯闪字(REVERTED-v11 注释详述)。
+                if (!(_w > 1) || !isfinite(_w) || _w > 1e5) {
+                    _w = 358.0;
+                }
+                _w -= 32.0;
+            }
+            newSize.width = _w;
+        }
+        if (newSize.height <= 0) {
+            newSize.height = fabs(newSize.height);
+        }
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0x1F) == 1) {
+            NSLog(@"[TextContainerGuard] [V65] FIXED-NONPOSITIVE size=%.1fx%.1f "
+                  @"-> %.1fx%.1f total=%llu container=%p — 修正转发(旧版丢弃=卡字)",
+                  _v65orig.width, _v65orig.height, newSize.width, newSize.height,
+                  (unsigned long long)gShortCircuitCount,
+                  (__bridge void *)self);
+        }
+        // 不 return —— 继续往下走熔断逻辑, 修正后的尺寸照常转发给 TextKit。
     }
     // [V38C-PROBEH] intrinsic 探测哨兵高度收敛。
     //
@@ -234,9 +317,31 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
 
     // [IOS15-FIX-STORM] 累加本 tick 转发次数; 超过阈值即置熔断标志,
     // 后续同 tick 调用走上面的 storm-breaker SKIP 直接 return。
-    s->commitCount += 1;
-    if (s->commitCount > kStormForwardLimit) {
-        s->stormed = YES;
+    // [V65-STORM] 只有**哨兵**尺寸才计入风暴预算; 真实排版高度永不参与。
+    //
+    // 【装机铁证】v64 之后 (13:21 装机日志) 熔断误伤了 85 次真实排版:
+    //   size=358.0x19.0 ×39   ← 一行, 真实高度
+    //   size=358.0x41.0 ×46   ← 两行, 真实高度
+    // 这些不是哨兵(哨兵是 ≥3000 被压到 2000), 是**真正的行高**。丢掉它们
+    // ⇒ 这一帧排版作废 ⇒ 下一帧拿旧高度上屏 ⇒ 用户看到的「打一个字母抖一下」。
+    //
+    // 【为什么这样切是安全的】熔断(kStormForwardLimit=40)存在的唯一目的是
+    // 斩断哨兵驱动的 fillLayoutHole re-entrant 风暴(v4 的 11918ms 卡死)。
+    // 真实排版尺寸**不是**风暴源 —— 它进 CoreText 是一次有界的正常排版。
+    // 之前把两者混在同一个计数器里, 于是熔断在杀哨兵的路上把真实排版
+    // 一起吞了: 这就是「哨兵没治好、真排版先受害」。
+    //
+    // 判据用高度: ≥ 2000 即已被上面 kProbeHeightCeiling 压到哨兵值, 那才是
+    // 风暴源; < 2000 是真实内容高度, 不计预算、不触发熔断。
+    // ★为什么写字面量 2000 而不是引用 kProbeHeightCeiling: 那个 const 声明在
+    //   本函数体内它自己那段 `{ ... }` 里, 与本处**不在同一作用域**, 直接
+    //   引用会编译失败(这正是 run#159/run#157 同类错误的第四次)。写死字面量
+    //   并在上面的哨兵压位处加了注释锚点, 两处靠 2000 这个数字对齐。
+    if (newSize.height >= 2000.0) {
+        s->commitCount += 1;
+        if (s->commitCount > kStormForwardLimit) {
+            s->stormed = YES;
+        }
     }
     ((void (*)(id, SEL, CGSize))gOriginalSetSize)(self, _cmd, newSize);
 }
