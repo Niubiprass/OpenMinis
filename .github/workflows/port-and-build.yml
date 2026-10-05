@@ -37,6 +37,9 @@ on:
       # 恰恰是最需要 CI 发现的改动(run#37137912522 那类区间误伤,
       # 修复也只动判据文件)。漏掉它 = 判据体系可以悄悄烂掉。
       - "scripts/ios15_verify/**"
+      # ★基准图是 v63 几何判据的**输入**, 换掉它等于换掉尺子。
+      #   只列目录不够 —— baseline/ 下的图必须也在 paths 里。
+      - "scripts/ios15_verify/baseline/**"
       # ★v63 起: 全链验证脚本也进 paths。它同时跑三阶段(①port ②port_v2
       #   ③fallback), 是「只跑③会静默 SKIP」这个坑的守门人 ——
       #   改了三阶段里任何一个而不触发 CI, 等于没门禁。
@@ -476,6 +479,33 @@ jobs:
             echo "   注意: v63① 落在 iOS15Compat.swift, 而该文件由 ios15_port_v2.py **生成**;"
             echo "         只跑 ios15_fallback.py 会静默跳过(edit() 对缺文件直接 return)。"
             echo "         本地复现请用: bash scripts/verify_v63.sh (三阶段齐全)"
+            exit 1
+          fi
+          echo "::endgroup::"
+          echo "::group::断言67: v63 几何基准 —— 「正常」必须有数字定义"
+          # ★这是本项目**第一条绝对基准**判据。此前 62 版全是相对判据
+          #   (「比 v61 好」「标记在位」), 于是 v53→v62 每版都「相对更好」,
+          #   而装机日志里 V53-DEBT/V62-SURPLUS 出现 0 次、live 恒 0 ——
+          #   「相对更好」可以一直成立而病一直没好。
+          #   基准量自真机正常画面(同源移植): 11 张同形态卡片 36.3~37.0pt,
+          #   极差 0.7pt, 间距 8~11pt ⇒ 正常 = 卡片等高 + 间距恒定。
+          # ★它的主判据是「定型后极差」而不是「全段跨度」——
+          #   首帧给旧值是测量的固有代价(idx=17 首帧偏 51pt 但第 3 帧起
+          #   恒定, 那是正确的), 按全段跨度判会把这种形态也报红;
+          #   装机后满屏红 ⇒ 没人再看第二眼 ⇒ 判据自动失效。
+          #   判据宁可漏报不可误报(v53 被连续两版忽略, 正因为信号常红/为零)。
+          if python3 "$SCRIPT_DIR/ios15_verify/verify_v63_geometry.py" ; then
+            echo "✅ 几何基准自证通过 (正常样本判正常 / 一次定型不误报 / v62 样本判病态)"
+          else
+            echo "::error::几何基准自证失败 —— 尺子本身出了问题, 比没有尺子更危险"
+            echo "   —— 若常量被改动: 必须同时给出新参考图的量算结果"
+            echo "   —— 若 selfcheck 报「一次定型被判异常」: 说明宽限帧数被改小"
+            exit 1
+          fi
+          if [ -f "$SCRIPT_DIR/ios15_verify/baseline/normal-ref.jpg" ]; then
+            echo "✅ 基准图在位 (scripts/ios15_verify/baseline/normal-ref.jpg)"
+          else
+            echo "::error::缺基准图 —— 几何判据失去唯一输入, 整条断言失效"
             exit 1
           fi
           echo "::endgroup::"
