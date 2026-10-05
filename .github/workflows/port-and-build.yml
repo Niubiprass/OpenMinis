@@ -694,6 +694,14 @@ jobs:
           #   · v68 分支必须**等于装机日志**(1,957,633) —— 这是"模拟可信性自检",
           #     若不等说明模拟与源码不一致, 本判据全部结论作废;
           #   · v69 分支必须降到约 3 万(1/64)且修正值回填真实高度。
+          #
+          # 【2026-10-06 重推记录 —— ★本 workflow 的 on.push 带 **paths 过滤**】
+          #   Actions 事故期间(degraded_performance)job 表现为 **steps=0**
+          #   (日志 22 字节空 zip, run 7 秒就 failure —— runner 根本没分配)。
+          #   恢复后想重推时踩了一个坑: `git commit --allow-empty` **不会触发**
+          #   本 workflow —— 因为空提交没有任何文件落在 on.push.paths 里。
+          #   ⇒ 重推必须改 **paths 内的文件**; 或用 workflow_dispatch,
+          #     但本项目 PAT 无 workflow scope(实测 403 Resource not accessible)。
           if python3 "$SCRIPT_DIR/ios15_verify/assert_v69_global_storm.py" ; then
             echo "✅ v69 语义判据: 容器工厂形态下 196 万次 → 约 3 万次(1/64), 修正值回填真实高度"
           else
