@@ -320,8 +320,8 @@ def verify_guard_fixsize_v65(src):
 
     # ---------- 第 ⑨ 层 (v68): 硬闸门不得永久冻结, 修正值不得是活锁燃料 ----------
     # ⑨-1: 命中上限后必须是**降频放行**(有游标), 不是无条件 return。
-    seg2 = _block_after(src, "if (s->nonPositiveStreak > kNonPositiveHardLimit) {", code)
-    if "nonPositiveSkipTick" not in seg2:
+    seg2 = _block_after_hardstop(code)
+    if not ("nonPositiveSkipTick" in seg2 or "gGlobalSkipTick" in seg2):
         raise RuntimeError(
             "⑨ 跨 tick 硬闸门是**永久冻结**(命中即 return) —— 这是把内存问题\n"
             "  原地换成了空白问题:\n"
@@ -335,6 +335,29 @@ def verify_guard_fixsize_v65(src):
         raise RuntimeError(
             "⑨ 降频逻辑缺少 `kNonPositiveSkipStride` 步长常量 ——\n"
             "  必须有一个明确的放行步长(不能是裸数字, 否则无法反推降频比)。")
+    # ⑨-1b (v69): 降频游标必须是**进程级** gGlobalSkipTick。
+    #
+    # 【为什么 per-container 游标不够 —— 第十三次「验证手段骗了自己」】
+    # 装机 minis-2026-10-06 2.log: 「点击选择模型」11 秒 1,957,633 次,
+    # 而 DOWNFREQ=0。原因: SwiftUI measure 时**每次新建一个 NSTextContainer**
+    # ⇒ GuardState 每次全新 ⇒ per-container 游标恒为 0 ⇒ 每次都走到"放行"
+    # ⇒ **降频等于没写**。判据若只查"游标在不在"就又是假绿 —— 必须查
+    # "游标挂在哪一级": 容器级会在容器工厂形态下失效, 进程级不会。
+    if "gGlobalSkipTick" not in seg2:
+        raise RuntimeError(
+            "⑨-1b 降频游标仍是**per-container** nonPositiveSkipTick ——\n"
+            "  它在「容器工厂」形态下恒为 0 ⇒ 每次都放行 ⇒ 降频完全落空。\n"
+            "  装机铁证(minis-2026-10-06 2.log): 点击「选择模型」11 秒\n"
+            "  1,957,633 次, DOWNFREQ **0** 次 —— 语句全在、结构全对,\n"
+            "  只因 SwiftUI 每次 measure 都新建一个 NSTextContainer,\n"
+            "  GuardState 随之每次全新 ⇒ streak 恒 1、游标恒 0。\n"
+            "  ⇒ 必须用**进程级** gGlobalSkipTick(v69③)。")
+    # ⑨-1c (v69): 闸门判据必须有**进程级**一路, 否则容器重建时永不超限。
+    if "gGlobalNonPositiveStreak" not in code:
+        raise RuntimeError(
+            "⑨-1c 缺进程级 gGlobalNonPositiveStreak —— 容器每次重建时,\n"
+            "  per-container 的 streak 恒为 1, 永远到不了 400 ⇒ 闸门不开。\n"
+            "  必须有一路与容器生命周期无关的计数(v69①)。")
     if "nonPositiveStreak" not in code or "lastGoodHeight" not in code:
         raise RuntimeError(
             "⑨ GuardState 缺 `lastGoodHeight` / `nonPositiveSkipTick` 字段 ——\n"
@@ -375,6 +398,38 @@ def verify_guard_fixsize_v65(src):
             "    两者断的位置不同: v65 改「修正成什么」, v66 改「还转不转发」。\n"
             "  ⇒ 必须优先用 `s->lastGoodHeight`(该容器上一次真实排版过的高度)。")
     return True
+
+
+def _block_after_hardstop(code):
+    """取跨 tick 硬闸门 if 的整块 —— 按**语义**定位, 不锚定语句文本。
+
+    ★为什么不能用 `_block_after(src, "if (s->nonPositiveStreak > "
+      "kNonPositiveHardLimit) {", code)` 这种精确锚点 —— 第十四次「判据跟着代码跑」:
+
+      v69 把闸门条件从
+          if (s->nonPositiveStreak > kNonPositiveHardLimit) {
+      扩展成
+          if ((s->nonPositiveStreak > kNonPositiveHardLimit) ||
+              (gGlobalNonPositiveStreak > kNonPositiveGlobalLimit)) {
+      ⇒ 精确锚点立刻失配, 判据抛 `ValueError: substring not found`。
+
+      ★这个错最坏的地方在于它**伪装成药坏了**: 看到 `❌` 会本能地去查
+        v69 的注入逻辑, 而实际上药是对的、坏的是判据的锚点。
+        历史同族: run#57(内联复制品没跟着改)、CI#161(shell 变量未求值)。
+        三者的共同点: **判据锚定的是"代码长什么样", 而不是"这一步在判什么"**。
+
+      ⇒ 锚点必须换成**不随写法变化的东西**: 这里用"含 kNonPositiveHardLimit
+        的那个 if 条件" —— 无论是单个比较还是 OR 组合都能命中。
+    """
+    m = re.search(r"if\s*\([^{]*?kNonPositiveHardLimit", code)
+    if not m:
+        raise RuntimeError(
+            "⑨ 找不到跨 tick 硬闸门(含 kNonPositiveHardLimit 的 if 条件)。\n"
+            "  没有它 ⇒ 197 万次转发没有任何上限 ⇒ 内存 1.4GB ⇒ SIGKILL。")
+    j = code.find("{", m.start())
+    if j < 0:
+        raise RuntimeError("⑨ 硬闸门 if 之后没有 `{`, 取不到块。")
+    return _brace_block(code, j)
 
 
 def _block_after(src, marker, code=None):

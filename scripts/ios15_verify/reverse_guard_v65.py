@@ -295,15 +295,24 @@ def s15_hardstop_back_to_permanent(t):
     而且把「上游万一自愈」的可能性一并删掉了。
     ⇒ 第 ⑨ 层必须要求降频游标 + 步长常量。
     """
-    old = """        s->nonPositiveSkipTick += 1;
-        if (s->nonPositiveSkipTick < kNonPositiveSkipStride) {
-            return;   // 本次丢弃: 只丢这一次, 不是永久
-        }
-        s->nonPositiveSkipTick = 0;   // 本次放行"""
-    if old not in t:
-        raise AssertionError("锚点15: 降频放行那几行没找到")
-    new = """        return;   // [S15] 退回 v66 的永久停止转发"""
-    return t.replace(old, new, 1)
+    # ★锚点必须**两种形态都认**: v68 用 per-container 游标, v69 改成进程级
+    #   gGlobalSkipTick(因为容器工厂形态下 per-container 游标恒 0 = 废)。
+    #   只认 v68 那一段 ⇒ v69 之后 sabotage 自己失败 ⇒ 变成**空测**
+    #   ⚠️ —— 空测和漏过一样危险: 它让这一条反向永远"通过", 而没人知道
+    #   它其实什么也没验。
+    for cursor in ("gGlobalSkipTick", "s->nonPositiveSkipTick"):
+        old = ("        %s += 1;\n"
+               "        if (%s < kNonPositiveSkipStride) {\n"
+               "            return;   // 本次丢弃: 只丢这一次, 不是永久\n"
+               "        }\n"
+               "        %s = 0;   // 本次放行" % (cursor, cursor, cursor))
+        if old in t:
+            new = "        return;   // [S15] 退回 v66 的永久停止转发"
+            return t.replace(old, new, 1)
+    raise AssertionError(
+        "锚点15: 降频放行那几行没找到(已试 gGlobalSkipTick 与 "
+        "s->nonPositiveSkipTick 两种形态) —— 若游标变量又改名, 这里必须同步, "
+        "否则本条 sabotage 变成空测(⚠️), 绿灯是假的。")
 
 
 def s16_floor_back_to_bare_one(t):
@@ -336,13 +345,33 @@ def s17_drop_goodh_recording(t):
     而所有"字段存在"类断言全绿。
     ⇒ 第 ⑨ 层必须检查记录语句本身。
     """
-    old = """    if (newSize.height > 0.0 && isfinite(newSize.height) &&
-        newSize.height <= kMaxContainerHeight) {
-        s->lastGoodHeight = newSize.height;
-    }"""
-    if old not in t:
-        raise AssertionError("锚点17: lastGoodHeight 记录段没找到")
-    return t.replace(old, "    // [S17] 不记录 lastGoodHeight(字段永远为 0)", 1)
+    # ★锚点按**语义**定位("记录 lastGoodHeight 的那个 if 块"), 不锚定整段文本。
+    #   v69 把记录条件扩展成 `&& newSize.height < 2000.0 && _v65orig_h > 0.0
+    #   && _v65orig_w > 0.0`(防止把守卫自己修正出来的 1.0 记成"真实高度"),
+    #   并新增 `gGlobalLastGoodHeight = newSize.height;`。
+    #   锚定整段 ⇒ v69 之后 sabotage 自己失败 ⇒ **空测**(⚠️), 与漏过同罪。
+    m = re.search(r"if \(newSize\.height > 0\.0 && isfinite\(newSize\.height\) &&", t)
+    if not m:
+        raise AssertionError(
+            "锚点17: lastGoodHeight 记录段没找到(已改为按 `if (newSize.height "
+            "> 0.0 && isfinite(...)` 语义定位, 仍没命中) —— 若这段被删或改写, "
+            "本条 sabotage 变成空测(⚠️), 绿灯是假的。")
+    j = t.find("{", m.start())
+    if j < 0:
+        raise AssertionError("锚点17: 记录条件后没有 `{`")
+    depth = 0
+    end = None
+    for k in range(j, len(t)):
+        if t[k] == "{":
+            depth += 1
+        elif t[k] == "}":
+            depth -= 1
+            if depth == 0:
+                end = k
+                break
+    if end is None:
+        raise AssertionError("锚点17: 记录块花括号不配平")
+    return t[:m.start()] + "    // [S17] 不记录 lastGoodHeight(字段永远为 0)" + t[end + 1:]
 
 
 SABS_V68 = [

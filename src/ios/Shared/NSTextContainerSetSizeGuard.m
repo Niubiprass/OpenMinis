@@ -39,6 +39,30 @@ static const NSInteger kNonPositiveHardLimit = 400;
 // 同时**保留上行通道**: 上游一旦自愈, 高度仍能一帧一帧追回来。
 static const NSInteger kNonPositiveSkipStride = 64;
 
+// [V69-GLOBAL] **进程级**非正尺寸风暴计数。
+//
+// 【为什么必须有全局一份 —— 见上方 v69 装机铁证】
+// 风暴的第二种形态是"容器工厂": 上游每次循环新建一个 NSTextContainer,
+// 用完即弃。此时所有 per-container 计数器(含 v68 的三条)随容器一起消失,
+// 恒为初始值 ⇒ 累加不动、游标恒 0、历史高度恒 0 ⇒ 闸门永远不开。
+// 进程级计数与容器生命周期无关, 是这种形态下**唯一**还能累加的东西。
+static NSInteger gGlobalNonPositiveStreak = 0;
+// [V69-GLOBAL] 进程级降频游标。必须是全局的: per-container 的
+// nonPositiveSkipTick 在容器重建时恒为 0 ⇒ 每次都放行 ⇒ 降频完全落空。
+static NSInteger gGlobalSkipTick = 0;
+// [V69-GLOBAL] 进程级"上一次真实排版过的高度"。容器是新的时候,
+// s->lastGoodHeight 恒为 0, 这是唯一还能拿到的真实高度。
+static CGFloat gGlobalLastGoodHeight = 0.0;
+// [V69-GLOBAL] 连续收到**正**尺寸的计数, 用于风暴结束后退出降频态。
+static NSInteger gGlobalGoodRun = 0;
+// [V69-GLOBAL] 进程级硬上限: 与 per-container 的 400 同量级。正常排版里
+// 非正尺寸最多偶发几次; 连续 400 次意味上游已进入死循环。
+static const NSInteger kNonPositiveGlobalLimit = 400;
+// [V69-GLOBAL] 连续这么多次正尺寸即认定上游已自愈, 全局计数清零。
+// 取 128 而不是更大: 一帧正常排版里正尺寸 setSize 远多于 128 次,
+// 取大了会让 App 在一次风暴后长期滞留降频态。
+static const NSInteger kNonPositiveGoodRunReset = 128;
+
 // [IOS15-FIX-STORM] 容器高度上限。源码用 .greatestFiniteMagnitude 关掉高度钳制;
 // 旧 guard 钳到 1e7 (仍近乎无限)。iOS 15 上近乎无限的容器让 fillLayoutHole 对长
 // 流式消息病态循环。1e5(≈100000pt ≈ 16× 最高真实气泡) 既保留"足够高不裁真实
@@ -275,6 +299,14 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
             // 无历史(首次就是 0x0)时才退回 1.0 —— 那时至少不是空容器。
             if (!(_ah > 1.0)) {
                 CGFloat _prev = s->lastGoodHeight;
+                if (!(_prev > 1.0 && isfinite(_prev) &&
+                      _prev <= kMaxContainerHeight)) {
+                    // [V69-GLOBAL]④ 本容器无历史(**容器是新建的**, 这正是
+                    // 「选择模型」风暴的形态) ⇒ 退回进程级历史高度。
+                    // 没有这一层兜底, 修正值恒为 1.0 ⇒ 上游拿到 1.0 和拿到
+                    // 0.0 同样排不出东西 ⇒ 自反馈回路一秒都没断(活锁)。
+                    _prev = gGlobalLastGoodHeight;
+                }
                 _ah = (_prev > 1.0 && isfinite(_prev) &&
                        _prev <= kMaxContainerHeight) ? _prev : 1.0;
             }
@@ -489,6 +521,40 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
                   (long)s->nonPositiveStreak,
                   (long long)s->commitCount);
         }
+        // [V69-GLOBAL]① 进程级累加: 容器每次重建也断不了这一条。
+        gGlobalNonPositiveStreak += 1;
+        gGlobalGoodRun = 0;
+        if ((gGlobalNonPositiveStreak & 0x3F) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V69] GLOBAL-STREAK "
+                  @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f "
+                  @"gstreak=%ld cstreak=%ld — 进程级非正尺寸累加中",
+                  (__bridge void *)self, _v65orig_w, _v65orig_h,
+                  newSize.width, newSize.height,
+                  (long)gGlobalNonPositiveStreak,
+                  (long)s->nonPositiveStreak);
+        }
+    } else if (_v65orig_h > 0.0 && _v65orig_w > 0.0) {
+        // [V69-GLOBAL]⑤ 自愈退出: 连续收到正尺寸 ⇒ 上游已恢复, 全局计数清零。
+        //
+        // 【为什么必须显式退出】降频是"每 64 次放 1 次", 若风暴结束后计数
+        // 不清零, App 会**永久**滞留降频态 —— 与 v66「永久冻结」同类错误:
+        // 那一次是冻结单个容器, 这一次是冻结整个进程, 更狠。
+        //
+        // 判据用**原始**尺寸而不是修正后的: 修正后的值恒为正(守卫干的正是
+        // 这件事), 用它判断"上游是否自愈"会永远为真 ⇒ 计数刚加上就被清掉。
+        // 走到本分支意味着: 高度 <2000(非哨兵) 且 原始宽高都为正 —— 即
+        // 上游这次**真的**算出了一个合法尺寸。
+        gGlobalGoodRun += 1;
+        if (gGlobalGoodRun >= kNonPositiveGoodRunReset) {
+            if (gGlobalNonPositiveStreak > 0) {
+                NSLog(@"[TextContainerGuard] [INFO] [V69] GLOBAL-RECOVER "
+                      @"gstreak=%ld — 连续正尺寸已 %d 次, 全局风暴计数清零",
+                      (long)gGlobalNonPositiveStreak,
+                      (int)kNonPositiveGoodRunReset);
+            }
+            gGlobalNonPositiveStreak = 0;
+            gGlobalGoodRun = 0;
+        }
     }
     // [V65-FIXSIZE-S] **跨 tick 硬闸门**: 非正高度连续命中超限后, 停止转发。
     //
@@ -518,7 +584,10 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     //   · 197 万次 → 约 3 万次 ⇒ 内存增速降到 1/64(1.4GB → 约 20MB 量级)
     //   · 上游一旦自愈(哪怕很慢), 高度仍能一帧一帧追回来
     //   · 容器不会失去合法几何: 上一次放行的值本身就是合法的
-    if (s->nonPositiveStreak > kNonPositiveHardLimit) {
+    // [V69-GLOBAL]② 闸门判据加**进程级**一路: 容器工厂形态下
+    // per-container 的 streak 恒为 1, 只有全局这一路可能超限。
+    if ((s->nonPositiveStreak > kNonPositiveHardLimit) ||
+        (gGlobalNonPositiveStreak > kNonPositiveGlobalLimit)) {
         gShortCircuitCount += 1;
         if ((gShortCircuitCount & 0xFF) == 1) {
             NSLog(@"[TextContainerGuard] [WARN] [V68] NONPOSITIVE-DOWNFREQ "
@@ -526,17 +595,37 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
                   (__bridge void *)self, (long)s->nonPositiveStreak,
                   (int)kNonPositiveSkipStride);
         }
-        s->nonPositiveSkipTick += 1;
-        if (s->nonPositiveSkipTick < kNonPositiveSkipStride) {
+        // [V69-GLOBAL]③ 游标必须用**全局**的: 容器每次都是新的,
+        // per-container 的 nonPositiveSkipTick 恒为 0 ⇒ 每次都走到"放行",
+        // 降频等于没写(这正是 v68 装机 196 万次一次没减的原因)。
+        gGlobalSkipTick += 1;
+        if (gGlobalSkipTick < kNonPositiveSkipStride) {
             return;   // 本次丢弃: 只丢这一次, 不是永久
         }
-        s->nonPositiveSkipTick = 0;   // 本次放行
+        gGlobalSkipTick = 0;   // 本次放行
     }
     // [V68-GOODH] 转发一个**真实排版过的高度**, 记进 lastGoodHeight。
     // 只在高度为正且有限时记录 —— 负值/0 不是"排版过的高度"。
+    // [V69-GOODH-PURE] 只有**上游真的算出了正尺寸**时才记历史高度。
+    //
+    // 【v68 的 GOODH 有个自锁 bug —— 装机日志 (5) 的第二层原因】
+    // v68 的条件只看 `newSize.height > 0`。而 0x0 经过守卫修正后是 **1.0**,
+    // 1.0 > 0 ⇒ 被当成"真实排版过的高度"记进 lastGoodHeight; 下一次 0x0
+    // 再来, 取到的"历史"就是自己上次造出来的 1.0 ⇒ 修正值恒为 1.0
+    // ⇒ 上游拿到 1.0 和拿到 0.0 一样排不出东西 ⇒ **活锁一圈没断**。
+    // 日志实测修正值恒为 326.0x**1.0**, 与此完全吻合。
+    //
+    // ⇒ 必须按**原始**尺寸判定: 只有 orig 宽高都为正, 这次才是"上游算对了";
+    //   守卫修正出来的值**永远不是**"排版过的真实高度"。
+    // 另外排除 >= 2000: 那是哨兵钳位后的值, 同样不是真实内容高度。
     if (newSize.height > 0.0 && isfinite(newSize.height) &&
-        newSize.height <= kMaxContainerHeight) {
+        newSize.height <= kMaxContainerHeight &&
+        newSize.height < 2000.0 &&
+        _v65orig_h > 0.0 && _v65orig_w > 0.0) {
         s->lastGoodHeight = newSize.height;
+        // [V69-GLOBAL]④ 同步写进程级历史: 只有这里记下来,
+        // 下一个**新建**的容器才可能在崩溃时拿到一个真实高度。
+        gGlobalLastGoodHeight = newSize.height;
     }
     ((void (*)(id, SEL, CGSize))gOriginalSetSize)(self, _cmd, newSize);
 }

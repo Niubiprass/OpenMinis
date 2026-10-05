@@ -116,14 +116,17 @@ def main():
     print("✅ streak 累加在 per-tick 门槛之外(花括号深度 0) —— 跨 tick 硬闸门可达")
 
     # ---- ④ 降频放行游标必须在硬闸门块内(不许退回永久冻结) ----
-    g = re.search(r"if\s*\(\s*s->nonPositiveStreak\s*>\s*kNonPositiveHardLimit\s*\)",
-                  code)
+    # ★锚点按**语义**定位(含 kNonPositiveHardLimit 的那个 if), 不锚定语句文本。
+    #   v69 把条件扩展成 `if ((s->nonPositiveStreak > kNonPositiveHardLimit) ||
+    #   (gGlobalNonPositiveStreak > kNonPositiveGlobalLimit)) {`, 精确锚点会失配
+    #   ⇒ 报 `substring not found`, 而**药其实是对的**(第十四次判据跟着代码跑)。
+    g = re.search(r"if\s*\([^{]*?kNonPositiveHardLimit", code)
     if not g:
-        print("::error::找不到跨 tick 硬闸门 `nonPositiveStreak > kNonPositiveHardLimit`")
+        print("::error::找不到跨 tick 硬闸门(含 kNonPositiveHardLimit 的 if)")
         print("   ⇒ 197 万次转发没有任何上限 ⇒ 内存 1.4GB ⇒ SIGKILL")
         return 1
     gate = brace_block(code, code.index("{", g.start()))
-    if "nonPositiveSkipTick" not in gate:
+    if not ("nonPositiveSkipTick" in gate or "gGlobalSkipTick" in gate):
         print("::error::硬闸门是**永久冻结**(命中即 return) —— 把内存问题换成了空白问题:")
         print("   · 上游持续算崩时该容器再也收不到 setSize ⇒ 高度永久冻结")
         print("   · 屏幕保留一整块旧几何 ⇒ **巨大空白**(v61 刚修掉的症状换个形态回来)")

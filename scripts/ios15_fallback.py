@@ -2083,6 +2083,250 @@ def fix_nonpositive_downfreq_v68(t):
     return t
 
 
+# ============================================================================
+# v69 —— 「点击选择模型就卡死」: 容器工厂形态的风暴, 所有 per-container 计数全废
+# ============================================================================
+#
+# 【装机铁证 —— minis-2026-10-06 2.log (iOS 15.5 / iPhone12, PID 32470)】
+# 时间线:
+#   05:06:11~05:06:22  正常期: short-circuited **37** 条, NONPOSITIVE-STREAK 22 条
+#                      (tick=1426/1520 等真实 tick, 容器 0x282537c00/0x28257fa20
+#                       稳定复用 ⇒ 守卫**工作正常**)
+#   05:06:22           用户点击「选择模型」
+#   05:06:22~05:06:33 风暴期 11 秒: FIXED-NONPOSITIVE 61156 条(每 32 打 1)
+#                     ⇒ 实际 **1,957,633 次**; 每秒 5000~6700 条日志 ⇒ 约 10 万次/秒
+#   05:06:34          进程死亡, PID 32470 → **32493** 重启
+#
+# 风暴期内六个异常, 全部指向同一个根因:
+#   (1) short-circuited        = **0**    (正常期 37 条 —— 守卫整个失灵)
+#   (2) NONPOSITIVE-STREAK     = 22 条, 且**无一例外全是 streak=1**
+#   (3) NONPOSITIVE-DOWNFREQ   = **0**    (v68②降频闸门一次没开)
+#   (4) storm-breaker          = **0**    (v4 熔断一次没触发)
+#   (5) 修正值恒为 326.0x**1.0**            (v68③ lastGoodHeight 从未生效)
+#   (6) container 恒为 0x2825dfb60 (61151 条)
+#
+# 【反证: 为什么只能是"每次都是新容器"】
+#   · 每秒 10 万次调用 ⇒ runloop tick 不可能变化这么快
+#     ⇒ `s->lastTick == gRunloopTick` 恒真;
+#   · 尺寸恒为 326.0x1.0 ⇒ `CGSizeEqualToSize(s->lastSize, newSize)` 恒真;
+#   · 于是 377 行的 dedupe 只要 `s->initialized == YES` 就必然命中
+#     ⇒ 应该打出几十万条 short-circuited ⇒ **实测 0 条**;
+#   · ⇒ `s->initialized == NO` ⇒ **每次拿到的都是全新的 GuardState**;
+#   · holder 用 OBJC_ASSOCIATION_RETAIN_NONATOMIC 挂在容器上, 容器活着 holder
+#     必活着 ⇒ **NSTextContainer 对象本身每次都是新建的**。
+#     地址恒为 0x2825dfb60 只是 malloc 复用同一块内存(旧对象释放后新对象落在同址)。
+#
+# 【为什么 v68 三条修法在同一形态下全部落空】
+#   v68 的三个计数器 —— nonPositiveStreak / nonPositiveSkipTick / lastGoodHeight
+#   —— 全是 **per-container**。而本形态的风暴源恰恰是**容器的不稳定**:
+#   SwiftUI measure 每个候选项时新建一个 NSTextContainer, 此时该项尚未布局
+#   ⇒ 宽度 0 ⇒ 喂 0x0 ⇒ 守卫修正转发 ⇒ TextKit 在 1pt 上空排 ⇒ 高度回报不可用
+#   ⇒ SwiftUI 重新 measure ⇒ **又新建一个容器** ⇒ 死循环。
+#   · streak:      每个新容器从 0 起, 累加 1 次就随容器消失 ⇒ 永不到 400 ⇒ (3)
+#   · skipTick:    per-container 游标恒为 0 ⇒ 每次都放行 ⇒ 降频完全落空
+#   · lastGoodH:   每个新容器恒为 0 ⇒ 修正值退回 1.0 ⇒ (5)
+#   · commitCount/stormed: 新容器 + 每 tick 清零 ⇒ (4)
+#
+# ★ v68 的设计盲区: **所有防御都建在"容器是稳定对象"这个假设上, 而风暴源
+#   恰恰是容器的不稳定**。验证手段又一次骗了自己 —— 第十三次: 判据问的是
+#   "这些计数器会不会累加"(会), 却从没问"它们挂在的那个对象活得够不够久"。
+#
+# 【v69 修法: 把风暴计数从 per-container 提升到 per-process(进程级)】
+#   ① 新增 gGlobalNonPositiveStreak —— 所有容器共享累加, 容器重建也断不了;
+#   ② 降频闸门判据改为 `per-container 超限 OR 全局超限`;
+#   ③ 降频游标改用**全局** gGlobalSkipTick —— per-container 游标恒 0 是废的;
+#   ④ lastGoodHeight 加**全局兜底** gGlobalLastGoodHeight, 并在每次转发正高度
+#      时同步写入 —— 这是容器每次重建时唯一还能拿到"真实排版高度"的地方;
+#   ⑤ 自愈退出: 连续收到正尺寸 >= kNonPositiveGoodRunReset 次 ⇒ 全局计数清零。
+#      没有它, 一次风暴会让 App 永久处于降频态(第三条「永久冻结」的同类错误)。
+#
+# 预期: 196 万次 → 约 3 万次(1/64), 且上游拿到的高度是**真实高度**而非 1.0
+#       ⇒ 自反馈回路被打断 ⇒ 风暴提前收敛, 不只是"跑完 196 万次再死"。
+
+V69_GLOBAL_OLD = """static const NSInteger kNonPositiveSkipStride = 64;"""
+
+V69_GLOBAL_NEW = """static const NSInteger kNonPositiveSkipStride = 64;
+
+// [V69-GLOBAL] **进程级**非正尺寸风暴计数。
+//
+// 【为什么必须有全局一份 —— 见上方 v69 装机铁证】
+// 风暴的第二种形态是"容器工厂": 上游每次循环新建一个 NSTextContainer,
+// 用完即弃。此时所有 per-container 计数器(含 v68 的三条)随容器一起消失,
+// 恒为初始值 ⇒ 累加不动、游标恒 0、历史高度恒 0 ⇒ 闸门永远不开。
+// 进程级计数与容器生命周期无关, 是这种形态下**唯一**还能累加的东西。
+static NSInteger gGlobalNonPositiveStreak = 0;
+// [V69-GLOBAL] 进程级降频游标。必须是全局的: per-container 的
+// nonPositiveSkipTick 在容器重建时恒为 0 ⇒ 每次都放行 ⇒ 降频完全落空。
+static NSInteger gGlobalSkipTick = 0;
+// [V69-GLOBAL] 进程级"上一次真实排版过的高度"。容器是新的时候,
+// s->lastGoodHeight 恒为 0, 这是唯一还能拿到的真实高度。
+static CGFloat gGlobalLastGoodHeight = 0.0;
+// [V69-GLOBAL] 连续收到**正**尺寸的计数, 用于风暴结束后退出降频态。
+static NSInteger gGlobalGoodRun = 0;
+// [V69-GLOBAL] 进程级硬上限: 与 per-container 的 400 同量级。正常排版里
+// 非正尺寸最多偶发几次; 连续 400 次意味上游已进入死循环。
+static const NSInteger kNonPositiveGlobalLimit = 400;
+// [V69-GLOBAL] 连续这么多次正尺寸即认定上游已自愈, 全局计数清零。
+// 取 128 而不是更大: 一帧正常排版里正尺寸 setSize 远多于 128 次,
+// 取大了会让 App 在一次风暴后长期滞留降频态。
+static const NSInteger kNonPositiveGoodRunReset = 128;"""
+
+V69_STREAK_OLD = """        s->nonPositiveStreak += 1;
+        if ((s->nonPositiveStreak & 0x3F) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V68] NONPOSITIVE-STREAK "
+                  @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f "
+                  @"streak=%ld tickCommit=%lld — 非正尺寸跨 tick 累加中",
+                  (__bridge void *)self, _v65orig_w, _v65orig_h,
+                  newSize.width, newSize.height,
+                  (long)s->nonPositiveStreak,
+                  (long long)s->commitCount);
+        }
+    }"""
+
+V69_STREAK_NEW = """        s->nonPositiveStreak += 1;
+        if ((s->nonPositiveStreak & 0x3F) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V68] NONPOSITIVE-STREAK "
+                  @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f "
+                  @"streak=%ld tickCommit=%lld — 非正尺寸跨 tick 累加中",
+                  (__bridge void *)self, _v65orig_w, _v65orig_h,
+                  newSize.width, newSize.height,
+                  (long)s->nonPositiveStreak,
+                  (long long)s->commitCount);
+        }
+        // [V69-GLOBAL]① 进程级累加: 容器每次重建也断不了这一条。
+        gGlobalNonPositiveStreak += 1;
+        gGlobalGoodRun = 0;
+        if ((gGlobalNonPositiveStreak & 0x3F) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V69] GLOBAL-STREAK "
+                  @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f "
+                  @"gstreak=%ld cstreak=%ld — 进程级非正尺寸累加中",
+                  (__bridge void *)self, _v65orig_w, _v65orig_h,
+                  newSize.width, newSize.height,
+                  (long)gGlobalNonPositiveStreak,
+                  (long)s->nonPositiveStreak);
+        }
+    } else if (_v65orig_h > 0.0 && _v65orig_w > 0.0) {
+        // [V69-GLOBAL]⑤ 自愈退出: 连续收到正尺寸 ⇒ 上游已恢复, 全局计数清零。
+        //
+        // 【为什么必须显式退出】降频是"每 64 次放 1 次", 若风暴结束后计数
+        // 不清零, App 会**永久**滞留降频态 —— 与 v66「永久冻结」同类错误:
+        // 那一次是冻结单个容器, 这一次是冻结整个进程, 更狠。
+        //
+        // 判据用**原始**尺寸而不是修正后的: 修正后的值恒为正(守卫干的正是
+        // 这件事), 用它判断"上游是否自愈"会永远为真 ⇒ 计数刚加上就被清掉。
+        // 走到本分支意味着: 高度 <2000(非哨兵) 且 原始宽高都为正 —— 即
+        // 上游这次**真的**算出了一个合法尺寸。
+        gGlobalGoodRun += 1;
+        if (gGlobalGoodRun >= kNonPositiveGoodRunReset) {
+            if (gGlobalNonPositiveStreak > 0) {
+                NSLog(@"[TextContainerGuard] [INFO] [V69] GLOBAL-RECOVER "
+                      @"gstreak=%ld — 连续正尺寸已 %d 次, 全局风暴计数清零",
+                      (long)gGlobalNonPositiveStreak,
+                      (int)kNonPositiveGoodRunReset);
+            }
+            gGlobalNonPositiveStreak = 0;
+            gGlobalGoodRun = 0;
+        }
+    }"""
+
+V69_GATE_OLD = """    if (s->nonPositiveStreak > kNonPositiveHardLimit) {"""
+
+V69_GATE_NEW = """    // [V69-GLOBAL]② 闸门判据加**进程级**一路: 容器工厂形态下
+    // per-container 的 streak 恒为 1, 只有全局这一路可能超限。
+    if ((s->nonPositiveStreak > kNonPositiveHardLimit) ||
+        (gGlobalNonPositiveStreak > kNonPositiveGlobalLimit)) {"""
+
+V69_SKIP_OLD = """        s->nonPositiveSkipTick += 1;
+        if (s->nonPositiveSkipTick < kNonPositiveSkipStride) {
+            return;   // 本次丢弃: 只丢这一次, 不是永久
+        }
+        s->nonPositiveSkipTick = 0;   // 本次放行"""
+
+V69_SKIP_NEW = """        // [V69-GLOBAL]③ 游标必须用**全局**的: 容器每次都是新的,
+        // per-container 的 nonPositiveSkipTick 恒为 0 ⇒ 每次都走到"放行",
+        // 降频等于没写(这正是 v68 装机 196 万次一次没减的原因)。
+        gGlobalSkipTick += 1;
+        if (gGlobalSkipTick < kNonPositiveSkipStride) {
+            return;   // 本次丢弃: 只丢这一次, 不是永久
+        }
+        gGlobalSkipTick = 0;   // 本次放行"""
+
+V69_FIXH_OLD = """            if (!(_ah > 1.0)) {
+                CGFloat _prev = s->lastGoodHeight;
+                _ah = (_prev > 1.0 && isfinite(_prev) &&
+                       _prev <= kMaxContainerHeight) ? _prev : 1.0;
+            }"""
+
+V69_FIXH_NEW = """            if (!(_ah > 1.0)) {
+                CGFloat _prev = s->lastGoodHeight;
+                if (!(_prev > 1.0 && isfinite(_prev) &&
+                      _prev <= kMaxContainerHeight)) {
+                    // [V69-GLOBAL]④ 本容器无历史(**容器是新建的**, 这正是
+                    // 「选择模型」风暴的形态) ⇒ 退回进程级历史高度。
+                    // 没有这一层兜底, 修正值恒为 1.0 ⇒ 上游拿到 1.0 和拿到
+                    // 0.0 同样排不出东西 ⇒ 自反馈回路一秒都没断(活锁)。
+                    _prev = gGlobalLastGoodHeight;
+                }
+                _ah = (_prev > 1.0 && isfinite(_prev) &&
+                       _prev <= kMaxContainerHeight) ? _prev : 1.0;
+            }"""
+
+V69_GOODH_OLD = """    if (newSize.height > 0.0 && isfinite(newSize.height) &&
+        newSize.height <= kMaxContainerHeight) {
+        s->lastGoodHeight = newSize.height;
+    }"""
+
+V69_GOODH_NEW = """    // [V69-GOODH-PURE] 只有**上游真的算出了正尺寸**时才记历史高度。
+    //
+    // 【v68 的 GOODH 有个自锁 bug —— 装机日志 (5) 的第二层原因】
+    // v68 的条件只看 `newSize.height > 0`。而 0x0 经过守卫修正后是 **1.0**,
+    // 1.0 > 0 ⇒ 被当成"真实排版过的高度"记进 lastGoodHeight; 下一次 0x0
+    // 再来, 取到的"历史"就是自己上次造出来的 1.0 ⇒ 修正值恒为 1.0
+    // ⇒ 上游拿到 1.0 和拿到 0.0 一样排不出东西 ⇒ **活锁一圈没断**。
+    // 日志实测修正值恒为 326.0x**1.0**, 与此完全吻合。
+    //
+    // ⇒ 必须按**原始**尺寸判定: 只有 orig 宽高都为正, 这次才是"上游算对了";
+    //   守卫修正出来的值**永远不是**"排版过的真实高度"。
+    // 另外排除 >= 2000: 那是哨兵钳位后的值, 同样不是真实内容高度。
+    if (newSize.height > 0.0 && isfinite(newSize.height) &&
+        newSize.height <= kMaxContainerHeight &&
+        newSize.height < 2000.0 &&
+        _v65orig_h > 0.0 && _v65orig_w > 0.0) {
+        s->lastGoodHeight = newSize.height;
+        // [V69-GLOBAL]④ 同步写进程级历史: 只有这里记下来,
+        // 下一个**新建**的容器才可能在崩溃时拿到一个真实高度。
+        gGlobalLastGoodHeight = newSize.height;
+    }"""
+
+
+def fix_nonpositive_global_v69(t):
+    """v69 注入: 非正尺寸风暴的计数从 per-container 提升到进程级。
+
+    【为什么必须提升, 而不是继续修 per-container 的累加位置】
+    v66 的病是"累加语句埋在门槛里"(位置错), v68 已修;
+    v69 的病是"计数挂的对象活不过一轮循环"(**宿主错**)。
+    位置修对了也没用 —— 计数随宿主一起被丢弃。这类错误的判据不能只问
+    "语句在不在、会不会执行", 必须问"**它的宿主活得够不够久**"。
+
+    幂等: 已有 [V69-GLOBAL] 原样返回。
+    """
+    if "[V69-GLOBAL]" in t:
+        return t
+    t = _v60_replace1(t, V69_GLOBAL_OLD, V69_GLOBAL_NEW,
+                       "v69① 新增进程级风暴计数/游标/历史高度 + 两个常量")
+    t = _v60_replace1(t, V69_STREAK_OLD, V69_STREAK_NEW,
+                       "v69①⑤ else-if 内加全局累加, 并补 else 分支做自愈退出")
+    t = _v60_replace1(t, V69_GATE_OLD, V69_GATE_NEW,
+                       "v69② 降频闸门判据加进程级一路")
+    t = _v60_replace1(t, V69_SKIP_OLD, V69_SKIP_NEW,
+                       "v69③ 降频游标改用全局(per-container 游标恒 0 = 废)")
+    t = _v60_replace1(t, V69_FIXH_OLD, V69_FIXH_NEW,
+                       "v69④ 修正值加进程级历史高度兜底(容器新建时唯一可用)")
+    t = _v60_replace1(t, V69_GOODH_OLD, V69_GOODH_NEW,
+                       "v69④ 转发正高度时同步写进程级历史")
+    return t
+
+
 def fix_guard_fixsize_v65(t):
     """v65 注入: 守卫不再丢弃有限非正尺寸, 且熔断只对哨兵生效。
 
@@ -14685,6 +14929,30 @@ def main():
         "197 万次修正全是同一个值 1.0 ⇒ 自反馈一秒没断。"
         "★v65 的病是「修正成和原来一样的值」(空操作), v66 是「修正成上游仍"
         "不满意的值」(活锁) —— 断的位置不同。")
+    edit("Shared/NSTextContainerSetSizeGuard.m", fix_nonpositive_global_v69,
+        "v69: ★v68 装机后新症状「点击选择模型就卡死」(10-06 2.log, PID "
+        "32470: 05:06:22 点击 → 11 秒 **1,957,633 次** → 进程死亡重启为 32493)。"
+        "风暴期内 short-circuited **0** 条(正常期 37 条)、NONPOSITIVE-STREAK "
+        "22 条**全是 streak=1**、DOWNFREQ/storm-breaker **各 0**、修正值恒为 "
+        "326.0x**1.0**、container 恒为 0x2825dfb60 —— 六者同一个根因: "
+        "**每次 setSize: 拿到的都是全新 GuardState, 即 NSTextContainer 每次都"
+        "是新建的**(地址相同只是 malloc 复用)。反证: 每秒 10 万次 ⇒ tick 恒等、"
+        "尺寸恒等 ⇒ dedupe 若 initialized==YES 必然命中 ⇒ 应有几十万条 "
+        "short-circuited ⇒ 实测 0 ⇒ initialized 恒 NO ⇒ 宿主每次都是新的。"
+        "★**v68 的全部防御都建在「容器是稳定对象」这一假设上, 而风暴源恰恰是"
+        "容器的不稳定**(SwiftUI measure 候选项时新建容器 → 宽度 0 → 喂 0x0 → "
+        "修正转发 → 1pt 空排 → 回报不可用 → 重新 measure → 又新建容器)。"
+        "★第十三次「验证手段骗了自己」: 判据问的是「这些计数器会不会累加」"
+        "[会], 却从没问「**它们挂的那个对象活得够不够久**」[不够]。"
+        "修法 —— 把计数从 per-container 提升到 **per-process**: "
+        "①进程级 gGlobalNonPositiveStreak(容器重建也断不了); "
+        "②闸门判据加全局一路(per-container 恒 1, 永不到 400); "
+        "③降频游标改全局 gGlobalSkipTick(per-container 游标恒 0 = 废); "
+        "④lastGoodHeight 加全局兜底并同步写入(容器新建时唯一能拿到真实高度处); "
+        "⑤连续 128 次正尺寸即清零全局计数(否则一次风暴让 App **永久**滞留"
+        "降频态 —— v66「永久冻结」的同类错误, 且这次是冻结整个进程)。"
+        "预期 196 万 → 约 3 万次, 且上游拿到的是真实高度而非 1.0 ⇒ 自反馈回路"
+        "被打断 ⇒ 风暴提前收敛, 不只是「跑完 196 万次再死」。")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_clamp_v39, "v39: 帧同步补上高度 — 治'字显示不全/排版不对'(v23 帧同步只修宽度不修高度, 每帧把 v18 撑好的高度改回去 → svH 恒为 needH 的 0.50~0.74, 37/37)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_unconditional_v40, "v40: 高度补齐挪出 polluted 分支 — 治'块重叠/字只剩一半'(v39 实测: textView 自身 frameH==needH 已 52/52 全对, 但 superview 52/52 仍欠 23.7~476pt。根因: polluted 判据只看宽度, 宽度修好后早退, v39 的高度代码一行没跑 → 宽度修好反而挡住了高度)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_height_clamp_v41, "v41: KVO 抢帧器补高度 — 治'字只剩一半/终端框不接结果'(推翻 v39/v40 的诊断: log9 同一毫秒同一 layoutSubviews 内 DIAG2 读到 358x2000.33 而开头快照是 100000x1455.33 → v18+v40 在 pass 内**确实修好了**, 欠账是 pass 结束后 SwiftUI 写回的。真凶: KVO 抢帧器只修x/width 从不写高度, 且 polluted 判据只看宽度 → '宽度正常+高度欠账'的帧被 if !polluted { return } 放过 → 末行被裁。v41: KVO 内无条件补高度 + polluted 增加高度维度 + 提交前兜底 + pass 末尾 V41-DEBT 回写侦测)")
