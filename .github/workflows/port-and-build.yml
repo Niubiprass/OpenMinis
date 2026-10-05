@@ -1,5 +1,5 @@
 name: iOS15 移植并打包 IPA
-# [CI-RETRIGGER] via contents API (github.com 直连超时) 2026-10-05 22:23 UTC
+# [CI-RETRIGGER] Actions 恢复后重推第 1 次 (22:26:23 UTC)
 
 on:
   workflow_dispatch:
