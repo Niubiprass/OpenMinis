@@ -543,13 +543,14 @@ jobs:
           #   闸门在不在(S1) 算不算(S2) 改不改写(S3) 会不会误杀真实增长(S4)
           #   播种真不取上一轮(S5/S6/S7) 顺序对不对(S8) 有没有 est 下限(S9)。
           if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v64.py" . ; then
-            echo "✅ v64 就位 (不播种 + 收敛闸真改写 + 数据流顺序正确 + 9 条 sabotage 全拦)"
+            echo "✅ v64 就位 (不播种 + 收敛闸真改写 + 数据流顺序正确 + 标识符存在 + 10 条 sabotage 全拦)"
           else
             echo "::error::v64 判据异常 —— 自我播种未断(pref 每拍 +170pt 累加, 整屏狂跳)"
             echo "   —— 若报「仍取 attrs.size.height」: 播种没断, 环还在自我累加"
             echo "   —— 若报「只计算不改写」: 闸门算了不用, 等于没下药(v53 当年的原样病)"
             echo "   —— 若报「在写回之后」: 顺序错了, 拦下的值不会被采纳, 闸门形同虚设"
             echo "   —— 若报「缺 est > 4 下限」: 首帧高度会被锁成 0 ⇒ 整格空白"
+            echo "   —— 若报「没有声明」: 引用了不存在的标识符, 编译必报 cannot find in scope(run#159)"
             exit 1
           fi
           echo "::endgroup::"

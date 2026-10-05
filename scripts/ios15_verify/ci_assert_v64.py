@@ -14,7 +14,8 @@ v64 的判据本体在 ios15_fallback.verify_deseed_v64(与注入同源, 避免�
     0 = 真通过   1 = 真失败   3 = 无法检查(环境不全)
 
 层次:
-    core  = fallback.verify_deseed_v64(形状+数据流) + verify_swift_static_v63(语法)
+    core  = fallback.verify_deseed_v64(形状+数据流+标识符存在性)
+            + verify_swift_static_v63(语法)
     probe = 装机可观测性(去播种/收敛闸打点是否在位 —— 判据全绿 ≠ 病治好)
     sab   = reverse_v64.py 的 9 条 sabotage, 全部问**实质**而非「标记在不在」
 
@@ -38,6 +39,7 @@ v64 的判据本体在 ios15_fallback.verify_deseed_v64(与注入同源, 避免�
     播种值真不取上一轮?   → S5/S6/S7
     闸门在写回之前?     → S8
     闸门会不会退化成 v53 式无条件锁死? → S9
+    引用的标识符真实存在吗?         → S10（**run#159 的真实错误**）
 """
 import io
 import os

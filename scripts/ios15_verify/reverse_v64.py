@@ -206,6 +206,23 @@ def s9_gate_no_floor(t):
     return t.replace(old, "        if _v64grew && !_v64tkFresh {", 1)
 
 
+def s10_bad_identifier(t):
+    """S10 收敛闸引用不存在的标识符 —— **run#159 的真实错误**。
+
+    形态: `_v64found`(真名 `_ios15Found`), 编译期报
+      `cannot find '_v64found' in scope`, 整个 App 构建不出来。
+
+    ★为什么这条必须留(而不是"这种错谁也不会写"):
+      run#159 上 35 条判据**全绿**, 判据全绿而编译红 —— 因为它们都只查
+      文本「在不在」, 查不出「引用的标识符存不存在」。
+      这是本项目第四次撞上「判据全绿但…」(前三次见 CONTEXT §4.10.5),
+      也是最贵的一次: 前面几次浪费的是时间, 这次浪费的是一次 CI run。
+    """
+    old = "        let _v64tkFresh = _ios15Found && _v64tk > _v64est + 0.5"
+    assert t.count(old) == 1, "S10 前置失败: 目标行数=%d" % t.count(old)
+    return t.replace(old, "        let _v64tkFresh = _v64found && _v64tk > _v64est + 0.5", 1)
+
+
 SABOTAGE = [
     ("S1 摘收敛闸(只断播种就收工)",      s1_drop_gate),
     ("S2 闸门只算不改写",                s2_gate_no_write),
@@ -216,6 +233,7 @@ SABOTAGE = [
     ("S7 播种不用压缩语义",              s7_seed_not_compressed),
     ("S8 闸门挪到写回之后(形同虚设)",    s8_gate_after_writeback),
     ("S9 闸门无 est 下限(首帧锁 0)",     s9_gate_no_floor),
+    ("S10 引用不存在的标识符(run#159 真错)", s10_bad_identifier),
 ]
 
 

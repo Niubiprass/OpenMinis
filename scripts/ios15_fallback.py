@@ -7775,7 +7775,7 @@ V64_GATE_NEW = """        // [V64-CONVERGE] 收敛闸 —— 断掉反馈之后�
         let _v64est = attrs.size.height
         let _v64tk = _ios15TkSum
         let _v64grew = _ios15Reconciled >= _v64est - 0.5
-        let _v64tkFresh = _v64found && _v64tk > _v64est + 0.5
+        let _v64tkFresh = _ios15Found && _v64tk > _v64est + 0.5
         if _v64grew && !_v64tkFresh, _v64est > 4 {
             Self.sizingLogger.info("[CellSizing][V64-CONVERGE] hold est=\\(String(format: "%.1f", _v64est)) recomputed=\\(String(format: "%.1f", _ios15Reconciled)) tk=\\(String(format: "%.1f", _v64tk)) — 未真重算, 保留 est 阻断累加")
             _ios15Reconciled = _v64est
@@ -8168,6 +8168,31 @@ def verify_deseed_v64(infra):
             "%s: 收敛闸(偏移 %d) 在写回 lastComputedHeight(偏移 %d) **之后** —— "
             "拦下的值不会被采纳, 闸门形同虚设(这正是 v64 初版判据放过的那类"
             "形态: 东西都在位, 但顺序让它不生效)" % (F, gi, ci))
+
+    # ── ⑤ ★标识符必须真实存在(run#159 的直接产物) ──
+    # run#159 编译红: `cannot find '_v64found' in scope` —— 收敛闸引用了
+    # 一个**不存在**的标识符(真名是 _ios15Found)。本地 35 条判据全绿,
+    # 因为它们只查文本「在不在」, 查不出「引用的东西存不存在」。
+    # ⇒ 这里逐个核对闸门引用的外部标识符在产物里真有定义。
+    #   范围只限闸门自己引入的 4 个(_v64est/_v64tk/_v64grew/_v64tkFresh)
+    #   加上它引用的 2 个上游量(_ios15Reconciled/_ios15TkSum/_ios15Found)。
+    for ident in ("_v64est", "_v64tk", "_v64grew", "_v64tkFresh",
+                  "_ios15Reconciled", "_ios15TkSum", "_ios15Found"):
+        # 声明行(let/var X = ...)才算定义; 纯引用不算
+        if not re.search(r"\b(?:let|var)\s+%s\b" % re.escape(ident), infra):
+            raise RuntimeError(
+                "%s: 收敛闸引用的 %r 在产物里**没有声明** —— 编译期必然报 "
+                "`cannot find in scope`。这就是 run#159 的那一个错误: "
+                "判据全绿而编译红(判据只验文本, 验不了标识符是否存在)"
+                % (F, ident))
+    # 反向: 闸门里不得出现未声明的 _v64* 变量(防新增时重犯)
+    declared = set(re.findall(r"\b(?:let|var)\s+(_v64\w+)", gate))
+    used = set(re.findall(r"\b(_v64\w+)", gate))
+    unknown = used - declared
+    if unknown:
+        raise RuntimeError(
+            "%s: 收敛闸用了未在其内部声明的 %s —— 未定义标识符, 编译必红"
+            % (F, sorted(unknown)))
 
     # 且必须落在 reconcile 之后(闸门要比较的是 reconcile 后的值)
     ri = infra.find("var _ios15Reconciled = fittingSize.height")
