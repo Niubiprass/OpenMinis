@@ -81,6 +81,17 @@
   ★关键在于「v66 报 v68 红」这条: 它证明判据不是「永远放行」。
     若三份都全绿, 反而要怀疑判据没有鉴别力。
 
+【CI 侧待确认: 两次 job 未启动】
+  修完判据后连推两次(`eb6883c` → run 37370184926、`922c2a5` → run 37370465099),
+  两次都是 `completed / failure`, 但:
+    · job 的 steps 列表**为空**
+    · 日志 zip 只有 22 字节(空)
+    · 一次 7 秒结束、一次 5 分 15 秒结束
+  ⇒ **不是本仓库任何步骤失败**(步骤一个都没跑), 是 runner 没能启动。
+  高度怀疑 Actions 分钟配额(macOS runner 按 10 倍计费, 本仓库已 212 次 run),
+  需在 GitHub Billing 页确认。PAT 无权查 billing 也无权重跑, 只能靠推送触发。
+  ★这与判据无关: 判据已在本地和三份真实 IPA 上验证过(见上)。
+
 【怎么用】
     python3 verify_binary_guard_markers.py <Minis.app 目录>  或  <Mach-O 文件>
     python3 verify_binary_guard_markers.py --self-test
