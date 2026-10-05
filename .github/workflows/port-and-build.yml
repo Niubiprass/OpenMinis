@@ -37,6 +37,10 @@ on:
       # 恰恰是最需要 CI 发现的改动(run#37137912522 那类区间误伤,
       # 修复也只动判据文件)。漏掉它 = 判据体系可以悄悄烂掉。
       - "scripts/ios15_verify/**"
+      # ★v63 起: 全链验证脚本也进 paths。它同时跑三阶段(①port ②port_v2
+      #   ③fallback), 是「只跑③会静默 SKIP」这个坑的守门人 ——
+      #   改了三阶段里任何一个而不触发 CI, 等于没门禁。
+      - "scripts/verify_v63.sh"
       - ".github/workflows/port-and-build.yml"
 
 permissions:
@@ -433,6 +437,45 @@ jobs:
             fi
           else
             echo "::error::产物缺 [V62-SURPLUS] —— v62 注入没生效(上游/兼容层结构可能变了)"
+            exit 1
+          fi
+          echo "::endgroup::"
+          echo "::group::断言66: v63 工具卡片狂跳 + 文字非流式必须就位 (invalidate 唯一通道 + drift 兜底)"
+          # ★v63 修的是 v60 引入的伤: v60 为治「宽度污染」把 intrinsicContentSize
+          #   的**高度**也改成 noIntrinsicMetric, 而 iOS 15 上它是 SwiftUI 内容
+          #   变化的**唯一**信号源(iOS 16 起才有 sizingOptions) ⇒ 信号源被切断。
+          #   外部交叉验证(四个独立来源同结论): Mozilla Firefox iOS 的
+          #   HostingTableViewCell.host() 每次 rootView 赋值后都跟
+          #   invalidateIntrinsicContentSize(); StackOverflow 77027194(36k 赞)
+          #   明确说 setNeedsLayout/layoutIfNeeded 都无效; vbat.dev 与
+          #   Apple FB9641883 社区解法同结论。
+          # ★为什么这条断言必须硬失败: v62 装机日志里 V53-DEBT/V62-SURPLUS
+          #   出现 **0 次**、live= 唯一取值 {0} ⇒ 代码全在但从未执行,
+          #   而当时 26 条判据全绿。判据全绿已被证明是不可信信号, 所以
+          #   这里额外要求**探针在位**(装机可观测), 而不只是代码在位。
+          if grep -q "\[V63-UPDATE\]" src/ios/iOS15Compat.swift \
+             && grep -q "\[V63-CFG\]" src/ios/iOS15Compat.swift \
+             && grep -q "\[V63-PROBE\]" src/ios/iOS15Compat.swift \
+             && grep -q "\[V63-INTSIZE\]" src/ios/Views/Chat/SelectableMarkdownView.swift \
+             && grep -q "\[V63-UNCYCLE\]" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
+            # ci_assert_v63 内含 core(两条真实判据) + probe(装机可观测性)
+            # + sab(reverse_v63 的 14 条 sabotage, judge 直调 verify_*_v63)
+            if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v63.py" . ; then
+              echo "✅ v63 就位 (判据全过 + 14 条 sabotage 全拦 + 探针可观测)"
+              echo "   —— 装机后请在日志里确认: [V63-PROBE] fast=N rebuild=M 且 live=N (>0)"
+              echo "   —— 若 fast=0 ⇒ REUSE 快速路径没被执行; 若 live 仍恒为 0 ⇒"
+              echo "      说明 invalidate 通道修好了但测量仍被挡, 需带日志再定位"
+            else
+              echo "::error::v63 判据异常 —— 跳动/非流式修复注入不完整(判据或探针失效)"
+              echo "   —— 报「没有 invalidate」: iOS 15 收不到 SwiftUI 变化信号, 高度锁死旧值"
+              echo "   —— 报「探针缺失」: 装机将零输出, 又回到 v53/v62 那种「代码在但没跑」"
+              exit 1
+            fi
+          else
+            echo "::error::产物缺 [V63-*] 标记 —— v63 注入没生效(上游/兼容层结构可能变了)"
+            echo "   注意: v63① 落在 iOS15Compat.swift, 而该文件由 ios15_port_v2.py **生成**;"
+            echo "         只跑 ios15_fallback.py 会静默跳过(edit() 对缺文件直接 return)。"
+            echo "         本地复现请用: bash scripts/verify_v63.sh (三阶段齐全)"
             exit 1
           fi
           echo "::endgroup::"

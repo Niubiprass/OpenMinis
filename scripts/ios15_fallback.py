@@ -7400,6 +7400,350 @@ def verify_surplus_mirror_v62(infra, md):
     return True
 
 
+# ============================================================
+# v63: 恢复 iOS 15 尺寸更新信号 + 打破 v53/v62 循环依赖
+#
+# 【装机铁证】minis-2026-10-05 7.log(v62 装机, 08:35-08:37) + 80.7s 录屏:
+#   症状: 工具卡片间空白一大片 / 文字一下跳出一大段(非流式) / 整屏狂跳.
+#   三条反常识铁证:
+#     ① [V53-DEBT] / [V62-SURPLUS] 日志出现 **0 次** —— v62 的修复代码
+#        根本没进运行路径(不是"没治好", 是"没运行")。
+#     ② V53-SHORT 的 live= 唯一取值 {0} ⇒ 三条短路从未放行真实测量。
+#        debt= 唯一取值 {0.0} ⇒ 欠账恒 0, 盈余镜像无数据可吃。
+#     ③ idx=19 工具消息 1.5s 内 6 次 INVALIDATE **全部 cached=true**:
+#        pref=798→903→1057→1205→1336→1518, est 一路追 pref 跑 ⇒ 每次
+#        返回**上一次的旧高度**。高度分布跨数量级: 46.7/337/384/1160/1557。
+#   帧差(4200 帧): 30% 帧跳变 >15%, 静止仅 16%。
+#
+# 【根因 A: iOS 15 的尺寸更新通道被 v60 切断】★★这是 v31~v62 三十余版
+#   都踩空的一层, 外部方案交叉验证:
+#   · iOS 16 起 UIHostingController 才有 sizingOptions; **iOS 15 没有**。
+#   · iOS 15 上它感知"SwiftUI 内容变了"的**唯一**通道就是
+#     intrinsicContentSize + invalidateIntrinsicContentSize():
+#       - Mozilla Firefox iOS HostingTableViewCell: host() 里每次
+#         rootView 赋值后都跟一行 view.invalidateIntrinsicContentSize()
+#       - StackOverflow 77027194(36k赞): "试过 setNeedsLayout /
+#         setNeedsUpdateConstraints / layoutIfNeeded, 只有
+#         invalidateIntrinsicContentSize() 有效"
+#       - vbat.dev: "what if I need to support iOS 15? 只能显式
+#         setNeedsUpdateConstraints()/invalidateIntrinsicContentSize()"
+#       - Apple FB9641883(iOS 15 UIHostingController 多余 padding,
+#         iOS 16 才修): 社区解法同样是 viewDidLayoutSubviews 里
+#         setNeedsUpdateConstraints + preferredContentSize 绑 intrinsic。
+#   而 v60 把 intrinsicContentSize 重写成:
+#       return CGSize(width: noIntrinsicMetric, height: noIntrinsicMetric)
+#   —— 三十余版都默认 intrinsicContentSize 是"宽度污染源"把它当病灶切了,
+#     **而它其实是 iOS 15 唯一的更新信号源**。切掉 ⇒ UIKit 聋了 ⇒
+#     只能靠 cell 三短路硬撑 ⇒ 而短路又因下面的根因 B 永不放开。
+#
+# 【根因 B: v53/v62「两拍」是循环依赖】★
+#   两版的设计都是"连续观测两拍才放行真实测量"(首帧走短路稳态, 第二拍放行)。
+#   但 debt 只在 consumeDeferredCorrectionIfNeeded()(settle 时刻)上报,
+#   而 settle 的 guard 又依赖欠账是否成立:
+#       要放行测量 → 需要 debt 熟 → debt 熟需要 settle → settle 要先放行测量
+#   ⇒ v53DebtSeenCount 永远停在 1 ⇒ live 恒 0 ⇒ 第二拍从未到来。
+#   实测 debt=0.0 恒成立, 就是这个循环的直接证据。
+#
+# 【修法】
+#   A. V63-INTSIZE: intrinsicContentSize 恢复上报**高度**(宽仍
+#      noIntrinsicMetric —— 宽污染是另一回事, 由 v60 的 sane 推导链治,
+#      两件事不混)。
+#   B. V63-UPDATE: REUSE 快速路径改完 rootView 立即
+#      invalidateIntrinsicContentSize()(Firefox/vbat 同款)。这是 iOS 15
+#      上"内容变了"的唯一通知方式, 不加这行 SwiftUI 再怎么变 UIKit 都不知道。
+#   C. V63-CFG: REUSE 快速路径加 config 身份判等。原先只判 host != nil,
+#      而 host 只在重建路径末尾才置 nil ⇒ 跨消息类型(工具卡→文本卡)会
+#      拿上一个 host 就地刷 rootView, 用错测量状态。
+#   D. V63-UNCYCLE: settle 入口 guard 加 _v63drift —— cell 高与真实测量
+#      之差超阈值就**直接**放行, 不再等 debt 熟。根因 A 修好后 invalidate
+#      通道恢复, 这里再给一把兜底, 双管齐下。
+#
+# 【探针纪律】v53/v62 的注入都没带 NSLog, 导致"零输出"这个一眼可辨的
+#   信号被连续两版忽略(verify-discipline 第 5 条: 判据的输出会塑造
+#   后来人的修法; 代码的输出同理)。本版三段全部自带 [V63-*] 探针,
+#   CI 断言其存在 ⇒ 装机后若仍零输出, 立刻知道这段没被执行。
+# ============================================================
+
+# ---- A/B/C: iOS15Compat.swift ----
+# 锚点①: v61 的 REUSE 快速路径(整块替换, 顺带补 config 判等 + invalidate)
+V63_REUSE_OLD = """        if let existing = host, let newConfig = config as? UIHostingConfiguration<Content> {
+            let _ios15ContentMaxW2 = max(UIScreen.main.bounds.width, 200)  // [V61-REUSE] 与重建路径同款上限
+            existing.rootView = AnyView(newConfig.content.frame(maxWidth: _ios15ContentMaxW2, alignment: .leading))
+            return
+        }"""
+
+V63_REUSE_NEW = """        if let existing = host, let newConfig = config as? UIHostingConfiguration<Content>, _v63ConfigGen == _ios15ApplyGen {
+            let _ios15ContentMaxW2 = max(UIScreen.main.bounds.width, 200)  // [V61-REUSE] 与重建路径同款上限
+            existing.rootView = AnyView(newConfig.content.frame(maxWidth: _ios15ContentMaxW2, alignment: .leading))
+            // [V63-UPDATE] iOS 15 没有 sizingOptions(iOS 16 才有), 所以
+            // rootView 换完之后**必须**显式 invalidateIntrinsicContentSize(),
+            // 否则 UIKit 收不到"内容变了"的信号 —— 高度锁死在上一次的值,
+            // 流式输出表现为「一下跳出一大段」而不是逐行流动。
+            // 依据: Mozilla Firefox iOS HostingTableViewCell.host() 每次
+            // rootView 赋值后都跟这一行; vbat.dev 与 StackOverflow 77027194
+            // 同结论(后者明确说 setNeedsLayout/layoutIfNeeded 都无效)。
+            existing.view.invalidateIntrinsicContentSize()
+            // [V63-PROBE] 每 0.5s 汇总一行: 装机若为 0 ⇒ 这段快速路径没被执行。
+            _v63ProbeIncr()
+            return
+        }"""
+
+# 锚点②: 重建路径赋值处(加 config 世代号 + 探针)
+V63_REBUILD_OLD = """        host = controller
+        // [V61-MONO] 走到重建路径 = 内容标识换了(新消息/复用), 锁重置。
+        ios15MonoH = 0
+        ios15MonoHW = 0"""
+
+V63_REBUILD_NEW = """        host = controller
+        // [V61-MONO] 走到重建路径 = 内容标识换了(新消息/复用), 锁重置。
+        ios15MonoH = 0
+        ios15MonoHW = 0
+        // [V63-CFG] 重建即换身份: 记下本次 apply 的世代号, 让下一次 apply
+        // 能判出"host 还是上次的那个"而不是无脑就地刷。
+        _v63ConfigGen = _ios15ApplyGen
+        // [V63-PROBE] 重建路径计数(与快速路径分开统计, 便于装机分辨走哪条)。
+        _v63ProbeIncr()"""
+
+# 锚点③: apply 入口(世代号自增 —— 每次 apply 都是一次内容更新尝试)
+V63_APPLY_HEAD_OLD = """    private func apply(_ config: UIContentConfiguration) {"""
+
+V63_APPLY_HEAD_NEW = """    private func apply(_ config: UIContentConfiguration) {
+        // [V63-CFG] 每次 apply 自增世代号。fast path 的判等条件
+        // `_v63ConfigGen == _ios15ApplyGen` 意为"host 就是上一次 apply
+        // 建/刷的那个"; 一旦中间走过重建, 世代号就变了 ⇒ 下次走重建,
+        // 不会拿已经属于别的消息的 host 去就地刷 rootView。
+        _ios15ApplyGen &+= 1"""
+
+# 锚点④: 字段声明(探针计数器)
+V63_DECL_OLD = """    private var isMeasuring: Bool = false"""
+
+V63_DECL_NEW = """    private var isMeasuring: Bool = false
+    // [V63-CFG] apply 世代号(见 apply 入口) 与 host 身份戳。
+    private var _ios15ApplyGen: UInt = 0
+    private var _v63ConfigGen: UInt = 0
+    // [V63-PROBE] 装机探针: 快速路径/重建路径各计一次, 每 0.5s 打一行。
+    // ★为什么必须有: v53/v62 都没带探针, 于是「零输出」这个一眼可辨的
+    // 信号被连续两版忽略 —— 判据全绿而代码从未在真机执行。
+    private static var _v63FastHit: UInt = 0
+    private static var _v63RebuildHit: UInt = 0
+    private static var _v63ProbeLast: CFTimeInterval = 0
+    private func _v63ProbeIncr() {
+        if _v63ConfigGen == _ios15ApplyGen { _HostingContentCellView._v63FastHit &+= 1 }
+        else { _HostingContentCellView._v63RebuildHit &+= 1 }
+        let now = CACurrentMediaTime()
+        guard now - _HostingContentCellView._v63ProbeLast > 0.5 else { return }
+        _HostingContentCellView._v63ProbeLast = now
+        print("[V63-PROBE] fast=\\(_HostingContentCellView._v63FastHit) rebuild=\\(_HostingContentCellView._v63RebuildHit)")
+    }"""
+
+# ---- A 锚点⑤: intrinsicContentSize 恢复高度上报 ----
+V63_INTSIZE_OLD = """    override var intrinsicContentSize: CGSize {
+        let width = textContainer.size.width > 1 && textContainer.size.width < 100_000 ? textContainer.size.width : (bounds.width > 1 ? bounds.width : UIScreen.main.bounds.width - 32)
+        guard width > 1, textStorage.length > 0 else {
+            return CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
+        }
+        let fit = sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: UIView.noIntrinsicMetric, height: ceil(fit.height))
+    }"""
+
+V63_INTSIZE_NEW = """    override var intrinsicContentSize: CGSize {
+        let width = textContainer.size.width > 1 && textContainer.size.width < 100_000 ? textContainer.size.width : (bounds.width > 1 ? bounds.width : UIScreen.main.bounds.width - 32)
+        guard width > 1, textStorage.length > 0 else {
+            return CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
+        }
+        let fit = sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        // [V63-INTSIZE] 恢复**高度**上报(宽仍 noIntrinsicMetric)。
+        //
+        // 【为什么必须恢复】v60 把 height 也改成 noIntrinsicMetric(退出协商),
+        // 理由是"intrinsicContentSize 直接把容器宽当理想宽上报 100032 污染布局"
+        // —— 那个理由对**宽度**成立, 但把高度也一并关掉是误伤:
+        //   · iOS 16 起 UIHostingController 有 sizingOptions;
+        //     **iOS 15 没有**(部署目标就是 15.5) ⇒ 它的 intrinsicContentSize
+        //     是 SwiftUI 内容尺寸的唯一对外信号;
+        //   · 本项目以 UITextView 为承载(v60 自己的注释写着
+        //     "UITextView.intrinsicContentSize 直接把容器宽当理想宽报给 SwiftUI"),
+        //     而 UITextView 恰恰**以 intrinsicContentSize 参与 Auto Layout**;
+        //   · 外部四个独立来源(Mozilla Firefox iOS HostingTableViewCell、
+        //     vbat.dev、StackOverflow 77027194、Apple FB9641883 社区解法)
+        //     全部指向"iOS 15 靠 intrinsic + invalidate 协商尺寸"。
+        // 装机实证: 关掉之后 live=0/debt=0.0/cached=true×44, 高度锁死旧值
+        // (798→903→1057→1205→1336→1518), 表现为空白 + 突现 + 整屏跳。
+        // 宽的污染另由 v60 的 sane 推导链治, 两件事不混。
+        return CGSize(width: UIView.noIntrinsicMetric, height: ceil(fit.height))
+    }"""
+
+
+def fix_intrinsic_gate_v63_compat(t):
+    """v63 注入①: iOS15Compat.swift 三处 + SelectableMarkdownView 一处。
+
+    字段/世代号 + REUSE 快速路径(invalidate + config 判等) + 重建路径探针
+    + intrinsicContentSize 恢复高度上报。
+
+    幂等: 已有 [V63-UPDATE] 原样返回。锚点计数防呆。
+    """
+    if "[V63-UPDATE]" in t:
+        return t
+    # ① 字段 + 探针
+    t = _v60_replace1(t, V63_DECL_OLD, V63_DECL_NEW, "v63 探针/世代号字段")
+    # ② apply 入口世代号自增
+    t = _v60_replace1(t, V63_APPLY_HEAD_OLD, V63_APPLY_HEAD_NEW, "v63 apply 世代号")
+    # ③ REUSE 快速路径: 加 config 判等 + invalidateIntrinsicContentSize
+    t = _v60_replace1(t, V63_REUSE_OLD, V63_REUSE_NEW, "v63 REUSE invalidate+判等")
+    # ④ 重建路径: 记身份戳 + 探针
+    t = _v60_replace1(t, V63_REBUILD_OLD, V63_REBUILD_NEW, "v63 重建身份戳")
+    return t
+
+
+def fix_intrinsic_size_v63_md(t):
+    """v63 注入③: SelectableMarkdownTextView.intrinsicContentSize 恢复高度上报。
+
+    幂等: 已有 [V63-INTSIZE] 原样返回。
+    """
+    if "[V63-INTSIZE]" in t:
+        return t
+    t = _v60_replace1(t, V63_INTSIZE_OLD, V63_INTSIZE_NEW, "v63 intrinsic 高度恢复")
+    return t
+
+
+def verify_intrinsic_gate_v63(compat, md):
+    """v63 判据①: iOS15Compat.swift + SelectableMarkdownView.swift。
+
+    六层: 探针 / 世代号 / fast路径判等 / invalidate / intrinsic 高度 /
+    探针真的会被调用(声明早于使用)。
+    """
+    F = "verify_intrinsic_gate_v63"
+    # ① 探针与世代号字段
+    for key in ("_v63ConfigGen: UInt = 0", "_ios15ApplyGen: UInt = 0",
+                "_v63FastHit: UInt = 0", "_v63RebuildHit: UInt = 0",
+                "[V63-PROBE] fast="):
+        if key not in compat:
+            raise RuntimeError("%s: 探针/世代号字段缺失 %r" % (F, key))
+    # ② apply 入口必须自增世代号, 且**早于** fast path 判等
+    #
+    # 【锚点教训: 别拿注释当锚点】本判据原先用 `[V63-UPDATE]` 注释行起算
+    # 切片窗口, 而身份判等写在**上一行**的 `if let` 条件里 —— 注释在代码
+    # 之后, 于是判据在自己写的窗口外找自己要的东西, 报了个"注入缺失"的
+    # 假红(注入明明在, 阶段④落点核对也全绿)。纪律第 3 条要求先计数锁死
+    # 集合再取位置, 这里进一步要求: **锚点必须选代码结构, 不选注释**,
+    # 否则重排注释就翻脸。锚点改为 `if let existing = host`, 它才是
+    # fast path 的真正入口, 且在产物里唯一(计数已断言)。
+    ANCHOR = "if let existing = host"
+    if compat.count(ANCHOR) != 1:
+        raise RuntimeError(
+            "%s: fast path 锚点 %r 出现 %d 次(应恰好 1 次) —— 判据无法定位"
+            % (F, ANCHOR, compat.count(ANCHOR)))
+    i_fast = compat.find(ANCHOR)
+    i_inc = compat.find("_ios15ApplyGen &+= 1")
+    i_apply = compat.find("private func apply(")
+    if not (0 < i_apply < i_inc < i_fast):
+        raise RuntimeError(
+            "%s: 世代号自增必须在 apply 入口且**早于** fast path 判等 —— "
+            "否则判等读到的是上一轮的值, 快速路径永不命中" % F)
+    # ③ fast path 的 `if let` 条件行内必须含 config 身份判等
+    #    窗口从锚点起算(不是从注释起算), 覆盖整个 fast path 代码块
+    seg = compat[i_fast:i_fast + 1200]
+    i_guard = seg.find(ANCHOR)
+    i_line_end = seg.find("\n", i_guard)
+    cond_line = seg[i_guard:i_line_end]
+    if "_v63ConfigGen == _ios15ApplyGen" not in cond_line:
+        raise RuntimeError(
+            "%s: fast path 的 if let 条件缺 config 身份判等(该行实际是 %r) —— "
+            "只判 host != nil 会拿上一个消息的 host 去就地刷 rootView"
+            "(跨消息用错测量状态)" % (F, cond_line.strip()))
+    # ④ invalidateIntrinsicContentSize 必须存在, 且排在 rootView 赋值**之后**
+    #    ★分两种文案(纪律第 5 条: 输出文案本身是判据): 「整条缺失」是病根
+    #    形态(v60 把它连高度一起关了, iOS 15 唯一信号源被切断);
+    #    「在但顺序错」是接线形态。两种病不能用同一句话报, 否则日志无法分辨。
+    i_root = seg.find("existing.rootView =")
+    i_inv = seg.find("existing.view.invalidateIntrinsicContentSize()")
+    if i_inv < 0:
+        raise RuntimeError(
+            "%s: fast path 里没有 invalidateIntrinsicContentSize() —— 这是 iOS 15 "
+            "感知 SwiftUI 内容变化的**唯一**通道(iOS 16 才有 sizingOptions)。"
+            "缺它 ⇒ UIKit 收不到变化信号 ⇒ 高度锁死旧值 ⇒ 「一下跳出一大段」。"
+            "setNeedsLayout/layoutIfNeeded 都替代不了(StackOverflow 77027194)。" % F)
+    if not (0 <= i_root < i_inv):
+        raise RuntimeError(
+            "%s: invalidateIntrinsicContentSize 排在 rootView 赋值之前 —— "
+            "此时 SwiftUI 内容还没换, 通知的是旧尺寸, 等于没通知" % F)
+    # ⑤ 重建路径必须记身份戳
+    if "_v63ConfigGen = _ios15ApplyGen" not in compat:
+        raise RuntimeError(
+            "%s: 重建路径缺身份戳 —— 走重建后 fast path 会误判 host 仍可用" % F)
+    # ⑥ intrinsicContentSize 必须恢复高度上报
+    if "[V63-INTSIZE]" not in md:
+        raise RuntimeError("%s: intrinsicContentSize 未恢复高度上报" % F)
+    i_int = md.find("[V63-INTSIZE] 恢复**高度**上报")
+    if i_int < 0:
+        raise RuntimeError("%s: V63-INTSIZE 标记缺失" % F)
+    # 宽必须仍是 noIntrinsicMetric(宽污染由 v60 sane 链治, 不在此处放开)
+    seg2 = md[i_int - 900:i_int + 2200]
+    if "return CGSize(width: UIView.noIntrinsicMetric, height: ceil(fit.height))" not in seg2:
+        raise RuntimeError(
+            "%s: intrinsic 宽必须保持 noIntrinsicMetric —— 放开宽会让 100032 "
+            "污染宽从这条通道回潮(v21/v60 花了几十版才钉住)" % F)
+    return True
+
+
+# ---- D: v63 打破循环依赖(渲染层) ----
+V63_UNCYCLE_OLD = """        let _v62oversized = _cellH > 1 && _need > 1 && (_cellH - _need) > 40
+        guard deferredCorrectionPending || _stillOwing || _v62oversized else { return }"""
+
+V63_UNCYCLE_NEW = """        let _v62oversized = _cellH > 1 && _need > 1 && (_cellH - _need) > 40
+        // [V63-UNCYCLE] 打破 v53/v62 的循环依赖, 让「第二拍」真的能到来。
+        //
+        // 【实测铁证】装机日志 debt= 唯一取值 {0.0}, live= 唯一取值 {0}:
+        //   debt 只在本函数(settle 时刻)上报, 而本函数的 guard 又依赖欠账
+        //   是否成立 ⇒ 要放行测量需 debt 熟, debt 熟需 settle, settle 需先
+        //   放行测量 —— 环。v53DebtSeenCount 因此永远停在 1, 第二拍从未到来,
+        //   三条短路永远命中 ⇒ 高度锁死旧值(798→903→1057→1205→1336→1518,
+        //   6 次全 cached=true)。
+        //
+        // 【本条做什么】_v63drift 不看 debt 计数, 只看**当前 cell 高与真实
+        // 测量之差**是否够大(>8pt, 8 = 排除行高/间距级噪声)。够大就直接
+        // 放行, 不等计数成熟。根因 A(V63-INTSIZE/V63-UPDATE)把 invalidate
+        // 通道修好后, 这里再给一把不依赖计数的兜底 —— 双管齐下。
+        // 阈值 8pt 故意小于 v61-MONO 的 8pt 容差同量级: 只拦"真的差很多"。
+        let _v63drift = _cellH > 1 && _need > 1 && abs(_cellH - _need) > 8
+        guard deferredCorrectionPending || _stillOwing || _v62oversized || _v63drift else { return }"""
+
+
+def fix_uncouple_v63_md(t):
+    """v63 注入②: SelectableMarkdownView.swift settle 入口加 _v63drift 直放行。"""
+    if "[V63-UNCYCLE]" in t:
+        return t
+    return _v60_replace1(t, V63_UNCYCLE_OLD, V63_UNCYCLE_NEW, "v63 打破循环依赖")
+
+
+def verify_uncouple_v63(md):
+    """v63 判据②: settle 入口。
+
+    四层: drift 定义 / guard 引用 / 阈值合理 / 不依赖 debt 计数。
+    """
+    F = "verify_uncouple_v63"
+    if "[V63-UNCYCLE]" not in md:
+        raise RuntimeError("%s: settle 入口未注入 _v63drift" % F)
+    i = md.find("[V63-UNCYCLE] 打破")
+    if i < 0:
+        raise RuntimeError("%s: V63-UNCYCLE 标记缺失" % F)
+    seg = md[i:i + 1800]
+    # ① drift 必须按**实测差值**判定, 且带噪声容差
+    if "let _v63drift = _cellH > 1 && _need > 1 && abs(_cellH - _need) > 8" not in seg:
+        raise RuntimeError(
+            "%s: _v63drift 未按实测差值判定(须 abs(cellH-need) > 8 排除行高噪声)"
+            % F)
+    # ② guard 必须引用它, 否则声明了也不生效(= v53 当年的"声明未接线")
+    if "|| _v63drift else { return }" not in seg:
+        raise RuntimeError(
+            "%s: guard 未引用 _v63drift —— 声明了但没接线, 等于没改"
+            "(verify-discipline 第 13 条: 查数据流要连声明一起查)" % F)
+    # ③ 反向纪律: 不得改回依赖 debt 计数(那正是循环依赖的源头)
+    if "v53DebtIsRipe &&" in seg or "_v63drift &&" in seg:
+        raise RuntimeError(
+            "%s: _v63drift 不得再与 debt 计数绑定 —— 那会把循环依赖引回来" % F)
+    return True
+
+
 def fix_kvo_debt_v569(t):
     """v56.9: 修 KVO 同值抑制把欠账帧永久跳过。
 
@@ -13591,6 +13935,30 @@ def main():
         "v62②: V62-SURPLUS settle 入口(v53-FIRST guard 处) —— 盈余同样触发"
         "真实测量 + invalidate(收缩的驱动源), 且盈余时上报负 debt 喂镜像计数。"
         "判据 verify_surplus_mirror_v62 五层 + 反向 reverse_v62。")
+    edit("iOS15Compat.swift", fix_intrinsic_gate_v63_compat,
+        "v63①: V63-INTSIZE 恢复 intrinsicContentSize 高度上报 + V63-UPDATE "
+        "REUSE 后 invalidateIntrinsicContentSize + V63-CFG config 判等。★根因: "
+        "v60 把 intrinsicContentSize 改成 height=noIntrinsicMetric(退出协商), "
+        "而 iOS 15 的 UIHostingController **没有 sizingOptions**(iOS 16 才有) ⇒ "
+        "intrinsic+invalidate 是它唯一的尺寸更新信号源。切掉它 UIKit 就聋了, "
+        "cell 三短路又因 v53/v62 循环依赖永不放开 ⇒ 实测 live=0/debt=0.0/"
+        "cached=true×44, 高度锁死旧值(798→903→1057→1205→1336→1518)。"
+        "外部依据: Mozilla Firefox iOS HostingTableViewCell、vbat.dev、"
+        "SO 77027194(试过 setNeedsLayout/layoutIfNeeded, 只有 invalidate 有效)"
+        "、Apple FB9641883。宽仍保持 noIntrinsicMetric(宽污染是另一回事, "
+        "由 v60 的 sane 推导链治)。★iOS15Compat.swift 由第二阶段 "
+        "ios15_port_v2.py 生成, 本阶段 edit 到它 —— 单跑本脚本会静默 SKIP。")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_intrinsic_size_v63_md,
+        "v63②: V63-INTSIZE SelectableMarkdownTextView.intrinsicContentSize "
+        "恢复高度上报(宽仍 noIntrinsicMetric)。★v60 把高度也关了, 而本项目"
+        "以 UITextView 为承载 —— UITextView 恰恰以 intrinsicContentSize "
+        "参与 Auto Layout。宽污染(100032)是 v60 的病, 但关高度是误伤: "
+        "iOS 15 上这是尺寸协商的唯一通道。判据 verify_intrinsic_gate_v63 六层。")
+    edit("Views/Chat/SelectableMarkdownView.swift", fix_uncouple_v63_md,
+        "v63③: V63-UNCYCLE 打破 v53/v62「两拍」循环依赖 —— settle 入口 guard "
+        "新增 _v63drift 实测差值直放行(不依赖 debt 熟)。★为什么必须: 实测 "
+        "debt 恒 0.0、live 恒 0, 计数永远停在 1 ⇒ 第二拍从未到来 ⇒ 真实测量"
+        "从未执行。判据 verify_uncouple_v63 + 反向 reverse_v63。")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")

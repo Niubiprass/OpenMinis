@@ -61,7 +61,13 @@ SABS = [
      "if debt <= 1 {\n            // sabotage: 不复位", "C2"),
     ("S5", "settle 入口改回 flag-only(首段被挡)", "T",
      # ★v62 适配: guard 形态扩为盈余感知
-     "guard deferredCorrectionPending || _stillOwing || _v62oversized else { return }",
+     # ★v63 适配: guard 再扩为「打破循环依赖」形态, 末尾多了 || _v63drift。
+     #   这不是简单改锚点 —— v63 加的是**第四条腿**(drift 兜底, 不依赖 debt
+     #   计数), 而 S5 的语义是"把放行条件砍回只剩 flag"。若照旧用 v62 锚点,
+     #   find() 落空 ⇒ 本条变空测(判据自己会报"锚点未命中")。
+     #   纪律第 10 条: 锚点失效必须自己报错, 不许静默跳过;
+     #   修的时候要问一句"新加的那条腿有没有被测到" ⇒ 见 S15/S16。
+     "guard deferredCorrectionPending || _stillOwing || _v62oversized || _v63drift else { return }",
      "guard deferredCorrectionPending else { return }", "FIRST"),
     ("S6", "首段欠账阈值放到 0(亚像素噪声也算欠账)", "T",
      "_debt > 1", "_debt > -1", "FIRST"),
