@@ -70,6 +70,17 @@
   「链接器有没有把它放进 App」。两者之间隔着编译器与链接器。
   这是**结构性缺口**, 不是某一步写错了 —— 所以它必须独立存在。
 
+【实跑验证记录(本版)】
+  三份历史 IPA 各自解包、对真实 `Payload/Minis.app/Minis` 跑本脚本:
+
+      v66 包 (run 37291520517): v65 ✅ / v68 两条 ❌  ⇒ rc=1
+           —— v66 那年还没写 v68, 报红是**正确的**, 说明判据分得清版本
+      v67b包 (run 37347279503): 同上
+      v68 包 (run 37357375487): 六条全 ✅            ⇒ rc=0
+
+  ★关键在于「v66 报 v68 红」这条: 它证明判据不是「永远放行」。
+    若三份都全绿, 反而要怀疑判据没有鉴别力。
+
 【怎么用】
     python3 verify_binary_guard_markers.py <Minis.app 目录>  或  <Mach-O 文件>
     python3 verify_binary_guard_markers.py --self-test
