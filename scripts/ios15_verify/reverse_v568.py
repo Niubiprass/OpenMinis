@@ -24,6 +24,8 @@
 import importlib.util
 import os
 import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from upstream_base import upstream_ios  # noqa: E402  唯一的上游解析入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FALLBACK = os.path.join(HERE, os.pardir, "ios15_fallback.py")
@@ -51,7 +53,7 @@ def load_fallback():
 # 基线: 干净上游 + v56.8 注入 = 应该判绿
 # ----------------------------------------------------------------------
 def build_baseline(g):
-    up = os.environ.get("OPENMINIS_UPSTREAM_IOS") or "/tmp/up-1.14/src/ios"
+    up = upstream_ios(quiet=True)
     t = open(os.path.join(up, "Views/Chat/AssistantBlockView.swift"),
              encoding="utf-8").read()
     return g["fix_capsule_shimmer_v568"](t)

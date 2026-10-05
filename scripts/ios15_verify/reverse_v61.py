@@ -14,6 +14,8 @@ import os
 import subprocess
 import sys
 import tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from upstream_base import upstream_ios  # noqa: E402  唯一的上游解析入口
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FB = os.path.join(ROOT, 'scripts', 'ios15_fallback.py')
@@ -43,7 +45,7 @@ FAST_BLOCK_END = '            return\n        }\n'
 
 def build_product():
     """完整移植链生成产物(优先), 否则 src/ios 现货。"""
-    up = os.environ.get('OPENMINIS_UPSTREAM_IOS', '')
+    up = upstream_ios(quiet=True)
     if up and os.path.isdir(up):
         with tempfile.TemporaryDirectory() as td:
             dst = os.path.join(td, 'src', 'ios')

@@ -42,10 +42,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from upstream_base import upstream_ios  # noqa: E402  唯一的上游解析入口
 
 ROOT = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else '.')
 WF_DIR = os.path.join(ROOT, '.github', 'workflows')
-UPSTREAM = os.environ.get('OPENMINIS_UPSTREAM_IOS', '').strip()
+UPSTREAM = upstream_ios(quiet=True) or ''
 FALLBACK = 'scripts/ios15_fallback.py'
 
 # 需要 (fallback 路径, 干净上游) 两个参数的脚本 —— 从 workflow 里解析

@@ -29,6 +29,8 @@ import re
 import subprocess
 import sys
 import tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from upstream_base import upstream_ios  # noqa: E402  唯一的上游解析入口
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FB = os.path.join(ROOT, 'scripts', 'ios15_fallback.py')
@@ -55,7 +57,7 @@ _PROBE_W = 'textContainer' + r'\.size\.width\s*='
 # 产物获取：跑 fallback 从干净上游生成
 # ----------------------------------------------------------------------
 def build_product():
-    up = os.environ.get('OPENMINIS_UPSTREAM_IOS', '')
+    up = upstream_ios(quiet=True)
     if up and os.path.isdir(up):
         with tempfile.TemporaryDirectory() as td:
             dst = os.path.join(td, 'src', 'ios')

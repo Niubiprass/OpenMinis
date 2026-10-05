@@ -30,6 +30,8 @@ import os
 import subprocess
 import sys
 import tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from upstream_base import upstream_ios  # noqa: E402  唯一的上游解析入口
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FB = os.path.join(ROOT, 'scripts', 'ios15_fallback.py')
@@ -72,7 +74,7 @@ def build_product():
       port_v2/runtime_fixes 硬编码 cwd 相对路径 src/ios ⇒ 临时目录必须
       是 <td>/src/ios 且 cwd=<td>。
     """
-    up = os.environ.get('OPENMINIS_UPSTREAM_IOS', '')
+    up = upstream_ios(quiet=True)
     if up and os.path.isdir(up):
         with tempfile.TemporaryDirectory() as td:
             dst = os.path.join(td, 'src', 'ios')

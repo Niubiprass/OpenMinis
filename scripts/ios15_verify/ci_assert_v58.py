@@ -34,6 +34,8 @@ import os
 import re
 import subprocess
 import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from upstream_base import upstream_ios  # noqa: E402  唯一的上游解析入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MD_REL = "src/ios/Views/Chat/SelectableMarkdownView.swift"
@@ -333,7 +335,7 @@ def main():
         print("  scope 编译级            OK  (槽位对齐/节流阈值 ≥0.1s)")
 
     # ---- sab: 8 条 sabotage ----
-    up = os.environ.get("OPENMINIS_UPSTREAM_IOS", "")
+    up = upstream_ios(quiet=True)
     sb = os.path.join(HERE, "reverse_v58.py")
     if "--no-sab" in sys.argv:
         print("  sab 反向(8条)           SKIP(--no-sab)")

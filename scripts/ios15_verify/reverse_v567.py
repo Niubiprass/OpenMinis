@@ -17,10 +17,12 @@ import os
 import subprocess
 import sys
 import tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from upstream_base import upstream_ios  # noqa: E402  唯一的上游解析入口
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FB = os.path.join(ROOT, "scripts", "ios15_fallback.py")
-UP = os.environ.get("OPENMINIS_UPSTREAM_IOS") or os.path.join(ROOT, ".upstream-ios")
+UP = upstream_ios(quiet=True)
 
 SHEET = "Views/Chat/ToolLiveSheet.swift"
 CHAT = "Views/Chat/AIChatView.swift"
@@ -160,8 +162,9 @@ CASES = [
 
 
 def main():
-    if not os.path.isdir(UP):
-        print("!! 找不到干净上游基线: %s" % UP)
+    if not UP:
+        print("!! 找不到干净上游基线(已探测$OPENMINIS_UPSTREAM_IOS 与 "
+              "仓库内 .upstream-ios)")
         print("   CI 里应由 workflow 另存 .upstream-ios; 本地可用 "
               "OPENMINIS_UPSTREAM_IOS 指定")
         return 1

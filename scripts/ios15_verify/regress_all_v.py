@@ -39,6 +39,8 @@ v48 的写入白名单。
 import os
 import subprocess
 import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from upstream_base import upstream_ios  # noqa: E402  唯一的上游解析入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -54,7 +56,7 @@ GUARD_REL = "src/ios/Shared/NSTextContainerSetSizeGuard.m"
 # 干净上游的 src/ios 路径(幂等门的基线)。CI 里拿不到 —— 那里 fallback
 # 已经跑过, 产物是移植过的, 自己拷自己当基线等于永远绿。
 # 所以本地必须显式指一份没被移植过的上游, 拿不到就 SKIP。
-UPSTREAM_IOS = os.environ.get("OPENMINIS_UPSTREAM_IOS", "")
+UPSTREAM_IOS = upstream_ios(quiet=True) or ""
 
 # (显示名, 脚本名, 传参约定, 额外需要的产物文件)
 CHECKS = [

@@ -40,6 +40,8 @@
 import os
 import subprocess
 import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from upstream_base import upstream_ios  # noqa: E402  唯一的上游解析入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MD_REL = "src/ios/Views/Chat/SelectableMarkdownView.swift"
@@ -433,7 +435,7 @@ def main():
                 print("        · %s" % l[:100])
 
     # ---- sab ----
-    up = os.environ.get("OPENMINIS_UPSTREAM_IOS", "")
+    up = upstream_ios(quiet=True)
     sb = os.path.join(HERE, "reverse_v565.py")
     if "--no-sab" in sys.argv:
         print("  sab 反向(9条)              SKIP(--no-sab)")
