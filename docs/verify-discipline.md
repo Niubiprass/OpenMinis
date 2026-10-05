@@ -568,3 +568,42 @@ if (_bv) _w = (CGFloat)[_bv CGSizeValue].width;
 
 ★ 顺手扫了全文件的 category 依赖：除这行外，`origin/size/minX/midX/...`
 **一处都没有**（真代码只用 `CGSize` 的真 struct 成员），所以这是**唯一**一处。
+
+## §24 「替系统干活」的补丁越堆越厚 —— 先问"这机制在目标系统上存在吗"（CI#163 后）
+
+v13–v65 修了六代。v65 收敛时回头看，发现**所有版本都在最底层
+（`NSTextContainer.setSize:`）加判据**，而病根在上游：
+
+> `UITableView.selfSizingInvalidation`（cell 内容变化**自动** resize + 多次失效
+> **自动合并**成一次最优更新）是 **iOS 16.0+** 才有的 API。
+> **iOS 15.5 上不存在。**
+
+⇒ App 在 iOS 16 上开发/测试时高度是对的（系统帮它 resize、帮它合并），
+换到 15.5 就抖 —— **不是 bug，是缺失的系统机制**。
+而 `setSize:` 层的尺寸钳制**补不了这个缺**：缺的是"自动失效"和"合并更新"两个概念，
+不是"尺寸太大"。⇒ 补丁越厚，离根越远。
+
+### 纪律
+
+**在给某个 OS 版本打补丁前，先确认那个版本"原生具备"该机制。**
+查官方文档的**平台标注**（`iOS 16.0+` 这种），而不是"新系统里有这功能"的印象。
+判据：若目标系统缺少该机制 ⇒ 补丁是在**替系统实现**，必须评估"能不能在正确的层做"
+（cell 层 vs 文本层），而不是继续在当前层加第 N 条。
+
+### 同族：注入层禁用会触发不可逆降级的 API
+
+TextKit 的坑：iOS 16+ 上访问 `UITextView.layoutManager` 会让一个正在用 TextKit 2 的
+text view **永久降级**到 TextKit 1，Apple 头文件注释写明
+*"After this happens, .textLayoutManager will return nil — and any TextKit 2 objects you
+may have cached will cease functioning"*，且**不可逆**。
+
+⇒ 当前注入层已验证 TK1 API **零使用**，把它**固化成判据**，
+防止将来有人顺手加一行 `layoutManager.invalidateLayout(...)`（一个看起来完全无害的调用）。
+**"看起来无害"正是它危险的原因。**
+
+### 附：官方文档优先于论坛用户答案
+
+调研中遇到一条论坛回答称 "Since iOS 15, UITextView is backed by TextKit 2 by default"，
+与 WWDC22 原文矛盾。**不采信**，因为官方 API 平台标注是 `iOS 16.0+`
+（iOS 15 上连显式选 TK2 的构造器 `UITextView(usingTextLayoutManager:)` 都不存在）。
+⇒ 冲突时以**官方文档的平台标注**为准；论坛答案记进文档时**必须标注冲突与不采信的理由**。

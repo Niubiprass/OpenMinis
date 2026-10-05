@@ -56,7 +56,9 @@ def s2_put_back_return(t):
       return 混在一起, 判据无法区分二者 —— 那不是判据该管的射程。
       插在块内语义完全等价(TextKit 同样收不到修正值), 且无歧义。
     """
-    old = "            newSize.height = fabs(newSize.height);"
+    # [v66] 锚点跟着源码改: 旧写法 `newSize.height = fabs(...)` 已被
+    # 「fabs + 下界钳制」取代(v65 装机证明旧写法对 height==0 是空操作)。
+    old = "            CGFloat _ah = fabs(newSize.height);"
     if old not in t:
         raise AssertionError("锚点2: fabs 修正语句没找到")
     new = ("            newSize.height = fabs(newSize.height);\n"
@@ -84,10 +86,14 @@ def s3_storm_no_gate(t):
 
 def s4_drop_fabs(t):
     """去掉负高取绝对值 —— 负高原样喂回 TextKit。"""
-    old = "            newSize.height = fabs(newSize.height);"
+    # [v66] 锚点跟着源码改: 旧写法 `newSize.height = fabs(...)` 已被
+    # 「fabs + 下界钳制」取代(v65 装机证明旧写法对 height==0 是空操作)。
+    old = "            CGFloat _ah = fabs(newSize.height);"
     if old not in t:
         raise AssertionError("锚点4: fabs 没找到")
-    return t.replace(old, "            newSize.height = newSize.height;")
+    # ★保留钳制行: 只抽掉 fabs 这一行, 于是精确测「负高不再取绝对值」
+    #   这件事(第②层), 而不会先撞上第⑦层的「钳制缺失」。
+    return t.replace(old, "            CGFloat _ah = newSize.height;")
 
 
 def s5_gate_after_commit(t):
@@ -191,6 +197,52 @@ def s11_category_member(t):
     return t.replace(old, bad)
 
 
+def s12_fabs_noop(t):
+    """★★还原 v65 装机日志实测的**空操作**（本轮真实缺陷）。
+
+    8.log (17:20:41-55, iOS 15.5 / iPhone13,2) 82507 条:
+        size=0.0x0.0 -> 326.0x0.0     ← 前后高度**完全相同**
+    ⇒ 实际进入修正分支 2644129 次, 全部 height==0
+    ⇒ 根因: 写的是 `newSize.height = fabs(newSize.height)`, 而 fabs(0.0)==0.0
+    ⇒ 单容器 14 秒 264 万次: 内存 151.8→624.2MB(+470MB) ⇒ SIGKILL,
+      同期主线程 6281ms 卡顿 ⇒ 抖动。抖/卡/崩**同一个根因**。
+
+    ★为什么旧判据 6 层全放过了它: `fabs` 那个写法**语法完全合法**,
+      看代码"像不像修好了"的检查一律放行 ⇒ 本项目第七次
+      「验证手段骗了自己」的第 7 号形态（判据全绿、编译全绿、药不治病）。
+    ⇒ 第 ⑦ 层直接断言"不得把 fabs 结果直接赋回"+"必须有下界钳制"。
+
+    ★只改这一处(保留 fabs 调用本身, 免得先撞上第②层的 fabs 检查),
+      于是只有第⑦层会红 —— 拦下 ≠ 测到(同 §21/§22.4)。
+    """
+    old = ("            CGFloat _ah = fabs(newSize.height);\n"
+           "            if (!(_ah > 1.0)) { _ah = 1.0; }      // 0 / -0 / 亚 1pt 一律抬到 1")
+    if old not in t:
+        raise AssertionError("锚点12: fabs+钳制那两行没找到")
+    bad = "            newSize.height = fabs(newSize.height);"
+    return t.replace(old, bad)
+
+
+def s13_drop_hardstop(t):
+    """★去掉跨 tick 硬闸门 ⇒ 264 万次风暴复现。
+
+    装机实测: 单容器 0x2802b8820 在 14 秒内被喂 2644129 次 0x0。
+    per-tick 的 storm-breaker 每换 tick 清零, 而上游 0x0 **每个 tick 都在喂**
+    ⇒ 计数永远到不了 40 ⇒ 永不熔断 ⇒ 每次都走 KVC 取值+装箱+转发
+    ⇒ 14 秒 +470MB ⇒ 内存压力 ⇒ SIGKILL(闪退); 同期 6281ms 卡顿(抖动)。
+
+    ⇒ 必须有**跨 tick 累加**的 nonPositiveStreak + kNonPositiveHardLimit。
+      本用例把它退回 per-tick(跟着 commitCount 一起清零), 模拟"没做这层"。
+    """
+    old = "    if (_newTick) { s->commitCount = 0; s->stormed = NO; }"
+    if old not in t:
+        raise AssertionError("锚点13: per-tick 清零那行没找到")
+    bad = ("    if (_newTick) { s->commitCount = 0; s->stormed = NO; }\n"
+           "    // [S13] 模拟「没做跨 tick 累加」的错误实现\n"
+           "    if (_newTick) { s->nonPositiveStreak = 0; }")
+    return t.replace(old, bad)
+
+
 SABS = [
     ("S1", "恢复合并式丢弃(NaN/inf/负一个if全丢)", s1_restore_merged_reject),
     ("S2", "修正分支末尾加 return(改回丢弃)", s2_put_back_return),
@@ -204,6 +256,10 @@ SABS = [
     ("S10", "引用不存在的 kV65SentinelFloor(编译红)", s10_missing_identifier),
     ("S11", "用 CGRect category 成员 bounds.width(CI#162 原样编译红)",
      s11_category_member),
+    ("S12", "高度修正退回 fabs(对 0 是空操作,装机 264万次风暴)",
+     s12_fabs_noop),
+    ("S13", "跨 tick 累加退回 per-tick(风暴永不熔断)",
+     s13_drop_hardstop),
 ]
 
 

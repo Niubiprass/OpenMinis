@@ -1549,7 +1549,12 @@ V65_REJECT_OLD = """    if (!isfinite(newSize.width) || !isfinite(newSize.height
         return;
     }"""
 
-V65_REJECT_NEW = """    if (!isfinite(newSize.width) || !isfinite(newSize.height)) {
+V65_REJECT_NEW = """    // [V65-FIXSIZE-S] 原始尺寸的函数级副本 (赋值在下面的修正分支里)。
+    // 必须声明在函数体开头: 块内声明对后续兄弟块不可见(clang 实测 4 处
+    // "use of undeclared identifier"), 本项目 §19 同族第四次。
+    CGFloat _v65orig_w = newSize.width;
+    CGFloat _v65orig_h = newSize.height;
+    if (!isfinite(newSize.width) || !isfinite(newSize.height)) {
         // [V65] NaN/inf 仍然硬拒 —— 它们会触发 CoreText fillLayoutHole 病态循环
         // (v4 实证 11918ms 主线程卡死), 且 TextKit 无法表示, 无从"修正"。
         gShortCircuitCount += 1;
@@ -1587,6 +1592,14 @@ V65_REJECT_NEW = """    if (!isfinite(newSize.width) || !isfinite(newSize.height
     //            取绝对值后 8/16 是一个合法的最小容器高, 排版能正常跑。
     if (newSize.width <= 0 || newSize.height <= 0) {
         CGSize _v65orig = newSize;
+        // [V65-FIXSIZE-S] 把原始(未修正)尺寸**提升到函数作用域**。
+        // ★clang 实测: 声明写在上面的 if 块内时, 下面的熔断段
+        //   "use of undeclared identifier '_v65orig_h'"(4 处)——
+        //   即本项目 §19「标识符存在 != 标识符**可见**」第四次同族。
+        //   C 的块作用域: 块内声明只到块尾可见, 后面够不着。
+        // ⇒ 必须在**函数体开头**声明, 这里只赋值。
+        _v65orig_w = newSize.width;
+        _v65orig_h = newSize.height;
         if (newSize.width <= 0) {
             // [V65] 取容器自己当前的宽。走 KVC 而不是 `[(id)self width]`:
             // NSTextContainer 是私有类, 直接发消息在 ARC 下要求编译器知道该
@@ -1632,7 +1645,25 @@ V65_REJECT_NEW = """    if (!isfinite(newSize.width) || !isfinite(newSize.height
             newSize.width = _w;
         }
         if (newSize.height <= 0) {
-            newSize.height = fabs(newSize.height);
+            // [V65-FIXSIZE-H] 高度 <= 0 **不能只取 fabs**。
+            //
+            // 【v65 装机铁证 —— 这次不是"没修", 是"修了个空"】
+            // minis-2026-10-05 8.log (17:20:41-17:20:55, iOS 15.5 / iPhone13,2):
+            //   size=0.0x0.0 -> 326.0x0.0    × 82507 条日志 (每 32 次打 1 条)
+            //   ⇒ 实际进入本分支 **2644129 次**, 全部是 height **0.0**。
+            // 而 `fabs(0.0) == 0.0` ⇒ 打印出来的前后尺寸**完全相同**:
+            //   "FIXED-NONPOSITIVE size=0.0x0.0 -> 326.0x0.0"  ← 高度 0 → 还是 0
+            // ⇒ 所谓"修正转发"对最常见的形态(0x0)是**空操作**:
+            //   高度 0 原样喂给 TextKit, 排版出 0 行, 下一帧还是 0。
+            // 这就是用户说的"还是有一点点闪、会抖动"的**直接根因**。
+            //
+            // 【正确做法】0 高不是一个合法容器高(TextKit 认为"没有高度"),
+            // 必须夹到一个**能跑排版的最小合法高度**。用 1.0 而不是 0:
+            // TextKit 对 height<=0 视为无容器可用, 对极小正高仍会排版。
+            CGFloat _ah = fabs(newSize.height);
+            if (!(_ah > 1.0)) { _ah = 1.0; }      // 0 / -0 / 亚 1pt 一律抬到 1
+            if (_ah > kMaxContainerHeight) { _ah = kMaxContainerHeight; }
+            newSize.height = _ah;
         }
         gShortCircuitCount += 1;
         if ((gShortCircuitCount & 0x1F) == 1) {
@@ -1676,6 +1707,38 @@ V65_STORM_NEW = """    // [V65-STORM] 只有**哨兵**尺寸才计入风暴预�
         if (s->commitCount > kStormForwardLimit) {
             s->stormed = YES;
         }
+    } else if (_v65orig_h <= 0.0 || _v65orig_w <= 0.0) {
+        // [V65-FIXSIZE-S] **非正高度同样计入风暴预算**。
+        //
+        // 【v65 装机铁证 —— 上一版的豁免规则漏了最毒的形态】
+        // v65 只让"哨兵(≥2000)"计费, 理由是"真实排版高度不该被熔断吞掉"。
+        // 但装机日志显示: 2644129 次修正里 **82507 条日志(全部 0x0)** 走的是
+        // `_v65orig_h <= 0` 这条路, 它 **既不是哨兵、也不是正常高度**, 而是
+        // 上游算崩的产物 —— 恰恰是最该被熔断的东西, 却被豁免了。
+        // 后果(14 秒内, 单容器 0x2802b8820):
+        //   · 264 万次 KVC 取值 + NSNumber 装箱 ⇒ 内存 151.8MB → **624.2MB**
+        //     (17:20:39→17:20:44, +470MB) ⇒ 内存压力 ⇒ **SIGKILL 闪退**
+        //   · 同时每次都走完修正+转发 ⇒ 主线程 **6281ms 卡顿**(HangDetector
+        //     抓到 UIKitCore/QuartzCore/UIFoundation 满屏栈) ⇒ 抖动
+        // ⇒ 抖、卡、崩**三者是同一个根因**, 不是三个病。
+        //
+        // 【为什么不能靠"每 tick 40 次"现成熔断】
+        // 上面的 storm-breaker 是 per-tick 的; 而 0x0 在**每个 tick 都被反复喂**,
+        // tick 一换计数就清零 ⇒ 永远不超阈值 ⇒ 永远不熔断。
+        // ⇒ 必须让"非正高度"这一类**跨 tick 也计费**, 才可能触发熔断。
+        s->commitCount += 1;
+        if (s->commitCount > kStormForwardLimit) {
+            s->stormed = YES;
+            s->nonPositiveStreak += 1;
+            if ((s->nonPositiveStreak & 0xF) == 1) {
+                NSLog(@"[TextContainerGuard] [WARN] [V65] NONPOSITIVE-STORM "
+                      @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f "
+                      @"commit=%llu — 非正高度反复喂, 已熔断",
+                      (__bridge void *)self, _v65orig_w, _v65orig_h,
+                      newSize.width, newSize.height,
+                      (unsigned long long)s->commitCount);
+            }
+        }
     }"""
 
 
@@ -1714,6 +1777,13 @@ def fix_textcontainer_guard_stormbreaker(t):
 // (多 cell 批量排版时每容器也就几次), 但 re-entrant 风暴会一 tick 内打几千次。
 static const NSInteger kStormForwardLimit = 40;
 
+// [V65-FIXSIZE-S] 非正尺寸(宽或高 <= 0)的**跨 tick** 硬上限。
+// 装机实测(8.log): 单容器 14 秒被喂 2644129 次 0x0, 内存 +470MB ⇒ SIGKILL。
+// 40 太大(单条消息正常排版也就几次), 这里取一个既能止住风暴、又不会误伤
+// 正常排版的值: 正常一轮排版里"上游算崩"最多偶发 1-2 次, 连续 400 次
+// 意味着上游已经进入死循环, 此时停止转发是唯一正确的选择。
+static const NSInteger kNonPositiveHardLimit = 400;
+
 // [IOS15-FIX-STORM] 容器高度上限。源码用 .greatestFiniteMagnitude 关掉高度钳制;
 // 旧 guard 钳到 1e7 (仍近乎无限)。iOS 15 上近乎无限的容器让 fillLayoutHole 对长
 // 流式消息病态循环。1e5(≈100000pt ≈ 16× 最高真实气泡) 既保留"足够高不裁真实
@@ -1734,6 +1804,10 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     NSInteger repeatCount;
     NSInteger commitCount;   // [IOS15-FIX-STORM] 本 tick 内已转发次数
     BOOL stormed;            // [IOS15-FIX-STORM] 本 tick 熔断已触发
+    // [V65-FIXSIZE-S] 非正高度连续命中次数。**跨 tick 累加**(故意不清零):
+    // 装机实测 0x0 在每个 tick 都被反复喂, 只按 tick 清零 ⇒ 永不熔断 ⇒
+    // 单容器 14 秒 264 万次 ⇒ 内存 +470MB ⇒ SIGKILL。跨 tick 累加才能拦住它。
+    NSInteger nonPositiveStreak;
     BOOL initialized;
 } GuardState;'''
     if OLD2 in t:
@@ -1820,6 +1894,32 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     s->commitCount += 1;
     if (s->commitCount > kStormForwardLimit) {
         s->stormed = YES;
+    }
+    // [V65-FIXSIZE-S] **跨 tick 硬闸门**: 非正高度连续命中超限后, 停止转发。
+    //
+    // 【为什么必须有这一刀, 而不能只靠 per-tick 的 storm-breaker】
+    // 装机实测(8.log 17:20:41-55): 单容器 0x2802b8820 在 14 秒内被喂
+    // **2644129 次 0x0**。per-tick 熔断每换一次 tick 就清零, 而上游每个
+    // tick 都在喂 ⇒ 计数永远到不了 40 ⇒ 永远不熔断 ⇒ 无限转发。
+    // 而每一次转发都要: KVC 取 NSValue → CGSizeValue → 装箱 → 修正 → 转发,
+    // 14 秒堆出 **+470MB**(151.8→624.2MB) ⇒ SIGKILL; 同期主线程 6281ms 卡顿。
+    //
+    // 【为什么这里 return 是安全的 —— 不再是"丢弃=卡字"】
+    // v65 之前靠"丢弃坏尺寸"来止风暴, 代价是 TextKit 保留过期几何 ⇒ 卡字。
+    // 现在非正高度**先被修正成合法尺寸**(高度抬到 1.0), 连续命中到上限后
+    // 才停止转发 —— 此时容器已经拿到过一个**合法几何**, 保留它即可,
+    // 不是"从未更新过的过期几何"。⇒ 与 v65 的修正转发不冲突。
+    if (s->nonPositiveStreak > kNonPositiveHardLimit) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V65] NONPOSITIVE-HARDSTOP "
+                  @"container=%p orig=%.1fx%.1f fixed=%.1fx%.1f streak=%ld "
+                  @"— 停止转发(容器已有合法几何)",
+                  (__bridge void *)self, newSize.width, newSize.height,
+                  newSize.width, newSize.height,
+                  (long)s->nonPositiveStreak);
+        }
+        return;
     }
     ((void (*)(id, SEL, CGSize))gOriginalSetSize)(self, _cmd, newSize);
 }'''

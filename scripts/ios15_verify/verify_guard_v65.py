@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""verify_guard_fixsize_v65 —— v65 守卫判据（六层）。
+"""verify_guard_fixsize_v65 —— v65/v66 守卫判据（七层）。
 
 【为什么要有这一层】v65 是本项目第五次「判据全绿但药不治病」之后的产物，
 历史教训(run#156/157/159 + v64初版)已经证明：查「标记在不在」的判据
@@ -85,12 +85,18 @@ def verify_guard_fixsize_v65(src):
             "  两个分量必须在同一个 `if (width<=0 || height<=0)` 内 —— "
             "拆开会出现「只进一个分支、另一半没修」的空档。" % _ifhead.strip())
 
-    if "fabs(newSize.height)" not in body:
+    # [v66] 负高修正: 不再要求"直接赋 fabs" —— 那个写法对 height==0 是
+    # **空操作**(fabs(0.0)==0.0), 装机日志 size=0.0x0.0 -> 326.0x0.0 实锤。
+    # 现在要求的是"对 fabs 结果做**下界钳制**", 由第 ⑦ 层进一步断言。
+    # 本层只管"负高确实被取过绝对值"(装机 0.0x-8.0 / 0.0x-16.0 那批)。
+    if not re.search(r"fabs\s*\(\s*newSize\.height\s*\)", body):
         raise RuntimeError(
             "② 负高修正缺失: 必须在修正分支里对 height 取 fabs。\n"
             "  装机 61 次里 43 次是 -8.0、18 次是 -16.0 —— 正好是 "
             "textContainerInset 的量级(上游把 inset 减了两遍)。"
-            "不取绝对值则负高原样喂回 TextKit。")
+            "不取绝对值则负高原样喂回 TextKit。\n"
+            "  ★v66 起不再要求写成 `newSize.height = fabs(...)` —— 那个写法\n"
+            "    对 height==0 是空操作, 改为 fabs + 下界钳制(见第 ⑦ 层)。")
 
     # ★关键: **从修正块起点**到原始 IMP 调用之间不得有 return ——
     #   一旦 return 就退回「丢弃」语义, 而丢弃正是卡字的直接原因。
@@ -121,10 +127,12 @@ def verify_guard_fixsize_v65(src):
             % _tail_wo_finally[max(0, _first - 60):_first + 40].replace("\n", " "))
 
     # 修正后必须仍能到达原始 IMP 调用 —— 用位置关系证明数据流通
-    g = body.rfind("newSize.height = fabs")
+    # [v66] 锚点从 `newSize.height = fabs` 改成 fabs 调用本身: 新写法是
+    # `CGFloat _ah = fabs(newSize.height);` + 下界钳制, 旧的锚点已不存在。
+    g = body.rfind("fabs")
     call = code.rfind("gOriginalSetSize)(self, _cmd, newSize)")
     if g < 0:
-        raise RuntimeError("② 找不到负高修正语句 `newSize.height = fabs(...)`。")
+        raise RuntimeError("② 找不到负高修正语句(fabs 调用)。")
     if call < g:
         raise RuntimeError(
             "② 数据流断裂: 原始 setSize: 调用出现在修正语句**之前** —— "
@@ -210,6 +218,52 @@ def verify_guard_fixsize_v65(src):
             "  ⇒ 改走 KVC: [[obj valueForKey:@\"bounds\"] CGSizeValue].width\n"
             "  ★注意 CGSize 的 width/height 是**真** struct 成员, 那个可以用。"
             % (cg.group(1), cg.group(2), cg.group(2)))
+    # ---------- 第 ⑦ 层: 修正必须**真的**修正（防空操作）----------
+    # ★★★ 这层是 v65 装机日志(8.log)直接指出的缺陷的防线。
+    #   实测: size=0.0x0.0 -> 326.0x0.0  × 82507 条日志
+    #        ⇒ 实际进入修正分支 2644129 次, 全部是 height **0.0**
+    #   根因: 修正写的是 `newSize.height = fabs(newSize.height)`,
+    #         而 **fabs(0.0) == 0.0** ⇒ 打印出的前后尺寸完全相同
+    #         ⇒ 所谓"修正转发"对最常见的 0x0 形态是**空操作**。
+    #   ⇒ 单容器 14 秒 264 万次: 内存 151.8→624.2MB(+470MB) ⇒ SIGKILL;
+    #     同期主线程 6281ms 卡顿 ⇒ 抖动。抖/卡/崩**同一个根因**。
+    #
+    # 【为什么源码正则抓不到, 必须显式断言】
+    # `fabs` 这个写法**语法完全合法**, 任何"看代码像不像修好了"的检查都会
+    # 放行 —— 本项目前六代判据就是这么漏掉的。必须直接断言:
+    #   高度分支里**不允许**出现把 fabs 结果直接赋回去的写法,
+    #   且**必须**有一个把结果抬到 >0 的下界钳制。
+    m = re.search(r"newSize\.height\s*=\s*fabs\s*\(\s*newSize\.height\s*\)", code)
+    if m:
+        raise RuntimeError(
+            "⑦ 高度修正写成了 `newSize.height = fabs(newSize.height)` ——\n"
+            "  **对 height==0 是空操作**(fabs(0.0)==0.0), 装机日志实测:\n"
+            "      size=0.0x0.0 -> 326.0x0.0  (前后尺寸完全相同)\n"
+            "    82507 条日志 / 实际 2644129 次 / 单容器 14 秒\n"
+            "    ⇒ 内存 +470MB ⇒ SIGKILL; 同期主线程 6281ms 卡顿 ⇒ 抖动\n"
+            "  ⇒ 抖、卡、闪退是**同一个根因**, 不是三个病。\n"
+            "  必须把 0/-0/亚 1pt 抬到一个**正的**合法高度(如 1.0)。\n"
+            "  ★本项目第七次「验证手段骗了自己」的前车之鉴:\n"
+            "    这段代码**语法合法、编译通过、判据全绿**, 唯独装机不治病。")
+    if not re.search(r"!\s*\(\s*_\w+\s*>\s*1\.0\s*\)", code):
+        raise RuntimeError(
+            "⑦ 高度修正缺少**下界钳制** —— 非正高度被修正后仍可能是 0。\n"
+            "  装机日志: size=0.0x0.0 -> 326.0x0.0 (高度 0 → 还是 0)。\n"
+            "  必须有一个形如 `if (!(_ah > 1.0)) { _ah = 1.0; }` 的钳制,\n"
+            "  把 0 / -0 / 亚 1pt 抬到正的合法高度。")
+    # 跨 tick 硬闸门: 止住 264 万次的那种机制必须存在且不被清零。
+    if "kNonPositiveHardLimit" not in code:
+        raise RuntimeError(
+            "⑦ 缺少 `kNonPositiveHardLimit` 跨 tick 硬闸门。\n"
+            "  per-tick 的 storm-breaker 每换 tick 就清零, 而上游 0x0 是\n"
+            "  **每个 tick 都在喂** ⇒ 计数永远到不了 40 ⇒ 永远不熔断\n"
+            "  ⇒ 实测单容器 14 秒 2644129 次 ⇒ +470MB ⇒ SIGKILL。\n"
+            "  ⇒ 必须在 GuardState 里有**跨 tick 累加**的 nonPositiveStreak。")
+    if re.search(r"nonPositiveStreak\s*=\s*0", code):
+        raise RuntimeError(
+            "⑦ `nonPositiveStreak` 被清零了 —— 它必须**跨 tick 累加**。\n"
+            "  它存在的唯一意义是止住「每 tick 都喂 0x0」这种形态;\n"
+            "  一旦按 tick 清零, 就退回 per-tick 熔断的老行为 ⇒ 永不熔断。")
     return True
 
 
@@ -316,7 +370,7 @@ if __name__ == "__main__":
         "src/ios/Shared/NSTextContainerSetSizeGuard.m"
     try:
         verify_guard_fixsize_v65(open(p, encoding="utf-8").read())
-        print("✅ v65 守卫判据: 6 层全过")
+        print("✅ v65/v66 守卫判据: 7 层全过")
     except Exception as e:
         print("❌ %s" % e)
         sys.exit(1)

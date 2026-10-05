@@ -581,7 +581,7 @@ jobs:
             exit 1
           fi
           if python3 "$SCRIPT_DIR/ios15_verify/verify_guard_v65.py" "$GUARD_V65" ; then
-            echo "✅ v65 判据就位 (拆分丢弃/修正转发/无 return/哨兵门槛包住自增/常量一致/标识符存在/禁 CGRect category, 共 6 层)"
+            echo "✅ v65/v66 判据就位 (拆分丢弃/修正转发/无 return/哨兵门槛包住自增/常量一致/标识符存在/禁 CGRect category/防空操作+跨tick闸门, 共 7 层)"
           else
             echo "::error::v65 守卫判据异常 —— 上面列出的那一层没过, 按提示对症"
             echo "   —— 若报「未找到 NaN/inf 硬拒分支」: NaN/inf 会进 TextKit ⇒ CoreText fillLayoutHole 病态循环(v4 实证 12s 卡死)"
@@ -592,11 +592,12 @@ jobs:
             echo "   —— 若报「常量不一致」: 哨兵被压到 ceil 而门槛按别的值判, 两条改动互相抵消"
             echo "   —— 若报「引用了 kProbeHeightCeiling」: 它是函数内局部 const, 作用域外 ⇒ 编译红"
             echo "   —— 若报「用到了 CGRect 的 category 成员」: CI#162 那类编译红, CGRect.width 是 category 不是字段 ⇒ 改走 KVC"
+            echo "   —— 若报「高度修正写成了 fabs」或「nonPositiveStreak 被清零」: v65 装机的真实缺陷 ⇒ fabs(0.0)==0.0 是空操作, 且 per-tick 熔断拦不住每 tick 都喂的 0x0"
             exit 1
           fi
           echo "---"
           if python3 "$SCRIPT_DIR/ios15_verify/reverse_guard_v65.py" . ; then
-            echo "✅ v65 反向 11 条全拦 (含 S2 块内return / S5 顺序 / S9 作用域 / S10 标识符不存在 / S11 CGRect category)"
+            echo "✅ v65/v66 反向 13 条全拦 (含 S2 块内return / S5 顺序 / S9 作用域 / S10 标识符不存在 / S11 CGRect category / S12 fabs空操作 / S13 跨tick闸门)"
           else
             echo "::error::v65 反向未全拦 —— 判据存在盲区, 上面的绿灯不可信(见 verify-discipline §16/§17)"
             exit 1
