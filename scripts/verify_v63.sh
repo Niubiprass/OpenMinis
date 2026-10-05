@@ -76,7 +76,7 @@ check Views/Chat/SelectableMarkdownView.swift  "V63-UNCYCLE" "V63-UNCYCLE 打破
 [ "$MISS" -eq 0 ] || { echo "✗ v63 未完整注入"; exit 1; }
 
 echo
-echo "════ 5. v63 判据链(CI 入口 core+probe, 内含 reverse_v63 的 14 条 sab) ════"
+echo "════ 5. v63 判据链(CI 入口 core+probe, 内含 reverse_v63 的 17 条 sab) ════"
 python3 "$REPO/scripts/ios15_verify/ci_assert_v63.py" "$WORK" 2>&1 | sed 's/^/  /' || exit 1
 echo "════ 5b. 内置判据直调(verify_*_v63, 不经 CI 包装) ════"
 cd "$REPO" && python3 - <<'PYEOF' || exit 1
@@ -93,8 +93,11 @@ W = "/tmp/v63verify/src/ios/"
 compat = open(W + "iOS15Compat.swift", encoding="utf-8").read()
 md = open(W + "Views/Chat/SelectableMarkdownView.swift", encoding="utf-8").read()
 ok = True
+# ★第三条 verify_swift_static_v63 是 run#157 的直接产物(语法级判据):
+#   v63 首版把 static 计数器放进泛型类型, 前两条判据全绿而编译 exit 65。
 for name, fn, args in (("verify_intrinsic_gate_v63", fb.verify_intrinsic_gate_v63, (compat, md)),
-                       ("verify_uncouple_v63",      fb.verify_uncouple_v63,      (md,))):
+                       ("verify_uncouple_v63",      fb.verify_uncouple_v63,      (md,)),
+                       ("verify_swift_static_v63",  fb.verify_swift_static_v63,  (compat,))):
     try:
         fn(*args); print("  ✅ %s" % name)
     except Exception as e:

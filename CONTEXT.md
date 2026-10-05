@@ -381,6 +381,141 @@ live=N                          ← N>0 才说明真实测量放行了（v62 装
 
 ---
 
+## 4.9 ★★★★ run#157 失败复盘 —— 判据体系的**第二个盲区**：文本在位 ≠ 能编译
+
+### 现象
+
+run#156 的失败（v61 判据红）已修，全链本地 33/0/0、远端快照也 33/0/0 判据全绿，
+结果 run#157 仍然失败 —— **但这次不是判据红，是编译红**：
+
+```
+iOS15Compat.swift:420:24: error: static stored properties not supported in generic types
+iOS15Compat.swift:421:24: error: static stored properties not supported in generic types
+iOS15Compat.swift:422:24: error: static stored properties not supported in generic types
+（全文仅此 3 个错误 ⇒ xcodebuild exit 65）
+```
+
+### 根因
+
+v63 探针的三个计数器被声明在**泛型类型**里：
+
+```swift
+private final class _HostingContentCellView<Content: View>: UIView, UIContentView {
+    private static var _v63FastHit: UInt = 0      // ← 硬错误
+    private static var _v63RebuildHit: UInt = 0   // ← 硬错误
+    private static var _v63ProbeLast: CFTimeInterval = 0  // ← 硬错误
+```
+
+Swift **禁止在泛型类型中声明静态存储属性**（泛型类型的 static 成员无法在
+类型擦除后保持唯一性）。这不是「警告」而是编译期硬拒。
+
+### ★ 为什么 66 条断言一条都没拦住 —— 这是判据体系的真实盲区
+
+v1~v63 的全部判据（含 v63 新增的几何基准）验证的都是**文本与接线**：
+标记在不在、锚点 count 对不对、guard 腿数够不够、sabotage 拦不拦得住。
+**没有任何一条验证「这段 Swift 语法合法」。**
+
+| 判据能证明的 | 判据不能证明的 |
+|---|---|
+| 改动注入到位了 | 改动**能编译** |
+| 接线没被摘掉 | 类型/语法层面合法 |
+| 规则没被写死 | 落地在合法的类型上下文里 |
+
+所以会出现这种局面：**66 条断言全绿 + 编译 exit 65**。
+这与 v60 的元教训（「v31~v59 从未被真机验证」）是同一个家族：
+**判据是代理指标，代理指标全绿不等于目标达成。**
+
+### 修法（两件事，缺一不可）
+
+**① 代码：静态计数器搬到非泛型宿主**
+
+```swift
+// [V63-PROBE] 装机可观测性计数器。★必须是**非泛型**类型
+private final class _V63Probe {
+    static var fastHit: UInt = 0
+    static var rebuildHit: UInt = 0
+    static var lastPrint: CFTimeInterval = 0
+    static func hitFast() { fastHit &+= 1; maybePrint() }
+    static func hitRebuild() { rebuildHit &+= 1; maybePrint() }
+    private static func maybePrint() { /* 0.5s 节流 + print */ }
+}
+```
+
+只搬代码是不够的 —— 下一个人还会往泛型格里塞 static。
+**② 判据：新增语法级判据 `verify_swift_static_v63`**
+
+- 用花括号配平扫出**所有**泛型类型，逐个检查体内有无 `static var/let`；
+- 报错带**字段名 + 行号**（run#157 的三个错误一网打尽）；
+- 反向自证：造一份与 run#157 **完全一样**的坏产物，确认判据会红；
+  同时确认正常产物（含非泛型类型里的 static）不误报；
+- 新增 3 条 sabotage 守着它：
+  - `S15` 把探针宿主改回泛型（**run#157 亲手犯过的错**）
+  - `S16` 直接把 static 偷渡进泛型 cell（换个写法照样编译失败）
+  - `S17` 摘掉非泛型宿主（计数器无处安放）
+
+### 元教训：判据体系的第三代盲区
+
+| 代 | 盲区 | 发现方式 | 补法 |
+|---|---|---|---|
+| 1 | 只验「标记在位」，锚点腐化看不见 | run#156 | 锚点双形态 + 空测独立计数 |
+| 2 | 只验**文本**，不验**语法** | **run#157** | `verify_swift_static_v63` |
+| 3 | 只验**产物**，不验**真机行为** | v60 起未解决 | 装机探针（v63 已带，待验） |
+
+第三代仍未解决 —— v63 装机后必须确认 `[V63-PROBE] fast=N` 且 `N>0`。
+
+### 附：读 CI 日志的通道（run#157 实测）
+
+PAT 没有 `actions:read` 时：
+- `GET /actions/runs/<id>/jobs` → **404**
+- `GET /commits/<sha>/check-runs` → **403**
+- `GET /actions/runs/<id>/logs`（zip，**不需要 actions:read**）→ **200** ✅
+- `GET /actions/runs/<id>/artifacts` → 200 ✅，但 artifact 需单独再下一层 zip
+
+★关键：xcodebuild 的输出被 `> build.log 2>&1` 重定向后**不在步骤日志里**，
+只有 `failed-build.log` artifact 里才有。步骤日志只能看到
+`Failed frontend command:` 和一堆 warning —— **拿不到 error 行**。
+所以编译类失败必须下 artifact。
+
+### 附 1：这条判据自己踩的两个坑（都靠四形态自证抓出来）
+
+写完 `verify_swift_static_v63` 后，用「同一份代码、四种形态」逐一验证：
+
+| 形态 | 期望 | 结果 |
+|---|---|---|
+| 合法产物（含 `static var defaultValue: T? { nil }`） | 通过 | ✅ |
+| run#157 原样（`private static var` 进泛型 cell） | 拦住 | ✅ |
+| S15 探针宿主改回泛型 | 拦住 | ✅ |
+| S17 摘掉计数器字段 | 拦住 | ✅ |
+
+**坑一 —— 误报：把 computed property 当成存储属性**
+
+产物里本来就有合法的一处（`IOS15GeometryValueKey`，协议要求）：
+
+```swift
+private struct IOS15GeometryValueKey<T: Equatable>: PreferenceKey {
+    static var defaultValue: T? { nil }     // ← computed, Swift 完全合法
+    static func reduce(...) { ... }
+}
+```
+
+初版正则只匹配 `static var` 开头 ⇒ 把它判成违规，而它**编译一直通过**。
+Swift 禁止的只是 `static stored properties`。
+
+> ⇒ 修法：存储属性必然带 `=` 初始化，computed 必然带 `{` 实现体。**按 `=` 判，零误报。**
+> 这就是纪律第 14 条「宁可漏报不可误报」的具体应用 —— 一条会误报的判据比没有判据更坏，
+> 因为它会训练人忽略红。
+
+**坑二 —— 漏过：只查「宿主在不在」，不查「计数器在不在」**
+
+第一版 S17 sabotage 故意「摘字段、留类名」，结果判据放过了。
+这与 run#156 的「锚点缺失被计入通过」是**同一个病根**：检查了容器，没检查内容。
+
+> ⇒ 修法：花括号配平取出 `_V63Probe` 的类型体，逐个确认
+> `static var fastHit / rebuildHit` 都在里面。
+> 一般规律：**判据要检查被保护对象的「实质」，而不是「存在性」。**
+
+---
+
 ## 5. 已知风险
 
 1. **令牌泄露**（已处理：仅只读查询，未落盘；但对话中明文出现，**用户需自行撤销**）
@@ -410,6 +545,51 @@ live=N                          ← N>0 才说明真实测量放行了（v62 装
   python3 scripts/ios15_verify/regress_all_v.py /tmp/vXXfull
   ```
 - 回归输出 `0 跳过` 才是真通过
+
+### 6.1 `git push` 不可达时的 Git Data API 流程（含两个必踩的坑）
+
+沙箱内 `github.com:443` 常连不上（135 s 超时），但 `api.github.com` 通。
+此时走 Git Data API，**必须是四步，不能跳步**：
+
+| 步 | 端点 | 关键点 |
+|---|---|---|
+| 1 | `POST /git/blobs` | **每个文件一次**，内容 base64。**不可跳过** ↓ |
+| 2 | `POST /git/trees` | `base_tree` = 远端当前 sha；`tree[]` 填步骤 1 返回的 sha |
+| 3 | `POST /git/commits` | `parents` = 远端当前 sha（单亲即快进） |
+| 4 | `PATCH /git/refs/heads/main` | `force: false`（只允许快进） |
+
+**坑 1 —— `422 Invalid tree info`（错误信息完全误导）**
+
+Git Data API 的 tree 只能引用**已存在于远端对象库**的 blob。
+本地 `git hash-object` 算出的 sha 在远端 `GET /git/blobs/<sha>` 一律 404，
+直接拿去建树就报 `422 Invalid tree info` —— 报错只说「tree info 无效」，
+**完全不提「blob 不存在」**。必须先把 8 个 blob 全部 `POST /git/blobs` 上传完。
+
+> 防御手段：上传时对每个文件重算 `sha1("blob %d\0" + content)` 与本地 sha 比对。
+> 本轮就靠这道校验抓到我手抄 sha 时多打一个字符（`fe9da837be21` vs `fe9da837be22`），
+> 否则会静默推上去一份坏文件。
+
+**坑 2 —— `git mv` 的重命名不会自动生效**
+
+`base_tree` 之上只写新路径 = **复制**，旧路径仍在远端。
+必须显式补一条 `{"path": 旧路径, "mode": "100644", "type": "blob", "sha": null}`（`sha: null` = 删除）。
+验证方式：`GET /contents/<旧路径>` 应 404，且提交里 GitHub 自己把该文件标成 `renamed` 而非 `added`。
+
+**推完必做：在远端快照上跑判据，而不是在本地工作区跑**
+
+```bash
+curl -sL -u "x-access-token:$PAT" -o om.tar.gz \
+  https://codeload.github.com/Niubiprass/OpenMinis/tar.gz/refs/heads/main
+tar xzf om.tar.gz && cd OpenMinis-main && bash scripts/verify_v63.sh
+```
+
+私有仓库的 `codeload` **必须带认证**（不带直接 404，不是 401）。
+本轮验证结论：远端快照 `verify_v63.sh` 退出码 0，33 通过 / 0 失败 / 0 跳过，
+幂等 704 文件逐字节相同 —— 这才能证明 CI 会绿。
+
+> 顺带记一个测量陷阱：`python3 x.py | tail -40; echo $?` 拿到的是 **`tail` 的退出码**，
+> 会把红判据显示成 `EXIT=0`。判据自身的退出码约定（0/1/3）是对的，
+> 是观测方式骗人。**量退出码必须重定向到文件再读**：`python3 x.py >log 2>&1; echo $?`。
 
 ---
 

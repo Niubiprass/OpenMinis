@@ -7517,6 +7517,14 @@ V63_APPLY_HEAD_NEW = """    private func apply(_ config: UIContentConfiguration)
 # 锚点④: 字段声明(探针计数器)
 V63_DECL_OLD = """    private var isMeasuring: Bool = false"""
 
+# ★★ run#157 编译失败教训(2026-10-05): 静态存储属性不能放在泛型类型里。
+# `_HostingContentCellView<Content: View>` 是泛型类型, Swift 编译器硬性拒绝
+# `private static var`(error: static stored properties not supported in
+# generic types), 三个计数器直接让 Release 编译 exit 65。
+#
+# ★为什么判据没拦住: v63 全链 33/0/0 全绿, 文本判据只验「标记在位」,
+# 没有任何一条验「Swift 语法合法」—— 判据体系存在一个真实盲区。
+# 所以修法不只是搬代码, 必须同时补一条**语法级**判据(见 verify_swift_static_v63)。
 V63_DECL_NEW = """    private var isMeasuring: Bool = false
     // [V63-CFG] apply 世代号(见 apply 入口) 与 host 身份戳。
     private var _ios15ApplyGen: UInt = 0
@@ -7524,17 +7532,33 @@ V63_DECL_NEW = """    private var isMeasuring: Bool = false
     // [V63-PROBE] 装机探针: 快速路径/重建路径各计一次, 每 0.5s 打一行。
     // ★为什么必须有: v53/v62 都没带探针, 于是「零输出」这个一眼可辨的
     // 信号被连续两版忽略 —— 判据全绿而代码从未在真机执行。
-    private static var _v63FastHit: UInt = 0
-    private static var _v63RebuildHit: UInt = 0
-    private static var _v63ProbeLast: CFTimeInterval = 0
+    // ★计数器在 _V63Probe(非泛型) 上, 不在本格里 —— 泛型类型禁 static 存储属性。
     private func _v63ProbeIncr() {
-        if _v63ConfigGen == _ios15ApplyGen { _HostingContentCellView._v63FastHit &+= 1 }
-        else { _HostingContentCellView._v63RebuildHit &+= 1 }
-        let now = CACurrentMediaTime()
-        guard now - _HostingContentCellView._v63ProbeLast > 0.5 else { return }
-        _HostingContentCellView._v63ProbeLast = now
-        print("[V63-PROBE] fast=\\(_HostingContentCellView._v63FastHit) rebuild=\\(_HostingContentCellView._v63RebuildHit)")
+        if _v63ConfigGen == _ios15ApplyGen { _V63Probe.hitFast() }
+        else { _V63Probe.hitRebuild() }
     }"""
+
+# [V63-PROBE] 非泛型探针宿主。★必须非泛型: 泛型类型里放 static 存储属性
+# 是 Swift 硬错误(run#157 实测, exit 65)。三个计数器 + 0.5s 节流都在这里。
+V63_PROBE_OLD = """private final class _HostingContentCellView<Content: View>: UIView, UIContentView {"""
+
+V63_PROBE_NEW = """// [V63-PROBE] 装机可观测性计数器。★必须是**非泛型**类型: Swift 禁止在
+// 泛型类型里声明静态存储属性, 放进去 Release 编译直接失败(run#157)。
+private final class _V63Probe {
+    static var fastHit: UInt = 0
+    static var rebuildHit: UInt = 0
+    static var lastPrint: CFTimeInterval = 0
+    static func hitFast() { fastHit &+= 1; maybePrint() }
+    static func hitRebuild() { rebuildHit &+= 1; maybePrint() }
+    private static func maybePrint() {
+        let now = CACurrentMediaTime()
+        guard now - lastPrint > 0.5 else { return }
+        lastPrint = now
+        print("[V63-PROBE] fast=\\(fastHit) rebuild=\\(rebuildHit)")
+    }
+}
+
+private final class _HostingContentCellView<Content: View>: UIView, UIContentView {"""
 
 # ---- A 锚点⑤: intrinsicContentSize 恢复高度上报 ----
 V63_INTSIZE_OLD = """    override var intrinsicContentSize: CGSize {
@@ -7583,6 +7607,8 @@ def fix_intrinsic_gate_v63_compat(t):
     """
     if "[V63-UPDATE]" in t:
         return t
+    # ⓪ 非泛型探针宿主(run#157: 泛型类型里放 static 存储属性编译必失败)
+    t = _v60_replace1(t, V63_PROBE_OLD, V63_PROBE_NEW, "v63 非泛型探针宿主")
     # ① 字段 + 探针
     t = _v60_replace1(t, V63_DECL_OLD, V63_DECL_NEW, "v63 探针/世代号字段")
     # ② apply 入口世代号自增
@@ -7613,8 +7639,11 @@ def verify_intrinsic_gate_v63(compat, md):
     """
     F = "verify_intrinsic_gate_v63"
     # ① 探针与世代号字段
+    # ★计数器锚点已从 `_v63FastHit: UInt = 0` 改为 `static var fastHit: UInt = 0`:
+    #   run#157 实测 —— 泛型类型里的 static 存储属性编译期就被拒, 计数器必须
+    #   住在非泛型的 _V63Probe 上。锚点跟着代码走, 不跟着历史名字走。
     for key in ("_v63ConfigGen: UInt = 0", "_ios15ApplyGen: UInt = 0",
-                "_v63FastHit: UInt = 0", "_v63RebuildHit: UInt = 0",
+                "static var fastHit: UInt = 0", "static var rebuildHit: UInt = 0",
                 "[V63-PROBE] fast="):
         if key not in compat:
             raise RuntimeError("%s: 探针/世代号字段缺失 %r" % (F, key))
@@ -7682,6 +7711,99 @@ def verify_intrinsic_gate_v63(compat, md):
         raise RuntimeError(
             "%s: intrinsic 宽必须保持 noIntrinsicMetric —— 放开宽会让 100032 "
             "污染宽从这条通道回潮(v21/v60 花了几十版才钉住)" % F)
+    return True
+
+
+def verify_swift_static_v63(compat):
+    """v63 判据⑦(语法级): 泛型类型里不得有 static 存储属性。
+
+    ★★ 这条判据是 run#157 逼出来的。v63 全链 33/0/0 全绿, 判据只验
+    「标记在位」, 没有一条验「Swift 语法合法」, 于是
+    `private static var` 落在 `private final class _HostingContentCellView
+    <Content: View>` 里 —— Swift 硬错误:
+        error: static stored properties not supported in generic types
+    Release 编译 exit 65, 前面 66 条断言全绿也没用。
+
+    ⇒ 文本判据的体系性盲区: 能证明「改到位」, 证明不了「能编译」。
+    这条判据把「编译能过」里最容易被注入代码破坏的那一类提前到秒级。
+
+    覆盖: ① 泛型类型扫 static 存储属性 ② 探针计数必须住在非泛型宿主
+         ③ 带反证的 sabotage(把计数器塞回泛型里必须被抓)。
+    """
+    F = "verify_swift_static_v63"
+    import re as _re
+    # ① 扫出所有泛型类型声明, 检查其体内有无 **存储形式**的 static 属性
+    #
+    # ★★ 误报教训(第一次写这条判据时就踩了): Swift 禁止的是
+    #   `static stored properties`(存储属性), **computed property 不算**。
+    #   产物里本来就有合法的一处:
+    #       private struct IOS15GeometryValueKey<T: Equatable>: PreferenceKey {
+    #           static var defaultValue: T? { nil }        ← computed, 合法
+    #           static func reduce(...)                      ← 方法, 不在范围内
+    #       }
+    #   初版正则只匹配 `static var` 开头, 把它误判成违规 —— 而它编译一直通过。
+    #   ⇒ 判据宁可漏报不可误报(纪律第 14 条): 存储属性必然带 `=` 初始化,
+    #     computed property 必然带 `{` 实现体。按 `=` 判, 零误报。
+    gen_re = _re.compile(
+        r"(?:final\s+class|class|struct)\s+(\w+)\s*<[^>]*>\s*(?::[^{]*)?\{")
+    bad = []
+    for m in gen_re.finditer(compat):
+        name = m.group(1)
+        # 从 '{' 起做花括号配平, 取出类型体
+        i = compat.index("{", m.start())
+        depth, j = 0, i
+        while j < len(compat):
+            if compat[j] == "{":
+                depth += 1
+            elif compat[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        body = compat[i + 1:j]
+        # 存储属性: `static var/let NAME[: Type] =`  (等号在行内, 非 {)
+        for sm in _re.finditer(
+                r"^\s*(?:public\s+|private\s+|fileprivate\s+|internal\s+)?"
+                r"static\s+(?:var|let)\s+(\w+)[^=\n]*=", body, _re.M):
+            bad.append("%s.%s (第 %d 行)"
+                       % (name, sm.group(1), compat[:i + 1 + sm.start()].count("\n") + 1))
+    if bad:
+        raise RuntimeError(
+            "%s: 泛型类型里出现 static 存储属性 %s —— Swift 编译期硬拒"
+            "(static stored properties not supported in generic types), "
+            "Release 编译必失败。静态计数器请搬到非泛型宿主类型上。"
+            "★这条判据是 run#157 的直接产物。" % (F, "; ".join(bad)))
+    # ② 探针计数器的家必须非泛型, 且**计数器本体必须真的在里面**。
+    # ★S17 漏过一次的教训: 只查「宿主类型在不在」不够 —— 宿主在、字段被摘
+    #   一样能通过, 那就又变成「空测被当成通过」(run#156 同款病根)。
+    #   所以这里逐个字段确认, 且要求三个都在。
+    if "private final class _V63Probe" not in compat:
+        raise RuntimeError(
+            "%s: 找不到非泛型探针宿主 _V63Probe —— 计数器必须有合法的落脚点" % F)
+    if "_V63Probe<" in compat:
+        raise RuntimeError(
+            "%s: _V63Probe 竟被写成泛型 —— 那就把 static 存储属性又装回去了" % F)
+    i_probe = compat.find("private final class _V63Probe {")
+    if i_probe < 0:
+        raise RuntimeError("%s: 探针宿主声明形态不符(需 `private final class _V63Probe {`)" % F)
+    j_probe = compat.index("{", i_probe)
+    depth, k = 0, j_probe
+    while k < len(compat):
+        if compat[k] == "{":
+            depth += 1
+        elif compat[k] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        k += 1
+    probe_body = compat[j_probe + 1:k]
+    for field in ("static var fastHit: UInt = 0",
+                  "static var rebuildHit: UInt = 0"):
+        if field not in probe_body:
+            raise RuntimeError(
+                "%s: 探针宿主里缺 %r —— 计数器被摘掉后探针会永远不打日志, "
+                "而「零输出」正是 v53/v62 连续两版被忽略的那个信号"
+                % (F, field))
     return True
 
 

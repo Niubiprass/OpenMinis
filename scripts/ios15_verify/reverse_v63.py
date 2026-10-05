@@ -25,6 +25,9 @@
   S12 _v63drift 与 debt 计数重新绑定        ← 循环依赖引回来, 病复发
   S13 摘 _ios15ApplyGen 自增                ← 同 S5, 但破坏点在 apply 入口
   S14 探针字段/打印被摘                     ← 装机又变成"零输出", 无人察觉
+  S15 探针宿主改回泛型(157 真犯)            ← static 存储属性编译期被拒, exit 65
+  S16 static 偷渡进泛型 cell               ← 同上, 换个写法照样编译失败
+  S17 摘掉非泛型探针宿主                   ← 计数器无处安放
 
 ★纪律对照:
   第 5 条「判据输出文案本身是判据」⇒ 每条拦住时打印的是**判据的原文**,
@@ -60,17 +63,23 @@ DRIFT_DEF = ("        let _v63drift = _cellH > 1 && _need > 1 "
              "&& abs(_cellH - _need) > 8")
 GUARD = ("        guard deferredCorrectionPending || _stillOwing "
          "|| _v62oversized || _v63drift else { return }")
-PROBE_DECL = "    private static var _v63FastHit: UInt = 0"
+PROBE_DECL = "    static var fastHit: UInt = 0"
 PROBE_CALL = "            _v63ProbeIncr()"
 # ★这段锚点含 Swift 字符串插值 `\(`。Python 源码里写两个反斜杠才解析出
 #   一个 —— 写成一个会被当成 `\_`(反斜杠+下划线), 静默不命中。
 #   本项目已因此浪费三轮(改一次坏一次), 故下面加**自检**:
 #   构造完立刻断言首插值前缀正确, 错了当场抛, 不留到跑 sab 才发现。
-PROBE_PRINT = ('        print("[V63-PROBE] fast='
-               '\\(_HostingContentCellView._v63FastHit) rebuild=')
-assert '_v63FastHit' in PROBE_PRINT and '\\(_Hosting' in PROBE_PRINT, (
+# ★run#157 后插值宿主也变了: 计数器搬到非泛型 _V63Probe(泛型类型里放
+#   static 存储属性编译期就被拒), 所以是 `\(fastHit)` 而非
+#   `\(...)` 里带宿主名。
+PROBE_PRINT = '        print("[V63-PROBE] fast=\\(fastHit) rebuild='
+assert 'fastHit' in PROBE_PRINT and '\\(fastHit)' in PROBE_PRINT, (
     "PROBE_PRINT 的 Swift 插值转义写错了(须为 \\() —— "
     "Python 源码里要写两个反斜杠, 只写一个会变成 \\_")
+# ★run#157 直接产物: 泛型宿主声明行本身也是锚点 —— 它前面必须插着
+#   非泛型的 _V63Probe, 否则三个 static 计数器无处安放(编译失败)。
+GEN_HOST = "private final class _HostingContentCellView<Content: View>: UIView, UIContentView {"
+PROBE_HOST = "private final class _V63Probe {"
 
 
 def load_fb():
@@ -112,6 +121,10 @@ def judge(fb, prod):
     try:
         fb.verify_intrinsic_gate_v63(compat, md)
         fb.verify_uncouple_v63(md)
+        # ★run#157 新增: 语法级判据。文本判据证明「改到位」,
+        #   证明不了「能编译」—— 泛型类型里的 static 存储属性就是这么
+        #   溜过 66 条断言的。S15/S16 两条 sabotage 守的就是它。
+        fb.verify_swift_static_v63(compat)
     except RuntimeError as e:
         return False, str(e)
     except Exception as e:
@@ -119,7 +132,7 @@ def judge(fb, prod):
         #   测试自身坏了(签名错/函数名错), 不算「拦住」——
         #   v53 的 S5~S7 就曾因 TypeError 而假绿。
         return False, "★判据自身异常(%s): %s" % (type(e).__name__, e)
-    return True, "两条 v63 判据全过"
+    return True, "三条 v63 判据全过"
 
 
 # ---------------------------------------------------------------- sabotage
@@ -258,6 +271,48 @@ def s14_drop_probe(prod):
     return (c, md)
 
 
+def s15_static_into_generic(prod):
+    """★run#157 事故复现: 把 static 计数器塞回泛型宿主 ⇒ Release 编译 exit 65。
+
+    这条不是假想: v63 首版就是这么写的, 66 条断言全绿, 编译一挂到底。
+    文本判据体系当时完全没有能力拦住它 —— 所以必须有这条 sabotage,
+    证明新加的 verify_swift_static_v63 真的能抓, 而不是又一个空跑绿的判据。
+    """
+    compat, md = prod
+    if PROBE_HOST not in compat or PROBE_DECL not in compat:
+        return None
+    # 把非泛型宿主改成泛型 —— static 存储属性瞬间非法
+    c = compat.replace(PROBE_HOST,
+                       "private final class _V63Probe<Content: View> {", 1)
+    return (c, md)
+
+
+def s16_put_static_back_in_cell(prod):
+    """★run#157 事故复现(另一形态): 直接在泛型 cell 里加 static 存储属性。
+
+    S15 改宿主, S16 直接往泛型格里塞 —— 两种写法都要能被抓,
+    否则下一个人会以为「只要不动 _V63Probe 就没事」。
+    """
+    compat, md = prod
+    if GEN_HOST not in compat or PROBE_DECL not in compat:
+        return None
+    c = compat.replace(
+        GEN_HOST,
+        GEN_HOST.replace(" {", " {\n    static var smuggled: UInt = 0", 1), 1)
+    return (c, md)
+
+
+def s17_drop_probe_host(prod):
+    """摘掉非泛型探针宿主 —— 计数器无处安放(判据的 ② 号检查)。"""
+    compat, md = prod
+    if PROBE_HOST not in compat:
+        return None
+    c = compat.replace(PROBE_HOST, "// sabotage: 宿主被摘\nprivate final class _V63Probe {", 1)
+    # 连字段一起摘, 模拟「只删类型名不删内容」
+    c = c.replace(PROBE_DECL, "    // sabotage: 字段被摘", 1)
+    return (c, md)
+
+
 SABOTAGE = [
     ("BASE 基线",              None),
     ("S1 摘 invalidate",       s1_drop_invalidate),
@@ -274,6 +329,9 @@ SABOTAGE = [
     ("S12 drift 重新绑 debt",  s12_rebind_to_debt),
     ("S13 apply 入口摘自增",   s13_drop_gen_inc_apply),
     ("S14 摘探针",             s14_drop_probe),
+    ("S15 宿主改泛型(157真犯)", s15_static_into_generic),
+    ("S16 static 偷渡进泛型格", s16_put_static_back_in_cell),
+    ("S17 摘非泛型探针宿主",   s17_drop_probe_host),
 ]
 
 

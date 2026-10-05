@@ -466,10 +466,10 @@ jobs:
              && grep -q "\[V63-PROBE\]" src/ios/iOS15Compat.swift \
              && grep -q "\[V63-INTSIZE\]" src/ios/Views/Chat/SelectableMarkdownView.swift \
              && grep -q "\[V63-UNCYCLE\]" src/ios/Views/Chat/SelectableMarkdownView.swift ; then
-            # ci_assert_v63 内含 core(两条真实判据) + probe(装机可观测性)
-            # + sab(reverse_v63 的 14 条 sabotage, judge 直调 verify_*_v63)
+            # ci_assert_v63 内含 core(三条真实判据, 含语法级) + probe(装机可观测性)
+            # + sab(reverse_v63 的 17 条 sabotage, judge 直调 verify_*_v63)
             if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v63.py" . ; then
-              echo "✅ v63 就位 (判据全过 + 14 条 sabotage 全拦 + 探针可观测)"
+              echo "✅ v63 就位 (判据全过 + 17 条 sabotage 全拦 + 探针可观测 + 泛型 static 语法合法)"
               echo "   —— 装机后请在日志里确认: [V63-PROBE] fast=N rebuild=M 且 live=N (>0)"
               echo "   —— 若 fast=0 ⇒ REUSE 快速路径没被执行; 若 live 仍恒为 0 ⇒"
               echo "      说明 invalidate 通道修好了但测量仍被挡, 需带日志再定位"

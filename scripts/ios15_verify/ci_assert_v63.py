@@ -12,9 +12,9 @@
     3 = 无法检查(环境不全)
 
 层次:
-    core  = fallback 内两个 verify_*_v63(形状: 代码在不在、接线对不对)
+    core  = fallback 内三个 verify_*_v63(形状: 代码在不在、接线对不对、语法合不合法)
     probe = 探针自证能力(装机能否分辨「这段跑没跑」)
-    sab   = reverse_v63.py 的 14 条 sabotage, 守的是**判据本身会不会失灵**
+    sab   = reverse_v63.py 的 17 条 sabotage, 守的是**判据本身会不会失灵**
 
 ★为什么 v63 要单独开一个 CI 入口, 而不是把判据塞进 v53 的:
   v63 修的是 v60 引入的伤 —— v60 把 intrinsicContentSize 的**高度**也改成
@@ -81,7 +81,11 @@ def main():
     # ---- core ----
     for name, fn, args in (
             ("gate(invalidate+判等+高度)", fb.verify_intrinsic_gate_v63, (compat, md)),
-            ("uncouple(drift 兜底)",         fb.verify_uncouple_v63,      (md,))):
+            ("uncouple(drift 兜底)",         fb.verify_uncouple_v63,      (md,)),
+            # ★run#157 新增。文本判据证明「改到位」, 证明不了「能编译」:
+            #   v63 首版把 static 计数器放进泛型的 _HostingContentCellView,
+            #   66 条断言全绿, Release 编译 exit 65。
+            ("swift-static(泛型禁static)",   fb.verify_swift_static_v63,  (compat,))):
         try:
             fn(*args)
             print("  core  %-26s OK" % name)
@@ -108,8 +112,11 @@ def main():
     #   BAD 分支直接复用同一句, 若句子是「不会打印」这种坏消息,
     #   印在 OK 行上就是反的(犯过一次)。所以这里用陈述句 + 前缀区分。
     for key, what in (
-            ("_v63FastHit &+= 1", "快速路径计数器在自增"),
-            ("_v63RebuildHit &+= 1", "重建路径计数器在自增"),
+            # ★锚点已随 run#157 修复改名: 计数器从泛型宿主搬到非泛型 _V63Probe,
+            #   字段名 _v63FastHit -> fastHit。若这里不跟着改, 判据会红,
+            #   而红的原因是「判据腐化」不是「注入缺失」—— 最难查的那类假红。
+            ("fastHit &+= 1", "快速路径计数器在自增"),
+            ("rebuildHit &+= 1", "重建路径计数器在自增"),
             ("print(\"[V63-PROBE] fast=",
              "探针打印在位(否则装机日志零输出 —— v53/v62 就死在这)")):
         if key not in compat:
