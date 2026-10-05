@@ -1,5 +1,5 @@
 name: iOS15 移植并打包 IPA
-# [CI-RETRIGGER] Actions 事故恢复后重推第 1 次 (2026-10-05 22:12 UTC)
+# [CI-RETRIGGER] Actions 事故恢复后重推第 2 次 (2026-10-05 22:18 UTC)
 
 on:
   workflow_dispatch:
