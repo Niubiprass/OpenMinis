@@ -4,49 +4,66 @@
 产物二进制级校验: 装机包里**真的**有守卫修复吗?
 =====================================================
 
-★ 本项目**第九次**「验证手段骗了自己」—— 而且是最隐蔽的一次。
-  前八次都是「判据问错了问题」; 这一次是**判据根本没看最终产物**。
+★ 本项目**第九次**「验证手段骗了自己」—— 判据根本没看最终产物。
+★ 本项目**第十二次**「验证手段骗了自己」—— 判据**看了产物, 但只按一种编码看**。
 
-【装机铁证】CI run 37357375487 (commit e72f6b6, v68) 全绿:
-    - 编译成功, IPA 71MB, dyld 体检通过
-    - 断言 71 真跑了: "v68 判据就位(累加在门槛外 + 降频游标 + 步长常量
-      + lastGoodHeight 既读又写)"
-    - 反向 17 条逐条拦下(S14 死代码复现 / S15 永久冻结 / S16 裸1.0
-      / S17 字段没人写)
-  而从该 run 的 artifact 里挖出主 App 二进制(121MB Mach-O arm64),
-  逐字节搜 NSLog 格式串:
-
-    源码里应有 8 条            二进制里
-    ----------------------------------------------------------------
-    ... REJECT-NAN-INF ...        在   (v4)
-    [V65] FIXED-NONPOSITIVE       ❌ 缺失
-    [V38C] probe-height           在   (v38-C)
-    [WARN] storm-breaker SKIP     在   (v4)
-    ... short-circuited setSize:  在   (v4)
-    [V68] NONPOSITIVE-STREAK      ❌ 缺失
-    [V68] NONPOSITIVE-DOWNFREQ    ❌ 缺失
-    [INFO] installed (threshold   在   (v4)
-
-  ⇒**装机包里是 v38-C 那一代的守卫, v65 与 v68 都不在。**
-  同 run 的产物级幂等门、bash 语法门、9 层判据、17 条反向**全绿**。
-
-★为什么前八次都没抓到: 判据全部作用在 `src/ios/**.m` **源码**上,
-  而「装机包里到底有没有这段代码」这件事**从来没被问过**。
-  源码正确 + 编译成功 + 产物打包成功 ⇒ 三件事同时成立,
+【第九次: 判据只验原料】
+  前八次都是「判据问错了问题」; 第九次是**判据全部作用在 `src/ios/**.m`
+  源码上**, 而「装机包里到底有没有这段代码」从来没被问过。
+  源码正确 + 编译成功 + 打包成功 ⇒ 三件事同时成立,
   仍不能推出「修复进了二进制」。
   ★判据必须验**交付物本身**, 而不是交付物的**原料**。
 
-【第十次(紧随其后): 本脚本第一版自己把流水线掐死了】
-  它被 local_all_gates.py 从 workflow 文本里正则抽出来重跑,
-  而抽取器只认 `VAR=字面量`、**不认 GitHub Actions 的模板表达式**
-  ⇒ IPA 变量被原样传入 ⇒ FileNotFoundError ⇒ 门禁 exit 1
+【第十次: 新判据自己把流水线掐死】
+  本脚本被 local_all_gates.py 从 workflow 文本里正则抽出来重跑,
+  抽取器只认 `VAR=字面量`、**不认 `${{ ... }}` 表达式**
+  ⇒ FileNotFoundError ⇒ 门禁 exit 1
   ⇒ CI 37361069156 / 37361453374 **编译一步都没跑**。
-  ★讽刺: 加判据是为了查「产物里没有 v68」,
-    结果判据自己先把构建堵住, 那个答案一个也没拿到。
   ⇒ §27: **新增判据必须先在本地全量门禁跑通再推**。
-    门禁是绿的, 只因为那时还没这个脚本 —— 加完必须重跑。
-    把「我加了判据」当成「门禁因此更严」是错的:
-    实际可能是「门禁因此挂了, 而挂着的时候它一条都不验」。
+
+★【第十二次(本版修的): 判据只按 UTF-8 搜, 漏了 UTF-16 —— 假红】
+  本脚本第一版在 CI 37367511487 上报:
+      ❌ v68(1) NONPOSITIVE-STREAK      count=0
+      ❌ v68(2) NONPOSITIVE-DOWNFREQ    count=0
+      ❌ v65    FIXED-NONPOSITIVE       count=0
+      ✅ v4     storm-breaker           count=1   ← 对照组
+      ✅ v38-C  probe-height            count=1   ← 对照组
+      ✅ v4     REJECT-NAN-INF          count=1   ← 对照组
+  对照组全在、硬规则全缺 ⇒ 看起来铁证如山「修复没进包」。
+
+  **但它错了。** 真实原因:
+      clang 对 `@"..."` 字面量的存储编码**取决于字面量是否全 ASCII**:
+        · 全 ASCII        → `__TEXT,__cstring`   (UTF-8)
+        · 含非 ASCII 字符 → `__TEXT,__ustring`   (UTF-16LE)
+  对照组的三条格式串**全是 ASCII**; 而 v65/v68 那三条的日志文本里
+  带中文注释(`— 修正转发(旧版丢弃=卡字)`、`— 非正尺寸跨 tick 累加中`、
+  `— 降频 1/%d 放行(保留上行通道)`) ⇒ 它们被存成 **UTF-16LE**。
+  第一版判据只搜 UTF-8 字节 ⇒ 一律 count=0。
+
+  实测(同一份 v68 主二进制, 121MB Mach-O arm64):
+
+      串                        UTF-8 搜   UTF-16LE 搜
+      ---------------------------------------------------
+      FIXED-NONPOSITIVE (v65)      0          1
+      NONPOSITIVE-STREAK (v68)     0          1
+      NONPOSITIVE-DOWNFREQ (v68)   0          1
+      storm-breaker (v4 对照)      1          0
+      probe-height (v38C 对照)     1          0
+
+  **完美互补** —— 不是「修复没进包」, 是「判据只看得见一半的包」。
+  ⇒ 三份历史 IPA 交叉复核后全部自洽:
+      v66 包: v65 utf16=1   (那时还没有 v68, 符合预期)
+      v67b包: v65 utf16=1, v68 utf16=0 (同上)
+      v68 包: v65 utf16=1, v68 两条 utf16=1
+  ⇒ **v65 从 v66 起一直在包里; v68 也在。修复从未丢失。**
+
+  ★这次与第九次是**同一类错误的两种形态**:
+    第九次  问都没问「产物里有没有」;
+    第十二次 问了, 但**只按一种编码问**, 于是「没有」是搜索方法的产物。
+  ⇒ 纪律: 判据说「没有」时, 先自问「我有没有可能没看见」,
+    尤其是**对照组恰好全在**的时候 —— 那正说明查对了文件、错了方法。
+  ⇒ 判据的 self-test 必须包含**真实形态的样本**(本版已加:
+    good_mixed = 硬规则 UTF-16 + 对照组 UTF-8), 否则同样的假红会再犯。
 
 【为什么这个判据不能靠 grep 源码代替】
   grep 源码查的是「我有没有写这段代码」; 本脚本查的是
@@ -64,38 +81,68 @@
   断言 72 写的是 `"$IPA"`, `IPA="Minis-iOS${{ env.DEPLOY_TARGET }}.ipa"`,
   于是抽取器把 `${{ env.DEPLOY_TARGET }}` **原样**传下来, 脚本拿到
   一个字面文件名 `Minis-iOS${{ env.DEPLOY_TARGET }}.ipa`
-  ⇒ FileNotFoundError ⇒ 门禁红, 而**编译一步都没跑**(CI 37361069156 /
-  37361453374 都是这样失败的)。
+  ⇒ FileNotFoundError ⇒ 门禁红, 而**编译一步都没跑**。
   ⇒ 本脚本若无参, 门禁里必红; 所以无参时走 self-test:
-  **造一份已知的坏样本, 验「判据能报红」, 并造一份好样本, 验「判据不误报」**。
-  这比「凑一个能过的参数」强得多 —— 它验的是判据的有效性本身,
-  而不是判据在某个环境里恰好不报错(§16 的反面)。
+  **造已知的好/坏样本, 验判据既能报红也不误报**。
 """
 
 import os
 import sys
 
-# (字节串, 人类可读描述, 最小出现次数)
+# (文本串, 人类可读描述, 最小出现次数)
+# ★用**文本**而不是字节: 编码由 _count() 展开, 见下方 ENCODINGS。
 RULES = [
-    # ---- v68: 非正尺寸风暴的真闸门 ----
-    (b"[TextContainerGuard] [V68] NONPOSITIVE-STREAK",
+    # ---- v68: 非正尺寸风暴的真闸门 (格式串含中文 ⇒ UTF-16) ----
+    # ★前缀务必与源码逐字对齐: v68 这两条带 [WARN], v65 那条不带。
+    #   第一版把 [WARN] 漏掉了 ⇒ 自证里的真实形态样本当场报红(它拦住了)。
+    ("[TextContainerGuard] [WARN] [V68] NONPOSITIVE-STREAK",
      "v68(1) streak 跨 tick 累加(必须无条件执行, 不在 per-tick 门槛内)", 1),
-    (b"[TextContainerGuard] [V68] NONPOSITIVE-DOWNFREQ",
+    ("[TextContainerGuard] [WARN] [V68] NONPOSITIVE-DOWNFREQ",
      "v68(2) 降频放行(硬闸门不得退回「命中即 return」的永久冻结)", 1),
-    # ---- v65: 非正尺寸就地修正转发, 不再丢弃 ----
-    (b"[TextContainerGuard] [V65] FIXED-NONPOSITIVE",
+    # ---- v65: 非正尺寸就地修正转发, 不再丢弃 (含中文 ⇒ UTF-16) ----
+    ("[TextContainerGuard] [V65] FIXED-NONPOSITIVE",
      "v65     非正尺寸就地修正后转发(旧版丢弃 => 排版停在上一帧 => 卡字)", 1),
-    # ---- v4 / v38-C: 基线熔断(这三段历史上一直在包里, 当对照组) ----
-    (b"storm-breaker SKIP",
+    # ---- v4 / v38-C: 基线熔断(这三段历史上一直在包里, 当对照组; 全 ASCII ⇒ UTF-8) ----
+    ("storm-breaker SKIP",
      "v4      setSize 风暴熔断(对照组: 它若也不在, 说明查错了二进制)", 1),
-    (b"probe-height",
+    ("probe-height",
      "v38-C   intrinsic 哨兵高度钳制(对照组)", 1),
-    (b"REJECT-NAN-INF",
+    ("REJECT-NAN-INF",
      "v4      NaN/inf 硬拒(对照组)", 1),
 ]
 
-# __PAGEZERO / __TEXT 等段名, 用于跳过 Mach-O 头 (只影响报错的可读性)
+# ★第十二次的修法: 同一个字面量在 Mach-O 里可能是 UTF-8(__cstring),
+#   也可能是 UTF-16LE(__ustring) —— 取决于它是否全 ASCII。
+#   两条都要搜, 命中任一即算「在」。
+ENCODINGS = ("utf-8", "utf-16-le")
+
 _BIN_SUFFIXES = ("", ".app")
+
+
+def _encodings(s: str):
+    out = []
+    for enc in ENCODINGS:
+        try:
+            b = s.encode(enc)
+        except Exception:
+            continue
+        if b not in out:
+            out.append(b)
+    return out
+
+
+def _count(blob: bytes, s: str) -> int:
+    """任一编码命中即算命中; 返回**最大**的那一档计数(便于人读)。"""
+    return max((blob.count(b) for b in _encodings(s)), default=0)
+
+
+def _is_hard_rule(s: str) -> bool:
+    """硬规则 = v65/v68(要修的那几段); 其余是对照组。
+
+    ★按**版本标记**判断, 不按前缀: v68 两条带 `[WARN]`、v65 那条不带,
+      用前缀判会把 v68 误当成对照组 ⇒ 坏样本里它们"在" ⇒ 漏报。
+    """
+    return "[V65]" in s or "[V68]" in s
 
 
 def _find_binary(target: str):
@@ -132,6 +179,16 @@ def _find_binary(target: str):
     return None
 
 
+def _write_sample(path, enc_by_rule):
+    """按 {规则文本: 编码} 写一份样本; 值为 None 表示不写(缺失)。"""
+    with open(path, "wb") as f:
+        for s, _d, _n in RULES:
+            enc = enc_by_rule.get(s)
+            if enc is None:
+                continue
+            f.write(s.encode(enc) + (b"\x00" if enc == "utf-8" else b"\x00\x00"))
+
+
 def _self_test():
     """自证: 判据对**已知的好样本**放行、对**已知的坏样本**报红。
 
@@ -139,52 +196,72 @@ def _self_test():
       只验「坏样本报红」⇒ 判据可能是「永远报红」, 那它没有鉴别力。
       只验「好样本放行」⇒ 判据可能是「永远放行」, 那它是个废品。
       ★反向漏过(永远放行) 是判据的信息, 不是噪音(§25 附三)。
+
+    ★★第十二次的直接产物 —— 三种「好」形态都要放行:
+      good_utf8   : 六条全 UTF-8      (纯 ASCII 世界的形态)
+      good_utf16  : 六条全 UTF-16LE
+      good_mixed  : 硬规则 UTF-16 + 对照组 UTF-8   ← **真实产物就是这个形态**
+      只测 good_utf8 时, 第一版全绿, 一上真机产物就假红 ——
+      ⇒ **自证样本必须包含交付物的真实形态**, 否则自证是自欺。
     """
+    import contextlib
+    import io
     import tempfile
     ok = True
-    print("=== 断言72 判据自证 (双向) ===")
+    print("=== 断言72 判据自证 (双向 + 双编码) ===")
 
-    # ---- 好样本: 六条规则全在 ⇒ 必须放行 ----
-    good = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
-    with open(good.name, "wb") as f:
-        for pat, _d, _n in RULES:
-            f.write(pat + b"\x00")
-    # 反向样本
-    bad = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
-    with open(bad.name, "wb") as f:
-        # 只写对照组(v4/v38-C), 三条硬规则全缺 —— 复现装机包的真实形态
-        for pat, _d, _n in RULES:
-            if pat.startswith(b"[TextContainerGuard] [V65]") \
-               or pat.startswith(b"[TextContainerGuard] [V68]"):
-                continue
-            f.write(pat + b"\x00")
+    all_utf8 = {s: "utf-8" for s, _d, _n in RULES}
+    all_utf16 = {s: "utf-16-le" for s, _d, _n in RULES}
+    mixed = {s: ("utf-16-le" if _is_hard_rule(s) else "utf-8")
+             for s, _d, _n in RULES}
+    bad_map = {s: ("utf-8" if not _is_hard_rule(s) else None)
+               for s, _d, _n in RULES}   # 硬规则全缺, 对照组在
 
+    n_hard = sum(1 for s, _d, _n in RULES if _is_hard_rule(s))
+
+    samples = [
+        # (标签, 样本, 期望 rc, 期望报红条数)
+        ("坏样本(硬规则全缺)", bad_map, 1, n_hard),
+        ("好样本(全 UTF-8)", all_utf8, 0, 0),
+        ("好样本(全 UTF-16LE)", all_utf16, 0, 0),
+        ("好样本(真实形态: 硬规则UTF-16+对照UTF-8)", mixed, 0, 0),
+    ]
+
+    tmps = []
     try:
-        r_bad = main([bad.name])
-        print("")
-        print("--- 判定 ---")
-        if r_bad != 1:
-            print("❌ 对「缺 v65/v68」的样本判据**没有报红** ⇒ 判据没有鉴别力")
-            ok = False
-        else:
-            print("✅ 对「缺 v65/v68」的样本正确报红 (rc=1)")
-
-        print("")
-        r_good = main([good.name])
-        print("")
-        print("--- 判定 ---")
-        if r_good != 0:
-            print("❌ 对「六条齐备」的样本判据**误报** ⇒ 规则写错了")
-            ok = False
-        else:
-            print("✅ 对「六条齐备」的样本正确放行 (rc=0)")
+        for label, mapping, want, want_bad in samples:
+            t = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+            tmps.append(t.name)
+            _write_sample(t.name, mapping)
+            print("")
+            print("--- %s (期望 rc=%d, 报红 %d 条) ---" % (label, want, want_bad))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main([t.name])
+            sys.stdout.write(buf.getvalue())
+            # ★不只验 rc: 坏样本必须**恰好**报红 n_hard 条。
+            #   只验 rc 时, 漏掉两条硬规则也照样 rc=1 —— 自证会睁一只眼闭一只眼。
+            got_bad = sum(1 for ln in buf.getvalue().splitlines()
+                          if ln.startswith("  ❌"))
+            if rc != want:
+                print("❌ %s: 期望 rc=%d, 实际 rc=%d" % (label, want, rc))
+                ok = False
+            elif got_bad != want_bad:
+                print("❌ %s: 期望报红 %d 条, 实际 %d 条 —— 规则归类可能错了"
+                      % (label, want_bad, got_bad))
+                ok = False
+            else:
+                print("✅ %s: rc=%d, 报红 %d 条, 均符合期望"
+                      % (label, rc, got_bad))
 
         print("")
         if ok:
-            print("✅ 判据自证通过: 双向都有鉴别力(能报真问题, 也不误报)")
+            print("✅ 判据自证通过: 双向都有鉴别力, 且 UTF-8/UTF-16 两种编码都认得")
+        else:
+            print("❌ 判据自证失败")
         return 0 if ok else 1
     finally:
-        for p in (good.name, bad.name):
+        for p in tmps:
             try:
                 os.unlink(p)
             except OSError:
@@ -219,8 +296,8 @@ def main(argv=None) -> int:
             tmp = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
             with z.open(names[0]) as src, open(tmp.name, "wb") as dst:
                 dst.write(src.read())
-            target = tmp.name
             print("(从 %s 取出 %s)" % (os.path.basename(target), names[0]))
+            target = tmp.name
 
     path = _find_binary(target)
     if not path:
@@ -229,25 +306,30 @@ def main(argv=None) -> int:
 
     size = os.path.getsize(path)
     print("=== 二进制级守卫校验: %s (%.1f MB) ===" % (path, size / 1048576.0))
+    print("(搜索编码: %s —— 含中文的字面量在 Mach-O 里是 UTF-16)" %
+          " + ".join(ENCODINGS))
     with open(path, "rb") as f:
         blob = f.read()
 
     # Mach-O 是 0xCAFEBABE(BE) 时说明是 fat/多架构二进制, 切片扫一遍
-    chunks = [("", blob)]
+    # ★chunks 必须是**纯 bytes 列表**: 早先写成 [("", blob)], _count() 收到的是
+    #   tuple, tuple.count(bytes) 恒返回 0 —— 自证里所有样本一律 count=0,
+    #   当场被 self-test 抓住(这正是自证存在的意义)。
+    chunks = [blob]
     if blob[:4] == b"\xca\xfe\xba\xbe":
         import struct
         narch, = struct.unpack(">I", blob[4:8])
         pos, slices = 8, []
         for _ in range(narch):
             _cpu, _sub, off, _size, _align = struct.unpack(">IIIII", blob[pos:pos + 20])
-            slices.append(("slice@%d" % off, blob[off:off + _size]))
+            slices.append(blob[off:off + _size])
             pos += 20
         chunks = slices
         print("(多架构二进制, %d 个切片)" % narch)
 
     bad = []
     for pat, desc, need in RULES:
-        total = sum(chunk.count(pat) for _n, chunk in chunks)
+        total = sum(_count(chunk, pat) for chunk in chunks)
         if total >= need:
             print("  ✅ %-62s count=%d" % (desc[:62], total))
         else:
@@ -264,6 +346,13 @@ def main(argv=None) -> int:
     print("★ 这意味着: 源码判据全绿、编译成功、IPA 打出来了,")
     print("  但**修复没进二进制**。装机后跑的还是旧守卫 ——")
     print("  症状会与「没打这个补丁」完全一致, 而 CI 全绿。")
+    print("")
+    print("★★ 先排除「判据自己没看见」(第十二次假绿的教训):")
+    print("  0. 对照组(v4/v38-C)是不是全绿?")
+    print("     全绿  ⇒ 查对了二进制, 问题在**搜索方法**或**代码真没进包**;")
+    print("             先确认这些串的编码: 含中文的字面量是 UTF-16(__ustring),")
+    print("             ASCII 的才是 UTF-8(__cstring)。本脚本两种都搜。")
+    print("     也红  ⇒ 查错了二进制(架构/文件路径), 先修定位。")
     print("")
     print("排查顺序(每步都要看, 别跳):")
     print("  1. 注入是否真生效: grep 编译用的 .m 是否含这些标记")
