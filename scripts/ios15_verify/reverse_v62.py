@@ -34,7 +34,16 @@ NOTE_BRANCH = """        if debt < -40 {
 MUTEX_BLOCK = """        v53SurplusSeenCount = 0
         v53SurplusHeightDebt = 0
         v53PendingHeightDebt = debt"""
-MD_GUARD = 'guard deferredCorrectionPending || _stillOwing || _v62oversized else { return }'
+# ★v63 适配: settle 入口 guard 多了第四条腿 `|| _v63drift`(打破 v53/v62 的
+#   两拍循环依赖)。锚死 v62 形态会让基线判红 —— 而基线红是**最容易修也最
+#   容易掩盖**的一类: 改锚点就行, 但改完这条 sabotage 就测不到新腿了。
+#   ⇒ 两种形态都接受; v63 那条腿由 reverse_v63.py 的 S9~S12 专门测
+#     (直调 verify_uncouple_v63), 职责不丢。
+#   教训见 verify-discipline 第 10 条。
+MD_GUARD_V62 = 'guard deferredCorrectionPending || _stillOwing || _v62oversized else { return }'
+MD_GUARD_V63 = ('guard deferredCorrectionPending || _stillOwing '
+                '|| _v62oversized || _v63drift else { return }')
+MD_GUARDS = (MD_GUARD_V63, MD_GUARD_V62)   # 优先新形态
 MD_REPORT = '_v53ReportDebtToCell(_stillOwing || _v62oversized ? _debt : 0)'
 MD_OVER = 'let _v62oversized = _cellH > 1 && _need > 1 && (_cellH - _need) > 40'
 
@@ -82,7 +91,10 @@ def judge(prod):
             return False, 'note 盈余分支不完整(缺 %r)' % key[:24]
     if MUTEX_BLOCK not in infra:
         return False, '欠账态互斥清盈余缺失'
-    for key in (MD_OVER, MD_GUARD, MD_REPORT):
+    # guard 两种形态都接受(见 MD_GUARDS 的说明)
+    if not any(g in md for g in MD_GUARDS):
+        return False, 'settle 入口缺 guard(v62/v63 两种形态都没找到)'
+    for key in (MD_OVER, MD_REPORT):
         if key not in md:
             return False, 'settle 入口缺 %r' % key[:36]
     return True, 'v62 五层全过'
@@ -110,11 +122,19 @@ def s3_drop_guard_a(prod):
 
 
 def s4_drop_guard_cond(prod):
+    """摘掉驱动条件(_v62oversized)。
+
+    ★sabotage 必须打到**当前形态**的那个 guard 上。若拿 v62 形态去替换,
+      在 v63 产物上会「锚点缺失」⇒ 本条空测 ⇒ 而空测现在算失败。
+      ⇒ 先按 MD_GUARDS 的顺序找当前形态, 替换时把它整条换成退化形态。
+    """
     infra, md = prod
-    if MD_GUARD not in md:
-        return prod, '锚点缺失'
-    return (infra, md.replace(MD_GUARD,
-           'guard deferredCorrectionPending || _stillOwing else { return }', 1)), '摘盈余驱动'
+    for g in MD_GUARDS:
+        if g in md:
+            return (infra, md.replace(
+                g, 'guard deferredCorrectionPending || _stillOwing else { return }', 1)), \
+                '摘盈余驱动'
+    return prod, '锚点缺失'
 
 
 def s5_report_zero(prod):
@@ -163,12 +183,18 @@ def main():
     print('产物来源: %s (infra %d / md %d 字符)'
           % (origin, len(prod[0]), len(prod[1])))
 
-    caught = passed = 0
+    caught = passed = voided = 0
     for name, fn in SABOTAGE:
         mutated, desc = fn(prod)
         if mutated == prod and not name.startswith('BASE'):
-            print('  ⚠ %-24s 注入未生效(锚点缺失)，本条无效' % name)
-            passed += 1
+            # ★纪律第 10 条: 锚点失效必须**自己报错**, 且必须算失败。
+            #   原实现把空测计入 `passed`, 而结尾按 passed==0 判成败
+            #   ⇒ 「N-1 拦下 + 1 空测」被当成全过 = **空测当成通过**。
+            #   判据链少一条守门却仍显示全绿, 比红更危险。
+            #   实测: v63 给 REUSE 快速路径加了 config 判等 ⇒ v61 的 S1 锚点
+            #   落空, 而 run#156 一路绿到 CI 才在别处炸出来。
+            print('  ✗ %-24s 锚点缺失 —— 本条**空测**, 结果不作数(记失败)' % name)
+            voided += 1
             continue
         ok, why = judge(mutated)
         if name.startswith('BASE'):
@@ -187,8 +213,10 @@ def main():
 
     n = len(SABOTAGE) - 1
     print('-' * 62)
-    print('v62 反向: %d 拦下, %d 漏过（共 %d 条 sabotage）' % (caught, passed, n))
-    return 0 if passed == 0 else 1
+    print('v62 反向: %d 拦下, %d 漏过, %d 空测（共 %d 条 sabotage）' % (caught, passed, voided, n))
+    if voided:
+        print('★ 有 %d 条空测 —— 结果不作数, 修锚点或修产物。' % voided)
+    return 0 if (passed == 0 and voided == 0) else 1
 
 
 if __name__ == '__main__':

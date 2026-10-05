@@ -347,12 +347,18 @@ def main():
     prod = (md0, ct0)
     print('产物来源: %s (md %d / compat %d 字符)' % (origin, len(md0), len(ct0)))
 
-    caught = passed = 0
+    caught = passed = voided = 0
     for name, fn in SABOTAGE:
         mutated, desc = fn(prod)
         if mutated == prod and not name.startswith('BASE'):
-            print('  ⚠ %-28s 注入未生效(锚点缺失)，本条无效' % name)
-            passed += 1
+            # ★纪律第 10 条: 锚点失效必须**自己报错**, 且必须算失败。
+            #   原实现把空测计入 `passed`, 而结尾按 passed==0 判成败
+            #   ⇒ 「N-1 拦下 + 1 空测」被当成全过 = **空测当成通过**。
+            #   判据链少一条守门却仍显示全绿, 比红更危险。
+            #   实测: v63 给 REUSE 快速路径加了 config 判等 ⇒ v61 的 S1 锚点
+            #   落空, 而 run#156 一路绿到 CI 才在别处炸出来。
+            print('  ✗ %-28s 锚点缺失 —— 本条**空测**, 结果不作数(记失败)' % name)
+            voided += 1
             continue
         ok, why = judge(mutated[0], mutated[1])
         if name.startswith('BASE'):
@@ -371,8 +377,10 @@ def main():
 
     n = len(SABOTAGE) - 1
     print('-' * 62)
-    print('v60 反向: %d 拦下, %d 漏过（共 %d 条 sabotage）' % (caught, passed, n))
-    return 0 if passed == 0 else 1
+    print('v60 反向: %d 拦下, %d 漏过, %d 空测（共 %d 条 sabotage）' % (caught, passed, voided, n))
+    if voided:
+        print('★ 有 %d 条空测 —— 结果不作数, 修锚点或修产物。' % voided)
+    return 0 if (passed == 0 and voided == 0) else 1
 
 
 if __name__ == '__main__':

@@ -1,18 +1,31 @@
 # -*- coding: utf-8 -*-
-"""v59 反向测试 —— 「关掉容器宽跟随」这条线到底拦不拦得住真错。
+# ============================================================================
+# ★已退役 (2026-10-05, v63 期间发现) —— 请勿复活, 也请勿删除
+#
+# 【为什么退役】
+#   本脚本判的基线是「产物里有 [V59-NOTRACK] 标记」。而 v60 起,
+#   **v59 整体退场** —— v60 判据 reverse_v60.py / verify_zhao_* 明确要求
+#   `[V59-NOTRACK]` 在产物里**必须为 0 处**(「v59 必须整体退场」)。
+#   ⇒ 本脚本要求的正是 v60 消灭的东西 ⇒ 自 v60 起逻辑上永久判红。
+#
+#   实测: 干净上游跑完整链, 产物里 V59-NOTRACK = 0 处, 基线红。
+#   ★这与 v63 无关: git stash 回到改动前重跑, 同样红 ⇒ 既有缺陷。
+#
+# 【为什么一直没被发现】
+#   本脚本**没有被任何门禁调用**(port-and-build.yml 0 次,
+#   regress_all_v.py 0 次) ⇒ 从 v60 至今一直是孤儿 ⇒ 它的红从未影响任何人。
+#   但它留在 scripts/ios15_verify/ 里, 会让下一个维护者误以为
+#   「v59 受 reverse_v59.py 保护」—— 而那份保护在 v60 之后是**假的**。
+#   ⇒ 归档并写明原因, 比留一个假装有效的门禁诚实。
+#
+# 【v59 的修复是否还需要保护】
+#   需要。v59(关闭容器宽跟随, commit 582455c)本身仍生效,
+#   它由 **v60 的判据**接管保护:
+#     · reverse_v60.py S?: 破坏 init/兜底会被拦
+#     · verify_*_v60: 断言「[V59-NOTRACK] 0 处」= v59 确实退场
+#   即 v59 的**成果**受保护, 只是不再用这份**已失效**的判据去测。
+# ============================================================================
 
-v59 是 v31~v58 全部失败后的断源版: SelectableMarkdownTextView.init() 的
-widthTracksTextView 从 true 改 false, 让 KVO 纠偏写入的净宽不再被系统
-每趟布局从 frame(390) 重新派生覆盖。
-
-【每条 sabotage 对应一个真实可能犯的错】
-  S1 改回 true            ← 直接回到「改了等于没改」的天花板(本版治的病)
-  S2 删掉首帧兜底          ← 关掉跟随后容器默认 1e7, 首趟排版排成一行超长
-  S3 顺手把 TableScrollView 那处也改 false ← 范围失控(v56.6 纪律:
-       表格内联代码的 frame 是干净的, 它不是病灶)
-  S4 摘掉标记但保留行为    ← 判据只看标记会放过「改了没标记」
-  S5 兜底宽写成 1e7       ← 等于没兜底, 且重现历史 1e7 污染
-"""
 import io
 import os
 import subprocess
@@ -132,12 +145,18 @@ def main():
     prod, origin = build_product()
     print('产物来源: %s (%d 字符)' % (origin, len(prod)))
 
-    caught = passed = 0
+    caught = passed = voided = 0
     for name, fn in SABOTAGE:
         mutated, desc = fn(prod)
         if mutated == prod and not name.startswith('BASE'):
-            print('  ⚠ %-24s 注入未生效(锚点缺失)，本条无效' % name)
-            passed += 1
+            # ★纪律第 10 条: 锚点失效必须**自己报错**, 且必须算失败。
+            #   原实现把空测计入 `passed`, 而结尾按 passed==0 判成败
+            #   ⇒ 「N-1 拦下 + 1 空测」被当成全过 = **空测当成通过**。
+            #   判据链少一条守门却仍显示全绿, 比红更危险。
+            #   实测: v63 给 REUSE 快速路径加了 config 判等 ⇒ v61 的 S1 锚点
+            #   落空, 而 run#156 一路绿到 CI 才在别处炸出来。
+            print('  ✗ %-24s 锚点缺失 —— 本条**空测**, 结果不作数(记失败)' % name)
+            voided += 1
             continue
         ok, why = judge(mutated)
         if name.startswith('BASE'):
@@ -156,8 +175,10 @@ def main():
 
     n = len(SABOTAGE) - 1
     print('-' * 62)
-    print('v59 反向: %d 拦下, %d 漏过（共 %d 条 sabotage）' % (caught, passed, n))
-    return 0 if passed == 0 else 1
+    print('v59 反向: %d 拦下, %d 漏过, %d 空测（共 %d 条 sabotage）' % (caught, passed, voided, n))
+    if voided:
+        print('★ 有 %d 条空测 —— 结果不作数, 修锚点或修产物。' % voided)
+    return 0 if (passed == 0 and voided == 0) else 1
 
 
 if __name__ == '__main__':

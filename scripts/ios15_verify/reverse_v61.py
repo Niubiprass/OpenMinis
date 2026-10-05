@@ -26,7 +26,18 @@ MONO_TAIL = """        if width != ios15MonoHW { ios15MonoHW = width; ios15MonoH
         }
         if height > ios15MonoH { ios15MonoH = height }
         return CGSize(width: width, height: max(0, height))"""
-FAST_BLOCK_START = '        if let existing = host, let newConfig = config as? UIHostingConfiguration<Content> {'
+# ★v63 适配: REUSE 快速路径的 `if let` 条件加了 config 身份判等
+#   `_v63ConfigGen == _ios15ApplyGen`(治「拿别的消息的 host 就地刷 rootView」),
+#   所以 v61 形态的裸串已不存在 —— 照旧用旧锚点会让 S1 变空测。
+#   ★这不是「改锚点就完了」: 改的时候必须问「v63 加的那条腿有没有被测到」
+#     ⇒ v63 自己的 reverse_v63.py 用 S4 专门测它(直调 verify_intrinsic_gate_v63)。
+#   教训见 verify-discipline 第 10 条: 锚点失效必须自己报错, 不许静默跳过。
+#   —— 而本文件此前恰恰违反了这条(见下方 main() 的计数修正)。
+FAST_BLOCK_START = ('        if let existing = host, '
+                    'let newConfig = config as? UIHostingConfiguration<Content>'
+                    ', _v63ConfigGen == _ios15ApplyGen {')
+FAST_BLOCK_START_V61 = ('        if let existing = host, '
+                        'let newConfig = config as? UIHostingConfiguration<Content> {')
 FAST_BLOCK_END = '            return\n        }\n'
 
 
@@ -99,8 +110,18 @@ def _extract_if_block(t, start_key):
 
 
 def s1_drop_fast_path(x):
-    """S1: 删掉 apply 快速路径整块 —— rebuild 风暴复活。"""
-    span = _extract_if_block(x, FAST_BLOCK_START)
+    """S1: 删掉 apply 快速路径整块 —— rebuild 风暴复活。
+
+    ★两种形态都接受: v61 原形态与 v63 加了 config 判等的形态。
+      写死任一形态都会在下一版加条件时再次空测 —— 而空测会被
+      「本条无效」一句话轻轻带过, 于是判据链少了一条守门却仍全绿。
+      ⇒ 宁可模糊匹配, 不可锚死形态。
+    """
+    span = None
+    for start in (FAST_BLOCK_START, FAST_BLOCK_START_V61):
+        span = _extract_if_block(x, start)
+        if span:
+            break
     if not span:
         return x, '锚点缺失'
     # 连同前面的注释行一起删
@@ -162,12 +183,20 @@ def main():
     prod, origin = build_product()
     print('产物来源: %s (%d 字符)' % (origin, len(prod)))
 
-    caught = passed = 0
+    caught = passed = voided = 0
     for name, fn in SABOTAGE:
         mutated, desc = fn(prod)
         if mutated == prod and not name.startswith('BASE'):
-            print('  ⚠ %-24s 注入未生效(锚点缺失)，本条无效' % name)
-            passed += 1
+            # ★纪律第 10 条: 锚点失效必须**自己报错**, 且必须算失败。
+            #   此前这里把锚点缺失计入 `passed` 再 continue ——
+            #   而 `passed` 的语义是"漏过", 结尾又按 passed==0 判成败,
+            #   于是 "4 拦下 + 1 空测 = 5" 被当成全过, **空测当成了通过**。
+            #   v63 加了 config 判等 ⇒ S1 锚点落空 ⇒ run#156 就是这样
+            #   一路绿到 CI 才在别处炸出来。空测必须显式变红。
+            print('  ✗ %-24s 锚点缺失 —— 本条**空测**, 结果不作数(记失败)' % name)
+            print('     ★这说明产物结构变了而本脚本没跟上。'
+                  '空测比红更危险: 它让判据链少一条守门却仍显示全绿。')
+            voided += 1
             continue
         ok, why = judge(mutated)
         if name.startswith('BASE'):
@@ -186,8 +215,11 @@ def main():
 
     n = len(SABOTAGE) - 1
     print('-' * 62)
-    print('v61 反向: %d 拦下, %d 漏过（共 %d 条 sabotage）' % (caught, passed, n))
-    return 0 if passed == 0 else 1
+    print('v61 反向: %d 拦下, %d 漏过, %d 空测（共 %d 条 sabotage）'
+          % (caught, passed, voided, n))
+    if voided:
+        print('★ 有 %d 条空测 —— 结果不作数, 修锚点或修产物。' % voided)
+    return 0 if (passed == 0 and voided == 0) else 1
 
 
 if __name__ == '__main__':
