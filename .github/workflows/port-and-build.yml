@@ -554,6 +554,53 @@ jobs:
             exit 1
           fi
           echo "::endgroup::"
+
+          # ---- 断言69: v65 守卫不再丢弃坏尺寸 / 不再误伤真实排版 ----
+          # ★v64 装机实测: 累加确实治好了(13 对 FIRST-MEASURE 无自旋, +170/拍消失),
+          #   但用户仍报闪屏/抖动/卡字。日志把真因指得很死:
+          #   [TextContainerGuard] REJECT-NAN-INF-NEG size=0.0x-8.0 ×43 / 0.0x-16.0 ×18
+          #   ⇒ 宽 0、负高的尺寸被守卫**丢弃** 61 次 ⇒ TextKit 容器尺寸一次没更新
+          #   ⇒ 排版停在上一帧 ⇒ 字被裁(旁证 tk=27.0×83 / est=31.0×96, 31pt=一行)。
+          #   同时 size=358.0x19.0 ×39 / 358.0x41.0 ×46 共 85 次**真实行高**
+          #   被风暴熔断吞掉 ⇒ 排版作废 ⇒ 「打一个字母抖一下」。
+          # ⇒ 病在守卫这一层, 与 v64 那条线无关。v65 两条同版落地。
+          echo "::group::断言69: v65 setSize 守卫必须修正而非丢弃, 且熔断不得吞真实排版"
+          GUARD_V65="src/ios/Shared/NSTextContainerSetSizeGuard.m"
+          if [ ! -f "$GUARD_V65" ]; then
+            echo "::error::找不到 $GUARD_V65 —— 守卫文件缺失, v65 无法生效"
+            exit 1
+          fi
+          if ! grep -q "V65-FIXSIZE" "$GUARD_V65" ; then
+            echo "::error::v65 有限非正尺寸修正(V65-FIXSIZE)缺失 —— 守卫仍在丢弃 0.0x-8.0, 卡字复发"
+            echo "   —— 丢弃 = TextKit 保留过期几何 = 排版结果永远滞后 = 卡字的直接原因"
+            exit 1
+          fi
+          if ! grep -q "V65-STORM" "$GUARD_V65" ; then
+            echo "::error::v65 熔断哨兵豁免(V65-STORM)缺失 —— 真实行高(19/41pt)仍被熔断吞掉, 抖动复发"
+            echo "   —— 熔断本是为杀哨兵风暴, 却在吞真实排版"
+            exit 1
+          fi
+          if python3 "$SCRIPT_DIR/ios15_verify/verify_guard_v65.py" "$GUARD_V65" ; then
+            echo "✅ v65 判据就位 (拆分丢弃/修正转发/无 return/哨兵门槛包住自增/常量一致/标识符存在, 共 5 层)"
+          else
+            echo "::error::v65 守卫判据异常 —— 上面列出的那一层没过, 按提示对症"
+            echo "   —— 若报「未找到 NaN/inf 硬拒分支」: NaN/inf 会进 TextKit ⇒ CoreText fillLayoutHole 病态循环(v4 实证 12s 卡死)"
+            echo "   —— 若报「仍是合并式丢弃」: 负尺寸被连带丢弃 ⇒ 卡字"
+            echo "   —— 若报「负高修正缺失」: 少了 fabs, -8.0/-16.0 原样喂回 TextKit"
+            echo "   —— 若报「修正块内出现 return」: 等于改回丢弃语义"
+            echo "   —— 若报「commitCount 不在哨兵门槛块内」: 顺序错了, 真实排版照旧计入预算(run#159 同族)"
+            echo "   —— 若报「常量不一致」: 哨兵被压到 ceil 而门槛按别的值判, 两条改动互相抵消"
+            echo "   —— 若报「引用了 kProbeHeightCeiling」: 它是函数内局部 const, 作用域外 ⇒ 编译红"
+            exit 1
+          fi
+          echo "---"
+          if python3 "$SCRIPT_DIR/ios15_verify/reverse_guard_v65.py" . ; then
+            echo "✅ v65 反向 10 条全拦 (含 S2 块内return / S5 顺序 / S9 作用域 / S10 标识符不存在)"
+          else
+            echo "::error::v65 反向未全拦 —— 判据存在盲区, 上面的绿灯不可信(见 verify-discipline §16/§17)"
+            exit 1
+          fi
+          echo "::endgroup::"
           echo "::group::断言37: v37 attachmentBounds probe 宽全局钳位必须就位 (9 处泄漏 → superview 撑到 817/1077/100000)"
           if grep -q "private func ios15ClampProbeWidth" src/ios/Views/Chat/SelectableMarkdownView.swift \
              && grep -q "guard proposed >= 100_000 else { return proposed }" src/ios/Views/Chat/SelectableMarkdownView.swift ; then

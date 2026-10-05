@@ -48,6 +48,8 @@ MLL_REL = "src/ios/Agent/MessageList/MessageListLayout.swift"
 # 而 C1/CONSUMED/FIRST 在 markdown view 里。少这个文件时必须 SKIP 并
 # 显式报出, 不能让判据在缺料的情况下「碰巧全绿」。
 INFRA_REL = "src/ios/Agent/MessageList/MessageListInfrastructure.swift"
+# v65 的判据对象是 ObjC 守卫(不是 swift), 单独一个传参约定。
+GUARD_REL = "src/ios/Shared/NSTextContainerSetSizeGuard.m"
 
 # 干净上游的 src/ios 路径(幂等门的基线)。CI 里拿不到 —— 那里 fallback
 # 已经跑过, 产物是移植过的, 自己拷自己当基线等于永远绿。
@@ -158,6 +160,21 @@ CHECKS = [
         "ci_assert_v64.py",                            "root",  []),
     ("v64 反向(10条含S6换名/S8顺序/S10标识符)",
         "reverse_v64.py",                              "root",  []),
+    # ★★ v65 守卫 —— v64 装机后暴露的**真根因**, 与 v64 那条线无关。
+    #   v64 装机实测: 累加确实治好了(13 对 FIRST-MEASURE 无自旋, +170/拍消失),
+    #   但用户仍报闪屏/抖动/卡字。真因在 NSTextContainerSetSizeGuard:
+    #     ① size=0.0x-8.0 ×43 / 0.0x-16.0 ×18 被守卫**丢弃** ⇒ TextKit
+    #        容器尺寸一次没更新 ⇒ 排版停在上一帧 ⇒ 卡字(est=31.0 就是一行);
+    #     ② size=358.0x19.0 ×39 / 358.0x41.0 ×46 是**真实行高**却被风暴
+    #        熔断吞掉 ⇒ 排版作废 ⇒ 「打一个字母抖一下」。
+    #   ⇒ 病在「丢弃」这一侧, 治法必须是「就地修正后转发」+「熔断只对哨兵」。
+    #   反向 10 条里 S2(块内 return)/S5(门槛挪到自增之后)/S9(引用作用域外
+    #   的局部 const)/S10(引用不存在的标识符)分别钉住 run#159 与本轮真实
+    #   犯过的两类编译红。
+    ("v65 守卫判据(5层含作用域自证)",
+        "verify_guard_v65.py",                         "guard", []),
+    ("v65 反向(10条含S2块内return/S5顺序/S9作用域/S10标识符)",
+        "reverse_guard_v65.py",                        "root",  []),
     # ★★ v63 几何基准 —— 本项目**第一条有绝对基准**的判据。
     #   v1~v62 共 62 版判据全是**相对**的(「比 v61 好」「标记在位」),
     #   从来没有一份回答过「正常的工具卡片应该多高」。后果已实证:
@@ -294,6 +311,9 @@ def main():
             missing += [r for r in extra if not os.path.exists(os.path.join(root, r))]
         elif mode == "swift" and not sp:
             missing.append(MD_REL)
+        elif mode == "guard":
+            if not root or not os.path.exists(os.path.join(root, GUARD_REL)):
+                missing.append(GUARD_REL)
         elif mode == "upstream":
             if not UPSTREAM_IOS or not os.path.isdir(UPSTREAM_IOS):
                 missing.append("干净上游 src/ios(设 OPENMINIS_UPSTREAM_IOS)")
@@ -308,6 +328,8 @@ def main():
             argv.append(root)
         elif mode == "swift":
             argv.append(sp)
+        elif mode == "guard":
+            argv.append(os.path.join(root, GUARD_REL))
         elif mode == "upstream":
             if fn == "reverse_v565.py":
                 argv += [os.path.join(HERE, "..", "ios15_fallback.py"),

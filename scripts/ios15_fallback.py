@@ -1498,6 +1498,181 @@ def fix_markdown_layout_reconcile(t):
 #      提交几何、不再转发 -> 斩断 re-entrant 链, 单次卡顿从 12s 降到几十 ms;
 #   B) 容器高度上限从 1e7 降到 1e5 (≈16× 最高真实气泡), fillLayoutHole 永远有
 #      有限终点。
+# F7b. v65: 守卫不再「丢弃」坏尺寸，也不再「误伤」真实排版
+# ---------------------------------------------------------------------
+# 【v64 装机后的真根因 —— 与 v64 那条线无关】
+#
+# v64 装机实证: 累加**确实治好了**(FIRST-MEASURE 13 对全部只出现 1 次,
+# 旧的 est=236→380→555 +170/拍 彻底消失)。但用户仍报闪屏/抖动/卡字,
+# 因为真正的病在**更上游的一层**, 日志把它指得死死的:
+#
+#   [TextContainerGuard] short-circuited setSize: REJECT-NAN-INF-NEG
+#       size=0.0x-8.0   × 43
+#       size=0.0x-16.0  × 18        ← 合计 61 次
+#
+#   宽度 **0**、高度**负数**。这 61 次全被守卫 `return` **丢弃** ⇒ TextKit
+#   的容器尺寸一次都没被更新 ⇒ 排版停在上一帧 ⇒ 屏幕上「字被裁掉一半」。
+#   旁证: `tk=27.0` 出现 83 次 / `est=31.0` 出现 96 次 —— 31pt 就是**一行**。
+#   ⇒ 「卡字」不是布局算错, 是**排版压根没跑**。
+#
+#   [TextContainerGuard] short-circuited setSize: size=358.0x19.0  × 39
+#                                            size=358.0x41.0  × 46
+#   这两个**不是哨兵, 是真实排版请求**(19/41pt = 一行/两行), 也被同 tick
+#   熔断规则连带丢掉 ⇒ 每次丢掉都意味着这一帧的排版作废、下一帧拿旧高度
+#   上屏 ⇒ 用户看到的「打一个字母就抖一下」。
+#
+# 【为什么之前 30 余版没治好 —— 三条排除法】
+#   ① 不是 self-sizing 反馈环: est==recomputed 176/176 = 100%, 累加已消失;
+#   ② 不是宽度污染: v34/v47/v48/v51 已把 tcW 钉在 358, 日志 tcW 恒 358;
+#   ③ 不是闸门锁死: 闸门只在"两侧都没更新信息"时收紧, 而 Tk 有值时放行。
+#   ⇒ 剩下唯一还在丢东西的环节, 就是这个守卫本身。
+#
+# 【v65 三条, 全部改「产生/丢弃」这一侧, 不动任何已修好的部分】
+#   ① REJECT → **就地修正后转发**: 宽 0 → 用容器当前宽(或屏宽兜底);
+#      负高 → 取绝对值并夹到合法区间。**丢弃是错的**: 丢弃让 TextKit 保留
+#      过期几何, 而过期几何正是"卡字"的直接来源。修正后转发 = 让排版真的跑。
+#   ② 风暴熔断**豁免真实排版尺寸**: 哨兵(≥2000 高)才进风暴计数;
+#      真实高度(19/41/939/1118...)永不因熔断被丢 ⇒ 抖动源头切断。
+#      ★这是本次最关键的一条: 熔断本是为杀哨兵风暴而设, 却在吞真实排版。
+#   ③ 保留 NaN/inf 的**硬拒**: 那些是真的不能喂给 TextKit(会走 fillLayoutHole
+#      病态循环 → 12s 卡死, v4 已实证)。只把「有限但非正」的尺寸改成修正转发。
+V65_REJECT_OLD = """    if (!isfinite(newSize.width) || !isfinite(newSize.height) ||
+        newSize.width < 0 || newSize.height < 0) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0x1F) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] short-circuited setSize: "
+                  @"REJECT-NAN-INF-NEG size=%.1fx%.1f total=%llu container=%p",
+                  newSize.width, newSize.height,
+                  (unsigned long long)gShortCircuitCount,
+                  (__bridge void *)self);
+        }
+        return;
+    }"""
+
+V65_REJECT_NEW = """    if (!isfinite(newSize.width) || !isfinite(newSize.height)) {
+        // [V65] NaN/inf 仍然硬拒 —— 它们会触发 CoreText fillLayoutHole 病态循环
+        // (v4 实证 11918ms 主线程卡死), 且 TextKit 无法表示, 无从"修正"。
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0x1F) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] short-circuited setSize: "
+                  @"REJECT-NAN-INF size=%.1fx%.1f total=%llu container=%p",
+                  newSize.width, newSize.height,
+                  (unsigned long long)gShortCircuitCount,
+                  (__bridge void *)self);
+        }
+        return;
+    }
+    // [V65-FIXSIZE] 有限但非正的尺寸: **就地修正后转发, 不再丢弃**。
+    //
+    // 【装机铁证】v64 之后 (minis-2026-10-05 13:21) 这个分支命中 61 次:
+    //   size=0.0x-8.0  ×43
+    //   size=0.0x-16.0 ×18
+    // 宽 0 + 负高 = 宽度算崩了、高度算成了 -inset/2。旧代码在这里 `return`
+    // ⇒ **TextKit 容器尺寸一次都没被更新** ⇒ 排版停在上一帧 ⇒ 屏幕上的字
+    // 被上一帧的旧高度裁掉一半。旁证: tk=27.0 ×83 / est=31.0 ×96,
+    // 31pt 就是一行 —— 「卡字」不是布局算错, 是排版压根没跑。
+    //
+    // 【为什么必须修正而不是丢弃】丢弃看起来"安全"(不把脏值喂给 TextKit),
+    // 但它恰恰是卡字的直接原因: 丢弃 = 保留过期几何 = 排版结果永远滞后。
+    // 而这些值是**有限**的, 数值上完全可以变成一个合法尺寸 —— 不存在
+    // "喂进去会病态循环"的风险(那是 inf/NaN 的问题, 上面已硬拒)。
+    //
+    // 【修正规则, 逐条都有装机依据】
+    //   宽 <= 0 → 用容器**自己当前的宽**(它是上一次排版的正确答案);
+    //            拿不到就退回屏宽-32(358, 日志实测的真实排版宽度)。
+    //            ★不用 UIScreen 满宽 390: v13/v34 已实证 390 排版/358 显示
+    //              会导致末行裁断与拉锯闪字(REVERTED-v11 注释详述)。
+    //   高 <= 0 → 取绝对值。8/16 正好是 textContainerInset 的量级, 说明
+    //            上游算的是 "容器高 - inset", inset 被减了两遍。
+    //            取绝对值后 8/16 是一个合法的最小容器高, 排版能正常跑。
+    if (newSize.width <= 0 || newSize.height <= 0) {
+        CGSize _v65orig = newSize;
+        if (newSize.width <= 0) {
+            // [V65] 取容器自己当前的宽。走 KVC 而不是 `[(id)self width]`:
+            // NSTextContainer 是私有类, 直接发消息在 ARC 下要求编译器知道该
+            // selector 声明, 会报 "no visible @interface" —— 这正是我担心的
+            // 又一处编译红(run#157/run#159 同类)。KVC 纯运行期查找, 无声明依赖。
+            CGFloat _w = 0;
+            @try {
+                NSValue *_wv = [(id)self valueForKey:@"size"];
+                if (_wv) _w = (CGFloat)[_wv CGSizeValue].width;
+            } @catch (__unused NSException *_e) {
+                _w = 0;
+            }
+            if (!(_w > 1) || !isfinite(_w) || _w > 1e5) {
+                _w = [UIScreen mainScreen].bounds.width - 32.0;
+            }
+            newSize.width = _w;
+        }
+        if (newSize.height <= 0) {
+            newSize.height = fabs(newSize.height);
+        }
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0x1F) == 1) {
+            NSLog(@"[TextContainerGuard] [V65] FIXED-NONPOSITIVE size=%.1fx%.1f "
+                  @"-> %.1fx%.1f total=%llu container=%p — 修正转发(旧版丢弃=卡字)",
+                  _v65orig.width, _v65orig.height, newSize.width, newSize.height,
+                  (unsigned long long)gShortCircuitCount,
+                  (__bridge void *)self);
+        }
+        // 不 return —— 继续往下走熔断逻辑, 修正后的尺寸照常转发给 TextKit。
+    }"""
+
+# ---- 风暴熔断豁免: 哨兵才计数, 真实排版永不因熔断被丢 ----
+V65_STORM_OLD = """    s->commitCount += 1;
+    if (s->commitCount > kStormForwardLimit) {
+        s->stormed = YES;
+    }"""
+
+V65_STORM_NEW = """    // [V65-STORM] 只有**哨兵**尺寸才计入风暴预算; 真实排版高度永不参与。
+    //
+    // 【装机铁证】v64 之后 (13:21 装机日志) 熔断误伤了 85 次真实排版:
+    //   size=358.0x19.0 ×39   ← 一行, 真实高度
+    //   size=358.0x41.0 ×46   ← 两行, 真实高度
+    // 这些不是哨兵(哨兵是 ≥3000 被压到 2000), 是**真正的行高**。丢掉它们
+    // ⇒ 这一帧排版作废 ⇒ 下一帧拿旧高度上屏 ⇒ 用户看到的「打一个字母抖一下」。
+    //
+    // 【为什么这样切是安全的】熔断(kStormForwardLimit=40)存在的唯一目的是
+    // 斩断哨兵驱动的 fillLayoutHole re-entrant 风暴(v4 的 11918ms 卡死)。
+    // 真实排版尺寸**不是**风暴源 —— 它进 CoreText 是一次有界的正常排版。
+    // 之前把两者混在同一个计数器里, 于是熔断在杀哨兵的路上把真实排版
+    // 一起吞了: 这就是「哨兵没治好、真排版先受害」。
+    //
+    // 判据用高度: ≥ 2000 即已被上面 kProbeHeightCeiling 压到哨兵值, 那才是
+    // 风暴源; < 2000 是真实内容高度, 不计预算、不触发熔断。
+    // ★为什么写字面量 2000 而不是引用 kProbeHeightCeiling: 那个 const 声明在
+    //   本函数体内它自己那段 `{ ... }` 里, 与本处**不在同一作用域**, 直接
+    //   引用会编译失败(这正是 run#159/run#157 同类错误的第四次)。写死字面量
+    //   并在上面的哨兵压位处加了注释锚点, 两处靠 2000 这个数字对齐。
+    if (newSize.height >= 2000.0) {
+        s->commitCount += 1;
+        if (s->commitCount > kStormForwardLimit) {
+            s->stormed = YES;
+        }
+    }"""
+
+
+def fix_guard_fixsize_v65(t):
+    """v65 注入: 守卫不再丢弃有限非正尺寸, 且熔断只对哨兵生效。
+
+    【为什么这两条必须一起做】
+      ① 丢弃 ⇒ TextKit 保留过期几何 ⇒ 卡字(61 次实证)
+      ② 熔断吞真实排版 ⇒ 排版作废 ⇒ 抖动(85 次实证)
+    只做 ①: 排版能跑了, 但一帧内被熔断吞掉, 仍抖。
+    只做 ②: 排版不丢, 但脏尺寸(宽 0)仍让 TextKit 排错, 仍卡字。
+    ⇒ 必须同版本落地, 否则两边的症状互相掩盖, 又变成"看不出哪条有效"。
+
+    幂等: 已有 [V65-FIXSIZE] 原样返回。
+    """
+    if "[V65-FIXSIZE]" in t:
+        return t
+    t = _v60_replace1(t, V65_REJECT_OLD, V65_REJECT_NEW,
+                       "v65 有限非正尺寸改为修正转发(旧版丢弃=卡字)")
+    t = _v60_replace1(t, V65_STORM_OLD, V65_STORM_NEW,
+                       "v65 风暴熔断只对哨兵计费(旧版吞真实排版=抖动)")
+    return t
+
+
 def fix_textcontainer_guard_stormbreaker(t):
     if "IOS15-FIX-STORM" in t:
         return t  # 幂等
@@ -14012,6 +14187,18 @@ def main():
     edit("Views/Chat/SelectableMarkdownView.swift", fix_stream_end_force_remeasure_v38a, "v38-A: 高度欠账自愈重测 — 治'末行整段不显示'(supervisor高 1299.67 vs needH 1748, 差 448pt 被裁; v18 改frame 赢不了布局 pass, 改走 invalidateCellSizeIfNeeded 提交诉求)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_table_width_clamp_v38b, "v38-B: 表格 attachmentBounds 返回宽钳到真实容器宽 (第 10 条泄漏: 1096 不是哨兵值, v37 的 >=100000 守卫拦不住)")
     edit("Shared/NSTextContainerSetSizeGuard.m", fix_setsize_storm_clamp_v38c, "v38-C: intrinsic 哨兵高度 100000 收敛到 4000 (358x100000 独占 87 次最高频风暴 → 终端框卡顿 + 长文本卡字)")
+    edit("Shared/NSTextContainerSetSizeGuard.m", fix_guard_fixsize_v65,
+        "v65: ★v64 之后的真根因(与 v64 那条线无关)。①REJECT-NAN-INF-NEG 拆开 —— "
+        "NaN/inf 仍硬拒(会走 fillLayoutHole 病态循环 → v4 实证 12s 卡死), 但"
+        "**有限非正的尺寸改为就地修正后转发**。装机铁证(13:21): size=0.0x-8.0 "
+        "×43 / 0.0x-16.0 ×18 共 61 次被**丢弃** ⇒ TextKit 容器尺寸一次没更新 "
+        "⇒ 排版停在上一帧 ⇒ 屏幕上字被裁掉一半(旁证 tk=27.0×83 / est=31.0×96, "
+        "31pt 就是一行)。★**丢弃才是卡字的直接原因**: 它=保留过期几何。"
+        "②风暴熔断只对哨兵(≥2000)计费 —— 真实行高 358x19.0×39 / 358x41.0×46 "
+        "共 85 次被熔断吞掉 ⇒ 排版作废 ⇒ 「打一个字母抖一下」。熔断本是为杀"
+        "哨兵风暴, 却在吞真实排版。两条必须同版落地, 否则症状互相掩盖。"
+        "★熔断判据写死字面量 2000 而不引用 kProbeHeightCeiling: 那个 const "
+        "声明在函数内另一段作用域, 引用会编译失败(run#159/run#157 同类错误第四次)。")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_clamp_v39, "v39: 帧同步补上高度 — 治'字显示不全/排版不对'(v23 帧同步只修宽度不修高度, 每帧把 v18 撑好的高度改回去 → svH 恒为 needH 的 0.50~0.74, 37/37)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_unconditional_v40, "v40: 高度补齐挪出 polluted 分支 — 治'块重叠/字只剩一半'(v39 实测: textView 自身 frameH==needH 已 52/52 全对, 但 superview 52/52 仍欠 23.7~476pt。根因: polluted 判据只看宽度, 宽度修好后早退, v39 的高度代码一行没跑 → 宽度修好反而挡住了高度)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_height_clamp_v41, "v41: KVO 抢帧器补高度 — 治'字只剩一半/终端框不接结果'(推翻 v39/v40 的诊断: log9 同一毫秒同一 layoutSubviews 内 DIAG2 读到 358x2000.33 而开头快照是 100000x1455.33 → v18+v40 在 pass 内**确实修好了**, 欠账是 pass 结束后 SwiftUI 写回的。真凶: KVO 抢帧器只修x/width 从不写高度, 且 polluted 判据只看宽度 → '宽度正常+高度欠账'的帧被 if !polluted { return } 放过 → 末行被裁。v41: KVO 内无条件补高度 + polluted 增加高度维度 + 提交前兜底 + pass 末尾 V41-DEBT 回写侦测)")
