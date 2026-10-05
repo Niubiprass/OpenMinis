@@ -2485,6 +2485,57 @@ jobs:
             exit 1
           fi
 
+      # ============== 断言 73: 编译前守卫源码指纹(为断言 72 定位根因) ==============
+      # ★ 断言 72 报红时说「装机包里没有 v65/v68」, 但那只是**现象**。
+      #   本步骤把「编译读进去的那份源码到底长什么样」在 CI 上打印出来,
+      #   于是「注入没生效」与「注入了但没编进去」两种成因被**一次分开**:
+      #     - 这里的行数/md5/标记数 == 期望(597 / v68 标记 >=1)
+      #       ⇒ 源码是对的 ⇒ 问题在编译/链接/打包 ⇒ 排查 ③④⑤
+      #     - 这里的行数 == 193(上游原版) 或 v68 标记 == 0
+      #       ⇒ **注入根本没落在 src/ios** ⇒ 排查 ①②
+      # ★ 为什么需要它: 源码判据(断言 71)与产物判据(断言 72)之间
+      #   隔着「fallback 写盘 → xcodebuild 读盘」这一跳,
+      #   而**没有任何一步在记录这一跳的两端**。
+      - name: "断言73: 编译前守卫源码指纹 (把断言72 的根因一次分开)"
+        if: success()
+        run: |
+          G="src/ios/Shared/NSTextContainerSetSizeGuard.m"
+          echo "::group::断言73: 编译前守卫源码指纹"
+          if [ ! -f "$G" ]; then
+            echo "::error::$G 不存在 —— 编译必然拿不到任何守卫代码"
+            exit 1
+          fi
+          LINES=$(wc -l < "$G" | tr -d ' ')
+          MD5=$(md5 -q "$G" 2>/dev/null || md5sum "$G" | cut -d' ' -f1)
+          echo "  文件      : $G"
+          echo "  行数      : $LINES   (干净上游 193 / v68 产物期望 597)"
+          echo "  md5       : $MD5"
+          echo "  编译读的是: $(cd "$(dirname "$G")" && pwd)/$(basename "$G")"
+          for m in "IOS15-FIX-STORM" "V65-FIXSIZE" "V68-STREAK" "V68-DOWNFREQ" "V68-GOODH" "V68-HOIST"; do
+            echo "  标记 $m = $(grep -c "$m" "$G" || true)"
+          done
+          # 期望: 597 行 + v68 系列标记全部 >=1
+          BADMARK=0
+          for m in "V68-STREAK" "V68-DOWNFREQ" "V68-GOODH"; do
+            C=$(grep -c "$m" "$G" || true)
+            if [ "$C" -lt 1 ]; then BADMARK=1; fi
+          done
+          if [ "$BADMARK" = "1" ]; then
+            echo "::error::★编译前的源码里 v68 标记不全★ ⇒ 注入**根本没落在 src/ios**"
+            echo "   —— 断言 71 却报绿 ⇒ 断言 71 验的是**别的文件**或**上一轮的残留**"
+            echo "   —— 重点查: fallback 的 edit() 目标路径 / 是否有别的步骤在编译前"
+            echo "           把 src/ios 重置回上游(幂等门的 copytree 目标是 tmpdir, 已排除)"
+            exit 1
+          fi
+          if [ "$LINES" -lt 500 ]; then
+            echo "::error::编译前的源码只有 $LINES 行(期望 597) ⇒ 注入丢了"
+            exit 1
+          fi
+          echo "✅ 编译前的源码带着 v68(行数=$LINES, md5=$MD5)"
+          echo "   ⇒ 若断言 72 仍报红, 根因就在**编译/链接/打包**这一侧"
+          echo "   ⇒ 不是注入问题, 不是源码问题, 是产物问题"
+          echo "::endgroup::"
+
       - name: "编译 App (不签名)"
         run: |
           set -e
