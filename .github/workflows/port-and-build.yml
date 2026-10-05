@@ -514,6 +514,45 @@ jobs:
             exit 1
           fi
           echo "::endgroup::"
+
+          # ---- 断言68: v64 切断 self-sizing 的「自我播种」 ----
+          echo "::group::断言68: v64 自我播种必须断开(去播种 + 收敛闸, 治 pref 每拍 +170pt 累加)"
+          # ★装机实证(v63 版) —— 这是本项目第一次拿到「代码真在跑」的证据:
+          #   [V63-PROBE] fast=1412 rebuild=0(88 次输出) + live=21/26/32/34/45
+          #   v31~v62 三十余版从未有过(那些版本探针 0 次、live 恒 0)。
+          # 但几何判据同时显示病更重: 尾部极差 717.0pt(v62 时 436pt),
+          # 形态从 v30-A 的「翻转」变成**单调累加**(delta 恒 +144~+205pt)。
+          #
+          # ★决定 v64 设计的关键证据 —— 6 拍的时间戳:
+          #   11:07:52.403 / .586 / .778 / 53.170 / .382 / 53.981
+          #   间隔 0.183/0.192/0.392/0.212/0.599s, 全在 1.58s 内,
+          #   且 **est_{n+1} 严格等于 pref_n**。
+          # ⇒ 高度不是「被谁算大了」, 是**被自己上一轮的答案累加出来的**:
+          #   H_{n+1} = H_n + 170。根因是 MessageListInfrastructure.swift 里
+          #   targetSize 声明了 layoutFittingCompressedSize(压缩语义 = 从内容
+          #   重算), 下一行却用 super 刚返回的、已膨胀的 attrs.size.height
+          #   当测量初值 ⇒ iOS 16+ SwiftUI 遵守压缩优先级无害, **iOS 15 不
+          #   遵守, 播种值胜出** ⇒ 写回缓存 ⇒ 下一轮 est 更大 ⇒ 再播种。
+          #
+          # ★v64 初版(同宽幂等锁)已被这组时间戳证伪并整体推翻: 0.35s 时间窗
+          #   拦不住 0.392/0.599s 那两拍; 且它是全局单例, 列表里多个同宽 cell
+          #   会互相冻结 ⇒ 内容截断, 比抖动更糟。
+          #
+          # ★本项目第三次「判据全绿但药不治病」(前两次: run#156 空测当通过、
+          #   run#157 只验文本不验语法)。所以反向 9 条全部改成**问实质**:
+          #   闸门在不在(S1) 算不算(S2) 改不改写(S3) 会不会误杀真实增长(S4)
+          #   播种真不取上一轮(S5/S6/S7) 顺序对不对(S8) 有没有 est 下限(S9)。
+          if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v64.py" . ; then
+            echo "✅ v64 就位 (不播种 + 收敛闸真改写 + 数据流顺序正确 + 9 条 sabotage 全拦)"
+          else
+            echo "::error::v64 判据异常 —— 自我播种未断(pref 每拍 +170pt 累加, 整屏狂跳)"
+            echo "   —— 若报「仍取 attrs.size.height」: 播种没断, 环还在自我累加"
+            echo "   —— 若报「只计算不改写」: 闸门算了不用, 等于没下药(v53 当年的原样病)"
+            echo "   —— 若报「在写回之后」: 顺序错了, 拦下的值不会被采纳, 闸门形同虚设"
+            echo "   —— 若报「缺 est > 4 下限」: 首帧高度会被锁成 0 ⇒ 整格空白"
+            exit 1
+          fi
+          echo "::endgroup::"
           echo "::group::断言37: v37 attachmentBounds probe 宽全局钳位必须就位 (9 处泄漏 → superview 撑到 817/1077/100000)"
           if grep -q "private func ios15ClampProbeWidth" src/ios/Views/Chat/SelectableMarkdownView.swift \
              && grep -q "guard proposed >= 100_000 else { return proposed }" src/ios/Views/Chat/SelectableMarkdownView.swift ; then

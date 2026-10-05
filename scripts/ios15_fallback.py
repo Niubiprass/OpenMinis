@@ -7620,6 +7620,198 @@ def fix_intrinsic_gate_v63_compat(t):
     return t
 
 
+# ==================================================================
+# v64: 打断「测量自激」—— 单向累加的真正病因
+# ==================================================================
+# v64: 切断「自我播种」—— 单向累加的真正病因
+# ==================================================================
+#
+# 【v63 装机实证 2026-10-05】v63 第一次在真机跑起来:
+#   [V63-PROBE] fast=1412 rebuild=0     (88 次输出)
+#   live=21/26/32/34/45                  (不再是恒 0)
+#   ⇒ invalidate 通道真的通了, v62 之前「探针 0 次 + live 恒 0」的死局打破。
+#   这是 v31~v62 三十余版从未有过的证据。
+#
+# 【但病更重了】几何判据(idx=9):
+#   尾部极差 717.0pt(上限 8.0), 最大单跳 301.0pt, 全段跨度 = 名义高 28.2 倍
+#   v62 时尾部极差 436pt ⇒ **反而更大**。
+#
+# 【病态形态变了 —— 这是本版的关键发现】
+#   v30-A 时期: 双引擎测高互相**翻转**(1176 ⇄ 850), est/pref 交叉
+#   v63 时期:   **单调累加, 只涨不跌**
+#     est=31   → pref=236   (+205)
+#     est=236  → pref=380   (+144)
+#     est=380  → pref=555   (+175)
+#     est=643  → pref=809   (+166)
+#     est=809  → pref=971   (+162)
+#     est=1070 → pref=1272  (+202)
+#   delta 稳定在 +144~+205 ⇒ 每拍固定多出约 170pt。
+#   日志里「双引擎/翻转」标记 0 次 ⇒ v30-A 那个老毛病确实治好了,
+#   现在露出来的是**更靠上游的新问题**。
+#
+# 【为什么 v63 反而更严重 —— 不是 v63 改坏了】
+#   v53/v62 的三条短路(欠账/盈余/settle 门)实际上在**掩盖**这个更底层的问题:
+#   它们让高度锁死在旧值, 看起来"稳定", 其实是冻结。
+#   v63 把 invalidate 通道修好后, 底层错误测量终于能真正执行 ⇒ 暴露。
+#   ⇒ 典型「修好上层, 下层塌出来」。必须继续往下挖, 不能回头打补丁。
+#
+# ==================================================================
+# 【v64 根因判定: 不是"重排太频繁", 是"测量自己喂自己"】
+# ==================================================================
+# 装机日志时间戳(这是推翻 v64 初版设计的决定性证据):
+#   11:07:52.403  est=31   → pref=236
+#   11:07:52.586  est=236  → pref=380    (+0.183s)
+#   11:07:52.778  est=380  → pref=555    (+0.192s)
+#   11:07:53.170  est=643  → pref=809    (+0.392s)
+#   11:07:53.382  est=809  → pref=971    (+0.212s)
+#   11:07:53.981  est=1070 → pref=1272   (+0.599s)
+# 6 拍全在 1.58s 内, 相邻间隔 0.183~0.81s。
+#
+# ⇒ v64 初版设计的「同宽 + 0.35s 时间窗幂等锁」**拦不住**:
+#   0.183/0.192/0.212s 三拍落在窗内会被拦, 但 0.392/0.599s 两拍在窗外
+#   照样放行 ⇒ 累加照旧。那把锁是装饰品, 必须推翻。
+#
+# ⇒ 更要紧的是看清了 est 与 pref 的关系:
+#     est_{n+1} == pref_n     (严格相等)
+#     pref_n - est_n ≈ +170  (恒定)
+#   est 就是 UIKit 下一轮递给我们的 layoutAttributes.size.height, 也就是
+#   **我们上一轮亲手写进 heightCache 的那个值**。
+#   ⇒ 高度不是"被谁算大了", 是**被自己上一轮的答案累加出来的**。
+#   这就是数学上的发散: H_{n+1} = H_n + 170, H_n = 31 + 170n。
+#
+# 【根因代码 —— MessageListInfrastructure.swift, preferredLayoutAttributesFitting】
+#   :531  let targetSize = CGSize(width: ..., height: UIView.layoutFittingCompressedSize.height)
+#         ↑ 声明了"我要压缩语义(从内容重算)"
+#   :561  var fittingSize = CGSize(width: targetSize.width, height: attrs.size.height)
+#         ↑ 却用 super 刚返回的、**已经膨胀过**的 attrs.size.height 当测量初值
+#   :567  fittingSize = self.contentView.systemLayoutSizeFitting(targetSize, ... .fittingSizeLevel)
+#   :717  fittingSize.height = _ios15Reconciled      (= max(SwiftUI, TextKit))
+#   :725  lastComputedHeight = fittingSize.height    ← 写回缓存, 成为下一轮的 est
+#
+#   :561 与 :531 **自相矛盾**: 声明压缩优先级, 却用上一轮结果播种。
+#   iOS 16+ 上 SwiftUI 遵守 .fittingSizeLevel, 从内容重算 ⇒ 无害;
+#   **iOS 15 上不遵守, 播种值胜出** ⇒ 写进缓存 ⇒ 下一轮 est 更大 ⇒ 再播种
+#   ⇒ 每拍 +170 的自激环。
+#
+# 【为什么 v63 让它从"冻结"变成"发散" —— v63 是对的, 不是 v63 改坏了】
+#   v60 曾把 intrinsicContentSize 的**高度**也改成 noIntrinsicMetric(只为治宽度
+#   污染)。对宽度成立, 但高度正是 iOS 15 唯一的内容尺寸更新信号源 ⇒ hosting
+#   view 高度恒为"无" ⇒ 播种值永远是死的 0 ⇒ 环转不起来, 但高度也永远
+#   锁死在旧值(v53/v62 看到的就是这个"稳定")。
+#   v63(V63-INTSIZE)恢复了高度上报 —— 这是**必须保留的正确修复**
+#   (iOS 15 感知 SwiftUI 内容尺寸变化的唯一通道就是 intrinsicContentSize +
+#   invalidateIntrinsicContentSize)。恢复之后播种值从"死的 0"变成"活的膨胀值",
+#   自激环第一次真正跑起来。
+#   ⇒ 病不是 v63 引入的, 是 v63 让一个存在了 30 余版的底层 bug 显形。
+#
+# 【v64 做什么 —— 一行切断自我播种】
+#   把 :561 的播种值从"上一轮的 attrs.size.height"改成"不播种"
+#   (height = UIView.layoutFittingCompressedSize.height, 与 :531 的声明一致),
+#   让 systemLayoutSizeFitting 只能从内容重算, 拿不到上一轮的答案。
+#
+#   顺带把 :718 之前补一道**收敛闸**: 若重算结果仍 ≥ 上一轮 est(说明 iOS 15
+#   的 SwiftUI 还是把旧值赢了回来), 就不许再往上加, 保留上一轮值 ——
+#   这是对 iOS 15 行为不确定时的兜底, 宁可暂时少报也不无限发散。
+#   真实内容变高时 TextKit 那一路(_ios15TkSum)仍会给出权威的、更大的值,
+#   闸门放行(条件是 est 未变 + Tk 实测更大), 不会误杀真实增长。
+#
+# 【为什么不用「限流」而用「断反馈」】限流/幂等锁是在**症状层**打补丁:
+#   它假设"重排太频繁", 于是限制重排次数。但真正的问题是**每次重排的输入
+#   里混进了上一次的结果** ⇒ 就算只重排一次, 那一次也可能返回一个偏大的值,
+#   而这个偏大的值会永久留在缓存里。断掉反馈, 一次都不需要限。
+#   (v64 初版就是限流思路的产物, 被上面 6 拍时间戳证伪, 已整体推翻。)
+
+# ---- 锚点: 播种行(infrastructure 侧, 全文唯一) ----
+V64_SEED_OLD = """        var fittingSize = CGSize(width: targetSize.width, height: attrs.size.height)"""
+
+V64_SEED_NEW = """        // [V64-DESEED] 不播种 —— 切断「测量自激」的自我反馈。
+        //
+        // 【为什么必须】上一行 `targetSize` 声明了
+        // `verticalFittingPriority: .fittingSizeLevel`(压缩语义 = 从内容重算),
+        // 这里却把 super 刚返回的、**已经膨胀过**的 `attrs.size.height` 当作
+        // 测量初值喂回去。iOS 16+ 上 SwiftUI 遵守压缩优先级, 无害;
+        // iOS 15 上不遵守, 播种值胜出 ⇒ 写进 lastComputedHeight/heightCache
+        // ⇒ 下一轮 UIKit 把这个值当 est 递回来(实测严格相等:
+        // est_{n+1} == pref_n) ⇒ 再播种 ⇒ H_{n+1} = H_n + 170 发散。
+        //
+        // 【装机铁证】idx=9 六拍, delta 恒 +144~+205,
+        // 11:07:52.403 → 53.981 全在 1.58s 内, 形态是单调累加、只涨不跌。
+        // 20pt 行高下 170pt ≈ 8~9 行, 与 storageLen=851 的表格消息吻合。
+        //
+        // 【v60/v63 的关系】v60 把 intrinsicContentSize 高度也清成
+        // noIntrinsicMetric, 于是播种值恒为死的 0, 环转不起来 —— 代价是高度
+        // 永远锁死(v53/v62 看到的"稳定")。v63 恢复高度上报是**必须保留的
+        // 正确修复**(iOS 15 感知 SwiftUI 内容尺寸变化的唯一通道), 恢复后
+        // 播种值变"活", 这个存在了 30 余版的底层 bug 才显形。
+        // ⇒ 本条只断反馈, 不动 v63 的高度上报。
+        //
+        // 【为什么不锁 invalidate 次数】限流是症状层补丁: 它假设"重排太频繁",
+        // 于是数次数。但病根是"每次重排的输入里混进了上一次的输出" ⇒
+        // 就算只重排一次, 那一次也可能返回偏大的值并永久留在缓存里。
+        // 断反馈, 一次都不需要限。
+        var fittingSize = CGSize(width: targetSize.width,
+                                 height: UIView.layoutFittingCompressedSize.height)"""
+
+# ---- 锚点: 收敛闸(必须紧跟 reconcile 之后、写回 lastComputedHeight 之前) ----
+V64_GATE_OLD = """        fittingSize.height = _ios15Reconciled
+        attrs.size.height = fittingSize.height"""
+
+V64_GATE_NEW = """        // [V64-CONVERGE] 收敛闸 —— 断掉反馈之后的兜底。
+        //
+        // 断掉播种后, 理论上 `fittingSize.height` 只能由内容决定。但 iOS 15
+        // 的 SwiftUI 是否真的遵守 .fittingSizeLevel 无法在编译期确认 ——
+        // 若它仍把上一轮的值赢回来, 累加会**换一条路复发**。
+        //
+        // 【判据】重算结果 ≥ 上一轮 est, 且宽度没变 ⇒ 判定为"没真的重算,
+        //   只是把旧值带了回来"。此时**保留 est**, 不许再往上加。
+        //   累加的数学结构(H → H+170)在这里被直接截断: 不加就不发散。
+        //
+        // 【为什么不会误杀真实增长】真实内容变高时, 权威测量是 TextKit 那一路
+        // (`_ios15TkSum`, 来自 SelectableMarkdownTextView.lastComputedHeight,
+        // 是 sizeThatFits 的实测值)。闸门只在上报值 ≥ est 时收紧; 若 Tk 实测
+        // 确实更高, `_ios15Reconciled` 会高于 est, 但那说明 SwiftUI 这次**真的
+        // 重算了**(est 已被重算结果取代) —— 所以判据里再要求
+        // 「Tk 实测没有超出 est」, 只有"两边都没给出更新的信息"才拦。
+        let _v64est = attrs.size.height
+        let _v64tk = _ios15TkSum
+        let _v64grew = _ios15Reconciled >= _v64est - 0.5
+        let _v64tkFresh = _v64found && _v64tk > _v64est + 0.5
+        if _v64grew && !_v64tkFresh, _v64est > 4 {
+            Self.sizingLogger.info("[CellSizing][V64-CONVERGE] hold est=\\(String(format: "%.1f", _v64est)) recomputed=\\(String(format: "%.1f", _ios15Reconciled)) tk=\\(String(format: "%.1f", _v64tk)) — 未真重算, 保留 est 阻断累加")
+            _ios15Reconciled = _v64est
+        }
+        fittingSize.height = _ios15Reconciled
+        attrs.size.height = fittingSize.height"""
+
+
+def fix_deseed_v64_infra(t):
+    """v64 注入: 切断 preferredLayoutAttributesFitting 的「自我播种」。
+
+    这是 v64 的全部内容 —— 两条, 都在 SelfSizingCell 一个函数里:
+      ① V64-DESEED  播种值不取上一轮结果(与 targetSize 的压缩语义对齐)
+      ② V64-CONVERGE 收敛闸: 重算值没真重算(=只是旧值回来)就保留 est
+
+    幂等: 已有 [V64-DESEED] 原样返回。锚点计数防呆。
+
+    【为什么放在这里而不是下游】下游(v53/v62/v63 的短路、v61 单调锁、
+      v31 翻转锁)全都在**症状层**: 它们限制"改几次"或"往哪个方向改"。
+      但 H_{n+1} = H_n + 170 的病根是"输入里混进了上一次的输出" ——
+      只要 est 仍是我们写回缓存的那个值, 无论下游怎么限, 下一轮都从
+      被污染的起点出发。**必须回到 self-sizing 的测量入口断开反馈。**
+
+    【为什么不用 v64 初版的「同宽幂等锁」】初版假设"重排太频繁", 用
+      0.35s 时间窗拦同宽重复 settle。装机时间戳把它证伪了: 6 拍间隔
+      0.183/0.192/0.392/0.212/0.599s, 0.35s 窗只能拦下 3 拍, 剩下 3 拍
+      照样累加 ⇒ 累加幅度不减, 病不治。而且那把锁是全局单例, 列表里多个
+      同宽 cell 会互相冻结 ⇒ 内容截断, 比抖动更糟。已整体推翻。
+    """
+    if "[V64-DESEED]" in t:
+        return t
+    t = _v60_replace1(t, V64_SEED_OLD, V64_SEED_NEW, "v64 去播种(断自我反馈)")
+    t = _v60_replace1(t, V64_GATE_OLD, V64_GATE_NEW, "v64 收敛闸(阻断累加)")
+    return t
+
+
 def fix_intrinsic_size_v63_md(t):
     """v63 注入③: SelectableMarkdownTextView.intrinsicContentSize 恢复高度上报。
 
@@ -7863,6 +8055,126 @@ def verify_uncouple_v63(md):
     if "v53DebtIsRipe &&" in seg or "_v63drift &&" in seg:
         raise RuntimeError(
             "%s: _v63drift 不得再与 debt 计数绑定 —— 那会把循环依赖引回来" % F)
+    return True
+
+
+def _v64_body(t, start_marker, what):
+    """取出 `start_marker` 所在语句起的花括号块(按配平)。
+
+    ★为什么必须按配平取而不是按固定行数(判据纪律第 6 条: 锚点选代码结构):
+    固定行数会随上游注释长度漂移 —— 上游加一段注释, 判据就切错了地方,
+    然后"锚点还在"判据全绿, 实际检查的是别的东西。run#156 的锚点腐化
+    就是这么发生的。
+    """
+    i = t.find(start_marker)
+    if i < 0:
+        raise RuntimeError("v64: %s 缺失(找不到起点 %r)" % (what, start_marker[:60]))
+    j = t.find("{", i)
+    if j < 0:
+        raise RuntimeError("v64: %s 起点之后没有 '{' —— 锚点可能指错语句" % what)
+    depth = 0
+    for k in range(j, len(t)):
+        if t[k] == "{":
+            depth += 1
+        elif t[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return t[i:k + 1]
+    raise RuntimeError("v64: %s 的花括号不配平(注入被截断?)" % what)
+
+
+def verify_deseed_v64(infra):
+    """v64 判据: 切断 self-sizing 的「自我播种」+ 收敛闸。
+
+    ★本判据的定位与前 63 版不同 —— 它必须能区分这两种情况:
+        (A) 播种值真的不再取上一轮结果
+        (B) 注释写着"不播种", 代码却还在取
+      v64 初版就是因为判据只查"标记在位", 才让一把**被时间戳证伪的锁**
+      带着 9 条绿灯过了 CI。所以这里的每一层都查**表达式与数据流**,
+      不查标记。
+
+    四层:
+      ① 去播种: 播种语句的高不得再来自 attrs.size.height, 且必须用
+         layoutFittingCompressedSize(与 targetSize 的压缩语义一致)
+      ② 收敛闸在位, 且真的改写 _ios15Reconciled(不是只打印)
+      ③ 收敛闸不会误杀真实增长 —— 必须存在"Tk 实测更大则放行"的分支
+      ④ 数据流: 闸门必须在 lastComputedHeight 写回**之前**, 否则拦了也白拦
+    """
+    F = "MessageListInfrastructure.swift"
+
+    # ── 前置: 断言函数签名与调用点存在, 否则下面全部空跑 ──
+    if "func verify_deseed_v64(" not in open(__file__, encoding="utf-8").read():
+        raise RuntimeError("verify_deseed_v64: 自检失败, 判据未定义")
+
+    # ⓪ 目标函数必须在
+    if "override func preferredLayoutAttributesFitting(" not in infra:
+        raise RuntimeError(
+            "%s: 找不到 preferredLayoutAttributesFitting —— v64 全部改动都落在"
+            "这个函数里, 它不在就说明注入点漂了" % F)
+
+    # ── ① 去播种: 查表达式实质, 不查标记 ──
+    seed = _v64_body(infra, "var fittingSize = CGSize(", "播种语句")
+    if "attrs.size.height" in seed:
+        raise RuntimeError(
+            "%s: 播种语句仍取 attrs.size.height(上一轮的结果) —— 这就是自激环"
+            "本身。H_{n+1} = H_n + 170 的递推没被切断" % F)
+    if "UIView.layoutFittingCompressedSize.height" not in seed:
+        raise RuntimeError(
+            "%s: 播种语句未用 layoutFittingCompressedSize.height —— 与 targetSize"
+            "声明的压缩语义不一致, 仍可能被上一轮值污染" % F)
+    # 反向纪律: 不得改回任何"取上一轮高度"的写法(换个名字也不行)
+    for bad in ("lastComputedHeight", "attrs.height", "_ios15Reconciled",
+                "fittingSize.height"):
+        if bad in seed:
+            raise RuntimeError(
+                "%s: 播种语句引用了 %r —— 任何来自上一轮结果的值都会让环续上"
+                % (F, bad))
+
+    # ── ② 收敛闸在位且真的改写 ──
+    if "[V64-CONVERGE]" not in infra:
+        raise RuntimeError(
+            "%s: 收敛闸缺失 —— 断掉播种只是去掉反馈通道, 若 iOS 15 的 SwiftUI "
+            "仍把旧值赢回来, 累加会换一条路复发。闸门是必要的兜底" % F)
+    gate = _v64_body(infra, "let _v64est = attrs.size.height", "收敛闸")
+    if "_ios15Reconciled = _v64est" not in gate:
+        raise RuntimeError(
+            "%s: 收敛闸只计算不改写 _ios15Reconciled —— 算出来不用等于没拦"
+            "(判据纪律第 13 条: 查数据流要连声明一起查)" % F)
+    # 闸门必须真的以"没重算"为条件, 而不是无条件保留 est
+    if "_v64grew && !_v64tkFresh" not in gate:
+        raise RuntimeError(
+            "%s: 收敛闸的触发条件缺失 —— 必须要求「重算值≥est」且「Tk 没有更新"
+            "的实测」才拦, 否则会把真实增长也一起拦掉" % F)
+
+    # ── ③ est 下限: 近零高度是"未测量"而非"已测量" ──
+    # ★不要在这里叠「看形状像无条件」的正则 —— 上一版叠了, 结果它对正确的
+    #   注入也报错(对缩进的假设不成立), 判据把自己的基线判红了。教训同
+    #   run#156: 判据自身误报比没有判据更贵, 会让人开始不信判据。
+    #   无条件形态由 reverse_v64 的 S3 专门覆盖(那才是它的正确位置)。
+    if "_v64est > 4" not in gate:
+        raise RuntimeError(
+            "%s: 收敛闸缺 est > 4 的下限 —— 近零高度是\"未测量\"而非\"已测量\", "
+            "拿它当基线会把首帧锁成 0" % F)
+
+    # ── ④ 数据流: 闸门必须在写回缓存之前(S8) ──
+    # ★必须比偏移量, 不能只查"都在这个文件里"。两处都在, 顺序错了闸门
+    #   就是装饰品 —— 而这正是 v64 初版判据的盲区(只问在不在, 不问对不对)。
+    gi = infra.find("let _v64est = attrs.size.height")
+    ci = infra.find("lastComputedHeight = fittingSize.height")
+    if gi < 0 or ci < 0:
+        raise RuntimeError("%s: 找不到写回点 lastComputedHeight" % F)
+    if gi > ci:
+        raise RuntimeError(
+            "%s: 收敛闸(偏移 %d) 在写回 lastComputedHeight(偏移 %d) **之后** —— "
+            "拦下的值不会被采纳, 闸门形同虚设(这正是 v64 初版判据放过的那类"
+            "形态: 东西都在位, 但顺序让它不生效)" % (F, gi, ci))
+
+    # 且必须落在 reconcile 之后(闸门要比较的是 reconcile 后的值)
+    ri = infra.find("var _ios15Reconciled = fittingSize.height")
+    if ri < 0 or gi < ri:
+        raise RuntimeError(
+            "%s: 收敛闸必须紧跟 reconcile(_ios15Reconciled 的赋值)之后, "
+            "否则它比较的是 reconcile 前的中间值" % F)
     return True
 
 
@@ -14081,6 +14393,24 @@ def main():
         "新增 _v63drift 实测差值直放行(不依赖 debt 熟)。★为什么必须: 实测 "
         "debt 恒 0.0、live 恒 0, 计数永远停在 1 ⇒ 第二拍从未到来 ⇒ 真实测量"
         "从未执行。判据 verify_uncouple_v63 + 反向 reverse_v63。")
+
+    # ---- v64: 切断「自我播种」—— 单向累加的真正病因 ----
+    edit("Agent/MessageList/MessageListInfrastructure.swift",
+        fix_deseed_v64_infra,
+        "v64: V64-DESEED + V64-CONVERGE, 全部落在 SelfSizingCell."
+        "preferredLayoutAttributesFitting 一个函数里。★装机铁证: idx=9 六拍 "
+        "delta 恒 +144~+205(≈170pt/拍), 11:07:52.403→53.981 全在 1.58s 内, "
+        "est_{n+1} 严格等于 pref_n ⇒ H_{n+1}=H_n+170 发散。"
+        "★根因: :531 声明 targetSize 用 layoutFittingCompressedSize(压缩语义=从"
+        "内容重算), :561 却用 super 刚返回的、已膨胀的 attrs.size.height 当"
+        "测量初值**自己喂自己**。iOS16+ SwiftUI 遵守压缩优先级无害; iOS15 不"
+        "遵守, 播种值胜出→写回缓存→下一轮 est 更大→再播种。"
+        "★为什么 v63 让病显形而非 v63 改坏: v60 把 intrinsicContentSize 高度也"
+        "清成 noIntrinsicMetric, 播种值恒为死的 0, 环转不起来但高度永远锁死"
+        "(v53/v62 看到的\"稳定\"); v63 恢复高度上报是必须保留的正确修复"
+        "(iOS15 感知内容尺寸变化的唯一通道), 恢复后播种值变\"活\", 三十余版的"
+        "底层 bug 才显形。★本条只断反馈, 不动 v63 的高度上报。"
+        "判据 verify_deseed_v64 四层 + 反向 reverse_v64。")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")

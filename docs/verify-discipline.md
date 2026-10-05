@@ -230,16 +230,83 @@ m_pre = re.search(r"let (?P<pre>_v50IsProbe)\s*=\s*"
 `scripts` 里的 `/tmp/push_*.py` 走 git data API:
 读 ref → 读 base tree → 逐文件建 blob → 建新 tree → **单个 commit** → 更新 ref。
 
+## 15. ★ 判据自身的误报, 比没有判据更贵
+
+v64 写判据时我加了一条正则, 检查"收敛闸有没有被写成无条件":
+
+```python
+# ✗ 这条对**正确的注入**也报错
+if re.search(r"_ios15Reconciled\s*=\s*_v64est\s*\n\s*\}\s*\n\s*fittingSize", infra):
+    raise RuntimeError("收敛闸看起来是无条件保留 est")
+```
+
+正则假设了闸门块与后续语句的**缩进关系**, 而实际注入的缩进与假设不符 ⇒
+**基线被判红** ⇒ 判据自己把自己的正确产物判成坏的。
+
+> 判据误报的危害不是"漏过一个 bug", 而是**让人开始不信判据**。
+> 一旦判据报过假红, 后面它报真红时就会被忽略 —— 那一刻它就彻底失效了,
+> 比从未写判据更糟(至少没写的时候你知道没有守卫)。
+
+**两条纪律**：
+1. 判据里**不要叠"看形状像 X"的正则**。要么直接查实质条件
+   (`"_v64grew && !_v64tkFresh" not in gate`), 要么交给专门的 sabotage。
+2. 判据必须**在基线上先跑一遍并通过**, 才允许拿去判别产物。
+   基线不通过就说明判据自己坏了, 不是产物坏了。
+
+## 16. ★ sabotage 必须自己证明"它真的破坏了什么"
+
+v64 的 S8 第一版: 把收敛闸整块挪到 `lastComputedHeight` 写回点**之前**,
+理由是"这样闸门就在写回之后了"。
+
+但基线里闸门**本来就在写回之前** ⇒ 插到写回点之前 = 插到闸门和写回**之间**
+⇒ **相对顺序根本没变** ⇒ 什么都没破坏。
+
+判据此时"漏过"了一个**根本没被破坏**的形态, 输出与"判据失灵"完全一样,
+但修法相反(要改 sabotage, 不是改判据)。
+
+**修法**：
+- sabotage 完成后**立刻检查 `t == base`**, 相等就是空测, 独立计数不计入通过
+  (与 §12 的 `assert_replaced` 同源, 但更靠后: 替换"成功"不等于"破坏到位")
+- 破坏"**顺序**"这类关系时, 必须先确认基线的顺序, 再插到**真的**另一侧
+
+## 17. ★ 反向 sabotage 要覆盖"换个名字继续错"
+
+v64 判据里原本逐字匹配 `attrs.size.height`。S5 把它改回去, 判据抓到了。
+
+但如果有人(including 未来的我)把播种写成 `height: lastComputedHeight` ——
+**同样是"取上一轮的结果"**, 逐字匹配会漏过。
+
+⇒ S6 专门构造这一条, 强制判据按**语义**禁:
+> 播种语句里不得出现**任何**来自上一轮结果的来源,
+> 而不是「不得出现 `attrs.size.height` 这个字符串」。
+
+**一般规律**: 判据禁"某种写法"时, 必须问一句
+「换个变量名/换个 API 绕过去, 判据还拦得住吗?」
+
+---
+
 ## 附: 提交前本地自检
 
 ```bash
 # 1) 从**干净上游**跑完整全链注入(不是从上一版产物叠加)
 #    ★必须用干净上游: /tmp/pristine 那类"看起来干净"的树其实已被注入过
+#    ★三阶段都要跑, 且要在**产物树内部**执行(见下方踩坑)
 cd /tmp && rm -rf vXXfull && cp -a up-1.14 vXXfull
-python3 scripts/ios15_fallback.py /tmp/vXXfull/src/ios
+cp -a scripts/ios15_*.py vXXfull/scripts/          # 产物树要带自己的脚本
+cd vXXfull && python3 scripts/ios15_port.py          # ①
+python3 scripts/ios15_port_v2.py                     # ② 生成 iOS15Compat.swift
+python3 scripts/ios15_fallback.py                    # ③ 注入 v21~v64
 
-# 2) 跑全版本回归(目标 14/14, v50 起)
+# 2) 跑全版本回归(目标 0 跳过)
 python3 scripts/ios15_verify/regress_all_v.py /tmp/vXXfull
+
+# 3) ★负向自检: 拿**只跑阶段①②**的产物跑判据, 必须报红
+#    这是判据有分辨力的唯一证据。全绿说明判据在空测。
 ```
 
 回归输出里 `0 跳过` 才是真通过 —— 有 SKIP 说明产物树不全。
+
+> ⚠ **三阶段脚本用相对当前目录定位产物**(`TARGET_DIR = sys.argv[1] or "src/ios"`)。
+> 在仓库根跑 `python3 scripts/ios15_port.py /tmp/x` 会**扫到仓库自己的 `src/`**
+> 并就地注入。v64 期间踩过一次, 用 `git checkout -- src/` 还原。
+> **正确姿势: `cd <产物树> && python3 scripts/ios15_port.py`**。

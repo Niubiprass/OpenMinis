@@ -122,11 +122,42 @@ CHECKS = [
     #   副本会被后人只改一处, 于是判据红了而反向测试还绿。
     ("v63 判据(三条真实判据含语法级)",
         "ci_assert_v63.py",                            "root",  []),
-    # ★ run#157 事故的产物: 语法级判据 + 3 条新 sabotage(S15/S16/S17)。
+    # ★run#157 事故的产物: 语法级判据 + 3 条新 sabotage(S15/S16/S17)。
     #   v63 首版把 static 计数器放进泛型类型, 66 条断言全绿而编译 exit 65 ——
     #   判据体系当时只能验文本、验不了语法。S15 复现的正是那个真实错误。
     ("v63 反向(17条含泛型static语法)",
         "reverse_v63.py",                              "root",  []),
+    # ★★ v64: 切断 self-sizing 的「自我播种」—— 单向累加的真正病因。
+    #   装机实证(v63 版): [V63-PROBE] fast=1412 rebuild=0, live 非 0
+    #   ⇒ invalidate 通道真的通了(三十余版第一次)。但几何判据尾部极差
+    #   717pt(v62 时 436pt, 反而更大), 形态从「翻转」变成**单调累加**
+    #   (delta 恒 +144~+205pt ≈ 170pt/拍)。
+    #
+    #   ★关键证据(决定了 v64 为什么推翻重做): 6 拍的时间戳
+    #     11:07:52.403 / .586 / .778 / 53.170 / .382 / 53.981
+    #     ⇒ 间隔 0.183/0.192/0.392/0.212/0.599s, 全在 1.58s 内,
+    #       且 **est_{n+1} 严格等于 pref_n**。
+    #   ⇒ 高度不是「被谁算大了」, 是**被自己上一轮的答案累加出来的**
+    #     (H_{n+1} = H_n + 170)。
+    #   根因: MessageListInfrastructure.swift 里 targetSize 声明了
+    #   layoutFittingCompressedSize(压缩语义 = 从内容重算), 下一行却用
+    #   super 刚返回的、已膨胀的 attrs.size.height 当测量初值 ⇒ iOS 16+
+    #   SwiftUI 遵守压缩优先级无害, **iOS 15 不遵守, 播种值胜出**。
+    #
+    #   ★v64 初版(同宽幂等锁)已被这组时间戳证伪并整体推翻: 0.35s 时间窗
+    #   拦不住 0.392/0.599s 那两拍; 且它是全局单例, 列表里多个同宽 cell
+    #   会互相冻结 ⇒ 内容截断, 比抖动更糟。
+    #
+    #   ★本项目的第三次「判据全绿但药不治病」:
+    #     run#156 空测当通过 / run#157 只验文本不验语法 / v64 初版只验标记在位
+    #   所以反向 9 条全部改成**问实质**: 闸门在不在(S1) 算不算(S2)
+    #   改不改写(S3) 会不会误杀真实增长(S4) 播种真不取上一轮(S5/S6/S7)
+    #   顺序对不对(S8) 有没有 est 下限(S9)。S6 专门防「换个属性名继续取
+    #   上一轮」—— 判据不能只逐字匹配一种写法。
+    ("v64 判据(不播种+收敛闸+数据流)",
+        "ci_assert_v64.py",                            "root",  []),
+    ("v64 反向(9条含S6换名/S8顺序/S9下限)",
+        "reverse_v64.py",                              "root",  []),
     # ★★ v63 几何基准 —— 本项目**第一条有绝对基准**的判据。
     #   v1~v62 共 62 版判据全是**相对**的(「比 v61 好」「标记在位」),
     #   从来没有一份回答过「正常的工具卡片应该多高」。后果已实证:
@@ -294,8 +325,19 @@ def main():
             #   轻量版: 不是递归, 是重复。方向仍须单向: 链跑入口, 入口自己跑 sab。
             argv.append("--no-sab")
 
+        # ★必须显式传 env: 部分历史判据(reverse_v62 等)内部会再调
+        #   ios15_port_v2.py, 而那个脚本默认要从 codeload 重下上游 tarball。
+        #   慢网下实测卡满 timeout=180(进程 CPU 0%、wchan=do_poll),
+        #   整条回归就卡在那儿。有 OPENMINIS_UPSTREAM_IOS 时(全链验证一定会设)
+        #   就把它当本地上游传下去, 让内层也跳过下载。
+        #   ★不改默认行为: 没设这个变量时, 内层仍走真实下载。
+        _env = dict(os.environ)
+        if UPSTREAM_IOS:
+            _env.setdefault("OPENMINIS_UPSTREAM_LOCAL",
+                            os.path.dirname(os.path.dirname(UPSTREAM_IOS.rstrip("/"))))
         try:
-            r = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
+            r = subprocess.run(argv, capture_output=True, text=True,
+                               timeout=1800, env=_env)
         except subprocess.TimeoutExpired:
             print("❌ %-22s 超时" % name)
             fail.append(name)

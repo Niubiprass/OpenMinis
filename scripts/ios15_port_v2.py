@@ -541,6 +541,24 @@ def restore_from_upstream() -> None:
     import tempfile
     import urllib.request
 
+    # ★本地缓存复用(2026-10-05 新增)
+    # 背景: codeload 下载在慢网下会长时间挂在 socket 上(实测 CPU 0%、wchan
+    #   do_poll, 卡满 timeout=180 才动)。本地全链验证每轮都要重下一次,
+    #   既慢又不必要 —— 上游是 tag 固定的 1.14, 一天内不会变。
+    # 用 OPENMINIS_UPSTREAM_LOCAL 指向一份已备好的干净上游即可跳过下载。
+    # ★为什么不设默认值: CI 必须走真实下载(那是"确保拿到上游原版"的唯一
+    #   保障); 只有本地全链验证才允许复用 —— 否则会掩盖"上游拉不到"这个问题。
+    local = os.environ.get("OPENMINIS_UPSTREAM_LOCAL")
+    if local and os.path.isdir(os.path.join(local, "src", "ios")):
+        log("ℹ️  复用本地上游: %s (OPENMINIS_UPSTREAM_LOCAL)" % local)
+        try:
+            shutil.rmtree(ROOT)
+        except Exception:
+            pass
+        shutil.copytree(os.path.join(local, "src", "ios"), ROOT,
+                        symlinks=True, dirs_exist_ok=True)
+        return
+
     tmpdir = tempfile.mkdtemp(prefix="upstream_om_")
     try:
         req = urllib.request.Request(

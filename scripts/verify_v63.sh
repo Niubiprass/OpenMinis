@@ -1,12 +1,12 @@
 #!/bin/bash
 # ============================================================
-# v63 全链验证 —— 从干净上游到判据全绿, 一条命令跑完
+# v63/v64 全链验证 —— 从干净上游到判据全绿, 一条命令跑完
 #
 # 为什么要这个脚本(踩过的坑):
 #   移植是**三阶段**的, 少跑一阶段会得出错误结论:
 #     ① ios15_port.py       改写 16 个 .swift(纯 API 降级)
 #     ② ios15_port_v2.py    **生成 iOS15Compat.swift 兼容层**
-#     ③ ios15_fallback.py   注入 v21~v63 全部补丁
+#     ③ ios15_fallback.py   注入 v21~v64 全部补丁
 #   v63 的 ① 落在 iOS15Compat.swift 上, 而那个文件是②生成的 ——
 #   只跑③ 会静默 SKIP(edit() 对缺文件直接 return), 看起来"成功"实则没注入。
 #   verify-discipline 第 6 条: 判据没跑就等于没人看守, 比红更危险。
@@ -47,7 +47,12 @@ python3 "$REPO/scripts/ios15_port.py" "$WORK/src/ios" 2>&1 | tail -2 || exit 1
 
 echo
 echo "════ 2. 阶段② ios15_port_v2.py (生成兼容层) ════"
-( cd "$WORK" && python3 "$REPO/scripts/ios15_port_v2.py" 2>&1 | tail -3 ) || exit 1
+# ★复用本地上游: 阶段② 默认会从 codeload 重下 tag 1.14 的 tarball。慢网下
+#   实测会挂在 socket 上卡满 timeout=180(进程 CPU 0%、wchan=do_poll),
+#   本地全链每轮重下一次纯属浪费。上游是固定 tag, 一天内不会变。
+#   ★CI 不设这个变量 —— 那里必须走真实下载, 那是"确保拿到上游原版"的唯一保障。
+( cd "$WORK" && OPENMINIS_UPSTREAM_LOCAL="${OPENMINIS_UPSTREAM_LOCAL:-$(dirname "$(dirname "$UPSTREAM")")}" \
+  python3 "$REPO/scripts/ios15_port_v2.py" 2>&1 | tail -3 ) || exit 1
 if [ ! -f "$WORK/src/ios/iOS15Compat.swift" ]; then
   echo "✗ iOS15Compat.swift 未生成 —— 阶段③ 会静默 SKIP 掉全部 hosting 层注入"
   exit 1
@@ -55,11 +60,11 @@ fi
 echo "✓ iOS15Compat.swift 已生成 ($(wc -l < "$WORK/src/ios/iOS15Compat.swift") 行)"
 
 echo
-echo "════ 3. 阶段③ ios15_fallback.py (v21~v63) ════"
+echo "════ 3. 阶段③ ios15_fallback.py (v21~v64) ════"
 python3 "$REPO/scripts/ios15_fallback.py" "$WORK/src/ios" 2>&1 | tail -2 || exit 1
 
 echo
-echo "════ 4. v63 落点核对(缺任一项即为静默 SKIP) ════"
+echo "════ 4. v63/v64 落点核对(缺任一项即为静默 SKIP) ════"
 MISS=0
 check() {  # check <文件> <标记> <说明>
   if grep -q "$2" "$WORK/src/ios/$1" 2>/dev/null; then
@@ -75,12 +80,29 @@ check Views/Chat/SelectableMarkdownView.swift  "V63-INTSIZE" "V63-INTSIZE 高度
 check Views/Chat/SelectableMarkdownView.swift  "V63-UNCYCLE" "V63-UNCYCLE 打破循环依赖"
 [ "$MISS" -eq 0 ] || { echo "✗ v63 未完整注入"; exit 1; }
 
+# ---- v64 落点核对(缺任一项即为静默 SKIP) ----
+MISS=0
+check Agent/MessageList/MessageListInfrastructure.swift "V64-DESEED"   "V64-DESEED   切断自我播种"
+check Agent/MessageList/MessageListInfrastructure.swift "V64-CONVERGE" "V64-CONVERGE 收敛闸"
+[ "$MISS" -eq 0 ] || { echo "✗ v64 未完整注入"; exit 1; }
+
 echo
 echo "════ 5. v63 判据链(CI 入口 core+probe, 内含 reverse_v63 的 17 条 sab) ════"
 python3 "$REPO/scripts/ios15_verify/ci_assert_v63.py" "$WORK" 2>&1 | sed 's/^/  /' || exit 1
-echo "════ 5b. 内置判据直调(verify_*_v63, 不经 CI 包装) ════"
-cd "$REPO" && python3 - <<'PYEOF' || exit 1
-import sys
+echo
+echo "════ 5-v64. v64 判据链(切断自我播种, 内含 reverse_v64 的 9 条 sab) ════"
+# ★为什么单独一节而不是并进 5: v64 改的是**另一个文件**的**另一个函数**
+#   (SelfSizingCell.preferredLayoutAttributesFitting), 与 v63 的三处落点
+#   (hosting 层 invalidate / config 判等 / 高度上报)无交集。混在一处会让
+#   "v63 绿了"被误读成"整链绿了" —— run#157 就是这么全绿而编译红的。
+python3 "$REPO/scripts/ios15_verify/ci_assert_v64.py" "$WORK" 2>&1 | sed 's/^/  /' || exit 1
+echo
+echo "════ 5b. 内置判据直调(verify_*_v63/v64, 不经 CI 包装) ════"
+# ★W 必须由调用方传入: 硬编码 /tmp/v63verify 会让「在别的 WORK 下跑」时
+#   读到上一轮的旧产物 —— 那正是 verify-discipline 点名过的「看起来跑过、
+#   实际验的是旧东西」。run#156 的空测就是这类。
+cd "$REPO" && W="$WORK/src/ios/" python3 - <<'PYEOF' || exit 1
+import sys, os
 sys.path.insert(0, "scripts")
 import importlib.util
 spec = importlib.util.spec_from_file_location("fb", "scripts/ios15_fallback.py")
@@ -89,15 +111,17 @@ try:
     spec.loader.exec_module(fb)
 except SystemExit:
     pass
-W = "/tmp/v63verify/src/ios/"
+W = os.environ.get("W", "/tmp/v63verify/src/ios/")
 compat = open(W + "iOS15Compat.swift", encoding="utf-8").read()
 md = open(W + "Views/Chat/SelectableMarkdownView.swift", encoding="utf-8").read()
+infra = open(W + "Agent/MessageList/MessageListInfrastructure.swift", encoding="utf-8").read()
 ok = True
 # ★第三条 verify_swift_static_v63 是 run#157 的直接产物(语法级判据):
 #   v63 首版把 static 计数器放进泛型类型, 前两条判据全绿而编译 exit 65。
 for name, fn, args in (("verify_intrinsic_gate_v63", fb.verify_intrinsic_gate_v63, (compat, md)),
                        ("verify_uncouple_v63",      fb.verify_uncouple_v63,      (md,)),
-                       ("verify_swift_static_v63",  fb.verify_swift_static_v63,  (compat,))):
+                       ("verify_swift_static_v63",  fb.verify_swift_static_v63,  (compat,)),
+                       ("verify_deseed_v64",        fb.verify_deseed_v64,        (infra,))):
     try:
         fn(*args); print("  ✅ %s" % name)
     except Exception as e:
@@ -106,7 +130,7 @@ sys.exit(0 if ok else 1)
 PYEOF
 
 echo
-echo "════ 6. 全版本回归(含 v63) ════"
+echo "════ 6. 全版本回归(含 v63/v64) ════"
 # 判据需要从产物树里找到 scripts/ios15_fallback.py(v53 判据的 sab 层要读它)
 mkdir -p "$WORK/scripts" && cp "$REPO/scripts/ios15_fallback.py" "$WORK/scripts/"
 cd "$REPO" && OPENMINIS_UPSTREAM_IOS="$UPSTREAM" \
