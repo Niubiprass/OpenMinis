@@ -506,3 +506,65 @@ CI#161（run 37271671515）红了一项，判据本身在同一次运行里是**
 
 ⇒ 纪律：**sabotage 漏过时，先证明观测面真的在被改的那条路径上**，
 再怀疑判据。顺序反了就会去放宽一个本来正确的判据（§21 的教训在工具层的重演）。
+
+## §23 桩比真实 SDK 宽松 = 假绿（本项目第六次「验证手段骗了自己」）
+
+CI#162（run 37275980272）编译红：
+
+```
+NSTextContainerSetSizeGuard.m:153:51: error: no member named 'width' in 'struct CGRect'
+  153 |   _w = [UIScreen mainScreen].bounds.width - 32.0;
+```
+
+而 v65 推送前我做过**真实的 clang 语法+类型检查**（自建 UIKit/Foundation/objc 桩），
+结果是 **0 error**。它没有骗我 —— 是**我的桩在骗我**。
+
+### 23.1 根因：一行桩代码
+
+```c
+// 我写的桩：
+typedef struct CGRect { CGPoint origin; CGSize size; CGFloat width; CGFloat height; } CGRectRec;
+                                                                  ^^^^^^^^^^^^^^^^^^^^^^ 我加的
+```
+
+真实 SDK 里 `CGRect` **没有** `width`/`height` 字段 —— 它们是 CoreGraphics
+`CGGeometry` 这个 **category** 提供的。而 **UIKit 的模块化导入不 re-export
+该 category**，所以即使文件顶部有 `#import <UIKit/UIKit.h>`，
+`bounds.width` 依然报 "no member named 'width' in 'struct CGRect'"。
+
+我为了"让桩好写"给 `CGRect` 补了这两个字段，于是**桩比真实 SDK 宽松**，
+编译检查就成了一盏永远绿的灯。
+
+### 23.2 纪律
+
+⇒ **桩只允许比真实 SDK 严格，不允许更宽松。**
+给桩**加一个真实 SDK 没有的能力**（字段/方法/category/宏）＝ 帮被测代码
+通过它本该过不了的检查。**桩多给的那一分宽容，会变成假绿。**
+
+⇒ 判据：**先证明桩能抓到已知的坏形态**，再用它判被测代码。
+本轮的验证顺序是：
+1. 用**旧（已知坏）**代码跑严格桩 ⇒ 恰好复现 CI 那一行报错（证明桩真的严了）；
+2. 再用**新**代码跑 ⇒ 0 error（这才算数）。
+
+跳过第 1 步的话，"0 error" 只说明"桩没意见"，不说明代码对 ——
+这正是 v65 那一轮栽的地方。
+
+⇒ 写桩时若为了省事给某个类型加了成员，必须在桩里**写明为什么真实 SDK 也有**
+（例：`CGSize` 的 `width/height` 是**真** struct 成员，
+`CGRect` 的则不是 —— 两者只有一字之差，恰恰是本轮踩的那个坑）。
+
+### 23.3 修法：能不依赖 category 就不依赖
+
+`[UIScreen mainScreen].bounds.width` 改成 KVC：
+
+```objc
+NSValue *_bv = [[UIScreen mainScreen] valueForKey:@"bounds"];
+if (_bv) _w = (CGFloat)[_bv CGSizeValue].width;
+```
+
+与同段已有的 `[... valueForKey:@"size"]` 风格一致，**纯运行期查找**，
+不需要编译器认识任何 category 声明。兜底宽度从屏宽推 `358.0 - 32.0`
+（日志实测的真实排版宽度，v13/v34 已实证不能用 390 满宽）。
+
+★ 顺手扫了全文件的 category 依赖：除这行外，`origin/size/minX/midX/...`
+**一处都没有**（真代码只用 `CGSize` 的真 struct 成员），所以这是**唯一**一处。

@@ -1017,3 +1017,82 @@ CI#161 证明这个前提也会悄悄失效。所以新增：
 | `local_all_gates.py`（v65check 树 + `.upstream-ios`） | 修正前 63/3（1 条真红 + 2 条环境），**修正后需复跑确认** |
 | `bash_syntax_check.py` | 21 个 run 块 0 语法错 |
 | `yaml.safe_load` | OK |
+
+## §4.13 CI#162 编译红：**我的 clang 桩骗了我**（本项目第六次「验证手段骗了自己」）
+
+CI#161 修好门禁后推送（`main@2fc6ff9020`），CI #162 编译红：
+
+```
+NSTextContainerSetSizeGuard.m:153:51: error: no member named 'width' in 'struct CGRect'
+  153 |   _w = [UIScreen mainScreen].bounds.width - 32.0;
+```
+
+而 v65 推送前我做过**真实的 clang 语法+类型检查**（自建 UIKit/Foundation/objc 桩），
+结果 **0 error**。⇒ 判据全绿、clang 也绿，**只有真编译器红**。
+
+### 4.13.1 根因：一行桩代码
+
+```c
+// /tmp/v65syn/stub.h:19  —— 我写的桩：
+typedef struct CGRect { CGPoint origin; CGSize size; CGFloat width; CGFloat height; } CGRectRec;
+                                                                  ^^^^^^^^^^^^^^^^^^^^ 我加的
+```
+
+真实 SDK 里 `CGRect` **没有** `width`/`height` 字段 —— 它们是 CoreGraphics
+`CGGeometry` 这个 **category** 提供的。而 **UIKit 的模块化导入不 re-export
+该 category**，所以文件顶部有 `#import <UIKit/UIKit.h>` 也不管用。
+
+我当初为了"让桩好写"给 `CGRect` 补了这两个字段 ⇒ **桩比真实 SDK 宽松** ⇒
+编译检查成了一盏永远绿的灯。★ 讽刺的是 `CGSize` 的 `width/height` **是真的**
+struct 成员，两者只有 `R` 一个字母之差。
+
+### 4.13.2 修法与防复发
+
+**代码**：`.bounds.width` 改走 KVC（与同段 `[... valueForKey:@"size"]` 一致，纯运行期）：
+
+```objc
+NSValue *_bv = [[UIScreen mainScreen] valueForKey:@"bounds"];
+if (_bv) _w = (CGFloat)[_bv CGSizeValue].width;
+...
+if (!(_w > 1) || !isfinite(_w) || _w > 1e5) { _w = 358.0; }   // 358 = 屏宽-32
+_w -= 32.0;
+```
+
+顺手扫全文件：`origin/size/minX/midX/...` 真代码**一处都没有**（只用 `CGSize` 真成员），
+所以这是**唯一**一处 category 依赖。
+
+**判据**：`verify_guard_v65.py` 加**第 ⑥ 层**（纯源码检查，不依赖任何桩）——
+禁 `.bounds/.frame/.size/.origin` 后接 `.width/.height/minX/...`。
+
+**反向**：`reverse_guard_v65.py` 加 **S11 = 原样还原 CI#162 那行**。
+★ S11 第一版把整段 KVC 换成一行 `bounds.width`，虽然拦下了，但报的是
+「② 负高修正缺失」—— 先撞上第②层，**没测到第⑥层本身**。改成只改兜底那一行，
+KVC 探测段与 fabs 修正全留，于是精确报「⑥ 用到了 CGRect 的 category 成员」。
+（同 §21/§22.4：拦下 ≠ 测到。）
+
+**桩本身修正**：`stub.h` 的 `CGRect` 去掉 width/height 字段，并写明
+「桩只允许比真实 SDK 严格，不允许更宽松」。
+
+### 4.13.3 验证顺序（这次做对了）
+
+1. **先证明桩能抓坏形态**：用**旧的已知坏**代码跑修正后的桩
+   ⇒ 恰好复现 CI 那一行 `error: no member named 'width' in 'struct CGRect'`；
+2. 再用**新**代码跑 ⇒ 0 error。
+
+跳过第 1 步的话，"0 error" 只说明"桩没意见"，不说明代码对 —— 上一轮就栽在这。
+
+### 4.13.4 本地验证口径
+
+| 场景 | 结果 |
+|---|---|
+| clang 严格桩（旧代码） | 1 error，**与 CI 逐字一致**（证明桩已变严） |
+| clang 严格桩（新代码） | **0 error** |
+| `verify_guard_v65.py` | **6 层全过** |
+| `reverse_guard_v65.py` | **11 拦下 / 0 漏过 / 0 空测**（S11 精确命中 ⑥） |
+| `regress_all_v.py`（干净树重建） | **38 通过 / 0 失败 / 0 跳过** |
+| `bash -n` / YAML | 21 个 run 块 0 错 / OK |
+
+★ 顺带记一个本地操作坑：`ios15_fallback.py` 的参数是 **`src/ios`**（相对仓库根），
+传 `.` 会让它去 `./Views/...` 找文件 ⇒ 全部 SKIP ⇒ 26 项判据集体变红。
+看起来像"炸了一大片"，实则是"一个文件都没改"。判红时先看**红项覆盖面**：
+连历史判据全红，通常是产物树本身没生成对，而不是判据坏了。

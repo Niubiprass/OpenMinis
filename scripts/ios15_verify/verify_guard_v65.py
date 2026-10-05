@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""verify_guard_fixsize_v65 —— v65 守卫判据（五层）。
+"""verify_guard_fixsize_v65 —— v65 守卫判据（六层）。
 
 【为什么要有这一层】v65 是本项目第五次「判据全绿但药不治病」之后的产物，
 历史教训(run#156/157/159 + v64初版)已经证明：查「标记在不在」的判据
@@ -12,6 +12,7 @@
   ③ 熔断只对哨兵 —— 真实行高不得进风暴预算
   ④ 常量一致    —— 熔断判据的 2000 必须与 kProbeHeightCeiling 一致
   ⑤ 标识符存在  —— run#159 的教训：引用的东西必须真的声明了
+  ⑥ 不依赖 category —— CI#162 的教训：CGRect.width 是 category 不是字段
 """
 import re
 import sys
@@ -188,6 +189,27 @@ def verify_guard_fixsize_v65(src):
             "⑤ V65-STORM 段落引用了 kProbeHeightCeiling —— 它是函数体内"
             "局部的 const, 不在该段落作用域内, **会编译失败**。\n"
             "  必须写字面量 2000.0。这是我本轮真实犯过一次并当场抓住的错误。")
+    # ---------- 第 ⑥ 层: 不得依赖 CGRect 的 category 成员 ----------
+    # ★★★ 这层是 CI#162(run 37275980272) 编译红的**唯一**防线。
+    #   真实错误: NSTextContainerSetSizeGuard.m:153:51:
+    #       error: no member named 'width' in 'struct CGRect'
+    #   根因: CGRect 没有 width/height **字段**, 它们是 CoreGraphics 的
+    #   `CGGeometry` **category**; 而 UIKit 的模块化导入**不 re-export**
+    #   该 category ⇒ 光有 `#import <UIKit/UIKit.h>` 也不够。
+    #   ★为什么之前没被抓住: 我自建的 clang 桩里给 CGRect **补了**这两个
+    #     字段当"方便", 桩比真实 SDK 宽松 ⇒ 0 error 的**假绿**。
+    #     ⇒ 判据必须**独立于任何桩**, 直接在源码上把这条禁令固化下来。
+    cg = re.search(r"\.\s*(bounds|frame|size|origin)\s*\.\s*"
+                   r"(width|height|minX|minY|maxX|maxY|midX|midY)\b", code)
+    if cg:
+        raise RuntimeError(
+            "⑥ 用到了 CGRect 的 category 成员 `%s.%s` —— **会编译红**。\n"
+            "  实测(CI#162): error: no member named '%s' in 'struct CGRect'\n"
+            "  CGRect 没有 width/height 字段, 它们是 CoreGraphics `CGGeometry`\n"
+            "  category 提供的, 而 UIKit 的模块化导入**不 re-export** 它。\n"
+            "  ⇒ 改走 KVC: [[obj valueForKey:@\"bounds\"] CGSizeValue].width\n"
+            "  ★注意 CGSize 的 width/height 是**真** struct 成员, 那个可以用。"
+            % (cg.group(1), cg.group(2), cg.group(2)))
     return True
 
 
@@ -294,7 +316,7 @@ if __name__ == "__main__":
         "src/ios/Shared/NSTextContainerSetSizeGuard.m"
     try:
         verify_guard_fixsize_v65(open(p, encoding="utf-8").read())
-        print("✅ v65 守卫判据: 5 层全过")
+        print("✅ v65 守卫判据: 6 层全过")
     except Exception as e:
         print("❌ %s" % e)
         sys.exit(1)

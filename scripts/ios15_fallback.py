@@ -1600,7 +1600,34 @@ V65_REJECT_NEW = """    if (!isfinite(newSize.width) || !isfinite(newSize.height
                 _w = 0;
             }
             if (!(_w > 1) || !isfinite(_w) || _w > 1e5) {
-                _w = [UIScreen mainScreen].bounds.width - 32.0;
+                // ★★必须走 KVC 而不是 `[UIScreen mainScreen].bounds.width`:
+                //   CGRect 的 `.width` / `.height` **不是 struct 成员**, 而是
+                //   CoreGraphics 里 `CGGeometry` 这个 **category**(NSGeometry on
+                //   macOS / CoreGraphics on iOS)提供的。UIKit 的模块化导入
+                //   **不 re-export 它**, 所以本文件写了 `#import <UIKit/UIKit.h>`
+                //   仍然报 (CI#162 / run 37275980272 实测):
+                //       NSTextContainerSetSizeGuard.m:153:51:
+                //       error: no member named 'width' in 'struct CGRect'
+                //   ⇒ 走 KVC `valueForKey:@"bounds"` 拿 NSValue 再取 CGSizeValue,
+                //     纯运行期查找, 不需要编译器认识任何 category 声明。
+                //   ★这也是本项目**第六次**「本地验证手段骗了自己」:
+                //     上轮我自建 UIKit 桩做 clang 检查, 桩里给 CGRect 加了
+                //     .width 访问器 ⇒ 0 error 的**假绿**。桩比真实 SDK 宽松,
+                //     它给不了的保证它会假装能给。
+                _w = 0;
+                @try {
+                    NSValue *_bv = [[UIScreen mainScreen] valueForKey:@"bounds"];
+                    if (_bv) _w = (CGFloat)[_bv CGSizeValue].width;
+                } @catch (__unused NSException *_e) {
+                    _w = 0;
+                }
+                // 358 = 日志实测的真实排版宽度(iPhone 14/15 屏宽 390 - 32)。
+                // ★不用 390 满宽: v13/v34 已实证 390 排版/358 显示会导致
+                //   末行裁断与拉锯闪字(REVERTED-v11 注释详述)。
+                if (!(_w > 1) || !isfinite(_w) || _w > 1e5) {
+                    _w = 358.0;
+                }
+                _w -= 32.0;
             }
             newSize.width = _w;
         }

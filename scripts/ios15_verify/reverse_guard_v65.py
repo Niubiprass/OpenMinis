@@ -161,6 +161,36 @@ def s10_missing_identifier(t):
     return t.replace(old, "    if (newSize.height >= kV65SentinelFloor) {")
 
 
+def s11_category_member(t):
+    """★还原 CI#162(run 37275980272) 的真实编译红。
+
+    实测错误:
+        NSTextContainerSetSizeGuard.m:153:51:
+        error: no member named 'width' in 'struct CGRect'
+      153 |   _w = [UIScreen mainScreen].bounds.width - 32.0;
+
+    ★为什么这条必须固化: v65 推送前我做过 clang 语法+类型检查, **0 error** ——
+      因为我自建的桩里给 `CGRect` **补了** width/height 字段(为了好写),
+      而真实 SDK 里它们是 CoreGraphics `CGGeometry` **category** 提供的,
+      且 UIKit 的模块化导入**不 re-export** 它。
+      ⇒ 桩比真实 SDK 宽松 = 假绿(verify-discipline §23)。
+      ⇒ 这条判据是**不依赖任何桩**的纯源码检查, 是那盏假绿灯的唯一防线。
+
+    ★★第一版把整段 KVC 换成一行 bounds.width, 结果反向**虽然拦下了**,
+      报出来的却是「② 负高修正缺失」—— 它先撞上第②层, **没测到第⑥层本身**。
+      那是 S2 的领地, 测⑥等于没测(同 §21/§22.4 的教训)。
+      ⇒ 正确形态: **只把兜底那一行改成 category 访问**, KVC 探测段与
+        fabs/height 修正全部原样保留, 于是只有第⑥层会红。
+    """
+    old = "                if (!(_w > 1) || !isfinite(_w) || _w > 1e5) {\n                    _w = 358.0;\n                }"
+    if old not in t:
+        raise AssertionError("锚点11: 兜底宽度那段没找到")
+    bad = ("                if (!(_w > 1) || !isfinite(_w) || _w > 1e5) {\n"
+           "                    _w = [UIScreen mainScreen].bounds.width - 32.0;\n"
+           "                }")
+    return t.replace(old, bad)
+
+
 SABS = [
     ("S1", "恢复合并式丢弃(NaN/inf/负一个if全丢)", s1_restore_merged_reject),
     ("S2", "修正分支末尾加 return(改回丢弃)", s2_put_back_return),
@@ -172,6 +202,8 @@ SABS = [
     ("S8", "两分量拆成两个独立 if", s8_split_into_two_ifs),
     ("S9", "引用 kProbeHeightCeiling(作用域外,编译红)", s9_scope_ref_ceiling),
     ("S10", "引用不存在的 kV65SentinelFloor(编译红)", s10_missing_identifier),
+    ("S11", "用 CGRect category 成员 bounds.width(CI#162 原样编译红)",
+     s11_category_member),
 ]
 
 
