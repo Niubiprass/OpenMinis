@@ -146,7 +146,33 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
             }
             return;
         }
+        // [V80-THROTTLE] 已有几何且本 tick 已转发 → 0x0 节流 return(不修正不转发)。
+        // V79 装机(minis-2026-10-07 3.log PID 64281)实测: 0x0 全量修正转发,
+        // 单容器 0x281079680 23 秒 278 万次(12 万/秒) ⇒ 每次真转发触发 CoreText
+        // layout ⇒ 主线程饱和 ⇒ SIGKILL。GLOBAL-STREAK 停在 1 的原因: 0x0 转发
+        // 触发的布局回调是重入, 重入 0x0 在 V74-REENT 处 return, 计费段(计非正
+        // streak/全局 streak)从未执行 ⇒ gstreak 永不超 400 ⇒ V79 分流空转。
+        // 修法: 有 holder 且本 tick 已转发过(commitCount>0)的 0x0 直接 return —
+        // 容器已拿到正几何(326x24), 排版能跑、测高能回报; 每 tick 每容器最多真
+        // 转发 1 次 ⇒ 12 万/秒 → ~60/秒。新容器(无 holder)不受影响, 首次 0x0
+        // 仍走修正+转发拿几何(保留 V79 斩 HANG 语义)。
+        _NSTextContainerGuardState *_v80h = objc_getAssociatedObject(self, kGuardStateKey);
+        if (_v80h && _v80h->state.initialized &&
+            _v80h->state.lastTick == gRunloopTick &&
+            _v80h->state.commitCount > 0) {
+            gShortCircuitCount += 1;
+            if ((gShortCircuitCount & 0x3FFFF) == 1) {
+                NSLog(@"[TextContainerGuard] [WARN] [V80] THROTTLE-ZERO "
+                      @"container=%p orig=%.1fx%.1f total=%llu "
+                      @"— 本 tick 已转发, 0x0 节流(保留已提交几何)",
+                      (__bridge void *)self, newSize.width, newSize.height,
+                      (unsigned long long)gShortCircuitCount);
+            }
+            return;
+        }
         // [V79-PRIME] 风暴识别前: 放行到 V65 修正段, 让新容器拿到正尺寸几何,
+        // 斩断「排版恒 0 → 测高永不收敛 → 布局死循环」HANG。不在此 return。
+
         // 斩断「排版恒 0 → 测高永不收敛 → 布局死循环」HANG。不在此 return。
     }
 
@@ -419,11 +445,15 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // [V68-HOIST] holder / s 已在本函数**开头**取好(见上方 [V68-HOIST]),
     // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
 
-    // [V79-MARKER] 一次性打印构建版本(装机确认)。V79 = V78 + 入口分流: **height==0 在全局风暴识别前放行 V65 修正+真转发**(斩「新容器排版恒 0 → 测高永不收敛 → 布局死循环 HANG」, 10-07 日志 PID 60262: MAIN HANG 18.6s SIGKILL + CrashLoop), 识别后短路零分配; V65 无历史兜底 1.0→24.0; V76 非正短路同样分流。
-    static BOOL _v79GuardLogged = NO;
-    if (!_v79GuardLogged) {
-        _v79GuardLogged = YES;
-        NSLog(@"[Minis-Guard] build=V79 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn+zeroAllocEarlyReturn+entrySplitPrime (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; V76 非正尺寸短路不转发; V77 入口短路在 valueForKey 之前; V78 入口短路在 associated 分配之前, 零堆分配; **V79 入口分流: 风暴识别前放行 0x0 修正转发斩布局死循环 HANG, 识别后短路; V65 兜底 1.0→24.0; V76 分流**");
+    // [V80-MARKER] 一次性打印构建版本(装机确认)。V80 = V79 + 0x0 入口节流: V79 放行修正转发后
+    // 0x0 每 tick 全量转发(单容器 23 秒 278 万次 = 12 万/秒 CoreText layout)⇒ 主线程饱和
+    // SIGKILL, 而重入 0x0 在 V74-REENT 提前 return 使 streak 永不累加 ⇒ gstreak 风暴识别空转;
+    // V80 在入口对「已有几何且本 tick 已转发」的 0x0 直接 return ⇒ 每 tick 每容器最多真转发
+    // 1 次, 12 万/秒 → ~60/秒, 新容器首次 0x0 仍放行拿几何(V79 斩 HANG 语义保留)。
+    static BOOL _v80GuardLogged = NO;
+    if (!_v80GuardLogged) {
+        _v80GuardLogged = YES;
+        NSLog(@"[Minis-Guard] build=V80 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn+zeroAllocEarlyReturn+entrySplitPrime+zeroThrottle (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; V76 非正尺寸短路不转发; V77 入口短路在 valueForKey 之前; V78 入口短路在 associated 分配之前, 零堆分配; V79 入口分流: 风暴识别前放行 0x0 修正转发斩 HANG, 识别后短路; **V80 0x0 入口节流: 已有几何且本 tick 已转发则 return, 每 tick 每容器最多真转发 1 次斩 CoreText 风暴 SIGKILL**");
     }
 
     // [V74-REENT] 递归哨兵: 斩断 setSize: → gOriginalSetSize → layout → setSize: 重入环。
@@ -747,8 +777,7 @@ static void bumpRunloopTick(CFRunLoopObserverRef obs, CFRunLoopActivity act, voi
 
 + (void)install {
     static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        if (![NSThread isMainThread]) {
+    dispatch_once(&once, ^{        if (![NSThread isMainThread]) {
             NSLog(@"[TextContainerGuard] [WARN] install called off main; deferring");
             dispatch_async(dispatch_get_main_queue(), ^{ [NSTextContainerSetSizeGuard install]; });
             return;
