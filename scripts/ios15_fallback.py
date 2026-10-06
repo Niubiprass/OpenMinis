@@ -2238,6 +2238,20 @@ V69_STREAK_NEW = """        s->nonPositiveStreak += 1;
                   (long)gGlobalNonPositiveStreak,
                   (long)s->nonPositiveStreak);
         }
+        // [V76-NONPOS-SHORTCIRCUIT] 非正原始尺寸直接短路, **不转发 CoreText**。
+        // 与 NSTextContainerSetSizeGuard.m 第 ~5xx 行 V76 改动一致: 非正尺寸
+        // (0x-16/0x0/0x-8) 被 V65 修正转发会触发 layout 活锁(实测 83526 次转发
+        // → 8.3 万次 layout → objc_sync_enter 锁卡死 → 7349ms HANG → SIGKILL)。
+        // 直接短路斩断活锁; 容器保留合法几何(lastGoodHeight), 文字照常显示。
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V76] NONPOSITIVE-SHORT-CIRCUIT "
+                  @"container=%p orig=%.1fx%.1f streak=%ld gstreak=%ld "
+                  @"— 非正尺寸直接短路(不转发 CoreText)",
+                  (__bridge void *)self, _v65orig_w, _v65orig_h,
+                  (long)s->nonPositiveStreak, (long)gGlobalNonPositiveStreak);
+        }
+        return;
     } else if (_v65orig_h > 0.0 && _v65orig_w > 0.0) {
         // [V69-GLOBAL]⑤ 自愈退出: 连续收到正尺寸 ⇒ 上游已恢复, 全局计数清零。
         //

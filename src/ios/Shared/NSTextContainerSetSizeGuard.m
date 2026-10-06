@@ -389,7 +389,7 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     static BOOL _v75GuardLogged = NO;
     if (!_v75GuardLogged) {
         _v75GuardLogged = YES;
-        NSLog(@"[Minis-Guard] build=V75 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环)");
+        NSLog(@"[Minis-Guard] build=V76 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; **V76 非正尺寸(0x-16/0x0)直接短路不转发斩断 layout 活锁**——专治 V75 仍未斩净的「选择模型卡死」(实测 8.3 万次非正转发→objc_sync_enter 锁卡死→7349ms HANG→SIGKILL))");
     }
 
     // [V74-REENT] 递归哨兵: 斩断 setSize: → gOriginalSetSize → layout → setSize: 重入环。
@@ -582,6 +582,31 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
                   (long)gGlobalNonPositiveStreak,
                   (long)s->nonPositiveStreak);
         }
+        // [V76-NONPOS-SHORTCIRCUIT] 非正原始尺寸直接短路, **不转发 CoreText**。
+        //
+        // 【装机铁证 — V75 实测 minis-2026-10-06 5.log】非正尺寸(0x-16 / 0x0 / 0x-8)
+        //   被 V65「修正后转发」喂给 CoreText **83526 次**, 每次转发触发一次真实
+        //   layout, layout 的反馈环路又吐非正尺寸 ⇒ **活锁**; V68 降频闸门
+        //   (NONPOSITIVE-DOWNFREQ) 因 gGlobalGoodRun 自愈逻辑反复清零全局计数而
+        //   **0 次触发**, V75 的 _sizeChanged 清零又废掉 commitCount 路径 ⇒ 两头
+        //   都没拦住; 8.3 万次 layout 把主线程钉在 UIFoundation 的 objc_sync_enter
+        //   锁上, MAIN HANG 峰值 **7349ms** ⇒ watchdog SIGKILL(43.8s 内两次前台崩溃)。
+        //
+        // 【为什么直接短路而非「修正转发」】非正值不是有效内容尺寸, 转发它给
+        //   TextKit 既算不出有意义的高度, 又会触发 layout 活锁(致命); 容器保留上次
+        //   合法几何(lastGoodHeight, 由正常正数 setSize 时记录)即可, 文字照常显示,
+        //   上游一旦算对(正数到达)走正常路径补全几何 —— 短路不丢任何有效更新。
+        //   (V65 注释担心的「丢弃=卡字」是针对偶发丢弃使几何停在过期值; 此处容器
+        //   有合法 lastGoodHeight 兜底, 且活锁每秒数千次非正, 转发=卡死 >> 跳过。)
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V76] NONPOSITIVE-SHORT-CIRCUIT "
+                  @"container=%p orig=%.1fx%.1f streak=%ld gstreak=%ld "
+                  @"— 非正尺寸直接短路(不转发 CoreText)",
+                  (__bridge void *)self, _v65orig_w, _v65orig_h,
+                  (long)s->nonPositiveStreak, (long)gGlobalNonPositiveStreak);
+        }
+        return;
     } else if (_v65orig_h > 0.0 && _v65orig_w > 0.0) {
         // [V69-GLOBAL]⑤ 自愈退出: 连续收到正尺寸 ⇒ 上游已恢复, 全局计数清零。
         //
