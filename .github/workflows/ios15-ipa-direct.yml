@@ -3,7 +3,7 @@ name: iOS15 IPA 直出（守卫二进制校验）
 # 定位：与 port-and-build.yml（拉上游→四阶段移植→重型门禁）互补的“直出”通道。
 # - 不拉上游、不重移植：直接编译仓库当前 src/ios（NSTextContainerSetSizeGuard.m 已提交在 main），
 #   代码状态=当前 main，可复现。
-# - 打包后对 IPA 主二进制逐项校验守卫标记（v65/v68/v69/v76/v79 双编码），缺失任一硬标记即标红，
+# - 打包后对 IPA 主二进制逐项校验守卫标记（v65/v68/v69/v76/v79/v80 双编码），缺失任一硬标记即标红，
 #   避免“源码判据全绿、修复没进二进制”的假绿（断言72 只查 v65/v68 的盲区）。
 # - 2026-10-07: ① 触发增加 push paths —— 推 src/ios/Shared/NSTextContainerSetSizeGuard.m 或本
 #   workflow 即自动构建，不再只靠手动 Run workflow；② 硬标记 v77 EARLY → v76 SHORT-CIRCUIT +
@@ -11,6 +11,9 @@ name: iOS15 IPA 直出（守卫二进制校验）
 #   ③ push 触发时 workflow_dispatch 的 inputs 为空，统一用 env 兜底（port-and-build 同款写法），
 #   否则 ${{ inputs.deploy_target }} 解析为空串 → sed 把版本号删掉 → RClone 编译失败
 #   （run 37517672788 实测：Build RClone XCFramework failure）。
+#   ④ 打包升级为 TrollStore 版（移植自 port-and-build）：dyld 体检剔除 iOS 15 不可启动的扩展
+#   （_AppIntents_SwiftUI 缺失 / minos>15.5，83679f4f 与 strip_ios15_incompatible_extensions.py
+#   同款判据）+ entitlements ad-hoc 签名（App Group，否则 TrollStore 不创建共享容器）。
 
 on:
   workflow_dispatch:
@@ -166,23 +169,148 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Package unsigned IPA
+      - name: Package unsigned IPA (TrollStore 版, dyld 体检 + entitlements 签名)
         run: |
+          set -e
           APP="build/Build/Products/${{ env.CONFIGURATION }}-iphoneos/Minis.app"
           test -d "$APP"
           rm -rf Payload
           mkdir Payload
           cp -R "$APP" Payload/
+
+          # ========== [WIDGET-DYLD] dyld 体检: 剔除 iOS 15 不可启动的扩展 ==========
+          # 判据移植自 port-and-build 的 strip_ios15_incompatible_extensions.py:
+          #   (a) 链接 iOS 15.5 不存在的框架 (AgentWidgetExtension → _AppIntents_SwiftUI,
+          #       弱链接 ActivityKit/AppIntents 救不了, 83679f4f 实证两份 .ips dyld SIGABRT)
+          #   (b) LC_BUILD_VERSION.minos > 15.5 (MinisFileProvider 含 iOS 16+ 符号,
+          #       设备实证 8 分钟 12 次秒崩: Symbol not found: CharacterSet)
+          # 通用判据: 不依赖符号名单, 上游将来引入新高版本扩展也自动兜住。
+          if [ -d "Payload/Minis.app/PlugIns" ]; then
+            for appex in Payload/Minis.app/PlugIns/*.appex; do
+              [ -d "$appex" ] || continue
+              EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$appex/Info.plist" 2>/dev/null || basename "$appex" .appex)
+              EXEF="$appex/$EXE"
+              BAD=0
+              if [ -f "$EXEF" ]; then
+                if otool -L "$EXEF" 2>/dev/null | grep -q "_AppIntents_SwiftUI"; then BAD=1; fi
+                MINOS=$(otool -l "$EXEF" 2>/dev/null | grep -A4 "LC_BUILD_VERSION" | awk '/minos/{print $2; exit}')
+                if [ -n "$MINOS" ]; then
+                  MAJOR=$(echo "$MINOS" | awk -F. '{print $1}')
+                  if [ "$MAJOR" -gt 15 ]; then BAD=1; fi
+                fi
+              fi
+              if [ "$BAD" = "1" ]; then
+                echo "剔除 $(basename "$appex") (缺框架或 minos>15.5, iOS 15 不可启动)"
+                rm -rf "$appex"
+              else
+                echo "保留 $(basename "$appex") (minos=${MINOS:-?})"
+              fi
+            done
+          fi
+
+          # ========== [ENTITLEMENTS] ad-hoc 签名: 写入 App Group / Keychain ==========
+          # 编译时 CODE_SIGNING_ALLOWED=NO → 二进制无签名; 裸 zip 会让 TrollStore
+          # 装完看不到 App Group, group.com.openminis.app 容器不创建 → 分享扩展、
+          # 跨进程共享、iSH 状态同步全部落空。按各 target 自己的 .entitlements 做
+          # ad-hoc(fakesign) 签名, TrollStore 安装时读取并保留这些 entitlements。
+          ENT_DIR="src/ios"
+          dump_ent() {  # $1 = Mach-O
+            if command -v ldid >/dev/null 2>&1; then
+              ldid -e "$1" 2>/dev/null || true
+            else
+              codesign -d --entitlements :- "$1" 2>/dev/null || true
+            fi
+          }
+          sign_macho() {  # $1 = Mach-O, $2 = entitlements 文件(可空)
+            if [ -n "$2" ] && [ -f "$2" ]; then
+              if command -v ldid >/dev/null 2>&1; then ldid -S"$2" "$1"
+              else codesign --force --sign - --timestamp=none --entitlements "$2" "$1"; fi
+            else
+              if command -v ldid >/dev/null 2>&1; then ldid -S "$1"
+              else codesign --force --sign - --timestamp=none "$1"; fi
+            fi
+          }
+
+          MAIN_EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' Payload/Minis.app/Info.plist)
+          echo "主可执行文件: $MAIN_EXE"
+          echo "签名工具: $(command -v ldid || echo codesign)"
+
+          # 1) 内层 Mach-O (dylib / framework / 原生依赖): 纯 ad-hoc
+          find Payload -type f -perm -u+x ! -path "*.appex/*" | while read -r F; do
+            case "$F" in "Payload/Minis.app/$MAIN_EXE") continue;; esac
+            if file "$F" | grep -q "Mach-O"; then sign_macho "$F" ""; fi
+          done
+
+          # 2) 内嵌扩展 (.appex): 用 CFBundleIdentifier 末段匹配同名 .entitlements
+          find Payload/Minis.app -maxdepth 3 -name "*.appex" -type d | while read -r APPEX; do
+            EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist" 2>/dev/null || basename "$APPEX" .appex)
+            BID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist" 2>/dev/null || basename "$APPEX" .appex)
+            LAST=$(echo "$BID" | awk -F. '{print $NF}' | tr -d ' \r')
+            ENT=""
+            for E in $(find "$ENT_DIR" -name "*.entitlements" ! -name "Minis.entitlements"); do
+              S=$(basename "$E" .entitlements | tr 'A-Z' 'a-z')
+              if [ "$S" = "$(echo "$LAST" | tr 'A-Z' 'a-z')" ]; then ENT="$E"; break; fi
+            done
+            if [ -z "$ENT" ]; then
+              for E in $(find "$ENT_DIR" -name "*.entitlements" ! -name "Minis.entitlements"); do
+                S=$(basename "$E" .entitlements | tr 'A-Z' 'a-z')
+                case "$(echo "$LAST" | tr 'A-Z' 'a-z')" in *"$S"*) ENT="$E"; break;; esac
+              done
+            fi
+            echo "扩展 $(basename "$APPEX") (bundle=$BID) -> exe=$EXE ent=${ENT:-(无)}"
+            sign_macho "$APPEX/$EXE" "$ENT"
+          done
+
+          # 3) 主 App (最后签, 带 App Group / iCloud / HealthKit …)
+          sign_macho "Payload/Minis.app/$MAIN_EXE" "$ENT_DIR/Minis.entitlements"
+
+          # 4) 校验: 主 App 必须真的带上 App Group, 否则 TrollStore 不会创建容器
+          ENTOUT=$(dump_ent "Payload/Minis.app/$MAIN_EXE")
+          echo "--- 主 App entitlements ---"
+          echo "$ENTOUT" | head -40
+          if echo "$ENTOUT" | grep -q "group.com.openminis.app"; then
+            echo "✅ 主 App 已带 App Group: group.com.openminis.app"
+          else
+            echo "::error::主 App 未带上 App Group 权限 (TrollStore 将不会创建共享容器)"; exit 1
+          fi
+          for APPEX in $(find Payload/Minis.app -maxdepth 3 -name "*.appex" -type d); do
+            EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist" 2>/dev/null || basename "$APPEX" .appex)
+            if dump_ent "$APPEX/$EXE" | grep -q "group.com.openminis.app"; then
+              echo "✅ $(basename "$APPEX") 已带 App Group"
+            else
+              echo "⚠️  $(basename "$APPEX") 未带 App Group (该扩展可能无法与主 App 共享数据)"
+            fi
+          done
+
           SUFFIX='${{ inputs.version_suffix }}'
           if [ -n "$SUFFIX" ]; then
             zip -qry "Minis-iOS${{ env.DEPLOY_TARGET }}-${SUFFIX}.ipa" Payload
           else
             zip -qry "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa" Payload
           fi
+          if ! unzip -l "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa" | grep -q "Payload/Minis.app/Info.plist"; then
+            echo "IPA 结构错误 (缺少 Payload/Minis.app/Info.plist)"; exit 1
+          fi
+          SIZE=$(stat -f%z "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa")
+          echo "IPA 大小: $SIZE 字节"
+          if [ "$SIZE" -lt 10000000 ]; then echo "::error::IPA 小于 10MB, 疑似空包"; exit 1; fi
           ls -lh Minis-iOS*.ipa
+          # [WIDGET-DYLD] 自检: IPA 不得含 iOS 15 不可启动的扩展 (83679f4f 同款断言)
+          BAD=0
+          if unzip -l Minis-iOS*.ipa | grep -q "AgentWidgetExtension.appex"; then
+            echo "::error::IPA 仍含 AgentWidgetExtension.appex (Library not loaded → dyld 启动崩溃)"; BAD=1
+          fi
+          if unzip -l Minis-iOS*.ipa | grep -q "MinisFileProvider.appex"; then
+            echo "::error::IPA 仍含 MinisFileProvider.appex (Symbol not found → 每次被拉起就秒崩)"; BAD=1
+          fi
+          if [ "$BAD" = "1" ]; then
+            unzip -l Minis-iOS*.ipa | grep '\.appex/' | awk '{print $4}'
+            exit 1
+          fi
+          echo "✅ IPA 已剔除全部 iOS 15 不可启动的扩展 (dyld 崩溃根因已移除)"
           unzip -l Minis-iOS*.ipa | head -20
 
-      - name: 守卫二进制校验 (v65/v68/v69/v76/v79 必须真在 App 里)
+      - name: 守卫二进制校验 (v65/v68/v69/v76/v79/v80 必须真在 App 里)
         run: |
           python3 - <<'PY'
           import zipfile, sys, re, glob
@@ -218,6 +346,7 @@ jobs:
               ("V69", "[V69] GLOBAL-RECOVER"),
               ("V76", "[V76] NONPOSITIVE-SHORT-CIRCUIT"),
               ("V79", "[V79] STORM-SHORT-CIRCUIT"),
+              ("V80", "[V80] THROTTLE-ZERO"),
           ]
           # 对照组：早期守卫特征仍在（UTF-8），缺失仅提示不阻断
           ctrl = [
