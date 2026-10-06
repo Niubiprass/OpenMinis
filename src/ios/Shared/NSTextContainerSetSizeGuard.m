@@ -463,24 +463,25 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
         }
     } else {
         // Different tick or different size — reset bookkeeping.
-        // [V75-PERSISTENT-STORM] 必须在覆盖 s->lastSize 之前算好 _sizeChanged
-        // (比本次到达尺寸与上一帧已记录尺寸是否不同)。
+        // [V75-PERSISTENT-STORM] 必须在覆盖 s->lastSize 之前算好 _sizeChanged:
+        // 它比的是「本次到达的尺寸」与「上一帧已记录的尺寸」是否不同。
         BOOL _sizeChanged = !CGSizeEqualToSize(s->lastSize, newSize);
         s->lastSize = newSize;
         s->repeatCount = 1;
         s->initialized = YES;
-        // [v26] 仅新 tick 才清零转发计数; 同 tick 内不同尺寸的放行调用继续累计
-        // commitCount, 保证 4x 硬上限对交替拉锯 (390<->358) 有效。
+        // [v26] 仅新 tick 才清零转发计数; 同 tick 内不同尺寸的放行
+        // 调用继续累计 commitCount, 保证 4x 硬上限对交替拉锯 (390<->358) 有效。
         // [V75-PERSISTENT-STORM] stormed 跨 tick 持久 —— 只在不同尺寸到达时解除,
-        // 不再随 tick 清零。旧逻辑每 tick 清零 stormed ⇒ 陷入「布局永不合收敛」的容器
-        // 每帧重燃: 每帧拿到 kStormForwardLimit*4(160) 次免费转发额度, 主线程被永久
-        // 喂满 ⇒ HangDetector 时长跨 tick 单调递增(2055→4407ms+)⇒ 看门狗 SIGKILL。
-        // 这正是「选择模型卡死」在 V74 仍未斩净的形态(setSize→runloop 新布局
-        // pass→setSize 跨调用重入, _gSetSizeForwarding 哨兵仅拦单次调用栈内重入,
-        // 抓不到)。跨 tick 保留 stormed ⇒ 一旦某 tick 内同尺寸重复超 160 次被熔断,
-        // 后续所有 tick 同尺寸调用一律 SKIP, 环被永久斩断; 上游若真收敛到新尺寸
-        // (不同尺寸到达) 即自动 re-arm, 合法更新零丢失。单次/少量同尺寸每帧只占
-        // repeatCount=1, 永不到 160 阈值, stormed 不置位, 合法场景零影响。
+        // 不再随 tick 清零。旧逻辑每 tick 把 stormed 复位 ⇒ 陷入「布局永不合收敛」
+        // 的容器每帧重燃: 每帧拿到 kStormForwardLimit*4 (160) 次免费转发额度,
+        // 主线程被永久喂满 ⇒ HangDetector 时长跨 tick 单调递增 (2055→4407ms+) ⇒
+        // 看门狗 SIGKILL。这正是「选择模型卡死」在 V74 仍未斩净的形态:
+        // setSize→runloop 新布局 pass→setSize 的跨调用重入, _gSetSizeForwarding
+        // 哨兵(仅拦单次调用栈内的重入)根本抓不到。跨 tick 保留 stormed ⇒ 一旦某
+        // tick 内同尺寸重复超 160 次被熔断, 后续所有 tick 的同尺寸调用一律 SKIP,
+        // 环被永久斩断; 上游若真收敛到新尺寸(不同尺寸到达)即自动 re-arm, 合法
+        // 更新零丢失。单次/少量同尺寸每帧只占 repeatCount=1, 永不到 160 阈值,
+        // stormed 不会置位, 合法场景零影响。
         BOOL _newTick = (s->lastTick != gRunloopTick);
         if (_newTick) { s->commitCount = 0; }
         if (_sizeChanged) { s->stormed = NO; s->commitCount = 0; }
