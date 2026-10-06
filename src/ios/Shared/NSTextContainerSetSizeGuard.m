@@ -381,11 +381,11 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // [V68-HOIST] holder / s 已在本函数**开头**取好(见上方 [V68-HOIST]),
     // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
 
-    // [V71-MARKER] 一次性打印构建版本(装机确认)
-    static BOOL _v71GuardLogged = NO;
-    if (!_v71GuardLogged) {
-        _v71GuardLogged = YES;
-        NSLog(@"[Minis-Guard] build=V71 ios15-pickerCap (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150");
+    // [V72-MARKER] 一次性打印构建版本(装机确认)。V72 = V71 的 pickerCap 根治 + 新增输入框打字闪屏(intrinsicContentSize 反馈环路)修复
+    static BOOL _v72GuardLogged = NO;
+    if (!_v72GuardLogged) {
+        _v72GuardLogged = YES;
+        NSLog(@"[Minis-Guard] build=V72 ios15-pickerCap+inputFlicker (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150; intrinsicContentSize 反馈环路守卫斩断输入闪屏)");
     }
 
     // [IOS15-FIX-STORM] 风暴熔断: 本 tick 已经触发过熔断后, 只丢弃"同尺寸重复"

@@ -1166,7 +1166,9 @@ class PastableUITextView: UITextView, UIDropInteractionDelegate {
             return CGSize(width: UIView.noIntrinsicMetric, height: font?.lineHeight ?? 20)
         }
         let size = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
-        isScrollEnabled = size.height > maxHeight
+        // [IOS15-FIX-INPUT-FLICKER] 仅当值变化才改写 isScrollEnabled, 避免 intrinsicContentSize 查询触发布局重入(输入闪屏根因)。
+        let _shouldScroll = size.height > maxHeight
+        if isScrollEnabled != _shouldScroll { isScrollEnabled = _shouldScroll }
         // [T-ipad-composer-resize] A dragged composer keeps its height even when
         // the text is short; otherwise the box would shrink back around one line.
         if let pinnedHeight {
