@@ -386,10 +386,10 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
 
     // [V76-MARKER] 一次性打印构建版本(装机确认)。V76 = V75 persistentStorm + **V76 非正尺寸跨 tick 持久短路**(非正原始尺寸 0x-16/0x0/0x-8 到达时直接 return 不转发 CoreText, 斩断 V65 修正转发引发的 layout 活锁; 容器保留 lastGoodHeight 合法几何, 文字照常显示, 上游算对即自动 re-arm)。专治 V75 仍未斩净的「选择模型卡死」(实测 8.3 万次非正转发→objc_sync_enter 锁卡死→7349ms HANG→SIGKILL)。
-    static BOOL _v75GuardLogged = NO;
-    if (!_v75GuardLogged) {
-        _v75GuardLogged = YES;
-        NSLog(@"[Minis-Guard] build=V75 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环)");
+    static BOOL _v76GuardLogged = NO;
+    if (!_v76GuardLogged) {
+        _v76GuardLogged = YES;
+        NSLog(@"[Minis-Guard] build=V76 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; **V76 非正尺寸(0x-16/0x0)直接短路不转发斩断 layout 活锁**)");
     }
 
     // [V74-REENT] 递归哨兵: 斩断 setSize: → gOriginalSetSize → layout → setSize: 重入环。
