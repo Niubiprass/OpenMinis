@@ -123,10 +123,10 @@ RULES = [
      "v68(2) 降频放行(硬闸门不得退回「命中即 return」的永久冻结)", 1),
     ("[TextContainerGuard] [WARN] [V76] NONPOSITIVE-SHORT-CIRCUIT",
      "v76     非正尺寸直接短路不转发(斩断 V65 修正转发引发的 layout 活锁)", 1),
-    ("[TextContainerGuard] [WARN] [V77] EARLY-NONPOSITIVE-RETURN",
-     "v77     入口短路: height==0 在 valueForKey 之前 return(不 KVC/不转发)", 1),
-    ("[Minis-Guard] build=V77",
-     "v77     装机确认横幅(注释键升级了、NSLog 仍打 V76 = 半升级)", 1),
+    ("[TextContainerGuard] [WARN] [V78] EARLY-NONPOSITIVE-RETURN",
+     "v78     入口短路: height==0 在 associated 分配之前 return(零堆分配)", 1),
+    ("[Minis-Guard] build=V78",
+     "v78     装机确认横幅(注释键升级了、NSLog 仍打 V77 = 半升级)", 1),
     # ---- v65: 非正尺寸就地修正转发, 不再丢弃 (含中文 ⇒ UTF-16) ----
     ("[TextContainerGuard] [V65] FIXED-NONPOSITIVE",
      "v65     非正尺寸就地修正后转发(旧版丢弃 => 排版停在上一帧 => 卡字)", 1),
@@ -171,7 +171,7 @@ def _is_hard_rule(s: str) -> bool:
       用前缀判会把 v68 误当成对照组 ⇒ 坏样本里它们"在" ⇒ 漏报。
     """
     return ("[V65]" in s or "[V68]" in s or "[V76]" in s or "[V77]" in s
-            or "build=V77" in s)
+            or "[V78]" in s or "build=V78" in s)
 
 
 def _find_binary(target: str):
@@ -367,7 +367,7 @@ def main(argv=None) -> int:
 
     print("")
     if not bad:
-        print("✅ 二进制里 v65/v68/v76/v77 修复全部就位 —— 装机包确实带上了")
+        print("✅ 二进制里 v65/v68/v76/v78 修复全部就位 —— 装机包确实带上了")
         return 0
 
     print("❌❌❌ 装机包里**缺**这些守卫修复 (上面 %d 条报红) ❌❌❌" % len(bad))

@@ -119,6 +119,30 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
         return;
     }
 
+    // [V78-NOALLOC] height==0 在任何堆分配之前 return。
+    // 装机 minis-2026-10-07.log PID 60253: build=V77 在跑,
+    // EARLY-NONPOSITIVE-RETURN 355 条, total 4097→1454081 / ~13.5s,
+    // FIXED 仅 4 条; MemMonitor 36→1958.8MB; MAIN HANG 105 次 max 13510ms;
+    // 随后 PID 60262 重启。V77 入口 return 看见了 145 万次, V65 税没再付;
+    // 病变成 0x0 仍以 ~10 万次/秒打进 setSize。
+    // 根因: V77 的 return 写在 objc_getAssociatedObject /
+    // [_NSTextContainerGuardState new] **之后**。容器工厂每次 0x0 仍
+    // new 一个 GuardState 进 autorelease pool, 同一次 layout 不排空
+    // ⇒ 145 万对象 ⇒ 2GB ⇒ SIGKILL。
+    // ★第十五次「验证手段骗了自己」: 第 ⑪ 层问「在 valueForKey 之前」
+    // [在], 没问「在 associated 分配之前」。
+    // 修法: height==0 在 objc_getAssociatedObject 之前 return, 零堆分配。
+    if (newSize.height == 0.0) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V78] EARLY-NONPOSITIVE-RETURN "
+                  @"orig=%.1fx%.1f total=%llu — 入口短路(零分配/不 KVC/不转发)",
+                  newSize.width, newSize.height,
+                  (unsigned long long)gShortCircuitCount);
+        }
+        return;
+    }
+
     // Sanitise obviously poisoned sizes that SwiftUI's measure path
     // occasionally leaks through (observed in Minis-2026-05-22-225827.ips
     // ViewGraphGeometryObservers crash logs: `408 x 1.79e308` from
@@ -183,23 +207,6 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
                   newSize.width, newSize.height,
                   (unsigned long long)gShortCircuitCount,
                   (__bridge void *)self);
-        }
-        return;
-    }
-    // [V77-EARLY-NONPOS] 非正原始尺寸在 KVC/NSLog/重入哨兵之前直接 return。
-    // 装机 minis-2026-10-06 2.log PID 52989: build=V76 在跑, SHORT-CIRCUIT 0 次,
-    // FIXED-NONPOSITIVE 21084 条(每 32 打 1) ⇒ 675425 次 0x0→326x307,
-    // 内存 48.5→2043.3MB / 9s / pressure=CRITICAL ⇒ PID 53046 重启。
-    // 根因: V76 的 return 在 V65 KVC+NSLog 与 V74 `if (_gSetSizeForwarding)` 之后。
-    // 重入 setSize 先付完 V65 税, 再被 V74 return, V76 一次都看不见。
-    // 修法: orig<=0 在 valueForKey 之前 return, 不转发、不做 KVC。
-    if (newSize.height == 0.0) {
-        gShortCircuitCount += 1;
-        if ((gShortCircuitCount & 0xFFF) == 1) {
-            NSLog(@"[TextContainerGuard] [WARN] [V77] EARLY-NONPOSITIVE-RETURN "
-                  @"orig=%.1fx%.1f total=%llu — 入口短路(不 KVC/不转发)",
-                  newSize.width, newSize.height,
-                  (unsigned long long)gShortCircuitCount);
         }
         return;
     }
@@ -402,11 +409,11 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // [V68-HOIST] holder / s 已在本函数**开头**取好(见上方 [V68-HOIST]),
     // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
 
-    // [V77-MARKER] 一次性打印构建版本(装机确认)。V76 = V75 persistentStorm + **V76 非正尺寸跨 tick 持久短路**(非正原始尺寸 0x-16/0x0/0x-8 到达时直接 return 不转发 CoreText, 斩断 V65 修正转发引发的 layout 活锁; 容器保留 lastGoodHeight 合法几何, 文字照常显示, 上游算对即自动 re-arm)。专治 V75 仍未斩净的「选择模型卡死」(实测 8.3 万次非正转发→objc_sync_enter 锁卡死→7349ms HANG→SIGKILL)。
-    static BOOL _v77GuardLogged = NO;
-    if (!_v77GuardLogged) {
-        _v77GuardLogged = YES;
-        NSLog(@"[Minis-Guard] build=V77 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; V76 非正尺寸短路不转发; **V77 入口短路: orig<=0 在 valueForKey 之前 return, 重入不再付 KVC 税**)");
+    // [V78-MARKER] 一次性打印构建版本(装机确认)。V78 = V77 再前移: **height==0 在 objc_getAssociatedObject / GuardState new 之前 return**(斩断「容器工厂每次 0x0 仍 new 一个 GuardState 进 autorelease pool」;装机 PID 60253: EARLY total 1454081 / 13.5s / 36→1958MB / SIGKILL)。
+    static BOOL _v78GuardLogged = NO;
+    if (!_v78GuardLogged) {
+        _v78GuardLogged = YES;
+        NSLog(@"[Minis-Guard] build=V78 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn+zeroAllocEarlyReturn (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; V76 非正尺寸短路不转发; V77 入口短路在 valueForKey 之前; **V78 入口短路在 associated 分配之前, 零堆分配**)");
     }
 
     // [V74-REENT] 递归哨兵: 斩断 setSize: → gOriginalSetSize → layout → setSize: 重入环。

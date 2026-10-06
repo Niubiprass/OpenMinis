@@ -2458,7 +2458,8 @@ _V76_BANNER = (
 
 def _is_true_v76_banner(t):
     # V77+ 横幅是后继, 本函数不得把 V77 NSLog 打回 V76。
-    if "_v77GuardLogged" in t or 'NSLog(@"[Minis-Guard] build=V77 ' in t:
+    if ("_v77GuardLogged" in t or 'NSLog(@"[Minis-Guard] build=V77 ' in t
+            or "_v78GuardLogged" in t or 'NSLog(@"[Minis-Guard] build=V78 ' in t):
         return True
     return ("[V76-MARKER]" in t
             and "_v76GuardLogged" in t
@@ -2731,100 +2732,113 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     return _upgrade_guard_banner_v76(t)
 
 
-# [V77-EARLY-NONPOS] 非正原始尺寸必须在 V65 KVC / V74 重入哨兵之前 return。
-# 装机 minis-2026-10-06 2.log PID 52989: build=V76 在跑, SHORT-CIRCUIT 0 次,
-# FIXED-NONPOSITIVE 21084 条(每 32 打 1) ⇒ 675425 次 0x0→326x307,
-# 内存 48.5→2043.3MB / 9s / pressure=CRITICAL ⇒ PID 53046 重启。
-# 根因: V76 的 return 写在 V65 KVC+NSLog 与 `if (_gSetSizeForwarding)` 之后。
-# 重入 setSize 先付完 V65 税, 再被 V74 return, V76 一次都看不见。
-V77_EARLY = """    // [V77-EARLY-NONPOS] 非正原始尺寸在 KVC/NSLog/重入哨兵之前直接 return。
-    // 装机 minis-2026-10-06 2.log PID 52989: build=V76 在跑, SHORT-CIRCUIT 0 次,
-    // FIXED-NONPOSITIVE 21084 条(每 32 打 1) ⇒ 675425 次 0x0→326x307,
-    // 内存 48.5→2043.3MB / 9s / pressure=CRITICAL ⇒ PID 53046 重启。
-    // 根因: V76 的 return 在 V65 KVC+NSLog 与 V74 `if (_gSetSizeForwarding)` 之后。
-    // 重入 setSize 先付完 V65 税, 再被 V74 return, V76 一次都看不见。
-    // 修法: orig<=0 在 valueForKey 之前 return, 不转发、不做 KVC。
+# [V78-NOALLOC] height==0 必须在 objc_getAssociatedObject / GuardState new 之前 return。
+# 装机 minis-2026-10-07.log PID 60253: build=V77 在跑, EARLY total 1454081 / 13.5s,
+# FIXED 仅 4 条; 内存 36→1958MB; MAIN HANG 105 次 max 13510ms ⇒ PID 60262 重启。
+# 根因: V77 的 return 写在 associated 分配之后。容器工厂每次 0x0 仍 new 一个
+# GuardState 进 autorelease pool, 同一次 layout 不排空 ⇒ 145 万对象 ⇒ 2GB。
+# ★第十五次假绿: 第 ⑪ 层问「在 valueForKey 之前」[在], 没问「在 associated 之前」。
+V78_EARLY = """    // [V78-NOALLOC] height==0 在任何堆分配之前 return。
+    // 装机 minis-2026-10-07.log PID 60253: build=V77 在跑,
+    // EARLY-NONPOSITIVE-RETURN 355 条, total 4097→1454081 / ~13.5s,
+    // FIXED 仅 4 条; MemMonitor 36→1958.8MB; MAIN HANG 105 次 max 13510ms;
+    // 随后 PID 60262 重启。V77 入口 return 看见了 145 万次, V65 税没再付;
+    // 病变成 0x0 仍以 ~10 万次/秒打进 setSize。
+    // 根因: V77 的 return 写在 objc_getAssociatedObject /
+    // [_NSTextContainerGuardState new] **之后**。容器工厂每次 0x0 仍
+    // new 一个 GuardState 进 autorelease pool, 同一次 layout 不排空
+    // ⇒ 145 万对象 ⇒ 2GB ⇒ SIGKILL。
+    // ★第十五次「验证手段骗了自己」: 第 ⑪ 层问「在 valueForKey 之前」
+    // [在], 没问「在 associated 分配之前」。
+    // 修法: height==0 在 objc_getAssociatedObject 之前 return, 零堆分配。
     if (newSize.height == 0.0) {
         gShortCircuitCount += 1;
         if ((gShortCircuitCount & 0xFFF) == 1) {
-            NSLog(@"[TextContainerGuard] [WARN] [V77] EARLY-NONPOSITIVE-RETURN "
-                  @"orig=%.1fx%.1f total=%llu — 入口短路(不 KVC/不转发)",
+            NSLog(@"[TextContainerGuard] [WARN] [V78] EARLY-NONPOSITIVE-RETURN "
+                  @"orig=%.1fx%.1f total=%llu — 入口短路(零分配/不 KVC/不转发)",
                   newSize.width, newSize.height,
                   (unsigned long long)gShortCircuitCount);
         }
         return;
     }
+
 """
 
-_V77_BANNER = (
-    "    // [V77-MARKER] 一次性打印构建版本(装机确认)。V77 = V76 短路前移: "
-    "**非正原始尺寸在 V65 KVC / V74 重入哨兵之前直接 return**"
-    "(斩断「重入 setSize 先付 V65 税再被 V74 return、V76 一次都看不见」;"
-    "装机 PID 52989: 675425 次 0x0→326x307 / 9s / 48→2043MB / SIGKILL)。\n"
-    "    static BOOL _v77GuardLogged = NO;\n"
-    "    if (!_v77GuardLogged) {\n"
-    "        _v77GuardLogged = YES;\n"
-    "        NSLog(@\"[Minis-Guard] build=V77 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn "
+_V78_BANNER = (
+    "    // [V78-MARKER] 一次性打印构建版本(装机确认)。V78 = V77 再前移: "
+    "**height==0 在 objc_getAssociatedObject / GuardState new 之前 return**"
+    "(斩断「容器工厂每次 0x0 仍 new 一个 GuardState 进 autorelease pool」;"
+    "装机 PID 60253: EARLY total 1454081 / 13.5s / 36→1958MB / SIGKILL)。\n"
+    "    static BOOL _v78GuardLogged = NO;\n"
+    "    if (!_v78GuardLogged) {\n"
+    "        _v78GuardLogged = YES;\n"
+    "        NSLog(@\"[Minis-Guard] build=V78 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn+zeroAllocEarlyReturn "
     "(cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; "
     "setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; "
-    "V76 非正尺寸短路不转发; **V77 入口短路: orig<=0 在 valueForKey 之前 return, 重入不再付 KVC 税**)\");\n"
+    "V76 非正尺寸短路不转发; V77 入口短路在 valueForKey 之前; "
+    "**V78 入口短路在 associated 分配之前, 零堆分配**)\");\n"
     "    }\n\n"
 )
 
-_V77_NSLOG = (
-    'NSLog(@"[Minis-Guard] build=V77 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn '
+_V78_NSLOG = (
+    'NSLog(@"[Minis-Guard] build=V78 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn+zeroAllocEarlyReturn '
     '(cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; '
     'setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; '
-    'V76 非正尺寸短路不转发; **V77 入口短路: orig<=0 在 valueForKey 之前 return, 重入不再付 KVC 税**)");'
+    'V76 非正尺寸短路不转发; V77 入口短路在 valueForKey 之前; '
+    '**V78 入口短路在 associated 分配之前, 零堆分配**)");'
 )
 
 
-def _is_true_v77_banner(t):
-    return ("[V77-MARKER]" in t
-            and "_v77GuardLogged" in t
-            and 'NSLog(@"[Minis-Guard] build=V77 ' in t
-            and "earlyNonPositiveReturn" in t
+def _is_true_v78_banner(t):
+    return ("[V78-MARKER]" in t
+            and "_v78GuardLogged" in t
+            and 'NSLog(@"[Minis-Guard] build=V78 ' in t
+            and "zeroAllocEarlyReturn" in t
+            and "_v77GuardLogged" not in t
             and "_v76GuardLogged" not in t
             and "_v75GuardLogged" not in t
             and "_v74GuardLogged" not in t)
 
 
-def _is_true_v77_early(t):
-    i = t.find("[V77-EARLY-NONPOS]")
+def _is_true_v78_early(t):
+    i = t.find("[V78-NOALLOC]")
+    assoc = t.find("objc_getAssociatedObject")
     k = t.find('valueForKey:@"size"')
     r = t.find("_gSetSizeForwarding")
     return (i >= 0
-            and "EARLY-NONPOSITIVE-RETURN" in t
-            and "newSize.height == 0.0" in t[i:i + 800]
+            and "[V78] EARLY-NONPOSITIVE-RETURN" in t
+            and "newSize.height == 0.0" in t[i:i + 1200]
+            and (assoc < 0 or i < assoc)
             and (k < 0 or i < k)
             and (r < 0 or i < r))
 
 
-def _upgrade_guard_banner_v77(t):
-    if _is_true_v77_banner(t):
+def _upgrade_guard_banner_v78(t):
+    if _is_true_v78_banner(t):
         return t
-    t = re.sub(r"_v7[0-6]GuardLogged", "_v77GuardLogged", t)
+    t = re.sub(r"_v7[0-7]GuardLogged", "_v78GuardLogged", t)
     t = re.sub(
         r'NSLog\(@"\[Minis-Guard\] build=V7[0-9][^"]*"\);',
-        _V77_NSLOG,
+        _V78_NSLOG,
         t,
         count=1,
     )
-    for oldk in ("[V76-MARKER]", "[V75-MARKER]", "[V74-MARKER]", "[V72-MARKER]"):
+    for oldk in ("[V77-MARKER]", "[V76-MARKER]", "[V75-MARKER]",
+                 "[V74-MARKER]", "[V72-MARKER]"):
         if oldk in t:
-            t = t.replace(oldk, "[V77-MARKER]", 1)
+            t = t.replace(oldk, "[V78-MARKER]", 1)
             break
-    if _is_true_v77_banner(t):
+    if _is_true_v78_banner(t):
         return t
     needle = "    // [V74-REENT] 递归哨兵:"
-    if needle in t and "_v77GuardLogged" not in t:
-        t = t.replace(needle, _V77_BANNER + needle, 1)
+    if needle in t and "_v78GuardLogged" not in t:
+        t = t.replace(needle, _V78_BANNER + needle, 1)
     return t
 
 
-def _strip_v77_early_block(t):
-    """摘掉任何位置的 V77 入口短路块(含错位到 KVC 之后的形态)。"""
-    i = t.find("[V77-EARLY-NONPOS]")
+def _strip_early_block(t, marker):
+    """摘掉任何位置的入口短路块(含错位到 associated / KVC 之后的形态)。"""
+    i = t.find(marker)
     if i < 0:
         return t
     line_start = t.rfind("\n", 0, i) + 1
@@ -2852,19 +2866,23 @@ def _strip_v77_early_block(t):
     return t[:line_start] + t[k:]
 
 
-def fix_early_nonpos_v77(t):
-    """v77: 非正原始尺寸在 V65 KVC / V74 重入哨兵之前直接 return。
+def fix_early_nonpos_v78(t):
+    """v78: height==0 在 objc_getAssociatedObject / GuardState new 之前 return。
 
-    幂等: 入口短路已在 valueForKey 之前且横幅三位一体 ⇒ 原样返回。
-    已注入树(IOS15-FIX-STORM 在)也必须能从 V76 错位走到真 V77。
+    幂等: 入口短路已在 associated 之前且横幅三位一体 ⇒ 原样返回。
+    已注入树也必须能从 V77 错位(return 在 associated 之后)走到真 V78。
     """
-    if not _is_true_v77_early(t):
-        if "[V77-EARLY-NONPOS]" in t:
-            t = _strip_v77_early_block(t)
-        needle = "    // [V65-FIXSIZE] 有限但非正的尺寸: **就地修正后转发, 不再丢弃**。"
-        if "[V77-EARLY-NONPOS]" not in t and needle in t:
-            t = t.replace(needle, V77_EARLY + needle, 1)
-    return _upgrade_guard_banner_v77(t)
+    if not _is_true_v78_early(t):
+        t = _strip_early_block(t, "[V78-NOALLOC]")
+        t = _strip_early_block(t, "[V77-EARLY-NONPOS]")
+        needle = "    // Sanitise obviously poisoned sizes that SwiftUI's measure path"
+        if "[V78-NOALLOC]" not in t and needle in t:
+            t = t.replace(needle, V78_EARLY + needle, 1)
+        if "[V78-NOALLOC]" not in t:
+            needle2 = "    _NSTextContainerGuardState *holder = objc_getAssociatedObject"
+            if needle2 in t:
+                t = t.replace(needle2, V78_EARLY + needle2, 1)
+    return _upgrade_guard_banner_v78(t)
 
 
 # =====================================================================
@@ -15320,16 +15338,18 @@ def main():
         "N=64 仍转发 ~6800/s(主线程饱和→SIGKILL, V72 实测), N=4096 压到 ~17/s"
         "(主线程空闲→看门狗不杀)。前 kNonPositiveGlobalLimit 次仍全转发建立 lastGoodHeight,"
         "之后 1/4096 放行斩断 CoreText fillLayoutHole re-entrant 死循环。既过 ⑨ 又真斩风暴。")
-    edit("Shared/NSTextContainerSetSizeGuard.m", fix_early_nonpos_v77,
-        "v77: ★V76 装机(minis-2026-10-06 2.log PID 52989)仍卡死闪退。"
-        "build=V76 在跑, NONPOSITIVE-SHORT-CIRCUIT **0 次**, FIXED-NONPOSITIVE "
-        "21084 条(每 32 打 1) ⇒ **675425 次** 0.0x0.0→326.0x307.0, 内存 "
-        "48.5→**2043.3MB**/9s/pressure=CRITICAL ⇒ PID 53046 重启。"
-        "根因: V76 的 return 写在 V65 KVC+NSLog 与 V74 `if (_gSetSizeForwarding)` "
-        "**之后**。重入 setSize 先付完 V65 税(KVC+NSLog), 再被 V74 return, "
-        "V76 一次都看不见。★第十四次「验证手段骗了自己」: 判据问 return 在不在 "
-        "else-if 同级[在], 没问「它在 valueForKey 之前还是之后」。"
-        "修法: orig<=0 在 valueForKey 之前直接 return, 不 KVC、不转发。")
+    edit("Shared/NSTextContainerSetSizeGuard.m", fix_early_nonpos_v78,
+        "v78: ★V77 装机(minis-2026-10-07.log PID 60253)仍 SIGKILL。"
+        "build=V77 在跑, EARLY-NONPOSITIVE-RETURN 355 条, total 4097→**1454081** "
+        "/ ~13.5s, FIXED 仅 4 条; MemMonitor 36→**1958.8MB**; MAIN HANG 105 次 "
+        "max 13510ms ⇒ PID 60262 重启。"
+        "根因: V77 的 return 写在 objc_getAssociatedObject / "
+        "[_NSTextContainerGuardState new] **之后**。容器工厂每次 0x0 仍 new "
+        "一个 GuardState 进 autorelease pool, 同一次 layout 不排空 ⇒ 145 万对象 "
+        "⇒ 2GB。★第十五次「验证手段骗了自己」: 第 ⑪ 层问「在 valueForKey 之前」"
+        "[在], 没问「在 associated 分配之前」。"
+        "修法: height==0 在 objc_getAssociatedObject 之前 return, 零堆分配。"
+        "0x-8/0x-16 仍走 V65 修正。")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_clamp_v39, "v39: 帧同步补上高度 — 治'字显示不全/排版不对'(v23 帧同步只修宽度不修高度, 每帧把 v18 撑好的高度改回去 → svH 恒为 needH 的 0.50~0.74, 37/37)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_unconditional_v40, "v40: 高度补齐挪出 polluted 分支 — 治'块重叠/字只剩一半'(v39 实测: textView 自身 frameH==needH 已 52/52 全对, 但 superview 52/52 仍欠 23.7~476pt。根因: polluted 判据只看宽度, 宽度修好后早退, v39 的高度代码一行没跑 → 宽度修好反而挡住了高度)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_height_clamp_v41, "v41: KVO 抢帧器补高度 — 治'字只剩一半/终端框不接结果'(推翻 v39/v40 的诊断: log9 同一毫秒同一 layoutSubviews 内 DIAG2 读到 358x2000.33 而开头快照是 100000x1455.33 → v18+v40 在 pass 内**确实修好了**, 欠账是 pass 结束后 SwiftUI 写回的。真凶: KVO 抢帧器只修x/width 从不写高度, 且 polluted 判据只看宽度 → '宽度正常+高度欠账'的帧被 if !polluted { return } 放过 → 末行被裁。v41: KVO 内无条件补高度 + polluted 增加高度维度 + 提交前兜底 + pass 末尾 V41-DEBT 回写侦测)")
