@@ -385,7 +385,7 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // [V68-HOIST] holder / s 已在本函数**开头**取好(见上方 [V68-HOIST]),
     // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
 
-    // [V75-MARKER] 一次性打印构建版本(装机确认)。V75 = V74 reentrantBreak + **V75 同尺寸风暴跨 tick 持久熔断**(stormed 不再随 tick 清零: 陷入 setSize→runloop 新布局 pass→setSize 跨调用重入的容器, 首 tick 内同尺寸重复超 160 次即被熔断, 后续所有 tick 同尺寸一律 SKIP, 环被永久斩断; 上游收敛到不同尺寸即自动 re-arm, 合法更新零丢失)。专治 V74 仍未斩净的「选择模型卡死」(HangDetector 时长跨 tick 单调递增→SIGKILL)。
+    // [V76-MARKER] 一次性打印构建版本(装机确认)。V76 = V75 persistentStorm + **V76 非正尺寸跨 tick 持久短路**(非正原始尺寸 0x-16/0x0/0x-8 到达时直接 return 不转发 CoreText, 斩断 V65 修正转发引发的 layout 活锁; 容器保留 lastGoodHeight 合法几何, 文字照常显示, 上游算对即自动 re-arm)。专治 V75 仍未斩净的「选择模型卡死」(实测 8.3 万次非正转发→objc_sync_enter 锁卡死→7349ms HANG→SIGKILL)。
     static BOOL _v75GuardLogged = NO;
     if (!_v75GuardLogged) {
         _v75GuardLogged = YES;
