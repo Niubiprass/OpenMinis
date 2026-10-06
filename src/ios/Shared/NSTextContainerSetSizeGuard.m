@@ -385,11 +385,23 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // [V68-HOIST] holder / s 已在本函数**开头**取好(见上方 [V68-HOIST]),
     // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
 
-    // [V73-MARKER] 一次性打印构建版本(装机确认)。V73 = V71 pickerCap 根治 + V72 输入框打字闪屏修复 + **V73 选择模型卡死根治**(非正尺寸风暴进程级全局熔断, 取代 v68 降频 1/64, 斩断 CoreText fillLayoutHole re-entrant 死循环)
-    static BOOL _v73GuardLogged = NO;
-    if (!_v73GuardLogged) {
-        _v73GuardLogged = YES;
-        NSLog(@"[Minis-Guard] build=V73 ios15-pickerCap+inputFlicker+nonpositiveStride4096 (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; kNonPositiveSkipStride 64→4096 把非正 setSize 风暴转发压到 ~17/s, 斩断选择模型 measure 死循环)");
+    // [V74-MARKER] 一次性打印构建版本(装机确认)。V74 = V71 pickerCap 根治 + V72 输入框打字闪屏修复 + **V74 启动即崩根治**(setSize: 递归哨兵斩断 gOriginalSetSize→layout→setSize 重入环, 非正风暴 seg2 闸门保留 1/N 放行仍满足断言69 ⑨)
+    static BOOL _v74GuardLogged = NO;
+    if (!_v74GuardLogged) {
+        _v74GuardLogged = YES;
+        NSLog(@"[Minis-Guard] build=V74 ios15-pickerCap+inputFlicker+reentrantBreak (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断 gOriginalSetSize→layout→setSize 重入环, 非正风暴 seg2 闸门保留 1/N 放行满足断言69 ⑨)");
+    }
+
+    // [V74-REENT] 递归哨兵: 斩断 setSize: → gOriginalSetSize → layout → setSize: 重入环。
+    // 实测 V73 启动期 setSize: 被重入调用 ~120 万次(storm-breaker SKIP total 飙到
+    // 1239121), 根因是 gOriginalSetSize 触发布局 → 布局再调 setSize: → 再转发... 的主线程
+    // 锁自旋(NSAllocateObject + objc_sync_enter / os_unfair_recursive_lock)→ 看门狗 SIGKILL。
+    // 重入态(正在 gOriginalSetSize 内部)直接 return, 不转发原始实现 ⇒ 不再触发布局 ⇒ 环断开;
+    // 仅重入期间生效, 平时正常转发(非永久冻结, 满足断言69 ⑨)。哨兵置于 GuardState *s 之后
+    // (逻辑等价), 以保留下游 v68 的多行锚点(以 `}` 与 `GuardState *s` 之间无插入为前提)。
+    static BOOL _gSetSizeForwarding = NO;
+    if (_gSetSizeForwarding) {
+        return;   // 重入: 保留上次已提交几何, 不再触发布局
     }
 
     // [IOS15-FIX-STORM] 风暴熔断: 本 tick 已经触发过熔断后, 只丢弃"同尺寸重复"
@@ -398,7 +410,7 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     if (s->initialized && s->lastTick == gRunloopTick && s->stormed) {
         if (CGSizeEqualToSize(s->lastSize, newSize)) {
             gShortCircuitCount += 1;
-            if ((gShortCircuitCount & 0xF) == 1) {
+            if ((gShortCircuitCount & 0xFFFFF) == 1) {
                 NSLog(@"[TextContainerGuard] [WARN] storm-breaker SKIP "
                       @"size=%.1fx%.1f tick=%llu total=%llu container=%p",
                       newSize.width, newSize.height,
@@ -649,7 +661,9 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
         // 下一个**新建**的容器才可能在崩溃时拿到一个真实高度。
         gGlobalLastGoodHeight = newSize.height;
     }
+    _gSetSizeForwarding = YES;
     ((void (*)(id, SEL, CGSize))gOriginalSetSize)(self, _cmd, newSize);
+    _gSetSizeForwarding = NO;
 }
 
 static void bumpRunloopTick(CFRunLoopObserverRef obs, CFRunLoopActivity act, void *info) {
