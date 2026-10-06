@@ -381,6 +381,13 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // [V68-HOIST] holder / s 已在本函数**开头**取好(见上方 [V68-HOIST]),
     // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
 
+    // [V71-MARKER] 一次性打印构建版本(装机确认)
+    static BOOL _v71GuardLogged = NO;
+    if (!_v71GuardLogged) {
+        _v71GuardLogged = YES;
+        NSLog(@"[Minis-Guard] build=V71 ios15-pickerCap (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150");
+    }
+
     // [IOS15-FIX-STORM] 风暴熔断: 本 tick 已经触发过熔断后, 只丢弃"同尺寸重复"
     // (自旋源); 不同尺寸的调用仍有限放行 —— v9 实证: 无差别丢弃会把正确的宽度
     // 修正 (358x550.9) 连坐丢掉, 容器宽停在旧值 → 文字不换行 → 横向裁切。

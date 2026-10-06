@@ -506,7 +506,7 @@ struct UnifiedModelPicker: View {
     /// slice.
     private var cappedEntriesByInstance: [InstanceSection] {
         let all = filteredEntriesByInstance
-        guard !debouncedSearch.isEmpty else { return all }
+        // [IOS15-FIX-PICKER-CAP] 非搜索态也截断(见函数注释)
         var remaining = Self.maxSearchResults
         var out: [InstanceSection] = []
         for section in all {
@@ -611,7 +611,7 @@ struct UnifiedModelPicker: View {
             ForEach(cappedEntriesByInstance, id: \.instance.id) { item in
                 instanceSection(item)
             }
-            if !debouncedSearch.isEmpty, totalSearchMatches > Self.maxSearchResults {
+            if totalSearchMatches > Self.maxSearchResults {
                 Section {
                     // Format string, not interpolation into the key: an
                     // interpolated key would bake runtime numbers into the
