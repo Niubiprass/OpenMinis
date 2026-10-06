@@ -2382,94 +2382,41 @@ def fix_guard_fixsize_v65(t):
 
 
 def fix_guard_circuit_breaker_v73(t):
-    """v73 注入: 非正尺寸风暴**进程级自适应硬降频**(取代 v68 固定 1/64 降频)。
+    """v73 注入: 非正尺寸风暴**进程级硬降频步长放大**(64 → 4096)。
 
     【本次装机铁证 —— minis-2026-10-06.log (iOS 15.5 / iPhone13,2), V72 仍卡死】
     12:34:07 total=65 → 12:34:13 total=430977(6 秒 43 万次 FIXED-NONPOSITIVE 0x0
     修正转发); 崩溃报告 HANG=7196ms, 堆栈全在 UIFoundation → SIGKILL。
-    v68 固定降频 1/64 在 SwiftUI measure 候选项的「新建容器→0x0→修正转发→
-    1pt 空排→回报不可用→重 measure→又新建容器」re-entrant 死循环里, 仍转发约
-    6800 次/秒 → 主线程打满 → 看门狗。
+    v68 固定降频 1/64 在「点击选择模型」SwiftUI measure 候选项的
+    「新建容器→0x0→修正转发→1pt 空排→回报不可用→重 measure→又新建容器」
+    re-entrant 死循环里, 仍转发约 6800 次/秒 → 主线程打满 → 看门狗 SIGKILL。
 
-    【为什么不能硬熔断(断言69 ⑨ 明令禁止"命中即 return")】
-    ⑨ 要求硬闸门块必须含 gGlobalSkipTick + kNonPositiveSkipStride(进程级降频),
-    否则判为"永久冻结"(v61 巨大空白回归)。硬熔断把两者删了 → CI 直接红。
-    且硬熔断真会让容器永久收不到 setSize → 巨大空白, 与守卫"让 App 活下去"职责相悖。
+    【为什么是放大步长, 不是硬熔断 / 不是改闸门结构】
+    ⑨ 铁律(verify_guard_v65 第⑨层): 命中上限后必须是**降频放行**(含
+    gGlobalSkipTick + kNonPositiveSkipStride), 否则判为"永久冻结"→ CI 红,
+    且真机会巨大空白。硬熔断(v73 第一版)踩中它 → 红。
+    降频结构本身是 v68/v69 已落地、CI 已验证通过的; 只需把步长放大即可把
+    实际转发压到非饱和量级, 且不动 S15 反向锚点(gGlobalSkipTick <
+    kNonPositiveSkipStride 字面保留)。
 
-    【v73 解法: 自适应降频步长 —— 既过 ⑨, 又真斩风暴】
-    转发数 F = 外部调用/(N-1), N=降频步长。步长越大, 实际转发越少:
-      · N=64   → F≈6800/s → 主线程饱和 → SIGKILL(现状)
+    【数学】转发数 F = 外部调用/(N-1), N=降频步长:
+      · N=64   → F≈6800/s → 主线程饱和 → SIGKILL(现状, V72 实测)
       · N=4096 → F≈17/s   → 主线程空闲 → 看门狗不杀
-    所以 v73 在 gGlobalNonPositiveStreak 远超 kNonPositiveGlobalLimit(即「选择模型」
-    容器工厂 re-entrant 形态, 实测 gstreak 直冲 43 万)时, 把有效步长从 64 切到
-    kNonPositiveGlobalStrideHard=4096:
-      - 轻度过载(gstreak 刚过限): 仍用温和 64, 给上游自愈留足通道(满足 ⑨);
-      - 重度风暴: 硬降频把转发压到非饱和量级, re-entrant 死循环不再打满主线程。
-    全程仍是"每 N 次放行 1 次"(非永久冻结), 且连续 128 次正尺寸即清零重置(⑨ 要求)。
+    所以把 kNonPositiveSkipStride 从 64 提到 4096。前 kNonPositiveGlobalLimit
+    次(进程级 gGlobalNonPositiveStreak 未超限)仍全转发, 建立 lastGoodHeight;
+    之后 1/4096 放行 —— re-entrant 死循环不再打满主线程, 当前 tick 尽快结束,
+    上游下一轮从干净状态重算。
 
-    幂等: 已有 [V73-ADAPTIVE] 原样返回。
+    幂等: 已是 4096 原样返回。
     """
-    if "[V73-ADAPTIVE]" in t:
+    if "kNonPositiveSkipStride = 4096" in t:
         return t
-    # ---- ① 新增重度风暴硬降频步长常量 ----
-    if "kNonPositiveGlobalStrideHard" not in t:
-        t = t.replace(
-            "static const NSInteger kNonPositiveSkipStride = 64;",
-            "static const NSInteger kNonPositiveSkipStride = 64;\n\n"
-            "// [V73-ADAPTIVE] 重度风暴硬降频步长: 进程级非正尺寸风暴累计远超\n"
-            "// kNonPositiveGlobalLimit 时(「选择模型」容器工厂 re-entrant 形态,\n"
-            "// 实测 gGlobalNonPositiveStreak 直冲数十万), 改用本步长把实际转发\n"
-            "// 压到非饱和量级(~17/s vs 原 ~6800/s), 斩断 CoreText fillLayoutHole\n"
-            "// 重入死循环, 主线程不再饱和 ⇒ 看门狗不再 SIGKILL。仍满足断言69 ⑨\n"
-            "// 「不得永久冻结、必须 1/N 放行」的要求。\n"
-            "static const NSInteger kNonPositiveGlobalStrideHard = 4096;")
-    # ---- ② 闸门块: 固定 1/64 → 自适应步长 ----
-    OLD = '''    if ((s->nonPositiveStreak > kNonPositiveHardLimit) ||
-        (gGlobalNonPositiveStreak > kNonPositiveGlobalLimit)) {
-        gShortCircuitCount += 1;
-        if ((gShortCircuitCount & 0xFF) == 1) {
-            NSLog(@"[TextContainerGuard] [WARN] [V68] NONPOSITIVE-DOWNFREQ "
-                  @"container=%p streak=%ld — 降频 1/%d 放行(保留上行通道)",
-                  (__bridge void *)self, (long)s->nonPositiveStreak,
-                  (int)kNonPositiveSkipStride);
-        }
-        // [V69-GLOBAL]③ 游标必须用**全局**的: 容器每次都是新的,
-        // per-container 的 nonPositiveSkipTick 恒为 0 ⇒ 每次都走到"放行",
-        // 降频等于没写(这正是 v68 装机 196 万次一次没减的原因)。
-        gGlobalSkipTick += 1;
-        if (gGlobalSkipTick < kNonPositiveSkipStride) {
-            return;   // 本次丢弃: 只丢这一次, 不是永久
-        }
-        gGlobalSkipTick = 0;   // 本次放行
-    }'''
-    NEW = '''    // [V73-ADAPTIVE] 进程级风暴**自适应硬降频**(取代 v68 固定 1/64)。
-    //   轻度过限(gstreak 刚过 kNonPositiveGlobalLimit): 仍用温和 kNonPositiveSkipStride,
-    //     给上游自愈留通道(断言69 ⑨ 要求: 不得永久冻结, 必须保留 1/N 放行)。
-    //   重度风暴(gstreak 远超上限, 即「选择模型」容器工厂 re-entrant 形态):
-    //     改用 kNonPositiveGlobalStrideHard 的硬降频, 实际转发压到非饱和量级
-    //     (~17/s vs 原 ~6800/s), 主线程不再饱和 ⇒ 看门狗不再 SIGKILL。
-    //   全程仍是「每 N 次放行 1 次」(非永久冻结); 连续 128 次正尺寸 good-run 即清零重置。
-    if ((s->nonPositiveStreak > kNonPositiveHardLimit) ||
-        (gGlobalNonPositiveStreak > kNonPositiveGlobalLimit)) {
-        gShortCircuitCount += 1;
-        if ((gShortCircuitCount & 0xFF) == 1) {
-            NSLog(@"[TextContainerGuard] [WARN] [V73] NONPOSITIVE-ADAPTIVE-DOWNFREQ "
-                  @"container=%p gstreak=%ld — 进程级风暴自适应降频(轻度 1/%d / 重度 1/%d)",
-                  (__bridge void *)self, (long)gGlobalNonPositiveStreak,
-                  (int)kNonPositiveSkipStride, (int)kNonPositiveGlobalStrideHard);
-        }
-        // [V69-GLOBAL]③ 游标必须用**全局**的: 容器每次都是新的,
-        // per-container 的 nonPositiveSkipTick 恒为 0 ⇒ 每次都走到"放行",
-        // 降频等于没写(这正是 v68 装机 196 万次一次没减的原因)。
-        // [V73-ADAPTIVE] 风暴越重, 有效步长越大: 直接斩断 re-entrant 死循环。
-        NSInteger _effStride = (gGlobalNonPositiveStreak > (kNonPositiveGlobalLimit * 2))
-            ? kNonPositiveGlobalStrideHard : kNonPositiveSkipStride;
-        gGlobalSkipTick += 1;
-        if (gGlobalSkipTick < _effStride) {
-            return;   // 本次丢弃: 只丢这一次, 不是永久
-        }
-        gGlobalSkipTick = 0;   // 本次放行
-    }'''
+    OLD = "static const NSInteger kNonPositiveSkipStride = 64;"
+    NEW = ("static const NSInteger kNonPositiveSkipStride = 4096;\n"
+           "// [V73] 非正尺寸风暴进程级硬降频步长 64→4096: 实测「点击选择模型」re-entrant\n"
+           "// 死循环 6 秒 43 万次 0x0 修正转发(v68 1/64 仍转发 ~6800/s 打满主线程 ⇒ SIGKILL)。\n"
+           "// F=外部调用/(N-1): N=4096 ⇒ F≈17/s, 主线程不再饱和 ⇒ 看门狗不杀;\n"
+           "// 前 kNonPositiveGlobalLimit 次仍全转发建立 lastGoodHeight。保留 ⑨ 与 S15 锚点。")
     if OLD in t:
         t = t.replace(OLD, NEW)
     return t
@@ -2679,7 +2626,7 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
                 "        _v72GuardLogged = YES;\n"
                 "        NSLog(@\"[Minis-Guard] build=V72 ios15-pickerCap+inputFlicker (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150; intrinsicContentSize 反馈环路守卫斩断输入闪屏)\");\n"
                 "    }",
-                "    // [V73-MARKER] 一次性打印构建版本(装机确认)。V73 = V71 pickerCap 根治 + V72 输入框打字闪屏修复 + **V73 选择模型卡死根治**(非正尺寸风暴进程级自适应硬降频, 重度风暴步长 4096 取代 v68 固定 1/64, 把实际转发压到非饱和量级斩断 CoreText fillLayoutHole re-entrant 死循环)\n"
+                "    // [V73-MARKER] 一次性打印构建版本(装机确认)。V73 = V71 pickerCap 根治 + V72 输入框打字闪屏修复 + **V73 选择模型卡死根治**(非正尺寸风暴进程级硬降频步长放大 64→4096, 把实际转发压到 ~17/s 斩断 CoreText fillLayoutHole re-entrant 死循环)\n"
                 "    static BOOL _v73GuardLogged = NO;\n"
                 "    if (!_v73GuardLogged) {\n"
                 "        _v73GuardLogged = YES;\n"
@@ -2693,7 +2640,7 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
                 "    static BOOL _v73GuardLogged = NO;\n"
                 "    if (!_v73GuardLogged) {\n"
                 "        _v73GuardLogged = YES;\n"
-                "        NSLog(@\"[Minis-Guard] build=V73 ios15-pickerCap+inputFlicker+nonpositiveCircuitBreak (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; gGlobalNonPositiveStreak>kNonPositiveGlobalLimit 后非正 setSize 一律 stop-forward, 斩断选择模型 measure 死循环)\");\n"
+                "        NSLog(@\"[Minis-Guard] build=V73 ios15-pickerCap+inputFlicker+nonpositiveStride4096 (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; kNonPositiveSkipStride 64→4096 把非正 setSize 风暴转发压到 ~17/s, 斩断选择模型 measure 死循环)\");\n"
                 "    }\n\n"
                 "    // [IOS15-FIX-STORM] 风暴熔断")
     return t
@@ -15147,11 +15094,11 @@ def main():
         "re-entrant 风暴**: v68 固定降频 1/64 在 SwiftUI measure 候选项的"
         "「新建容器 → 0x0 → 修正转发 → 1pt 空排 → 回报不可用 → 重 measure」死循环里"
         "仍转发约 6800 次/秒 ⇒ 主线程打满 ⇒ 看门狗。★不能直接硬熔断(断言69 ⑨ 明令"
-        "禁止「命中即 return」=永久冻结, 且 CI 会红)。改**自适应硬降频**: 转发数"
-        "F=外部/(N-1), N=步长; 重度风暴(gGlobalNonPositiveStreak 远超上限, 实测冲 43 万)"
-        "时有效步长从 64 切到 kNonPositiveGlobalStrideHard=4096, 实际转发压到 ~17/s,"
-        "主线程不再饱和 ⇒ 看门狗不杀; 轻度过限仍用 64 给上游自愈留通道, 全程仍是"
-        "每 N 次放行 1 次(非永久冻结), 连续 128 次正尺寸即清零重置。既过 ⑨ 又真斩风暴。")
+        "禁止「命中即 return」=永久冻结, 且 CI 会红)。改**进程级硬降频步长放大 64→4096**"
+        "(不动 v68/v69 闸门结构, 保留 ⑨ 与 S15 反向锚点): 转发数 F=外部/(N-1), N=步长;"
+        "N=64 仍转发 ~6800/s(主线程饱和→SIGKILL, V72 实测), N=4096 压到 ~17/s"
+        "(主线程空闲→看门狗不杀)。前 kNonPositiveGlobalLimit 次仍全转发建立 lastGoodHeight,"
+        "之后 1/4096 放行斩断 CoreText fillLayoutHole re-entrant 死循环。既过 ⑨ 又真斩风暴。")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_clamp_v39, "v39: 帧同步补上高度 — 治'字显示不全/排版不对'(v23 帧同步只修宽度不修高度, 每帧把 v18 撑好的高度改回去 → svH 恒为 needH 的 0.50~0.74, 37/37)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_unconditional_v40, "v40: 高度补齐挪出 polluted 分支 — 治'块重叠/字只剩一半'(v39 实测: textView 自身 frameH==needH 已 52/52 全对, 但 superview 52/52 仍欠 23.7~476pt。根因: polluted 判据只看宽度, 宽度修好后早退, v39 的高度代码一行没跑 → 宽度修好反而挡住了高度)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_height_clamp_v41, "v41: KVO 抢帧器补高度 — 治'字只剩一半/终端框不接结果'(推翻 v39/v40 的诊断: log9 同一毫秒同一 layoutSubviews 内 DIAG2 读到 358x2000.33 而开头快照是 100000x1455.33 → v18+v40 在 pass 内**确实修好了**, 欠账是 pass 结束后 SwiftUI 写回的。真凶: KVO 抢帧器只修x/width 从不写高度, 且 polluted 判据只看宽度 → '宽度正常+高度欠账'的帧被 if !polluted { return } 放过 → 末行被裁。v41: KVO 内无条件补高度 + polluted 增加高度维度 + 提交前兜底 + pass 末尾 V41-DEBT 回写侦测)")
