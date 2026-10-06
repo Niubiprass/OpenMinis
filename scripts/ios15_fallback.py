@@ -297,6 +297,22 @@ def fix_unified_model_picker(t):
         r'\.searchable\(text: \$searchText, placement: \.navigationBarDrawer\(displayMode: \.always\), prompt: "Search"\)',
         r'.searchable(text: $searchText, prompt: "Search")', t)
     t = re.sub(r"\n[ \t]*\.presentationDetents\(\[[^\]]*\]\)", "", t)
+    # [IOS15-FIX-PICKER-CAP] 非搜索态也截断到 maxSearchResults.
+    # 上游 GH#271 的 cap 仅作用于搜索态(见 cappedEntriesByInstance 的
+    # `guard !debouncedSearch.isEmpty else { return all }`); 非搜索态直接
+    # return all。但上游注释明示单个聚合器可持有 7000+ 模型。iOS 15 的
+    # SwiftUI List(UITableView 后台) 会对每个自定高单元格逐行测高, 每行触发
+    # 一次 UIFoundation 文本布局 -> 数千行 = 主线程 8.5s 卡死被看门狗 SIGKILL
+    # (实测 crash-20261006-101239.log: Hang 8533ms, 堆栈全在 UIFoundation,
+    # 对应"点选择模型就卡死")。统一截断保留相关性最高的前缀(entries 已按
+    # 相关性排序), 与搜索态行为一致; footer 同步提示。
+    t = t.replace(
+        "        let all = filteredEntriesByInstance\n        guard !debouncedSearch.isEmpty else { return all }\n        var remaining = Self.maxSearchResults",
+        "        let all = filteredEntriesByInstance\n        // [IOS15-FIX-PICKER-CAP] 非搜索态也截断(见函数注释)\n        var remaining = Self.maxSearchResults")
+    # footer 同步: 非搜索态截断时也提示 "Showing N of M"
+    t = t.replace(
+        "if !debouncedSearch.isEmpty, totalSearchMatches > Self.maxSearchResults {",
+        "if totalSearchMatches > Self.maxSearchResults {")
     return t
 
 
@@ -2538,6 +2554,10 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     } else {'''
     if OLD7 in t:
         t = t.replace(OLD7, NEW7)
+    # ---- ⑧ [V71-MARKER] 一次性打印构建版本, 便于设备日志确认装机版本 ----
+    t = t.replace(
+        "    GuardState *s = &holder->state;\n\n    // [IOS15-FIX-STORM] 风暴熔断",
+        "    GuardState *s = &holder->state;\n\n    // [V71-MARKER] 一次性打印构建版本(装机确认)\n    static BOOL _v71GuardLogged = NO;\n    if (!_v71GuardLogged) {\n        _v71GuardLogged = YES;\n        NSLog(@\"[Minis-Guard] build=V71 ios15-pickerCap (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=%ld)\",\n              (long)Self.maxSearchResults);\n    }\n\n    // [IOS15-FIX-STORM] 风暴熔断")
     return t
 
 
