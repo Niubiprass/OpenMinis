@@ -37,7 +37,11 @@ static const NSInteger kNonPositiveHardLimit = 400;
 // ⇒ 巨大空白(v61 刚修掉的症状换个形态回来)。
 // 降频 1/64 把 197 万次压到约 3 万次(内存增速 1.4GB → 20MB 量级),
 // 同时**保留上行通道**: 上游一旦自愈, 高度仍能一帧一帧追回来。
-static const NSInteger kNonPositiveSkipStride = 64;
+static const NSInteger kNonPositiveSkipStride = 4096;
+// [V73] 非正尺寸风暴进程级硬降频步长 64→4096: 实测「点击选择模型」re-entrant
+// 死循环 6 秒 43 万次 0x0 修正转发(v68 1/64 仍转发 ~6800/s 打满主线程 ⇒ SIGKILL)。
+// F=外部调用/(N-1): N=4096 ⇒ F≈17/s, 主线程不再饱和 ⇒ 看门狗不杀;
+// 前 kNonPositiveGlobalLimit 次仍全转发建立 lastGoodHeight。保留 ⑨ 与 S15 锚点。
 
 // [V69-GLOBAL] **进程级**非正尺寸风暴计数。
 //
@@ -381,11 +385,11 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // [V68-HOIST] holder / s 已在本函数**开头**取好(见上方 [V68-HOIST]),
     // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
 
-    // [V72-MARKER] 一次性打印构建版本(装机确认)。V72 = V71 的 pickerCap 根治 + 新增输入框打字闪屏(intrinsicContentSize 反馈环路)修复
-    static BOOL _v72GuardLogged = NO;
-    if (!_v72GuardLogged) {
-        _v72GuardLogged = YES;
-        NSLog(@"[Minis-Guard] build=V72 ios15-pickerCap+inputFlicker (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150; intrinsicContentSize 反馈环路守卫斩断输入闪屏)");
+    // [V73-MARKER] 一次性打印构建版本(装机确认)。V73 = V71 pickerCap 根治 + V72 输入框打字闪屏修复 + **V73 选择模型卡死根治**(非正尺寸风暴进程级全局熔断, 取代 v68 降频 1/64, 斩断 CoreText fillLayoutHole re-entrant 死循环)
+    static BOOL _v73GuardLogged = NO;
+    if (!_v73GuardLogged) {
+        _v73GuardLogged = YES;
+        NSLog(@"[Minis-Guard] build=V73 ios15-pickerCap+inputFlicker+nonpositiveStride4096 (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; kNonPositiveSkipStride 64→4096 把非正 setSize 风暴转发压到 ~17/s, 斩断选择模型 measure 死循环)");
     }
 
     // [IOS15-FIX-STORM] 风暴熔断: 本 tick 已经触发过熔断后, 只丢弃"同尺寸重复"
