@@ -3,8 +3,11 @@ name: iOS15 IPA 直出（守卫二进制校验）
 # 定位：与 port-and-build.yml（拉上游→四阶段移植→重型门禁）互补的“直出”通道。
 # - 不拉上游、不重移植：直接编译仓库当前 src/ios（NSTextContainerSetSizeGuard.m 已提交在 main），
 #   代码状态=当前 main，可复现。
-# - 打包后对 IPA 主二进制逐项校验守卫标记（v65/v68/v69/v77 双编码），缺失任一硬标记即标红，
+# - 打包后对 IPA 主二进制逐项校验守卫标记（v65/v68/v69/v76/v79 双编码），缺失任一硬标记即标红，
 #   避免“源码判据全绿、修复没进二进制”的假绿（断言72 只查 v65/v68 的盲区）。
+# - 2026-10-07: ① 触发增加 push paths —— 推 src/ios/Shared/NSTextContainerSetSizeGuard.m 或本
+#   workflow 即自动构建，不再只靠手动 Run workflow；② 硬标记 v77 EARLY → v76 SHORT-CIRCUIT +
+#   v79 STORM-SHORT-CIRCUIT（V79 守卫已用 [V79-SPLIT]/[V79-STORM] 取代 V77/V78 的入口短路块）。
 
 on:
   workflow_dispatch:
@@ -22,9 +25,13 @@ on:
           - Release
           - Debug
       version_suffix:
-        description: "可选版本后缀（如 v78，会拼进 IPA 文件名，便于区分 70 多个迭代）"
+        description: "可选版本后缀（如 v79，会拼进 IPA 文件名，便于区分 70 多个迭代）"
         required: false
         default: ""
+  push:
+    paths:
+      - "src/ios/Shared/NSTextContainerSetSizeGuard.m"
+      - ".github/workflows/ios15-ipa-direct.yml"
 
 concurrency:
   group: ios15-ipa-direct-${{ github.ref }}
@@ -167,7 +174,7 @@ jobs:
           ls -lh Minis-iOS*.ipa
           unzip -l Minis-iOS*.ipa | head -20
 
-      - name: 守卫二进制校验 (v65/v68/v69/v77 必须真在 App 里)
+      - name: 守卫二进制校验 (v65/v68/v69/v76/v79 必须真在 App 里)
         run: |
           python3 - <<'PY'
           import zipfile, sys, re, glob
@@ -201,7 +208,8 @@ jobs:
               ("V68", "[V68] NONPOSITIVE-DOWNFREQ"),
               ("V69", "[V69] GLOBAL-STREAK"),
               ("V69", "[V69] GLOBAL-RECOVER"),
-              ("V77", "[V77] EARLY-NONPOSITIVE-RETURN"),
+              ("V76", "[V76] NONPOSITIVE-SHORT-CIRCUIT"),
+              ("V79", "[V79] STORM-SHORT-CIRCUIT"),
           ]
           # 对照组：早期守卫特征仍在（UTF-8），缺失仅提示不阻断
           ctrl = [
@@ -221,7 +229,7 @@ jobs:
               ok = marker.encode("utf-8") in data
               print(("✅" if ok else "⚠️") + f" [{tag}] {marker} (UTF-8)" + ("" if ok else " —— 对照组缺失(可能编码不同, 仅提示)"))
 
-          # 打印实际 build 标记（不锁定具体版本号，避免以后 V78+ 误伤）
+          # 打印实际 build 标记（不锁定具体版本号，避免以后 V79+ 误伤）
           text = data.decode("utf-16-le", "ignore")
           m = re.search(r"\[Minis-Guard\] build=V[^\u0000]{0,80}", text)
           if m:
