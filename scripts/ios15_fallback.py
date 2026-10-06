@@ -2557,7 +2557,7 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     # ---- ⑧ [V71-MARKER] 一次性打印构建版本, 便于设备日志确认装机版本 ----
     t = t.replace(
         "    GuardState *s = &holder->state;\n\n    // [IOS15-FIX-STORM] 风暴熔断",
-        "    GuardState *s = &holder->state;\n\n    // [V71-MARKER] 一次性打印构建版本(装机确认)\n    static BOOL _v71GuardLogged = NO;\n    if (!_v71GuardLogged) {\n        _v71GuardLogged = YES;\n        NSLog(@\"[Minis-Guard] build=V71 ios15-pickerCap (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=%ld)\",\n              (long)Self.maxSearchResults);\n    }\n\n    // [IOS15-FIX-STORM] 风暴熔断")
+        "    GuardState *s = &holder->state;\n\n    // [V71-MARKER] 一次性打印构建版本(装机确认)\n    static BOOL _v71GuardLogged = NO;\n    if (!_v71GuardLogged) {\n        _v71GuardLogged = YES;\n        NSLog(@\"[Minis-Guard] build=V71 ios15-pickerCap (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150\");\n    }\n\n    // [IOS15-FIX-STORM] 风暴熔断")
     return t
 
 
