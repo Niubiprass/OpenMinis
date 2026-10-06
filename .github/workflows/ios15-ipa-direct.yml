@@ -7,7 +7,10 @@ name: iOS15 IPA 直出（守卫二进制校验）
 #   避免“源码判据全绿、修复没进二进制”的假绿（断言72 只查 v65/v68 的盲区）。
 # - 2026-10-07: ① 触发增加 push paths —— 推 src/ios/Shared/NSTextContainerSetSizeGuard.m 或本
 #   workflow 即自动构建，不再只靠手动 Run workflow；② 硬标记 v77 EARLY → v76 SHORT-CIRCUIT +
-#   v79 STORM-SHORT-CIRCUIT（V79 守卫已用 [V79-SPLIT]/[V79-STORM] 取代 V77/V78 的入口短路块）。
+#   v79 STORM-SHORT-CIRCUIT（V79 守卫已用 [V79-SPLIT]/[V79-STORM] 取代 V77/V78 的入口短路块）；
+#   ③ push 触发时 workflow_dispatch 的 inputs 为空，统一用 env 兜底（port-and-build 同款写法），
+#   否则 ${{ inputs.deploy_target }} 解析为空串 → sed 把版本号删掉 → RClone 编译失败
+#   （run 37517672788 实测：Build RClone XCFramework failure）。
 
 on:
   workflow_dispatch:
@@ -48,6 +51,11 @@ jobs:
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      # push 触发时 inputs 为空，统一用 env 兜底（port-and-build 同款写法）。
+      # 不兜底的话 ${{ inputs.deploy_target }} 解析为空串 → sed 把版本号删掉
+      # → RClone 编译失败（run 37517672788 实测）。
+      DEPLOY_TARGET: ${{ inputs.deploy_target || '15.5' }}
+      CONFIGURATION: ${{ inputs.configuration || 'Release' }}
 
     steps:
       - name: Checkout (with submodules)
@@ -114,13 +122,13 @@ jobs:
       - name: Build RClone XCFramework
         run: |
           set -e
-          sed -i '' 's/-miphoneos-version-min=[0-9.]*/-miphoneos-version-min=${{ inputs.deploy_target }}/; s/-mios-simulator-version-min=[0-9.]*/-mios-simulator-version-min=${{ inputs.deploy_target }}/' deps/build_rclone_ios.sh
+          sed -i '' 's/-miphoneos-version-min=[0-9.]*/-miphoneos-version-min=${{ env.DEPLOY_TARGET }}/; s/-mios-simulator-version-min=[0-9.]*/-mios-simulator-version-min=${{ env.DEPLOY_TARGET }}/' deps/build_rclone_ios.sh
           ./deps/build_rclone_ios.sh
 
       - name: Apply iOS deployment target
-        if: ${{ inputs.deploy_target != '16.0' }}
+        if: ${{ env.DEPLOY_TARGET != '16.0' }}
         run: |
-          TARGET='${{ inputs.deploy_target }}'
+          TARGET='${{ env.DEPLOY_TARGET }}'
           PBX=src/ios/Minis.xcodeproj/project.pbxproj
           sed -i '' -E "s/IPHONEOS_DEPLOYMENT_TARGET = (16|16\.2|26\.2);/IPHONEOS_DEPLOYMENT_TARGET = ${TARGET};/g" "$PBX"
           grep -c "IPHONEOS_DEPLOYMENT_TARGET = ${TARGET};" "$PBX"
@@ -131,7 +139,7 @@ jobs:
           xcodebuild \
             -project src/ios/Minis.xcodeproj \
             -scheme Minis \
-            -configuration '${{ inputs.configuration }}' \
+            -configuration '${{ env.CONFIGURATION }}' \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
@@ -160,16 +168,16 @@ jobs:
 
       - name: Package unsigned IPA
         run: |
-          APP="build/Build/Products/${{ inputs.configuration }}-iphoneos/Minis.app"
+          APP="build/Build/Products/${{ env.CONFIGURATION }}-iphoneos/Minis.app"
           test -d "$APP"
           rm -rf Payload
           mkdir Payload
           cp -R "$APP" Payload/
           SUFFIX='${{ inputs.version_suffix }}'
           if [ -n "$SUFFIX" ]; then
-            zip -qry "Minis-iOS${{ inputs.deploy_target }}-${SUFFIX}.ipa" Payload
+            zip -qry "Minis-iOS${{ env.DEPLOY_TARGET }}-${SUFFIX}.ipa" Payload
           else
-            zip -qry "Minis-iOS${{ inputs.deploy_target }}.ipa" Payload
+            zip -qry "Minis-iOS${{ env.DEPLOY_TARGET }}.ipa" Payload
           fi
           ls -lh Minis-iOS*.ipa
           unzip -l Minis-iOS*.ipa | head -20
@@ -246,7 +254,7 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Minis-iOS${{ inputs.deploy_target }}-ipa
+          name: Minis-iOS${{ env.DEPLOY_TARGET }}-ipa
           path: Minis-iOS*.ipa
           retention-days: 30
           if-no-files-found: error
