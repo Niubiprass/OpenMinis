@@ -2436,9 +2436,79 @@ def fix_guard_circuit_breaker_v73(t):
     return t
 
 
+# [V76-BANNER] 装机确认横幅。注释键 / static 名 / NSLog 串必须三位一体。
+# ★半升级(本轮真实故障): 注释已是 [V76-MARKER], 运行时仍是
+#   _v75GuardLogged + build=V75。用户装机日志只看得见 NSLog,
+#   于是「装的还是 V75」。生成器若 `if [V76-MARKER]: return` 会把半升级冻住。
+_V76_BANNER = (
+    "    // [V76-MARKER] 一次性打印构建版本(装机确认)。V76 = V75 persistentStorm + "
+    "**V76 非正尺寸跨 tick 持久短路**(非正原始尺寸 0x-16/0x0/0x-8 到达时直接 return 不转发 CoreText, "
+    "斩断 V65 修正转发引发的 layout 活锁; 容器保留 lastGoodHeight 合法几何, 文字照常显示, 上游算对即自动 re-arm)。"
+    "专治 V75 仍未斩净的「选择模型卡死」(实测 8.3 万次非正转发→objc_sync_enter 锁卡死→7349ms HANG→SIGKILL)。\n"
+    "    static BOOL _v76GuardLogged = NO;\n"
+    "    if (!_v76GuardLogged) {\n"
+    "        _v76GuardLogged = YES;\n"
+    "        NSLog(@\"[Minis-Guard] build=V76 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit "
+    "(cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; "
+    "setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; "
+    "**V76 非正尺寸(0x-16/0x0)直接短路不转发斩断 layout 活锁**)\");\n"
+    "    }\n\n"
+)
+
+
+def _is_true_v76_banner(t):
+    # V77+ 横幅是后继, 本函数不得把 V77 NSLog 打回 V76。
+    if "_v77GuardLogged" in t or 'NSLog(@"[Minis-Guard] build=V77 ' in t:
+        return True
+    return ("[V76-MARKER]" in t
+            and "_v76GuardLogged" in t
+            and 'NSLog(@"[Minis-Guard] build=V76 ' in t
+            and "nonPositiveShortCircuit" in t
+            and "_v75GuardLogged" not in t
+            and "_v74GuardLogged" not in t
+            and "_v72GuardLogged" not in t)
+
+
+_V76_NSLOG = (
+    'NSLog(@"[Minis-Guard] build=V76 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit '
+    '(cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; '
+    'setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; '
+    '**V76 非正尺寸(0x-16/0x0)直接短路不转发斩断 layout 活锁**)");'
+)
+
+
+def _upgrade_guard_banner_v76(t):
+    """横幅升级必须独立于 IOS15-FIX-STORM 早退。
+
+    已注入树带着 IOS15-FIX-STORM, 整函数早退 ⇒ 横幅升级一行都跑不到
+    ⇒ 半升级(注释 V76 / 运行时 V75)被永久冻住。这正是本轮故障。
+    """
+    if _is_true_v76_banner(t):
+        return t
+    t = re.sub(r"_v7[0-5]GuardLogged", "_v76GuardLogged", t)
+    t = re.sub(
+        r'NSLog\(@"\[Minis-Guard\] build=V7[0-6][^"]*"\);',
+        _V76_NSLOG,
+        t,
+        count=1,
+    )
+    for oldk in ("[V75-MARKER]", "[V74-MARKER]", "[V72-MARKER]"):
+        if oldk in t:
+            t = t.replace(oldk, "[V76-MARKER]", 1)
+            break
+    if _is_true_v76_banner(t):
+        return t
+    needle = "    // [V74-REENT] 递归哨兵:"
+    if needle in t and "_v76GuardLogged" not in t:
+        t = t.replace(needle, _V76_BANNER + needle, 1)
+    return t
+
+
 def fix_textcontainer_guard_stormbreaker(t):
+    # ★横幅升级必须在早退之外: 已注入树(IOS15-FIX-STORM 在)也要能
+    #   从半升级走到真 V76。早退只跳过风暴体注入, 不跳过横幅。
     if "IOS15-FIX-STORM" in t:
-        return t  # 幂等
+        return _upgrade_guard_banner_v76(t)
     # ---- ① 常量: 风暴阈值 + 有限高度上限 ----
     OLD1 = '''static const NSInteger kRepeatThreshold = 2;'''
     NEW1 = '''static const NSInteger kRepeatThreshold = 2;
@@ -2655,69 +2725,146 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     } else {'''
     if OLD7 in t:
         t = t.replace(OLD7, NEW7)
-    # ---- ⑧ [V7x-MARKER] 一次性打印构建版本, 便于设备日志确认装机版本 ----
-    # 幂等四态(标记键统一为 [V76-MARKER], 杜绝 auto-port 把 V76 打回 V75 的老问题):
-    #   · 已是 V76 标记([V76-MARKER]) → 不动;
-    #   · 已是 V75 标记([V75-MARKER]) → 升级到 V76;
-    #   · 已是 V74/V72 标记 → 升级到 V76;
-    #   · 干净上游(无标记) → 注入 V76。
-    _v76_marker = (
-        "    // [V76-MARKER] 一次性打印构建版本(装机确认)。V76 = V75 persistentStorm + "
-        "**V76 非正尺寸跨 tick 持久短路**(非正原始尺寸 0x-16/0x0/0x-8 到达时直接 return 不转发 CoreText, "
-        "斩断 V65 修正转发引发的 layout 活锁; 容器保留 lastGoodHeight 合法几何, 文字照常显示, 上游算对即自动 re-arm)。"
-        "专治 V75 仍未斩净的「选择模型卡死」(实测 8.3 万次非正转发→objc_sync_enter 锁卡死→7349ms HANG→SIGKILL)。\n"
-        "    static BOOL _v76GuardLogged = NO;\n"
-        "    if (!_v76GuardLogged) {\n"
-        "        _v76GuardLogged = YES;\n"
-        "        NSLog(@\"[Minis-Guard] build=V76 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit "
-        "(cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; "
-        "setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; "
-        "**V76 非正尺寸(0x-16/0x0)直接短路不转发斩断 layout 活锁**)\");\n"
-        "    }\n\n"
+    # ---- ⑧ 横幅: 干净上游走完整注入后, 再统一升到真 V76 ----
+    # 半升级 / 旧标记 / 无标记 三种形态都由 _upgrade_guard_banner_v76 处理,
+    # 与早退路径共用同一份逻辑(纪律第 8 条: 同一逻辑只能一处实现)。
+    return _upgrade_guard_banner_v76(t)
+
+
+# [V77-EARLY-NONPOS] 非正原始尺寸必须在 V65 KVC / V74 重入哨兵之前 return。
+# 装机 minis-2026-10-06 2.log PID 52989: build=V76 在跑, SHORT-CIRCUIT 0 次,
+# FIXED-NONPOSITIVE 21084 条(每 32 打 1) ⇒ 675425 次 0x0→326x307,
+# 内存 48.5→2043.3MB / 9s / pressure=CRITICAL ⇒ PID 53046 重启。
+# 根因: V76 的 return 写在 V65 KVC+NSLog 与 `if (_gSetSizeForwarding)` 之后。
+# 重入 setSize 先付完 V65 税, 再被 V74 return, V76 一次都看不见。
+V77_EARLY = """    // [V77-EARLY-NONPOS] 非正原始尺寸在 KVC/NSLog/重入哨兵之前直接 return。
+    // 装机 minis-2026-10-06 2.log PID 52989: build=V76 在跑, SHORT-CIRCUIT 0 次,
+    // FIXED-NONPOSITIVE 21084 条(每 32 打 1) ⇒ 675425 次 0x0→326x307,
+    // 内存 48.5→2043.3MB / 9s / pressure=CRITICAL ⇒ PID 53046 重启。
+    // 根因: V76 的 return 在 V65 KVC+NSLog 与 V74 `if (_gSetSizeForwarding)` 之后。
+    // 重入 setSize 先付完 V65 税, 再被 V74 return, V76 一次都看不见。
+    // 修法: orig<=0 在 valueForKey 之前 return, 不转发、不做 KVC。
+    if (newSize.height == 0.0) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V77] EARLY-NONPOSITIVE-RETURN "
+                  @"orig=%.1fx%.1f total=%llu — 入口短路(不 KVC/不转发)",
+                  newSize.width, newSize.height,
+                  (unsigned long long)gShortCircuitCount);
+        }
+        return;
+    }
+"""
+
+_V77_BANNER = (
+    "    // [V77-MARKER] 一次性打印构建版本(装机确认)。V77 = V76 短路前移: "
+    "**非正原始尺寸在 V65 KVC / V74 重入哨兵之前直接 return**"
+    "(斩断「重入 setSize 先付 V65 税再被 V74 return、V76 一次都看不见」;"
+    "装机 PID 52989: 675425 次 0x0→326x307 / 9s / 48→2043MB / SIGKILL)。\n"
+    "    static BOOL _v77GuardLogged = NO;\n"
+    "    if (!_v77GuardLogged) {\n"
+    "        _v77GuardLogged = YES;\n"
+    "        NSLog(@\"[Minis-Guard] build=V77 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn "
+    "(cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; "
+    "setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; "
+    "V76 非正尺寸短路不转发; **V77 入口短路: orig<=0 在 valueForKey 之前 return, 重入不再付 KVC 税**)\");\n"
+    "    }\n\n"
+)
+
+_V77_NSLOG = (
+    'NSLog(@"[Minis-Guard] build=V77 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn '
+    '(cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; '
+    'setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; '
+    'V76 非正尺寸短路不转发; **V77 入口短路: orig<=0 在 valueForKey 之前 return, 重入不再付 KVC 税**)");'
+)
+
+
+def _is_true_v77_banner(t):
+    return ("[V77-MARKER]" in t
+            and "_v77GuardLogged" in t
+            and 'NSLog(@"[Minis-Guard] build=V77 ' in t
+            and "earlyNonPositiveReturn" in t
+            and "_v76GuardLogged" not in t
+            and "_v75GuardLogged" not in t
+            and "_v74GuardLogged" not in t)
+
+
+def _is_true_v77_early(t):
+    i = t.find("[V77-EARLY-NONPOS]")
+    k = t.find('valueForKey:@"size"')
+    r = t.find("_gSetSizeForwarding")
+    return (i >= 0
+            and "EARLY-NONPOSITIVE-RETURN" in t
+            and "newSize.height == 0.0" in t[i:i + 800]
+            and (k < 0 or i < k)
+            and (r < 0 or i < r))
+
+
+def _upgrade_guard_banner_v77(t):
+    if _is_true_v77_banner(t):
+        return t
+    t = re.sub(r"_v7[0-6]GuardLogged", "_v77GuardLogged", t)
+    t = re.sub(
+        r'NSLog\(@"\[Minis-Guard\] build=V7[0-9][^"]*"\);',
+        _V77_NSLOG,
+        t,
+        count=1,
     )
-    _v75_marker_old = (
-        "    // [V75-MARKER] 一次性打印构建版本(装机确认)。V75 = V74 reentrantBreak + "
-        "**V75 同尺寸风暴跨 tick 持久熔断**(stormed 不再随 tick 清零: 陷入 setSize→runloop "
-        "新布局 pass→setSize 跨调用重入的容器, 首 tick 内同尺寸重复超 160 次即被熔断, 后续所有 "
-        "tick 同尺寸一律 SKIP, 环被永久斩断; 上游收敛到不同尺寸即自动 re-arm, 合法更新零丢失)。"
-        "专治 V74 仍未斩净的「选择模型卡死」(HangDetector 时长跨 tick 单调递增→SIGKILL)。\n"
-        "    static BOOL _v75GuardLogged = NO;\n"
-        "    if (!_v75GuardLogged) {\n"
-        "        _v75GuardLogged = YES;\n"
-        "        NSLog(@\"[Minis-Guard] build=V75 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm "
-        "(cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; "
-        "setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环)\");\n"
-        "    }\n\n"
-    )
-    if "[V76-MARKER]" in t:
-        pass  # 已是 V76, 保持不动(关键: 防止 auto-port 把 build=V76 改回 V75)
-    elif "[V75-MARKER]" in t:
-        t = t.replace(_v75_marker_old, _v76_marker)
-    elif "[V74-MARKER]" in t:
-        t = t.replace(
-            "    // [V74-MARKER] 一次性打印构建版本(装机确认)。V74 = V71 pickerCap 根治 + V72 输入框打字闪屏修复 + **V74 启动即崩根治**(setSize: 递归哨兵斩断 gOriginalSetSize→layout→setSize 重入环, 非正风暴 seg2 闸门保留 1/N 放行仍满足断言69 ⑨)\n"
-            "    static BOOL _v74GuardLogged = NO;\n"
-            "    if (!_v74GuardLogged) {\n"
-            "        _v74GuardLogged = YES;\n"
-            "        NSLog(@\"[Minis-Guard] build=V74 ios15-pickerCap+inputFlicker+reentrantBreak (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断 gOriginalSetSize→layout→setSize 重入环, 非正风暴 seg2 闸门保留 1/N 放行满足断言69 ⑨)\");\n"
-            "    }\n\n",
-            _v76_marker)
-    elif "[V72-MARKER]" in t:
-        t = t.replace(
-            "    // [V72-MARKER] 一次性打印构建版本(装机确认)。V72 = V71 的 pickerCap 根治 + 新增输入框打字闪屏(intrinsicContentSize 反馈环路)修复\n"
-            "    static BOOL _v72GuardLogged = NO;\n"
-            "    if (!_v72GuardLogged) {\n"
-            "        _v72GuardLogged = YES;\n"
-            "        NSLog(@\"[Minis-Guard] build=V72 ios15-pickerCap+inputFlicker (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150; intrinsicContentSize 反馈环路守卫斩输入闪屏)\");\n"
-            "    }",
-            _v76_marker)
-    else:
-        t = t.replace(
-            "    GuardState *s = &holder->state;\n\n    // [V74-REENT] 递归哨兵: 斩断 setSize: → gOriginalSetSize → layout → setSize: 重入环。",
-            "    GuardState *s = &holder->state;\n\n" +
-            _v76_marker +
-            "    // [V74-REENT] 递归哨兵: 斩断 setSize: → gOriginalSetSize → layout → setSize: 重入环。")
+    for oldk in ("[V76-MARKER]", "[V75-MARKER]", "[V74-MARKER]", "[V72-MARKER]"):
+        if oldk in t:
+            t = t.replace(oldk, "[V77-MARKER]", 1)
+            break
+    if _is_true_v77_banner(t):
+        return t
+    needle = "    // [V74-REENT] 递归哨兵:"
+    if needle in t and "_v77GuardLogged" not in t:
+        t = t.replace(needle, _V77_BANNER + needle, 1)
     return t
+
+
+def _strip_v77_early_block(t):
+    """摘掉任何位置的 V77 入口短路块(含错位到 KVC 之后的形态)。"""
+    i = t.find("[V77-EARLY-NONPOS]")
+    if i < 0:
+        return t
+    line_start = t.rfind("\n", 0, i) + 1
+    j = t.find("if (newSize.height == 0.0)", i)
+    if j < 0:
+        j = t.find("if (newSize.width <= 0.0 || newSize.height <= 0.0)", i)
+    if j < 0:
+        return t
+    brace = t.find("{", j)
+    if brace < 0:
+        return t
+    depth = 0
+    k = brace
+    while k < len(t):
+        if t[k] == "{":
+            depth += 1
+        elif t[k] == "}":
+            depth -= 1
+            if depth == 0:
+                k += 1
+                break
+        k += 1
+    if k < len(t) and t[k] == "\n":
+        k += 1
+    return t[:line_start] + t[k:]
+
+
+def fix_early_nonpos_v77(t):
+    """v77: 非正原始尺寸在 V65 KVC / V74 重入哨兵之前直接 return。
+
+    幂等: 入口短路已在 valueForKey 之前且横幅三位一体 ⇒ 原样返回。
+    已注入树(IOS15-FIX-STORM 在)也必须能从 V76 错位走到真 V77。
+    """
+    if not _is_true_v77_early(t):
+        if "[V77-EARLY-NONPOS]" in t:
+            t = _strip_v77_early_block(t)
+        needle = "    // [V65-FIXSIZE] 有限但非正的尺寸: **就地修正后转发, 不再丢弃**。"
+        if "[V77-EARLY-NONPOS]" not in t and needle in t:
+            t = t.replace(needle, V77_EARLY + needle, 1)
+    return _upgrade_guard_banner_v77(t)
 
 
 # =====================================================================
@@ -15173,6 +15320,16 @@ def main():
         "N=64 仍转发 ~6800/s(主线程饱和→SIGKILL, V72 实测), N=4096 压到 ~17/s"
         "(主线程空闲→看门狗不杀)。前 kNonPositiveGlobalLimit 次仍全转发建立 lastGoodHeight,"
         "之后 1/4096 放行斩断 CoreText fillLayoutHole re-entrant 死循环。既过 ⑨ 又真斩风暴。")
+    edit("Shared/NSTextContainerSetSizeGuard.m", fix_early_nonpos_v77,
+        "v77: ★V76 装机(minis-2026-10-06 2.log PID 52989)仍卡死闪退。"
+        "build=V76 在跑, NONPOSITIVE-SHORT-CIRCUIT **0 次**, FIXED-NONPOSITIVE "
+        "21084 条(每 32 打 1) ⇒ **675425 次** 0.0x0.0→326.0x307.0, 内存 "
+        "48.5→**2043.3MB**/9s/pressure=CRITICAL ⇒ PID 53046 重启。"
+        "根因: V76 的 return 写在 V65 KVC+NSLog 与 V74 `if (_gSetSizeForwarding)` "
+        "**之后**。重入 setSize 先付完 V65 税(KVC+NSLog), 再被 V74 return, "
+        "V76 一次都看不见。★第十四次「验证手段骗了自己」: 判据问 return 在不在 "
+        "else-if 同级[在], 没问「它在 valueForKey 之前还是之后」。"
+        "修法: orig<=0 在 valueForKey 之前直接 return, 不 KVC、不转发。")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_clamp_v39, "v39: 帧同步补上高度 — 治'字显示不全/排版不对'(v23 帧同步只修宽度不修高度, 每帧把 v18 撑好的高度改回去 → svH 恒为 needH 的 0.50~0.74, 37/37)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_unconditional_v40, "v40: 高度补齐挪出 polluted 分支 — 治'块重叠/字只剩一半'(v39 实测: textView 自身 frameH==needH 已 52/52 全对, 但 superview 52/52 仍欠 23.7~476pt。根因: polluted 判据只看宽度, 宽度修好后早退, v39 的高度代码一行没跑 → 宽度修好反而挡住了高度)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_height_clamp_v41, "v41: KVO 抢帧器补高度 — 治'字只剩一半/终端框不接结果'(推翻 v39/v40 的诊断: log9 同一毫秒同一 layoutSubviews 内 DIAG2 读到 358x2000.33 而开头快照是 100000x1455.33 → v18+v40 在 pass 内**确实修好了**, 欠账是 pass 结束后 SwiftUI 写回的。真凶: KVO 抢帧器只修x/width 从不写高度, 且 polluted 判据只看宽度 → '宽度正常+高度欠账'的帧被 if !polluted { return } 放过 → 末行被裁。v41: KVO 内无条件补高度 + polluted 增加高度维度 + 提交前兜底 + pass 末尾 V41-DEBT 回写侦测)")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""verify_guard_fixsize_v65 —— v65/v66 守卫判据（七层）。
+"""verify_guard_fixsize_v65 —— v65/v66/v68/v76/v77 守卫判据（11 层）。
 
 【为什么要有这一层】v65 是本项目第五次「判据全绿但药不治病」之后的产物，
 历史教训(run#156/157/159 + v64初版)已经证明：查「标记在不在」的判据
@@ -397,6 +397,91 @@ def verify_guard_fixsize_v65(src):
             "    v66 的病是「修正成**上游仍然不满意**的值」(活锁)。\n"
             "    两者断的位置不同: v65 改「修正成什么」, v66 改「还转不转发」。\n"
             "  ⇒ 必须优先用 `s->lastGoodHeight`(该容器上一次真实排版过的高度)。")
+
+    # ---------- 第 ⑩ 层 (v77 横幅): 三位一体 ----------
+    # ★V76 半升级: 注释 [V76-MARKER], 运行时仍是 _v75GuardLogged + build=V75。
+    # ★V77 必须问运行时标识符: 只问注释键 = 假绿。
+    if "[V77-MARKER]" not in src:
+        raise RuntimeError(
+            "⑩ 缺 [V77-MARKER] —— 装机确认横幅没注入, 日志无法核对版本。")
+    if "_v77GuardLogged" not in code:
+        raise RuntimeError(
+            "⑩ 横幅 static 仍不是 `_v77GuardLogged`。\n"
+            "  注释键升级了、NSLog 没升级 = 半升级。用户装机日志只看得见 NSLog。")
+    if 'NSLog(@"[Minis-Guard] build=V77 ' not in src:
+        raise RuntimeError(
+            "⑩ NSLog 横幅不是 `build=V77`。\n"
+            "  装机日志只看得见这一行。注释 V77 / 运行时 V76 = 半升级。")
+    if "earlyNonPositiveReturn" not in src:
+        raise RuntimeError(
+            "⑩ V77 横幅缺 `earlyNonPositiveReturn` 能力串 ——\n"
+            "  版本号改了、能力没写进日志, 装机仍无法确认本版修法在包里。")
+    if ("_v76GuardLogged" in code or "_v75GuardLogged" in code
+            or "_v74GuardLogged" in code or "_v72GuardLogged" in code):
+        raise RuntimeError(
+            "⑩ 运行时仍残留旧版 `_v7xGuardLogged` —— 半升级没切干净。")
+    if re.search(r'NSLog\(@"\[Minis-Guard\] build=V7[0-6] ', src):
+        raise RuntimeError(
+            "⑩ NSLog 仍在打 `build=V7[0-6]` —— 半升级的运行时半边。")
+    if "[V76-NONPOS-SHORTCIRCUIT]" not in src:
+        raise RuntimeError(
+            "⑩ 缺 [V76-NONPOS-SHORTCIRCUIT] —— 第二道防线(else-if 同级 return)\n"
+            "  被摘掉。V77 入口短路是第一道, 这道仍要在。")
+    seg76 = _block_after(
+        src, "} else if (_v65orig_h <= 0.0 || _v65orig_w <= 0.0) {", code)
+    m_ret = None
+    for m in re.finditer(r"\breturn\s*;", seg76):
+        if _rel_depth(seg76, m.start()) == 0:
+            m_ret = m
+            break
+    if not m_ret:
+        raise RuntimeError(
+            "⑩ V76 非正短路的 `return;` 不在 else-if 同级 ——\n"
+            "  要么被删, 要么埋进嵌套 if(死代码)。")
+
+    # ---------- 第 ⑪ 层 (v77): 入口短路必须在 valueForKey 之前 ----------
+    # ★V76 装机铁证(minis-2026-10-06 2.log PID 52989):
+    #   build=V76 在跑, SHORT-CIRCUIT 0 次, FIXED-NONPOSITIVE 21084 条
+    #   ⇒ 675425 次 0x0→326x307, 内存 48.5→2043.3MB / 9s ⇒ SIGKILL。
+    # 根因: V76 的 return 写在 V65 KVC+NSLog 与 V74 重入哨兵**之后**。
+    # 重入 setSize 先付完 V65 税, 再被 V74 return, V76 一次都看不见。
+    # ⇒ 判据必须问「return 在 valueForKey 之前还是之后」, 只问「return 在不在」= 假绿。
+    if "[V77-EARLY-NONPOS]" not in src:
+        raise RuntimeError(
+            "⑪ 缺 [V77-EARLY-NONPOS] —— 入口短路没注入。\n"
+            "  V76 的 return 在 KVC 之后 = 重入仍先付 67 万次税再死。")
+    if "EARLY-NONPOSITIVE-RETURN" not in src:
+        raise RuntimeError(
+            "⑪ 缺 EARLY-NONPOSITIVE-RETURN 日志串 —— 装机无法确认入口短路在跑。")
+    i77 = src.index("[V77-EARLY-NONPOS]")
+    kvc = src.find('valueForKey:@"size"')
+    reent = src.find("_gSetSizeForwarding")
+    if kvc < 0:
+        raise RuntimeError("⑪ 找不到 valueForKey:@\"size\" —— 无法核对短路是否在 KVC 之前。")
+    if i77 > kvc:
+        raise RuntimeError(
+            "⑪ [V77-EARLY-NONPOS] 在 valueForKey:@\"size\" **之后** ——\n"
+            "  这正是 V76 装机的病: 短路写在 KVC 后面, 67 万次税先付完。\n"
+            "  修法: height==0 必须在 KVC 之前 return。")
+    if reent >= 0 and i77 > reent:
+        raise RuntimeError(
+            "⑪ [V77-EARLY-NONPOS] 在 `_gSetSizeForwarding` **之后** ——\n"
+            "  重入哨兵先 return, 入口短路一次都看不见。")
+    v65fix = src.find("[V65-FIXSIZE] 有限", i77)
+    if v65fix < 0:
+        v65fix = i77 + 1200
+    early_code = code[i77:v65fix]
+    if "newSize.height == 0.0" not in early_code:
+        raise RuntimeError(
+            "⑪ V77 入口条件不是 `newSize.height == 0.0`。\n"
+            "  装机风暴是 0x0(675425 次); 0x-16 是正常首触, 必须仍走 V65 修正。")
+    if not re.search(r"\breturn\s*;", early_code):
+        raise RuntimeError(
+            "⑪ V77 入口 if 里没有 `return;` —— 标记在、日志在、不 return = 空操作。")
+    ret_at = i77 + early_code.find("return;")
+    if ret_at > kvc:
+        raise RuntimeError(
+            "⑪ V77 入口 `return;` 落在 valueForKey 之后 —— 顺序让它不生效。")
     return True
 
 
@@ -552,10 +637,12 @@ if __name__ == "__main__":
         "src/ios/Shared/NSTextContainerSetSizeGuard.m"
     try:
         verify_guard_fixsize_v65(open(p, encoding="utf-8").read())
-        print("✅ v65/v66/v68 守卫判据: 9 层全过"
+        print("✅ v65/v66/v68/v76/v77 守卫判据: 11 层全过"
               "(①弃丢弃已消失 ②负高取fabs ③块内无return ④哨兵门槛包住commitCount"
               " ⑤常量一致 ⑥标识符存在 ⑦禁CGRect category/防空操作/跨tick闸门"
-              " ⑧累加在门槛外 ⑨降频放行+真实高度回填)")
+              " ⑧累加在门槛外 ⑨降频放行+真实高度回填"
+              " ⑩横幅三位一体+V76短路真return"
+              " ⑪入口短路在 valueForKey 之前)")
     except Exception as e:
         print("❌ %s" % e)
         sys.exit(1)

@@ -586,7 +586,7 @@ jobs:
             exit 1
           fi
           if python3 "$SCRIPT_DIR/ios15_verify/verify_guard_v65.py" "$GUARD_V65" ; then
-            echo "✅ v65/v66/v68 判据就位 (共 9 层: 拆分丢弃/修正转发/无return/哨兵门槛包住自增/常量一致/标识符存在/禁CGRect category/防空操作+跨tick闸门/**累加在门槛外**/降频放行+真实高度回填)"
+            echo "✅ v65/v66/v68/v76/v77 判据就位 (共 11 层: 拆分丢弃/修正转发/无return/哨兵门槛包住自增/常量一致/标识符存在/禁CGRect category/防空操作+跨tick闸门/**累加在门槛外**/降频放行+真实高度回填/**横幅三位一体+V76短路真return**/**入口短路在 valueForKey 之前**)"
           else
             echo "::error::v65 守卫判据异常 —— 上面列出的那一层没过, 按提示对症"
             echo "   —— 若报「未找到 NaN/inf 硬拒分支」: NaN/inf 会进 TextKit ⇒ CoreText fillLayoutHole 病态循环(v4 实证 12s 卡死)"
@@ -604,7 +604,7 @@ jobs:
           fi
           echo "---"
           if python3 "$SCRIPT_DIR/ios15_verify/reverse_guard_v65.py" . ; then
-            echo "✅ v65/v66/v68 反向 17 条全拦 (含 S2 块内return / S5 顺序 / S9 作用域 / S10 标识符不存在 / S11 CGRect category / S12 fabs空操作 / S13 跨tick闸门 / S14 死代码复现 / S15 永久冻结 / S16 裸1.0活锁 / S17 字段没人写)"
+            echo "✅ v65/v66/v68/v76/v77 反向 20 条全拦 (含 S2 块内return / S5 顺序 / S9 作用域 / S10 标识符不存在 / S11 CGRect category / S12 fabs空操作 / S13 跨tick闸门 / S14 死代码复现 / S15 永久冻结 / S16 裸1.0活锁 / S17 字段没人写 / S18 横幅半升级 / S19 摘掉V76短路return / S20 入口短路挪到 KVC 之后)"
           else
             echo "::error::v65 反向未全拦 —— 判据存在盲区, 上面的绿灯不可信(见 verify-discipline §16/§17)"
             exit 1
@@ -717,7 +717,7 @@ jobs:
             exit 1
           fi
           if python3 "$SCRIPT_DIR/ios15_verify/reverse_guard_v65.py" . ; then
-            echo "✅ v65/v66/v68 反向 17 条全拦 (含 S14 死代码复现 / S15 永久冻结 / S16 裸 1.0 / S17 字段没人写)"
+            echo "✅ v65/v66/v68/v76/v77 反向 20 条全拦 (含 S14 死代码复现 / S15 永久冻结 / S16 裸 1.0 / S17 字段没人写 / S18 横幅半升级 / S19 摘掉V76短路return / S20 入口短路挪到 KVC 之后)"
           else
             echo "::error::反向未全拦 —— 判据存在盲区, 上面的绿灯不可信(见 verify-discipline §16/§17)"
             exit 1
@@ -2549,12 +2549,12 @@ jobs:
           echo "  行数      : $LINES   (干净上游 193 / v68 产物期望 597)"
           echo "  md5       : $MD5"
           echo "  编译读的是: $(cd "$(dirname "$G")" && pwd)/$(basename "$G")"
-          for m in "IOS15-FIX-STORM" "V65-FIXSIZE" "V68-STREAK" "V68-DOWNFREQ" "V68-GOODH" "V68-HOIST"; do
+          for m in "IOS15-FIX-STORM" "V65-FIXSIZE" "V68-STREAK" "V68-DOWNFREQ" "V68-GOODH" "V68-HOIST" "V76-NONPOS-SHORTCIRCUIT" "V77-MARKER" "V77-EARLY-NONPOS" "build=V77" "_v77GuardLogged"; do
             echo "  标记 $m = $(grep -c "$m" "$G" || true)"
           done
-          # 期望: 597 行 + v68 系列标记全部 >=1
+          # 期望: 597 行 + v68/v77 系列标记全部 >=1
           BADMARK=0
-          for m in "V68-STREAK" "V68-DOWNFREQ" "V68-GOODH"; do
+          for m in "V68-STREAK" "V68-DOWNFREQ" "V68-GOODH" "V77-MARKER" "V77-EARLY-NONPOS" "build=V77" "_v77GuardLogged"; do
             C=$(grep -c "$m" "$G" || true)
             if [ "$C" -lt 1 ]; then BADMARK=1; fi
           done

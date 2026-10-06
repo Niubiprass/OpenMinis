@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""reverse_guard_v65.py —— v65 反向验证（10 条 sabotage）。
+"""reverse_guard_v65.py —— v65/v66/v68/v76/v77 反向验证（20 条 sabotage）。
 
 纪律（docs/verify-discipline.md §16/§17）：
   §16 sabotage 必须**自己证明"它真的破坏了什么"** —— 破坏后 base==改后
@@ -28,7 +28,7 @@ def run_verify(root):
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
-# ---------------- 10 条 sabotage ----------------
+# ---------------- 20 条 sabotage ----------------
 def s1_restore_merged_reject(t):
     """把拆开的两段合回「NaN/inf/负 尺寸一个 if 全部丢弃」。
 
@@ -379,6 +379,114 @@ def s17_drop_goodh_recording(t):
     return t[:m.start()] + "    // [S17] 不记录 lastGoodHeight(字段永远为 0)" + t[end + 1:]
 
 
+def s18_half_upgrade_banner(t):
+    """★还原半升级: 注释 [V77-MARKER], 运行时仍打 build=V76。
+
+    问: 判据能不能识破「注释键升级了、NSLog 没升级」?
+    用户装机日志只看得见 NSLog。只问注释键 = 假绿。
+    ⇒ 第 ⑩ 层必须问三位一体: 注释键 / static 名 / NSLog 串。
+    """
+    if "_v77GuardLogged" not in t:
+        raise AssertionError("锚点18: `_v77GuardLogged` 没找到")
+    if 'NSLog(@"[Minis-Guard] build=V77 ' not in t:
+        raise AssertionError("锚点18: `build=V77` NSLog 没找到")
+    bad = t.replace("_v77GuardLogged", "_v76GuardLogged")
+    bad = re.sub(
+        r'NSLog\(@"\[Minis-Guard\] build=V77[^"]*"\);',
+        'NSLog(@"[Minis-Guard] build=V76 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit (half-upgrade sabotage)");',
+        bad,
+        count=1,
+    )
+    if "[V77-MARKER]" not in bad:
+        raise AssertionError("锚点18: 半升级必须保留 [V77-MARKER](这才是本轮故障形态)")
+    if "_v76GuardLogged" not in bad or 'build=V76 ' not in bad:
+        raise AssertionError("锚点18: sabotage 没把运行时打回 V76")
+    return bad
+
+
+def s19_drop_v76_shortcircuit_return(t):
+    """★摘掉 V76 非正短路的同级 return —— 继续转发 CoreText = 活锁。
+
+    问: 判据能不能识破「标记在、日志在、return 被删或埋进嵌套 if」?
+    装机铁证: 非正尺寸被 V65 修正转发 → layout 活锁 → 8.3 万次
+    → objc_sync_enter → 7349ms HANG → SIGKILL。
+    ⇒ 第 ⑩ 层必须要求 else-if 同级有 `return;`。
+    """
+    old = """        if ((gShortCircuitCount & 0xFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V76] NONPOSITIVE-SHORT-CIRCUIT "
+                  @"container=%p orig=%.1fx%.1f streak=%ld gstreak=%ld "
+                  @"— 非正尺寸直接短路(不转发 CoreText)",
+                  (__bridge void *)self, _v65orig_w, _v65orig_h,
+                  (long)s->nonPositiveStreak, (long)gGlobalNonPositiveStreak);
+        }
+        return;"""
+    if old not in t:
+        raise AssertionError("锚点19: V76 短路 return 段没找到")
+    new = """        if ((gShortCircuitCount & 0xFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V76] NONPOSITIVE-SHORT-CIRCUIT "
+                  @"container=%p orig=%.1fx%.1f streak=%ld gstreak=%ld "
+                  @"— 非正尺寸直接短路(不转发 CoreText)",
+                  (__bridge void *)self, _v65orig_w, _v65orig_h,
+                  (long)s->nonPositiveStreak, (long)gGlobalNonPositiveStreak);
+        }
+        /* [S19] 摘掉同级 return, 非正尺寸继续转发 CoreText */"""
+    return t.replace(old, new, 1)
+
+
+def s20_move_v77_after_kvc(t):
+    """★还原 V76 装机真故障: 入口短路写在 valueForKey 之后。
+
+    问: 判据能不能识破「标记在、return 在、但顺序在 KVC 之后」?
+    装机 PID 52989: SHORT-CIRCUIT 0, FIXED-NONPOSITIVE 675425 次,
+    内存 48→2043MB。V76 return 在 KVC 后 = 重入先付税再被 V74 挡掉。
+    ⇒ 第 ⑪ 层必须问「在 valueForKey 之前还是之后」。
+    """
+    old = """    // [V77-EARLY-NONPOS] 非正原始尺寸在 KVC/NSLog/重入哨兵之前直接 return。
+    // 装机 minis-2026-10-06 2.log PID 52989: build=V76 在跑, SHORT-CIRCUIT 0 次,
+    // FIXED-NONPOSITIVE 21084 条(每 32 打 1) ⇒ 675425 次 0x0→326x307,
+    // 内存 48.5→2043.3MB / 9s / pressure=CRITICAL ⇒ PID 53046 重启。
+    // 根因: V76 的 return 在 V65 KVC+NSLog 与 V74 `if (_gSetSizeForwarding)` 之后。
+    // 重入 setSize 先付完 V65 税, 再被 V74 return, V76 一次都看不见。
+    // 修法: orig<=0 在 valueForKey 之前 return, 不转发、不做 KVC。
+    if (newSize.height == 0.0) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V77] EARLY-NONPOSITIVE-RETURN "
+                  @"orig=%.1fx%.1f total=%llu — 入口短路(不 KVC/不转发)",
+                  newSize.width, newSize.height,
+                  (unsigned long long)gShortCircuitCount);
+        }
+        return;
+    }
+    // [V65-FIXSIZE] 有限但非正的尺寸: **就地修正后转发, 不再丢弃**。"""
+    if old not in t:
+        raise AssertionError("锚点20: V77 入口短路段没找到")
+    # 摘掉入口段, 把同样的 if 插到 `_gSetSizeForwarding` 之后。
+    # ★不能插到 valueForKey 行后: 那一行在 V65 修正块内, 第 ② 层会先
+    #   以「修正块内出现 return」拦住 —— 拦下 ≠ 测到第 ⑪ 层。
+    # `_gSetSizeForwarding` 在修正块与 KVC **之后**, 正是 V76 装机的错位:
+    # 重入先付 V65 税, 再被 V74 return, 入口短路一次都看不见。
+    without = t.replace(old, "    // [V65-FIXSIZE] 有限但非正的尺寸: **就地修正后转发, 不再丢弃**。", 1)
+    anchor = "static BOOL _gSetSizeForwarding = NO;"
+    j = without.find(anchor)
+    if j < 0:
+        raise AssertionError("锚点20: `_gSetSizeForwarding` 没找到")
+    nl = without.find("\n", j)
+    moved = """    // [V77-EARLY-NONPOS] [S20] 故意挪到 _gSetSizeForwarding 之后(V76 装机原样)
+    if (newSize.height == 0.0) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V77] EARLY-NONPOSITIVE-RETURN "
+                  @"orig=%.1fx%.1f total=%llu — 入口短路(不 KVC/不转发)",
+                  newSize.width, newSize.height,
+                  (unsigned long long)gShortCircuitCount);
+        }
+        return;
+    }
+"""
+    return without[:nl + 1] + moved + without[nl + 1:]
+
+
 SABS_V68 = [
     ("S14", "streak 累加塞回 per-tick 门槛(v66 死代码原样)",
      s14_streak_back_inside_gate),
@@ -388,6 +496,12 @@ SABS_V68 = [
      s16_floor_back_to_bare_one),
     ("S17", "不记录 lastGoodHeight(字段存在但没人写)",
      s17_drop_goodh_recording),
+    ("S18", "横幅半升级(注释 V77 / 运行时仍打 V76)",
+     s18_half_upgrade_banner),
+    ("S19", "摘掉 V76 非正短路 return(继续转发=活锁)",
+     s19_drop_v76_shortcircuit_return),
+    ("S20", "V77 入口短路挪到 valueForKey 之后(V76 装机原样)",
+     s20_move_v77_after_kvc),
 ]
 
 
