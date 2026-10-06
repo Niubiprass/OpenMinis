@@ -402,7 +402,7 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // [V68-HOIST] holder / s 已在本函数**开头**取好(见上方 [V68-HOIST]),
     // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
 
-    // [V77-MARKER] 一次性打印构建版本(装机确认)。V77 = V76 短路前移: **非正原始尺寸在 V65 KVC / V74 重入哨兵之前直接 return**(斩断「重入 setSize 先付 V65 税再被 V74 return、V76 一次都看不见」;装机 PID 52989: 675425 次 0x0→326x307 / 9s / 48→2043MB / SIGKILL)。
+    // [V77-MARKER] 一次性打印构建版本(装机确认)。V76 = V75 persistentStorm + **V76 非正尺寸跨 tick 持久短路**(非正原始尺寸 0x-16/0x0/0x-8 到达时直接 return 不转发 CoreText, 斩断 V65 修正转发引发的 layout 活锁; 容器保留 lastGoodHeight 合法几何, 文字照常显示, 上游算对即自动 re-arm)。专治 V75 仍未斩净的「选择模型卡死」(实测 8.3 万次非正转发→objc_sync_enter 锁卡死→7349ms HANG→SIGKILL)。
     static BOOL _v77GuardLogged = NO;
     if (!_v77GuardLogged) {
         _v77GuardLogged = YES;
