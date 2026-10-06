@@ -2546,13 +2546,28 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     }'''
     NEW5 = '''    } else {
         // Different tick or different size — reset bookkeeping.
+        // [V75-PERSISTENT-STORM] 必须在覆盖 s->lastSize 之前算好 _sizeChanged:
+        // 它比的是「本次到达的尺寸」与「上一帧已记录的尺寸」是否不同。
+        BOOL _sizeChanged = !CGSizeEqualToSize(s->lastSize, newSize);
         s->lastSize = newSize;
         s->repeatCount = 1;
         s->initialized = YES;
-        // [v26] 仅新 tick 才清零转发计数/熔断标志; 同 tick 内不同尺寸的放行
+        // [v26] 仅新 tick 才清零转发计数; 同 tick 内不同尺寸的放行
         // 调用继续累计 commitCount, 保证 4x 硬上限对交替拉锯 (390<->358) 有效。
+        // [V75-PERSISTENT-STORM] stormed 跨 tick 持久 —— 只在不同尺寸到达时解除,
+        // 不再随 tick 清零。旧逻辑每 tick 把 stormed 复位 ⇒ 陷入「布局永不合收敛」
+        // 的容器每帧重燃: 每帧拿到 kStormForwardLimit*4 (160) 次免费转发额度,
+        // 主线程被永久喂满 ⇒ HangDetector 时长跨 tick 单调递增 (2055→4407ms+) ⇒
+        // 看门狗 SIGKILL。这正是「选择模型卡死」在 V74 仍未斩净的形态:
+        // setSize→runloop 新布局 pass→setSize 的跨调用重入, _gSetSizeForwarding
+        // 哨兵(仅拦单次调用栈内的重入)根本抓不到。跨 tick 保留 stormed ⇒ 一旦某
+        // tick 内同尺寸重复超 160 次被熔断, 后续所有 tick 的同尺寸调用一律 SKIP,
+        // 环被永久斩断; 上游若真收敛到新尺寸(不同尺寸到达)即自动 re-arm, 合法
+        // 更新零丢失。单次/少量同尺寸每帧只占 repeatCount=1, 永不到 160 阈值,
+        // stormed 不会置位, 合法场景零影响。
         BOOL _newTick = (s->lastTick != gRunloopTick);
-        if (_newTick) { s->commitCount = 0; s->stormed = NO; }
+        if (_newTick) { s->commitCount = 0; }
+        if (_sizeChanged) { s->stormed = NO; s->commitCount = 0; }
         s->lastTick = gRunloopTick;
     }'''
     if OLD5 in t:
@@ -2628,11 +2643,34 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
         t = t.replace(OLD7, NEW7)
     # ---- ⑧ [V7x-MARKER] 一次性打印构建版本, 便于设备日志确认装机版本 ----
     # 幂等三态:
-    #   · 已是 V73 标记 → 不动;
-    #   · 已是 V72 标记(本地重跑) → 升级到 V73;
-    #   · 干净上游(无标记) → 注入 V73。
-    if "[V74-MARKER]" not in t:
-        if "[V72-MARKER]" in t:
+    #   · 已是 V75 标记 → 不动;
+    #   · 已是 V74/V72 标记(本地重跑) → 升级到 V75;
+    #   · 干净上游(无标记) → 注入 V75。
+    if "[V75-MARKER]" not in t:
+        _v75_marker = (
+            "    // [V75-MARKER] 一次性打印构建版本(装机确认)。V75 = V74 reentrantBreak + "
+            "**V75 同尺寸风暴跨 tick 持久熔断**(stormed 不再随 tick 清零: 陷入 setSize→runloop "
+            "新布局 pass→setSize 跨调用重入的容器, 首 tick 内同尺寸重复超 160 次即被熔断, 后续所有 "
+            "tick 同尺寸一律 SKIP, 环被永久斩断; 上游收敛到不同尺寸即自动 re-arm, 合法更新零丢失)。"
+            "专治 V74 仍未斩净的「选择模型卡死」(HangDetector 时长跨 tick 单调递增→SIGKILL)。\n"
+            "    static BOOL _v75GuardLogged = NO;\n"
+            "    if (!_v75GuardLogged) {\n"
+            "        _v75GuardLogged = YES;\n"
+            "        NSLog(@\"[Minis-Guard] build=V75 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm "
+            "(cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; "
+            "setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环)\");\n"
+            "    }\n\n"
+        )
+        if "[V74-MARKER]" in t:
+            t = t.replace(
+                "    // [V74-MARKER] 一次性打印构建版本(装机确认)。V74 = V71 pickerCap 根治 + V72 输入框打字闪屏修复 + **V74 启动即崩根治**(setSize: 递归哨兵斩断 gOriginalSetSize→layout→setSize 重入环, 非正风暴 seg2 闸门保留 1/N 放行仍满足断言69 ⑨)\n"
+                "    static BOOL _v74GuardLogged = NO;\n"
+                "    if (!_v74GuardLogged) {\n"
+                "        _v74GuardLogged = YES;\n"
+                "        NSLog(@\"[Minis-Guard] build=V74 ios15-pickerCap+inputFlicker+reentrantBreak (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断 gOriginalSetSize→layout→setSize 重入环, 非正风暴 seg2 闸门保留 1/N 放行满足断言69 ⑨)\");\n"
+                "    }\n\n",
+                _v75_marker)
+        elif "[V72-MARKER]" in t:
             t = t.replace(
                 "    // [V72-MARKER] 一次性打印构建版本(装机确认)。V72 = V71 的 pickerCap 根治 + 新增输入框打字闪屏(intrinsicContentSize 反馈环路)修复\n"
                 "    static BOOL _v72GuardLogged = NO;\n"
@@ -2640,22 +2678,12 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
                 "        _v72GuardLogged = YES;\n"
                 "        NSLog(@\"[Minis-Guard] build=V72 ios15-pickerCap+inputFlicker (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150; intrinsicContentSize 反馈环路守卫斩断输入闪屏)\");\n"
                 "    }",
-                "    // [V73-MARKER] 一次性打印构建版本(装机确认)。V73 = V71 pickerCap 根治 + V72 输入框打字闪屏修复 + **V73 选择模型卡死根治**(非正尺寸风暴进程级硬降频步长放大 64→4096, 把实际转发压到 ~17/s 斩断 CoreText fillLayoutHole re-entrant 死循环)\n"
-                "    static BOOL _v74GuardLogged = NO;\n"
-                "    if (!_v74GuardLogged) {\n"
-                "        _v74GuardLogged = YES;\n"
-                "        NSLog(@\"[Minis-Guard] build=V73 ios15-pickerCap+inputFlicker+nonpositiveAdaptiveDownfreq (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; gGlobalNonPositiveStreak 远超上限时有效降频步长切到 4096, 实际转发 ~17/s, 斩断选择模型 measure 死循环)\");\n"
-                "    }")
+                _v75_marker)
         else:
             t = t.replace(
                 "    GuardState *s = &holder->state;\n\n    // [V74-REENT] 递归哨兵: 斩断 setSize: → gOriginalSetSize → layout → setSize: 重入环。",
-                "    GuardState *s = &holder->state;\n\n"
-                "    // [V74-MARKER] 一次性打印构建版本(装机确认)。V74 = V71 pickerCap 根治 + V72 输入框打字闪屏修复 + **V74 启动即崩根治**(setSize: 递归哨兵斩断 gOriginalSetSize→layout→setSize 重入环, 非正风暴 seg2 闸门保留 1/N 放行仍满足断言69 ⑨)\n"
-                "    static BOOL _v74GuardLogged = NO;\n"
-                "    if (!_v74GuardLogged) {\n"
-                "        _v74GuardLogged = YES;\n"
-                "        NSLog(@\"[Minis-Guard] build=V74 ios15-pickerCap+inputFlicker+reentrantBreak (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断 gOriginalSetSize→layout→setSize 重入环, 非正风暴 seg2 闸门保留 1/N 放行满足断言69 ⑨)\");\n"
-                "    }\n\n"
+                "    GuardState *s = &holder->state;\n\n" +
+                _v75_marker +
                 "    // [V74-REENT] 递归哨兵: 斩断 setSize: → gOriginalSetSize → layout → setSize: 重入环。")
     return t
 

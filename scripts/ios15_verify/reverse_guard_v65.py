@@ -251,10 +251,15 @@ def s13_drop_hardstop(t):
     ⇒ 必须有**跨 tick 累加**的 nonPositiveStreak + kNonPositiveHardLimit。
       本用例把它退回 per-tick(跟着 commitCount 一起清零), 模拟"没做这层"。
     """
-    old = "    if (_newTick) { s->commitCount = 0; s->stormed = NO; }"
+    # [V75] 锚点跟着源码改: V75 把 per-tick 清零拆开, stormed 不再随 tick 清零
+    #   (只在 _sizeChanged 时解除, 见 NSTextContainerSetSizeGuard.m 的
+    #   [V75-PERSISTENT-STORM]), 所以 per-tick 清零那行只剩 commitCount。
+    #   锚点改锚这一行; 注入的「跨 tick 累加被退回 per-tick」语义不变
+    #   (判据⑦仍查 nonPositiveStreak 被 =0, 照旧拦下)。
+    old = "    if (_newTick) { s->commitCount = 0; }"
     if old not in t:
-        raise AssertionError("锚点13: per-tick 清零那行没找到")
-    bad = ("    if (_newTick) { s->commitCount = 0; s->stormed = NO; }\n"
+        raise AssertionError("锚点13: per-tick 清零那行(commitCount)没找到")
+    bad = ("    if (_newTick) { s->commitCount = 0; }\n"
            "    // [S13] 模拟「没做跨 tick 累加」的错误实现\n"
            "    if (_newTick) { s->nonPositiveStreak = 0; }")
     return t.replace(old, bad)
