@@ -578,8 +578,25 @@ def fix_system_voice_catalog(t):
 
 def fix_chat_input_bar(t):
     # v2 的 _replace_flow_layout 生成了非法的 Alignment(horizontal:) (缺 vertical:)
-    return t.replace("Alignment(horizontal: alignment)",
-                     "Alignment(horizontal: alignment, vertical: .center)")
+    t = t.replace("Alignment(horizontal: alignment)",
+                  "Alignment(horizontal: alignment, vertical: .center)")
+    # [IOS15-FIX-INPUT-FLICKER] 输入框打字闪屏根因: PastableUITextView 的
+    # intrinsicContentSize 在每次查询时无条件改写 isScrollEnabled, 触发 UIKit 布局
+    # 重入 (intrinsicContentSize → isScrollEnabled=… → layout → intrinsicContentSize …),
+    # 每键输入都让输入框高度(及内部文字)跳动/闪屏。改为"仅当值变化才改写",
+    # setter 对相同值早返回、不触发布局失效, 反馈环路被斩断, 滚动行为不变。
+    OLD_FLICKER = (
+        "        let size = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))\n"
+        "        isScrollEnabled = size.height > maxHeight\n")
+    NEW_FLICKER = (
+        "        let size = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))\n"
+        "        // [IOS15-FIX-INPUT-FLICKER] 仅当值变化才改写 isScrollEnabled, "
+        "避免 intrinsicContentSize 查询触发布局重入(输入闪屏根因)。\n"
+        "        let _shouldScroll = size.height > maxHeight\n"
+        "        if isScrollEnabled != _shouldScroll { isScrollEnabled = _shouldScroll }\n")
+    if OLD_FLICKER in t:
+        t = t.replace(OLD_FLICKER, NEW_FLICKER)
+    return t
 
 
 def fix_login_sheet_guards(t):
@@ -2557,7 +2574,7 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     # ---- ⑧ [V71-MARKER] 一次性打印构建版本, 便于设备日志确认装机版本 ----
     t = t.replace(
         "    GuardState *s = &holder->state;\n\n    // [IOS15-FIX-STORM] 风暴熔断",
-        "    GuardState *s = &holder->state;\n\n    // [V71-MARKER] 一次性打印构建版本(装机确认)\n    static BOOL _v71GuardLogged = NO;\n    if (!_v71GuardLogged) {\n        _v71GuardLogged = YES;\n        NSLog(@\"[Minis-Guard] build=V71 ios15-pickerCap (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150\");\n    }\n\n    // [IOS15-FIX-STORM] 风暴熔断")
+        "    GuardState *s = &holder->state;\n\n    // [V72-MARKER] 一次性打印构建版本(装机确认)。V72 = V71 的 pickerCap 根治 + 新增输入框打字闪屏(intrinsicContentSize 反馈环路)修复\n    static BOOL _v72GuardLogged = NO;\n    if (!_v72GuardLogged) {\n        _v72GuardLogged = YES;\n        NSLog(@\"[Minis-Guard] build=V72 ios15-pickerCap+inputFlicker (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150; intrinsicContentSize 反馈环路守卫斩断输入闪屏)\");\n    }\n\n    // [IOS15-FIX-STORM] 风暴熔断")
     return t
 
 
