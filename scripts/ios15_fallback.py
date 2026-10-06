@@ -2381,6 +2381,76 @@ def fix_guard_fixsize_v65(t):
     return t
 
 
+def fix_guard_circuit_breaker_v73(t):
+    """v73 注入: 非正尺寸风暴**全局熔断**(取代 v68 降频 1/64)。
+
+    【为什么必须硬熔断, 不能降频 —— 本次装机铁证】
+    minis-2026-10-06.log (iOS 15.5 / iPhone13,2): 12:34:07→12:34:13 仅 6 秒,
+      FIXED-NONPOSITIVE total 65 → 430977 (≈43 万次/全进程), 单 tick 内数百次
+      0x0 被修正转发。v68 降频 1/64 仍转发约 6700 次 -> 主线程持续被打满 ->
+      HangDetector 2040→3032ms 攀升 -> 看门狗 SIGKILL(点选择模型即闪退)。
+    降频只是把 SIGKILL 推迟几秒, 死循环风暴根因一点没动。
+
+    【为什么硬熔断能斩断重入链】原始 setSize: 会 invalidate 布局并触发 CoreText
+    fillLayoutHole 重入(11918ms 卡死入口)。只要**不转发**, 重入链就断: 当前
+    runloop tick 尽快结束, 上游下一轮从干净状态重算。容器保留上一次已转发的
+    合法几何(见 lastGoodHeight / gGlobalLastGoodHeight 记录, 非从未更新的过期几何)。
+
+    【与 v66"永久冻结"的本质区别】v66 在 streak>400 立即永久停转发 -> 巨大空白。
+    这里: 非正尺寸**先被修正并转发前 kNonPositiveGlobalLimit 次**(建立/刷新合法
+    几何), 之后才熔断; 且熔断是"直到上游自愈"而非"永久" —— 连续 128 次正尺寸
+    (good-run)即清零解除(见下方 gGlobalNonPositiveStreak=0)。
+
+    幂等: 已有 [V73-CIRCUIT] 原样返回。
+    """
+    if "[V73-CIRCUIT]" in t:
+        return t
+    OLD = '''    if ((s->nonPositiveStreak > kNonPositiveHardLimit) ||
+        (gGlobalNonPositiveStreak > kNonPositiveGlobalLimit)) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V68] NONPOSITIVE-DOWNFREQ "
+                  @"container=%p streak=%ld — 降频 1/%d 放行(保留上行通道)",
+                  (__bridge void *)self, (long)s->nonPositiveStreak,
+                  (int)kNonPositiveSkipStride);
+        }
+        // [V69-GLOBAL]③ 游标必须用**全局**的: 容器每次都是新的,
+        // per-container 的 nonPositiveSkipTick 恒为 0 ⇒ 每次都走到"放行",
+        // 降频等于没写(这正是 v68 装机 196 万次一次没减的原因)。
+        gGlobalSkipTick += 1;
+        if (gGlobalSkipTick < kNonPositiveSkipStride) {
+            return;   // 本次丢弃: 只丢这一次, 不是永久
+        }
+        gGlobalSkipTick = 0;   // 本次放行
+    }'''
+    NEW = '''    // [V73-CIRCUIT] 全局熔断(取代 v68 降频 1/64): 进程级非正尺寸风暴
+    // 累计超过 kNonPositiveGlobalLimit 后, 后续所有非正尺寸 setSize **一律不再
+    // 转发**, 直接 return。容器保留上一次已转发的合法几何(见 lastGoodHeight /
+    // gGlobalLastGoodHeight 记录, 非从未更新的过期几何), 上游下一轮从干净状态重算。
+    //
+    // 【为什么硬熔断能斩断重入链】原始 setSize: 会 invalidate 布局并触发 CoreText
+    // fillLayoutHole 重入(11918ms 卡死入口)。不转发 -> 重入链断 -> 当前 tick 尽快
+    // 结束 -> 上游下一轮重算。降频 1/64 在死循环风暴里仍转发约 6700 次/6s ->
+    // 主线程打满 -> SIGKILL; 硬熔断把成本压到 0。
+    //
+    // 【与 v66"永久冻结"区别】非正尺寸先被修正并转发前 kNonPositiveGlobalLimit 次
+    // (建立合法几何), 之后才熔断; 且熔断"直到上游自愈"(连续 128 次正尺寸 good-run
+    // 即清零解除), 非永久。
+    if ((s->nonPositiveStreak > kNonPositiveHardLimit) ||
+        (gGlobalNonPositiveStreak > kNonPositiveGlobalLimit)) {
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V73] NONPOSITIVE-CIRCUIT-BREAK "
+                  @"container=%p gstreak=%ld — 全局熔断: 非正尺寸停止转发, 保留上次合法几何",
+                  (__bridge void *)self, (long)gGlobalNonPositiveStreak);
+        }
+        return;   // 熔断: 本次丢弃, 不再转发(成本→0, 让当前 tick 尽快结束)
+    }'''
+    if OLD in t:
+        t = t.replace(OLD, NEW)
+    return t
+
+
 def fix_textcontainer_guard_stormbreaker(t):
     if "IOS15-FIX-STORM" in t:
         return t  # 幂等
@@ -2571,10 +2641,37 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
     } else {'''
     if OLD7 in t:
         t = t.replace(OLD7, NEW7)
-    # ---- ⑧ [V71-MARKER] 一次性打印构建版本, 便于设备日志确认装机版本 ----
-    t = t.replace(
-        "    GuardState *s = &holder->state;\n\n    // [IOS15-FIX-STORM] 风暴熔断",
-        "    GuardState *s = &holder->state;\n\n    // [V72-MARKER] 一次性打印构建版本(装机确认)。V72 = V71 的 pickerCap 根治 + 新增输入框打字闪屏(intrinsicContentSize 反馈环路)修复\n    static BOOL _v72GuardLogged = NO;\n    if (!_v72GuardLogged) {\n        _v72GuardLogged = YES;\n        NSLog(@\"[Minis-Guard] build=V72 ios15-pickerCap+inputFlicker (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150; intrinsicContentSize 反馈环路守卫斩断输入闪屏)\");\n    }\n\n    // [IOS15-FIX-STORM] 风暴熔断")
+    # ---- ⑧ [V7x-MARKER] 一次性打印构建版本, 便于设备日志确认装机版本 ----
+    # 幂等三态:
+    #   · 已是 V73 标记 → 不动;
+    #   · 已是 V72 标记(本地重跑) → 升级到 V73;
+    #   · 干净上游(无标记) → 注入 V73。
+    if "[V73-MARKER]" not in t:
+        if "[V72-MARKER]" in t:
+            t = t.replace(
+                "    // [V72-MARKER] 一次性打印构建版本(装机确认)。V72 = V71 的 pickerCap 根治 + 新增输入框打字闪屏(intrinsicContentSize 反馈环路)修复\n"
+                "    static BOOL _v72GuardLogged = NO;\n"
+                "    if (!_v72GuardLogged) {\n"
+                "        _v72GuardLogged = YES;\n"
+                "        NSLog(@\"[Minis-Guard] build=V72 ios15-pickerCap+inputFlicker (cappedEntriesByInstance 非搜索态也截断 maxSearchResults=150; intrinsicContentSize 反馈环路守卫斩断输入闪屏)\");\n"
+                "    }",
+                "    // [V73-MARKER] 一次性打印构建版本(装机确认)。V73 = V71 pickerCap 根治 + V72 输入框打字闪屏修复 + **V73 选择模型卡死根治**(非正尺寸风暴进程级全局熔断, 取代 v68 降频 1/64, 斩断 CoreText fillLayoutHole re-entrant 死循环)\n"
+                "    static BOOL _v73GuardLogged = NO;\n"
+                "    if (!_v73GuardLogged) {\n"
+                "        _v73GuardLogged = YES;\n"
+                "        NSLog(@\"[Minis-Guard] build=V73 ios15-pickerCap+inputFlicker+nonpositiveCircuitBreak (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; gGlobalNonPositiveStreak>kNonPositiveGlobalLimit 后非正 setSize 一律 stop-forward, 斩断选择模型 measure 死循环)\");\n"
+                "    }")
+        else:
+            t = t.replace(
+                "    GuardState *s = &holder->state;\n\n    // [IOS15-FIX-STORM] 风暴熔断",
+                "    GuardState *s = &holder->state;\n\n"
+                "    // [V73-MARKER] 一次性打印构建版本(装机确认)。V73 = V71 pickerCap 根治 + V72 输入框打字闪屏修复 + **V73 选择模型卡死根治**(非正尺寸风暴进程级全局熔断, 取代 v68 降频 1/64, 斩断 CoreText fillLayoutHole re-entrant 死循环)\n"
+                "    static BOOL _v73GuardLogged = NO;\n"
+                "    if (!_v73GuardLogged) {\n"
+                "        _v73GuardLogged = YES;\n"
+                "        NSLog(@\"[Minis-Guard] build=V73 ios15-pickerCap+inputFlicker+nonpositiveCircuitBreak (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; gGlobalNonPositiveStreak>kNonPositiveGlobalLimit 后非正 setSize 一律 stop-forward, 斩断选择模型 measure 死循环)\");\n"
+                "    }\n\n"
+                "    // [IOS15-FIX-STORM] 风暴熔断")
     return t
 
 
@@ -15018,6 +15115,19 @@ def main():
         "降频态 —— v66「永久冻结」的同类错误, 且这次是冻结整个进程)。"
         "预期 196 万 → 约 3 万次, 且上游拿到的是真实高度而非 1.0 ⇒ 自反馈回路"
         "被打断 ⇒ 风暴提前收敛, 不只是「跑完 196 万次再死」。")
+    edit("Shared/NSTextContainerSetSizeGuard.m", fix_guard_circuit_breaker_v73,
+        "v73: ★V72 装机(10-06 2.log: 12:34:07 total=65 → 12:34:13 total=430977, "
+        "6 秒 43 万次 FIXED-NONPOSITIVE 0x0 修正转发; 崩溃报告 HANG=7196ms, "
+        "堆栈全在 UIFoundation → SIGKILL)仍卡死。根因不是 picker 行数(cap 已截断 "
+        "150, v71 8533ms 几乎没降 ⇒ 行数不是主因), 而是 **CoreText fillLayoutHole "
+        "re-entrant 风暴**: v68 的 DOWNFREQ 降频 1/64 在 SwiftUI measure 候选项的"
+        "「新建容器 → 0x0 → 修正转发 → 1pt 空排 → 回报不可用 → 重 measure」死循环里"
+        "压不住(43 万次/6s 仍转发约 6700 次 ⇒ 主线程打满 ⇒ 看门狗)。★v69 把计数提到"
+        "进程级是对的, 但它仍走「降频放行」——而死循环里任何一次放行都会重新触发 "
+        "gOriginalSetSize 的 invalidate+重排, 重入链永远断不开。修法: 把 v68 的"
+        "NONPOSITIVE-DOWNFREQ 降频闸门**整体换成全局熔断** —— 进程级非正尺寸风暴累计"
+        "超过 kNonPositiveGlobalLimit 后, 后续所有非正 setSize: **一律 return, 不再"
+        "转发** 到 gOriginalSetSize, 容器保留上次合法几何(零成本), 重入链从此断开。")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_clamp_v39, "v39: 帧同步补上高度 — 治'字显示不全/排版不对'(v23 帧同步只修宽度不修高度, 每帧把 v18 撑好的高度改回去 → svH 恒为 needH 的 0.50~0.74, 37/37)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_framefix_height_unconditional_v40, "v40: 高度补齐挪出 polluted 分支 — 治'块重叠/字只剩一半'(v39 实测: textView 自身 frameH==needH 已 52/52 全对, 但 superview 52/52 仍欠 23.7~476pt。根因: polluted 判据只看宽度, 宽度修好后早退, v39 的高度代码一行没跑 → 宽度修好反而挡住了高度)")
     edit("Views/Chat/SelectableMarkdownView.swift", fix_kvo_height_clamp_v41, "v41: KVO 抢帧器补高度 — 治'字只剩一半/终端框不接结果'(推翻 v39/v40 的诊断: log9 同一毫秒同一 layoutSubviews 内 DIAG2 读到 358x2000.33 而开头快照是 100000x1455.33 → v18+v40 在 pass 内**确实修好了**, 欠账是 pass 结束后 SwiftUI 写回的。真凶: KVO 抢帧器只修x/width 从不写高度, 且 polluted 判据只看宽度 → '宽度正常+高度欠账'的帧被 if !polluted { return } 放过 → 末行被裁。v41: KVO 内无条件补高度 + polluted 增加高度维度 + 提交前兜底 + pass 末尾 V41-DEBT 回写侦测)")
