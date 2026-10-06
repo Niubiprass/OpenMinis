@@ -2510,6 +2510,34 @@ static const CGFloat kMaxContainerHeight = 1e5;'''
 }'''
     if OLD6 in t:
         t = t.replace(OLD6, NEW6)
+    # ---- ⑦ [V70] dedup 短路改为"先转发收敛再跳过" ----
+    # 旧逻辑: same tick 同尺寸第 2 次(kRepeatThreshold=2)就 return 不提交尺寸。
+    # 对 re-entrant 风暴(CoreText fillLayoutHole 在递归里反复 setSize)而言,
+    # 只第 1 次提交尺寸、其后全 return -> CoreText 永远收敛不了 -> 递归不终止 ->
+    # 627k 次/tick -> 主线程打满崩溃(装机 2026-10-06 实测: 选择模型卡死)。
+    # 改为: 本 tick 已转发次数(commitCount, 由下方 gOriginalSetSize 累加)未超
+    # kStormForwardLimit*4 就放过(落到 gOriginalSetSize 真正提交, 让 CoreText
+    # 收敛), 超阈值说明已收敛, 置 stormed 并跳过(安全)。这正是 v4 注释里的
+    # 设计意图, 只是被 kRepeatThreshold=2 抢跑了。
+    OLD7 = '''            return; // skip forwarding to original setSize:
+        }
+    } else {'''
+    NEW7 = '''            // [V70-DEDUP] 关键修复: 不再第 2 次同尺寸就跳过。
+            // 旧 kRepeatThreshold=2 让 re-entrant 风暴里 CoreText fillLayoutHole
+            // 只在第 1 次拿到尺寸提交, 其后全部 return -> 永远收敛不了 ->
+            // 递归不终止 -> 627k 次/tick -> 主线程打满崩溃(装机 2026-10-06 实测)。
+            // 改为: 本 tick 已转发次数(commitCount, 由下方 gOriginalSetSize 累加)
+            // 未超 kStormForwardLimit*4 时"放过", 落到 gOriginalSetSize 真正提交
+            // 尺寸让 CoreText 收敛; 超阈值说明已收敛, 置 stormed 并跳过(安全)。
+            if (s->commitCount > kStormForwardLimit * 4) {
+                s->stormed = YES;
+                return; // 收敛后跳过
+            }
+            // 否则 fall-through 到 gOriginalSetSize 转发(让 CoreText 收敛)
+        }
+    } else {'''
+    if OLD7 in t:
+        t = t.replace(OLD7, NEW7)
     return t
 
 
