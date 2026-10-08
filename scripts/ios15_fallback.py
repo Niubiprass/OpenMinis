@@ -9462,6 +9462,235 @@ def verify_deseed_v64(infra):
     return True
 
 
+# ==================================================================
+# v79: 流式 cell 豁免 A/C/broad/B-precalc, 走 live measure
+# ==================================================================
+#
+# 【基线】160 / v64 装机 (minis-2026-10-08.log):
+#   V64-CONVERGE 56/56 est==recomputed  —— 累加 H_{n+1}=H_n+170 已断
+#   [V53-SHORT] live=0 debt=0.0         —— 真实测量从未放行
+#   INVALIDATE 仅 6 次, 单跳 119-150pt  —— 高度被短路攒成一次跳出
+#     idx=2  360→490 / 31→150 / 226→357
+#     idx=5  88→217 / 291→441 / 441→571, 后几次 cached=true
+#
+# 【根因】A 路在流式判断之前: 同宽即返回 lastComputedHeight。
+#   B-precalc 被 heightCache 占住后不随 token 更新。
+#   _v53Note(.none) 全仓 0 调用 ⇒ live 恒 0 是探针未接线。
+#
+# 【本条只做】流式 cell(isStreamingCell) 不走 A/C/broad/B-precalc,
+#   落入 systemLayoutSizeFitting; 非流式短路与 V64 去播种/收敛闸不动。
+#   守卫串 `!v53DebtIsRipe, !v53SurplusIsRipe {` 一字不改(恰 3 处)。
+#
+# 【为什么豁免必须加在守卫串之外】v53/v62 反向按该串计 3 处;
+#   改那一行 = 历史判据全红。流式条件另起一行 `!_v79streaming,`。
+
+V79_A_HEAD_OLD = """        if let cached = lastComputedHeight,
+           let cachedW = lastComputedWidth,
+           abs(layoutAttributes.size.width - cachedW) < 1,
+"""
+
+V79_A_HEAD_NEW = """        // [V79-STREAM] 流式判定必须早于 A 路。A 是最宽短路, 同宽即返回缓存,
+        // 流式 token 增量被攒成一次 INVALIDATE(装机单跳 119-150pt, live 恒 0)。
+        var _v79streaming = false
+        if let _v79cv = superview as? UICollectionView,
+           let _v79layout = _v79cv.collectionViewLayout as? MessageListLayout {
+            _v79streaming = _v79layout.hasActiveStreaming
+                && _v79layout.isStreamingCell(layoutAttributes.indexPath.item)
+        }
+        if let cached = lastComputedHeight,
+           let cachedW = lastComputedWidth,
+           abs(layoutAttributes.size.width - cachedW) < 1,
+           !_v79streaming,
+"""
+
+V79_C_OLD = """           abs(cv.bounds.width - sw) < 1,
+           // [V53-C2] 同 A/B 路：种子高度若是欠账的那个值，不能再种回去。
+"""
+
+V79_C_NEW = """           abs(cv.bounds.width - sw) < 1,
+           !_v79streaming,
+           // [V53-C2] 同 A/B 路：种子高度若是欠账的那个值，不能再种回去。
+"""
+
+V79_BROAD_OLD = """        if let cached = lastComputedHeight,
+           abs(layoutAttributes.size.width - attrs.size.width) < 1 {
+"""
+
+V79_BROAD_NEW = """        if let cached = lastComputedHeight,
+           abs(layoutAttributes.size.width - attrs.size.width) < 1,
+           !_v79streaming {
+"""
+
+V79_PRECALC_OLD = """            if isStreamingItem,
+               let precalc = layout.precalcHeight(at: item) {
+                let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
+                copy.size.height = precalc
+                return copy
+            }
+"""
+
+V79_PRECALC_NEW = """            // [V79-STREAM] 流式 cell 看见 precalc 也不返回。
+            // precalc 被 heightCache 占住后不随 token 更新, 一次跳 ~120pt。
+            if isStreamingItem,
+               let precalc = layout.precalcHeight(at: item) {
+                Self.sizingLogger.info("[CellSizing][V79-STREAM] skip-precalc h=\\(String(format: "%.1f", precalc))")
+            }
+"""
+
+V79_LIVE_OLD = """        let gen = configGeneration
+"""
+
+V79_LIVE_NEW = """        // [V79-LIVE] 真实测量放行。v62/v64 装机 live 恒 0 = 探针从未接线。
+        Self._v53Note(.none, height: lastComputedHeight ?? layoutAttributes.size.height,
+                       width: layoutAttributes.size.width,
+                       pendingDebt: v53PendingHeightDebt)
+        let gen = configGeneration
+"""
+
+
+def fix_stream_live_v79(t):
+    """v79 注入: 流式 cell 豁免 A/C/broad/B-precalc, 走 live measure。
+
+    幂等: 已有 [V79-STREAM] 原样返回。锚点计数防呆(_v60_replace1)。
+    不改 `!v53DebtIsRipe, !v53SurplusIsRipe {`(v53/v62 按此串计恰 3 处)。
+    """
+    if "[V79-STREAM]" in t:
+        return t
+    t = _v60_replace1(t, V79_A_HEAD_OLD, V79_A_HEAD_NEW, "v79 流式判定+A路豁免")
+    t = _v60_replace1(t, V79_C_OLD, V79_C_NEW, "v79 C路流式豁免")
+    t = _v60_replace1(t, V79_BROAD_OLD, V79_BROAD_NEW, "v79 broad路流式豁免")
+    t = _v60_replace1(t, V79_PRECALC_OLD, V79_PRECALC_NEW, "v79 B-precalc 不返回")
+    t = _v60_replace1(t, V79_LIVE_OLD, V79_LIVE_NEW, "v79 接线 _v53Note(.none)")
+    return t
+
+
+def verify_stream_live_v79(infra):
+    """v79 判据: 问运行时顺序/行为, 不只问标记。
+
+    层:
+      ① _v79streaming 声明在 A 路之前, 且真读 isStreamingCell+hasActiveStreaming
+      ② A/C/broad 条件含 !_v79streaming(流式不吃缓存)
+      ③ B-precalc 块内不得 return(流式不锁 precalc)
+      ④ _v53Note(.none) 在 broad 之后、let gen 之前(短路命中不记 live)
+      ⑤ 守卫串恰 3 处 —— v79 不得改那一行
+      ⑥ 非流式 A 路仍 copy.size.height = cached
+      ⑦ _v79streaming 有声明, 且不是恒 false
+    """
+    F = "verify_stream_live_v79"
+
+    i_decl = infra.find("var _v79streaming")
+    if i_decl < 0:
+        i_decl = infra.find("let _v79streaming")
+    i_a = infra.find(
+        "if let cached = lastComputedHeight,\n           let cachedW = lastComputedWidth,")
+    if i_decl < 0:
+        raise RuntimeError(
+            "%s: 找不到 _v79streaming 声明 —— 流式判定没落地, A 路仍无条件吃缓存"
+            % F)
+    if i_a < 0:
+        raise RuntimeError("%s: 找不到 A 路 if 头 —— 注入点漂了" % F)
+    if i_decl > i_a:
+        raise RuntimeError(
+            "%s: _v79streaming 声明在 A 路之后 —— 流式 cell 仍先吃 dedup 缓存"
+            "(装机形态: live=0, INVALIDATE 单跳 119-150pt)" % F)
+
+    decl = infra[i_decl:i_a]
+    if "isStreamingCell" not in decl:
+        raise RuntimeError(
+            "%s: 流式判定未读 isStreamingCell —— 会把非流式 cell 一锅豁免"
+            "或整段判定失效" % F)
+    if "hasActiveStreaming" not in decl:
+        raise RuntimeError(
+            "%s: 流式判定未读 hasActiveStreaming —— 判定与 layout 的流式窗脱节"
+            % F)
+    # 声明行是 `var _v79streaming = false`(初值); 真正判定必须另有赋值,
+    # 且不得是字面量 true/false(恒 true = 非流式也每帧重测; 恒 false = 豁免死代码)。
+    # 赋值可跨行(`hasActiveStreaming && isStreamingCell(...)`)。
+    after_decl = decl.split("\n", 1)[-1] if "\n" in decl else ""
+    asg = list(re.finditer(r"_v79streaming\s*=\s*", after_decl))
+    if not asg:
+        raise RuntimeError(
+            "%s: _v79streaming 声明后、A 路前没有赋值 —— 判定是死代码" % F)
+    rhs = after_decl[asg[-1].end():]
+    if re.match(r"(true|false)\b", rhs.lstrip()):
+        raise RuntimeError(
+            "%s: _v79streaming 最终赋值是字面量 %s —— "
+            "恒 true 非流式也每帧重测; 恒 false 流式仍吃缓存"
+            % (F, rhs.lstrip().split()[0]))
+    if "isStreamingCell" not in rhs:
+        raise RuntimeError(
+            "%s: _v79streaming 最终赋值未读 isStreamingCell —— 实测 %r"
+            % (F, rhs[:80].strip()))
+
+    a_body = _v64_body(
+        infra,
+        "if let cached = lastComputedHeight,\n           let cachedW = lastComputedWidth,",
+        "A路")
+    if "!_v79streaming" not in a_body:
+        raise RuntimeError(
+            "%s: A 路无 !_v79streaming —— 流式仍返回 lastComputedHeight,"
+            "token 增量被攒成一次跳出" % F)
+    if "copy.size.height = cached" not in a_body:
+        raise RuntimeError(
+            "%s: A 路非流式短路被摘掉 —— 非流式 cell 会每帧 live 重测" % F)
+
+    c_body = _v64_body(
+        infra, "if let sh = seededHeight, let sw = seededWidth,", "C路")
+    if "!_v79streaming" not in c_body:
+        raise RuntimeError(
+            "%s: C 路无 !_v79streaming —— 流式仍被 seededHeight 挡回" % F)
+
+    i_broad = infra.find("abs(layoutAttributes.size.width - attrs.size.width)")
+    if i_broad < 0:
+        raise RuntimeError("%s: 找不到 broad 路" % F)
+    broad_body = _v64_body(
+        infra,
+        "if let cached = lastComputedHeight,\n           abs(layoutAttributes.size.width - attrs.size.width)",
+        "broad路")
+    if "!_v79streaming" not in broad_body:
+        raise RuntimeError(
+            "%s: broad 路无 !_v79streaming —— super 之后同宽缓存仍吞流式测量"
+            % F)
+
+    pc = _v64_body(
+        infra,
+        "if isStreamingItem,\n               let precalc = layout.precalcHeight(at: item)",
+        "B-precalc")
+    if re.search(r"\breturn\b", pc):
+        raise RuntimeError(
+            "%s: B-precalc 仍 return —— 流式高度锁在 precalc/heightCache,"
+            "不随 token 更新" % F)
+
+    i_none = infra.find("_v53Note(.none")
+    i_gen = infra.find("let gen = configGeneration")
+    if i_none < 0:
+        raise RuntimeError(
+            "%s: 未接线 _v53Note(.none) —— live 计数恒 0"
+            "(v62/v64 装机就是这个形态)" % F)
+    if i_gen < 0:
+        raise RuntimeError("%s: 找不到 let gen = configGeneration" % F)
+    if i_none > i_gen:
+        raise RuntimeError(
+            "%s: _v53Note(.none) 在 live 测量入口(let gen)之后 —— 记不到本次测量"
+            % F)
+    if i_none < i_broad:
+        raise RuntimeError(
+            "%s: _v53Note(.none) 在 broad 短路之前 —— 短路命中也会记 live,"
+            "装机 live>0 不再能证明真实测量放行了" % F)
+
+    n_guard = infra.count("!v53DebtIsRipe, !v53SurplusIsRipe {")
+    if n_guard != 3:
+        raise RuntimeError(
+            "%s: 守卫串应恰 3 处, 实测 %d —— v79 不得改 `!v53DebtIsRipe, "
+            "!v53SurplusIsRipe {{`" % (F, n_guard))
+
+    if not re.search(r"\b(?:let|var)\s+_v79streaming\b", infra):
+        raise RuntimeError(
+            "%s: _v79streaming 没有 let/var 声明 —— 编译必红 cannot find in scope"
+            % F)
+    return True
+
+
 def fix_kvo_debt_v569(t):
     """v56.9: 修 KVO 同值抑制把欠账帧永久跳过。
 
@@ -15774,6 +16003,16 @@ def main():
         "(iOS15 感知内容尺寸变化的唯一通道), 恢复后播种值变\"活\", 三十余版的"
         "底层 bug 才显形。★本条只断反馈, 不动 v63 的高度上报。"
         "判据 verify_deseed_v64 四层 + 反向 reverse_v64。")
+    edit("Agent/MessageList/MessageListInfrastructure.swift",
+        fix_stream_live_v79,
+        "v79: 流式 cell 豁免 A/C/broad/B-precalc, 走 live measure。"
+        "★基线 160/v64 装机: V64-CONVERGE 56/56 累加已断, 但 live 恒 0,"
+        "INVALIDATE 单跳 119-150pt(文字一下跳出)。"
+        "★根因: A 路在流式判断前退回同宽缓存; B-precalc 被 heightCache 占住;"
+        "_v53Note(.none) 从未调用。"
+        "★不改 `!v53DebtIsRipe, !v53SurplusIsRipe {{`(v53/v62 计恰 3 处);"
+        "非流式短路与 V64 去播种/收敛闸不动。"
+        "判据 verify_stream_live_v79 + 反向 reverse_v79。")
 
     # ---- 诊断: 几何测量回填是否落地 (inputBarHeight 相关的关键校验) ----
     print("-- 诊断 dump (几何测量回填点) --")

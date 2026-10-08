@@ -316,9 +316,18 @@ class SelfSizingCell: UICollectionViewCell {
         // `lastMeasureMediaTime` is kept (still written, still cleared) — it
         // remains useful diagnostics and leaves the 50ms window one line away
         // if a height-staleness case this reasoning missed ever shows up.
+        // [V79-STREAM] 流式判定必须早于 A 路。A 是最宽短路, 同宽即返回缓存,
+        // 流式 token 增量被攒成一次 INVALIDATE(装机单跳 119-150pt, live 恒 0)。
+        var _v79streaming = false
+        if let _v79cv = superview as? UICollectionView,
+           let _v79layout = _v79cv.collectionViewLayout as? MessageListLayout {
+            _v79streaming = _v79layout.hasActiveStreaming
+                && _v79layout.isStreamingCell(layoutAttributes.indexPath.item)
+        }
         if let cached = lastComputedHeight,
            let cachedW = lastComputedWidth,
            abs(layoutAttributes.size.width - cachedW) < 1,
+           !_v79streaming,
            // [V53-C2] 已知欠账且已持续一帧以上 ⇒ 不得返回这个欠账高度。
            // 见 `v53NotePendingDebt` 的 docstring：不清这一条，`preSVH` 会永远
            // 停在首次提交时的欠账值上（实测 1004.0，欠 268.3pt ≈ 8 行）。
@@ -424,11 +433,11 @@ class SelfSizingCell: UICollectionViewCell {
                                pendingDebt: v53PendingHeightDebt)
                 return copy
             }
+            // [V79-STREAM] 流式 cell 看见 precalc 也不返回。
+            // precalc 被 heightCache 占住后不随 token 更新, 一次跳 ~120pt。
             if isStreamingItem,
                let precalc = layout.precalcHeight(at: item) {
-                let copy = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
-                copy.size.height = precalc
-                return copy
+                Self.sizingLogger.info("[CellSizing][V79-STREAM] skip-precalc h=\(String(format: "%.1f", precalc))")
             }
         }
 
@@ -452,6 +461,7 @@ class SelfSizingCell: UICollectionViewCell {
         if let sh = seededHeight, let sw = seededWidth,
            let cv = superview as? UICollectionView,
            abs(cv.bounds.width - sw) < 1,
+           !_v79streaming,
            // [V53-C2] 同 A/B 路：种子高度若是欠账的那个值，不能再种回去。
            // 实测这条是「清缓存后旧高又回来了」的第二个来源 ——
            // configureCell 会把 memo 里的 1004 再写一次 seededHeight。
@@ -514,7 +524,8 @@ class SelfSizingCell: UICollectionViewCell {
         // dedup-window above but covers the broader "width never changed"
         // case across longer scroll runs.
         if let cached = lastComputedHeight,
-           abs(layoutAttributes.size.width - attrs.size.width) < 1 {
+           abs(layoutAttributes.size.width - attrs.size.width) < 1,
+           !_v79streaming {
             attrs.size.height = cached
             // [ScrollStall] Count broad cache hits; flush summary 1Hz.
             Self.broadHits &+= 1
@@ -527,6 +538,10 @@ class SelfSizingCell: UICollectionViewCell {
             return attrs
         }
 
+        // [V79-LIVE] 真实测量放行。v62/v64 装机 live 恒 0 = 探针从未接线。
+        Self._v53Note(.none, height: lastComputedHeight ?? layoutAttributes.size.height,
+                       width: layoutAttributes.size.width,
+                       pendingDebt: v53PendingHeightDebt)
         let gen = configGeneration
         let targetSize = CGSize(width: layoutAttributes.size.width, height: UIView.layoutFittingCompressedSize.height)
         let start = CACurrentMediaTime()

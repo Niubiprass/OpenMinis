@@ -162,6 +162,15 @@ CHECKS = [
         "ci_assert_v64.py",                            "root",  []),
     ("v64 反向(10条含S6换名/S8顺序/S10标识符)",
         "reverse_v64.py",                              "root",  []),
+    # ★★ v79: 流式 cell 豁免 A/C/broad/B-precalc, 走 live measure。
+    #   基线 160/v64 装机: V64-CONVERGE 56/56 累加已断, live 恒 0,
+    #   INVALIDATE 单跳 119-150pt(文字一下跳出)。
+    #   根因: A 路在流式判断前退回同宽缓存; B-precalc 被 heightCache 占住;
+    #   _v53Note(.none) 从未调用。不改守卫串(v53/v62 计恰 3 处)。
+    ("v79 判据(流式豁免+live接线)",
+        "ci_assert_v79.py",                            "root",  []),
+    ("v79 反向(12条含恒false/顺序/守卫串)",
+        "reverse_v79.py",                              "root",  []),
     # ★★ v65 守卫 —— v64 装机后暴露的**真根因**, 与 v64 那条线无关。
     #   v64 装机实测: 累加确实治好了(13 对 FIRST-MEASURE 无自旋, +170/拍消失),
     #   但用户仍报闪屏/抖动/卡字。真因在 NSTextContainerSetSizeGuard:
@@ -287,6 +296,7 @@ MANDATORY = {
     #   判 SKIP」时 CI 仍会绿。而 SKIP 项在 CI 里是**被 grep 出来报红的**
     #   (regress_all_v 里有专门那段), 两头都堵死才安全。
     "v64 判据(不播种+收敛闸+数据流)", "v64 反向(10条含S6换名/S8顺序/S10标识符)",
+    "v79 判据(流式豁免+live接线)", "v79 反向(12条含恒false/顺序/守卫串)",
     "v65 守卫判据(5层含作用域自证)", "v65 反向(10条含S2块内return/S5顺序/S9作用域/S10标识符)",
     # ★★ 门禁抽取器自身进 MANDATORY —— CI#161 的教训:
     #   「判据全绿」这个前提本身需要有人看守。抽取器坏了的时候, 全部
@@ -374,12 +384,9 @@ def main():
                          UPSTREAM_IOS, "3"]
         if fn == "reverse_v49_heavy.py":
             argv.append("--sab")
-        elif fn == "ci_assert_v565.py":
-            # ★必须降级为不跑 sab: ci_assert_v565 内部会调 reverse_v565.py,
-            #   而本链里 reverse_v565.py 本身就是一项 —— 不加会跑两遍,
-            #   时间翻倍(它要重跑 9 遍 fallback)。
-            # ★v51 踩过递归的坑(进程树指数膨胀, CI 挂死), 这里是同一个坑的
-            #   轻量版: 不是递归, 是重复。方向仍须单向: 链跑入口, 入口自己跑 sab。
+        elif fn in ("ci_assert_v565.py", "ci_assert_v79.py"):
+            # ★必须降级为不跑 sab: 入口内部会调 reverse_*.py,
+            #   而本链里 reverse 本身就是一项 —— 不加会跑两遍。
             argv.append("--no-sab")
 
         # ★必须显式传 env: 部分历史判据(reverse_v62 等)内部会再调

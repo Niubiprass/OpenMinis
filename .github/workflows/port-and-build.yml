@@ -560,6 +560,28 @@ jobs:
           fi
           echo "::endgroup::"
 
+          # ---- 断言75: v79 流式 cell 必须走 live measure ----
+          # ★基线 160/v64 装机 (minis-2026-10-08.log):
+          #   V64-CONVERGE 56/56 est==recomputed —— 累加已断
+          #   [V53-SHORT] live=0 debt=0.0         —— 真实测量从未放行
+          #   INVALIDATE 仅 6 次, 单跳 119-150pt  —— 高度被短路攒成一次跳出
+          # ★根因: A 路在流式判断前退回同宽缓存; B-precalc 被 heightCache 占住;
+          #   _v53Note(.none) 全仓 0 调用。
+          # ★不改 `!v53DebtIsRipe, !v53SurplusIsRipe {`(v53/v62 计恰 3 处)。
+          echo "::group::断言75: v79 流式 cell 必须豁免 A/C/broad/B-precalc 并接线 live"
+          if python3 "$SCRIPT_DIR/ios15_verify/ci_assert_v79.py" . ; then
+            echo "✅ v79 就位 (流式判定早于 A 路 + A/C/broad 豁免 + precalc 不 return + live 接线 + 守卫串恰 3 + 12 条 sabotage 全拦)"
+          else
+            echo "::error::v79 判据异常 —— 流式高度仍被短路攒成一次 INVALIDATE 跳出"
+            echo "   —— 若报「声明在 A 路之后」: 流式判定太晚, A 路仍先吃缓存"
+            echo "   —— 若报「A/C/broad 无 !_v79streaming」: 对应短路仍吞流式测量"
+            echo "   —— 若报「B-precalc 仍 return」: 高度锁在 heightCache, 不随 token 更新"
+            echo "   —— 若报「未接线 _v53Note(.none)」: live 恒 0, 装机无法判别是否放行"
+            echo "   —— 若报「守卫串应恰 3 处」: 改了 v53/v62 那一行, 历史判据会红"
+            exit 1
+          fi
+          echo "::endgroup::"
+
           # ---- 断言69: v65 守卫不再丢弃坏尺寸 / 不再误伤真实排版 ----
           # ★v64 装机实测: 累加确实治好了(13 对 FIRST-MEASURE 无自旋, +170/拍消失),
           #   但用户仍报闪屏/抖动/卡字。日志把真因指得很死:
