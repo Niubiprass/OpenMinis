@@ -90,9 +90,42 @@ SABS = [
      "copy.size.height = cached\n            // [V53-PROBE] A 路",
      "copy.size.height = cached * 1.5\n            // [V53-PROBE] A 路", "P"),
     ("S14", "两条短路的 if 头被合并(守卫只算一处)", "I",
-     "abs(cv.bounds.width - sw) < 1,\n           // [V53-C2] 同 A/B 路",
-     "abs(cv.bounds.width - sw) < 1 {\n           // [V53-C2] 同 A/B 路", "C2"),
+     # ★v79 适配: C 路 if 头与 [V53-C2] 之间多了 `!_v79streaming,`。
+     #   旧锚点 `abs(...) < 1,\n           // [V53-C2]` 落空 ⇒ 本条空测
+     #   (CI run 37716701845: v79 全绿, v53 sab「1 条锚点未命中」)。
+     #   新形态下破坏必须打在守卫前最后一行逗号(`!_v79streaming,`):
+     #   若仍改 abs 那行, 剥注释后上一行仍是 `!_v79streaming,` ⇒
+     #   判据不红 = sabotage 空转(同 v64 S8)。
+     #   旧形态仍接受, 避免锚死形态给下一版埋雷。实际选哪条见 _s14_pair。
+     "S14_PLACEHOLDER", "S14_PLACEHOLDER", "C2"),
 ]
+
+# 优先新形态。破坏目标 = 守卫前最后一行逗号结尾的条件延续行。
+S14_FORMS = (
+    ("!_v79streaming,\n           // [V53-C2] 同 A/B 路",
+     "!_v79streaming {\n           // [V53-C2] 同 A/B 路"),
+    ("abs(cv.bounds.width - sw) < 1,\n           // [V53-C2] 同 A/B 路",
+     "abs(cv.bounds.width - sw) < 1 {\n           // [V53-C2] 同 A/B 路"),
+)
+
+
+def _s14_pair(infra):
+    for old, new in S14_FORMS:
+        if old in infra:
+            return old, new
+    return S14_FORMS[0]
+
+
+def _materialize_sabs(infra):
+    """把 S14 占位换成当前产物上命中的那一种形态。"""
+    old14, new14 = _s14_pair(infra)
+    out = []
+    for item in SABS:
+        if item[0] == "S14":
+            out.append((item[0], item[1], item[2], old14, new14, item[5]))
+        else:
+            out.append(item)
+    return out
 
 
 def _resolve(target):
@@ -179,8 +212,9 @@ def main():
 
     # ---- 锚点逐条断言 ----
     print("\n[锚点] 逐条确认 sabotage 用的原串在产物里逐字存在")
+    sabs = _materialize_sabs(I0)
     bad_anchor = []
-    for sid, name, which, old, new, key in SABS:
+    for sid, name, which, old, new, key in sabs:
         src = T0 if which == "T" else I0
         if old not in src:
             bad_anchor.append("%s %s (原串未命中)" % (sid, name))
@@ -195,7 +229,7 @@ def main():
     # ---- 跑 sabotage ----
     print("\n[sab] 破坏后判据必须报失败(异常类型必须是 RuntimeError)")
     caught = 0
-    for sid, name, which, old, new, key in SABS:
+    for sid, name, which, old, new, key in sabs:
         T, I = T0, I0
         if which == "T":
             T = T.replace(old, new, 1)
