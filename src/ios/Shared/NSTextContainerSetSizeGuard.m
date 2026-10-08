@@ -119,61 +119,28 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
         return;
     }
 
-
-    // [V79-SPLIT] height==0 入口分流: 全局风暴识别前**放行修正转发**, 风暴期零分配短路。
-    // 装机 minis-2026-10-07.log PID 60262: build=V77 在跑, EARLY total 1437697,
-    // MemMonitor 42→53MB 正常(不是 V78 修的内存形态!), 但 MAIN HANG 2030ms→
-    // 18628/18737ms 单调增长, runloop trail 卡 BeforeSources/BeforeTimers, 崩溃栈
-    // 全 QuartzCore/UIKitCore ⇒ 主线程被「布局永不收敛」钉死 18.6s ⇒ SIGKILL ⇒
-    // 02:31:41 崩 + 38.4s 内二次崩 ⇒ CrashLoop 跳过会话恢复。
-    // 根因: V77/V78 把 0x0 **一律短路 return**。回前台时 SwiftUI 全量重测, 新 cell
-    // 的 NSTextContainer 从未被 setSize 过正尺寸 ⇒ 容器恒 0x0 ⇒ TextKit 排版恒 0
-    // ⇒ sizeThatFits 恒 0 ⇒ SwiftUI 永不满意 ⇒ 每帧重测 ⇒ 布局死循环 ⇒ HANG。
-    // 短路「下游」没让「上游测高」收敛 —— 这就是 V77 换形态(内存→HANG)的原因。
-    // 修法: ①风暴识别前放行 0x0 走 V65 修正+真转发, 新容器拿到正尺寸几何,
-    // 测高一次收敛; ②V65 无历史兜底 1.0→24.0(1pt 排不出任何一行=活锁燃料);
-    // ③V76 非正短路同样分流。真风暴 streak 跨 tick 累计超 400 后全局识别 ⇒
-    // 短路 ⇒ 内存/HANG 双形态都被斩断; 上游自愈走 V69⑤ GLOBAL-RECOVER 清零。
+    // [V78-NOALLOC] height==0 在任何堆分配之前 return。
+    // 装机 minis-2026-10-07.log PID 60253: build=V77 在跑,
+    // EARLY-NONPOSITIVE-RETURN 355 条, total 4097→1454081 / ~13.5s,
+    // FIXED 仅 4 条; MemMonitor 36→1958.8MB; MAIN HANG 105 次 max 13510ms;
+    // 随后 PID 60262 重启。V77 入口 return 看见了 145 万次, V65 税没再付;
+    // 病变成 0x0 仍以 ~10 万次/秒打进 setSize。
+    // 根因: V77 的 return 写在 objc_getAssociatedObject /
+    // [_NSTextContainerGuardState new] **之后**。容器工厂每次 0x0 仍
+    // new 一个 GuardState 进 autorelease pool, 同一次 layout 不排空
+    // ⇒ 145 万对象 ⇒ 2GB ⇒ SIGKILL。
+    // ★第十五次「验证手段骗了自己」: 第 ⑪ 层问「在 valueForKey 之前」
+    // [在], 没问「在 associated 分配之前」。
+    // 修法: height==0 在 objc_getAssociatedObject 之前 return, 零堆分配。
     if (newSize.height == 0.0) {
-        if (gGlobalNonPositiveStreak > kNonPositiveGlobalLimit) {
-            // [V79-STORM] 全局风暴已识别: 短路, 零分配零 KVC(保留 V78 语义)。
-            gShortCircuitCount += 1;
-            if ((gShortCircuitCount & 0xFFFFF) == 1) {
-                NSLog(@"[TextContainerGuard] [WARN] [V79] STORM-SHORT-CIRCUIT "
-                      @"orig=%.1fx%.1f total=%llu — 风暴期入口短路(零分配/不 KVC/不转发)",
-                      newSize.width, newSize.height,
-                      (unsigned long long)gShortCircuitCount);
-            }
-            return;
+        gShortCircuitCount += 1;
+        if ((gShortCircuitCount & 0xFFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V78] EARLY-NONPOSITIVE-RETURN "
+                  @"orig=%.1fx%.1f total=%llu — 入口短路(零分配/不 KVC/不转发)",
+                  newSize.width, newSize.height,
+                  (unsigned long long)gShortCircuitCount);
         }
-        // [V80-THROTTLE] 已有几何且本 tick 已转发 → 0x0 节流 return(不修正不转发)。
-        // V79 装机(minis-2026-10-07 3.log PID 64281)实测: 0x0 全量修正转发,
-        // 单容器 0x281079680 23 秒 278 万次(12 万/秒) ⇒ 每次真转发触发 CoreText
-        // layout ⇒ 主线程饱和 ⇒ SIGKILL。GLOBAL-STREAK 停在 1 的原因: 0x0 转发
-        // 触发的布局回调是重入, 重入 0x0 在 V74-REENT 处 return, 计费段(计非正
-        // streak/全局 streak)从未执行 ⇒ gstreak 永不超 400 ⇒ V79 分流空转。
-        // 修法: 有 holder 且本 tick 已转发过(commitCount>0)的 0x0 直接 return —
-        // 容器已拿到正几何(326x24), 排版能跑、测高能回报; 每 tick 每容器最多真
-        // 转发 1 次 ⇒ 12 万/秒 → ~60/秒。新容器(无 holder)不受影响, 首次 0x0
-        // 仍走修正+转发拿几何(保留 V79 斩 HANG 语义)。
-        _NSTextContainerGuardState *_v80h = objc_getAssociatedObject(self, kGuardStateKey);
-        if (_v80h && _v80h->state.initialized &&
-            _v80h->state.lastTick == gRunloopTick &&
-            _v80h->state.commitCount > 0) {
-            gShortCircuitCount += 1;
-            if ((gShortCircuitCount & 0x3FFFF) == 1) {
-                NSLog(@"[TextContainerGuard] [WARN] [V80] THROTTLE-ZERO "
-                      @"container=%p orig=%.1fx%.1f total=%llu "
-                      @"— 本 tick 已转发, 0x0 节流(保留已提交几何)",
-                      (__bridge void *)self, newSize.width, newSize.height,
-                      (unsigned long long)gShortCircuitCount);
-            }
-            return;
-        }
-        // [V79-PRIME] 风暴识别前: 放行到 V65 修正段, 让新容器拿到正尺寸几何,
-        // 斩断「排版恒 0 → 测高永不收敛 → 布局死循环」HANG。不在此 return。
-
-        // 斩断「排版恒 0 → 测高永不收敛 → 布局死循环」HANG。不在此 return。
+        return;
     }
 
     // Sanitise obviously poisoned sizes that SwiftUI's measure path
@@ -368,11 +335,8 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
                     // 0.0 同样排不出东西 ⇒ 自反馈回路一秒都没断(活锁)。
                     _prev = gGlobalLastGoodHeight;
                 }
-                // [V79-FLOOR] 无历史兜底 1.0→24.0: 1pt 排不出任何一行, 上游收到
-                // 1.0 和 0.0 一样算崩 ⇒ 活锁(v66 自述); 24pt 能排出一行,
-                // sizeThatFits 回报行高 ⇒ 测高收敛。
                 _ah = (_prev > 1.0 && isfinite(_prev) &&
-                       _prev <= kMaxContainerHeight) ? _prev : 24.0;
+                       _prev <= kMaxContainerHeight) ? _prev : 1.0;
             }
             if (_ah > kMaxContainerHeight) { _ah = kMaxContainerHeight; }
             newSize.height = _ah;
@@ -445,15 +409,11 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
     // [V68-HOIST] holder / s 已在本函数**开头**取好(见上方 [V68-HOIST]),
     // 非正高度修正段要用 s->lastGoodHeight, 那段比这里更早。
 
-    // [V80-MARKER] 一次性打印构建版本(装机确认)。V80 = V79 + 0x0 入口节流: V79 放行修正转发后
-    // 0x0 每 tick 全量转发(单容器 23 秒 278 万次 = 12 万/秒 CoreText layout)⇒ 主线程饱和
-    // SIGKILL, 而重入 0x0 在 V74-REENT 提前 return 使 streak 永不累加 ⇒ gstreak 风暴识别空转;
-    // V80 在入口对「已有几何且本 tick 已转发」的 0x0 直接 return ⇒ 每 tick 每容器最多真转发
-    // 1 次, 12 万/秒 → ~60/秒, 新容器首次 0x0 仍放行拿几何(V79 斩 HANG 语义保留)。
-    static BOOL _v80GuardLogged = NO;
-    if (!_v80GuardLogged) {
-        _v80GuardLogged = YES;
-        NSLog(@"[Minis-Guard] build=V80 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn+zeroAllocEarlyReturn+entrySplitPrime+zeroThrottle (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; V76 非正尺寸短路不转发; V77 入口短路在 valueForKey 之前; V78 入口短路在 associated 分配之前, 零堆分配; V79 入口分流: 风暴识别前放行 0x0 修正转发斩 HANG, 识别后短路; **V80 0x0 入口节流: 已有几何且本 tick 已转发则 return, 每 tick 每容器最多真转发 1 次斩 CoreText 风暴 SIGKILL**");
+    // [V78-MARKER] 一次性打印构建版本(装机确认)。V76 = V75 persistentStorm + **V76 非正尺寸跨 tick 持久短路**(非正原始尺寸 0x-16/0x0/0x-8 到达时直接 return 不转发 CoreText, 斩断 V65 修正转发引发的 layout 活锁; 容器保留 lastGoodHeight 合法几何, 文字照常显示, 上游算对即自动 re-arm)。专治 V75 仍未斩净的「选择模型卡死」(实测 8.3 万次非正转发→objc_sync_enter 锁卡死→7349ms HANG→SIGKILL)。
+    static BOOL _v78GuardLogged = NO;
+    if (!_v78GuardLogged) {
+        _v78GuardLogged = YES;
+        NSLog(@"[Minis-Guard] build=V78 ios15-pickerCap+inputFlicker+reentrantBreak+persistentStorm+nonPositiveShortCircuit+earlyNonPositiveReturn+zeroAllocEarlyReturn (cappedEntriesByInstance 非搜索态截断 150; intrinsicContentSize 反馈环路守卫斩输入闪屏; setSize: 递归哨兵斩断重入环; 同尺寸风暴跨 tick 持久熔断斩断选择模型 measure 死循环; V76 非正尺寸短路不转发; V77 入口短路在 valueForKey 之前; **V78 入口短路在 associated 分配之前, 零堆分配**)");
     }
 
     // [V74-REENT] 递归哨兵: 斩断 setSize: → gOriginalSetSize → layout → setSize: 重入环。
@@ -652,19 +612,14 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
         // → 8.3 万次 layout → objc_sync_enter 锁卡死 → 7349ms HANG → SIGKILL)。
         // 直接短路斩断活锁; 容器保留合法几何(lastGoodHeight), 文字照常显示。
         gShortCircuitCount += 1;
-        if (gGlobalNonPositiveStreak > kNonPositiveGlobalLimit) {
-            // [V79-SPLIT2] 全局风暴识别后: 短路(保留 V76 斩活锁语义)。
-            if ((gShortCircuitCount & 0xFF) == 1) {
-                NSLog(@"[TextContainerGuard] [WARN] [V76] NONPOSITIVE-SHORT-CIRCUIT "
-                      @"container=%p orig=%.1fx%.1f streak=%ld gstreak=%ld "
-                      @"— 非正尺寸直接短路(不转发 CoreText)",
-                      (__bridge void *)self, _v65orig_w, _v65orig_h,
-                      (long)s->nonPositiveStreak, (long)gGlobalNonPositiveStreak);
-            }
-            return;
+        if ((gShortCircuitCount & 0xFF) == 1) {
+            NSLog(@"[TextContainerGuard] [WARN] [V76] NONPOSITIVE-SHORT-CIRCUIT "
+                  @"container=%p orig=%.1fx%.1f streak=%ld gstreak=%ld "
+                  @"— 非正尺寸直接短路(不转发 CoreText)",
+                  (__bridge void *)self, _v65orig_w, _v65orig_h,
+                  (long)s->nonPositiveStreak, (long)gGlobalNonPositiveStreak);
         }
-        // [V79-PRIME2] 风暴识别前: fall-through 转发修正后的正尺寸(0x0→
-        // lastGoodHeight/24.0 等), 容器拿到几何 ⇒ 排版能跑 ⇒ 测高收敛。
+        return;
     } else if (_v65orig_h > 0.0 && _v65orig_w > 0.0) {
         // [V69-GLOBAL]⑤ 自愈退出: 连续收到正尺寸 ⇒ 上游已恢复, 全局计数清零。
         //
@@ -777,7 +732,8 @@ static void bumpRunloopTick(CFRunLoopObserverRef obs, CFRunLoopActivity act, voi
 
 + (void)install {
     static dispatch_once_t once;
-    dispatch_once(&once, ^{        if (![NSThread isMainThread]) {
+    dispatch_once(&once, ^{
+        if (![NSThread isMainThread]) {
             NSLog(@"[TextContainerGuard] [WARN] install called off main; deferring");
             dispatch_async(dispatch_get_main_queue(), ^{ [NSTextContainerSetSizeGuard install]; });
             return;
