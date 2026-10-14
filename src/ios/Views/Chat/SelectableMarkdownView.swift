@@ -10112,6 +10112,10 @@ struct SelectableMarkdownView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> SelectableMarkdownTextView {
+        // A reused coordinator must finish the OLD storage before owning a new view.
+        context.coordinator.fadeAnimator.cancelAll()
+        context.coordinator.fadeTextView = nil
+        context.coordinator.cancelDeferredRender()
         let textView = SelectableMarkdownTextView()
         textView.delegate = context.coordinator
         textView.setContentHuggingPriority(.required, for: .vertical)
@@ -10139,8 +10143,20 @@ struct SelectableMarkdownView: UIViewRepresentable {
         return textView
     }
 
+    static func dismantleUIView(_ textView: SelectableMarkdownTextView, coordinator: Coordinator) {
+        coordinator.fadeAnimator.cancelAll()
+        coordinator.fadeTextView = nil
+        coordinator.cancelDeferredRender()
+    }
+
     func updateUIView(_ textView: SelectableMarkdownTextView, context: Context) {
         let updateStart = CFAbsoluteTimeGetCurrent()
+        // iOS 15: never leave alpha-mutating work alive, even on dedup/defer returns.
+        if #available(iOS 16.0, *) {
+            // Keep the existing streamed word reveal on newer systems.
+        } else {
+            context.coordinator.fadeAnimator.cancelAll()
+        }
         context.coordinator.openURL = openURL
         textView.onTapBlank = onTapBlank
         textView.onCopyScreenshot = onCopyScreenshot
@@ -10592,14 +10608,17 @@ struct SelectableMarkdownView: UIViewRepresentable {
             }
         }
         if !fastPathTaken {
+            // Finish OLD ranges before replacing storage; cancelling afterwards
+            // would paint their saved colors onto the NEW content at stale offsets.
+            context.coordinator.fadeAnimator.cancelAll()
             textView.attributedText = attributed
         }
 
-        // [WordFade] Now that storage holds the final text (via either path),
-        // fade the revealed range in word-by-word. Decoupled from fastPathTaken
-        // so a full-replace token still animates. A scene-deferred / background
-        // frame never reaches here; isNewMessage / rotation already cancelAll'd.
-        if let revealRange = fadeRevealRange,
+        // [WordFade] Keep the existing reveal on iOS 16+, via either assign path.
+        // iOS 15 displays renderer colors immediately, with no alpha-0 seeding.
+        // Schedule only AFTER the old generation has been cancelled and assigned.
+        if #available(iOS 16.0, *),
+           let revealRange = fadeRevealRange,
            let liveStorage = textView.textStorage as? NSTextStorage {
             context.coordinator.fadeTextView = textView
             context.coordinator.fadeAnimator.scheduleAnimation(for: revealRange, in: liveStorage)
@@ -10781,25 +10800,30 @@ struct SelectableMarkdownView: UIViewRepresentable {
         guard newPrefix.length == oldPrefix.length else { return false }
         guard (newPrefix.string as NSString).isEqual(oldPrefix.string) else { return false }
         let fontKey = NSAttributedString.Key.font
-        let full = NSRange(location: 0, length: newPrefix.length)
-        var equal = true
-        newPrefix.enumerateAttributes(in: full, options: []) { aN, range, stop in
-            let aO = oldPrefix.attributes(at: range.location, effectiveRange: nil)
+        // Walk the UNION of both effective-range boundaries. Sampling only
+        // the start of a new run can miss a changed old run inside it (e.g.
+        // the second half still has an old color, font, or zero fade alpha).
+        var offset = 0
+        while offset < newPrefix.length {
+            var newRange = NSRange(location: 0, length: 0)
+            var oldRange = NSRange(location: 0, length: 0)
+            let aN = newPrefix.attributes(at: offset, effectiveRange: &newRange)
+            let aO = oldPrefix.attributes(at: offset, effectiveRange: &oldRange)
             // Reconcile fonts: equal as-is, or new.NSFont == old.NSOriginalFont.
             let fontN = aN[fontKey] as? UIFont
             let fontO = aO[fontKey] as? UIFont
             let originalO = aO[nsOriginalFontKey] as? UIFont
             let fontsOK = (fontN == fontO) || (fontN != nil && fontN == originalO)
-            if !fontsOK { equal = false; stop.pointee = true; return }
+            guard fontsOK else { return false }
             // Compare everything else with font bookkeeping removed.
             var nN = aN; nN.removeValue(forKey: fontKey); nN.removeValue(forKey: nsOriginalFontKey)
             var nO = aO; nO.removeValue(forKey: fontKey); nO.removeValue(forKey: nsOriginalFontKey)
-            if !(nN as NSDictionary).isEqual(to: nO) {
-                equal = false
-                stop.pointee = true
-            }
+            guard (nN as NSDictionary).isEqual(to: nO) else { return false }
+            let next = min(NSMaxRange(newRange), NSMaxRange(oldRange), newPrefix.length)
+            guard next > offset else { return false }
+            offset = next
         }
-        return equal
+        return true
     }
 
     /// Recursively collect `.image` inline nodes from a block tree for logging.
@@ -11482,6 +11506,12 @@ struct SelectableMarkdownView: UIViewRepresentable {
             replayDeferredRender = replay
         }
 
+        /// A dismantled/replaced view must never replay its captured update.
+        func cancelDeferredRender() {
+            pendingMarkdown = nil
+            replayDeferredRender = nil
+        }
+
         private var foregroundObserver: NSObjectProtocol?
         private var resignActiveObserver: NSObjectProtocol?
         /// Wall-clock timestamp of the most recent `willResignActive` we
@@ -11510,6 +11540,8 @@ struct SelectableMarkdownView: UIViewRepresentable {
                 queue: .main
             ) { [weak self] _ in
                 self?.inactiveEnteredAt = Date()
+                // Settle visible words before display-link delivery can pause.
+                self?.fadeAnimator.cancelAll()
             }
         }
 

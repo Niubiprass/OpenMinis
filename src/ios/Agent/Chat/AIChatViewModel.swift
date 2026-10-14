@@ -249,6 +249,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     private var captureSuppressCancellable: AnyCancellable?
     private var mediaPreemptCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
+    /// Refresh legacy chat-menu bindings when Settings / CLI changes the global opt-in.
+    private var autoCompactionDefaultsCancellable: AnyCancellable?
     /// Observer for font-size changes to invalidate cached attributed strings.
     private var fontChangeObserver: Any?
     /// Observer for iCloud sync changes to reload messages.
@@ -283,6 +285,13 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
     init() {
         logger.info("🔄SESSION [vm=\(self.vmInstanceId)] init — new AIChatViewModel created")
+
+        autoCompactionDefaultsCancellable = NotificationCenter.default
+            .publisher(for: UserDefaults.didChangeNotification, object: UserDefaults.standard)
+            .map { _ in AutoCompactionPreferences().enabled }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
 
         fontChangeObserver = NotificationCenter.default.addObserver(
             forName: .fontSettingsMessageBaseChanged, object: nil, queue: .main
@@ -1235,10 +1244,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// from the confirm dialog's "Compact & Enable Auto-Compact" button or
     /// the "..." menu's Auto Compact toggle; persisted in UserDefaults so
     /// future conversations inherit it.
-    @Published var autoCompactEnabled: Bool = UserDefaults.standard.bool(forKey: "autoCompactOnThreshold") {
-        didSet {
-            guard autoCompactEnabled != oldValue else { return }
-            UserDefaults.standard.set(autoCompactEnabled, forKey: "autoCompactOnThreshold")
+    var autoCompactEnabled: Bool {
+        get { AutoCompactionPreferences().enabled }
+        set {
+            guard newValue != autoCompactEnabled else { return }
+            objectWillChange.send()
+            AutoCompactionPreferences().enabled = newValue
         }
     }
     /// When true, shows a prompt telling user to start a new session or clear chat.
@@ -2905,6 +2916,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         } else {
             switch checkContextBeforeSend() {
             case .ok:
+                // Soft budget work belongs to the bounded agent loop, where
+                // the new user's persisted raw ID protects the current turn.
                 break
             case .needsCompact:
                 if sessionSource == "shortcut" || autoCompactEnabled {
@@ -6125,6 +6138,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // that keeps hitting the threshold can't compact forever; when the cap
         // is reached and we're still near capacity, the loop stops as exhausted.
         var compactionsThisLoop = 0
+        // Optional budget work must not spend the native safety allowance.
+        var budgetCompactionsThisLoop = 0
+        var budgetCompactionMadeNoProgress = false
+        let budgetProtectedRawId = agentHistory.last(where: { Self.isUserBubbleEntry($0) })?.dbMessageId
         // [T-ctx-measure-outbound] Set when an in-loop compaction left the
         // outbound request no smaller; cleared when a response arrives (new
         // content may make the next compaction worthwhile again).
@@ -6365,26 +6382,39 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // it) — but the overall maxAgentTurns ceiling is NEVER reset by a
             // compaction, or a loop that keeps compacting could run forever and
             // defeat the runaway backstop.
-            switch checkContextBeforeSend(site: "in-loop") {
+            let safetyVerdict = checkContextBeforeSend(site: "in-loop")
+            let budgetOnly = safetyVerdict == .ok && !budgetCompactionMadeNoProgress
+                && budgetCompactionsThisLoop < Self.maxInLoopCompactions && shouldCompactForBudget()
+            let budgetTarget = budgetOnly ? budgetCompactionTarget(before: budgetProtectedRawId) : nil
+            switch budgetOnly && budgetTarget != nil ? .needsCompact : safetyVerdict {
             case .ok:
                 break
             case .needsCompact:
-                let compactAnchorId = messages.last(where: {
+                let compactAnchorId = budgetOnly ? budgetTarget?.uiId : messages.last(where: {
                     $0.role != .compactDivider && $0.role != .systemInfo && !$0.isCompactedHistory
                 })?.id
                 // [T-ctx-measure-outbound] A compaction that did not shrink the
                 // outbound request is not retried: the loop used to spend its
                 // whole budget re-compacting when the SIZE it judged by was the
                 // thing that was wrong. Only real progress earns another pass.
-                if compactionsThisLoop < Self.maxInLoopCompactions,
-                   !lastInLoopCompactionMadeNoProgress,
+                if (budgetOnly || (compactionsThisLoop < Self.maxInLoopCompactions && !lastInLoopCompactionMadeNoProgress)),
                    let anchorId = compactAnchorId {
-                    compactionsThisLoop += 1
+                    if budgetOnly { budgetCompactionsThisLoop += 1 } else { compactionsThisLoop += 1 }
                     let sizeBefore = measureOutboundContextTokens()
-                    logger.info("[Context] In-loop near capacity — auto-compacting (\(compactionsThisLoop)/\(Self.maxInLoopCompactions)) turnCount=\(turnCount) measured=\(sizeBefore)")
-                    await compactBefore(anchorId, allowDuringProcessing: true)
+                    logger.info("[Context] In-loop near capacity — auto-compacting (\(compactionsThisLoop)/\(Self.maxInLoopCompactions)) turnCount=\(turnCount) measured=\(sizeBefore) budgetOnly=\(budgetOnly)")
+                    await compactBefore(anchorId, allowDuringProcessing: true, explicitRawAnchor: budgetOnly ? budgetTarget?.rawId : nil)
                     let sizeAfter = measureOutboundContextTokens()
-                    lastInLoopCompactionMadeNoProgress = sizeAfter >= sizeBefore
+                    if budgetOnly {
+                        budgetCompactionMadeNoProgress = sizeAfter >= sizeBefore
+                        logger.info("[Context] Soft budget compact: measured \(sizeBefore) → \(sizeAfter), noProgress=\(budgetCompactionMadeNoProgress)")
+                        // Always re-check the REAL window after await, even if
+                        // the summary grew or the active model changed. The raw
+                        // anchor precedes this turn, so do not seal its bubble.
+                        turnCount -= 1
+                        continue
+                    } else {
+                        lastInLoopCompactionMadeNoProgress = sizeAfter >= sizeBefore
+                    }
                     logger.info("[Context] In-loop compact result: measured \(sizeBefore) → \(sizeAfter)\(lastInLoopCompactionMadeNoProgress ? " (no progress — will not retry)" : "")")
 
                     // [T-ios-inloop-compact-divider-order] GH#235. Seal the

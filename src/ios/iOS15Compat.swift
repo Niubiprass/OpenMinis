@@ -373,6 +373,23 @@ private final class _V63Probe {
 
 private final class _HostingContentCellView<Content: View>: UIView, UIContentView {
     private var host: UIHostingController<AnyView>?
+    private var appliedHostWidth: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let host, let config = configuration as? UIHostingConfiguration<Content>,
+              bounds.width.isFinite, bounds.width > 1 else { return }
+        let width = resolvedHostingWidth(bounds.width)
+        guard abs(width - appliedHostWidth) > 0.5 else { return }
+        appliedHostWidth = width
+        host.rootView = AnyView(config.content.id(config.contentIdentity).frame(maxWidth: width, alignment: .leading))
+        ios15MonoH = 0
+        ios15MonoHW = 0
+        ios15LastGoodFitH = 0
+        host.view.invalidateIntrinsicContentSize()
+        invalidateIntrinsicContentSize()
+    }
+
     var configuration: UIContentConfiguration {
         didSet { apply(configuration) }
     }
@@ -416,7 +433,7 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     // 并 ceil 对齐像素。测量宽 == 渲染宽 → 高度不再错位。
     override func sizeThatFits(_ size: CGSize) -> CGSize {
         guard let host = host else { return super.sizeThatFits(size) }
-        let width = size.width > 0 ? size.width : (bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width)
+        let width = resolvedHostingWidth(size.width)
         let fitSize: CGSize
         if #available(iOS 16.0, *) {
             fitSize = host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
@@ -427,53 +444,42 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     }
 
     private var isMeasuring: Bool = false
-    // [V63-CFG] apply 世代号(见 apply 入口) 与 host 身份戳。
-    private var _ios15ApplyGen: UInt = 0
-    private var _v63ConfigGen: UInt = 0
-    // [V63-PROBE] 装机探针: 快速路径/重建路径各计一次, 每 0.5s 打一行。
-    // ★为什么必须有: v53/v62 都没带探针, 于是「零输出」这个一眼可辨的
-    // 信号被连续两版忽略 —— 判据全绿而代码从未在真机执行。
-    // ★计数器在 _V63Probe(非泛型) 上, 不在本格里 —— 泛型类型禁 static 存储属性。
-    private func _v63ProbeIncr() {
-        if _v63ConfigGen == _ios15ApplyGen { _V63Probe.hitFast() }
-        else { _V63Probe.hitRebuild() }
-    }
+    // [V64R-HOST] Content identity is independent of update count. The old
+    // increment-then-compare generation check could never take the fast path.
+    private var hostedContentIdentity: AnyHashable?
     private var lastLoggedWidth: CGFloat = -1
     private var ios15LastGoodFitH: CGFloat = 0
     // [V61-MONO] 高度单调锁状态: (历史最高, 绑定宽度)。宽变即重置。
     private var ios15MonoH: CGFloat = 0
     private var ios15MonoHW: CGFloat = 0
 
-    private func ios15FittingSize(_ targetSize: CGSize) -> CGSize {
-        var width = targetSize.width
-        // ⚠️ 关键: 布局引擎问"压缩尺寸"时传的是 UIView.layoutFittingCompressedSize,
-        // 宽高都是 Double.greatestFiniteMagnitude (≈1.8e308)。它是**有限数**,
-        // 所以 `width.isInfinite` 拦不住 —— 之前直接把它当真实宽度交给 SwiftUI,
-        // 内容按无界宽度排版: 长文本不换行、按自然宽度居中渲染 → 左右被裁;
-        // 同时 TextKit 在这个荒谬宽度下抛 NSException → 自排版永远退回估算
-        // 高度 → 单元格之间大片黑块（日志实测 1977 次全部 threw）。
-        // 这里把"未指定/哨兵"宽度替换成集合视图的真实宽度。
-        var probe: UIView? = superview
-        var cvW: CGFloat = 0
-        while let v = probe {
-            if let collection = v as? UICollectionView {
-                cvW = collection.bounds.width
+    // [V64R-WIDTH] Both UIKit fitting entry points measure the FULL cell.
+    // The SwiftUI assistant block consumes its own 16pt horizontal padding;
+    // subtracting another 32pt here measured a different line-wrap geometry.
+    private func resolvedHostingWidth(_ proposed: CGFloat) -> CGFloat {
+        var ancestor = superview
+        var collectionWidth: CGFloat?
+        while let view = ancestor {
+            if let collection = view as? UICollectionView,
+               collection.bounds.width.isFinite, collection.bounds.width > 1 {
+                collectionWidth = collection.bounds.width
                 break
             }
-            probe = v.superview
+            ancestor = view.superview
         }
-        if !(width > 0) || width.isInfinite || width >= 1_000_000 {
-            width = cvW > 0 ? cvW : (window?.bounds.width ?? UIScreen.main.bounds.width)
-        }
-        // [IOS15-FIX v17] 有限但超界的宽度同样要钳。SwiftUI 递归排版会把文本
-        // "理想宽" (494/895/1382) 传进来 —— 按 494 宽排出的高度被提交成 cell 高度
-        // (日志实证: 卡住的 252 = 按 494 宽排出; 渲染端 358 宽需要 ~300+ → 末行被
-        // 拦腰裁断 / 短消息上下大片空白)。钳到 cvW-32 (=358) 与渲染端 superview
-        // 修正宽度一致: 测量宽 == 渲染宽 → cell 高度吻合, 污染帧与拉锯闪烁同源消失。
-        let measCapW15 = cvW > 33 ? cvW - 32 : cvW
-        if measCapW15 > 1, width > measCapW15 {
-            width = measCapW15
-        }
+        // This layout allocates full-width cells. Its current width wins
+        // over a stale pre-rotation cell bounds/proposed fitting width.
+        if let collectionWidth { return collectionWidth }
+        let localWidth = bounds.width.isFinite && bounds.width > 1 ? bounds.width : nil
+        let windowWidth = window?.bounds.width
+        let fallback = collectionWidth ?? localWidth
+            ?? ((windowWidth?.isFinite == true && (windowWidth ?? 0) > 1) ? windowWidth! : UIScreen.main.bounds.width)
+        guard proposed.isFinite, proposed > 1, proposed < 1_000_000 else { return fallback }
+        return collectionWidth.map { min(proposed, $0) } ?? proposed
+    }
+
+    private func ios15FittingSize(_ targetSize: CGSize) -> CGSize {
+        let width = resolvedHostingWidth(targetSize.width)
         let probeCvW = (superview?.superview as? UICollectionView)?.bounds.width ?? -1
         print("[IOS15Size] in targetW=\(targetSize.width) w=\(width) cellW=\(bounds.width) cvW=\(probeCvW) hostNil=\(host == nil)")
         guard let host = host, !isMeasuring else {
@@ -512,31 +518,25 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     }
 
     private func apply(_ config: UIContentConfiguration) {
-        // [V63-CFG] 每次 apply 自增世代号。fast path 的判等条件
-        // `_v63ConfigGen == _ios15ApplyGen` 意为"host 就是上一次 apply
-        // 建/刷的那个"; 一旦中间走过重建, 世代号就变了 ⇒ 下次走重建,
-        // 不会拿已经属于别的消息的 host 去就地刷 rootView。
-        _ios15ApplyGen &+= 1
-        // [V61-REUSE] 就地更新快速路径(zhaoxiufei HostingContentView 同款):
-        // 同类 config 且已有 host 时只刷 rootView, 不再全删重建 ——
-        // 流式输出每 tick 走这里, SwiftUI 就地 diff, 测量状态连续。
-        // 旧实现每 tick 重建 UIHostingController(每秒 N 次) = 高度抖动
-        // 与整屏跳动的放大器(2026-10-05 5.log 实证 333↔490 漂移)。
-        if let existing = host, let newConfig = config as? UIHostingConfiguration<Content>, _v63ConfigGen == _ios15ApplyGen {
-            let _ios15ContentMaxW2 = max(UIScreen.main.bounds.width, 200)  // [V61-REUSE] 与重建路径同款上限
-            existing.rootView = AnyView(newConfig.content.frame(maxWidth: _ios15ContentMaxW2, alignment: .leading))
-            // [V63-UPDATE] iOS 15 没有 sizingOptions(iOS 16 才有), 所以
-            // rootView 换完之后**必须**显式 invalidateIntrinsicContentSize(),
-            // 否则 UIKit 收不到"内容变了"的信号 —— 高度锁死在上一次的值,
-            // 流式输出表现为「一下跳出一大段」而不是逐行流动。
-            // 依据: Mozilla Firefox iOS HostingTableViewCell.host() 每次
-            // rootView 赋值后都跟这一行; vbat.dev 与 StackOverflow 77027194
-            // 同结论(后者明确说 setNeedsLayout/layoutIfNeeded 都无效)。
+        // [V64R-HOST] Message/block identity, NOT an update generation, owns
+        // the graph. Only the same item may retain SwiftUI state across tokens.
+        if let existing = host, let newConfig = config as? UIHostingConfiguration<Content>,
+           let identity = newConfig.contentIdentity, identity == hostedContentIdentity {
+            _V63Probe.hitFast()
+            let contentMaxWidth = resolvedHostingWidth(bounds.width)
+            appliedHostWidth = contentMaxWidth
+            existing.rootView = AnyView(newConfig.content.id(newConfig.contentIdentity).frame(maxWidth: contentMaxWidth, alignment: .leading))
+            ios15MonoH = 0
+            ios15MonoHW = 0
+            ios15LastGoodFitH = 0
             existing.view.invalidateIntrinsicContentSize()
-            // [V63-PROBE] 每 0.5s 汇总一行: 装机若为 0 ⇒ 这段快速路径没被执行。
-            _v63ProbeIncr()
+            invalidateIntrinsicContentSize()
+            existing.view.setNeedsLayout()
+            setNeedsLayout()
             return
         }
+        _V63Probe.hitRebuild()
+        hostedContentIdentity = nil
         subviews.forEach { $0.removeFromSuperview() }
         host = nil
         guard let config = config as? UIHostingConfiguration<Content> else { return }
@@ -547,8 +547,10 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         // = 拉锯闪字, 布局高度随之错乱 = 上下空白 / 输出衔接不上。
         // 设 maxWidth 后内容理想宽被压到可用宽, 污染帧从根本上不再产生。
         // maxWidth 只是上限: 内容更窄时按内容宽排布, 右对齐的用户气泡不受影响。
-        let _ios15ContentMaxW = max(UIScreen.main.bounds.width, 200)  // [V35-FULLWIDTH] 全屏宽, 不再 -32
-        let controller = UIHostingController(rootView: AnyView(config.content.frame(maxWidth: _ios15ContentMaxW, alignment: .leading)))
+        let _ios15ContentMaxW = resolvedHostingWidth(bounds.width)
+        appliedHostWidth = _ios15ContentMaxW
+        let identity = config.contentIdentity
+        let controller = UIHostingController(rootView: AnyView(config.content.id(identity).frame(maxWidth: _ios15ContentMaxW, alignment: .leading)))
         controller.view.backgroundColor = .clear
         controller.view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(controller.view)
@@ -573,11 +575,9 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         // [V61-MONO] 走到重建路径 = 内容标识换了(新消息/复用), 锁重置。
         ios15MonoH = 0
         ios15MonoHW = 0
-        // [V63-CFG] 重建即换身份: 记下本次 apply 的世代号, 让下一次 apply
-        // 能判出"host 还是上次的那个"而不是无脑就地刷。
-        _v63ConfigGen = _ios15ApplyGen
-        // [V63-PROBE] 重建路径计数(与快速路径分开统计, 便于装机分辨走哪条)。
-        _v63ProbeIncr()
+        // Never carry a previous item's geometry into this new graph.
+        ios15LastGoodFitH = 0
+        hostedContentIdentity = identity
     }
 }
 
@@ -585,22 +585,32 @@ public struct UIHostingConfiguration<Content: View>: UIContentConfiguration {
     public let content: Content
     private let _minWidth: CGFloat?
     private let _minHeight: CGFloat?
+    fileprivate var contentIdentity: AnyHashable?
 
     public init(@ViewBuilder content: () -> Content) {
         self.content = content()
         self._minWidth = nil
         self._minHeight = nil
+        self.contentIdentity = nil
     }
 
-    private init(content: Content, minWidth: CGFloat?, minHeight: CGFloat?) {
+    private init(content: Content, minWidth: CGFloat?, minHeight: CGFloat?, contentIdentity: AnyHashable?) {
         self.content = content
         self._minWidth = minWidth
         self._minHeight = minHeight
+        self.contentIdentity = contentIdentity
+    }
+
+    // Identity must include the message and block, not its changing text hash.
+    public func ios15ContentIdentity<ID: Hashable>(_ identity: ID) -> UIHostingConfiguration<Content> {
+        var result = self
+        result.contentIdentity = AnyHashable(identity)
+        return result
     }
 
     public func minSize(width: CGFloat? = nil, height: CGFloat? = nil)
     -> UIHostingConfiguration<Content> {
-        UIHostingConfiguration(content: content, minWidth: width, minHeight: height)
+        UIHostingConfiguration(content: content, minWidth: width, minHeight: height, contentIdentity: contentIdentity)
     }
 
     public func margins(_ edges: Edge.Set = .all, _ length: CGFloat? = nil)

@@ -1,6 +1,262 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Token Budget": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Token Budget"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Token 预算"
+          }
+        }
+      }
+    },
+    "Save Budget": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save Budget"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存预算"
+          }
+        }
+      }
+    },
+    "Automatically summarize older context at 85% of the effective budget. A lower model or model-group limit takes priority.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatically summarize older context at 85% of the effective budget. A lower model or model-group limit takes priority."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "达到有效预算的 85% 时，自动摘要较早的上下文。若模型或模型组上限更低，以较低值为准。"
+          }
+        }
+      }
+    },
+    "Compression trigger at this budget: %@ tokens": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compression trigger at this budget: %@ tokens"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此预算的压缩触发线：%@ Token"
+          }
+        }
+      }
+    },
+    "This is a soft target, not a larger model window. Turning it off keeps the original model-window protection.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This is a soft target, not a larger model window. Turning it off keeps the original model-window protection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这是软预算，不会扩大模型窗口。关闭后仍保留原有的模型窗口保护。"
+          }
+        }
+      }
+    },
+    "Summaries may omit details. Original chat history is retained; the current turn and tool-call pairs are protected.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Summaries may omit details. Original chat history is retained; the current turn and tool-call pairs are protected."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "摘要可能丢失细节；原始聊天记录仍会保留，并保护当前回合及工具调用配对。"
+          }
+        }
+      }
+    },
+    "Enter a whole token count from 1,024 to 100,000,000. Leave empty to use 256,000.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a whole token count from 1,024 to 100,000,000. Leave empty to use 256,000."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请输入 1,024 至 100,000,000 之间的整数；留空使用默认的 256,000。"
+          }
+        }
+      }
+    },
+    "Trigger at about %@ tokens (85%%).": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trigger at about %@ tokens (85%%)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约在 %@ Token 时触发压缩（85%%）。"
+          }
+        }
+      }
+    },
+    "Auto Context Compression": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto Context Compression"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动压缩上下文"
+          }
+        }
+      }
+    },
+    "Automatically compress context": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatically compress context"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动压缩上下文"
+          }
+        }
+      }
+    },
+    "Token budget": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Token budget"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Token 预算"
+          }
+        }
+      }
+    },
+    "Apply Budget": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apply Budget"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用预算"
+          }
+        }
+      }
+    },
+    "Enter 1,024 to 5,000,000 tokens. Leave empty to use 256,000.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter 1,024 to 5,000,000 tokens. Leave empty to use 256,000."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请输入 1,024 至 5,000,000 之间的整数；留空使用默认的 256,000。"
+          }
+        }
+      }
+    },
+    "Compression starts at approximately %lld tokens (85%%).": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compression starts at approximately %lld tokens (85%%)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约在 %lld Token 时触发压缩（85%%）。"
+          }
+        }
+      }
+    },
+    "The lower model or model-group context limit takes priority. This soft budget cannot enlarge a model window.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The lower model or model-group context limit takes priority. This soft budget cannot enlarge a model window."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "若模型或模型组上限更低，以较低值为准。此软预算不会扩大模型的上下文窗口。"
+          }
+        }
+      }
+    },
+    "Turning this off keeps the original context-window protection. Summaries may lose details; original chat records are retained.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turning this off keeps the original context-window protection. Summaries may lose details; original chat records are retained."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭后仍保留原有的上下文窗口保护。摘要可能丢失细节，但原始聊天记录会保留。"
+          }
+        }
+      }
+    },
     "" : {
 
     },

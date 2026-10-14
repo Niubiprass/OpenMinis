@@ -55,6 +55,43 @@ extension AIChatViewModel {
         return result
     }
 
+    /// Only completed, persisted history STRICTLY before this run's first real
+    /// user input is eligible. Tool-result user rows are never turn boundaries.
+    func budgetCompactionTarget(before protectedRawId: String?) -> (uiId: UUID, rawId: String)? {
+        guard let protectedRawId,
+              let start = agentHistory.firstIndex(where: { $0.dbMessageId == protectedRawId }),
+              start > 0, let rawId = agentHistory[start - 1].dbMessageId else { return nil }
+        let prefix = agentHistory[..<start]
+        var pending = Set<String>()
+        for message in prefix {
+            for part in message.parts {
+                switch part {
+                case .toolUse(let id, _, _, _): pending.insert(Self.pairingKey(id))
+                case .toolResult(let id, _, _, _, _, _, _, _, _): pending.remove(Self.pairingKey(id))
+                default: break
+                }
+            }
+        }
+        guard pending.isEmpty else { return nil }
+        // The UI UUID is only a display fallback; rawId is the authoritative
+        // inclusive boundary. Never let compactBefore fall back to history.last.
+        guard let userUI = messages.lastIndex(where: { $0.role == .user && !$0.isQueued }),
+              let target = messages[..<userUI].last(where: {
+                  $0.role != .compactDivider && $0.role != .systemInfo && !$0.isCompactedHistory
+              }) else { return nil }
+        return (target.id, rawId)
+    }
+
+    /// Budget checks are additive and never change the safety verdict above.
+    /// A soft target that cannot be reached must not become Context Full.
+    func shouldCompactForBudget() -> Bool {
+        let budget = AutoCompactionPreferences().budget
+        guard budget.enabled, let entry = resolveCurrentEntry() else { return false }
+        ensureContextFixedTokens()
+        return budget.isReached(measured: measureOutboundContextTokens(),
+                                window: resolvedContextWindow(for: entry.model).window)
+    }
+
     // MARK: - Outbound context measurement [T-ctx-measure-outbound]
 
     /// The model the next request is judged for — the same resolution the send
@@ -241,6 +278,8 @@ extension AIChatViewModel {
         let resolved = resolvedContextWindow(for: entry.model)
         guard resolved.window > 0, contextFixedTokens > 0 else { return (warmUp, false) }
         let policy = ContextPolicy(contextWindow: resolved.window, isUserCap: resolved.isUserCap)
+        // Warm-up retention stays fixed per marker, independent of mutable
+        // soft preferences. The agent-loop budget gate handles proactive work.
         let line = policy.compactThreshold > 0 ? policy.compactThreshold : resolved.window
         let budget = Int(Double(line) / contextCalibrationRatio(for: entry.model.id)) - contextFixedTokens
         let restTokens = ContextSizeMeter.estimateTokens(rest) + ContextSizeMeter.estimateTokens(summaryText)
@@ -817,7 +856,7 @@ extension AIChatViewModel {
     ///   effectiveAgentHistory() on its next API call — so no special resume
     ///   handoff is needed.
     func compactBefore(_ chatMessageId: UUID, includesBoundary: Bool = false,
-                        allowDuringProcessing: Bool = false) async {
+                        allowDuringProcessing: Bool = false, explicitRawAnchor: String? = nil) async {
         guard allowDuringProcessing || !isProcessing else {
             logger.info("[Compact] Cannot compact while processing")
             appendSystemInfo("Cannot compact while processing.", icon: "arrow.down.right.and.arrow.up.left")
@@ -866,8 +905,12 @@ extension AIChatViewModel {
         // size the compacted range.
         let allRaw = await ChatStore.shared.loadMessages(sessionId: sessionId)
         var firstKeptMessageId: String? = nil
-        if let bso = boundaryUIMsg.sourceSortOrder,
-           let rawMsg = allRaw.first(where: { $0.sortOrder == bso }) {
+        if let explicitRawAnchor {
+            guard allRaw.contains(where: { $0.id == explicitRawAnchor }),
+                  agentHistory.contains(where: { $0.dbMessageId == explicitRawAnchor }) else { return }
+            firstKeptMessageId = explicitRawAnchor
+        } else if let bso = boundaryUIMsg.sourceSortOrder,
+                  let rawMsg = allRaw.first(where: { $0.sortOrder == bso }) {
             firstKeptMessageId = rawMsg.id
         }
 

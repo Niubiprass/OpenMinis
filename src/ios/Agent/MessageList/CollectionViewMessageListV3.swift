@@ -1389,7 +1389,7 @@ extension CollectionViewMessageListV3 {
                     // [T-ios-tool-capsule-vm-envobject-crash]
                     .environmentObject(vm)
                 }.minSize(width: 0, height: 0).margins(.all, 0)
-                cell.applyContentConfiguration(config)
+                cell.applyContentConfiguration(config.ios15ContentIdentity(item))
 
             case .assistantHeader(let msgId):
                 guard let msgIdx = messageIndex[msgId], msgIdx < messages.count else { return }
@@ -1401,7 +1401,7 @@ extension CollectionViewMessageListV3 {
                         .transaction { $0.disablesAnimations = true }
                         .environmentObject(vm)
                 }.minSize(width: 0, height: 0).margins(.all, 0)
-                cell.applyContentConfiguration(config)
+                cell.applyContentConfiguration(config.ios15ContentIdentity(item))
 
             case .assistantBlock(let msgId, let blockId):
                 guard let msgIdx = messageIndex[msgId], msgIdx < messages.count else {
@@ -1425,7 +1425,7 @@ extension CollectionViewMessageListV3 {
                     .transaction { $0.disablesAnimations = true }
                     .environmentObject(vm)
                 }.minSize(width: 0, height: 0).margins(.all, 0)
-                cell.applyContentConfiguration(config)
+                cell.applyContentConfiguration(config.ios15ContentIdentity(item))
 
             case .assistantFooter(let msgId):
                 guard let msgIdx = messageIndex[msgId], msgIdx < messages.count else { return }
@@ -1441,7 +1441,7 @@ extension CollectionViewMessageListV3 {
                     .transaction { $0.disablesAnimations = true }
                     .environmentObject(vm)
                 }.minSize(width: 0, height: 0).margins(.all, 0)
-                cell.applyContentConfiguration(config)
+                cell.applyContentConfiguration(config.ios15ContentIdentity(item))
             }
 
             // [T-ios-scroll-decel-height-drift] Seed this cell with the real

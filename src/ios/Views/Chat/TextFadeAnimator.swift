@@ -167,9 +167,9 @@ final class TextFadeAnimator {
     func cancelAll() {
         stopDisplayLink()
         // Snap any partially-faded words to their final color so nothing is
-        // left stuck translucent. Only safe while `storage` still holds the
-        // ranges we recorded; on a full replace the caller has already swapped
-        // storage, in which case the ranges are stale and we simply drop them.
+        // left stuck translucent. The owner MUST call this BEFORE replacing
+        // storage contents or scheduling the next generation: a bounds check
+        // cannot detect stale ranges that still fit inside the new text.
         if let storage, !words.isEmpty {
             let len = storage.length
             storage.beginEditing()

@@ -652,22 +652,12 @@ final class MessageListLayout: UICollectionViewLayout {
             // 一起跳过, 高度不落地 -> 内容被裁, 比原症状更糟。log11 里
             // `est` 恒等于上次 `pref`(29→159→303→408→518→612→742) 证明
             // 每次 invalidate 都被采纳, 拦它等于拦高度本身。
-            if abs(delta) > 100 {
-                let _v43Now = CACurrentMediaTime()
-                let _v43Prev = Self.v43BurstAt[index] ?? 0
-                if _v43Prev > 0, _v43Now - _v43Prev < 0.25 {
-                    // 窗口内: 只重排**这个 cell**, 不动全表。上面的 heightCache
-                    // 已经写好, 下一次真正的全表 prepare() 会用上正确高度。
-                    AppLogger(category: "CellSizing").info("[V43-BURST] idx=\(index) delta=\(String(format: "%.0f", delta)) full-reflow suppressed — 距上次全表重排 \(String(format: "%.3f", _v43Now - _v43Prev))s < 0.25s")
-                    return ctx
-                }
-                Self.v43BurstAt[index] = _v43Now
-                // 陈旧条目清理: 长会话里 idx 会累积到几百个, 不清会一直涨。
-                if Self.v43BurstAt.count > 64 {
-                    let _v43Cut = _v43Now - 2.0
-                    Self.v43BurstAt = Self.v43BurstAt.filter { $0.value > _v43Cut }
-                }
-            }
+            // [V64R-REFLOW] Keep rate limiting, but never drop the last
+            // correction. One pending callback reads the latest heightCache,
+            // even if no new token or scroll event ever arrives afterward.
+            let now = CACurrentMediaTime()
+            let reflowDelay: CFTimeInterval = abs(delta) > 100 && lastFooterReflowAt > 0
+                ? max(0, 0.25 - (now - lastFooterReflowAt)) : 0
             pendingFooterReflow = true
             // [T-ios-steadystate-reflow-gap] Rate evidence: a full prepare() is
             // O(items), so if this fired per correction during a fast scroll it
@@ -682,9 +672,10 @@ final class MessageListLayout: UICollectionViewLayout {
                 Self.reflowCount = 0
                 Self.reflowLastFlush = nowR
             }
-            DispatchQueue.main.async { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + reflowDelay) { [weak self] in
                 guard let self else { return }
                 self.pendingFooterReflow = false
+                self.lastFooterReflowAt = CACurrentMediaTime()
                 self.invalidateLayout()
             }
         }
@@ -700,8 +691,8 @@ final class MessageListLayout: UICollectionViewLayout {
     /// holds once the re-flow is no longer restricted to the first settle.
     private static var reflowCount = 0
     private static var reflowLastFlush: CFTimeInterval = 0
-    // [V43-BURST] 每 idx 最近一次**全表重排**被放行的时刻(节流窗口基准)。
-    private static var v43BurstAt: [Int: CFTimeInterval] = [:]
+    // Instance-local: different sessions/layouts never throttle each other.
+    private var lastFooterReflowAt: CFTimeInterval = 0
 
     /// [T-ios-plaf-streaming-graph-reentry] True while any streaming cell
     /// range is active. Locked snapshot (same lock as streamingCellRanges) so

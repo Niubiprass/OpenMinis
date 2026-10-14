@@ -8205,6 +8205,11 @@ private struct SettingsSheet: View {
                         }
                     }
                     NavigationLink {
+                        AutoContextCompactionSettingsView()
+                    } label: {
+                        Label("Auto Context Compression", systemImage: "text.badge.minus")
+                    }
+                    NavigationLink {
                         EnvironmentVariablesView()
                     } label: {
                         Label {
@@ -8762,4 +8767,50 @@ func nnsTakePending() -> String? {
 var nnsHandledRecently: Bool {
     if #available(iOS 16.0, *) { return NotificationNavigationStore.shared.handledRecently }
     return false
+}
+
+// V64R: global soft-budget settings; original hard-window safety stays intact.
+private struct AutoContextCompactionSettingsView: View {
+    @AppStorage(AutoCompactionPreferences.enabledKey) private var enabled = false
+    @State private var budgetText = String(AutoCompactionPreferences().budgetTokens)
+    @State private var saved = false
+    private var parsedBudget: Int? {
+        let text = budgetText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return AutoCompactionBudget.defaultTokens }
+        return AutoCompactionBudget.parse(text)
+    }
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Auto Context Compression", isOn: $enabled)
+            } footer: {
+                Text("Automatically summarize older context at 85% of the effective budget. A lower model or model-group limit takes priority.")
+            }
+            Section {
+                TextField("Token Budget", text: $budgetText)
+                    .keyboardType(.numberPad)
+                    .onChange(of: budgetText) { _ in saved = false }
+                Button("Save Budget") {
+                    guard let value = parsedBudget else { return }
+                    var preferences = AutoCompactionPreferences()
+                    preferences.budgetTokens = value
+                    budgetText = String(preferences.budgetTokens)
+                    saved = true
+                }.disabled(parsedBudget == nil)
+                if saved { Label("Saved", systemImage: "checkmark.circle") }
+            } header: { Text("Token Budget") }
+            Section {
+                if let value = parsedBudget {
+                    Text(String(format: AppLocalized.format("Compression trigger at this budget: %@ tokens"), String(Int(Double(value) * 0.85))))
+                } else {
+                    Text("Enter a whole token count from 1,024 to 100,000,000. Leave empty to use 256,000.")
+                        .foregroundColor(.red)
+                }
+                Text("This is a soft target, not a larger model window. Turning it off keeps the original model-window protection.")
+                Text("Summaries may omit details. Original chat history is retained; the current turn and tool-call pairs are protected.")
+            }
+        }
+        .navigationTitle("Auto Context Compression")
+        .navigationBarTitleDisplayMode(.inline)
+    }
 }

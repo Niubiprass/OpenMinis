@@ -159,6 +159,85 @@ struct ContextPolicy {
     }
 }
 
+// MARK: - Optional global soft budget
+
+/// A proactive target, NEVER a replacement for the model/group's real window.
+/// Invalid persisted/UI values restore the default rather than becoming a zero
+/// window. Keep this Foundation-only so the production policy is testable.
+struct AutoCompactionBudget {
+    static let defaultTokens = 256_000
+    static let minimumTokens = 1_024
+    static let maximumTokens = 100_000_000
+
+    let enabled: Bool
+    let tokens: Int
+
+    init(enabled: Bool, tokens: Int = defaultTokens) {
+        self.enabled = enabled
+        self.tokens = Self.normalized(tokens)
+    }
+
+    static func normalized(_ tokens: Int) -> Int {
+        (minimumTokens...maximumTokens).contains(tokens) ? tokens : defaultTokens
+    }
+
+    /// Strict, bounded decimal parsing: no signs, exponents, fractional values,
+    /// bool coercion, or overflowing Int conversions. Empty means default.
+    static func parse(_ text: String) -> Int? {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.utf8.count <= 9,
+              text.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+              let value = Int(text), (minimumTokens...maximumTokens).contains(value) else { return nil }
+        return value
+    }
+
+    func effectiveTokens(window: Int) -> Int {
+        window > 0 ? min(tokens, window) : tokens
+    }
+
+    func threshold(window: Int) -> Int {
+        let effective = effectiveTokens(window: window)
+        // Quotient/remainder avoids overflow, even if a future caller allows
+        // Int.max. A tiny model window must not turn the threshold into zero.
+        return max(1, (effective / 100) * 85 + ((effective % 100) * 85) / 100)
+    }
+
+    func isReached(measured: Int, window: Int) -> Bool {
+        enabled && measured >= threshold(window: window)
+    }
+}
+
+/// The existing opt-in key stays authoritative. No provider JSON / SQLite
+/// migration: older files simply lack the new optional UserDefaults budget.
+/// Read on EVERY decision, including already-open sessions and CLI changes.
+struct AutoCompactionPreferences {
+    static let enabledKey = "autoCompactOnThreshold"
+    static let budgetKey = "context.autoCompact.budgetTokens"
+    let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    var enabled: Bool {
+        get { (defaults.object(forKey: Self.enabledKey) as? Bool) ?? false }
+        nonmutating set { defaults.set(newValue, forKey: Self.enabledKey) }
+    }
+
+    var budgetTokens: Int {
+        get {
+            let object = defaults.object(forKey: Self.budgetKey)
+            if let number = object as? NSNumber {
+                // Bool bridges to NSNumber too; it is not a token budget.
+                guard String(cString: number.objCType) != "c" else { return AutoCompactionBudget.defaultTokens }
+                return AutoCompactionBudget.parse(number.stringValue) ?? AutoCompactionBudget.defaultTokens
+            }
+            return (object as? String).flatMap(AutoCompactionBudget.parse) ?? AutoCompactionBudget.defaultTokens
+        }
+        nonmutating set { defaults.set(AutoCompactionBudget.normalized(newValue), forKey: Self.budgetKey) }
+    }
+
+    var budget: AutoCompactionBudget { .init(enabled: enabled, tokens: budgetTokens) }
+}
+
 // MARK: - Outbound context measurement [T-ctx-measure-outbound]
 
 /// Sizes the request that is ABOUT to be sent, so every capacity decision
