@@ -8801,7 +8801,7 @@ private struct AutoContextCompactionSettingsView: View {
             } header: { Text("Token Budget") }
             Section {
                 if let value = parsedBudget {
-                    Text(String(format: AppLocalized.format("Compression trigger at this budget: %@ tokens"), String(Int(Double(value) * 0.85))))
+                    Text(String(format: AppLocalized("Compression trigger at this budget: %@ tokens"), String(Int(Double(value) * 0.85))))
                 } else {
                     Text("Enter a whole token count from 1,024 to 100,000,000. Leave empty to use 256,000.")
                         .foregroundColor(.red)
