@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ios15-v64-repair]
-    paths: ['src/ios/**', 'scripts/test_v64r_*.py', 'deps/build_rclone_ios.sh', '.github/workflows/ios15-v64-repair.yml']
+    paths: ['src/ios/**', 'scripts/test_v64r_*.py', 'scripts/v64r_package.py', 'deps/build_rclone_ios.sh', '.github/workflows/ios15-v64-repair.yml']
 
 permissions:
   contents: read
