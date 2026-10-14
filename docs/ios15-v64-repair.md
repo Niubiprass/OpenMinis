@@ -13,7 +13,8 @@ This branch starts from `f017c76cae19053a86236112544c4185c9e94783`, the ported a
 - Compare attributed-text prefixes across the union of old and new run boundaries; do not miss a color/font/transparent segment inside a longer new run. Keep original-font fallback reconciliation without discarding genuine style differences.
 - Add Settings → Auto Context Compression using the existing global opt-in preference, so legacy chat-menu toggles and Settings share one value. Default soft budget: 256,000; trigger: 85% (217,600). A lower model/group window takes priority. The budget never enlarges a real model window; disabling it retains existing window protection.
 - Proactive budget compaction uses an explicit persisted raw-history boundary strictly before the current run's first user input, rejects unfinished tool pairs, and retains original database messages. It is bounded and rechecks actual window safety after every awaited compaction, including no-progress/growing summaries.
-- Package for minimum iOS 15.5 with source App Group entitlements only. No new elevated privileges, device installation, logout, or restart is performed. App build number: 160641.
+- Package the main app for minimum iOS 15.5 with source App Group entitlements only. No new elevated privileges, device installation, logout, or restart is performed. App build number: 160641.
+- **Known baseline exception, not a compatibility fix:** The original #160 iOS 15.5 IPA already embeds `RealTimeCutVADCXXLibrary.framework` with Mach-O and framework plist minimum OS 15.6. The unmodified vendor binary remains at 15.6; the package checker accepts only this exact path, bundle ID and minOS while strictly enforcing <= 15.5 for all other Mach-O images. This does not prove VAD loads or voice input works on iOS 15.5. No version fields are rewritten; restoring verified 15.5 compatibility requires an actual 15.5-targeted rebuild and device testing.
 
 ## Research references
 

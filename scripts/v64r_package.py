@@ -35,7 +35,19 @@ for p in app.rglob('*'):
     headers = run('xcrun', 'vtool', '-show-build', str(p))
     minimums = re.findall(r'^\s*minos\s+(\d+(?:\.\d+)+)', headers, re.M)
     assert minimums, f'No verifiable deployment version: {p}'
-    assert all(version(v) <= limit for v in minimums), f'Incompatible deployment: {p}: {minimums}'
+    relative = p.relative_to(app).as_posix()
+    # The exact prebuilt VAD framework was already embedded in the user's original
+    # 160v64 iOS 15.5 IPA (main executable minOS 15.5, VAD binary/plist minOS 15.6).
+    # Keep its honest 15.6 metadata; never relabel or silently waive other images.
+    legacy_vad = relative == 'Frameworks/RealTimeCutVADCXXLibrary.framework/RealTimeCutVADCXXLibrary'
+    if legacy_vad:
+        assert minimums == ['15.6'], f'Unexpected legacy VAD version: {minimums}'
+        vad_info = plistlib.loads((p.parent / 'Info.plist').read_bytes())
+        assert vad_info['CFBundleIdentifier'] == 'io.code-concept.RealTimeCutVADCXXLibrary'
+        assert vad_info['MinimumOSVersion'] == '15.6'
+        print('KNOWN BASELINE EXCEPTION: prebuilt VAD minOS 15.6; iOS 15.5 load/voice behavior unverified')
+    else:
+        assert all(version(v) <= limit for v in minimums), f'Incompatible deployment: {p}: {minimums}'
     links = run('otool', '-L', str(p))
     assert '_AppIntents_SwiftUI.framework' not in links, f'Unavailable framework: {p}'
     images.append(p)
@@ -68,4 +80,4 @@ metadata = plistlib.loads(ent)
 assert 'group.com.openminis.app' in metadata.get('com.apple.security.application-groups', [])
 for forbidden in ('com.apple.private.security.no-sandbox', 'platform-application', 'com.apple.private.skip-library-validation'):
     assert forbidden not in metadata, forbidden
-print(f'Verified {len(images)} Mach-O images, minOS <= 15.5, source App Group and signatures.')
+print(f'Verified {len(images)} Mach-O images: all except baseline VAD minOS <= 15.5; original VAD minOS 15.6 remains unverified on iOS 15.5; source App Group and signatures verified.')
