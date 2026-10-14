@@ -81,7 +81,7 @@ jobs:
             -derivedDataPath DerivedData -clonedSourcePackagesDirPath SPMCache \
             -parallelizeTargets -jobs 4 CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
-            IPHONEOS_DEPLOYMENT_TARGET=15.5 CURRENT_PROJECT_VERSION=160641 \
+            CURRENT_PROJECT_VERSION=160641 \
             SWIFT_OPTIMIZATION_LEVEL=-Osize build 2>&1 | tee build-v64r.log
       - name: Package without adding elevated entitlements
         run: |
