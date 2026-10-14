@@ -153,6 +153,20 @@ final class MessageListLayout: UICollectionViewLayout {
     /// knows the item index) write the measured height back under the stable
     /// content key.
     private var contentKeyByIndex: [Int: String] = [:]
+    // SwiftUI hosting measurements for non-Markdown blocks can be genuine
+    // state-driven height changes; the Markdown feedback guard must not
+    // mistake a tool card for a text view just because both keys start b:.
+    private var markdownTextKeyByIndex: [Int: String] = [:]
+
+    func markMarkdownText(_ isText: Bool, key: String, at index: Int) {
+        if isText { markdownTextKeyByIndex[index] = key }
+        else { markdownTextKeyByIndex.removeValue(forKey: index) }
+    }
+
+    func isMarkdownText(key: String?, at index: Int) -> Bool {
+        guard let key else { return false }
+        return markdownTextKeyByIndex[index] == key
+    }
 
     /// Computed layout attributes for all items.
     private var itemAttributes: [UICollectionViewLayoutAttributes] = []
@@ -474,24 +488,41 @@ final class MessageListLayout: UICollectionViewLayout {
                 Self.invLastFlush = now
             }
         }
-        // [V31-FLIPLOCK] 反振荡: 锁定到观测到的最大高度, 仅静止态(!defer)拦截向下翻回
-        // (SwiftUI 在 iOS15 欠测 → 把 cell 压到 945, TextKit 真值 1201, 两者拉锯跳动).
-        // 宁可短暂偏高是多高也不能裁字; 流式/滚动(deferSelfSizing)期间完全放行, 真实增长与
-        // 工具卡塌缩不被误杀. 长窗口(20s)容错: 真实塌缩会在窗口过期后落地.
-        if shouldInvalidate, !deferSelfSizing, heightCache[index] != nil, delta > 100 {
-            let _v31Max = Self.v31MaxH[index] ?? -1
-            if preferred < _v31Max - 100, CACurrentMediaTime() - (Self.v31MaxAt[index] ?? 0) < 20.0 {
-                AppLogger(category: "CellSizing").info("[CellSizing][V31-FLIPLOCK] idx=\(index) shrink-back blocked(oscillation) est=\(String(format: "%.0f", original))→pref=\(String(format: "%.0f", preferred)) max=\(String(format: "%.0f", _v31Max))")
-                return false
+        // [V64R] Only suppress a shrink after observing an actual DOWN→UP
+        // oscillation for this SAME stable Markdown row. The former lock set
+        // its high-water mark on any ordinary growth and rejected the FIRST
+        // legitimate shrink for 20 seconds (device: idx257 491→267, 224pt
+        // empty strip). Tool, thinking and footer rows legitimately collapse.
+        let key = contentKeyByIndex[index]
+        let isStableText = isMarkdownText(key: key, at: index)
+            && !isStreamingCell(index) && !deferSelfSizing
+        if shouldInvalidate, isStableText, heightCache[index] != nil,
+           delta > 100, let key {
+            let now = CACurrentMediaTime()
+            if preferred < original - 100 {
+                if let bounce = v31Bounce[index], bounce.key == key,
+                   abs(original - bounce.high) < 24, now - bounce.at < 2 {
+                    AppLogger(category: "CellSizing").info("[CellSizing][V31-FLIPLOCK] idx=\(index) real bounce confirmed; est=\(String(format: "%.0f", original))→pref=\(String(format: "%.0f", preferred))")
+                    return false
+                }
+                v31Shrink[index] = (key: key, high: original, low: preferred, at: now)
+                v31Bounce.removeValue(forKey: index)
+            } else if preferred > original + 100 {
+                if let down = v31Shrink[index], down.key == key,
+                   abs(original - down.low) < 24,
+                   preferred >= down.high - 24, now - down.at < 2 {
+                    v31Bounce[index] = (key: key, high: preferred, at: now)
+                } else {
+                    v31Bounce.removeValue(forKey: index)
+                }
+                v31Shrink.removeValue(forKey: index)
             }
-            Self.v31MaxH[index] = max(_v31Max, max(preferred, original))
-            Self.v31MaxAt[index] = CACurrentMediaTime()
         }
         return shouldInvalidate
     }
-    // [V31-FLIPLOCK] 状态: idx → 观测到的最大高度 / 最近一次接受时刻 (防裁字, 仅向下翻回拦截)
-    private static var v31MaxH: [Int: CGFloat] = [:]
-    private static var v31MaxAt: [Int: CFTimeInterval] = [:]
+    // Instance-owned: cache remaps/session changes must discard index state.
+    private var v31Shrink: [Int: (key: String, high: CGFloat, low: CGFloat, at: CFTimeInterval)] = [:]
+    private var v31Bounce: [Int: (key: String, high: CGFloat, at: CFTimeInterval)] = [:]
     private static var invIdxCounts: [Int: Int] = [:]
     private static var invLastFlush: CFTimeInterval = 0
 
@@ -832,6 +863,10 @@ final class MessageListLayout: UICollectionViewLayout {
         precalcHeights = newPrecalc
         estimatedHeights = newEstimated
         geometryReaderConfirmed = newConfirmed
+        // Positions may now represent different blocks, including tool cards.
+        markdownTextKeyByIndex.removeAll()
+        v31Shrink.removeAll()
+        v31Bounce.removeAll()
     }
 
     /// Invalidate the cached height for a specific item index, forcing re-measurement.
@@ -839,6 +874,8 @@ final class MessageListLayout: UICollectionViewLayout {
     func invalidateHeight(at index: Int) {
         heightCache.removeValue(forKey: index)
         geometryReaderConfirmed.remove(index)
+        v31Shrink.removeValue(forKey: index)
+        v31Bounce.removeValue(forKey: index)
         // [T-ios-scroll-decel-height-drift] Belt-and-suspenders: also drop the
         // content-keyed memo for this index. The content-versioned key already
         // makes a height change miss the old entry, but an explicit invalidate
@@ -953,6 +990,9 @@ final class MessageListLayout: UICollectionViewLayout {
         geometryReaderConfirmed.removeAll()
         measuredHeightByContentKey.removeAll()
         contentKeyByIndex.removeAll()
+        markdownTextKeyByIndex.removeAll()
+        v31Shrink.removeAll()
+        v31Bounce.removeAll()
         footerHugByIndex.removeAll()
     }
 

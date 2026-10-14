@@ -92,5 +92,37 @@ class RenderContracts(unittest.TestCase):
         self.assertIn('asyncAfter(deadline: .now() + reflowDelay)', s)
         self.assertIn('self.lastFooterReflowAt = CACurrentMediaTime()', s)
 
+    def test_large_blank_row_can_shrink_without_first_shrink_lockout(self):
+        layout = source('src/ios/Agent/MessageList/MessageListLayout.swift')
+        self.assertIn('isMarkdownText(key: key, at: index)', layout)
+        self.assertNotIn('static var v31MaxH', layout)
+        self.assertIn('v31Shrink[index] = (key: key, high: original, low: preferred, at: now)', layout)
+        self.assertIn('v31Shrink.removeAll()', layout)
+        self.assertIn('v31Bounce.removeAll()', layout)
+        self.assertIn('markdownTextKeyByIndex.removeAll()', layout)
+        # Reproduce three actual device traces. Only a confirmed DOWN→UP→DOWN
+        # for the SAME stable row may be held. The first real shrink never is.
+        def accept(events):
+            down = bounce = None
+            result = []
+            for key, old, new, time in events:
+                if new < old-100:
+                    blocked = bool(bounce and bounce[0] == key
+                                   and abs(old-bounce[1]) < 24 and time-bounce[2] < 2)
+                    if not blocked: down, bounce = (key,old,new,time), None
+                elif new > old+100:
+                    if down and down[0] == key and abs(old-down[2]) < 24 and new >= down[1]-24 and time-down[3] < 2:
+                        bounce = (key,new,time)
+                    else: bounce = None
+                    down = None
+                    blocked = False
+                else: blocked = False
+                result.append(not blocked)
+            return result
+        self.assertEqual(accept([('text-A',491,267,0)]), [True])
+        self.assertEqual(accept([('text-A',324,212,0)]), [True])
+        self.assertEqual(accept([('text-A',491,267,0),('text-A',267,491,0.5),('text-A',491,267,1)]), [True,True,False])
+        self.assertEqual(accept([('text-A',491,267,0),('text-B',267,491,0.5),('text-A',491,267,1)]), [True,True,True])
+
 if __name__ == '__main__':
     unittest.main()

@@ -3048,6 +3048,14 @@ extension CollectionViewMessageListV3 {
                     // already computed (see MessageListLayout.invalidationContext).
                     let contentKey = Self.contentKey(for: item, messages: messages, messageIndex: messageIndex)
                     layout.setContentKey(contentKey, at: i)
+                    var isMarkdownText = false
+                    if case .assistantBlock(let messageId, let blockId) = item,
+                       let messageIdx = messageIndex[messageId], messageIdx < messages.count,
+                       let block = messages[messageIdx].blocks.first(where: { $0.id == blockId }),
+                       case .text = block.kind {
+                        isMarkdownText = true
+                    }
+                    layout.markMarkdownText(isMarkdownText, key: contentKey, at: i)
 
                     // [T-ios-footer-hug] Content-aware spacing policy — must run
                     // BEFORE the cachedHeight guard below, or footers that

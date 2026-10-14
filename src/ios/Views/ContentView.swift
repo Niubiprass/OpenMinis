@@ -8207,7 +8207,15 @@ private struct SettingsSheet: View {
                     NavigationLink {
                         AutoContextCompactionSettingsView()
                     } label: {
-                        Label("Auto Context Compression", systemImage: "text.badge.minus")
+                        Label {
+                            Text("Auto Context Compression")
+                        } icon: {
+                            Image(systemName: "text.badge.minus")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white)
+                                .frame(width: 21, height: 21)
+                                .background(.blue, in: Circle())
+                        }
                     }
                     NavigationLink {
                         EnvironmentVariablesView()
