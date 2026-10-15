@@ -103,7 +103,7 @@ jobs:
           xcrun vtool -show-build Payload/Minis.app/Minis | tee minos-v64r.txt
           zip -qry Minis-160645-Repair5-iOS15.5.ipa Payload
           unzip -tq Minis-160645-Repair5-iOS15.5.ipa
-          shasum -a 256 Minis-160644-Repair4-iOS15.5.ipa > SHA256SUMS
+          shasum -a 256 Minis-160645-Repair5-iOS15.5.ipa > SHA256SUMS
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
