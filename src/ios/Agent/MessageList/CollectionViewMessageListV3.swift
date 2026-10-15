@@ -5859,8 +5859,30 @@ extension CollectionViewMessageListV3 {
             let deferredCount = layout.deferredHeightCount
             AppLogger(category: "Settle").debug("[Settle] BEGIN mode=\(scrollMode == .autoScrolling ? "auto" : "browse") nearBottom=\(nearBottom) offset=\(String(format: "%.1f", cv.contentOffset.y)) contentSize=\(String(format: "%.1f", cv.contentSize.height)) deferredHeights=\(deferredCount) hasPendingSnapshot=\(hasPendingSnapshot)")
 
+            // Capture BEFORE any correction, using identity rather than a row
+            // number. Numeric offset restoration cannot preserve visible content
+            // when deferred cells above the viewport shrink.
+            let anchorIP = cv.indexPathsForVisibleItems.min()
+            let anchorItem = anchorIP.flatMap { dataSource?.itemIdentifier(for: $0) }
+            let anchorPreY = anchorIP.flatMap { layout.layoutAttributesForItem(at: $0)?.frame.minY }
+            let savedOffset = cv.contentOffset.y
+            isFlushing = true
+            layout.suppressContentOffsetAdjustment = true
+            defer {
+                layout.suppressContentOffsetAdjustment = false
+                isFlushing = false
+            }
+
             // Re-enable self-sizing so future layout passes use real heights.
             layout.deferSelfSizing = false
+
+            // Consume only pending host evidence. No global cache reset and no
+            // TextKit dependency: tool and thinking cards follow this path too.
+            func consumeHostShrink(in view: UIView) {
+                (view as? IOS15HostingHeightResettable)?.consumeIOS15PendingStableShrink()
+                for child in view.subviews { consumeHostShrink(in: child) }
+            }
+            for cell in cv.visibleCells { consumeHostShrink(in: cell) }
 
             // [T-ios-defer-retry-never-consumed] Now that the defer window is
             // genuinely closed, let every visible markdown view apply a
@@ -5890,27 +5912,23 @@ extension CollectionViewMessageListV3 {
             // offset now shows different content. Anchor on the top visible
             // cell's screen-relative y before/after to quantify the jump the
             // user actually sees at decel end.
-            let anchorIP = cv.indexPathsForVisibleItems.min()
-            let anchorPreY = anchorIP.flatMap { layout.layoutAttributesForItem(at: $0)?.frame.minY }
-
-            let savedOffset = cv.contentOffset.y
-            isFlushing = true
             layout.applyDeferredHeights()
-
-            layout.suppressContentOffsetAdjustment = true
             layout.invalidateLayout()
-            layout.suppressContentOffsetAdjustment = false
-            isFlushing = false
+            cv.layoutIfNeeded()
 
-            // Restore offset
             if scrollMode == .userBrowsing {
-                cv.contentOffset.y = savedOffset
+                let currentIP = anchorItem.flatMap { dataSource?.indexPath(for: $0) }
+                let postY = currentIP.flatMap { layout.layoutAttributesForItem(at: $0)?.frame.minY }
+                let desired = savedOffset + ((postY ?? anchorPreY ?? 0) - (anchorPreY ?? postY ?? 0))
+                let minOffset = -cv.adjustedContentInset.top
+                let maxOffset = max(minOffset, cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom)
+                cv.contentOffset.y = min(max(desired, minOffset), maxOffset)
             }
 
             // [SettleJitter] Post-flush: same anchor item, new frame. screenΔ
             // is the on-screen displacement of the content the user is looking
             // at (0 = no visible jitter from the settle flush).
-            if let ip = anchorIP, let preY = anchorPreY {
+            if let item = anchorItem, let ip = dataSource?.indexPath(for: item), let preY = anchorPreY {
                 cv.layoutIfNeeded()
                 let postY = layout.layoutAttributesForItem(at: ip)?.frame.minY ?? preY
                 let screenDelta = (postY - cv.contentOffset.y) - (preY - savedOffset)

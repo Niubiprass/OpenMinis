@@ -762,31 +762,14 @@ class SelfSizingCell: UICollectionViewCell {
         if _ios15Found, _ios15TkSum > _ios15Reconciled, _ios15TkSum < _ios15Reconciled + 2500 {
             _ios15Reconciled = _ios15TkSum
         }
-        // [V64-CONVERGE] 收敛闸 —— 断掉反馈之后的兜底。
-        //
-        // 断掉播种后, 理论上 `fittingSize.height` 只能由内容决定。但 iOS 15
-        // 的 SwiftUI 是否真的遵守 .fittingSizeLevel 无法在编译期确认 ——
-        // 若它仍把上一轮的值赢回来, 累加会**换一条路复发**。
-        //
-        // 【判据】重算结果 ≥ 上一轮 est, 且宽度没变 ⇒ 判定为"没真的重算,
-        //   只是把旧值带了回来"。此时**保留 est**, 不许再往上加。
-        //   累加的数学结构(H → H+170)在这里被直接截断: 不加就不发散。
-        //
-        // 【为什么不会误杀真实增长】真实内容变高时, 权威测量是 TextKit 那一路
-        // (`_ios15TkSum`, 来自 SelectableMarkdownTextView.lastComputedHeight,
-        // 是 sizeThatFits 的实测值)。闸门只在上报值 ≥ est 时收紧; 若 Tk 实测
-        // 确实更高, `_ios15Reconciled` 会高于 est, 但那说明 SwiftUI 这次**真的
-        // 重算了**(est 已被重算结果取代) —— 所以判据里再要求
-        // 「Tk 实测没有超出 est」, 只有"两边都没给出更新的信息"才拦。
-        let _v64est = attrs.size.height
+        // [160645] Reconciliation may raise a TextKit floor, but super's
+        // fitting result is NOT an estimate/ceiling. Clamping an independently
+        // measured fit to it rejects legitimate tool/thinking growth (no TK)
+        // and maintains a second, inconsistent height truth. The compressed
+        // target above already breaks the old H -> H+padding input feedback.
         let _v64tk = _ios15TkSum
-        let _v64grew = _ios15Reconciled >= _v64est - 0.5
-        let _v64tkFresh = _ios15Found && _v64tk > _v64est + 0.5
         let diagnosticReconciledH = _ios15Reconciled
-        let diagnosticHeld = _v64grew && !_v64tkFresh && _v64est > 4
-        if diagnosticHeld {
-            _ios15Reconciled = _v64est
-        }
+        let diagnosticHeld = false
         // One line per convergence decision, numeric identities/heights only.
         // Do not infer a real growth rejection from est == raw alone.
         if diagnosticHeld || abs(_ios15Reconciled - diagnosticSuperH) > 0.5 {

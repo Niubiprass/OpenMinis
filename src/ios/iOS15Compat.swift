@@ -376,16 +376,76 @@ private final class _V63Probe {
 /// transient attachment measurements from collapsing live cells.
 protocol IOS15HostingHeightResettable: AnyObject {
     func resetIOS15HostingHeightForConfirmedShrink()
+    func consumeIOS15PendingStableShrink()
 }
 
 private final class _HostingContentCellView<Content: View>: UIView, UIContentView, IOS15HostingHeightResettable {
     func resetIOS15HostingHeightForConfirmedShrink() {
         ios15MonoH = 0
+        shrinkCandidate = 0
+        shrinkCandidateAt = 0
         ios15MonoHW = 0
         ios15LastGoodFitH = 0
         host?.view.invalidateIntrinsicContentSize()
         invalidateIntrinsicContentSize()
     }
+    // A smaller positive fit is evidence, not permission to drop a live row.
+    // Confirmation is time-separated, same graph/width, and never streaming.
+    private var shrinkCandidate: CGFloat = 0
+    private var shrinkCandidateAt: CFTimeInterval = 0
+    private var shrinkRetryScheduled = false
+    private var hostingRevision: UInt = 0
+
+    private func owningCell() -> SelfSizingCell? {
+        var ancestor = superview
+        while let view = ancestor {
+            if let cell = view as? SelfSizingCell { return cell }
+            ancestor = view.superview
+        }
+        return nil
+    }
+
+    func consumeIOS15PendingStableShrink() {
+        guard shrinkCandidate > 1, let cell = owningCell(),
+              let cv = cell.superview as? UICollectionView,
+              let ip = cv.indexPath(for: cell),
+              let layout = cv.collectionViewLayout as? MessageListLayout,
+              !cv.isTracking, !cv.isDragging, !cv.isDecelerating,
+              !layout.deferSelfSizing, !layout.isStreamingCell(ip.item),
+              let identity = hostedContentIdentity?.base as? MessageListItem,
+              identity.scrollDiagnosticID == cell.scrollDiagnosticID,
+              abs(resolvedHostingWidth(bounds.width) - ios15MonoHW) < 0.5 else { return }
+        let oldHeight = ios15MonoH
+        _ = ios15FittingSize(CGSize(width: ios15MonoHW, height: 0))
+        guard ios15MonoH < oldHeight - 8 else { return }
+        // Evict every outer cache, not just the hosting lock. This also works
+        // for tool/thinking cards which have no SelectableMarkdownTextView.
+        cell.clearCachedHeight()
+        layout.invalidateHeight(at: ip.item, discardPrecalc: true)
+        if let key = cell.contentKey {
+            layout.invalidateMemo(forKey: SelfSizingCell.renderQualifiedKey(key, for: cell))
+        }
+        layout.invalidateLayout()
+    }
+
+    private func scheduleStableShrinkRetry() {
+        guard !shrinkRetryScheduled else { return }
+        shrinkRetryScheduled = true
+        let identity = hostedContentIdentity
+        let revision = hostingRevision
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self else { return }
+            guard self.hostedContentIdentity == identity, self.hostingRevision == revision else {
+                self.shrinkRetryScheduled = false
+                return
+            }
+            // Keep the flag set during measurement: at most one retry per
+            // external fitting pass, never a self-sustaining timer loop.
+            self.consumeIOS15PendingStableShrink()
+            self.shrinkRetryScheduled = false
+        }
+    }
+
     private var host: UIHostingController<AnyView>?
     private var appliedHostWidth: CGFloat = 0
 
@@ -398,6 +458,8 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         appliedHostWidth = width
         host.rootView = AnyView(config.content.id(config.contentIdentity).frame(maxWidth: width, alignment: .leading))
         ios15MonoH = 0
+        shrinkCandidate = 0
+        shrinkCandidateAt = 0
         ios15MonoHW = 0
         ios15LastGoodFitH = 0
         host.view.invalidateIntrinsicContentSize()
@@ -446,15 +508,7 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     // (不经过 systemLayoutSizeFitting)时也按传入真实宽向 SwiftUI 要高度,
     // 并 ceil 对齐像素。测量宽 == 渲染宽 → 高度不再错位。
     override func sizeThatFits(_ size: CGSize) -> CGSize {
-        guard let host = host else { return super.sizeThatFits(size) }
-        let width = resolvedHostingWidth(size.width)
-        let fitSize: CGSize
-        if #available(iOS 16.0, *) {
-            fitSize = host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
-        } else {
-            fitSize = host.view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        }
-        return CGSize(width: width, height: ceil(fitSize.height))
+        ios15FittingSize(size)
     }
 
     private var isMeasuring: Bool = false
@@ -502,31 +556,72 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         }
         isMeasuring = true
         defer { isMeasuring = false }
+        // A fitting pass may precede layoutSubviews after rotation/reuse.
+        // Measure the same root-width contract that will actually render.
+        if abs(width - appliedHostWidth) > 0.5,
+           let config = configuration as? UIHostingConfiguration<Content> {
+            appliedHostWidth = width
+            host.rootView = AnyView(config.content.id(config.contentIdentity).frame(maxWidth: width, alignment: .leading))
+            host.view.invalidateIntrinsicContentSize()
+        }
         // [v25] 测量前先强制宿主视图布局: SwiftUI 内容未布局时 sizeThatFits 返回 0
         // (日志实证 56 次 out h=0.0 → cell 高度塌缩 → 整条消息不显示)。
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
         var size = host.view.sizeThatFits(CGSize(width: width,
                                                  height: CGFloat.greatestFiniteMagnitude))
-        if !(size.height > 0) {
+        if !size.height.isFinite || size.height <= 1 {
             size = host.view.sizeThatFits(CGSize(width: width, height: 0))
+        }
+        if abs(width - ios15MonoHW) > 0.5 {
+            ios15MonoHW = width
+            ios15MonoH = 0
+            ios15LastGoodFitH = 0
+            shrinkCandidate = 0
         }
         let diagnosticRawH = size.height
         let diagnosticLastGoodH = ios15LastGoodFitH
         var height = size.height
         // [v25] 仍失败且有历史好值 → 用历史好值兜底, 避免塌缩成 0。
-        if !(height > 0), ios15LastGoodFitH > 1 {
-            height = ios15LastGoodFitH
-            size.width = width
-        } else if !(height > 0) {
-            height = bounds.height
+        if !height.isFinite || height <= 1 {
+            height = ios15LastGoodFitH > 1 ? ios15LastGoodFitH : max(0, bounds.height)
         }
         print("[IOS15Size] out w=\(width) h=\(height) idealW=\(size.width) idealH=\(size.height)")
-        if height > 1 { ios15LastGoodFitH = max(ios15LastGoodFitH, height) }
+        // Do not promote a fallback to fresh evidence or preserve a high-water
+        // value as the forever-zero fallback after an accepted shrink.
+        let freshFit = diagnosticRawH.isFinite && diagnosticRawH > 1
+        let cell = owningCell()
+        let cv = cell?.superview as? UICollectionView
+        let layout = cv?.collectionViewLayout as? MessageListLayout
+        let index = cell.flatMap { cv?.indexPath(for: $0)?.item }
+        let sameItem = hostedContentIdentity?.base as? MessageListItem
+        let mayShrink = sameItem != nil && sameItem?.scrollDiagnosticID == cell?.scrollDiagnosticID
+            && index != nil && layout != nil
+            && !(layout?.isStreamingCell(index ?? -1) ?? true)
+            && !(layout?.deferSelfSizing ?? true)
+            && cv?.isTracking == false && cv?.isDragging == false && cv?.isDecelerating == false
+        if freshFit, height < ios15MonoH - 8 {
+            let now = CACurrentMediaTime()
+            if shrinkCandidate > 1, abs(height - shrinkCandidate) <= 1,
+               now - shrinkCandidateAt >= 0.08, mayShrink {
+                ios15MonoH = height
+                ios15LastGoodFitH = height
+                shrinkCandidate = 0
+            } else {
+                if shrinkCandidate <= 1 || abs(height - shrinkCandidate) > 1 {
+                    shrinkCandidate = height
+                    shrinkCandidateAt = now
+                }
+                scheduleStableShrinkRetry()
+            }
+        } else if freshFit {
+            shrinkCandidate = 0
+        }
+        // Keep the last *accepted* fit for zero/invalid transient fallback.
+        // A held low candidate must not become the fallback before confirmation.
         // [V61-MONO] 单调锁生效点: 同宽下回缩超容差(8pt) → 沿用历史最高。
         // 挡住「测量管道抖动」(attachment 缓存时序导致同内容两次测量差
         // 157pt)直接上屏 —— 那就是用户看到的整屏跳动。
-        if width != ios15MonoHW { ios15MonoHW = width; ios15MonoH = 0 }
         if ios15MonoH > 1, height > 1, height < ios15MonoH - 8 {
             // Include small holds too; retain per-host throttling, not a size gate.
             do {
@@ -545,10 +640,12 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
             height = ios15MonoH
         }
         if height > ios15MonoH { ios15MonoH = height }
+        if freshFit { ios15LastGoodFitH = height }
         return CGSize(width: width, height: max(0, height))
     }
 
     private func apply(_ config: UIContentConfiguration) {
+        hostingRevision &+= 1
         // [V64R-HOST] Message/block identity, NOT an update generation, owns
         // the graph. Only the same item may retain SwiftUI state across tokens.
         if let existing = host, let newConfig = config as? UIHostingConfiguration<Content>,
@@ -558,6 +655,8 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
             appliedHostWidth = contentMaxWidth
             existing.rootView = AnyView(newConfig.content.id(newConfig.contentIdentity).frame(maxWidth: contentMaxWidth, alignment: .leading))
             ios15MonoH = 0
+            shrinkCandidate = 0
+            shrinkCandidateAt = 0
             ios15MonoHW = 0
             ios15LastGoodFitH = 0
             existing.view.invalidateIntrinsicContentSize()
@@ -605,6 +704,8 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         host = controller
         // [V61-MONO] 走到重建路径 = 内容标识换了(新消息/复用), 锁重置。
         ios15MonoH = 0
+        shrinkCandidate = 0
+        shrinkCandidateAt = 0
         ios15MonoHW = 0
         // Never carry a previous item's geometry into this new graph.
         ios15LastGoodFitH = 0

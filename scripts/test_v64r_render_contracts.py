@@ -62,7 +62,7 @@ class RenderContracts(unittest.TestCase):
 
     def test_width_contract(self):
         s = source('src/ios/iOS15Compat.swift')
-        self.assertIn('resolvedHostingWidth(size.width)', s)
+        self.assertIn('override func sizeThatFits(_ size: CGSize) -> CGSize {\n        ios15FittingSize(size)', s)
         self.assertIn('resolvedHostingWidth(targetSize.width)', s)
         self.assertNotIn('cvW - 32', s)
         self.assertNotIn('let measCapW15', s)
