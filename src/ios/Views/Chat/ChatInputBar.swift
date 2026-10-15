@@ -1166,7 +1166,13 @@ class PastableUITextView: UITextView, UIDropInteractionDelegate {
             return CGSize(width: UIView.noIntrinsicMetric, height: font?.lineHeight ?? 20)
         }
         let size = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
-        isScrollEnabled = size.height > maxHeight
+        // Measurement must not reset UIScrollView state on every intrinsic query.
+        // Keep the same overflow policy as layoutSubviews, but avoid same-value
+        // writes during keyboard/composer remeasurement.
+        let shouldScroll = size.height > maxHeight
+        if isScrollEnabled != shouldScroll {
+            isScrollEnabled = shouldScroll
+        }
         // [T-ipad-composer-resize] A dragged composer keeps its height even when
         // the text is short; otherwise the box would shrink back around one line.
         if let pinnedHeight {
@@ -1734,7 +1740,10 @@ struct PastableTextView: UIViewRepresentable {
 
         // Apply a pending caret move (e.g. after mention insert). Clamp to the
         // text length and only move when different to avoid fighting the user.
-        if let want = desiredCaret {
+        // A pending mention/ASR caret request must not end an active IME
+        // composition. Keep it pending until UIKit commits the marked text;
+        // moving selection during composition can discard candidate characters.
+        if tv.markedTextRange == nil, let want = desiredCaret {
             let length = (tv.text as NSString).length
             let clamped = max(0, min(want, length))
             if tv.selectedRange.location != clamped || tv.selectedRange.length != 0 {

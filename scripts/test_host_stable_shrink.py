@@ -103,7 +103,9 @@ class StableHostTests(unittest.TestCase):
     def test_production_trust_guards_and_all_cache_layers(self):
         for text in ('!cv.isTracking, !cv.isDragging, !cv.isDecelerating',
                      '!layout.deferSelfSizing, !layout.isStreamingCell(ip.item)',
-                     'identity.scrollDiagnosticID == cell.scrollDiagnosticID',
+                     'ds.itemIdentifier(for: ip) == identity',
+                     'context == currentRenderContext()',
+                     'abs(resolvedHostingWidth(bounds.width) - context.width) <= 0.5',
                      'now - shrinkCandidateAt >= 0.08, mayShrink',
                      'cell.clearCachedHeight()', 'discardPrecalc: true',
                      'layout.invalidateMemo', 'shrinkRetryScheduled = true'):
@@ -111,6 +113,11 @@ class StableHostTests(unittest.TestCase):
         self.assertIn('self.consumeIOS15PendingStableShrink()\n            self.shrinkRetryScheduled = false', HOST)
         self.assertIn('ios15FittingSize(size)', HOST)
         self.assertIn('if abs(width - appliedHostWidth) > 0.5,', HOST)
+        self.assertIn('addChild(host)', HOST)
+        self.assertIn('host.didMove(toParent: parent)', HOST)
+        self.assertIn('host.removeFromParent()', HOST)
+        self.assertNotIn('layout.setCachedHeight', HOST)
+        self.assertNotIn('cell.setCachedHeight', HOST)
 
     def test_tool_thinking_growth_not_clamped_to_super(self):
         self.assertNotIn('let _v64grew', CELL)

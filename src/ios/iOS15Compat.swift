@@ -379,10 +379,30 @@ protocol IOS15HostingHeightResettable: AnyObject {
     func consumeIOS15PendingStableShrink()
 }
 
+private struct _IOS15HostRenderContext: Equatable {
+    let identity: AnyHashable?
+    let revision: UInt
+    let generation: UInt
+    let width: CGFloat
+}
+
+private struct _IOS15HostRenderSample: Equatable {
+    let context: _IOS15HostRenderContext
+    let size: CGSize
+}
+
+private struct _IOS15HostRenderHeightKey: PreferenceKey {
+    // Absence is NOT a rendered zero (especially for an asynchronously mounted row).
+    static var defaultValue: _IOS15HostRenderSample? { nil }
+    static func reduce(value: inout _IOS15HostRenderSample?, nextValue: () -> _IOS15HostRenderSample?) {
+        if let next = nextValue() { value = next }
+    }
+}
+
 private final class _HostingContentCellView<Content: View>: UIView, UIContentView, IOS15HostingHeightResettable {
     func resetIOS15HostingHeightForConfirmedShrink() {
         ios15MonoH = 0
-        shrinkCandidate = 0
+        shrinkCandidate = nil
         shrinkCandidateAt = 0
         ios15MonoHW = 0
         ios15LastGoodFitH = 0
@@ -391,7 +411,7 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     }
     // A smaller positive fit is evidence, not permission to drop a live row.
     // Confirmation is time-separated, same graph/width, and never streaming.
-    private var shrinkCandidate: CGFloat = 0
+    private var shrinkCandidate: CGFloat?
     private var shrinkCandidateAt: CFTimeInterval = 0
     private var shrinkRetryScheduled = false
     private var hostingRevision: UInt = 0
@@ -406,37 +426,27 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     }
 
     func consumeIOS15PendingStableShrink() {
-        guard shrinkCandidate > 1, let cell = owningCell(),
-              let cv = cell.superview as? UICollectionView,
-              let ip = cv.indexPath(for: cell),
-              let layout = cv.collectionViewLayout as? MessageListLayout,
+        guard let (_, cv, ip, layout) = boundRow(),
               !cv.isTracking, !cv.isDragging, !cv.isDecelerating,
-              !layout.deferSelfSizing, !layout.isStreamingCell(ip.item),
-              let identity = hostedContentIdentity?.base as? MessageListItem,
-              identity.scrollDiagnosticID == cell.scrollDiagnosticID,
-              abs(resolvedHostingWidth(bounds.width) - ios15MonoHW) < 0.5 else { return }
-        let oldHeight = ios15MonoH
-        _ = ios15FittingSize(CGSize(width: ios15MonoHW, height: 0))
-        guard ios15MonoH < oldHeight - 8 else { return }
-        // Evict every outer cache, not just the hosting lock. This also works
-        // for tool/thinking cards which have no SelectableMarkdownTextView.
-        cell.clearCachedHeight()
-        layout.invalidateHeight(at: ip.item, discardPrecalc: true)
-        if let key = cell.contentKey {
-            layout.invalidateMemo(forKey: SelfSizingCell.renderQualifiedKey(key, for: cell))
+              !layout.deferSelfSizing, !layout.isStreamingCell(ip.item) else { return }
+        // Also consume invalidation debt when ordinary fitting already accepted
+        // the shrink and cleared its candidate. Comparing old/new mono here lost it.
+        if shrinkCandidate != nil {
+            _ = ios15FittingSize(CGSize(width: resolvedHostingWidth(bounds.width), height: 0))
         }
-        layout.invalidateLayout()
+        publishPendingHeightChange()
     }
 
     private func scheduleStableShrinkRetry() {
         guard !shrinkRetryScheduled else { return }
         shrinkRetryScheduled = true
-        let identity = hostedContentIdentity
-        let revision = hostingRevision
+        let context = currentRenderContext()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
             guard let self else { return }
-            guard self.hostedContentIdentity == identity, self.hostingRevision == revision else {
+            guard self.isCurrent(context) else {
                 self.shrinkRetryScheduled = false
+                // A stale timer must not steal a newer root's only retry.
+                if self.shrinkCandidate != nil { self.scheduleStableShrinkRetry() }
                 return
             }
             // Keep the flag set during measurement: at most one retry per
@@ -445,6 +455,190 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
             self.shrinkRetryScheduled = false
         }
     }
+
+    // Root generation changes only when installing a root, NOT on layout callbacks.
+    private var renderGeneration: UInt = 0
+    private var renderedSample: _IOS15HostRenderSample?
+    private var publishedRenderSample: _IOS15HostRenderSample?
+    private var renderPublicationScheduled = false
+    // An ordinary fitting pass can accept the shrink before the retry consumer.
+    // Keep an explicit debt until ALL outer caches have been evicted afterward.
+    private var heightInvalidationPending = false
+
+    private func currentRenderContext() -> _IOS15HostRenderContext {
+        _IOS15HostRenderContext(identity: hostedContentIdentity, revision: hostingRevision,
+                                generation: renderGeneration, width: appliedHostWidth)
+    }
+
+    private func installRoot(_ config: UIHostingConfiguration<Content>, width: CGFloat) {
+        appliedHostWidth = width
+        renderGeneration &+= 1
+        renderedSample = nil
+        publishedRenderSample = nil
+        let context = currentRenderContext()
+        host?.rootView = AnyView(
+            config.content.id(config.contentIdentity)
+                .frame(width: width, alignment: .leading)
+                // Measure the complete NATURAL row, not the allocated UIKit wrapper.
+                // Width stays proposed/full-cell; only the vertical proposal is ideal.
+                .fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { geometry in
+                    Color.clear.preference(key: _IOS15HostRenderHeightKey.self,
+                        value: _IOS15HostRenderSample(context: context, size: geometry.size))
+                })
+                .onPreferenceChange(_IOS15HostRenderHeightKey.self) { [weak self] sample in
+                    guard let sample else { return }
+                    self?.receiveRenderedHeight(sample)
+                }
+                .frame(maxWidth: width, alignment: .leading)
+        )
+    }
+
+    private func isCurrent(_ context: _IOS15HostRenderContext) -> Bool {
+        context == currentRenderContext()
+            && abs(resolvedHostingWidth(bounds.width) - context.width) <= 0.5
+    }
+
+    private var isFooter: Bool {
+        guard let item = hostedContentIdentity?.base as? MessageListItem else { return false }
+        if case .assistantFooter = item { return true }
+        return false
+    }
+
+    private func receiveRenderedHeight(_ sample: _IOS15HostRenderSample) {
+        // Preference delivery is normally on main; marshal before touching UIKit/state.
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in self?.receiveRenderedHeight(sample) }
+            return
+        }
+        guard isCurrent(sample.context), sample.size.height.isFinite,
+              sample.size.width.isFinite, abs(sample.size.width - sample.context.width) <= 0.5,
+              sample.size.height > 1 || (isFooter && sample.size.height == 0) else { return }
+        if let old = renderedSample, old.context == sample.context,
+           abs(old.size.height - sample.size.height) <= 0.5 { return }
+        renderedSample = sample
+        scheduleRenderPublication()
+    }
+
+    private func scheduleRenderPublication() {
+        guard !renderPublicationScheduled else { return }
+        renderPublicationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.renderPublicationScheduled = false
+            self.publishPendingHeightChange()
+        }
+    }
+
+    private func boundRow() -> (SelfSizingCell, UICollectionView, IndexPath, MessageListLayout)? {
+        guard window != nil, let identity = hostedContentIdentity?.base as? MessageListItem,
+              let cell = owningCell(), let cv = cell.superview as? UICollectionView,
+              let ip = cv.indexPath(for: cell),
+              let ds = cv.dataSource as? UICollectionViewDiffableDataSource<CollectionViewMessageListV3.Section, MessageListItem>,
+              ds.itemIdentifier(for: ip) == identity,
+              let layout = cv.collectionViewLayout as? MessageListLayout else { return nil }
+        return (cell, cv, ip, layout)
+    }
+
+    private func mayShrinkRow(_ cv: UICollectionView, _ ip: IndexPath, _ layout: MessageListLayout) -> Bool {
+        !cv.isTracking && !cv.isDragging && !cv.isDecelerating
+            && !layout.deferSelfSizing && !layout.isStreamingCell(ip.item)
+    }
+
+    private func publishPendingHeightChange() {
+        guard let (cell, cv, ip, layout) = boundRow() else { return }
+        let sample = renderedSample.flatMap { isCurrent($0.context) ? $0 : nil }
+        let changed = sample != nil && sample != publishedRenderSample
+        guard changed || heightInvalidationPending else { return }
+        // Park a collapse while browsing/streaming. Do not remove layout's cached
+        // height first: that would turn it into a 'first fit' and bypass defer.
+        if let sample, sample.size.height < ios15MonoH - 8 || (sample.size.height == 0 && ios15MonoH > 0) {
+            if shrinkCandidate == nil || abs((shrinkCandidate ?? 0) - sample.size.height) > 1 {
+                shrinkCandidate = sample.size.height
+                shrinkCandidateAt = CACurrentMediaTime()
+            }
+            guard mayShrinkRow(cv, ip, layout), CACurrentMediaTime() - shrinkCandidateAt >= 0.08 else {
+                scheduleStableShrinkRetry()
+                return
+            }
+            _ = ios15FittingSize(CGSize(width: appliedHostWidth, height: 0))
+            guard ios15MonoH <= sample.size.height + 1 else { return }
+        }
+        // Invalidate only. preferred fitting -> layout's deferred/anchor machinery
+        // commits the result; NEVER write setCachedHeight from a render callback.
+        cell.clearCachedHeight()
+        layout.invalidateHeight(at: ip.item, discardPrecalc: true)
+        if let key = cell.contentKey {
+            layout.invalidateMemo(forKey: key)
+            layout.invalidateMemo(forKey: SelfSizingCell.renderQualifiedKey(key, for: cell))
+        }
+        heightInvalidationPending = false
+        publishedRenderSample = sample
+        host?.view.invalidateIntrinsicContentSize()
+        invalidateIntrinsicContentSize()
+        layout.invalidateLayout()
+    }
+
+    private func installHostedView(_ controller: UIHostingController<AnyView>) {
+        guard controller.view.superview !== self else { return }
+        controller.view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(controller.view)
+        NSLayoutConstraint.activate([
+            controller.view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            controller.view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            controller.view.topAnchor.constraint(equalTo: topAnchor),
+            controller.view.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    private func reconcileHostParent() {
+        guard let host else { return }
+        var parent: UIViewController?
+        if window != nil {
+            var responder: UIResponder? = next
+            while let current = responder {
+                if let controller = current as? UIViewController, controller !== host {
+                    parent = controller
+                    break
+                }
+                responder = current.next
+            }
+        }
+        guard host.parent !== parent else { return }
+        if host.parent != nil {
+            host.willMove(toParent: nil)
+            host.view.removeFromSuperview()
+            host.removeFromParent()
+        }
+        if let parent {
+            parent.addChild(host)
+            installHostedView(host)
+            host.didMove(toParent: parent)
+        } else {
+            installHostedView(host) // retain graph off-window; no per-token mount churn
+        }
+    }
+
+    override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        reconcileHostParent()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        reconcileHostParent()
+        if window != nil { scheduleRenderPublication() }
+    }
+
+    private func removeHostedController() {
+        guard let host else { return }
+        if host.parent != nil { host.willMove(toParent: nil) }
+        host.view.removeFromSuperview()
+        if host.parent != nil { host.removeFromParent() }
+        self.host = nil
+    }
+
+    deinit { removeHostedController() }
 
     private var host: UIHostingController<AnyView>?
     private var appliedHostWidth: CGFloat = 0
@@ -456,9 +650,9 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         let width = resolvedHostingWidth(bounds.width)
         guard abs(width - appliedHostWidth) > 0.5 else { return }
         appliedHostWidth = width
-        host.rootView = AnyView(config.content.id(config.contentIdentity).frame(maxWidth: width, alignment: .leading))
+        installRoot(config, width: width)
         ios15MonoH = 0
-        shrinkCandidate = 0
+        shrinkCandidate = nil
         shrinkCandidateAt = 0
         ios15MonoHW = 0
         ios15LastGoodFitH = 0
@@ -561,7 +755,7 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         if abs(width - appliedHostWidth) > 0.5,
            let config = configuration as? UIHostingConfiguration<Content> {
             appliedHostWidth = width
-            host.rootView = AnyView(config.content.id(config.contentIdentity).frame(maxWidth: width, alignment: .leading))
+            installRoot(config, width: width)
             host.view.invalidateIntrinsicContentSize()
         }
         // [v25] 测量前先强制宿主视图布局: SwiftUI 内容未布局时 sizeThatFits 返回 0
@@ -577,52 +771,54 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
             ios15MonoHW = width
             ios15MonoH = 0
             ios15LastGoodFitH = 0
-            shrinkCandidate = 0
+            shrinkCandidate = nil
+        }
+        // Only a natural, rendered, current-width footer zero is evidence of
+        // emptiness. A zero from UIKit's asynchronous fitter alone is NEVER so.
+        let natural = renderedSample.flatMap { isCurrent($0.context) ? $0 : nil }
+        let emptyFooter = isFooter && natural?.size.height == 0
+            && size.height.isFinite && size.height <= 1 && size.height >= 0
+        if let natural, natural.size.height > 1 || emptyFooter {
+            size.height = natural.size.height
         }
         let diagnosticRawH = size.height
         let diagnosticLastGoodH = ios15LastGoodFitH
         var height = size.height
         // [v25] 仍失败且有历史好值 → 用历史好值兜底, 避免塌缩成 0。
-        if !height.isFinite || height <= 1 {
+        if (!height.isFinite || height <= 1) && !emptyFooter {
             height = ios15LastGoodFitH > 1 ? ios15LastGoodFitH : max(0, bounds.height)
         }
         print("[IOS15Size] out w=\(width) h=\(height) idealW=\(size.width) idealH=\(size.height)")
         // Do not promote a fallback to fresh evidence or preserve a high-water
         // value as the forever-zero fallback after an accepted shrink.
-        let freshFit = diagnosticRawH.isFinite && diagnosticRawH > 1
-        let cell = owningCell()
-        let cv = cell?.superview as? UICollectionView
-        let layout = cv?.collectionViewLayout as? MessageListLayout
-        let index = cell.flatMap { cv?.indexPath(for: $0)?.item }
-        let sameItem = hostedContentIdentity?.base as? MessageListItem
-        let mayShrink = sameItem != nil && sameItem?.scrollDiagnosticID == cell?.scrollDiagnosticID
-            && index != nil && layout != nil
-            && !(layout?.isStreamingCell(index ?? -1) ?? true)
-            && !(layout?.deferSelfSizing ?? true)
-            && cv?.isTracking == false && cv?.isDragging == false && cv?.isDecelerating == false
-        if freshFit, height < ios15MonoH - 8 {
+        let freshFit = (diagnosticRawH.isFinite && diagnosticRawH > 1) || emptyFooter
+        let row = boundRow()
+        let mayShrink = row.map { mayShrinkRow($0.1, $0.2, $0.3) } ?? false
+        if freshFit, height < ios15MonoH - 8 || (emptyFooter && ios15MonoH > 0) {
             let now = CACurrentMediaTime()
-            if shrinkCandidate > 1, abs(height - shrinkCandidate) <= 1,
+            if let candidate = shrinkCandidate, abs(height - candidate) <= 1,
                now - shrinkCandidateAt >= 0.08, mayShrink {
                 ios15MonoH = height
                 ios15LastGoodFitH = height
-                shrinkCandidate = 0
+                shrinkCandidate = nil
+                heightInvalidationPending = true
+                scheduleRenderPublication()
             } else {
-                if shrinkCandidate <= 1 || abs(height - shrinkCandidate) > 1 {
+                if shrinkCandidate == nil || abs(height - (shrinkCandidate ?? 0)) > 1 {
                     shrinkCandidate = height
                     shrinkCandidateAt = now
                 }
                 scheduleStableShrinkRetry()
             }
         } else if freshFit {
-            shrinkCandidate = 0
+            shrinkCandidate = nil
         }
         // Keep the last *accepted* fit for zero/invalid transient fallback.
         // A held low candidate must not become the fallback before confirmation.
         // [V61-MONO] 单调锁生效点: 同宽下回缩超容差(8pt) → 沿用历史最高。
         // 挡住「测量管道抖动」(attachment 缓存时序导致同内容两次测量差
         // 157pt)直接上屏 —— 那就是用户看到的整屏跳动。
-        if ios15MonoH > 1, height > 1, height < ios15MonoH - 8 {
+        if ios15MonoH > 0, (height > 1 && height < ios15MonoH - 8) || (emptyFooter && height == 0) {
             // Include small holds too; retain per-host throttling, not a size gate.
             do {
                 let now = CACurrentMediaTime()
@@ -646,19 +842,16 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
 
     private func apply(_ config: UIContentConfiguration) {
         hostingRevision &+= 1
-        // [V64R-HOST] Message/block identity, NOT an update generation, owns
-        // the graph. Only the same item may retain SwiftUI state across tokens.
+        heightInvalidationPending = false
+        shrinkCandidate = nil
+        shrinkCandidateAt = 0
+        // Content identity owns the graph. Revision owns render callbacks only.
         if let existing = host, let newConfig = config as? UIHostingConfiguration<Content>,
            let identity = newConfig.contentIdentity, identity == hostedContentIdentity {
             _V63Probe.hitFast()
-            let contentMaxWidth = resolvedHostingWidth(bounds.width)
-            appliedHostWidth = contentMaxWidth
-            existing.rootView = AnyView(newConfig.content.id(newConfig.contentIdentity).frame(maxWidth: contentMaxWidth, alignment: .leading))
-            ios15MonoH = 0
-            shrinkCandidate = 0
-            shrinkCandidateAt = 0
-            ios15MonoHW = 0
-            ios15LastGoodFitH = 0
+            installRoot(newConfig, width: resolvedHostingWidth(bounds.width))
+            // Keep accepted fallback for this item; new natural rendering provides
+            // growth/shrink evidence without a per-token remove/addChild cycle.
             existing.view.invalidateIntrinsicContentSize()
             invalidateIntrinsicContentSize()
             existing.view.setNeedsLayout()
@@ -666,51 +859,26 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
             return
         }
         _V63Probe.hitRebuild()
+        removeHostedController()
         hostedContentIdentity = nil
-        subviews.forEach { $0.removeFromSuperview() }
-        host = nil
-        guard let config = config as? UIHostingConfiguration<Content> else { return }
-        // [IOS15-FIX-CLIP v22] 给 SwiftUI 内容设最大宽度上限。
-        // SwiftUI 的 Text / 表格等在"无限宽"提议下不换行, 理想宽可达 100032 / 2378,
-        // 于是 SwiftUI 把内容视图布局成宽 ~100000 并在父视图里居中 → x = -49805
-        // (sv0 日志实证) → 内容飞出屏幕; 渲染端抢回来、SwiftUI 每 tick 又写出去
-        // = 拉锯闪字, 布局高度随之错乱 = 上下空白 / 输出衔接不上。
-        // 设 maxWidth 后内容理想宽被压到可用宽, 污染帧从根本上不再产生。
-        // maxWidth 只是上限: 内容更窄时按内容宽排布, 右对齐的用户气泡不受影响。
-        let _ios15ContentMaxW = resolvedHostingWidth(bounds.width)
-        appliedHostWidth = _ios15ContentMaxW
-        let identity = config.contentIdentity
-        let controller = UIHostingController(rootView: AnyView(config.content.id(identity).frame(maxWidth: _ios15ContentMaxW, alignment: .leading)))
-        controller.view.backgroundColor = .clear
-        controller.view.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(controller.view)
-        // [IOS15-FIX-CLIP v24] 硬钉 hosting 视图宽度 = 可用宽, 左对齐 + 裁切溢出。
-        // 病根: 四边钉死让 hosting view 跟随已被污染的父宽(表格/代码块不理 maxWidth,
-        // 理想宽 730/100000), 气泡超宽 → 双侧裁字 + 右侧空白 + SwiftUI 抢帧闪字。
-        // 改成硬钉宽度=可用宽(max(屏宽-32,200)): view 帧恒为 358, SwiftUI 据此向 root
-        // 提议 358 → 所有子节点按 358 排布, 超宽帧从根上不再产生; clipsToBounds 把
-        // 任何内部溢出(超宽表格)裁在 358 内 → 气泡恒等于可用宽。
-        let _ios15AvailW = max(UIScreen.main.bounds.width, 200)  // [V36-TRACKPARENT] 保留(兼容旧断言), 宽度约束已改与父等宽
-        controller.view.clipsToBounds = true
-        NSLayoutConstraint.activate([
-                controller.view.leadingAnchor.constraint(equalTo: leadingAnchor),
-                // [V36-TRACKPARENT] 与父等宽(删掉写死的 _ios15AvailW 常量约束):
-                // hosting 视图是 cell contentView 的填充子视图, 父宽即真值,
-                // 天然跟随旋转/分屏/过渡态, 不再用 UIScreen 常量近似。
-                controller.view.trailingAnchor.constraint(equalTo: trailingAnchor),
-                controller.view.topAnchor.constraint(equalTo: topAnchor),
-                controller.view.bottomAnchor.constraint(equalTo: bottomAnchor),
-            ])
-        host = controller
-        // [V61-MONO] 走到重建路径 = 内容标识换了(新消息/复用), 锁重置。
+        renderGeneration &+= 1
+        renderedSample = nil
+        publishedRenderSample = nil
         ios15MonoH = 0
-        shrinkCandidate = 0
-        shrinkCandidateAt = 0
         ios15MonoHW = 0
-        // Never carry a previous item's geometry into this new graph.
         ios15LastGoodFitH = 0
-        hostedContentIdentity = identity
+        guard let config = config as? UIHostingConfiguration<Content> else { return }
+        hostedContentIdentity = config.contentIdentity
+        let controller = UIHostingController(rootView: AnyView(EmptyView()))
+        controller.view.backgroundColor = .clear
+        controller.view.clipsToBounds = true
+        host = controller
+        installRoot(config, width: resolvedHostingWidth(bounds.width))
+        // addChild must precede insertion and didMove must follow it.
+        reconcileHostParent()
+        installHostedView(controller)
     }
+
 }
 
 public struct UIHostingConfiguration<Content: View>: UIContentConfiguration {

@@ -47,7 +47,8 @@ final class LongTextContainerLayoutTests: XCTestCase {
     func testLiveFittingGrowsPast2007AndFreshViewAgrees() {
         NSTextContainerSetSizeGuard.install()
         func makeView() -> SelectableMarkdownTextView {
-            let view = SelectableMarkdownTextView(frame: CGRect(x: 0, y: 0, width: 358, height: 500), textContainer: nil)
+            let view = SelectableMarkdownTextView()
+            view.frame = CGRect(x: 0, y: 0, width: 358, height: 500)
             view.isScrollEnabled = false
             view.textContainerInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
             view.textContainer.lineFragmentPadding = 0
@@ -71,5 +72,42 @@ final class LongTextContainerLayoutTests: XCTestCase {
         XCTAssertGreaterThan(full, 3000)
         XCTAssertEqual(measure(makeView(), count: 40), full, accuracy: 1,
                        "Fresh/reentered and incrementally updated rendering must agree")
+    }
+
+    func testSameWidthClippedContainerFitsLikeFreshFullContainer() {
+        NSTextContainerSetSizeGuard.install()
+        let content = NSAttributedString(string: paragraphs(12), attributes: [
+            .font: UIFont.systemFont(ofSize: 17)
+        ])
+        func makeView() -> SelectableMarkdownTextView {
+            let view = SelectableMarkdownTextView()
+            view.frame = CGRect(x: 0, y: 0, width: 358, height: 120)
+            view.isScrollEnabled = false
+            view.textContainerInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
+            view.textContainer.lineFragmentPadding = 0
+            view.textContainer.widthTracksTextView = false
+            view.textContainer.heightTracksTextView = false
+            view.attributedText = content
+            return view
+        }
+        let fresh = makeView()
+        fresh.textContainer.size = CGSize(width: 358, height: 100000)
+        let expected = fresh.sizeThatFits(
+            CGSize(width: 358, height: CGFloat.greatestFiniteMagnitude)).height
+        XCTAssertGreaterThan(expected, 500)
+
+        let reused = makeView()
+        // Same content and same width. Only the prior visible container height
+        // changes, as after leaving/reentering a row or a keyboard resize.
+        for priorHeight: CGFloat in [120, 280, 480, 120] {
+            reused.textContainer.size = CGSize(width: 358, height: priorHeight)
+            reused.layoutManager.ensureLayout(for: reused.textContainer)
+            let fitted = reused.sizeThatFits(
+                CGSize(width: 358, height: CGFloat.greatestFiniteMagnitude)).height
+            XCTAssertEqual(fitted, expected, accuracy: 1,
+                           "Full demand must not depend on the previous visible height")
+            XCTAssertEqual(reused.textContainer.size.height, priorHeight,
+                           "A fitting query must restore the live container height")
+        }
     }
 }
