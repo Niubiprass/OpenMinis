@@ -55,7 +55,7 @@ class RenderContracts(unittest.TestCase):
         self.assertIn('identity == hostedContentIdentity', s)
         self.assertIn('_V63Probe.hitFast()', s)
         self.assertIn('_V63Probe.hitRebuild()', s)
-        self.assertIn('hostedContentIdentity = identity', s)
+        self.assertIn('hostedContentIdentity = config.contentIdentity', s)
         self.assertIn('ios15LastGoodFitH = 0', s)
         cells = source('src/ios/Agent/MessageList/CollectionViewMessageListV3.swift')
         self.assertEqual(cells.count('applyContentConfiguration(config.ios15ContentIdentity(item))'), 4)
@@ -112,7 +112,7 @@ class RenderContracts(unittest.TestCase):
         self.assertIn('protocol IOS15HostingHeightResettable: AnyObject', hosting)
         self.assertIn('func resetIOS15HostingHeightForConfirmedShrink()', hosting)
         self.assertIn('ios15MonoH = 0', hosting)
-        self.assertIn('if ios15MonoH > 1, height > 1, height < ios15MonoH - 8', hosting)
+        self.assertIn('if ios15MonoH > 0, (height > 1 && height < ios15MonoH - 8) || (emptyFooter && height == 0)', hosting)
         # Reproduce 08:30 trace; reject normal host padding and live streams.
         def eligible(need, inner, outer, cell, streaming=False, deferred=False):
             return need > 4 and inner-need > 80 and abs(outer-need) < 8 \
