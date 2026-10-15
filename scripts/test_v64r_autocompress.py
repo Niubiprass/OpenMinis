@@ -16,6 +16,9 @@ branch = vm.split('budgetCompactionMadeNoProgress = sizeAfter >= sizeBefore',1)[
 assert 'continue' in branch and 'turnCount -= 1' in branch
 assert 'if budgetCompactionMadeNoProgress { break }' not in vm
 assert 'private var lastFooterReflowAt' in (root/'src/ios/Agent/MessageList/MessageListLayout.swift').read_text()
+assert 'compactionQueueBlockedSessionId' in vm and 'guard !isQueueBlockedByCompaction' in vm
+assert 'previousSummary: summary1' in compaction
+assert '* 1.5' in policy
 print('Automatic compression source contracts: PASS (not device tests)')
 start = policy.index('struct AutoCompactionBudget {')
 end = policy.index('// MARK: - Outbound context measurement', start)

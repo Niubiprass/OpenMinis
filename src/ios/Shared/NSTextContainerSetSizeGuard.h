@@ -14,10 +14,11 @@
 //  Repeated enough times this exceeds the 10s scene-update watchdog
 //  and the system kills the app with 0x8BADF00D.
 //
-//  This guard swizzles setSize: and short-circuits redundant calls in
-//  the same runloop tick. It does NOT modify the size value itself,
-//  it only skips the work when the new size equals the cached size
-//  *and* the same container has already been hit in this tick.
+//  This guard swizzles setSize:, rejects invalid geometry, bounds
+//  unbounded proposals to 100000pt, and suppresses redundant/reentrant
+//  calls in the same runloop tick. Legitimate heights through 100000pt
+//  are preserved; an unbounded fitting proposal must never be reduced
+//  to a short-content estimate such as 2000pt.
 //
 //  Logs a warning when a short-circuit fires so we can monitor how
 //  often this rescues us in production.

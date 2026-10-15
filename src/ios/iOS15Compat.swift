@@ -511,6 +511,8 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         if !(size.height > 0) {
             size = host.view.sizeThatFits(CGSize(width: width, height: 0))
         }
+        let diagnosticRawH = size.height
+        let diagnosticLastGoodH = ios15LastGoodFitH
         var height = size.height
         // [v25] 仍失败且有历史好值 → 用历史好值兜底, 避免塌缩成 0。
         if !(height > 0), ios15LastGoodFitH > 1 {
@@ -526,7 +528,8 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         // 157pt)直接上屏 —— 那就是用户看到的整屏跳动。
         if width != ios15MonoHW { ios15MonoHW = width; ios15MonoH = 0 }
         if ios15MonoH > 1, height > 1, height < ios15MonoH - 8 {
-            if ios15MonoH - height > 80 {
+            // Include small holds too; retain per-host throttling, not a size gate.
+            do {
                 let now = CACurrentMediaTime()
                 if now - lastHeightHoldLogAt > 0.5 {
                     lastHeightHoldLogAt = now
@@ -535,7 +538,8 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
                     let cell = owner as? UICollectionViewCell
                     let cv = cell?.superview as? UICollectionView
                     let index = cell.flatMap { cv?.indexPath(for: $0)?.item } ?? -1
-                    print("[V64R-HOST-HOLD] idx=\(index) measured=\(String(format: "%.1f", height)) locked=\(String(format: "%.1f", ios15MonoH))")
+                    let itemID = (hostedContentIdentity?.base as? MessageListItem)?.scrollDiagnosticID ?? 0
+                    print("[V64R-HOST-HOLD] item=\(itemID) cellItem=\((cell as? SelfSizingCell)?.scrollDiagnosticID ?? 0) host=\(UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque())) cell=\(cell.map { UInt(bitPattern: Unmanaged.passUnretained($0).toOpaque()) } ?? 0) idx=\(index) incoming=\(targetSize.height) raw=\(diagnosticRawH) measured=\(height) lastGood=\(diagnosticLastGoodH) locked=\(ios15MonoH) final=\(ios15MonoH) width=\(width) tracking=\(cv?.isTracking == true ? 1 : 0) dragging=\(cv?.isDragging == true ? 1 : 0) decel=\(cv?.isDecelerating == true ? 1 : 0)")
                 }
             }
             height = ios15MonoH

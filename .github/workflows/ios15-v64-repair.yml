@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ios15-v64-repair]
-    paths: ['src/ios/**', 'scripts/test_v64r_*.py', 'scripts/v64r_package.py', 'deps/build_rclone_ios.sh', '.github/workflows/ios15-v64-repair.yml']
+    paths: ['src/ios/**', 'scripts/test_v64r_*.py', 'scripts/test_scroll_deferred_identity.py', 'scripts/test_longtext_container_layout.py', 'scripts/test_thinking_visibility.py', 'scripts/test_stream_text_fade_source.py', 'scripts/v64r_package.py', 'deps/build_rclone_ios.sh', '.github/workflows/ios15-v64-repair.yml']
 
 permissions:
   contents: read
@@ -37,6 +37,10 @@ jobs:
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_autocompress.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_attribute_prefix.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_live_assistant.py
+          # Three-agent source contracts; Swift helpers fail closed on macOS.
+          python3 scripts/test_scroll_deferred_identity.py
+          python3 scripts/test_longtext_container_layout.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_thinking_visibility.py
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
       - uses: actions/setup-go@v5
@@ -83,7 +87,7 @@ jobs:
             -derivedDataPath DerivedData -clonedSourcePackagesDirPath SPMCache \
             -parallelizeTargets -jobs 4 CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
-            CURRENT_PROJECT_VERSION=160644 \
+            CURRENT_PROJECT_VERSION=160645 \
             SWIFT_OPTIMIZATION_LEVEL=-Osize build 2>&1 | tee build-v64r.log
       - name: Package without adding elevated entitlements
         run: |
@@ -97,15 +101,15 @@ jobs:
           python3 scripts/v64r_package.py Payload/Minis.app
           /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Payload/Minis.app/Info.plist
           xcrun vtool -show-build Payload/Minis.app/Minis | tee minos-v64r.txt
-          zip -qry Minis-160644-Repair4-iOS15.5.ipa Payload
-          unzip -tq Minis-160644-Repair4-iOS15.5.ipa
+          zip -qry Minis-160645-Repair5-iOS15.5.ipa Payload
+          unzip -tq Minis-160645-Repair5-iOS15.5.ipa
           shasum -a 256 Minis-160644-Repair4-iOS15.5.ipa > SHA256SUMS
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Minis-160644-Repair4-iOS15.5
+          name: Minis-160645-Repair5-iOS15.5
           path: |
-            Minis-160644-Repair4-iOS15.5.ipa
+            Minis-160645-Repair5-iOS15.5.ipa
             SHA256SUMS
             minos-v64r.txt
           retention-days: 30

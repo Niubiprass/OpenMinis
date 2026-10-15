@@ -30,8 +30,6 @@ static const NSInteger kStormForwardLimit = 40;
 // 流式消息病态循环。1e5(≈100000pt ≈ 16× 最高真实气泡) 既保留"足够高不裁真实
 // 内容", 又给 CoreText 一个有限终点 -> 单次 typeset 成本有界。
 static const CGFloat kMaxContainerHeight = 1e5;
-// [V38C-PROBEH] 被识别为 intrinsic 哨兵的 setSize 累计次数 (诊断用)。
-static NSUInteger gProbeHeightCount = 0;
 
 // Monotonic tick id, bumped from a runloop observer (BeforeWaiting).
 // Two setSize: calls within the same tick share the same value here.
@@ -111,48 +109,14 @@ static void minis_NSTextContainer_setSize(id self, SEL _cmd, CGSize newSize) {
         }
         return;
     }
-    // [V38C-PROBEH] intrinsic 探测哨兵高度收敛。
-    //
-    // 背景 (minis-2026-10-03 6.log, v37 实测): setSize: size=358.0x100000.0
-    // 出现 87 次(最高频), totalShortCircuits 累计 2913, tick 横跨 1586~12402。
-    // 根因: kMaxContainerHeight 恰好 = 1e5 = 100000, 而这里是 `<=` 边界 → 100000
-    // **恰好放行**; 熔断只丢"同 tick 同尺寸", 这些调用跨 tick 尺寸相同 → 每个
-    // 新 tick 重新初始化并真跑一次 CoreText 在 358x100000 上排版, 熔断形同虚设。
-    //
-    // 100000 一定是错的: 它是 intrinsic 探测的哨兵值(与 v37 处理的 lineFrag.width
-    // = 10M 同源), 只想让 TextKit 报"我不约束高度"; 真实气泡最高 ~1748pt
-    // (同日志实测 cell 高上限), 100000 是它的 57 倍。按 100000 高排版后 TextKit
-    // 认为下方还有 ~98000pt 假空白, usedRect/高度回报都不可信。
-    //
-    // 修法: 高度 >= 3000 判定为探测哨兵, 压到 2000。
-    //
-    // 【v39 实测修正】初版取 8000/4000 过于保守: log7 显示 4000 反而成了新的最高频
-    // (358x4000 × 131 次), 因为 4000 仍远超真实需求。log7 实测真实气泡最高只有
-    // **901.3pt**(FIRST-MEASURE newH 与 needH 双向确认), 3000 已有 3.3× 余量,
-    // 2000 也有 2.2× 余量。既保持"真实尺寸零影响", 又能把哨兵排版成本再降一半。
-    // 哨兵本身不丢弃(下游需要它做 max-width/高度发现), 只是不再让 CoreText
-    // 在十万点高度上真的排版。
-    //
-    // 【v40 实测: 阈值维持 3000/2000 不动, 不能收紧】
-    // log8 看似"2000 成了最高频 x221"支持收紧, 但 FIRST-MEASURE 的 newH 实证
-    // **真实气泡最高 2002.3pt**, 且 setSize 里真实尺寸已出现 1994.3 / 1863.0 / 1799.0
-    // —— 它们紧贴 2000。若收到 1200/800, 这些**真实排版会被误判成哨兵并压掉**,
-    // 直接制造一轮新的裁字(比现在更隐蔽, 因为只在长文本出现)。
-    // 结论: 2000 不是"新风暴源"而是"真实上限", 221 次命中恰恰说明真实内容这么高。
-    // 风暴的真正解法是消掉哨兵**探测行为**, 而不是压低哨兵值的上限 ——
-    // 那属于 v25/v26 测高链的职责, 不在哨兵钳位这一层。
-    const CGFloat kProbeHeightFloor = 3000.0;
-    const CGFloat kProbeHeightCeiling = 2000.0;
-    if (newSize.height >= kProbeHeightFloor) {
-        if (gProbeHeightCount == 0) {
-            NSLog(@"[TextContainerGuard] [V38C] probe-height %.0f -> %.0f "
-                  @"container=%p",
-                  newSize.height, kProbeHeightCeiling,
-                  (__bridge void *)self);
-        }
-        gProbeHeightCount += 1;
-        newSize.height = kProbeHeightCeiling;
-    }
+    // [T-ios-longtext-container-cap] An unbounded fitting proposal is not
+    // evidence that the CONTENT fits in 2000pt. The former V38C rule mapped
+    // every height >= 3000 (including real 3000..100000pt layouts) to 2000.
+    // On 160644 this stopped TextKit at usedH=1998.1 / fitH=2007 while the
+    // storage kept growing from 1569 to 2764 characters. Re-measurement and
+    // cell-cache invalidation cannot recover glyphs outside that container.
+    // Preserve real heights and use only the existing finite 100000pt bound
+    // below for unbounded proposals. Keep duplicate/storm suppression intact.
     if (newSize.width > 1e5) newSize.width = 1e5;
     // [IOS15-FIX-STORM] 容器高度上限改有限值: 旧版钳到 1e7 仍近乎无限, iOS 15 上
     // 让 fillLayoutHole 对长流式消息病态循环 (多秒主线程卡死)。钳到 kMaxContainerHeight

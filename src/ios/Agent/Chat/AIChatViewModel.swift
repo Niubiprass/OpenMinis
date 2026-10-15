@@ -2785,6 +2785,14 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// schedulers (compactBefore's success tail + compactAndSend's failure
     /// backstop) can't spawn two racing drain tasks for the same compact.
     var postCompactDrainPending = false
+    /// A failed/cancelled compact must not be followed by an epilogue/idle
+    /// drain. Session-scoped, cleared only by a committed compact; explicit
+    /// /compact or Resume may try again, never an automatic queue consumer.
+    var compactionQueueBlockedSessionId: String?
+    var isQueueBlockedByCompaction: Bool {
+        guard let sessionId else { return false }
+        return compactionQueueBlockedSessionId == sessionId
+    }
     /// When non-nil, the next send() acts as an edit: truncates conversation from this
     /// message index and re-sends. Cleared after the edit is applied.
     @Published var editingMessageIndex: Int?
@@ -3653,6 +3661,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// into agentHistory so the model knows to pick up where it left off.
     func resume() {
         guard !isProcessing, canResume else { return }
+        // A failure status/queued row may be last, so handle this BEFORE the
+        // assistant/user tail checks. One explicit tap grants one bounded run.
+        if isQueueBlockedByCompaction {
+            compactAll()
+            return
+        }
         // [T-ios-orphan-user-tail GH#262/#263] A tail of "user turn with no
         // reply at all" has no assistant row to resume INTO — the reply never
         // reached the store, so loadSession rebuilt the transcript ending on
@@ -4892,16 +4906,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // its text, and drop the queue — destroying a message the user is
             // still waiting on.
             if origin == .beforeSend {
-                // Restore all queued compact-and-send messages back to input
-                // (use the last one for inputText since it's the most recent)
-                for queued in promptQueue {
-                    messages.removeAll { $0.queuedPromptId == queued.id }
-                }
-                if let last = promptQueue.last {
-                    inputText = last.text
-                    attachments = last.attachments
-                }
-                promptQueue.removeAll()
+                // Keep every queued text, attachment and placeholder. Restoring
+                // only the last item into the composer silently lost earlier
+                // prompts. Explicit /compact retries; Stop must not drain.
+                compactionQueueBlockedSessionId = sessionId
             }
         }
         endBackgroundProcessing()
@@ -4971,6 +4979,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// directly. Mirrors resumeQueueAfterCancel minus the cancel bookkeeping.
     func startDrainIfIdle(reason: String) {
         guard remoteDeviceId == nil else { return }
+        guard !isQueueBlockedByCompaction else { return }
         guard !isProcessing, !isDrainingQueue, !isCompacting, !postCompactDrainPending else {
             logger.info("📨[DRAIN] startDrainIfIdle(\(reason)) skipped — isProcessing=\(self.isProcessing) draining=\(self.isDrainingQueue) compacting=\(self.isCompacting) postCompactPending=\(self.postCompactDrainPending)")
             return
@@ -5020,6 +5029,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// `internal` (not `private`) so `compactAndSend` in the +Compaction
     /// extension file can drain through this same path after a compact.
     func drainQueuedPrompts() async {
+        guard !isQueueBlockedByCompaction, !isCompacting else { return }
         guard !self.isDrainingQueue else {
             logger.info("📨[DRAIN] Already draining in another task — skipping duplicate drain")
             return
@@ -5041,6 +5051,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 logger.info("📨[DRAIN] Task cancelled — leaving \(self.promptQueue.count) prompt(s) in queue")
                 break
             }
+            guard !isQueueBlockedByCompaction, !isCompacting else { break }
             let queued = self.promptQueue
             self.promptQueue.removeAll()
             logger.info("📨[DRAIN] Draining \(queued.count) queued prompt(s)")
@@ -5168,7 +5179,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
         // Yield once to let any last-moment enqueuePrompt() calls execute
         await Task.yield()
-        if !Task.isCancelled && !self.userDidCancel && !self.promptQueue.isEmpty {
+        if !Task.isCancelled && !self.userDidCancel && !isQueueBlockedByCompaction
+            && !self.promptQueue.isEmpty {
             logger.info("📨[DRAIN] Late arrivals after yield: \(self.promptQueue.count)")
             // Recurse on the INNER worker (we already hold the reentrancy guard)
             // so late-arrival handling isn't skipped by our own guard.
@@ -5193,7 +5205,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         committedBlockCount: inout Int,
         turnUsage: TokenUsage
     ) async -> Bool {
-        guard !promptQueue.isEmpty else { return false }
+        guard !isQueueBlockedByCompaction, !isCompacting, !promptQueue.isEmpty else { return false }
         let queued = promptQueue
         promptQueue.removeAll()
         // Mark corresponding chat messages as no longer queued (remove dashed border + X)
@@ -6405,7 +6417,29 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                     if budgetOnly { budgetCompactionsThisLoop += 1 } else { compactionsThisLoop += 1 }
                     let sizeBefore = measureOutboundContextTokens()
                     logger.info("[Context] In-loop near capacity — auto-compacting (\(compactionsThisLoop)/\(Self.maxInLoopCompactions)) turnCount=\(turnCount) measured=\(sizeBefore) budgetOnly=\(budgetOnly)")
-                    await compactBefore(anchorId, allowDuringProcessing: true, explicitRawAnchor: budgetOnly ? budgetTarget?.rawId : nil)
+                    let compactOutcome = await compactBefore(anchorId, allowDuringProcessing: true, explicitRawAnchor: budgetOnly ? budgetTarget?.rawId : nil)
+                    logger.info("[CompactDiag] in-loop outcome=\(compactOutcome.rawValue) budgetOnly=\(budgetOnly)")
+                    // Failure is not evidence that a successful summary cannot shrink
+                    // context. Stop resumably, retaining history/queue for same-session retry.
+                    if Task.isCancelled || compactOutcome == .cancelled {
+                        compactionQueueBlockedSessionId = sessionId
+                        canResume = true
+                        hitTurnLimit = false
+                        break loopLabel
+                    }
+                    if compactOutcome == .failed {
+                        compactionQueueBlockedSessionId = sessionId
+                        appendSystemInfo("Compaction failed. Retry compaction in this conversation when the model or connection is available. Original messages and queued prompts are retained.", icon: "arrow.down.right.and.arrow.up.left")
+                        canResume = true
+                        hitTurnLimit = false
+                        break loopLabel
+                    }
+                    if compactOutcome == .skipped {
+                        if budgetOnly { budgetCompactionMadeNoProgress = true }
+                        else { lastInLoopCompactionMadeNoProgress = true }
+                        turnCount -= 1
+                        continue
+                    }
                     let sizeAfter = measureOutboundContextTokens()
                     if budgetOnly {
                         budgetCompactionMadeNoProgress = sizeAfter >= sizeBefore

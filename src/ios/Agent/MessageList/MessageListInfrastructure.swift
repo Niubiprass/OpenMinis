@@ -28,6 +28,23 @@ enum MessageListItem: Hashable {
     /// Footer area: typing indicator, error, resume, usage.
     case assistantFooter(UUID)
 
+    /// Deterministic numeric diagnostic token (kind + UUIDs); never hashes body
+    /// text. Correlates reuse/host/PLAF across a process without logging UUIDs.
+    /// FNV-1a is diagnostic only, not the diffable identity (collisions possible).
+    var scrollDiagnosticID: UInt64 {
+        let identity: String
+        switch self {
+        case .wholeMessage(let id): identity = "0:" + id.uuidString
+        case .assistantHeader(let id): identity = "1:" + id.uuidString
+        case .assistantBlock(let message, let block):
+            identity = "2:" + message.uuidString + ":" + block.uuidString
+        case .assistantFooter(let id): identity = "3:" + id.uuidString
+        }
+        return identity.utf8.reduce(UInt64(14695981039346656037)) {
+            ($0 ^ UInt64($1)) &* 1099511628211
+        }
+    }
+
     /// The message ID this item belongs to.
     var messageId: UUID {
         switch self {
@@ -224,6 +241,8 @@ class SelfSizingCell: UICollectionViewCell {
     /// `indexPath(for:) == nil` (idx=-1) window during reuse, where an
     /// index-based write would miss.
     var contentKey: String?
+    /// Set by configureCell from MessageListItem, not index/content length.
+    var scrollDiagnosticID: UInt64 = 0
 
     #if DEBUG
     /// [T-ios-scroll-metrics-ring] Stable content-hash identity (set by
@@ -268,6 +287,8 @@ class SelfSizingCell: UICollectionViewCell {
     override func preferredLayoutAttributesFitting(
         _ layoutAttributes: UICollectionViewLayoutAttributes
     ) -> UICollectionViewLayoutAttributes {
+        // Capture scalar values before super can mutate the incoming attributes.
+        let diagnosticIncomingH = layoutAttributes.size.height
         // [IOS15-FIX] Clamp a bogus proposed width before ANY measure path
         // runs. On iOS 15 the proposed width is transiently garbage
         // (895 / 1382 / 1e7) during recursive layout passes; measuring at it
@@ -509,6 +530,7 @@ class SelfSizingCell: UICollectionViewCell {
             return layoutAttributes
         }
         let attrs = superAttrs
+        let diagnosticSuperH = superAttrs.size.height
 
         // Same-width cache hit (no time bound). Same rationale as the
         // dedup-window above but covers the broader "width never changed"
@@ -760,9 +782,15 @@ class SelfSizingCell: UICollectionViewCell {
         let _v64tk = _ios15TkSum
         let _v64grew = _ios15Reconciled >= _v64est - 0.5
         let _v64tkFresh = _ios15Found && _v64tk > _v64est + 0.5
-        if _v64grew && !_v64tkFresh, _v64est > 4 {
-            Self.sizingLogger.info("[CellSizing][V64-CONVERGE] hold est=\(String(format: "%.1f", _v64est)) recomputed=\(String(format: "%.1f", _ios15Reconciled)) tk=\(String(format: "%.1f", _v64tk)) — 未真重算, 保留 est 阻断累加")
+        let diagnosticReconciledH = _ios15Reconciled
+        let diagnosticHeld = _v64grew && !_v64tkFresh && _v64est > 4
+        if diagnosticHeld {
             _ios15Reconciled = _v64est
+        }
+        // One line per convergence decision, numeric identities/heights only.
+        // Do not infer a real growth rejection from est == raw alone.
+        if diagnosticHeld || abs(_ios15Reconciled - diagnosticSuperH) > 0.5 {
+            Self.sizingLogger.info("[CellSizing][V64-CONVERGE] item=\(self.scrollDiagnosticID) cell=\(UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque())) idx=\(idx) incoming=\(diagnosticIncomingH) super=\(diagnosticSuperH) raw=\(fittingSize.height) reconciled=\(diagnosticReconciledH) final=\(_ios15Reconciled) tkFound=\(_ios15Found ? 1 : 0) tk=\(_v64tk) hold=\(diagnosticHeld ? 1 : 0) gen=\(gen)")
         }
         fittingSize.height = _ios15Reconciled
         attrs.size.height = fittingSize.height
@@ -861,6 +889,7 @@ class SelfSizingCell: UICollectionViewCell {
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        scrollDiagnosticID = 0
         lastComputedHeight = nil
         lastComputedWidth = nil
         lastMeasureMediaTime = nil

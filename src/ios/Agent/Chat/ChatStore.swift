@@ -2261,14 +2261,17 @@ actor ChatStore {
 
     /// Extract a snippet around the first keyword match, up to maxLength characters.
     private static func keywordSnippet(from text: String, keywords: [String], maxLength: Int) -> String {
-        guard !text.isEmpty else { return "" }
-        let lower = text.lowercased()
+        guard !text.isEmpty, maxLength > 0 else { return "" }
 
-        // Find earliest keyword match position
+        // Search the ORIGINAL string: lowercasing may change Unicode length
+        // (e.g. İ), so indices from a lowercased copy cannot index `text`.
         var earliest = text.count
-        for kw in keywords {
-            if let range = lower.range(of: kw.lowercased()) {
-                let pos = text.distance(from: text.startIndex, to: range.lowerBound)
+        for kw in keywords where !kw.isEmpty {
+            if let range = text.range(of: kw, options: .caseInsensitive) {
+                // A match can begin inside an extended grapheme cluster.
+                // Snap back to its Character boundary before distance/index.
+                let boundary = text.indices.last(where: { $0 <= range.lowerBound }) ?? text.startIndex
+                let pos = text.distance(from: text.startIndex, to: boundary)
                 earliest = min(earliest, pos)
             }
         }
@@ -4088,6 +4091,14 @@ actor ChatStore {
     }
 
     // MARK: - Compact Markers
+
+    /// Commit point for compaction: cancellation is checked on the store actor,
+    /// without suspension between the check and SQLite insertion.
+    func insertCompactMarkerUnlessCancelled(_ marker: CompactMarker) -> Bool {
+        guard !Task.isCancelled else { return false }
+        insertCompactMarker(marker)
+        return getCompactMarker(id: marker.id) != nil
+    }
 
     /// Insert a compact marker after a successful compaction.
     func insertCompactMarker(_ marker: CompactMarker) {

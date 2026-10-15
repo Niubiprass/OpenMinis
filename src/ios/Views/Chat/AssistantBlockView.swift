@@ -37,6 +37,7 @@ struct AssistantBlockView: View {
                 block: block,
                 isStreaming: isActiveMessage && message.blocks.last?.id == block.id
             )
+            .id(block.id) // Never carry frozen scroll/text @State into a reused block.
             .padding(.vertical, 2)
         case .shellTool:
             ToolCapsuleView(block: block, icon: "terminal", accentColor: .green,
@@ -901,13 +902,16 @@ struct ThinkingBlockView: View {
                     guard isTruncated else { return block.content }
                     let startIdx = block.content.index(block.content.endIndex, offsetBy: -windowSize)
                     let cleanStart = block.content[startIdx...].firstIndex(of: "\n")
-                        .map { block.content.index(after: $0) } ?? startIdx
+                        .map { block.content.index(after: $0) }
+                        .flatMap { $0 < block.content.endIndex ? $0 : nil } ?? startIdx
                     return String(block.content[cleanStart...])
                 }()
 
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
+                // A vertical ScrollView has no intrinsic height. maxHeight alone
+                // lets an iOS 15 hosting cell reuse a zero/old proposal. A hidden
+                // copy of the SAME windowed content supplies the natural height;
+                // the bounded overlay scrolls without taking part in self-sizing.
+                let thinkingBody = VStack(alignment: .leading, spacing: 0) {
                             if isTruncated {
                                 Text("Showing last \(displayContent.count / 1000)K of \(total / 1000)K characters", comment: "Thinking window truncation hint")
                                     .font(.system(size: 11))
@@ -936,8 +940,15 @@ struct ThinkingBlockView: View {
                                 .padding(.bottom, 10)
                                 .id("thinkingBottom")
                         }
-                    }
-                    .frame(maxHeight: 300)
+                thinkingBody
+                    .fixedSize(horizontal: false, vertical: true)
+                    .hidden()
+                    .accessibilityHidden(true)
+                    .frame(maxHeight: 300, alignment: .top)
+                    .clipped()
+                    .overlay(alignment: .topLeading) {
+                        ScrollViewReader { proxy in
+                            ScrollView { thinkingBody }
                     // [T-thinking-scroll-followback GH#125] User-intent gate,
                     // Android parity (ChatAssistantMessageUI.kt): mark
                     // scrolled-away ONLY when a real finger drag moved the view
@@ -998,7 +1009,8 @@ struct ThinkingBlockView: View {
                             frozenThinkingContent = nil
                         }
                     }
-                }
+                        }
+                    }
             }
         }
         // [T-thinking-stream-jank] Hitch monitor runs while this block is

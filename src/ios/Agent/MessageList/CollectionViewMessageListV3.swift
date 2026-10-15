@@ -1341,6 +1341,7 @@ extension CollectionViewMessageListV3 {
 
         private func configureCell(_ cell: SelfSizingCell, item: MessageListItem, indexPath: IndexPath) {
             guard let vm else { return }
+            cell.scrollDiagnosticID = item.scrollDiagnosticID
             let configStart = CACurrentMediaTime()
             cellConfigCount += 1
             if cellConfigCount == 1 {
@@ -2271,6 +2272,17 @@ extension CollectionViewMessageListV3 {
                 .sink { [weak self] update in
                     guard let self else { return }
                     self.pendingTextLayoutItems.insert(.assistantBlock(update.messageId, update.blockId))
+                    // Empty text -> first committed pixels changes waiting footer
+                    // visibility without changing blocks.count or message identity.
+                    if let vm = self.vm,
+                       let message = vm.messages.first(where: { $0.id == update.messageId }),
+                       let bridge = self.cellBridges[message.id] {
+                        let shape = FooterHeightShape(bridge: bridge, message: message)
+                        if self.lastFooterShapeByMessage[message.id] != shape {
+                            self.pendingTextLayoutItems.insert(.assistantFooter(message.id))
+                            self.updateBridge(bridge, message: message, in: vm.messages)
+                        }
+                    }
                     self.flushStreamingLayout()
                 }
                 .store(in: &subscriptions)
@@ -2615,8 +2627,13 @@ extension CollectionViewMessageListV3 {
             thinkingLayoutSubs = thinkingLayoutSubs.filter { ids.contains($0.key) }
             for (mid, block) in blocks where thinkingLayoutSubs[block.id] == nil {
                 let bid = block.id
-                thinkingLayoutSubs[bid] = block.$content
-                    .dropFirst()
+                // Observe model state too: a view onChange/notification is not
+                // delivered reliably for offscreen cells or nested SwiftUI updates.
+                // Deliver after @Published's willSet so estimates see committed data.
+                thinkingLayoutSubs[bid] = Publishers.Merge(
+                    block.$content.dropFirst().map { _ in () },
+                    block.$isThinkingExpanded.removeDuplicates().dropFirst().map { _ in () }
+                )
                     .receive(on: DispatchQueue.main)
                     .sink { [weak self] _ in
                         guard let self else { return }
@@ -2666,8 +2683,13 @@ extension CollectionViewMessageListV3 {
             // drain them even if processing has already ended.
             if !pendingTextLayoutItems.isEmpty, let ds = dataSource {
                 let dirty = pendingTextLayoutItems.filter { item in
-                    guard case .assistantBlock(let mid, let bid) = item else { return false }
-                    return vm.messages.contains { $0.id == mid && $0.blocks.contains { $0.id == bid } }
+                    switch item {
+                    case .assistantBlock(let mid, let bid):
+                        return vm.messages.contains { $0.id == mid && $0.blocks.contains { $0.id == bid } }
+                    case .assistantFooter(let mid):
+                        return vm.messages.contains { $0.id == mid && $0.role == .assistant }
+                    default: return false
+                    }
                 }
                 pendingTextLayoutItems = dirty
                 for item in dirty {
@@ -2892,10 +2914,11 @@ extension CollectionViewMessageListV3 {
                                     layout.invalidateBlockMemos(messageId: mid, blockId: bid)
                                     self.pendingTextLayoutItems.insert(item)
                                 }
+                                // Use the identity-based coalesced path only. It
+                                // may apply a NEW snapshot; applying `snapshot`
+                                // captured above afterwards can resurrect removed
+                                // rows or drop blocks appended by that flush.
                                 self.flushStreamingLayout()
-                                var snap = snapshot
-                                snap.reconfigureItems([item])
-                                self.dataSource?.apply(snap, animatingDifferences: false)
                                 layout.invalidateLayout()
                                 tlog.info("[ThinkingCollapse] HIT block=\(blockId.uuidString.prefix(8)) idx=\(i) cellFound=\(cellOpt != nil) frameH=\(String(format: "%.1f", frameH)) beforeLayout=\(beforeLayout.map { String(format: "%.1f", $0) } ?? "nil") beforePrecalc=\(beforePrecalc.map { String(format: "%.1f", $0) } ?? "nil")")
                                 // Defer one runloop tick to capture the

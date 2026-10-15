@@ -296,7 +296,7 @@ enum ContextSizeMeter {
             }
         }
         let tokens = Double(letters) / 4.5 + Double(digits) / 2.0
-            + Double(asciiOther) * 0.35 + Double(nonASCII)
+            + Double(asciiOther) * 0.35 + Double(nonASCII) * 1.5
         return Int(tokens.rounded(.up))
     }
 

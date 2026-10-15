@@ -320,15 +320,16 @@ final class MessageListLayout: UICollectionViewLayout {
     /// Heights measured by preferredLayoutAttributesFitting while the user
     /// was scrolling.  Stored here (not in heightCache) so prepare() keeps
     /// using the old height → contentSize stays frozen.  Applied on thaw
-    /// via `applyDeferredHeights()`.
+    /// via `applyDeferredHeights()`. Indices are atomically remapped by
+    /// MessageListItem in updateCacheForSnapshot, and cleared on reset or a
+    /// newer accepted measurement so an old shrink cannot overwrite new work.
     private var deferredHeights: [Int: CGFloat] = [:]
 
     /// Number of pending deferred heights (for diagnostics).
     var deferredHeightCount: Int { deferredHeights.count }
 
-    /// Move deferred heights into the real cache.  Call after scrolling ends.
-    /// Only writes if the cache doesn't already have a value (GeometryReader
-    /// may have reported a more precise height while we were deferring).
+    /// Reconcile parked heights after scrolling ends. Entries follow snapshot
+    /// item identity and are cancelled when a newer measurement is accepted.
     func applyDeferredHeights() {
         guard !deferredHeights.isEmpty else { return }
         // [SettleJitter] Evidence log: classify every deferred correction by
@@ -548,6 +549,8 @@ final class MessageListLayout: UICollectionViewLayout {
             : (estimatedHeights[index] != nil ? "est" : "def"))
 
         // Cache the new height. prepare() will use this to compute correct totalHeight.
+        // A newer accepted correction supersedes any browse-time shrink.
+        deferredHeights.removeValue(forKey: index)
         heightCache[index] = newHeight
 
         // [SettleJitter] Evidence log (H2): a correction passing through DURING
@@ -849,11 +852,15 @@ final class MessageListLayout: UICollectionViewLayout {
         var newEstimated: [Int: CGFloat] = [:]
         var newPrecalc: [Int: CGFloat] = [:]
         var newConfirmed: Set<Int> = []
+        // Deferred measurements belong to the OLD item, never to its row number.
+        // Rebuild atomically with the other index caches; deleted items are dropped.
+        var newDeferred: [Int: CGFloat] = [:]
         for (newIndex, item) in newIds.enumerated() {
             if let oldIndex = oldIndexByItem[item] {
                 if let h = heightCache[oldIndex] { newCache[newIndex] = h }
                 if let h = precalcHeights[oldIndex] { newPrecalc[newIndex] = h }
                 if let h = estimatedHeights[oldIndex] { newEstimated[newIndex] = h }
+                if let h = deferredHeights[oldIndex] { newDeferred[newIndex] = h }
                 if geometryReaderConfirmed.contains(oldIndex) { newConfirmed.insert(newIndex) }
             }
         }
@@ -861,6 +868,7 @@ final class MessageListLayout: UICollectionViewLayout {
         precalcHeights = newPrecalc
         estimatedHeights = newEstimated
         geometryReaderConfirmed = newConfirmed
+        deferredHeights = newDeferred
         // Positions may now represent different blocks, including tool cards.
         markdownTextKeyByIndex.removeAll()
         v31Shrink.removeAll()
@@ -870,6 +878,8 @@ final class MessageListLayout: UICollectionViewLayout {
     /// Invalidate the cached height for a specific item index, forcing re-measurement.
     /// Use this for the actively streaming message whose height is changing.
     func invalidateHeight(at index: Int, discardPrecalc: Bool = false) {
+        // An explicit content/render-state invalidation supersedes parked work.
+        deferredHeights.removeValue(forKey: index)
         heightCache.removeValue(forKey: index)
         if discardPrecalc { precalcHeights.removeValue(forKey: index) }
         geometryReaderConfirmed.remove(index)
@@ -890,6 +900,7 @@ final class MessageListLayout: UICollectionViewLayout {
     /// from what `preferredLayoutAttributesFitting` returned, bypassing
     /// the unreliable self-sizing cycle.
     func setCachedHeight(_ height: CGFloat, at index: Int) {
+        deferredHeights.removeValue(forKey: index)
         heightCache[index] = height
         geometryReaderConfirmed.insert(index)
     }
@@ -991,6 +1002,7 @@ final class MessageListLayout: UICollectionViewLayout {
 
     /// Clear all cached heights (e.g., on session change).
     func clearHeightCache() {
+        deferredHeights.removeAll()
         heightCache.removeAll()
         precalcHeights.removeAll()
         estimatedHeights.removeAll()

@@ -190,6 +190,11 @@ final class ChatMessage: Identifiable, ObservableObject {
     /// THIS round has started producing.
     var shouldShowTypingIndicator: Bool {
         if blocks.isEmpty { return true }
+        // Providers can announce an empty text block before the first delta.
+        // contentBlockStart clears isAwaitingModelResponse, but an empty Text
+        // renders no pixels. Keep waiting feedback until real output arrives.
+        // A thinking/tool/info header is already visible and suppresses this.
+        if blocks.allSatisfy({ $0.kind == .text && $0.content.isEmpty }) { return true }
         guard isAwaitingModelResponse else { return false }
         return !blocks.contains { block in
             switch block.toolStatus {
