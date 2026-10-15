@@ -855,6 +855,8 @@ class SelfSizingCell: UICollectionViewCell {
         lastComputedHeight = nil
         lastComputedWidth = nil
         lastMeasureMediaTime = nil
+        seededHeight = nil
+        seededWidth = nil
     }
 
     override func prepareForReuse() {

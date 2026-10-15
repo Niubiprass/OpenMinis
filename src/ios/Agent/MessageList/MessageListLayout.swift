@@ -64,8 +64,8 @@ final class MessageListLayout: UICollectionViewLayout {
     /// "not streaming" in `isStreamingCell`, so each content flush took the
     /// visible-cell contentOffsetAdjustment below — dragging a hovering
     /// reader's viewport down by the growth delta on every flush ("can't
-    /// hover on the earlier streaming message"). Ranges are sorted ascending;
-    /// the LAST range keeps the historical open-ended tail semantics.
+    /// hover on the earlier streaming message"). Ranges are sorted ascending
+    /// and bounded so queued user rows after the assistant remain non-streaming.
     ///
     /// [T-streamingcellranges-async-render-race] THREAD SAFETY: this array is
     /// written on the main thread (applySnapshot) but read from `prepare()` /
@@ -666,11 +666,13 @@ final class MessageListLayout: UICollectionViewLayout {
         // do. What remains at that point is exactly this: a self-size
         // correction during scroll with no full re-flow behind it.
         //
-        // The guards that made this safe during first-settle carry over
-        // unchanged — real delta, not a streaming cell (its position is owned
-        // by the pin logic), and coalesced to at most one `prepare()` per
-        // runloop tick so a burst of N corrections cannot go O(N²).
-        if abs(delta) > 0.5, !isStreamingCell(index), !pendingFooterReflow {
+        // Real deltas share one coalesced callback, so a burst of N height
+        // corrections cannot enqueue N independent full-list prepares.
+        // [V64R-QUEUED-REFLOW] A live assistant is not necessarily the tail:
+        // queued user rows may follow it. Pinning adjusts the viewport only;
+        // it cannot update those rows' y positions. Reuse the same coalesced
+        // trailing reflow for live and settled height corrections.
+        if abs(delta) > 0.5, !pendingFooterReflow {
             // [V43-BURST] 涌入型突增的**全表重排**节流 — 见函数 docstring 完整推导。
             //
             // 【关键: 高度在上一行已经落地, 这里只拦 O(items) 的全表 prepare()】
@@ -741,13 +743,9 @@ final class MessageListLayout: UICollectionViewLayout {
         // main, so both a torn read AND a double-read seeing two different
         // states must be avoided.
         let ranges = streamingCellRanges
-        // Tail streaming message keeps the historical open-ended semantics
-        // (`index >= start`): its footer and any late-appended cells count as
-        // streaming so growing tail content never takes the offset adjustment.
-        if let last = ranges.last, index >= last.lowerBound { return true }
-        // Earlier streaming messages (queued-interrupt turns still flushing
-        // tool output) match by their exact item span.
-        // [T-stream-hover-earlier-streaming]
+        // Snapshot ranges already include each live assistant's footer.
+        // Do not extend the last range through queued user/system rows: those
+        // cells must measure normally instead of accepting a streaming precalc.
         return ranges.contains { $0.contains(index) }
     }
 
@@ -871,8 +869,9 @@ final class MessageListLayout: UICollectionViewLayout {
 
     /// Invalidate the cached height for a specific item index, forcing re-measurement.
     /// Use this for the actively streaming message whose height is changing.
-    func invalidateHeight(at index: Int) {
+    func invalidateHeight(at index: Int, discardPrecalc: Bool = false) {
         heightCache.removeValue(forKey: index)
+        if discardPrecalc { precalcHeights.removeValue(forKey: index) }
         geometryReaderConfirmed.remove(index)
         v31Shrink.removeValue(forKey: index)
         v31Bounce.removeValue(forKey: index)

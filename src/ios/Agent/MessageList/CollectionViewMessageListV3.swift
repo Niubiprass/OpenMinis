@@ -1611,7 +1611,10 @@ extension CollectionViewMessageListV3 {
                                   isInitialBridgeSetup: Bool = false) {
             guard let vm else { return }
             let isLast = message.id == messages.last?.id
-            let isActive = isLast && vm.isProcessing
+            // Queued user turns can follow the assistant that is still working.
+            let isLatestAssistant = message.role == .assistant
+                && message.id == Self.latestAssistantMessage(in: messages)?.id
+            let isActive = vm.isProcessing && isLatestAssistant
 
             // [T-ios-plaf-cache-footer-staleness] Snapshot the height-BEARING
             // subset before writing. These four decide whether the footer shows
@@ -1645,8 +1648,8 @@ extension CollectionViewMessageListV3 {
             bridge.onStop = isActive ? { [weak self] in self?.onStop?() } : nil
             bridge.browserPool = vm.browserTabPool
             bridge.toolSnapshots = vm.toolSnapshots
-            bridge.autoRetryAttempt = isLast ? vm.autoRetryAttempt : 0
-            bridge.autoRetryCountdown = isLast ? vm.autoRetryCountdown : 0
+            bridge.autoRetryAttempt = isLatestAssistant ? vm.autoRetryAttempt : 0
+            bridge.autoRetryCountdown = isLatestAssistant ? vm.autoRetryCountdown : 0
             // [T-ios-session-status-mismatch] Defense-in-depth: even if vm.canResume
             // is somehow stale-true and vm.isProcessing hasn't flipped yet, do NOT
             // show the "Interrupted — tap Resume" banner while SessionActivityTracker
@@ -1816,9 +1819,12 @@ extension CollectionViewMessageListV3 {
                     prevBridge.onResume = nil
                 }
             }
-            for msg in messages.dropLast() {
-                if msg.role == .assistant, let b = cellBridges[msg.id], b.isActiveMessage {
-                    b.isActiveMessage = false
+            // Refresh the working assistant even when queued user rows follow it.
+            let workingAssistant = Self.latestAssistantMessage(in: messages)
+            for msg in messages where msg.role == .assistant && msg.id != lastMsg.id {
+                if let b = cellBridges[msg.id],
+                   b.isActiveMessage || msg.id == workingAssistant?.id {
+                    updateBridge(b, message: msg, in: messages)
                 }
             }
             for msg in messages where msg.role == .user {
@@ -3036,6 +3042,9 @@ extension CollectionViewMessageListV3 {
                 heightCacheHits = 0
                 heightCacheMisses = 0
                 heightMeasureSeconds = 0
+                let latestAssistantId = Self.latestAssistantMessage(in: messages)?.id
+                let liveAssistantIds = Self.liveAssistantMessageIds(messages: messages,
+                                                                    isProcessing: vm.isProcessing)
                 for (i, item) in newItems.enumerated() {
                     // [T-ios-scroll-decel-height-drift] Register the stable
                     // content key for this index so a later self-size writes the
@@ -3048,6 +3057,25 @@ extension CollectionViewMessageListV3 {
                     // already computed (see MessageListLayout.invalidationContext).
                     let contentKey = Self.contentKey(for: item, messages: messages, messageIndex: messageIndex)
                     layout.setContentKey(contentKey, at: i)
+                    let itemMessageId = Self.messageId(of: item)
+                    let isLiveCompact = itemMessageId.flatMap { messageIndex[$0] }
+                        .map { messages[$0].role == .systemInfo && messages[$0].isCompactLoading } ?? false
+                    let isLiveItem = isLiveCompact
+                        || (itemMessageId.map { liveAssistantIds.contains($0) } ?? false)
+                    if isLiveItem {
+                        // Stable item identity does not mean stable content. Drop
+                        // both index caches before the cachedHeight fast path;
+                        // the switch below computes a fresh text precalc.
+                        layout.invalidateHeight(at: i, discardPrecalc: true)
+                        layout.invalidateMemo(forKey: contentKey)
+                        // UIKit still uses the OLD snapshot until apply below.
+                        // Resolve by identity, never by this new index.
+                        if let oldIndexPath = dataSource?.indexPath(for: item),
+                           let cell = viewController?.collectionView.cellForItem(at: oldIndexPath) as? SelfSizingCell {
+                            cell.clearCachedHeight()
+                            cell.contentKey = nil
+                        }
+                    }
                     var isMarkdownText = false
                     if case .assistantBlock(let messageId, let blockId) = item,
                        let messageIdx = messageIndex[messageId], messageIdx < messages.count,
@@ -3093,7 +3121,7 @@ extension CollectionViewMessageListV3 {
                         // [T-ios-typing-indicator-scope] Same single source of
                         // truth the view uses, so the seeded height and the
                         // rendered row can never disagree.
-                        let isActive = isLastMsg && vm.isProcessing
+                        let isActive = footerMsgId == latestAssistantId && vm.isProcessing
                             && (footerMsg?.shouldShowTypingIndicator ?? false)
                         footerProminent = hasError || showsResume || isActive
                         layout.setFooterHug(!footerProminent, at: i)
@@ -3105,7 +3133,7 @@ extension CollectionViewMessageListV3 {
                     // Re-entry seed: if we have a real measured height for this
                     // exact content key at this width, use it as precalc — the
                     // cell lands at its true height with zero on-screen jump.
-                    if let memo = layout.measuredHeight(forKey: contentKey, width: cvWidth) {
+                    if !isLiveItem, let memo = layout.measuredHeight(forKey: contentKey, width: cvWidth) {
                         layout.setPrecalcHeight(memo, at: i)
                         continue
                     }
@@ -3442,6 +3470,10 @@ extension CollectionViewMessageListV3 {
             // Skip diffable-data-source apply when items haven't changed —
             // avoids expensive UIKit cell creation/layout on redundant snapshots.
             if newItems == previousSnapshotIds {
+                // Live content can change without any structural diff. The
+                // estimate pass above refreshed its heights; commit positions
+                // even when UIKit does not need another snapshot apply.
+                if vm.isProcessing { viewController?.messageListLayout?.invalidateLayout() }
                 AppLogger(category: "SnapshotDiag").info("[SnapshotDiag] SKIP caller=\(caller) items unchanged (count=\(newItems.count)) — no re-apply")
                 // [T-ios-bg-resume-collapse] …but a SKIP is exactly wrong for a
                 // flush that was DEFERRED across a suspend window. While
@@ -3975,13 +4007,18 @@ extension CollectionViewMessageListV3 {
         /// `configureCell` still tested only `messages.last`, so a growing
         /// earlier message was treated as settled history and got frozen at a
         /// stale height (see the call site for the resulting overlap).
+        static func latestAssistantMessage(in messages: [ChatMessage]) -> ChatMessage? {
+            messages.last(where: { $0.role == .assistant })
+        }
+
         static func liveAssistantMessageIds(messages: [ChatMessage], isProcessing: Bool) -> Set<UUID> {
             guard isProcessing else { return [] }
             var ids: Set<UUID> = []
-            if let last = messages.last, last.role == .assistant {
-                ids.insert(last.id)
+            let latestAssistant = latestAssistantMessage(in: messages)
+            if let latestAssistant {
+                ids.insert(latestAssistant.id)
             }
-            for msg in messages where msg.role == .assistant && msg.id != messages.last?.id {
+            for msg in messages where msg.role == .assistant && msg.id != latestAssistant?.id {
                 let hasLiveTool = msg.blocks.contains { blk in
                     switch blk.toolStatus {
                     case .running, .streaming: return true
