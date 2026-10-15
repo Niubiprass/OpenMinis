@@ -1854,6 +1854,10 @@ extension CollectionViewMessageListV3 {
             #endif
             AppLogger(category: "ScrollDiag").info("[ScrollDiag][rebind] coordinator vm \(hadOld ? "changed" : "was nil") → rebinding subscriptions + resyncing flags")
             subscriptions.removeAll()
+            pendingTextLayoutItems.removeAll()
+            thinkingLayoutSubs.removeAll()
+            pendingStreamingLayout?.cancel()
+            pendingStreamingLayout = nil
             lastMessageSub?.cancel(); lastMessageSub = nil
             lastMessageBlockCountSub?.cancel(); lastMessageBlockCountSub = nil
             lastMessageId = nil
@@ -1935,9 +1939,9 @@ extension CollectionViewMessageListV3 {
                     // many loop turns ran un-rendered, until an unrelated
                     // sheetDismiss/settle happened to flush. Resume always runs
                     // foreground, so applying the snapshot here is safe.
-                    guard self.hasPendingSnapshot else { return }
+                    guard self.hasPendingSnapshot || !self.pendingTextLayoutItems.isEmpty else { return }
                     AppLogger(category: "PendingSnap").info("[PendingSnap] suspend-resume flush applied (hasPendingSnapshot=true, isProcessing=\(vm.isProcessing))")
-                    self.flushPendingSnapshotIfNeeded(caller: "suspend-resume")
+                    self.flushStreamingLayout()
                 }
             suspendResumeSub?.store(in: &subscriptions)
 
@@ -1962,9 +1966,9 @@ extension CollectionViewMessageListV3 {
                     // foreground-resume while the loop is still running must
                     // re-apply the deferred snapshot, or the UI freezes on the
                     // last-rendered tool until an unrelated sheetDismiss/settle.
-                    guard self.hasPendingSnapshot else { return }
+                    guard self.hasPendingSnapshot || !self.pendingTextLayoutItems.isEmpty else { return }
                     AppLogger(category: "PendingSnap").info("[PendingSnap] suspend-resume flush (hasPendingSnapshot=true, isProcessing=\(self.vm?.isProcessing == true))")
-                    self.flushPendingSnapshotIfNeeded(caller: "suspend-resume")
+                    self.flushStreamingLayout()
                 }
                 if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
             }
@@ -2055,6 +2059,7 @@ extension CollectionViewMessageListV3 {
                         // [T-message-list-empty-on-foreground]
                         self.hasPendingSnapshot = false
                         self.applySnapshot(messages: msgs, caller: "bind3-sessionLoad")
+                        if !self.pendingTextLayoutItems.isEmpty { self.flushStreamingLayout() }
                     }
                     if isFirstLoad {
                         // First load: scroll to bottom and clamp.
@@ -2258,6 +2263,15 @@ extension CollectionViewMessageListV3 {
                         }
                         self.remeasureVisibleCells(reason: "foreground(delta=\(accumulated))")
                     }
+                }
+                .store(in: &subscriptions)
+
+            vm.textBlockLayoutSignal
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] update in
+                    guard let self else { return }
+                    self.pendingTextLayoutItems.insert(.assistantBlock(update.messageId, update.blockId))
+                    self.flushStreamingLayout()
                 }
                 .store(in: &subscriptions)
 
@@ -2577,6 +2591,7 @@ extension CollectionViewMessageListV3 {
         // a backstop flush. [T-message-list-empty-on-foreground]
         fileprivate func flushPendingSnapshotIfNeeded(caller: String = "?") {
             guard hasPendingSnapshot else { return }
+            guard vm?.isLoadingSession == false, vm?.streamingUIUpdatesSuspended == false else { return }
             hasPendingSnapshot = false
             let blocks = vm?.messages.last(where: { $0.role == .assistant })?.blocks.count ?? -1
             // [T-ios-scroll-suspend-leak] Include blockCount + isProcessing so a
@@ -2587,7 +2602,32 @@ extension CollectionViewMessageListV3 {
             if let msgs = vm?.messages { applySnapshot(messages: msgs, caller: "flushPending(\(caller))") }
         }
 
+        // Identity-based: queued rows and snapshot inserts must not redirect a
+        // pending text update to whichever cell later occupies the old index.
+        private var pendingTextLayoutItems = Set<MessageListItem>()
+        private var thinkingLayoutSubs: [UUID: AnyCancellable] = [:]
+
+        private func syncThinkingLayoutSubscriptions(_ messages: [ChatMessage]) {
+            let blocks = messages.flatMap { message in
+                message.blocks.filter { $0.kind == .thinking }.map { (message.id, $0) }
+            }
+            let ids = Set(blocks.map { $0.1.id })
+            thinkingLayoutSubs = thinkingLayoutSubs.filter { ids.contains($0.key) }
+            for (mid, block) in blocks where thinkingLayoutSubs[block.id] == nil {
+                let bid = block.id
+                thinkingLayoutSubs[bid] = block.$content
+                    .dropFirst()
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] _ in
+                        guard let self else { return }
+                        self.pendingTextLayoutItems.insert(.assistantBlock(mid, bid))
+                        self.flushStreamingLayout()
+                    }
+            }
+        }
+
         private func flushStreamingLayout() {
+            guard let vm, !vm.isLoadingSession, !vm.streamingUIUpdatesSuspended else { return }
             // Check if a deferred snapshot can now be applied (sheet dismissed).
             flushPendingSnapshotIfNeeded(caller: "flushStreamingLayout")
 
@@ -2617,8 +2657,40 @@ extension CollectionViewMessageListV3 {
 
         /// Actually perform the streaming layout flush + scroll.
         private func doFlushStreamingLayout() {
+            guard let vm, !vm.isLoadingSession, !vm.streamingUIUpdatesSuspended else { return }
             lastStreamingLayoutTime = Date()
             guard let layout = viewController?.messageListLayout else { return }
+            // A block's @Published content does not publish on ChatMessage.
+            // Rebuild estimates on committed batches, not just blocks.count or
+            // array changes. Keep dirty identities while suspended; resume will
+            // drain them even if processing has already ended.
+            if !pendingTextLayoutItems.isEmpty, let ds = dataSource {
+                let dirty = pendingTextLayoutItems.filter { item in
+                    guard case .assistantBlock(let mid, let bid) = item else { return false }
+                    return vm.messages.contains { $0.id == mid && $0.blocks.contains { $0.id == bid } }
+                }
+                pendingTextLayoutItems = dirty
+                for item in dirty {
+                    guard let ip = ds.indexPath(for: item) else { continue }
+                    layout.invalidateHeight(at: ip.item, discardPrecalc: true)
+                    if case .assistantBlock(let mid, let bid) = item {
+                        layout.invalidateBlockMemos(messageId: mid, blockId: bid)
+                    }
+                    (viewController?.collectionView?.cellForItem(at: ip) as? SelfSizingCell)?.clearCachedHeight()
+                }
+                applySnapshot(messages: vm.messages, caller: "text-batch")
+                // Also reconfigure at stream end: live ranges have now cleared,
+                // so the final cell must measure from the complete attributed text.
+                var snapshot = ds.snapshot()
+                let present = Set(snapshot.itemIdentifiers)
+                let changed = dirty.filter { present.contains($0) }
+                pendingTextLayoutItems.subtract(changed)
+                if !changed.isEmpty {
+                    snapshot.reconfigureItems(Array(changed))
+                    ds.apply(snapshot, animatingDifferences: false)
+                }
+                AppLogger(category: "StreamLayout").info("[V64R-TEXT-BATCH] refreshed=\(changed.count) processing=\(vm.isProcessing)")
+            }
             // Always invalidate layout — even during scrolling. The layout's
             // invalidationContext already skips contentOffsetAdjustment when
             // isTracking/isDecelerating, so this won't cause scroll jitter.
@@ -2815,7 +2887,12 @@ extension CollectionViewMessageListV3 {
                                 if let cell = cellOpt {
                                     cell.clearCachedHeight()
                                 }
-                                layout.invalidateHeight(at: i)
+                                layout.invalidateHeight(at: i, discardPrecalc: true)
+                                if case .assistantBlock(let mid, let bid) = item {
+                                    layout.invalidateBlockMemos(messageId: mid, blockId: bid)
+                                    self.pendingTextLayoutItems.insert(item)
+                                }
+                                self.flushStreamingLayout()
                                 var snap = snapshot
                                 snap.reconfigureItems([item])
                                 self.dataSource?.apply(snap, animatingDifferences: false)
@@ -2933,6 +3010,8 @@ extension CollectionViewMessageListV3 {
             // the first occurrence and log, so a data glitch costs one hidden
             // duplicate row instead of a crash.
             newItems = Self.uniqueItems(newItems, caller: caller)
+
+            syncThinkingLayoutSubscriptions(messages)
 
             // Remap height cache + set accurate estimates for ALL item types
             if let layout = viewController?.messageListLayout {

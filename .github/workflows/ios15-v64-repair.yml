@@ -31,6 +31,7 @@ jobs:
       - name: Verify fixed source (never fetch or re-port upstream)
         run: |
           git log -1 --format='%H %s'
+          python3 scripts/test_v64r_text_layout.py
           python3 scripts/test_v64r_render_contracts.py
           python3 scripts/test_stream_text_fade_source.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_autocompress.py
@@ -82,7 +83,7 @@ jobs:
             -derivedDataPath DerivedData -clonedSourcePackagesDirPath SPMCache \
             -parallelizeTargets -jobs 4 CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
-            CURRENT_PROJECT_VERSION=160643 \
+            CURRENT_PROJECT_VERSION=160644 \
             SWIFT_OPTIMIZATION_LEVEL=-Osize build 2>&1 | tee build-v64r.log
       - name: Package without adding elevated entitlements
         run: |
@@ -96,15 +97,15 @@ jobs:
           python3 scripts/v64r_package.py Payload/Minis.app
           /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Payload/Minis.app/Info.plist
           xcrun vtool -show-build Payload/Minis.app/Minis | tee minos-v64r.txt
-          zip -qry Minis-160643-Repair3-iOS15.5.ipa Payload
-          unzip -tq Minis-160643-Repair3-iOS15.5.ipa
-          shasum -a 256 Minis-160643-Repair3-iOS15.5.ipa > SHA256SUMS
+          zip -qry Minis-160644-Repair4-iOS15.5.ipa Payload
+          unzip -tq Minis-160644-Repair4-iOS15.5.ipa
+          shasum -a 256 Minis-160644-Repair4-iOS15.5.ipa > SHA256SUMS
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Minis-160643-Repair3-iOS15.5
+          name: Minis-160644-Repair4-iOS15.5
           path: |
-            Minis-160643-Repair3-iOS15.5.ipa
+            Minis-160644-Repair4-iOS15.5.ipa
             SHA256SUMS
             minos-v64r.txt
           retention-days: 30

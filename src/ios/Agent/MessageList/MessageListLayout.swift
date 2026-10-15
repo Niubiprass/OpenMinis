@@ -981,6 +981,14 @@ final class MessageListLayout: UICollectionViewLayout {
         measuredHeightByContentKey.removeValue(forKey: key)
     }
 
+    /// Evict every content-length/render variant for one block identity.
+    func invalidateBlockMemos(messageId: UUID, blockId: UUID) {
+        let prefix = "b:\(messageId):\(blockId):"
+        for key in Array(measuredHeightByContentKey.keys) where key.hasPrefix(prefix) {
+            measuredHeightByContentKey.removeValue(forKey: key)
+        }
+    }
+
     /// Clear all cached heights (e.g., on session change).
     func clearHeightCache() {
         heightCache.removeAll()

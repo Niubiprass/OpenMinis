@@ -1164,6 +1164,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// re-measures its height (UIKit doesn't always trigger preferredLayoutAttributesFitting
     /// reliably when the SwiftUI body changes inside a UIHostingConfiguration).
     let blockContentFilledSignal = PassthroughSubject<(messageId: UUID, blockId: UUID), Never>()
+    /// Emitted after every committed text batch, including the terminal flush.
+    /// Block observation redraws SwiftUI but does not invalidate collection heights.
+    let textBlockLayoutSignal = PassthroughSubject<(messageId: UUID, blockId: UUID), Never>()
     /// Content offset Y published on each scroll event (for debug jitter monitoring).
     let contentOffsetYSignal = PassthroughSubject<CGFloat, Never>()
     /// Content size height delta signal (for debug jitter monitoring).
@@ -7893,6 +7896,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         }
         if shouldCacheAttributedString {
             cacheAttributedString(for: block)
+        }
+        if let message = messages.first(where: { $0.blocks.contains(where: { $0.id == block.id }) }) {
+            textBlockLayoutSignal.send((messageId: message.id, blockId: block.id))
         }
         // When content transitions from empty to non-empty, signal the collection
         // view to reconfigure the cell. UIHostingConfiguration doesn't always
