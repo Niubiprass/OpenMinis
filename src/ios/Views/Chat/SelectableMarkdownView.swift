@@ -9873,6 +9873,55 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         let _need = sizeThatFits(CGSize(width: lastSizedWidth > 1 ? lastSizedWidth : bounds.width,
                                         height: .greatestFiniteMagnitude)).height
         let _cellH = superview?.frame.size.height ?? 0
+        // [V64R-INNER-SURPLUS] Device repro 08:30:27/43, len=365: TextKit
+        // needs 457pt, the immediate host is already 457pt, but this text
+        // view remains 723pt and its collection cell is cached at 774pt.
+        // Looking only at _cellH misses this surplus and the cached cell never
+        // receives the first shrink that V31 now permits. Repair only a
+        // settled, visible, non-streaming text row at the drag/decel settle
+        // hook; do not change heights during SwiftUI's KVO layout pass.
+        if _need > 4, frame.height - _need > 80,
+           abs(_cellH - _need) < 8,
+           let cell = findCell() as? SelfSizingCell,
+           let cv = findCollectionView(),
+           let ip = cv.indexPath(for: cell),
+           let layout = cv.collectionViewLayout as? MessageListLayout,
+           !layout.deferSelfSizing, !layout.isStreamingCell(ip.item),
+           cell.bounds.height - _need > 80 {
+            let oldTextHeight = frame.height
+            let oldCellHeight = cell.bounds.height
+            var corrected = frame
+            corrected.size.height = _need
+            frame = corrected
+            // Evict the SwiftUI representable's own size cache as well as the
+            // UIKit cell cache: it can otherwise return the old 723pt answer
+            // immediately and write the same 774pt cell height back.
+            if let coord = delegate as? SelectableMarkdownView.Coordinator {
+                coord.cachedSizes.removeAll()
+            }
+            invalidateIntrinsicContentSize()
+            // The host has an independent V61 high-water lock; reset only
+            // this cell's hosting instance after its own TextKit confirms the
+            // oversized text view. Separate untagged host readings are not
+            // assumed to belong to this row.
+            var hostAncestor: UIView? = superview
+            var resetHosts = 0
+            while let view = hostAncestor, view !== cell {
+                if let host = view as? IOS15HostingHeightResettable {
+                    host.resetIOS15HostingHeightForConfirmedShrink()
+                    resetHosts += 1
+                }
+                hostAncestor = view.superview
+            }
+            cell.clearCachedHeight()
+            layout.invalidateHeight(at: ip.item)
+            if let key = cell.contentKey {
+                layout.invalidateMemo(forKey: SelfSizingCell.renderQualifiedKey(key, for: cell))
+            }
+            cellSizeLogger.info("[V64R-INNER-SURPLUS] idx=\(ip.item) text=\(String(format: "%.1f", oldTextHeight))→\(String(format: "%.1f", frame.height)) host=\(String(format: "%.1f", _cellH)) need=\(String(format: "%.1f", _need)) cellWas=\(String(format: "%.1f", oldCellHeight)) hostResets=\(resetHosts)")
+            layout.invalidateLayout()
+            return
+        }
         let _debt = _need - _cellH
         let _stillOwing = _cellH > 1 && _need > 1 && _debt > 1
         // [V62-SURPLUS] 盈余(cell 比 need 高 40pt+)同样触发 settle 纠正 ——

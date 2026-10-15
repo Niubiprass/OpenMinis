@@ -81,7 +81,7 @@ jobs:
             -derivedDataPath DerivedData -clonedSourcePackagesDirPath SPMCache \
             -parallelizeTargets -jobs 4 CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
-            CURRENT_PROJECT_VERSION=160641 \
+            CURRENT_PROJECT_VERSION=160642 \
             SWIFT_OPTIMIZATION_LEVEL=-Osize build 2>&1 | tee build-v64r.log
       - name: Package without adding elevated entitlements
         run: |
@@ -95,15 +95,15 @@ jobs:
           python3 scripts/v64r_package.py Payload/Minis.app
           /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Payload/Minis.app/Info.plist
           xcrun vtool -show-build Payload/Minis.app/Minis | tee minos-v64r.txt
-          zip -qry Minis-160v64-Repair1-iOS15.5.ipa Payload
-          unzip -tq Minis-160v64-Repair1-iOS15.5.ipa
-          shasum -a 256 Minis-160v64-Repair1-iOS15.5.ipa > SHA256SUMS
+          zip -qry Minis-160642-Repair2-iOS15.5.ipa Payload
+          unzip -tq Minis-160642-Repair2-iOS15.5.ipa
+          shasum -a 256 Minis-160642-Repair2-iOS15.5.ipa > SHA256SUMS
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Minis-160v64-Repair1-iOS15.5
+          name: Minis-160642-Repair2-iOS15.5
           path: |
-            Minis-160v64-Repair1-iOS15.5.ipa
+            Minis-160642-Repair2-iOS15.5.ipa
             SHA256SUMS
             minos-v64r.txt
           retention-days: 30

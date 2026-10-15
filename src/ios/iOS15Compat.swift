@@ -371,7 +371,21 @@ private final class _V63Probe {
     }
 }
 
-private final class _HostingContentCellView<Content: View>: UIView, UIContentView {
+/// Narrow escape hatch for a *confirmed* TextKit shrink on a settled row.
+/// Do not remove the hosting high-water guard globally: it also shields
+/// transient attachment measurements from collapsing live cells.
+protocol IOS15HostingHeightResettable: AnyObject {
+    func resetIOS15HostingHeightForConfirmedShrink()
+}
+
+private final class _HostingContentCellView<Content: View>: UIView, UIContentView, IOS15HostingHeightResettable {
+    func resetIOS15HostingHeightForConfirmedShrink() {
+        ios15MonoH = 0
+        ios15MonoHW = 0
+        ios15LastGoodFitH = 0
+        host?.view.invalidateIntrinsicContentSize()
+        invalidateIntrinsicContentSize()
+    }
     private var host: UIHostingController<AnyView>?
     private var appliedHostWidth: CGFloat = 0
 
@@ -449,6 +463,7 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     private var hostedContentIdentity: AnyHashable?
     private var lastLoggedWidth: CGFloat = -1
     private var ios15LastGoodFitH: CGFloat = 0
+    private var lastHeightHoldLogAt: CFTimeInterval = 0
     // [V61-MONO] 高度单调锁状态: (历史最高, 绑定宽度)。宽变即重置。
     private var ios15MonoH: CGFloat = 0
     private var ios15MonoHW: CGFloat = 0
@@ -511,6 +526,18 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         // 157pt)直接上屏 —— 那就是用户看到的整屏跳动。
         if width != ios15MonoHW { ios15MonoHW = width; ios15MonoH = 0 }
         if ios15MonoH > 1, height > 1, height < ios15MonoH - 8 {
+            if ios15MonoH - height > 80 {
+                let now = CACurrentMediaTime()
+                if now - lastHeightHoldLogAt > 0.5 {
+                    lastHeightHoldLogAt = now
+                    var owner: UIView? = superview
+                    while let v = owner, !(v is UICollectionViewCell) { owner = v.superview }
+                    let cell = owner as? UICollectionViewCell
+                    let cv = cell?.superview as? UICollectionView
+                    let index = cell.flatMap { cv?.indexPath(for: $0)?.item } ?? -1
+                    print("[V64R-HOST-HOLD] idx=\(index) measured=\(String(format: "%.1f", height)) locked=\(String(format: "%.1f", ios15MonoH))")
+                }
+            }
             height = ios15MonoH
         }
         if height > ios15MonoH { ios15MonoH = height }

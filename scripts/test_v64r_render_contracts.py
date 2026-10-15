@@ -92,6 +92,37 @@ class RenderContracts(unittest.TestCase):
         self.assertIn('asyncAfter(deadline: .now() + reflowDelay)', s)
         self.assertIn('self.lastFooterReflowAt = CACurrentMediaTime()', s)
 
+    def test_settled_inner_surplus_eviction(self):
+        text = source('src/ios/Views/Chat/SelectableMarkdownView.swift')
+        start = text.index('// [V64R-INNER-SURPLUS] Device repro')
+        end = text.index('let _debt = _need - _cellH', start)
+        repair = text[start:end]
+        for guard in ('frame.height - _need > 80', 'abs(_cellH - _need) < 8',
+                      '!layout.deferSelfSizing', '!layout.isStreamingCell(ip.item)',
+                      'cell.bounds.height - _need > 80'):
+            self.assertIn(guard, repair)
+        actions = ('corrected.size.height = _need', 'coord.cachedSizes.removeAll()',
+                   'invalidateIntrinsicContentSize()', 'cell.clearCachedHeight()',
+                   'layout.invalidateHeight(at: ip.item)', 'layout.invalidateMemo(forKey:',
+                   'layout.invalidateLayout()')
+        for action in actions: self.assertIn(action, repair)
+        self.assertIn('resetIOS15HostingHeightForConfirmedShrink()', repair)
+        self.assertIn(r'hostResets=\(resetHosts)', repair)
+        hosting = source('src/ios/iOS15Compat.swift')
+        self.assertIn('protocol IOS15HostingHeightResettable: AnyObject', hosting)
+        self.assertIn('func resetIOS15HostingHeightForConfirmedShrink()', hosting)
+        self.assertIn('ios15MonoH = 0', hosting)
+        self.assertIn('if ios15MonoH > 1, height > 1, height < ios15MonoH - 8', hosting)
+        # Reproduce 08:30 trace; reject normal host padding and live streams.
+        def eligible(need, inner, outer, cell, streaming=False, deferred=False):
+            return need > 4 and inner-need > 80 and abs(outer-need) < 8 \
+                and not streaming and not deferred and cell-need > 80
+        self.assertTrue(eligible(457, 723, 457, 774))
+        self.assertFalse(eligible(457, 457, 457, 508))
+        self.assertFalse(eligible(457, 723, 457, 774, streaming=True))
+        self.assertFalse(eligible(457, 723, 457, 774, deferred=True))
+        self.assertFalse(eligible(457, 723, 510, 774))
+
     def test_large_blank_row_can_shrink_without_first_shrink_lockout(self):
         layout = source('src/ios/Agent/MessageList/MessageListLayout.swift')
         self.assertIn('isMarkdownText(key: key, at: index)', layout)
