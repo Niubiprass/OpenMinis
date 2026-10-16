@@ -1,0 +1,11 @@
+{
+  "branch": "ios15-v64-repair",
+  "commit": "3f0e87b0f373c363ac2919fb9406f0f62a1a01b9",
+  "build": "160647",
+  "ci_run": 38780989539,
+  "ci_status": "completed",
+  "ci_conclusion": "success",
+  "device_validation": "NOT PASSED / still failing",
+  "device": "iPhone 12 / iOS15.5",
+  "snapshot_date": "2026-10-16"
+}
