@@ -143,7 +143,7 @@ require(host.contentShape == nil && host.ios15PerformHeightChange == nil, "new i
 require(host.ios15MonoH == 0 && host.ios15LastGoodFitH == 0, "new identity clears fallback")
 print("production Swift: state, geometry storm, lifecycle PASS")
 '''
-    return 'import Foundation\n' + definitions + '\n' + shim + '\nprivate func runChecks() {\n' + checks + '\n}\nrunChecks()\n'
+    return 'import Foundation\nimport CoreGraphics\n' + definitions + '\n' + shim + '\nprivate func runChecks() {\n' + checks + '\n}\nrunChecks()\n'
 
 
 class HostShrinkRelease(unittest.TestCase):
