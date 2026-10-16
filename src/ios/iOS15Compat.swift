@@ -377,6 +377,10 @@ private final class _V63Probe {
 protocol IOS15HostingHeightResettable: AnyObject {
     func resetIOS15HostingHeightForConfirmedShrink()
     func consumeIOS15PendingStableShrink()
+    /// A committed model shape transition, NOT a smaller fitting sample.
+    func noteIOS15HostingContentShape(_ shape: AnyHashable)
+    /// Synchronous coordinator transaction: one offset owner per correction.
+    var ios15PerformHeightChange: ((() -> Void) -> Void)? { get set }
 }
 
 private struct _IOS15HostRenderContext: Equatable {
@@ -389,6 +393,16 @@ private struct _IOS15HostRenderContext: Equatable {
 private struct _IOS15HostRenderSample: Equatable {
     let context: _IOS15HostRenderContext
     let size: CGSize
+
+    // Render revisions reject stale callbacks, but are NOT geometry changes.
+    // Otherwise every text reconfigure evicts the same accepted height again.
+    func needsPublication(comparedTo previous: Self?) -> Bool {
+        guard let previous else { return true }
+        return context.identity != previous.context.identity
+            || abs(context.width - previous.context.width) > 0.5
+            || abs(size.width - previous.size.width) > 0.5
+            || abs(size.height - previous.size.height) > 0.5
+    }
 }
 
 private struct _IOS15HostRenderHeightKey: PreferenceKey {
@@ -428,7 +442,8 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
     func consumeIOS15PendingStableShrink() {
         guard let (_, cv, ip, layout) = boundRow(),
               !cv.isTracking, !cv.isDragging, !cv.isDecelerating,
-              !layout.deferSelfSizing, !layout.isStreamingCell(ip.item) else { return }
+              !layout.deferSelfSizing,
+              contentShapeChangePending || !layout.isStreamingCell(ip.item) else { return }
         // Also consume invalidation debt when ordinary fitting already accepted
         // the shrink and cleared its candidate. Comparing old/new mono here lost it.
         if shrinkCandidate != nil {
@@ -474,7 +489,12 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         appliedHostWidth = width
         renderGeneration &+= 1
         renderedSample = nil
-        publishedRenderSample = nil
+        // Preserve published geometry across same-item/same-width roots. Only
+        // the fresh sample's context must match the new revision/generation.
+        if let previous = publishedRenderSample,
+           previous.context.identity != hostedContentIdentity || abs(previous.context.width - width) > 0.5 {
+            publishedRenderSample = nil
+        }
         let context = currentRenderContext()
         host?.rootView = AnyView(
             config.content.id(config.contentIdentity)
@@ -540,16 +560,52 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         return (cell, cv, ip, layout)
     }
 
+    // Survives same-item root revisions: a committed expand/collapse is not
+    // invalidated merely because a final text batch installs another root.
+    private var contentShapeChangePending = false
+    private var contentShape: AnyHashable?
+    var ios15PerformHeightChange: ((() -> Void) -> Void)?
+
+    func noteIOS15HostingContentShape(_ shape: AnyHashable) {
+        let previous = contentShape
+        contentShape = shape
+        guard let previous, previous != shape else { return }
+        contentShapeChangePending = true
+        // Install one new geometry context for this discrete model transition.
+        // Old queued preferences must not confirm a newer expand/collapse.
+        if let config = configuration as? UIHostingConfiguration<Content> {
+            installRoot(config, width: resolvedHostingWidth(bounds.width))
+        }
+        host?.view.invalidateIntrinsicContentSize()
+        host?.view.setNeedsLayout()
+        invalidateIntrinsicContentSize()
+        setNeedsLayout()
+    }
+
+    private func rowIsIdle(_ cv: UICollectionView, _ layout: MessageListLayout) -> Bool {
+        !cv.isTracking && !cv.isDragging && !cv.isDecelerating && !layout.deferSelfSizing
+    }
+
     private func mayShrinkRow(_ cv: UICollectionView, _ ip: IndexPath, _ layout: MessageListLayout) -> Bool {
-        !cv.isTracking && !cv.isDragging && !cv.isDecelerating
-            && !layout.deferSelfSizing && !layout.isStreamingCell(ip.item)
+        guard rowIsIdle(cv, layout) else { return false }
+        if contentShapeChangePending { return true }
+        // Ordinary fits still require the original non-streaming contract.
+        guard !layout.deferSelfSizing, !layout.isStreamingCell(ip.item) else { return false }
+        return true
     }
 
     private func publishPendingHeightChange() {
         guard let (cell, cv, ip, layout) = boundRow() else { return }
         let sample = renderedSample.flatMap { isCurrent($0.context) ? $0 : nil }
-        let changed = sample != nil && sample != publishedRenderSample
-        guard changed || heightInvalidationPending else { return }
+        let changed = sample?.needsPublication(comparedTo: publishedRenderSample) ?? false
+        // Explicit debts must survive geometry dedup; a shape needs a fresh
+        // current-root sample, while an already accepted shrink can publish now.
+        guard changed || heightInvalidationPending || (contentShapeChangePending && sample != nil) else { return }
+        // A confirmed shrink's invalidation debt must also wait for settle;
+        // apply(root revision) cannot erase it between fitting and publication.
+        if heightInvalidationPending || contentShapeChangePending {
+            guard rowIsIdle(cv, layout) else { return }
+        }
         // Park a collapse while browsing/streaming. Do not remove layout's cached
         // height first: that would turn it into a 'first fit' and bypass defer.
         if let sample, sample.size.height < ios15MonoH - 8 || (sample.size.height == 0 && ios15MonoH > 0) {
@@ -557,7 +613,13 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
                 shrinkCandidate = sample.size.height
                 shrinkCandidateAt = CACurrentMediaTime()
             }
-            guard mayShrinkRow(cv, ip, layout), CACurrentMediaTime() - shrinkCandidateAt >= 0.08 else {
+            guard mayShrinkRow(cv, ip, layout) else {
+                scheduleStableShrinkRetry()
+                return
+            }
+            // Model shape + current natural geometry is already independent
+            // evidence. Ordinary fitter shrink still needs its 80ms confirm.
+            guard contentShapeChangePending || CACurrentMediaTime() - shrinkCandidateAt >= 0.08 else {
                 scheduleStableShrinkRetry()
                 return
             }
@@ -566,17 +628,29 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         }
         // Invalidate only. preferred fitting -> layout's deferred/anchor machinery
         // commits the result; NEVER write setCachedHeight from a render callback.
-        cell.clearCachedHeight()
-        layout.invalidateHeight(at: ip.item, discardPrecalc: true)
-        if let key = cell.contentKey {
-            layout.invalidateMemo(forKey: key)
-            layout.invalidateMemo(forKey: SelfSizingCell.renderQualifiedKey(key, for: cell))
+        let publish = {
+            cell.clearCachedHeight()
+            layout.invalidateHeight(at: ip.item, discardPrecalc: true)
+            if let key = cell.contentKey {
+                layout.invalidateMemo(forKey: key)
+                layout.invalidateMemo(forKey: SelfSizingCell.renderQualifiedKey(key, for: cell))
+            }
+            self.heightInvalidationPending = false
+            self.publishedRenderSample = sample
+            if sample != nil { self.contentShapeChangePending = false }
+            self.host?.view.invalidateIntrinsicContentSize()
+            self.invalidateIntrinsicContentSize()
+            layout.invalidateLayout()
         }
-        heightInvalidationPending = false
-        publishedRenderSample = sample
-        host?.view.invalidateIntrinsicContentSize()
-        invalidateIntrinsicContentSize()
-        layout.invalidateLayout()
+        // A shrink can finish on the 120ms confirmation retry, outside scroll
+        // settle. Its coordinator owns the anchor (and disables layout's second
+        // offset adjustment) for exactly this synchronous cache eviction.
+        if let transaction = ios15PerformHeightChange,
+           heightInvalidationPending || contentShapeChangePending {
+            transaction(publish)
+        } else {
+            publish()
+        }
     }
 
     private func installHostedView(_ controller: UIHostingController<AnyView>) {
@@ -796,8 +870,18 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         let mayShrink = row.map { mayShrinkRow($0.1, $0.2, $0.3) } ?? false
         if freshFit, height < ios15MonoH - 8 || (emptyFooter && ios15MonoH > 0) {
             let now = CACurrentMediaTime()
-            if let candidate = shrinkCandidate, abs(height - candidate) <= 1,
-               now - shrinkCandidateAt >= 0.08, mayShrink {
+            // A model shape transition can override the whole-message streaming
+            // exclusion, but ONLY after current natural geometry arrives.
+            let trustedShape = contentShapeChangePending && natural != nil
+            if trustedShape, mayShrink {
+                ios15MonoH = height
+                ios15LastGoodFitH = height
+                shrinkCandidate = nil
+                heightInvalidationPending = true
+                scheduleRenderPublication()
+            } else if let candidate = shrinkCandidate, abs(height - candidate) <= 1,
+               now - shrinkCandidateAt >= 0.08, mayShrink,
+               !contentShapeChangePending || natural != nil {
                 ios15MonoH = height
                 ios15LastGoodFitH = height
                 shrinkCandidate = nil
@@ -842,7 +926,8 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
 
     private func apply(_ config: UIContentConfiguration) {
         hostingRevision &+= 1
-        heightInvalidationPending = false
+        // Same-item render revisions must not cancel an already accepted
+        // shrink's outer-cache invalidation. Identity replacement below does.
         shrinkCandidate = nil
         shrinkCandidateAt = 0
         // Content identity owns the graph. Revision owns render callbacks only.
@@ -860,6 +945,10 @@ private final class _HostingContentCellView<Content: View>: UIView, UIContentVie
         }
         _V63Probe.hitRebuild()
         removeHostedController()
+        heightInvalidationPending = false
+        contentShapeChangePending = false
+        contentShape = nil
+        ios15PerformHeightChange = nil
         hostedContentIdentity = nil
         renderGeneration &+= 1
         renderedSample = nil

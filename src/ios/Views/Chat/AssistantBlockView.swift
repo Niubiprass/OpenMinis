@@ -821,6 +821,26 @@ struct ThinkingBlockView: View {
         // as "tap an old thinking block, see the streaming block's content."
     }
 
+    /// Reconcile on mount as well as on stream transitions: a reconfigured or
+    /// reused host can first mount with isStreaming == false, so onChange alone
+    /// never sees the stream-end edge. Only the model publishes size changes.
+    private func reconcileAutomaticExpansion(streaming: Bool) {
+        guard !block.thinkingUserToggled else { return }
+        let autoExpand = (UserDefaults.standard.object(forKey: "chat.autoExpandThinking") as? Bool) ?? true
+        guard !streaming || autoExpand else { return }
+        let expanded = streaming
+        guard block.isThinkingExpanded != expanded else { return }
+        var transaction = Transaction(animation: nil)
+        if #available(iOS 16.0, *) {
+            transaction = Transaction()
+        } else {
+            transaction.disablesAnimations = true
+        }
+        withTransaction(transaction) {
+            block.isThinkingExpanded = expanded
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
@@ -863,12 +883,10 @@ struct ThinkingBlockView: View {
             .padding(.vertical, 10)
             .contentShape(Rectangle())
             .onTapGesture {
-                // Mark before flipping so any concurrent stream-end collapse
-                // observer in this view sees `thinkingUserToggled = true`
-                // and bails out instead of stomping the user's choice.
-                // The collection view's cached height is invalidated by the
-                // `onChange(of: isThinkingExpanded)` observer below — single
-                // source of truth so the auto-collapse path stays in sync.
+                // Mark before flipping so a concurrent stream-end collapse
+                // cannot stomp the user's choice. The coordinator observes the
+                // committed @Published isThinkingExpanded value for visible AND
+                // offscreen blocks; do not also post a second resize request.
                 AppLogger(category: "ThinkingCollapse").info("[ThinkingCollapse] tap block=\(block.id.uuidString.prefix(8)) wasExpanded=\(isExpanded.wrappedValue) streaming=\(isStreaming) contentLen=\(block.content.count)")
                 block.thinkingUserToggled = true
                 if !isExpanded.wrappedValue {
@@ -992,13 +1010,22 @@ struct ThinkingBlockView: View {
                         // building the interpolated string cost more than the log
                         // call. The two scroll-gesture lines above stay — they
                         // fire once per user drag, not per flush.
-                        // Animated follow only for short content — animating a
-                        // long text's scroll re-lays-out every frame of the
-                        // 0.15s animation; a jump is one layout.
-                        if len > 3000 {
-                            proxy.scrollTo("thinkingBottom", anchor: .bottom)
+                        // iOS 15 self-sizing must not animate an inner scroll
+                        // while the outer row is publishing a new natural size.
+                        // Both animations otherwise retarget the same content on
+                        // every flush. Preserve the existing newer-iOS behavior.
+                        if #available(iOS 16.0, *) {
+                            if len > 3000 {
+                                proxy.scrollTo("thinkingBottom", anchor: .bottom)
+                            } else {
+                                withAnimation(.linear(duration: 0.15)) {
+                                    proxy.scrollTo("thinkingBottom", anchor: .bottom)
+                                }
+                            }
                         } else {
-                            withAnimation(.linear(duration: 0.15)) {
+                            var transaction = Transaction(animation: nil)
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
                                 proxy.scrollTo("thinkingBottom", anchor: .bottom)
                             }
                         }
@@ -1038,65 +1065,10 @@ struct ThinkingBlockView: View {
                 .stroke(Color.blue.opacity(0.15), lineWidth: 0.5)
         )
         .task(id: block.id) {
-            // One-shot per-block auto-expand. Runs when this cell first hosts
-            // a given thinking block (block.id is stable across content
-            // updates) and only flips state if the user hasn't taken control.
-            // [T-thinking-auto-expand-toggle] Gated on the Appearance setting
-            // (default ON = historical behavior). When the user turned it off,
-            // new streaming thinking blocks stay collapsed; a manual tap still
-            // expands them (and sets thinkingUserToggled, so nothing here
-            // fights the user either way).
-            let autoExpand = (UserDefaults.standard.object(forKey: "chat.autoExpandThinking") as? Bool) ?? true
-            if autoExpand, isStreaming, !block.thinkingUserToggled, !block.isThinkingExpanded {
-                block.isThinkingExpanded = true
-            }
+            reconcileAutomaticExpansion(streaming: isStreaming)
         }
         .onChange(of: isStreaming) { streaming in
-            // Auto-collapse when streaming for THIS block ends, but only if
-            // the user hasn't manually toggled it. Without the user-touched
-            // gate, the streaming-end transition stomped a tap the user did
-            // on an earlier thinking block while a later one was still live.
-            if !streaming, !block.thinkingUserToggled {
-                AppLogger(category: "ThinkingCollapse").info("[ThinkingCollapse] auto-collapse block=\(block.id.uuidString.prefix(8)) streaming→false userToggled=false contentLen=\(block.content.count)")
-                block.isThinkingExpanded = false
-                // [T-ios-thinking-autocollapse-no-post] Post the invalidation
-                // HERE rather than relying on the `.onChange(of:)` below.
-                //
-                // Field evidence (2026-08-13 device log): `auto-collapse` fired
-                // 6 times while `[ThinkingCollapse] post` fired 0 times. The
-                // observer never ran, because this write happens inside another
-                // `onChange` handler in the same view update — SwiftUI compares
-                // `isThinkingExpanded` before and after that update as a whole,
-                // and the write is not observed as a transition. A manual tap is
-                // its own update, which is why tapping to collapse always worked
-                // and only the stream-end auto-collapse left a gap.
-                //
-                // Without the post, `SelfSizingCell`'s width-keyed dedup keeps
-                // answering with the EXPANDED height (the cache the
-                // `.thinkingBlockToggled` receiver exists to clear), so the pill
-                // draws collapsed inside a frame still sized for the expanded
-                // body — the blank strip under the first thinking block.
-                //
-                // Posting from both places is safe: the receiver only clears
-                // caches and reconfigures, and a duplicate notification
-                // re-measures to the same height.
-                NotificationCenter.default.post(name: .thinkingBlockToggled,
-                                                object: block.id)
-            } else if !streaming {
-                AppLogger(category: "ThinkingCollapse").info("[ThinkingCollapse] stream-end-skip block=\(block.id.uuidString.prefix(8)) userToggled=\(block.thinkingUserToggled) currentlyExpanded=\(block.isThinkingExpanded)")
-            }
-        }
-        .onChange(of: block.isThinkingExpanded) { newValue in
-            // Single source of truth for cell-height invalidation: fires
-            // for BOTH manual taps and the stream-end auto-collapse path
-            // above. Previously only the tap gesture posted this, so when
-            // a long thinking block auto-collapsed at stream end, the
-            // UICollectionView kept the expanded cell height (~300pt) and
-            // rendered a tall empty gap below the pill — see 2026-05-17
-            // screenshot bug.
-            AppLogger(category: "ThinkingCollapse").info("[ThinkingCollapse] post block=\(block.id.uuidString.prefix(8)) expanded=\(newValue) userToggled=\(block.thinkingUserToggled) streaming=\(isStreaming)")
-            NotificationCenter.default.post(name: .thinkingBlockToggled,
-                                            object: block.id)
+            reconcileAutomaticExpansion(streaming: streaming)
         }
     }
 }

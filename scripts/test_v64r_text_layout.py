@@ -13,9 +13,12 @@ b=c[c.index('        private func doFlushStreamingLayout()'):c.index('        pr
 assert 'pendingTextLayoutItems.subtract(changed)' in b
 assert 'guard let vm, !vm.isLoadingSession, !vm.streamingUIUpdatesSuspended' in b
 assert 'syncThinkingLayoutSubscriptions(messages)' in c
-assert 'thinkingLayoutSubs[bid] = Publishers.Merge(' in c
-assert 'block.$content.dropFirst()' in c
-assert 'block.$isThinkingExpanded.removeDuplicates().dropFirst()' in c
+assert 'thinkingLayoutSubs[item] = Publishers.Merge(' in c
+assert 'block.$content.dropFirst().map { _ in false }' in c
+assert 'block.$isThinkingExpanded.removeDuplicates().dropFirst().map { _ in true }' in c
+assert 'self.recordThinkingShape(item, expanded: block.isThinkingExpanded)' in c
+assert 'private func flushThinkingShapeChanges()' in c
+assert 'thinkingHeightState.record(item, expanded: expanded)' in c
 assert 'self.hasPendingSnapshot || !self.pendingTextLayoutItems.isEmpty' in c
 assert b.index('ds.indexPath(for: item)') < b.index('layout.invalidateHeight')
 for x in ['discardPrecalc: true','clearCachedHeight()', 'applySnapshot(messages: vm.messages, caller: "text-batch")', 'snapshot.reconfigureItems']:

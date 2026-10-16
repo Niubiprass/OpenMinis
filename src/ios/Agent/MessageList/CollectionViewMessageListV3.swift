@@ -27,6 +27,46 @@ extension Notification.Name {
     static let minisUserAttachmentsMounted = Notification.Name("minisUserAttachmentsMounted")
 }
 
+// MARK: - Thinking shape invalidation (independent of hosting render revisions)
+
+/// Model shape changes are authoritative, unlike a transient small UIKit fit.
+/// This debt belongs to the complete item, not a row number or host generation.
+/// Kept Foundation-free so the actual state machine can run in a Swift CLI test.
+private struct ThinkingHeightReleaseState<Item: Hashable> {
+    private(set) var expandedByItem: [Item: Bool] = [:]
+    private(set) var pendingItems = Set<Item>()
+
+    mutating func register(_ item: Item, expanded: Bool) {
+        if expandedByItem[item] == nil { expandedByItem[item] = expanded }
+    }
+
+    @discardableResult
+    mutating func record(_ item: Item, expanded: Bool) -> Bool {
+        let previous = expandedByItem.updateValue(expanded, forKey: item)
+        guard let previous, previous != expanded else { return false }
+        pendingItems.insert(item)
+        return true
+    }
+
+    func pendingExpansion(for item: Item) -> Bool? {
+        pendingItems.contains(item) ? expandedByItem[item] : nil
+    }
+
+    mutating func complete(_ items: Set<Item>) {
+        pendingItems.subtract(items)
+    }
+
+    mutating func retain(_ items: Set<Item>) {
+        expandedByItem = expandedByItem.filter { items.contains($0.key) }
+        pendingItems.formIntersection(items)
+    }
+
+    mutating func reset() {
+        expandedByItem.removeAll()
+        pendingItems.removeAll()
+    }
+}
+
 // MARK: - CollectionViewMessageListV3
 
 /// V3 message list: builds on V2's cell-per-block model but simplifies
@@ -1427,6 +1467,15 @@ extension CollectionViewMessageListV3 {
                     .environmentObject(vm)
                 }.minSize(width: 0, height: 0).margins(.all, 0)
                 cell.applyContentConfiguration(config.ios15ContentIdentity(item))
+                if block.kind == .thinking {
+                    forEachIOS15Host(in: cell.contentView) { host in
+                        host.noteIOS15HostingContentShape(AnyHashable(block.isThinkingExpanded))
+                        host.ios15PerformHeightChange = { [weak self] updates in
+                            guard let self else { updates(); return }
+                            self.performHostingHeightChange(updates)
+                        }
+                    }
+                }
 
             case .assistantFooter(let msgId):
                 guard let msgIdx = messageIndex[msgId], msgIdx < messages.count else { return }
@@ -1856,6 +1905,8 @@ extension CollectionViewMessageListV3 {
             AppLogger(category: "ScrollDiag").info("[ScrollDiag][rebind] coordinator vm \(hadOld ? "changed" : "was nil") → rebinding subscriptions + resyncing flags")
             subscriptions.removeAll()
             pendingTextLayoutItems.removeAll()
+            thinkingHeightState.reset()
+            thinkingShapeFlushScheduled = false
             thinkingLayoutSubs.removeAll()
             pendingStreamingLayout?.cancel()
             pendingStreamingLayout = nil
@@ -2617,34 +2668,130 @@ extension CollectionViewMessageListV3 {
         // Identity-based: queued rows and snapshot inserts must not redirect a
         // pending text update to whichever cell later occupies the old index.
         private var pendingTextLayoutItems = Set<MessageListItem>()
-        private var thinkingLayoutSubs: [UUID: AnyCancellable] = [:]
+        private var thinkingLayoutSubs: [MessageListItem: AnyCancellable] = [:]
+        private var thinkingHeightState = ThinkingHeightReleaseState<MessageListItem>()
+        private var thinkingShapeFlushScheduled = false
 
         private func syncThinkingLayoutSubscriptions(_ messages: [ChatMessage]) {
             let blocks = messages.flatMap { message in
                 message.blocks.filter { $0.kind == .thinking }.map { (message.id, $0) }
             }
-            let ids = Set(blocks.map { $0.1.id })
-            thinkingLayoutSubs = thinkingLayoutSubs.filter { ids.contains($0.key) }
-            for (mid, block) in blocks where thinkingLayoutSubs[block.id] == nil {
-                let bid = block.id
-                // Observe model state too: a view onChange/notification is not
-                // delivered reliably for offscreen cells or nested SwiftUI updates.
-                // Deliver after @Published's willSet so estimates see committed data.
-                thinkingLayoutSubs[bid] = Publishers.Merge(
-                    block.$content.dropFirst().map { _ in () },
-                    block.$isThinkingExpanded.removeDuplicates().dropFirst().map { _ in () }
+            let items = Set(blocks.map { MessageListItem.assistantBlock($0.0, $0.1.id) })
+            thinkingLayoutSubs = thinkingLayoutSubs.filter { items.contains($0.key) }
+            thinkingHeightState.retain(items)
+            for (mid, block) in blocks {
+                let item = MessageListItem.assistantBlock(mid, block.id)
+                thinkingHeightState.register(item, expanded: block.isThinkingExpanded)
+                guard thinkingLayoutSubs[item] == nil else { continue }
+                // Keep content batching, but separate DISCRETE shape changes from
+                // the 3s reading-history throttle. Read after @Published willSet.
+                thinkingLayoutSubs[item] = Publishers.Merge(
+                    block.$content.dropFirst().map { _ in false },
+                    block.$isThinkingExpanded.removeDuplicates().dropFirst().map { _ in true }
                 )
                     .receive(on: DispatchQueue.main)
-                    .sink { [weak self] _ in
-                        guard let self else { return }
-                        self.pendingTextLayoutItems.insert(.assistantBlock(mid, bid))
-                        self.flushStreamingLayout()
+                    .sink { [weak self, weak block] shape in
+                        guard let self, let block else { return }
+                        if shape {
+                            self.recordThinkingShape(item, expanded: block.isThinkingExpanded)
+                        } else {
+                            self.pendingTextLayoutItems.insert(item)
+                            self.flushStreamingLayout()
+                        }
                     }
             }
         }
 
+        private func recordThinkingShape(_ item: MessageListItem, expanded: Bool) {
+            guard thinkingHeightState.record(item, expanded: expanded) else { return }
+            // One runloop coalescer for model and legacy notification callers.
+            // It does NOT reinstall roots or enter the streaming text throttle.
+            guard !thinkingShapeFlushScheduled else { return }
+            thinkingShapeFlushScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.thinkingShapeFlushScheduled = false
+                self.flushThinkingShapeChanges()
+            }
+        }
+
+        private func forEachIOS15Host(in view: UIView, _ action: (IOS15HostingHeightResettable) -> Void) {
+            if let host = view as? IOS15HostingHeightResettable { action(host); return }
+            for child in view.subviews { forEachIOS15Host(in: child, action) }
+        }
+
+        /// Only one offset owner: suppress layout/KVO adjustments while measuring,
+        /// then restore one stable item's screen Y (or the pinned bottom).
+        private func performHostingHeightChange(_ updates: () -> Void) {
+            guard let cv = viewController?.collectionView,
+                  let layout = viewController?.messageListLayout, !isFlushing else { updates(); return }
+            let savedOffset = cv.contentOffset.y
+            let anchorIP = cv.indexPathsForVisibleItems.sorted().first
+            let anchorItem = anchorIP.flatMap { dataSource?.itemIdentifier(for: $0) }
+            let beforeY = anchorIP.flatMap { cv.layoutAttributesForItem(at: $0)?.frame.minY }
+            let wasSuppressed = layout.suppressContentOffsetAdjustment
+            isFlushing = true
+            layout.suppressContentOffsetAdjustment = true
+            defer { layout.suppressContentOffsetAdjustment = wasSuppressed; isFlushing = false }
+            UIView.performWithoutAnimation {
+                updates()
+                cv.layoutIfNeeded()
+                let postIP = anchorItem.flatMap { dataSource?.indexPath(for: $0) }
+                let afterY = postIP.flatMap { cv.layoutAttributesForItem(at: $0)?.frame.minY }
+                let maxY = max(-cv.adjustedContentInset.top,
+                    cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom)
+                let target: CGFloat
+                if scrollMode == .autoScrolling { target = maxY }
+                else { target = savedOffset + ((afterY ?? beforeY ?? 0) - (beforeY ?? 0)) }
+                cv.setContentOffset(CGPoint(x: cv.contentOffset.x,
+                    y: min(maxY, max(-cv.adjustedContentInset.top, target))), animated: false)
+            }
+        }
+
+        private func flushThinkingShapeChanges() {
+            guard let vm, !vm.isLoadingSession,
+                  (!vm.streamingUIUpdatesSuspended || isFlushing),
+                  let cv = viewController?.collectionView, !cv.isTracking,
+                  !cv.isDragging, !cv.isDecelerating,
+                  let layout = viewController?.messageListLayout, !layout.deferSelfSizing,
+                  let ds = dataSource, !thinkingHeightState.pendingItems.isEmpty else { return }
+            var completed = Set<MessageListItem>()
+            var unhosted = [MessageListItem]()
+            for item in thinkingHeightState.pendingItems {
+                guard let ip = ds.indexPath(for: item),
+                      let expanded = thinkingHeightState.pendingExpansion(for: item) else { continue }
+                var hasHost = false
+                if let cell = cv.cellForItem(at: ip) as? SelfSizingCell {
+                    forEachIOS15Host(in: cell.contentView) { host in
+                        hasHost = true
+                        host.noteIOS15HostingContentShape(AnyHashable(expanded))
+                        host.consumeIOS15PendingStableShrink()
+                    }
+                }
+                // A visible host owns all its cache eviction after fresh natural
+                // geometry, never clear it here and then again in publication.
+                if !hasHost { unhosted.append(item) }
+                completed.insert(item)
+            }
+            if !unhosted.isEmpty {
+                performHostingHeightChange {
+                    for item in unhosted {
+                        guard let ip = ds.indexPath(for: item) else { continue }
+                        (cv.cellForItem(at: ip) as? SelfSizingCell)?.clearCachedHeight()
+                        layout.invalidateHeight(at: ip.item, discardPrecalc: true)
+                        if case .assistantBlock(let mid, let bid) = item {
+                            layout.invalidateBlockMemos(messageId: mid, blockId: bid)
+                        }
+                    }
+                    layout.invalidateLayout()
+                }
+            }
+            thinkingHeightState.complete(completed)
+        }
+
         private func flushStreamingLayout() {
             guard let vm, !vm.isLoadingSession, !vm.streamingUIUpdatesSuspended else { return }
+            flushThinkingShapeChanges()
             // Check if a deferred snapshot can now be applied (sheet dismissed).
             flushPendingSnapshotIfNeeded(caller: "flushStreamingLayout")
 
@@ -2675,6 +2822,7 @@ extension CollectionViewMessageListV3 {
         /// Actually perform the streaming layout flush + scroll.
         private func doFlushStreamingLayout() {
             guard let vm, !vm.isLoadingSession, !vm.streamingUIUpdatesSuspended else { return }
+            flushThinkingShapeChanges()
             lastStreamingLayoutTime = Date()
             guard let layout = viewController?.messageListLayout else { return }
             // A block's @Published content does not publish on ChatMessage.
@@ -2883,61 +3031,14 @@ extension CollectionViewMessageListV3 {
                             tlog.warning("[ThinkingCollapse] block=\(blockId.uuidString.prefix(8)) infra missing: cv=\(self.viewController?.collectionView != nil) ds=\(self.dataSource != nil)")
                             return
                         }
-                        // [T-thinking-collapse-blank] The layout-side
-                        // `invalidateHeight` only wipes the MessageListLayout
-                        // `heightCache`, not the per-cell `lastComputedHeight`
-                        // on SelfSizingCell. Without also clearing the
-                        // cell-side cache, the next
-                        // `preferredLayoutAttributesFitting` short-circuits
-                        // via the broad-width cache and returns the OLD
-                        // expanded height (~300pt) for a cell whose SwiftUI
-                        // body now renders just the 36pt header — producing
-                        // a tall empty gap below the collapsed pill (user
-                        // screenshot 2026-05-19). Clear both caches here
-                        // and reconfigure so UIHostingConfiguration
-                        // re-measures from scratch. Trace each step so a
-                        // future report can be diagnosed from logs alone.
-                        var matched = false
-                        for (i, item) in snapshot.itemIdentifiers.enumerated() {
-                            if case .assistantBlock(_, let bid) = item, bid == blockId {
-                                matched = true
-                                let beforeLayout = layout.cachedHeight(at: i)
-                                let beforePrecalc = layout.precalcHeight(at: i)
-                                let ip = IndexPath(item: i, section: 0)
-                                let cellOpt = cv.cellForItem(at: ip) as? SelfSizingCell
-                                let frameH = cellOpt?.frame.size.height ?? -1
-                                if let cell = cellOpt {
-                                    cell.clearCachedHeight()
-                                }
-                                layout.invalidateHeight(at: i, discardPrecalc: true)
-                                if case .assistantBlock(let mid, let bid) = item {
-                                    layout.invalidateBlockMemos(messageId: mid, blockId: bid)
-                                    self.pendingTextLayoutItems.insert(item)
-                                }
-                                // Use the identity-based coalesced path only. It
-                                // may apply a NEW snapshot; applying `snapshot`
-                                // captured above afterwards can resurrect removed
-                                // rows or drop blocks appended by that flush.
-                                self.flushStreamingLayout()
-                                layout.invalidateLayout()
-                                tlog.info("[ThinkingCollapse] HIT block=\(blockId.uuidString.prefix(8)) idx=\(i) cellFound=\(cellOpt != nil) frameH=\(String(format: "%.1f", frameH)) beforeLayout=\(beforeLayout.map { String(format: "%.1f", $0) } ?? "nil") beforePrecalc=\(beforePrecalc.map { String(format: "%.1f", $0) } ?? "nil")")
-                                // Defer one runloop tick to capture the
-                                // post-reconfigure measurement and confirm
-                                // the cell actually shrank/grew. If the
-                                // delta is small the cache invalidation
-                                // didn't take — that's the case to escalate.
-                                DispatchQueue.main.async { [weak cv, weak layout] in
-                                    let cv = cv
-                                    let layout = layout
-                                    let after = cv?.cellForItem(at: ip)?.frame.size.height ?? -1
-                                    let afterLayout = layout?.cachedHeight(at: i)
-                                    tlog.info("[ThinkingCollapse] POST block=\(blockId.uuidString.prefix(8)) idx=\(i) frameH=\(String(format: "%.1f", after)) layoutCache=\(afterLayout.map { String(format: "%.1f", $0) } ?? "nil") delta=\(String(format: "%.1f", after - frameH))")
-                                }
-                                break
-                            }
-                        }
-                        if !matched {
-                            tlog.warning("[ThinkingCollapse] MISS block=\(blockId.uuidString.prefix(8)) not in snapshot (items=\(snapshot.itemIdentifiers.count))")
+                        // Compatibility API only: model and notification converge
+                        // on one idempotent shape transition, never a second flush.
+                        for item in snapshot.itemIdentifiers {
+                            guard case .assistantBlock(let mid, let bid) = item, bid == blockId,
+                                  let message = self.vm?.messages.first(where: { $0.id == mid }),
+                                  let block = message.blocks.first(where: { $0.id == bid }) else { continue }
+                            self.recordThinkingShape(item, expanded: block.isThinkingExpanded)
+                            break
                         }
                     }
             }
@@ -5875,6 +5976,9 @@ extension CollectionViewMessageListV3 {
 
             // Re-enable self-sizing so future layout passes use real heights.
             layout.deferSelfSizing = false
+            // Shape debt bypasses the text throttle and shares this settle's
+            // anchor owner; suspended streaming is allowed only inside isFlushing.
+            flushThinkingShapeChanges()
 
             // Consume only pending host evidence. No global cache reset and no
             // TextKit dependency: tool and thinking cards follow this path too.

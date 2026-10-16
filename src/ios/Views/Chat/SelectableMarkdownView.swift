@@ -5483,18 +5483,27 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
     // 不再产出 390/1e5 污染宽。逐字对齐他们的真机验证版。
     override func sizeThatFits(_ size: CGSize) -> CGSize {
         let width = size.width > 1 && size.width < 100_000 ? size.width : (textContainer.size.width > 1 && textContainer.size.width < 100_000 ? textContainer.size.width : (bounds.width > 1 ? bounds.width : UIScreen.main.bounds.width - 32))
+        let oldWidth = textContainer.size.width
+        let oldHeight = textContainer.size.height
+        // [160648-TEXT] Fitting is a probe, not a new render geometry. In
+        // particular, an outer-width probe must not become the next intrinsic
+        // query's width. Restore both axes, including on the empty-text path;
+        // avoid same-value setters which themselves invalidate TextKit layout.
+        defer {
+            if textContainer.size.width != oldWidth {
+                textContainer.size.width = oldWidth
+            }
+            if textContainer.size.height != oldHeight {
+                textContainer.size.height = oldHeight
+            }
+        }
         guard textStorage.length > 0 else {
             return super.sizeThatFits(CGSize(width: width, height: size.height > 0 ? size.height : 4))
         }
-        let oldWidth = textContainer.size.width
-        let oldHeight = textContainer.size.height
         if abs(textContainer.size.width - width) > 0.5 {
             textContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
         }
         let fit = super.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        if oldHeight < .greatestFiniteMagnitude {
-            textContainer.size.height = oldHeight
-        }
         return CGSize(width: width, height: ceil(fit.height))
     }
 
@@ -6522,6 +6531,18 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
     /// user as the table rendering only its first column / first row(s)
     /// even though the markdown source already contains the full table.
     private var lastSizedTableGenSum: UInt64 = 0
+    /// Drop only content-dependent measurement keys after a real storage commit.
+    /// Length alone misses equal-length rewrites, newline and font/style changes.
+    /// Keep the previous height for delta/deferred-debt accounting, not as a floor.
+    fileprivate func invalidateTextMeasurementKeys() {
+        lastSizedStorageLen = -1
+        ios15LatchedNeedH = 0
+        if let coord = delegate as? SelectableMarkdownView.Coordinator {
+            coord.cachedSizes.removeAll(keepingCapacity: true)
+            coord.cachedSizeMarkdownCount = -1
+        }
+    }
+
     /// Raw markdown source for "Copy Markdown" action.
     var rawMarkdown: String = ""
 
@@ -9005,6 +9026,11 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
             // 【v47-REWRAP 标记保留在下方, 判据的 find 仍能定位到本段】
             // [V47-REWRAP] 行碎片已按 _realW2 定型, 记下来供下次比对。
             self.ios15LastLaidOutW = _realW2
+            // [160648-TEXT] An unchanged layout must not dirty intrinsic again:
+            // SwiftUI's next intrinsic query itself performs fitting/layout.
+            // Content commits already invalidate explicitly in updateUIView.
+            let needsIntrinsicUpdate = _widthChanged || _ios15WRegrabbed
+                || abs(ios15LastNeededH - _needH) > 0.5
             ios15LastNeededH = _needH
             // [V50-LAIDW-DIAG] 纯诊断: 确认记忆这次真的写进去了
             // (v49 实测 138/143 是 -1, 装机后这里应恒为 358)。
@@ -9049,7 +9075,9 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
                     _sv.frame = _sf
                     _didFix = true
                 }
-                invalidateIntrinsicContentSize()
+                if needsIntrinsicUpdate {
+                    invalidateIntrinsicContentSize()
+                }
             }
             // [V38A-HEIGHTDEBT] 高度欠账自愈 — 见函数 docstring 的完整推导。
             //
@@ -10674,6 +10702,7 @@ struct SelectableMarkdownView: UIViewRepresentable {
         }
         let assignElapsed = (CFAbsoluteTimeGetCurrent() - assignStart) * 1000
         textView.rawMarkdown = markdown
+        textView.invalidateTextMeasurementKeys()
         textView.resetAttachmentRecoveryState()
         // [HangRepro] Record the full markdown just assigned to this
         // textView so a subsequent main-thread hang (caught by
