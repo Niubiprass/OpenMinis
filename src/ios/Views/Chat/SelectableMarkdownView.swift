@@ -6543,6 +6543,25 @@ final class SelectableMarkdownTextView: UITextView, UIGestureRecognizerDelegate 
         }
     }
 
+    /// A cell may use a TextKit floor only from this live render, not an
+    /// arbitrary old `lastComputedHeight` (which survives storage changes).
+    /// Read-only: never lay out or mutate TextKit from the outer fitter.
+    func currentCellTextKitHeight(for width: CGFloat) -> CGFloat? {
+        guard !isScrollEnabled, width.isFinite, width > 1,
+              textStorage.length > 0 else { return nil }
+        if #available(iOS 16.0, *) {
+            guard lastComputedHeight.isFinite, lastComputedHeight > 1,
+                  abs(bounds.width - width) <= 0.5 else { return nil }
+            return lastComputedHeight
+        }
+        guard ios15LatchedNeedH.isFinite, ios15LatchedNeedH > 1,
+              ios15LatchLen == textStorage.length,
+              abs(ios15LatchW - width) <= 0.5,
+              abs((ios15LastRenderContentW ?? -1) - width) <= 0.5,
+              ios15LatchHash == textStorage.mutableString.hash else { return nil }
+        return ios15LatchedNeedH
+    }
+
     /// Raw markdown source for "Copy Markdown" action.
     var rawMarkdown: String = ""
 

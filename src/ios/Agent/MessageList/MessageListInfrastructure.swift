@@ -56,6 +56,37 @@ enum MessageListItem: Hashable {
 }
 
 
+// MARK: - Current TextKit height reconciliation
+
+/// Pure policy: sum only separately allocated vertical text segments. Overlapping
+/// views (including transition copies) are ambiguous, not additional row height.
+/// This is extracted and executed as real Swift by the CI regression test.
+struct CurrentTextKitHeightSlice {
+    let top: CGFloat
+    let bottom: CGFloat
+    let height: CGFloat
+}
+
+enum CurrentTextKitHeightFloor {
+    static func resolve(_ slices: [CurrentTextKitHeightSlice]) -> CGFloat? {
+        guard !slices.isEmpty else { return nil }
+        let ordered = slices.sorted { $0.top < $1.top }
+        var end: CGFloat?
+        var total: CGFloat = 0
+        for slice in ordered {
+            guard slice.top.isFinite, slice.bottom.isFinite,
+                  slice.height.isFinite, slice.height > 1,
+                  slice.bottom > slice.top else { return nil }
+            if let previousEnd = end, slice.top < previousEnd - 0.5 {
+                return nil
+            }
+            total += slice.height
+            end = slice.bottom
+        }
+        return total.isFinite ? total : nil
+    }
+}
+
 // MARK: - Self-Sizing Cell
 
 /// A plain UICollectionViewCell that correctly reports its preferred size
@@ -746,26 +777,36 @@ class SelfSizingCell: UICollectionViewCell {
                 + "dir=\(delta > 0 ? "RESERVED-TOO-MUCH" : "LAID-OUT-SHORT") key=\(contentKey ?? "-")")
         }
         #endif
-        // [IOS15-FIX] 以 TextKit 实测高度兜底, 修正 SwiftUI 排版路径
-        // 少算一行导致的末行裁切 (日志实测 cellH=256 但 TextKit 实测 273 ->
-        // 末行被 clipsToBounds 裁掉, "不显示/不对齐")。遍历 contentView 子树里
-        // 所有 SelectableMarkdownTextView, 累加它们的 lastComputedHeight
-        // (由 invalidateCellSizeIfNeeded 在稳定宽度下算出的权威 TextKit 高度),
-        // 取与 SwiftUI 测量值的较大者。两路径一致后 FIRST-MEASURE 冲突消失,
-        // 主线程卡死 (卡死/什么都点不了) 随之消除。
+        // [160650] `hostingSubtree` is a PRE-measure lifetime pin only. Hosting
+        // fitting may replace/detach its descendants without changing the cell's
+        // configGeneration. Summing that retained array promotes stale views or
+        // old per-view lastComputedHeight into a second, false row-height truth
+        // (device after session return: host=748, current text=744, old sum=1215).
+        // Re-walk the CURRENT tree after both fits and accept only a current
+        // content/width-qualified render. Never re-measure TextKit here.
         var _ios15Reconciled = fittingSize.height
         var _ios15TkSum: CGFloat = 0
         var _ios15Found = false
-        for _v in hostingSubtree {
-            if let _mdv = _v as? SelectableMarkdownTextView {
-                let _h = _mdv.lastComputedHeight
-                if _h > 1 { _ios15TkSum += _h; _ios15Found = true }
+        var currentTextCount = 0
+        var rejectedTextCount = 0
+        if #available(iOS 16.0, *) {
+            // Preserve the existing newer-OS path; this fix targets iOS 15.
+            for view in hostingSubtree {
+                if let text = view as? SelectableMarkdownTextView, text.lastComputedHeight > 1 {
+                    _ios15TkSum += text.lastComputedHeight
+                    _ios15Found = true
+                }
             }
+        } else {
+            let currentText = currentTextKitSlices()
+            let textFloor = CurrentTextKitHeightFloor.resolve(currentText.slices)
+            currentTextCount = currentText.candidates
+            rejectedTextCount = currentText.rejected
+            _ios15TkSum = textFloor ?? 0
+            _ios15Found = textFloor != nil
         }
-        // [IOS15-FIX] 上限 2500: 日志实测 643.7 vs TextKit 1198 (含工具卡长消息)
-        // 差 554pt 恰好被旧上限 +500 拒掉 → reconcile 永远不生效 → 缓存钉死 643.7
-        // → FIRST-MEASURE 无限纠偏 → DeferDebt OWED/CONSUME 自旋 → setSize 风暴
-        // → 主线程 15s 卡死。TextKit 是权威测量 (源码注释自认), 放宽到 2500。
+        // Keep the historical bounded clipping fallback, but not an unqualified
+        // historical maximum. Ambiguous/overlapping views leave the host intact.
         if _ios15Found, _ios15TkSum > _ios15Reconciled, _ios15TkSum < _ios15Reconciled + 2500 {
             _ios15Reconciled = _ios15TkSum
         }
@@ -780,7 +821,7 @@ class SelfSizingCell: UICollectionViewCell {
         // One line per convergence decision, numeric identities/heights only.
         // Do not infer a real growth rejection from est == raw alone.
         if diagnosticHeld || abs(_ios15Reconciled - diagnosticSuperH) > 0.5 {
-            Self.sizingLogger.info("[CellSizing][V64-CONVERGE] item=\(self.scrollDiagnosticID) cell=\(UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque())) idx=\(idx) incoming=\(diagnosticIncomingH) super=\(diagnosticSuperH) raw=\(fittingSize.height) reconciled=\(diagnosticReconciledH) final=\(_ios15Reconciled) tkFound=\(_ios15Found ? 1 : 0) tk=\(_v64tk) hold=\(diagnosticHeld ? 1 : 0) gen=\(gen)")
+            Self.sizingLogger.info("[CellSizing][V64-CONVERGE] item=\(self.scrollDiagnosticID) cell=\(UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque())) idx=\(idx) incoming=\(diagnosticIncomingH) super=\(diagnosticSuperH) raw=\(fittingSize.height) reconciled=\(diagnosticReconciledH) final=\(_ios15Reconciled) tkFound=\(_ios15Found ? 1 : 0) tk=\(_v64tk) tkCount=\(currentTextCount) tkRejected=\(rejectedTextCount) hold=\(diagnosticHeld ? 1 : 0) gen=\(gen)")
         }
         fittingSize.height = _ios15Reconciled
         attrs.size.height = fittingSize.height
@@ -829,6 +870,40 @@ class SelfSizingCell: UICollectionViewCell {
         MessageListSnapshotCollector.captureIfEnabled(from: self, trigger: "cell.PLAF", triggerDetail: cellPtr)
         #endif
         return attrs
+    }
+
+    /// Collect after fitting, never from the lifetime-pin array. A top-level
+    /// markdown view already includes its attachments; do not visit its children
+    /// and count a table/code/embedded markdown a second time.
+    private func currentTextKitSlices() -> (slices: [CurrentTextKitHeightSlice], candidates: Int, rejected: Int) {
+        var slices: [CurrentTextKitHeightSlice] = []
+        var candidates = 0
+        var rejected = 0
+        var seen = Set<ObjectIdentifier>()
+        func visit(_ view: UIView) {
+            guard !view.isHidden, view.alpha > 0.01,
+                  view.window === self.window,
+                  view.isDescendant(of: self.contentView) else { return }
+            if let text = view as? SelectableMarkdownTextView {
+                candidates += 1
+                guard seen.insert(ObjectIdentifier(text)).inserted else { return }
+                let width = text.bounds.width - text.textContainerInset.left - text.textContainerInset.right
+                let rect = text.convert(text.bounds, to: self.contentView)
+                guard let height = text.currentCellTextKitHeight(for: width),
+                      rect.origin.y.isFinite, rect.height.isFinite,
+                      rect.height > 0, rect.width.isFinite, rect.width > 1 else {
+                    rejected += 1
+                    return
+                }
+                slices.append(CurrentTextKitHeightSlice(top: rect.minY, bottom: rect.maxY, height: height))
+                return
+            }
+            // A scroll area's full document is not the allocated row height.
+            if let scroll = view as? UIScrollView, scroll.isScrollEnabled { return }
+            for child in view.subviews { visit(child) }
+        }
+        for child in contentView.subviews { visit(child) }
+        return (slices, candidates, rejected)
     }
 
     /// Recursively collect `view` and every descendant into `out`. Used to pin
