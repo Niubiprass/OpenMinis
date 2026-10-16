@@ -143,6 +143,7 @@ class StabilityTests(unittest.TestCase):
 
 SHIM = r'''
 import Foundation
+import CoreGraphics
 class UIView {
     static let noIntrinsicMetric: CGFloat = -1
     var bounds = CGRect(x: 0, y: 0, width: 358, height: 120)
