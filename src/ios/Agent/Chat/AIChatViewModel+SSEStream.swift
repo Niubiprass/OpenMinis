@@ -381,8 +381,8 @@ extension AIChatViewModel {
             let prepared = prepareMarkdownForRender(text)
             let parsed = MarkdownContent(prepared)
             await MainActor.run {
-                guard msgIdx < messages.count, block >= 0,
-                      block < messages[msgIdx].blocks.count else { return }
+                guard msgIdx < self.messages.count, block >= 0,
+                      block < self.messages[msgIdx].blocks.count else { return }
                 self.setStreamingTextBlockContent(
                     msgIdx: msgIdx,
                     blockIdx: block,
