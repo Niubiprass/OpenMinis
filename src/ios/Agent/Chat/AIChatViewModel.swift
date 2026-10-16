@@ -1270,6 +1270,18 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     var pendingSendIsFromComposer = false
     /// When true, skip the needsCompactBeforeSend check (used after compactAndSend to avoid loop).
     var skipCompactCheck = false
+    /// [T-auto-compact-entry] One-shot guard so the entry auto-compact check
+    /// (`autoCompactOnEntryIfNeeded`) evaluates at most once per session
+    /// visit, even though loadSession / the SKIP-LOAD branch can re-fire for
+    /// the same session (sync reloads, re-enters, share flows). Consumed when
+    /// an entry compaction is actually started; re-armed when the user starts
+    /// a new turn (send / resume / retry) so the next visit re-checks.
+    /// Together with the existing queue gate (isQueueBlockedByCompaction,
+    /// lifted only by a committed marker) this bounds entry-triggered
+    /// attempts: same-visit re-runs are blocked by this flag, and post-
+    /// failure automatic retries stay blocked by the gate — only explicit
+    /// Resume / compact may try again.
+    var didCheckAutoCompactOnEntry = false
     /// When false, memory_write tool calls are skipped (returns "Memory disabled") in this session.
     @Published var memoryEnabled = true
 
@@ -2887,6 +2899,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             return
         }
 
+        // [T-auto-compact-entry] A fresh user turn starts a new visit: re-arm
+        // the entry auto-compact check so the next load completion re-evaluates
+        // the threshold (the pre-send check below keeps guarding this send).
+        didCheckAutoCompactOnEntry = false
+
         // Don't stop TTS here — let the previous reply finish playing. The stream
         // handler will clear the queue on the FIRST textDelta of the new reply, so
         // the old audio plays until actual new content starts arriving.
@@ -3463,6 +3480,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // arrived" by the auto-focus observer.
         turnStartedByRetry = true
 
+        // [T-auto-compact-entry] User-initiated retry is a new turn: re-arm
+        // the entry auto-compact check for the next session visit.
+        didCheckAutoCompactOnEntry = false
+
         autoRetryAttempt = 0
         autoRetryCountdown = 0
         canResume = false
@@ -3661,6 +3682,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// into agentHistory so the model knows to pick up where it left off.
     func resume() {
         guard !isProcessing, canResume else { return }
+        // [T-auto-compact-entry] User-initiated recovery is a new turn: re-arm
+        // the entry auto-compact check for the next session visit.
+        didCheckAutoCompactOnEntry = false
         // A failure status/queued row may be last, so handle this BEFORE the
         // assistant/user tail checks. One explicit tap grants one bounded run.
         if isQueueBlockedByCompaction {

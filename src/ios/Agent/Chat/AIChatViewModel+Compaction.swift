@@ -578,6 +578,55 @@ extension AIChatViewModel {
         }
     }
 
+    /// [T-auto-compact-entry] Enter/restore auto-compaction: when the global
+    /// auto-compact opt-in is ON and the just-loaded history already sits at
+    /// or above the SAME ContextPolicy threshold the pre-send path uses, start
+    /// a compaction immediately — no confirmation UI, and no message needs to
+    /// be sent first.
+    ///
+    /// Runs at the two persistence load/restore completion points: the end of
+    /// `loadSession()` (full DB rebuild) and the SKIP-LOAD branch of
+    /// `reloadMessagesFromDB` (cached-VM re-enter with no DB diff). It is
+    /// deliberately restricted to the frontmost session — `activeSessionId`
+    /// is written only by AIChatView onAppear / sessionId change — so background
+    /// loadSession callers (jobs, intents, sync-triggered reloads of sessions
+    /// the user is not looking at) never compact anything unseen.
+    ///
+    /// Reuses `compactAll()` — the exact entry `resume()` takes for a
+    /// queue-blocked session (does NOT queue or send anything) — so no second
+    /// compaction state machine is introduced and the existing semantics hold:
+    /// success → committed marker, status row, post-compact drain (nothing is
+    /// queued by this entry, so the drain is a no-op); failure/cancel →
+    /// content preserved, explicit failure row, queue gate up, no auto-retry.
+    func autoCompactOnEntryIfNeeded() {
+        // Only the session whose chat UI is frontmost.
+        guard let sessionId, AIChatViewModel.activeSessionId == sessionId else { return }
+        // The opt-in switch — a global live read of the same key the pre-send
+        // branch uses. OFF must leave today's behavior exactly as it was.
+        guard autoCompactEnabled else { return }
+        // Never pile onto an in-flight send/loop or compaction.
+        guard !isProcessing, !isCompacting else { return }
+        // A failed/cancelled compaction keeps the queue gate up; only explicit
+        // Resume / /compact may retry. Entry must respect that — no auto-retry.
+        guard !isQueueBlockedByCompaction else { return }
+        // At most one evaluation (and at most one started compaction) per
+        // session visit, whatever re-fires load complete in between.
+        guard !didCheckAutoCompactOnEntry else { return }
+        // Same threshold / window-aware verdict as pre-send (site=entry is
+        // attributable in the [CtxMeter] decide log). `.exhausted` mirrors the
+        // pre-send auto branch: only `.needsCompact` compacts automatically.
+        guard checkContextBeforeSend(site: "entry") == .needsCompact else { return }
+        // compactAll() prints "Not enough messages to compact." when there is
+        // nothing to fold — pre-filter so a silent entry leaves no status row.
+        let activeMessages = messages.filter {
+            $0.role != .compactDivider && $0.role != .systemInfo && !$0.isCompactedHistory && !$0.isQueued
+        }
+        guard activeMessages.count > 1 else { return }
+        didCheckAutoCompactOnEntry = true
+        logger.info("[Context] Near capacity on session entry — auto-compacting (autoCompactEnabled, no prompt)")
+        compactAll()
+    }
+
     /// Find the agentHistory index of the Nth-from-last user message that has
     /// visible text content (i.e. a user the user actually typed, not a
     /// tool_result-only synthetic row). Returns nil if fewer than `n` such

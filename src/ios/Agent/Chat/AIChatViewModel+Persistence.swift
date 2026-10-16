@@ -161,6 +161,10 @@ extension AIChatViewModel {
             // is still false, the detail page shows no "Interrupted" banner
             // even though the list shows ⏸. Re-run the lightweight check here.
             recheckCanResumeFromHistory()
+            // [T-auto-compact-entry] Cached-VM re-enter with no DB diff is a
+            // load-completion too: run the same entry auto-compact check
+            // (frontmost-only, opt-in gated, one attempt per visit).
+            autoCompactOnEntryIfNeeded()
         }
     }
 
@@ -935,6 +939,14 @@ extension AIChatViewModel {
         let totalElapsed = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
         let totalSinceAppear = (CFAbsoluteTimeGetCurrent() - Self.onAppearTimestamp) * 1000
         logger.info("[SessionLoad] \(sessionId) — TOTAL: \(String(format: "%.1f", totalElapsed))ms T+\(String(format: "%.0f", totalSinceAppear))ms [DB: \(String(format: "%.1f", dbElapsed)) | Build: \(String(format: "%.1f", buildElapsed)) | Snapshots: \(String(format: "%.1f", snapshotElapsed)) | Mount: \(String(format: "%.1f", mountElapsed))]")
+
+        // [T-auto-compact-entry] History load/restore is complete. With the
+        // auto-compact opt-in ON and the loaded context already at/over the
+        // ContextPolicy threshold, start compaction right away — no prompt,
+        // nothing to send first. No-op when the switch is off, the session is
+        // not frontmost, work is in flight, the failure gate is up, or the
+        // check already ran for this visit.
+        autoCompactOnEntryIfNeeded()
     }
 
     /// [T-ios-paused-badge-desync] Lightweight interrupted-loop tail check.

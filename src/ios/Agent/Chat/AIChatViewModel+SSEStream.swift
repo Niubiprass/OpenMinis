@@ -28,6 +28,97 @@ private final class StreamIteratorBox<T: Sendable>: @unchecked Sendable {
     }
 }
 
+// MARK: - Bounded text delivery (Foundation-only; exercised by host regression)
+
+// REPAIR-160649: one worker per text block, NOT a debounce restarted by every
+// delta. `enqueue` feeds the newest snapshot and the worker commits it on its
+// own tier schedule, so a quiet provider still delivers its pending tail
+// within 0.06–0.10s (short text) without waiting for another event.
+actor StreamTextDelivery {
+    /// (target block index, newest snapshot). The block is captured at enqueue
+    /// time so a commit can never target a block opened later by the stream.
+    typealias Sink = @Sendable (Int, String, Bool) async -> Void
+    private let sink: Sink
+    private var pending: (block: Int, text: String)?
+    private var worker: Task<Void, Never>?
+    private var lastDelivery: TimeInterval?
+    private var closed = false
+
+    init(sink: @escaping Sink) { self.sink = sink }
+
+    /// Tiers are non-decreasing (asserted by scripts/test_stream_delivery_160649.py).
+    /// Short blocks commit fast enough that a provider pause is invisible;
+    /// the ≥ 32k tiers keep the historical conservative pacing so the O(N²)
+    /// full-markdown re-parse storm (0x8BADF00D) cannot re-open.
+    static func interval(forUTF16Length length: Int) -> TimeInterval {
+        length < 500 ? 0.06 : length < 2_000 ? 0.10
+            : length < 32_000 ? 0.20 : length < 64_000 ? 1.00
+            : length < 128_000 ? 1.50 : 2.00
+    }
+
+    /// Register the newest text snapshot for the current text block. If no
+    /// worker is running, spawn one; the drain commits at most once per tier
+    /// interval measured from the last commit.
+    func enqueue(_ text: String, block: Int) {
+        guard !closed, !text.isEmpty else { return }
+        pending = (block, text)
+        guard worker == nil else { return }
+        worker = Task { [weak self] in
+            guard let self else { return }
+            await self.drain()
+        }
+    }
+
+    private func drain() async {
+        while !closed, !Task.isCancelled, let next = pending {
+            if let lastDelivery {
+                let wait = Self.interval(forUTF16Length: next.text.utf16.count)
+                    - (ProcessInfo.processInfo.systemUptime - lastDelivery)
+                if wait > 0 {
+                    do { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+                    catch { break }
+                }
+            }
+            guard !closed, !Task.isCancelled, let snapshot = pending else { break }
+            pending = nil
+            // Only this worker calls the sink while open. Deltas arriving during
+            // parse/MainActor delivery replace pending, never queue stale parses.
+            await sink(snapshot.block, snapshot.text, false)
+            lastDelivery = ProcessInfo.processInfo.systemUptime
+        }
+        worker = nil
+    }
+
+    /// Mid-stream boundary (tool block append): cancel and join any in-flight
+    /// worker so a stale snapshot can never land after the boundary. Unlike
+    /// `stop` this does NOT close the actor — the next text block's `enqueue`
+    /// re-arms a fresh worker.
+    func settle() async {
+        let oldWorker = worker
+        oldWorker?.cancel()
+        await oldWorker?.value
+        worker = nil
+        pending = nil
+    }
+
+    // Join even a worker already awaiting MainActor before any final/cache write.
+    // This prevents an older delayed snapshot overwriting the complete final one.
+    func stop() async {
+        closed = true
+        let oldWorker = worker
+        oldWorker?.cancel()
+        await oldWorker?.value
+        pending = nil
+    }
+
+    /// Stop the worker, then commit the complete final text with `isFinal ==
+    /// true` (cache attributed string, no scroll request). No-op for empty text.
+    func finish(with text: String, block: Int) async {
+        await stop()
+        if !text.isEmpty { await sink(block, text, true) }
+    }
+}
+
 // MARK: - Background SSE Stream Processing
 
 extension AIChatViewModel {
@@ -278,9 +369,30 @@ extension AIChatViewModel {
         let speakEnabled = await MainActor.run { self.speakEnabled }
         await MainActor.run { VoiceLog.log("stream start: speakEnabled snapshot=\(self.speakEnabled)") }
 
-        // Throttle timestamps (local to this stream processing call)
-        var lastTextDeltaFlush: Date = .distantPast
-        var lastTextDeltaFlushedLength: Int = 0
+        // REPAIR-160649: quiet-period tail-edge delivery for the text commit
+        // path. Every textDelta feeds the newest snapshot; the actor's worker
+        // commits at its tier interval even when no further events arrive, then
+        // exit paths stop it so a stale snapshot never overwrites the final
+        // text. isFinal == true → cacheAttributedString + no scroll request,
+        // mirroring the old end-of-stream flush; non-final commits behave like
+        // the old throttled flush (no attributed cache, scroll when near
+        // bottom).
+        let textDelivery = StreamTextDelivery { block, text, isFinal in
+            let prepared = prepareMarkdownForRender(text)
+            let parsed = MarkdownContent(prepared)
+            await MainActor.run {
+                guard msgIdx < messages.count, block >= 0,
+                      block < messages[msgIdx].blocks.count else { return }
+                self.setStreamingTextBlockContent(
+                    msgIdx: msgIdx,
+                    blockIdx: block,
+                    text: text,
+                    parsedMarkdown: parsed,
+                    cacheAttributedString: isFinal,
+                    requestScroll: !isFinal
+                )
+            }
+        }
         var lastThinkingDeltaFlush: Date = .distantPast
         var lastFileWriteStreamUpdate: Date = .distantPast
         var lastToolInputStreamUpdate: Date = .distantPast
@@ -470,12 +582,16 @@ extension AIChatViewModel {
                         lastFileWriteStreamUpdate = .distantPast
                     }
                     lastToolInputStreamUpdate = .distantPast
-                    // Step 1: Flush any throttled text to the preceding text block.
-                    // This is the FINAL flush before a tool block — must bypass
-                    // streamingUIUpdatesSuspended to prevent "swallowed text" when
-                    // the user is scrolling during streaming.
+                    // REPAIR-160649: join the tail worker BEFORE the tool block
+                    // is appended, so an in-flight quiet-tail commit can never
+                    // land after the boundary (ordering vs the tool publish is
+                    // preserved: text flush → tool block, exactly as before).
+                    await textDelivery.settle()
+                    // Step 1: Flush the complete text to the preceding text block
+                    // — the final per-block snapshot, straight from the stream.
+                    // This must bypass streamingUIUpdatesSuspended to prevent
+                    // "swallowed text" when the user is scrolling during streaming.
                     if let textIdx, !assistantText.isEmpty {
-                        lastTextDeltaFlushedLength = assistantText.count
                         let prepared = prepareMarkdownForRender(assistantText)
                         let parsed = MarkdownContent(prepared)
                         await MainActor.run {
@@ -580,55 +696,17 @@ extension AIChatViewModel {
                         }
                     }
 
-                    let now = Date()
-                    let elapsed = now.timeIntervalSince(lastTextDeltaFlush)
-                    let len = result.assistantText.count
-                    let unflushed = len - lastTextDeltaFlushedLength
-                    // Tiered flush throttle (085e0cd6): protects the main thread
-                    // from the O(N²) full-markdown re-parse storm on dense /
-                    // box-drawing streams that tripped the 0x8BADF00D watchdog.
-                    // The word-fade gets its smooth, steady reveal from the
-                    // animation layer's fixed stagger window (see TextFadeAnimator),
-                    // NOT from flushing more often — a faster flush here just
-                    // re-introduced the SwiftUI ForEach-diff main-thread hang.
-                    // First tier matches the streaming-grow layout animation
-                    // duration (0.2s) so each flushed batch glides over exactly
-                    // one animation window. [T-ios-stream-grow-anim]
-                    let throttle: TimeInterval = len < 500 ? 0.20
-                                                : len < 2000 ? 0.30
-                                                : len < 32_000 ? 0.50
-                                                : len < 64_000 ? 1.00
-                                                : len < 128_000 ? 1.50
-                                                : 2.00
-
-                    // Newline fast-path:
-                    //   - Below 5000 chars: flush on newline + ≥50 unflushed (≈ one box-drawing
-                    //     line). This still gives a line-by-line feel for short replies.
-                    //   - At/above 5000 chars: disable the fast-path. ASCII-art / table runs
-                    //     emit a newline every ~2 chars; without this gate the time throttle
-                    //     is pinned at the per-chunk delay (~30ms) and the main thread melts.
-                    //     Pure time throttle (300-500ms) is the only safe pacing here.
-                    let newlineFlush = len < 5000 && text.contains("\n") && unflushed >= 50
-
-                    if elapsed >= throttle || newlineFlush {
-                        lastTextDeltaFlush = now
-                        lastTextDeltaFlushedLength = len
-                        let snapshot = result.assistantText
-                        // Parse markdown off main thread — cmark + math extraction + regex transforms
-                        let prepared = prepareMarkdownForRender(snapshot)
-                        let parsed = MarkdownContent(prepared)
-                        await MainActor.run {
-                            guard msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count else { return }
-                            self.setStreamingTextBlockContent(
-                                msgIdx: msgIdx,
-                                blockIdx: blockIdx,
-                                text: snapshot,
-                                parsedMarkdown: parsed,
-                                cacheAttributedString: false,
-                                requestScroll: true
-                            )
-                        }
-                    }
+                    // REPAIR-160649: tail-edge commit. Hand the newest snapshot
+                    // to the delivery worker instead of committing inline only
+                    // when the NEXT delta arrives. The worker commits on its own
+                    // tier schedule (see StreamTextDelivery.interval), so a
+                    // quiet provider still renders pending text within 0.06–0.10s
+                    // for short blocks — no more text stuck until the next event.
+                    // The ≥ 32k tiers keep the historical conservative pacing
+                    // (1.0–2.0s) so the O(N²) full-markdown re-parse storm
+                    // (0x8BADF00D) cannot re-open; the delta-driven inline
+                    // throttle (085e0cd6) is superseded by this single committer.
+                    await textDelivery.enqueue(result.assistantText, block: blockIdx)
                 }
 
             case .toolInputDelta(let name, let accumulated):
@@ -1002,27 +1080,23 @@ extension AIChatViewModel {
         // the caller never receives a half-parsed StreamResult.
         try Task.checkCancellation()
         } catch is CancellationError {
-            // Flush any throttled text to the block before propagating cancellation,
-            // so handleUserCancelledCleanup sees the full streamed content.
-            if let blockIdx = currentTextBlockIdx, !result.assistantText.isEmpty {
-                await MainActor.run {
-                    guard msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count else { return }
-                    self.setStreamingTextBlockContent(
-                        msgIdx: msgIdx,
-                        blockIdx: blockIdx,
-                        text: result.assistantText,
-                        parsedMarkdown: MarkdownContent(prepareMarkdownForRender(result.assistantText)),
-                        cacheAttributedString: true,
-                        requestScroll: false
-                    )
-                }
-            }
+            // REPAIR-160649: stop the tail worker and commit the full streamed
+            // text before propagating cancellation, so
+            // handleUserCancelledCleanup sees the complete content and no
+            // older snapshot can overwrite it after we throw.
+            await textDelivery.finish(with: result.assistantText, block: currentTextBlockIdx ?? -1)
             throw CancellationError()
         } catch {
             result.isStreamInterrupted = true
             _streamError = error
         }
-        if let err = _streamError { throw err }
+        if let err = _streamError {
+            // REPAIR-160649: mid-stream error — deliver what already arrived
+            // (the retry/give-up decisions downstream see the same text the
+            // user saw). Same tail-edge flush as the cancellation path.
+            await textDelivery.finish(with: result.assistantText, block: currentTextBlockIdx ?? -1)
+            throw err
+        }
         // Stream ended cleanly. First drain any un-extracted tail past
         // spokenTextOffset: the streaming look-ahead in extractSentencesStatic
         // intentionally STOPS on a digit-trailing `.`/`,` at the buffer end
@@ -1058,6 +1132,11 @@ extension AIChatViewModel {
             result.pendingSpeakBuffer = ""
             _ = await MainActor.run { self.feedDynamicTTS(buf, force: true) }
         }
+        // REPAIR-160649: clean end — stop the tail worker and commit the
+        // complete final text immediately instead of waiting for a next
+        // event. (The caller's own end-of-turn flush then sees
+        // content == assistantText and takes its SKIP path — idempotent.)
+        await textDelivery.finish(with: result.assistantText, block: currentTextBlockIdx ?? -1)
         return result
     }
 

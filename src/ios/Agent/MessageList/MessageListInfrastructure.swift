@@ -287,7 +287,9 @@ class SelfSizingCell: UICollectionViewCell {
     override func preferredLayoutAttributesFitting(
         _ layoutAttributes: UICollectionViewLayoutAttributes
     ) -> UICollectionViewLayoutAttributes {
-        // Capture scalar values before super can mutate the incoming attributes.
+        // Capture the owner BEFORE either hosting measure can synchronously
+        // reconfigure/reuse the cell. A stale pass must not publish its result.
+        let gen = configGeneration
         let diagnosticIncomingH = layoutAttributes.size.height
         // [IOS15-FIX] Clamp a bogus proposed width before ANY measure path
         // runs. On iOS 15 the proposed width is transiently garbage
@@ -303,6 +305,9 @@ class SelfSizingCell: UICollectionViewCell {
             clamped.size.width = iCv.bounds.width
             layoutAttributes = clamped
         }
+        // Preserve the proposal: super may mutate its argument in place. A
+        // cancelled pass must return NO correction, not an old host's fit.
+        let unmeasuredAttributes = layoutAttributes.copy() as! UICollectionViewLayoutAttributes
         // Cache-hit short-circuit BEFORE super: when UIKit re-asks a cell to
         // self-size at a width it already measured, return the cached
         // height directly and skip both `super.preferredLayoutAttributesFitting`
@@ -517,6 +522,7 @@ class SelfSizingCell: UICollectionViewCell {
                 superAttrs = super.preferredLayoutAttributesFitting(layoutAttributes)
             }
         }
+        guard configGeneration == gen else { return unmeasuredAttributes }
         if !superOk {
             // super's hosting measure threw an ObjC exception mid-race. Fall
             // back to the best height we have (cached, else the proposed one)
@@ -536,7 +542,9 @@ class SelfSizingCell: UICollectionViewCell {
         // dedup-window above but covers the broader "width never changed"
         // case across longer scroll runs.
         if let cached = lastComputedHeight,
-           abs(layoutAttributes.size.width - attrs.size.width) < 1 {
+           let cachedW = lastComputedWidth,
+           abs(layoutAttributes.size.width - cachedW) < 1,
+           !v53DebtIsRipe, !v53SurplusIsRipe {
             attrs.size.height = cached
             // [ScrollStall] Count broad cache hits; flush summary 1Hz.
             Self.broadHits &+= 1
@@ -549,7 +557,6 @@ class SelfSizingCell: UICollectionViewCell {
             return attrs
         }
 
-        let gen = configGeneration
         let targetSize = CGSize(width: layoutAttributes.size.width, height: UIView.layoutFittingCompressedSize.height)
         let start = CACurrentMediaTime()
         // Wrap systemLayoutSizeFitting in noff_try_objc to catch NSExceptions
@@ -684,7 +691,7 @@ class SelfSizingCell: UICollectionViewCell {
         if layoutAttributes.size.height < 4 && fittingSize.height > 20 {
             Self.sizingLogger.info("[TextDrift] ⚠️ CELL GREW FROM ~0: idx=\(idx) \(String(format: "%.0f", layoutAttributes.size.height))→\(String(format: "%.0f", fittingSize.height))pt — potential text overlap during this transition")
         }
-        guard configGeneration == gen else { return attrs }
+        guard configGeneration == gen else { return unmeasuredAttributes }
         #if DEBUG
         // [BottomGapDiag] Catch "the layout is holding a taller height than the
         // cell actually renders" — the shape behind every reported blank strip
