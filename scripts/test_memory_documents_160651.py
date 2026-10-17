@@ -83,6 +83,9 @@ class SourceContracts(unittest.TestCase):
                       'type == .typeDirectory', 'canonical == directories[index]'):
             self.assertIn(token, STORE)
         self.assertIn("matches.count == 1", STORE)
+        self.assertIn("directories = roots.map { Self.directoryURL($0.directory.standardizedFileURL.resolvingSymlinksInPath()) }", STORE)
+        self.assertIn("let canonical = Self.directoryURL(original.resolvingSymlinksInPath())", STORE)
+        self.assertIn("URL(fileURLWithPath: url.path, isDirectory: true)", STORE)
         self.assertNotIn("contentsOfDirectory(at: directory", STORE)
         listing = between(STORE, "func list()", "func readSnapshot(")
         self.assertIn('if root.isGlobal && !names.contains("GLOBAL.md")', listing)

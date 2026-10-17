@@ -44,7 +44,10 @@ final class MemoryDocumentStore {
 
     init(roots: [MemoryLibraryRoot]) {
         self.roots = roots
-        directories = roots.map { $0.directory.standardizedFileURL.resolvingSymlinksInPath() }
+        // Missing roots must retain directory semantics after resolving existing ancestors.
+        // URL equality includes the directory hint on macOS; without it, a missing
+        // GLOBAL.md placeholder can be rejected even though its parent is authorized.
+        directories = roots.map { Self.directoryURL($0.directory.standardizedFileURL.resolvingSymlinksInPath()) }
     }
 
     func list() throws -> [Snapshot] {
@@ -142,6 +145,10 @@ final class MemoryDocumentStore {
         return matches[0]
     }
 
+    private static func directoryURL(_ url: URL) -> URL {
+        URL(fileURLWithPath: url.path, isDirectory: true)
+    }
+
     private func authorizedDirectory(rootID: String) throws -> URL {
         let root = try authorizedRoot(rootID)
         guard root.directory.isFileURL, root.directory.path.hasPrefix("/"),
@@ -158,7 +165,7 @@ final class MemoryDocumentStore {
                 guard type == .typeDirectory else { throw Failure.unsafePath }
             }
         }
-        let canonical = original.resolvingSymlinksInPath()
+        let canonical = Self.directoryURL(original.resolvingSymlinksInPath())
         guard canonical == directories[index] else { throw Failure.unsafePath }
         return canonical
     }
