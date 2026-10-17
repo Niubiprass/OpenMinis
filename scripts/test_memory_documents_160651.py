@@ -209,6 +209,8 @@ let group = root("group-A", "a")
 let other = root("group-B", "b")
 let global = root("global", "global", global: true)
 let store = MemoryDocumentStore(roots: [group, other, global])
+func phase(_ text: String) { FileHandle.standardError.write(Data(("Memory runtime phase: " + text + "\n").utf8)) }
+phase("list missing roots")
 try check(!fm.fileExists(atPath: global.directory.path), "init must not create directories")
 let initial = try store.list()
 try check(initial.count == 1 && initial[0].fileName == "GLOBAL.md" && !initial[0].exists, "global placeholder")
@@ -218,6 +220,7 @@ cancelledDraft = "draft never saved"
 try check(cancelledDraft == "draft never saved", "independent draft")
 try check(!fm.fileExists(atPath: global.directory.path), "list/read/cancel must not create directory")
 try rejects(.unsavedExport, "missing global is not saved") { _ = try store.export([pending]) }
+phase("save missing global")
 let created = try store.save(pending, text: "# Global\n用户偏好\n")
 try check(created.exists && created.originalText == "# Global\n用户偏好\n", "create global")
 try rejects(.conflict, "stale missing snapshot must not overwrite") { _ = try store.save(pending, text: "lost") }
@@ -227,6 +230,7 @@ let missingEmpty = try emptyStore.readSnapshot(rootID: "empty", fileName: "GLOBA
 try write(emptyRoot, "GLOBAL.md", "")
 try rejects(.conflict, "missing versus existing empty") { _ = try emptyStore.save(missingEmpty, text: "lost") }
 
+phase("read populated roots")
 try write(group, "2026-10-17.md", "# A\n原文\n")
 try write(other, "2026-10-17.md", "# B\nsecond group\n")
 try write(global, "SOUL.md", "identity\n")
@@ -251,6 +255,7 @@ try check(try store.readSnapshot(rootID: group.id, fileName: original.fileName).
 '''
 
 SWIFT_TEST += r'''
+phase("unsafe names and symlinks")
 for name in ["../escape.md", "/tmp/escape.md", "folder/file.md", "folder\\file.md", "..md", ".hidden.md", "", "a:bad.md", "bad\n.md", "bad\0.md", "a.MD"] {
     try rejects(.unsafePath, "unsafe filename \(name)") { _ = try store.readSnapshot(rootID: group.id, fileName: name) }
 }
@@ -282,6 +287,7 @@ try rejects(.unsafePath, "ancestor symlink") {
     _ = try MemoryDocumentStore(roots: [childLink]).readSnapshot(rootID: childLink.id, fileName: "2026-10-17.md")
 }
 
+phase("CAS conflict and export")
 // External changes BEFORE CAS are detected; uncoordinated changes DURING CAS cannot be guaranteed.
 try write(group, original.fileName, "external change\n")
 try rejects(.conflict, "raw edit before CAS") { _ = try store.save(original, text: "lost") }
