@@ -47,19 +47,17 @@
 - 7 份新增功能脚本共 57 项：**53 通过、4 跳过**。跳过项是 Foundation 分组策略运行、Foundation 记忆存储运行、真实 SwiftUI 记忆页及模型工具栏 typecheck；Linux 没有 swiftc/Xcode。
 - 原16份稳定基线回归脚本全部 exit 0；其中需要真实 Swift 的部分仍可本机跳过，不等于全部执行过 UIKit。
 - 新 Python AST、MCP CLI AST、本地化 JSON 及 `git diff --check` 通过。
-- 这些主要是源码契约、提取 SQL 和有限 Python 行为检查，不证明完整 Swift/ObjC 编译或真机运行。
+- 上述本机检查主要是源码契约、提取 SQL 和有限 Python 行为检查；真实 Swift 和完整 App 编译的结果以本节下方的成功 CI 为准，仍不等于真机验收。
 
-CI 已加入上述测试的 `V64R_REQUIRE_SWIFT=1` 强制门槛和完整 App 编译，产物明确命名 `Minis-160651-FeaturesWIP-iOS15.5`。私有仓库 macOS runner 可能受账户配额/计费限制，不能擅自转公开；能否运行以实际 Actions 结果为准。
+CI 已加入上述测试的 `V64R_REQUIRE_SWIFT=1` 强制门槛和完整 App 编译，产物命名 `Minis-160651-FeaturesWIP-iOS15.5`。用户明确授权后，仓库已公开；公开分支的 macOS runner 已真实启动。
 
 ## 实际提交与云构建结果
 
 - 功能代码提交：`8e3502d0536b4dab87a37b92da639b89d5f82dae`，46 文件，3287 行新增 / 360 行移除；是修改行数，不存在删除源码文件的提交条目。
-- 已成功推送独立私有分支 `ios15-160651-features-wip`，远端 `ls-remote` 逐字核验 SHA 一致。
-- 稳定远端 `ios15-v64-repair` 仍是 `b113f88f0d6035e15e16533af825fe250052d578`，仓库 `private:true`；未安装、重启或替换手机160650。
-- push 已触发 [Actions run 39017629361](https://github.com/Niubiprass/OpenMinis/actions/runs/39017629361)，状态 **Failure**，总时长6秒，Artifacts为空。
-- GitHub原文：`The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings`。
-- **没有启动编译、没有运行CI里的真实Swift测试、没有生成IPA**；这不是代码已编译失败的证据，也不能据本地测试称编译成功。
-- 当前 `$OPENMINIS` 的 Actions REST读取为403，缺 `actions=read`；已用已登录GitHub网页读到上述真实结果，不需要为了查看状态输出或重建Token。
-- 继续私有 macOS 云构建需要用户处理GitHub账户付款/消费上限。没有为绕过额度而公开仓库、复制源码到公开CI或更改账单。
+- 分支 `ios15-160651-features-wip` 已成功推送；用户本人完成 GitHub sudo 验证后，匿名 API 200、`private:false`，仓库改为公开。旧版私有 run [39017629361](https://github.com/Niubiprass/OpenMinis/actions/runs/39017629361) 因付款/额度限制仅 6 秒失败，job 未启动。
+- 按用户要求，只用 **git push 自动触发**后续构建，不在网页点重跑：提交 `75eaa3e` 的 [run 39018852274](https://github.com/Niubiprass/OpenMinis/actions/runs/39018852274) 真实启动，在 `Verify fixed source` 失败：`MemoryDocumentStore.Failure.unsafePath`，未进入 App 编译。
+- 用阶段标记提交 `74cdc3a` 的 [run 39020478351](https://github.com/Niubiprass/OpenMinis/actions/runs/39020478351) 将故障收敛至缺失记忆根目录的首个 `store.list()`；`6128750` 保留 symlink 安全检查并将目录 URL 规范化、增添回归断言。
+- [成功 run 39021064234](https://github.com/Niubiprass/OpenMinis/actions/runs/39021064234)：commit `612875010b65e7e426dcde0cfd99563e6cb9b71d`、`completed/success`，真实 Swift 测试、原生依赖、完整 iOS App 编译、打包和上传步骤均为 success；两个未过期 Artifacts：`Minis-160651-FeaturesWIP-iOS15.5`（72,882,266 字节，artifact 12096784894）及 `Minis-v64r-build-evidence`（148,362 字节）。仅核验 API 中产物记录，尚未逐文件检查下载 IPA 的 Info.plist/Mach-O/校验值或安装。
+- 稳定远端 `ios15-v64-repair` 仍在旧基线 `b113f88f0d6035e15e16533af825fe250052d578`；未安装、重启或替换手机160650。公开仓库的源码、提交历史及 Actions 日志现在对所有人可见。
 
-没有成功IPA不写成已交付；编译成功也不等于运行成功。其他1.15未完成项仍在同版目标中，本分支只作为开发进度保存，不构成缩减范围后的正式发布。
+**构建成功不等于运行成功或 1.15 功能全量复现。** 本候选尚未真机验收；其他 1.15 未完成项仍是原同版目标，本分支只是开发候选，不能冒充正式发布。
