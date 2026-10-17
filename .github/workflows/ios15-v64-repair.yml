@@ -14,6 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # Re-run 2026-10-17 after repo made public to restore macOS runner eligibility.
   IOS_DEPLOYMENT_TARGET: '15.5'
 
 jobs:
