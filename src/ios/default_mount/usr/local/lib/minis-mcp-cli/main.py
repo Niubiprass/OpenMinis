@@ -41,9 +41,15 @@ from utils import config  # noqa: E402
 
 LOG_PATH = "/var/minis/mcp-servers/mcp-cli.log"
 
-PID_FILE = "/tmp/minis-mcp-daemon.pid"
-PORT_FILE = "/tmp/minis-mcp-daemon.port"  # daemon publishes its 127.0.0.1 port here
-LOCK_FILE = "/tmp/minis-mcp-daemon.lock"  # cold-start fork guard (one winner forks)
+# Device-local activation epoch contains no secrets. New shells after an
+# env-var toggle must not reuse a daemon carrying the previous environment.
+# Old in-flight calls finish in their old pool and expire via the normal TTL.
+_epoch = os.environ.get("MINIS_ENV_EPOCH", "legacy")
+_epoch = "".join(c for c in _epoch if c.isascii() and (c.isalnum() or c == "-"))[:80] or "legacy"
+_daemon_base = "/tmp/minis-mcp-daemon-" + _epoch
+PID_FILE = _daemon_base + ".pid"
+PORT_FILE = _daemon_base + ".port"
+LOCK_FILE = _daemon_base + ".lock"
 CONN_TIMEOUT = 310.0  # socket recv timeout, slightly above the 300s RPC timeout
 LOCK_STALE_SECONDS = 12.0  # reclaim a cold-start lock older than this (crashed start)
 

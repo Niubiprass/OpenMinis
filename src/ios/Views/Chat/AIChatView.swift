@@ -24,7 +24,7 @@ private final class CachedViewModel: ObservableObject {
     /// observes all @Published changes through the @StateObject.
     private var cancellable: AnyCancellable?
 
-    init(sessionId: String?) {
+    init(sessionId: String?, initialFolderId: String? = nil) {
         if let sessionId {
             let (cached, isNew) = ViewModelCache.shared.getOrCreate(for: sessionId)
             self.vm = cached
@@ -44,6 +44,9 @@ private final class CachedViewModel: ObservableObject {
             minisLogger.info("🔑DRAFT CachedViewModel.init sessionId=\(sessionId) vm=\(cached.vmInstanceId) isNew=\(isNew)")
         } else {
             let draft = ViewModelCache.shared.createDraft()
+            // New ChatFolder draft intent must exist before any send/auto-run;
+            // session creation will persist it before starting the request.
+            draft.initialFolderId = initialFolderId
             self.vm = draft
             self.isNew = true
             minisLogger.info("🔑DRAFT CachedViewModel.init DRAFT vm=\(draft.vmInstanceId)")
@@ -263,6 +266,8 @@ struct AIChatView: View {
     var remoteDeviceId: String? = nil
     /// Model group to bind when creating a new session (from long-press FAB).
     var initialGroupId: String? = nil
+    /// ChatFolder UUID for a new draft, separate from the model group above.
+    var initialFolderId: String? = nil
     @EnvironmentObject var shareCoordinator: ShareCoordinator
     @StateObject private var cached: CachedViewModel
     /// [T-ios-crash-objectdestroy-composer-uaf] Relay for the composer's key
@@ -286,11 +291,12 @@ struct AIChatView: View {
         )
     }
 
-    init(sessionId: String? = nil, draftId: String? = nil, remoteDeviceId: String? = nil, initialGroupId: String? = nil) {
+    init(sessionId: String? = nil, draftId: String? = nil, remoteDeviceId: String? = nil, initialGroupId: String? = nil, initialFolderId: String? = nil) {
         self.sessionId = sessionId
         self.draftId = draftId
         self.remoteDeviceId = remoteDeviceId
         self.initialGroupId = initialGroupId
+        self.initialFolderId = initialFolderId
         // [T-ios-aichatview-eager-cachedvm] Build the CachedViewModel INSIDE the
         // StateObject autoclosure so SwiftUI only constructs it the first time
         // this view's StateObject is created — NOT on every struct re-init.
@@ -307,7 +313,7 @@ struct AIChatView: View {
         // re-init a no-op when the StateObject already exists. CachedViewModel.init
         // logs its own creation (🔑DRAFT), so the redundant per-init [SessionLoad]
         // line is dropped.
-        _cached = StateObject(wrappedValue: CachedViewModel(sessionId: sessionId))
+        _cached = StateObject(wrappedValue: CachedViewModel(sessionId: sessionId, initialFolderId: initialFolderId))
         AIChatViewModel.onAppearTimestamp = CFAbsoluteTimeGetCurrent()
     }
     @StateObject private var oauth = ClaudeOAuthManager.shared

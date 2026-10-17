@@ -35,6 +35,7 @@ struct EnvironmentVariablesView: View {
                 Toggle("Privacy Mode", isOn: $privacy.enabled)
             } footer: {
                 Text("When enabled, any environment variable value that appears in shell-execute output is replaced with a masked form (e.g. `sk-1********ajhks`) before reaching the model. Values shorter than 8 characters become all `*`. The user-visible output in chat is unchanged.")
+                Text("Disable a variable to keep its value without injecting it into new shells on this device. Existing processes are unchanged. This does not disable credentials already saved in providers or MCP servers.")
             }
 
             if store.entries.isEmpty {
@@ -142,6 +143,18 @@ struct EnvironmentVariablesView: View {
         let isRevealed = revealedKeys.contains(entry.id)
         let currentValue = store.value(forKey: entry.key) ?? ""
 
+        VStack(alignment: .leading, spacing: 8) {
+            envVarSummary(entry, isRevealed: isRevealed, currentValue: currentValue)
+            Toggle("Enabled", isOn: Binding(
+                get: { store.isEnabled(id: entry.id) },
+                set: { store.setEnabled(id: entry.id, enabled: $0) }
+            ))
+            .accessibilityLabel(Text(entry.key + ": " + AppLocalized("Enabled")))
+        }
+    }
+
+    @ViewBuilder
+    private func envVarSummary(_ entry: EnvVarEntry, isRevealed: Bool, currentValue: String) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.key)

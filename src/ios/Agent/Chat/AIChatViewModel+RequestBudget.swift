@@ -289,6 +289,14 @@ extension AIChatViewModel {
         minisAppGroupRoot.appendingPathComponent("memory", isDirectory: true)
     }
 
+    /// Folder memory is kept outside the globally shared FileProvider memory root.
+    /// Hashing the stable folder id prevents path traversal and survives renames.
+    nonisolated static func minisFolderMemoryPersistentDir(for folderId: String) -> URL {
+        let key = SHA256.hash(data: Data(folderId.utf8)).map { String(format: "%02x", $0) }.joined()
+        return minisConfigRoot.appendingPathComponent("folder-memory", isDirectory: true)
+            .appendingPathComponent(key, isDirectory: true)
+    }
+
     /// Persistent storage directory for skills (shared across all sessions).
     /// Stored in the App Group container so the FileProvider extension can access it.
     nonisolated static var minisSkillsPersistentDir: URL {
@@ -324,6 +332,15 @@ extension AIChatViewModel {
         // single-encoded form. [T-fix-double-encoding]
         let subPaths = MinisURLPathDecoding.subPathCandidates(for: url)
         let fm = FileManager.default
+        if host == "memory", let sid = sessionId ?? activeSessionId {
+            guard let root = MinisFsRouter.shared.memoryDirectory(for: sid) else { return nil }
+            for subPath in subPaths {
+                let target = root.appendingPathComponent(subPath).resolvingSymlinksInPath().standardizedFileURL
+                let base = root.resolvingSymlinksInPath().standardizedFileURL.path
+                if target.path.hasPrefix(base + "/"), fm.fileExists(atPath: target.path) { return target }
+            }
+            return nil // a folder miss must not fall through to global memory
+        }
 
         // Primary: resolve via the owning session (explicit), else frontmost
         if let sid = sessionId ?? activeSessionId {

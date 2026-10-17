@@ -146,8 +146,8 @@ struct ProvidersCollection: ConfigCollection {
         guard !name.isEmpty else {
             throw ConfigError.invalidValue("`$$` reference is missing a variable name")
         }
-        guard let value = EnvVarStore.loadValueSync(forKey: name), !value.isEmpty else {
-            throw ConfigError.invalidValue("Environment variable \"\(name)\" is not set — create it in Settings → Environment Variables first")
+        guard let value = EnvVarStore.loadEnabledValueSync(forKey: name), !value.isEmpty else {
+            throw ConfigError.invalidValue("Environment variable \"\(name)\" is not set or is disabled — enable it in Settings → Environment Variables first")
         }
         return value
     }

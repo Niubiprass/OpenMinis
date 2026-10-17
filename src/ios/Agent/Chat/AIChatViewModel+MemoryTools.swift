@@ -1,14 +1,103 @@
 import Foundation
 
+// MARK: - Folder-scoped runtime (new adaptation; not recovered 1.15 source)
+
+struct FolderRuntimeContext {
+    let folderId: String?
+    let configuration: ChatFolderConfiguration
+
+    var usesFolderMemory: Bool { folderId != nil && configuration.memoryPolicy == .folder }
+    var memoryDirectory: URL {
+        if usesFolderMemory, let folderId {
+            return AIChatViewModel.minisFolderMemoryPersistentDir(for: folderId)
+        }
+        return AIChatViewModel.minisMemoryPersistentDir
+    }
+    var readDirectories: [(label: String, directory: URL)] {
+        var roots = [(label: usesFolderMemory ? "folder/" : "", directory: memoryDirectory)]
+        if usesFolderMemory && configuration.readsGlobalMemory {
+            roots.append((label: "global-read-only/", directory: AIChatViewModel.minisMemoryPersistentDir))
+        }
+        return roots
+    }
+}
+
 // MARK: - Memory Tools
 
 extension AIChatViewModel {
 
+    /// Resolve the owning home folder, including parent inheritance for helpers.
+    /// A failed config read is propagated, never silently treated as global.
+    func refreshFolderRuntimeContext() async throws {
+        guard let sid = helperConfig?.parentSessionId ?? sessionId else {
+            if let folderId = initialFolderId {
+                let configuration = try await ChatStore.shared.getFolderConfiguration(folderId)
+                folderRuntimeContext = FolderRuntimeContext(folderId: folderId, configuration: configuration)
+            }
+            return
+        }
+        let resolved = try await ChatStore.shared.resolveFolderRuntimeContext(for: sid)
+        let context = FolderRuntimeContext(folderId: resolved.folderId, configuration: resolved.configuration)
+        try FileManager.default.createDirectory(at: context.memoryDirectory, withIntermediateDirectories: true)
+        folderRuntimeContext = context
+        SkillStore.shared.setFolderSkillDefaults(context.configuration.skillDefaults, for: sid)
+        MinisFsRouter.shared.setMemoryDirectory(context.memoryDirectory, for: sid)
+        if let childId = sessionId, childId != sid {
+            MinisFsRouter.shared.setMemoryDirectory(context.memoryDirectory, for: childId)
+        }
+    }
+
+    var effectiveMemoryDirectory: URL {
+        folderRuntimeContext?.memoryDirectory ?? Self.minisMemoryPersistentDir
+    }
+
+    var effectiveSoulPrompt: String? {
+        if let sid = helperConfig?.parentSessionId ?? sessionId,
+           let override = UserDefaults.standard.string(forKey: "session.soul.body.\(sid)") {
+            return override // explicit empty string disables the inherited body
+        }
+        guard let configuration = folderRuntimeContext?.configuration else { return nil }
+        switch configuration.soulMode {
+        case "inherit": return nil
+        case "clear": return ""
+        case "append":
+            return [SoulStore.load()?.body ?? "", configuration.soulPrompt ?? ""]
+                .filter { !$0.isEmpty }.joined(separator: "\n\n")
+        default: return configuration.soulPrompt
+        }
+    }
+
+    var folderMemoryStatusFragment: String {
+        guard let context = folderRuntimeContext, context.usesFolderMemory else { return "" }
+        return "\n\nFolder memory is active. /var/minis/memory and minis://memory refer to THIS folder only. "
+            + "memory_write and file tools write only here. Do not use other folders' memories. "
+            + (context.configuration.readsGlobalMemory
+                ? "Global memories may be read through memory_get and are injected as read-only background. Never modify global memory from this folder; ask the user to open global memory management."
+                : "Global memories are not authorized for this folder; do not search or infer them.")
+            + " No old global files were moved, copied or deleted. This is logical organization within one rootfs, not a security sandbox against arbitrary malicious shell code."
+    }
+
+    /// Called at both initial and fallback prompt construction sites.
+    func scopedMemoryPromptFragments() -> [String] {
+        guard memoryEnabled else { return [] }
+        let roots = folderRuntimeContext?.readDirectories ?? [(label: "", directory: Self.minisMemoryPersistentDir)]
+        return roots.flatMap { root -> [String] in
+            var fragments: [String] = []
+            if let global = Self.loadGlobalMemoryFragment(from: root.directory) {
+                fragments.append("Memory source: \(root.label.isEmpty ? "global" : root.label)\n" + global)
+            }
+            if let daily = Self.loadRecentDailyMemoryFragment(from: root.directory) {
+                fragments.append("Memory source: \(root.label.isEmpty ? "global" : root.label)\n" + daily)
+            }
+            return fragments
+        }
+    }
+
     // MARK: - Memory Tools
 
     /// Load full global memory content for system prompt injection.
-    nonisolated static func loadGlobalMemoryFragment() -> String? {
-        let globalFile = minisMemoryPersistentDir.appendingPathComponent("GLOBAL.md")
+    nonisolated static func loadGlobalMemoryFragment(from directory: URL? = nil) -> String? {
+        let globalFile = (directory ?? minisMemoryPersistentDir).appendingPathComponent("GLOBAL.md")
         guard FileManager.default.fileExists(atPath: globalFile.path),
               let content = try? String(contentsOf: globalFile, encoding: .utf8),
               !content.isEmpty else { return nil }
@@ -17,7 +106,7 @@ extension AIChatViewModel {
     }
 
     /// Load the 3 most recent daily memory logs that have content, for system prompt injection (first 200 lines each).
-    nonisolated static func loadRecentDailyMemoryFragment() -> String? {
+    nonisolated static func loadRecentDailyMemoryFragment(from directory: URL? = nil) -> String? {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
         let fm = FileManager.default
@@ -30,7 +119,7 @@ extension AIChatViewModel {
         while fragments.count < 3 && dayOffset < maxLookback {
             let date = today.addingTimeInterval(-Double(dayOffset) * 86400)
             let dateStr = fmt.string(from: date)
-            let fileURL = minisMemoryPersistentDir.appendingPathComponent("\(dateStr).md")
+            let fileURL = (directory ?? minisMemoryPersistentDir).appendingPathComponent("\(dateStr).md")
 
             if fm.fileExists(atPath: fileURL.path),
                let content = try? String(contentsOf: fileURL, encoding: .utf8),
@@ -72,8 +161,12 @@ extension AIChatViewModel {
         }
 
         let fm = FileManager.default
-        let persistDir = Self.minisMemoryPersistentDir
-        try? fm.createDirectory(at: persistDir, withIntermediateDirectories: true)
+        let persistDir = effectiveMemoryDirectory
+        do {
+            try fm.createDirectory(at: persistDir, withIntermediateDirectories: true)
+        } catch {
+            return FileToolResult(output: "Error preparing memory directory: \(error.localizedDescription)", success: false)
+        }
 
         let dateFmt = DateFormatter()
         dateFmt.dateFormat = "yyyy-MM-dd"
@@ -98,7 +191,7 @@ extension AIChatViewModel {
         }
 
         do {
-            try writeData.write(to: fileURL)
+            try writeData.write(to: fileURL, options: .atomic)
         } catch {
             return FileToolResult(output: "Error writing memory: \(error.localizedDescription)", success: false)
         }
@@ -111,8 +204,10 @@ extension AIChatViewModel {
         // Date() call) so the dateKey matches what was actually written
         // even across a midnight boundary.
         let dateStrForSync = (fileName as NSString).deletingPathExtension
-        Task { @MainActor in
-            await ChatStore.shared.markDirty(recordType: "MemoryDailyV2", recordId: dateStrForSync)
+        if folderRuntimeContext?.usesFolderMemory != true {
+            Task { @MainActor in
+                await ChatStore.shared.markDirty(recordType: "MemoryDailyV2", recordId: dateStrForSync)
+            }
         }
         NotificationCenter.default.post(name: .memoryFilesDidChange, object: nil)
 
@@ -149,34 +244,25 @@ extension AIChatViewModel {
 
         var filesToSearch: [(label: String, url: URL)] = []
         let fm = FileManager.default
-        let memDir = Self.minisMemoryPersistentDir
-
-        var globalEmpty = false
-        if scope == "all" {
-            let globalFile = memDir.appendingPathComponent("GLOBAL.md")
-            if fm.fileExists(atPath: globalFile.path) {
-                let content = (try? String(contentsOf: globalFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                if content.isEmpty {
-                    globalEmpty = true
-                } else {
-                    filesToSearch.append(("GLOBAL.md", globalFile))
+        let roots = folderRuntimeContext?.readDirectories ?? [(label: "", directory: Self.minisMemoryPersistentDir)]
+        for root in roots {
+            if scope == "all" {
+                let globalFile = root.directory.appendingPathComponent("GLOBAL.md")
+                if fm.fileExists(atPath: globalFile.path) {
+                    filesToSearch.append((root.label + "GLOBAL.md", globalFile))
                 }
-            } else {
-                globalEmpty = true
+            }
+            if let files = try? fm.contentsOfDirectory(at: root.directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+                let sorted = files
+                    .filter { $0.pathExtension == "md" && $0.lastPathComponent != "GLOBAL.md" }
+                    .sorted { $0.lastPathComponent > $1.lastPathComponent }
+                for file in sorted {
+                    filesToSearch.append((root.label + file.lastPathComponent, file))
+                }
             }
         }
-
-        if fm.fileExists(atPath: memDir.path),
-           let files = try? fm.contentsOfDirectory(at: memDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
-            let sorted = files
-                .filter { $0.pathExtension == "md" && $0.lastPathComponent != "GLOBAL.md" }
-                .sorted { $0.lastPathComponent > $1.lastPathComponent }
-            for file in sorted {
-                filesToSearch.append((file.lastPathComponent, file))
-            }
-        }
-
-        let globalNote = globalEmpty ? "[GLOBAL.md is empty or does not exist. Use file_write to create it when the user asks to save global memory.]\n\n" : ""
+        let globalNote = folderRuntimeContext?.usesFolderMemory == true
+            ? "[Folder memory: writes stay in this folder. Global entries, when enabled, are read-only.]\n\n" : ""
 
         if filesToSearch.isEmpty {
             return FileToolResult(output: globalNote + "No memory files found.", success: true)

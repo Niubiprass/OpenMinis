@@ -362,6 +362,23 @@ class ISHTerminalViewModel: ObservableObject {
             let mountStart = CFAbsoluteTimeGetCurrent()
             logger.info("[StartShell] mountForSession dispatched (async) for \(sid)")
             Task.detached { [weak self] in
+                do {
+                    let context = try await ChatStore.shared.resolveFolderRuntimeContext(for: sid)
+                    let directory: URL
+                    if context.configuration.memoryPolicy == .folder, let folderId = context.folderId {
+                        directory = AIChatViewModel.minisFolderMemoryPersistentDir(for: folderId)
+                    } else { directory = AIChatViewModel.minisMemoryPersistentDir }
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    MinisFsRouter.shared.setMemoryDirectory(directory, for: sid)
+                } catch {
+                    await MainActor.run {
+                        self?.isShellStarted = false
+                        if let data = ("\r\nMemory scope unavailable: " + error.localizedDescription + "\r\n").data(using: .utf8) {
+                            self?.emulator.feed(data)
+                        }
+                    }
+                    return
+                }
                 await ISHExecutionCoordinator.shared.mountForSession(sid)
                 await MainActor.run {
                     guard let self else { return }
@@ -395,16 +412,18 @@ class ISHTerminalViewModel: ObservableObject {
 
         // Inject user-defined environment variables
         stepStart = CFAbsoluteTimeGetCurrent()
-        let customEnv = EnvVarStore.shared.allAsDict()
-        if !customEnv.isEmpty {
-            ISHKernel.shared.customEnvironment = customEnv
-        }
+        var customEnv = EnvVarStore.shared.allAsDict()
+        customEnv["MINIS_ENV_EPOCH"] = EnvVarStore.runtimeEnvironmentEpoch
+        // Always replace the prior snapshot, including when the last variable
+        // was disabled/deleted. Otherwise a new terminal inherits stale secrets.
+        ISHKernel.shared.customEnvironment = customEnv
         logger.info("[StartShell] envVars: \(String(format: "%.1f", (CFAbsoluteTimeGetCurrent() - stepStart) * 1000))ms (\(customEnv.count) vars)")
 
         // Start shell
         stepStart = CFAbsoluteTimeGetCurrent()
         // Start as login shell (-l) so /etc/profile and /etc/profile.d/*.sh
         // are sourced, enabling command history and line editing.
+        ISHKernel.shared.interactiveFSContext = sessionId.map { MinisFsRouter.shared.context(for: $0) } ?? 0
         let err = ISHKernel.shared.executeCommand(["/bin/sh", "-l"])
         logger.info("[StartShell] executeCommand(/bin/sh -l): \(String(format: "%.1f", (CFAbsoluteTimeGetCurrent() - stepStart) * 1000))ms")
         if err < 0 {

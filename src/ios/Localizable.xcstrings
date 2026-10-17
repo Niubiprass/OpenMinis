@@ -1,6 +1,69 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "The memory directory is not authorized or has a duplicate ID." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The memory directory is not authorized or has a duplicate ID." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "记忆目录未经授权或标识重复。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "記憶目錄未經授權或識別碼重複。" } } } },
+    "Only regular Markdown files directly inside the allowed directory are supported. Symlinks are not allowed." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Only regular Markdown files directly inside the allowed directory are supported. Symlinks are not allowed." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仅支持授权目录直属的普通 Markdown 文件，不允许符号链接。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "僅支援授權目錄直屬的一般 Markdown 檔案，不允許符號連結。" } } } },
+    "The memory file no longer exists." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The memory file no longer exists." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "记忆文件已不存在。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "記憶檔案已不存在。" } } } },
+    "The memory file is not valid UTF-8. Nothing was saved." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The memory file is not valid UTF-8. Nothing was saved." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "记忆文件不是有效的 UTF-8，未保存任何内容。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "記憶檔案不是有效的 UTF-8，未儲存任何內容。" } } } },
+    "This memory file or directory is read-only." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "This memory file or directory is read-only." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此记忆文件或目录为只读。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "此記憶檔案或目錄為唯讀。" } } } },
+    "The file changed or was removed. Your draft is kept. Cancel to reload before editing again." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The file changed or was removed. Your draft is kept. Cancel to reload before editing again." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "文件已变更或被移除。草稿仍保留；取消后重新载入再编辑。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "檔案已變更或被移除。草稿仍保留；取消後重新載入再編輯。" } } } },
+    "Save or cancel the draft before sharing a saved file." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Save or cancel the draft before sharing a saved file." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "分享已保存文件前，请先保存或取消草稿。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "分享已儲存檔案前，請先儲存或取消草稿。" } } } },
+    "File coordination did not complete. Please try again." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "File coordination did not complete. Please try again." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "文件协调未完成，请重试。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "檔案協調未完成，請重試。" } } } },
+    "Global Memory" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Global Memory" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全局记忆" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "全域記憶" } } } },
+    "Search memories" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Search memories" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "搜索记忆" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "搜尋記憶" } } } },
+    "Share (%lld)" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Share (%lld)" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "分享（%lld）" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "分享（%lld）" } } } },
+    "Memory error" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Memory error" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "记忆操作失败" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "記憶操作失敗" } } } },
+    "No memory documents" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "No memory documents" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无记忆文档" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "尚無記憶文件" } } } },
+    "No matching memories" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "No matching memories" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "没有匹配的记忆" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "沒有符合的記憶" } } } },
+    "Not created — open to create GLOBAL.md" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Not created — open to create GLOBAL.md" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "尚未创建，打开后可创建 GLOBAL.md" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "尚未建立，開啟後可建立 GLOBAL.md" } } } },
+    "This memory file has not been created." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "This memory file has not been created." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此记忆文件尚未创建。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "此記憶檔案尚未建立。" } } } },
+    "Save or cancel this draft before sharing." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Save or cancel this draft before sharing." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "分享前请先保存或取消此草稿。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "分享前請先儲存或取消此草稿。" } } } },
+    "Sharing saved Markdown does not change memory visibility or group access." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Sharing saved Markdown does not change memory visibility or group access." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "分享已保存的 Markdown 不会更改记忆可见性或分组访问权限。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "分享已儲存的 Markdown 不會更改記憶可見性或群組存取權限。" } } } },
+    "Share exports the saved snapshot, not a draft. It does not change group access." : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Share exports the saved snapshot, not a draft. It does not change group access." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "分享导出的是已保存快照而非草稿，不会更改分组访问权限。" } }, "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "分享匯出的是已儲存快照而非草稿，不會更改群組存取權限。" } } } },
+    "Copy Source Link" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy Source Link"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制来源链接"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "複製來源連結"
+          }
+        }
+      }
+    },
+    "Disable a variable to keep its value without injecting it into new shells on this device. Existing processes are unchanged. This does not disable credentials already saved in providers or MCP servers." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Disable a variable to keep its value without injecting it into new shells on this device. Existing processes are unchanged. This does not disable credentials already saved in providers or MCP servers."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停用后仍保留变量值，但不再注入本机新启动的 shell。已运行的进程不受影响；服务商或 MCP 服务器中已保存的凭据不会被停用。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停用後仍保留變數值，但不再注入本機新啟動的 shell。已執行的程序不受影響；供應商或 MCP 伺服器中已儲存的憑證不會被停用。"
+          }
+        }
+      }
+    },
     "Token Budget": {
       "localizations": {
         "en": {

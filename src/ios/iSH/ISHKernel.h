@@ -29,6 +29,8 @@ typedef void (^ISHCommandCompletionCallback)(NSString *output, NSError * _Nullab
 /// Custom environment variables to inject into shell execution.
 /// Set before calling executeCommand:. Keys and values are strings.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSString *> *customEnvironment;
+/// Captured for each interactive child; routes that terminal to its owning session.
+@property (nonatomic) uint64_t interactiveFSContext;
 
 /// Initialize kernel and mount root filesystem
 /// @param rootPath fakefs root directory path (containing data/ and meta.db)

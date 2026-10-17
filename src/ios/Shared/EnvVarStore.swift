@@ -38,6 +38,11 @@ final class EnvVarStore: ObservableObject {
     static let shared = EnvVarStore()
 
     @Published private(set) var entries: [EnvVarEntry] = []
+    /// Device-local opt-out by stable entry UUID. No secrets or activation
+    /// flags are added to env-vars.json, portable backups, or cloud records.
+    @Published private(set) var disabledEntryIDs: Set<String> = []
+
+    nonisolated private static let disabledEntryIDsKey = "envvar.disabled_entry_ids"
 
     private let fileURL: URL
     nonisolated private static let keychainService = "com.openminis.app.envvar"
@@ -48,6 +53,7 @@ final class EnvVarStore: ObservableObject {
         try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
         self.fileURL = baseURL.appendingPathComponent("env-vars.json")
         self.entries = Self.loadEntries(from: fileURL)
+        self.disabledEntryIDs = Self.loadDisabledEntryIDs()
         scheduleLegacyRecordCleanupIfNeeded()
     }
 
@@ -314,6 +320,34 @@ final class EnvVarStore: ObservableObject {
 
     // MARK: - Public API
 
+    nonisolated private static func loadDisabledEntryIDs() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: disabledEntryIDsKey) ?? [])
+    }
+
+    /// Activation applies to future shell injections on this device only.
+    /// The Keychain value remains readable for editing, backup, and redaction.
+    func isEnabled(id: String) -> Bool {
+        guard let key = entries.first(where: { $0.id == id })?.key else { return false }
+        return !entries.contains(where: { $0.key == key && disabledEntryIDs.contains($0.id) })
+    }
+
+    func setEnabled(id: String, enabled: Bool) {
+        guard let key = entries.first(where: { $0.id == id })?.key, isEnabled(id: id) != enabled else { return }
+        var disabled = disabledEntryIDs
+        for entry in entries where entry.key == key {
+            if enabled { disabled.remove(entry.id) }
+            else { disabled.insert(entry.id) }
+        }
+        // Persist before publishing so a subsequent shell reads the new state.
+        UserDefaults.standard.set(disabled.sorted(), forKey: Self.disabledEntryIDsKey)
+        UserDefaults.standard.set(UUID().uuidString, forKey: "envvar.runtime.epoch")
+        disabledEntryIDs = disabled
+    }
+
+    nonisolated static var runtimeEnvironmentEpoch: String {
+        UserDefaults.standard.string(forKey: "envvar.runtime.epoch") ?? "activation-v1"
+    }
+
     func add(key: String, value: String, note: String = "") {
         let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard !trimmedKey.isEmpty, Self.isValidKey(trimmedKey) else { return }
@@ -478,7 +512,20 @@ final class EnvVarStore: ObservableObject {
         logger.info("[EnvVarStore] applyRemoteDeletion id=\(id.prefix(8)) key=\(key)")
     }
 
-    /// Returns all env vars as a dictionary for injection into shell execution.
+    /// Runtime references honor activation, while loadValueSync stays available
+    /// for backup, editing and secret redaction (never render this value).
+    nonisolated static func loadEnabledValueSync(forKey key: String) -> String? {
+        let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
+        let url = library.appendingPathComponent("MinisChat/env-vars.json")
+        guard let data = try? Data(contentsOf: url),
+              let entries = try? JSONDecoder().decode([EnvVarEntry].self, from: data) else { return nil }
+        let disabled = loadDisabledEntryIDs()
+        guard !entries.contains(where: { $0.key == key && disabled.contains($0.id) }) else { return nil }
+        return loadValueSync(forKey: key)
+    }
+
+    /// Returns enabled env vars for injection into a NEW shell execution.
+    /// Existing processes retain their environment; this is not credential revocation.
     nonisolated func allAsDict() -> [String: String] {
         var dict: [String: String] = [:]
         // Read entries from the JSON file directly (avoid MainActor requirement)
@@ -488,7 +535,12 @@ final class EnvVarStore: ObservableObject {
               let entries = try? JSONDecoder().decode([EnvVarEntry].self, from: data) else {
             return dict
         }
-        for entry in entries {
+        let disabled = Self.loadDisabledEntryIDs()
+        // Sync can retain two entries with the same key. If either is opted
+        // out, suppress that key entirely rather than leaking its shared value
+        // through the enabled duplicate (Keychain values are keyed by name).
+        let disabledKeys = Set(entries.filter { disabled.contains($0.id) }.map(\.key))
+        for entry in entries where !disabledKeys.contains(entry.key) {
             if let val = Self.loadValue(forKey: entry.key) {
                 dict[entry.key] = val
             }

@@ -1064,7 +1064,7 @@ enum SystemPromptBuilder {
     /// We never substitute a default body into the prompt — the identity
     /// sentence alone is the safe fallback when SOUL.md is missing or
     /// empty, matching pre-SOUL behavior.
-    static func identitySection() -> String {
+    static func identitySection(personalityOverride: String? = nil) -> String {
         let file = SoulStore.load()
         let name: String = {
             let n = (file?.metadata.name ?? SoulMetadata.default.name)
@@ -1104,7 +1104,7 @@ enum SystemPromptBuilder {
             return "\n\nResponse style (from SOUL.md `style` — apply to every reply unless the user explicitly asks otherwise; if it prescribes a reply language, it overrides the default match-the-user's-language rule):\n\(s)"
         }
 
-        guard let body = file?.body else {
+        guard let body = personalityOverride ?? file?.body else {
             return identityTrimmed + styleBlock(style) + "\n\n" + soulEditHint + "\n\n"
         }
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)

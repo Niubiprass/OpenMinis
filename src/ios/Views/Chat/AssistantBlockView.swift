@@ -588,7 +588,11 @@ struct ToolCapsuleView: View {
                 // `content` parse can still come back empty here (malformed or
                 // still-streaming args). Report that rather than failing silently.
                 if let written = memoryWriteContent {
-                    revokeMemoryResult = MemoryWriteRevoker.revoke(writtenContent: written)
+                    if vm.folderRuntimeContext?.usesFolderMemory == true {
+                        revokeMemoryResult = "请在本组记忆管理中编辑此条目；旧撤销入口不会访问全局记忆。"
+                    } else {
+                        revokeMemoryResult = MemoryWriteRevoker.revoke(writtenContent: written)
+                    }
                 } else {
                     revokeMemoryResult = AppLocalized("No written content to revoke.")
                 }

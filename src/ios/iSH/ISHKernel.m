@@ -1212,12 +1212,20 @@ static void handle_process_exit(struct task *task, int code) {
     // Spawn shell as a child of init process
     // This must be done in a background thread
     NSArray<NSString *> *commandCopy = [command copy];
+    uint64_t fsContext = self.interactiveFSContext;
+    NSDictionary<NSString *, NSString *> *environmentCopy = [self.customEnvironment copy];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Create a new child process of init
         int err = become_new_init_child();
         if (err < 0) {
             NSLog(@"ISHKernel: become_new_init_child failed: %d", err);
             return;
+        }
+
+        // Match ISHShellExecutor's per-invocation routing; forked children
+        // inherit the group token. Never change a global memory mount.
+        if (fsContext != 0 && current->group != NULL) {
+            current->group->fs_context = fsContext;
         }
 
         // Create a pseudo-terminal (PTY) for the shell session.
@@ -1354,7 +1362,7 @@ static void handle_process_exit(struct task *task, int code) {
         }
 
         // Append custom environment variables
-        NSDictionary<NSString *, NSString *> *customEnv = self->_customEnvironment;
+        NSDictionary<NSString *, NSString *> *customEnv = environmentCopy;
         if (customEnv) {
             for (NSString *key in customEnv) {
                 NSString *entry = [NSString stringWithFormat:@"%@=%@", key, customEnv[key]];

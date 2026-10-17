@@ -2247,8 +2247,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         let subPaths = MinisURLPathDecoding.subPathCandidates(for: url)
         let fm = FileManager.default
 
+        if host == "memory" {
+            return resolveMinisURL(url, sessionId: activeSessionId)
+        }
         // Global directories resolve without session ID
-        let globalDirs = ["memory", "skills", "shared"]
+        let globalDirs = ["skills", "shared"]
         if globalDirs.contains(host) {
             let library = fm.urls(for: .libraryDirectory, in: .userDomainMask).first!
             for subPath in subPaths {
@@ -2337,7 +2340,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // Personality section from SOUL.md's body. The original wording
         // is preserved inside SystemPromptBuilder.identityTemplate so we
         // don't regress model behavior that depended on it.
-        (helperConfig != nil ? helperIdentitySection : SystemPromptBuilder.identitySection())
+        (helperConfig != nil ? helperIdentitySection + (effectiveSoulPrompt.map { "\n\nInherited conversation personality:\n" + $0 + "\n\n" } ?? "") : SystemPromptBuilder.identitySection(personalityOverride: effectiveSoulPrompt))
             + "You should proactively use shell commands to accomplish the user's tasks — installing packages (apk add), "
             + "writing and running scripts, managing files, networking, and any other operations a Linux terminal can perform.\n\n"
             + "Available tools:\n"
@@ -2548,6 +2551,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 + "- SOUL.md (your persona / identity) is unaffected and remains active above."
         }
     }
+
+    /// Snapshot used consistently by prompt injection, memory tools and filesystem routing.
+    /// Refreshed at each turn/tool boundary; errors never fall back to global memory.
+    var folderRuntimeContext: FolderRuntimeContext?
+    /// Set by the home folder's new-chat entry before the first persisted message.
+    var initialFolderId: String?
 
     /// Session ID for persistence integration. Set by the view on appear.
     var sessionId: String? {
@@ -5885,6 +5894,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         defer { logger.info("🔄SESSION [vm=\(self.vmInstanceId)] runAgentLoop END session=\(self.sessionId ?? "nil") history=\(self.agentHistory.count) estimated ~\(self.estimateContextTokens()) tokens") }
 
         let loopSetupStart = CFAbsoluteTimeGetCurrent()
+        try await refreshFolderRuntimeContext()
 
         // [T-ios-stale-error-banner] Every turn funnels through here — a send, a
         // retry, a Resume, a queued prompt draining, and the auto-fallback that
@@ -5995,17 +6005,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // session so a repro shows whether loadSession seeded it from the
         // global default.
         AppLogger(category: "MemDiag").info("[MemDiag] inject-decision sid=\(self.sessionId?.prefix(8) ?? "nil") vm.memoryEnabled=\(self.memoryEnabled)")
-        if memoryEnabled {
-            if let memoryFragment = Self.loadGlobalMemoryFragment() {
-                userSystemPrompt += "\n\n" + memoryFragment
-            }
-            if let dailyFragment = Self.loadRecentDailyMemoryFragment() {
-                userSystemPrompt += "\n\n" + dailyFragment
-            }
+        for fragment in scopedMemoryPromptFragments() {
+            userSystemPrompt += "\n\n" + fragment
         }
         // Authoritative memory-status footer (overrides any earlier
         // baseSystemPrompt mentions when memory is disabled).
-        userSystemPrompt += memoryStatusFragment
+        userSystemPrompt += memoryStatusFragment + folderMemoryStatusFragment
 
         let promptBuildMs = (CFAbsoluteTimeGetCurrent() - loopSetupStart) * 1000
         logger.info("⏱️ [runAgentLoop] prompt build elapsed=\(String(format: "%.1f", promptBuildMs))ms history=\(self.agentHistory.count)")
@@ -6749,15 +6754,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 // the gate from the first injection site — fallback to a
                 // new provider must respect the per-session memoryEnabled
                 // toggle the same way the initial system prompt did.
-                if memoryEnabled {
-                    if let memoryFragment = Self.loadGlobalMemoryFragment() {
-                        userSystemPrompt += "\n\n" + memoryFragment
-                    }
-                    if let dailyFragment = Self.loadRecentDailyMemoryFragment() {
-                        userSystemPrompt += "\n\n" + dailyFragment
-                    }
+                for fragment in scopedMemoryPromptFragments() {
+                    userSystemPrompt += "\n\n" + fragment
                 }
-                userSystemPrompt += memoryStatusFragment
+                userSystemPrompt += memoryStatusFragment + folderMemoryStatusFragment
                 fallbackTrigger += 1
                 if !fallbackReasons.isEmpty {
                     // Resync the assistant message index by its stable id before

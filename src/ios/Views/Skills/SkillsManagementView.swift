@@ -95,6 +95,16 @@ struct SkillsManagementView: View {
                         .labelsHidden()
                     }
                 }
+                .contextMenu {
+                    if let source = skill.sourceURL, !source.isEmpty {
+                        Button {
+                            UIPasteboard.general.setItems([["public.utf8-plain-text": source]],
+                                options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(300)])
+                        } label: {
+                            Label("Copy Source Link", systemImage: "link")
+                        }
+                    }
+                }
             }
             .onDelete { offsets in
                 let ids = offsets.map { filteredSkills[$0].id }

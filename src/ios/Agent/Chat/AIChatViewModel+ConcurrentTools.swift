@@ -904,6 +904,7 @@ extension AIChatViewModel {
             }
 
         case "memory_write":
+            try await refreshFolderRuntimeContext()
             let memResult = executeMemoryWrite(from: argsJson)
             if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
                 messages[msgIdx].blocks[blockIdx].content = memResult.output
@@ -912,6 +913,7 @@ extension AIChatViewModel {
             toolSuccess = memResult.success
 
         case "memory_get":
+            try await refreshFolderRuntimeContext()
             let memResult = executeMemoryGet(from: argsJson)
             if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
                 messages[msgIdx].blocks[blockIdx].content = memResult.output

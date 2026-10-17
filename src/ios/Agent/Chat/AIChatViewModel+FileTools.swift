@@ -110,7 +110,7 @@ extension AIChatViewModel {
         // [T-fix-double-encoding]
         let base: URL
         switch host {
-        case "memory": base = Self.minisMemoryPersistentDir
+        case "memory": base = effectiveMemoryDirectory
         case "skills": base = Self.minisSkillsPersistentDir
         case "shared": base = Self.minisSharedPersistentDir
         case "mcp-servers": base = Self.minisMcpServersPersistentDir
@@ -143,8 +143,17 @@ extension AIChatViewModel {
     /// to get the actual host URL, avoiding races when mounts switch between concurrent sessions.
     /// Falls back to resolveHostPath for non-/var/minis/ paths (e.g. /tmp, /root).
     func resolvePathForDirectRead(_ linuxPath: String) async -> URL? {
+        if linuxPath == Self.minisMemoryLinuxDir || linuxPath.hasPrefix(Self.minisMemoryLinuxDir + "/") {
+            do { try await refreshFolderRuntimeContext() } catch { return nil }
+            let tail = String(linuxPath.dropFirst(Self.minisMemoryLinuxDir.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !tail.split(separator: "/").contains("..") else { return nil }
+            let root = effectiveMemoryDirectory.resolvingSymlinksInPath().standardizedFileURL
+            let target = root.appendingPathComponent(tail).resolvingSymlinksInPath().standardizedFileURL
+            guard target.path == root.path || target.path.hasPrefix(root.path + "/") else { return nil }
+            return target
+        }
         if linuxPath.hasPrefix("/var/minis/") || linuxPath == "/var/minis" {
-            if let resolved = await ISHExecutionCoordinator.shared.hostURL(for: linuxPath) {
+            if let resolved = await ISHExecutionCoordinator.shared.hostURL(for: linuxPath, sessionId: fsSessionId) {
                 let exists = FileManager.default.fileExists(atPath: resolved.path)
                 logger.notice("📂[RESOLVE] \(linuxPath) → \(resolved.path) exists=\(exists) sid=\(self.sessionId ?? "nil")")
                 if exists { return resolved }
@@ -491,7 +500,7 @@ extension AIChatViewModel {
         // into iSH and visible in iOS Files).
         let hostURL: URL?
         if path.hasPrefix("/var/minis/mounts/") {
-            let mountURL = await ISHExecutionCoordinator.shared.hostURL(for: path)
+            let mountURL = await ISHExecutionCoordinator.shared.hostURL(for: path, sessionId: fsSessionId)
             #if DEBUG
             print("[FileWrite] hostURL(for:\(path)) → \(mountURL?.path ?? "<nil>")")
             #endif

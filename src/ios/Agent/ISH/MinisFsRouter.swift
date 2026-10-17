@@ -31,6 +31,19 @@ final class MinisFsRouter: @unchecked Sendable {
     private var nextContext: UInt64 = 1
     private var contextToSid: [UInt64: String] = [:]
     private var sidToContext: [String: UInt64] = [:]
+    private var memoryDirectories: [String: URL] = [:]
+
+    /// Memory routing shares the exact fs_context used for workspace routing.
+    /// Never swaps a global bind mount when two conversations run concurrently.
+    func setMemoryDirectory(_ directory: URL, for sid: String) {
+        lock.lock(); defer { lock.unlock() }
+        memoryDirectories[sid] = directory
+    }
+
+    func memoryDirectory(for sid: String) -> URL? {
+        lock.lock(); defer { lock.unlock() }
+        return memoryDirectories[sid]
+    }
 
     /// Host base URL (~/Library/MinisChat/minis). Captured once at install time.
     private let minisBaseURL: URL
@@ -96,6 +109,13 @@ final class MinisFsRouter: @unchecked Sendable {
     }
 
     private func hostPath(forGuest guestPath: String, sid: String) -> String? {
+        let memoryPrefix = AIChatViewModel.minisMemoryLinuxDir
+        if guestPath == memoryPrefix || guestPath.hasPrefix(memoryPrefix + "/"),
+           let directory = memoryDirectory(for: sid) {
+            let tail = String(guestPath.dropFirst(memoryPrefix.count))
+            guard !tail.split(separator: "/").contains("..") else { return nil }
+            return directory.path + tail
+        }
         for bucket in perSessionBuckets {
             let prefix = bucket.linuxPrefix
             guard guestPath.hasPrefix(prefix) else { continue }
@@ -117,6 +137,19 @@ final class MinisFsRouter: @unchecked Sendable {
     /// Returns nil if the path doesn't live under any per-session bucket
     /// (caller falls back to the static bind_mount_resolve table).
     private func reverse(hostPath: String) -> String? {
+        lock.lock()
+        let memoryRoots = Array(memoryDirectories.values)
+        lock.unlock()
+        func normalized(_ path: String) -> String {
+            path.hasPrefix("/private/var/") ? String(path.dropFirst("/private".count)) : path
+        }
+        let input = normalized(hostPath)
+        for directory in memoryRoots {
+            let root = normalized(directory.path)
+            if input == root || input.hasPrefix(root + "/") {
+                return AIChatViewModel.minisMemoryLinuxDir + String(input.dropFirst(root.count))
+            }
+        }
         let basePath = minisBaseURL.path
         // F_GETPATH on iOS may resolve /var → /private/var; normalize that
         // so a single prefix compare suffices.

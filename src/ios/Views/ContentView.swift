@@ -718,6 +718,180 @@ private struct FolderAlertsModifier: ViewModifier {
     }
 }
 
+/// Phase-1 configuration editor, newly implemented here to reuse the existing
+/// compiled ContentView source (no project-file churn). Skills are enumerated
+/// from SkillStore; SoulStore supplies the same body limit as global SOUL.
+/// This saves LOCAL configuration only, not runtime isolation or prompt changes.
+@MainActor
+private struct ChatFolderSettingsSheet: View {
+    let folder: ChatFolder
+    let onSaved: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var skills = SkillStore.shared
+    @State private var original: ChatFolderConfiguration?
+    @State private var draft = ChatFolderConfiguration.default
+    @State private var isLoading = true
+    @State private var isSaving = false
+    @State private var failure: String?
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    Text(folder.name).font(.headline)
+                    Text("候选功能，需独立测试。本页仅在本机保存分组配置；技能、灵魂提示词及记忆策略的实际生效由聊天运行时负责。启用记忆选项不等于安全沙箱或隔离保证。")
+                        .font(.footnote).foregroundColor(.secondary)
+                }
+                if isLoading {
+                    ProgressView()
+                } else if original != nil {
+                    skillSection.disabled(isSaving)
+                    soulSection.disabled(isSaving)
+                    policySection.disabled(isSaving)
+                }
+                if let failure {
+                    Section {
+                        Text(failure).foregroundColor(.red)
+                        Button("重新载入（丢弃本页草稿）") { Task { await load() } }
+                            .disabled(isSaving)
+                    }
+                }
+            }
+            .navigationTitle("分组配置")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }.disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isSaving ? "保存中…" : "保存配置") { Task { await save() } }
+                        .disabled(!canSave)
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+        .interactiveDismissDisabled(isSaving)
+        .task { await load() }
+    }
+
+    private var canSave: Bool {
+        guard let original, !isLoading, !isSaving else { return false }
+        return draft != original && !SoulStore.isOverLimit(draft.soulPrompt ?? "").isOverLimit
+    }
+
+    private var skillSection: some View {
+        Section {
+            if skills.skills.isEmpty {
+                Text("尚未安装技能，请先在全局技能管理中添加。")
+                    .foregroundColor(.secondary)
+            }
+            ForEach(skills.skills) { skill in
+                Picker(selection: skillSelection(skill.id)) {
+                    Text(skill.isEnabled ? "继承全局（启用）" : "继承全局（禁用）").tag(-1)
+                    Text("分组启用").tag(1)
+                    Text("分组禁用").tag(0)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(skill.name)
+                        if !skill.description.isEmpty {
+                            Text(skill.description).font(.caption).foregroundColor(.secondary).lineLimit(2)
+                        }
+                    }
+                }
+            }
+            Button("所有技能恢复继承全局") { draft.skillDefaults.removeAll() }
+                .disabled(draft.skillDefaults.isEmpty)
+        } header: {
+            Text("分组技能默认")
+        } footer: {
+            Text("未设置的技能继承全局；显式禁用不等于继承。运行时优先级约定：会话覆盖 > 分组默认 > 全局默认。暂未安装的技能配置会保留；本页不修改全局或会话开关。")
+        }
+    }
+
+    private func skillSelection(_ id: String) -> Binding<Int> {
+        Binding(
+            get: { draft.skillDefaults[id].map { $0 ? 1 : 0 } ?? -1 },
+            set: { value in
+                if value == -1 { draft.skillDefaults.removeValue(forKey: id) }
+                else { draft.skillDefaults[id] = value == 1 }
+            }
+        )
+    }
+
+    private var soulSection: some View {
+        Section {
+            Picker("灵魂模式", selection: Binding(
+                get: { draft.soulMode ?? (draft.soulPrompt == nil ? "inherit" : "replace") },
+                set: { draft.soulMode = $0 }
+            )) {
+                Text("继承全局").tag("inherit")
+                Text("替换人格正文").tag("replace")
+                Text("附加到全局正文").tag("append")
+                Text("清空人格正文").tag("clear")
+            }
+            TextEditor(text: Binding(
+                get: { draft.soulPrompt ?? "" },
+                set: { draft.soulPrompt = $0 }
+            ))
+            .frame(minHeight: 140)
+            .accessibilityLabel("分组灵魂提示词")
+            Text("\(SoulStore.tokenCount(draft.soulPrompt ?? "")) / \(SoulStore.bodyTokenLimit)")
+                .font(.caption)
+                .foregroundColor(SoulStore.isOverLimit(draft.soulPrompt ?? "").isOverLimit ? .red : .secondary)
+            Button("清空并继承全局灵魂") { draft.soulPrompt = nil; draft.soulMode = "inherit" }
+                .disabled(draft.soulPrompt == nil)
+        } header: {
+            Text("分组灵魂提示词")
+        } footer: {
+            Text("留空继承全局 SOUL；非空配置用于替换人格正文，不改全局名称、图标或 SOUL.md。长度校验复用 SoulStore；实际提示词组装需单独验证。")
+        }
+    }
+
+    private var policySection: some View {
+        Section {
+            Picker("记忆策略（候选）", selection: $draft.memoryPolicy) {
+                Text("沿用全局记忆").tag(ChatFolderMemoryPolicy.global)
+                Text("分组独立记忆").tag(ChatFolderMemoryPolicy.folder)
+            }
+            Toggle("读取全局记忆（只读）", isOn: $draft.readsGlobalMemory)
+                .disabled(draft.memoryPolicy != .folder)
+        } header: {
+            Text("记忆策略配置")
+        } footer: {
+            Text("默认沿用全局；独立记忆的全局只读开关默认关闭，仅对独立模式有意义。保存配置本身不创建、迁移、复制或删除记忆；运行时应将新增记忆仅写本组，全局读取不授予全局写入。目录、工具、提示词及 shell 作用域尚需完整测试；此功能不是安全沙箱。")
+        }
+    }
+
+    private func load() async {
+        isLoading = true
+        failure = nil
+        original = nil
+        do {
+            let value = try await ChatStore.shared.getFolderConfiguration(folder.id)
+            draft = value
+            original = value
+            skills.reload()
+        } catch {
+            failure = error.localizedDescription
+        }
+        isLoading = false
+    }
+
+    private func save() async {
+        guard let original, !isSaving else { return }
+        isSaving = true
+        failure = nil
+        do {
+            _ = try await ChatStore.shared.saveFolderConfiguration(folder.id, configuration: draft, expected: original)
+            onSaved()
+            dismiss()
+        } catch {
+            failure = error.localizedDescription
+        }
+        isSaving = false
+    }
+}
+
 /// A pending "move sessions to folder" interaction, presented as a sheet.
 private struct FolderPickerRequest: Identifiable {
     let id = UUID()
@@ -1315,6 +1489,7 @@ struct ContentView: View {
     @State private var folderMoveApplied = false
     // Folder-header context-menu state (rename / dissolve / delete-all / new chat).
     @State private var folderToRename: ChatFolder?
+    @State private var folderToConfigure: ChatFolder?
     @State private var renameFolderText = ""
     @State private var renameFolderDesc = ""
     @State private var folderToDissolve: ChatFolder?
@@ -1935,6 +2110,9 @@ struct ContentView: View {
                 folderPickerRequest = nil
             }
         }
+        .sheet(item: $folderToConfigure) { folder in
+            ChatFolderSettingsSheet(folder: folder, onSaved: { refreshSessionList() })
+        }
         .modifier(FolderAlertsModifier(
             folderToRename: $folderToRename,
             renameFolderText: $renameFolderText,
@@ -2493,7 +2671,7 @@ struct ContentView: View {
                                 .id(id)
                         }
                     } else {
-                        AIChatView(sessionId: Self.isNewSessionId(id) ? nil : id, draftId: Self.isNewSessionId(id) ? id : nil, initialGroupId: Self.extractGroupId(from: id))
+                        AIChatView(sessionId: Self.isNewSessionId(id) ? nil : id, draftId: Self.isNewSessionId(id) ? id : nil, initialGroupId: Self.extractGroupId(from: id), initialFolderId: initialFolderId(forDraft: id))
                             .id(id)
                             .onAppear {
                                 if currentStackSessionId != id {
@@ -2534,7 +2712,7 @@ struct ContentView: View {
             // on first send. The .id() ensures each draft gets its own View lifecycle.
             let isDraft = Self.isNewSessionId(id)
             let effectiveId: String? = isDraft ? nil : id
-            AIChatView(sessionId: effectiveId, draftId: isDraft ? id : nil, initialGroupId: Self.extractGroupId(from: id))
+            AIChatView(sessionId: effectiveId, draftId: isDraft ? id : nil, initialGroupId: Self.extractGroupId(from: id), initialFolderId: initialFolderId(forDraft: id))
                 .id(id)
                 .onAppear {
                     draftLog.info("🔑DRAFT detailView APPEAR id=\(id) effectiveId=\(effectiveId ?? "nil") isDraft=\(isDraft)")
@@ -5473,6 +5651,11 @@ struct ContentView: View {
                     Label("Rename Group", systemImage: "square.and.pencil")
                 }
                 Button {
+                    folderToConfigure = folder
+                } label: {
+                    Label("分组配置（本机候选）", systemImage: "slider.horizontal.3")
+                }
+                Button {
                     newChatInFolder(fid)
                 } label: {
                     Label("New Chat in Group", systemImage: "plus.bubble")
@@ -5499,8 +5682,18 @@ struct ContentView: View {
         })
     }
 
-    /// "New chat in folder": file the just-promoted draft. Separate from the
-    /// draft-bookkeeping onReceive (which is gated on isWideLayout) because
+    /// Bind by the exact draft id so unrelated or abandoned drafts cannot
+    /// inherit this folder. The VM persists this intent before its first run.
+    private func initialFolderId(forDraft id: String) -> String? {
+        guard Self.isNewSessionId(id), let pending = pendingFolderDraft,
+              pending.draftId == id else { return nil }
+        return pending.folderId
+    }
+
+    /// UI bookkeeping / legacy fallback for the just-promoted draft. Runtime
+    /// creation must persist initialFolderId before its first request; this
+    /// notification is asynchronous and is NOT a memory-isolation boundary.
+    /// Separate from draft-bookkeeping onReceive (gated on isWideLayout) because
     /// this must run on iPhone too. The notification can arrive off-main
     /// (ChatStore actor executor) — all state access happens inside the
     /// MainActor hop. Extracted to a method so the body's modifier chain
@@ -5523,9 +5716,9 @@ struct ContentView: View {
     }
 
     /// Folder-header menu: start a new chat that lands inside the folder.
-    /// The folder assignment is deferred to draft promotion (see
-    /// pendingFolderDraft); the folder is auto-expanded so the new session
-    /// doesn't appear to vanish into a collapsed section.
+    /// pendingFolderDraft is passed as initialFolderId into the draft VM, which
+    /// must file the promoted session before its first request. The notification
+    /// handler is only UI bookkeeping / legacy fallback. Auto-expand the group.
     private func newChatInFolder(_ folderId: String) {
         if collapsedFolderIds.contains(folderId) { toggleFolderCollapsed(folderId) }
         let draftId = Self.makeNewSessionId()

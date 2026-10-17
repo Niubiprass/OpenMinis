@@ -137,15 +137,7 @@ actor ISHExecutionCoordinator {
         perSessionInflight[sessionId, default: []].append(head)
         syncInflightPidSnapshot()
 
-        try Task.checkCancellation()
-
-        mountedSessionId = sessionId
-        ensureStaticMountsInitialized(for: sessionId)
-
-        let fsContext = MinisFsRouter.shared.context(for: sessionId)
-
         defer {
-            // Dequeue self. No waiters to wake — concurrent dispatch.
             if var queue = perSessionInflight[sessionId],
                let idx = queue.firstIndex(where: { $0.id == myId }) {
                 queue.remove(at: idx)
@@ -153,6 +145,27 @@ actor ISHExecutionCoordinator {
                 syncInflightPidSnapshot()
             }
         }
+        try Task.checkCancellation()
+
+        let folder: (folderId: String?, configuration: ChatFolderConfiguration)
+        if sessionId == "mcp-settings" {
+            // Explicit non-chat settings probe: no persisted chat/folder exists.
+            folder = (nil, .default)
+        } else {
+            folder = try await ChatStore.shared.resolveFolderRuntimeContext(for: sessionId)
+        }
+        let memoryDirectory: URL
+        if folder.configuration.memoryPolicy == .folder, let folderId = folder.folderId {
+            memoryDirectory = AIChatViewModel.minisFolderMemoryPersistentDir(for: folderId)
+        } else {
+            memoryDirectory = AIChatViewModel.minisMemoryPersistentDir
+        }
+        try FileManager.default.createDirectory(at: memoryDirectory, withIntermediateDirectories: true)
+        MinisFsRouter.shared.setMemoryDirectory(memoryDirectory, for: sessionId)
+        mountedSessionId = sessionId
+        ensureStaticMountsInitialized(for: sessionId)
+
+        let fsContext = MinisFsRouter.shared.context(for: sessionId)
 
         return try await runCommand(
             sessionId: sessionId,
@@ -220,6 +233,17 @@ actor ISHExecutionCoordinator {
     /// session buckets. Per-session lookups need a sessionId because the
     /// router routes by fs_context; pass it via `sessionId` for those paths.
     func hostURL(for linuxPath: String, sessionId: String? = nil) -> URL? {
+        // Memory must have an explicit owner and a resolved scope. Never use
+        // the last foreground/mounted session or the global bind-mount fallback.
+        if linuxPath == AIChatViewModel.minisMemoryLinuxDir
+            || linuxPath.hasPrefix(AIChatViewModel.minisMemoryLinuxDir + "/") {
+            guard let sid = sessionId else { return nil }
+            return MinisFsRouter.shared.hostURL(forGuest: linuxPath, sid: sid)
+        }
+        if let sid = sessionId ?? mountedSessionId,
+           let url = MinisFsRouter.shared.hostURL(forGuest: linuxPath, sid: sid) {
+            return url
+        }
         for (prefix, hostBase) in mountedPaths {
             if linuxPath == prefix {
                 return hostBase
@@ -319,7 +343,8 @@ actor ISHExecutionCoordinator {
         let effectiveTimeout = timeout ?? 300 // 5 minute default
 
         // Load user-defined env vars (nonisolated, reads from disk + Keychain)
-        let customEnv = EnvVarStore.shared.allAsDict()
+        var customEnv = EnvVarStore.shared.allAsDict()
+        customEnv["MINIS_ENV_EPOCH"] = EnvVarStore.runtimeEnvironmentEpoch
 
         // Feed the command as a script via stdin pipe to /bin/sh.
         // This avoids shell quoting issues with multi-line or special-char commands.

@@ -10,15 +10,68 @@ import SwiftUI
 struct SessionMemoryView: View {
     @ObservedObject var vm: AIChatViewModel
     @Environment(\.dismiss) private var dismiss
+    private let libraryRoots: [MemoryLibraryRoot]?
+    private let onSaveDirty: MemorySaveDirty?
+    @State private var runtimeRoots: [MemoryLibraryRoot]?
+    @State private var runtimeReady = false
+    @State private var runtimeError: String?
+
+    /// The runtime owner supplies its actual authorized directories. Passing
+    /// roots never falls back to a global scan or the legacy log-entry writer.
+    /// nil preserves the existing session-injection/activity screen.
+    init(vm: AIChatViewModel, roots: [MemoryLibraryRoot]? = nil,
+         onSaveDirty: MemorySaveDirty? = nil) {
+        self.vm = vm
+        self.libraryRoots = roots
+        self.onSaveDirty = onSaveDirty
+    }
 
     var body: some View {
         NavigationStack {
+            if let roots = libraryRoots ?? runtimeRoots {
+                ScopedMemoryLibraryView(title: AppLocalized("Memories in Session"),
+                                        roots: roots, onSaveDirty: onSaveDirty)
+                    .toolbar {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button("Done") { dismiss() }
+                        }
+                    }
+            } else if !runtimeReady {
+                ProgressView()
+            } else if let runtimeError {
+                Text(runtimeError).padding().foregroundColor(.red)
+            } else {
+                sessionContents
+            }
+        }
+        .task {
+            guard libraryRoots == nil else { return }
+            do {
+                try await vm.refreshFolderRuntimeContext()
+                if let context = vm.folderRuntimeContext, context.usesFolderMemory {
+                    var roots = [MemoryLibraryRoot(id: "folder-" + (context.folderId ?? ""), title: "本组记忆", directory: context.memoryDirectory, isReadOnly: false, isGlobal: false)]
+                    if context.configuration.readsGlobalMemory {
+                        roots.append(MemoryLibraryRoot(id: "global-read-only", title: "全局记忆（只读）", directory: AIChatViewModel.minisMemoryPersistentDir, isReadOnly: true, isGlobal: true))
+                    }
+                    runtimeRoots = roots
+                }
+            } catch { runtimeError = error.localizedDescription }
+            runtimeReady = true
+        }
+    }
+
+    private var sessionContents: some View {
             List {
                 // Section 1: Auto-injected memories
                 Section {
                     ForEach(autoInjected, id: \.name) { item in
                         NavigationLink {
-                            MemoryContentView(title: item.name, content: item.content, fileURL: item.fileURL)
+                            if let fileURL = item.fileURL {
+                                MemoryContentView(root: .sharedMemory, fileName: fileURL.lastPathComponent,
+                                                  title: item.name)
+                            } else {
+                                Text(item.content).textSelection(.enabled)
+                            }
                         } label: {
                             row(name: item.name, detail: item.detail, icon: item.icon)
                         }
@@ -57,7 +110,6 @@ struct SessionMemoryView: View {
                     Button("Done") { dismiss() }
                 }
             }
-        }
     }
 
     // MARK: - Row
@@ -246,50 +298,70 @@ struct SessionMemoryView: View {
 
 // MARK: - Content Detail
 
-private struct MemoryContentView: View {
-    let title: String
-    let content: String
-    let fileURL: URL?
-
-    @State private var editedContent: String = ""
-    @State private var isEditing = false
+@MainActor
+struct MemoryContentView: View {
+    private let title: String
+    private let root: MemoryLibraryRoot
+    private let fileName: String
+    private let store: MemoryDocumentStore
+    private let onSaveDirty: MemorySaveDirty?
+    @State private var snapshot: MemoryDocumentStore.Snapshot?
+    // A presented editor owns its base snapshot, including an unchanged draft.
+    @State private var editingSnapshot: MemoryDocumentStore.Snapshot?
+    @State private var error: String?
     @State private var saved = false
+    @State private var share: MemoryShareItem?
+
+    init(root: MemoryLibraryRoot, fileName: String, title: String? = nil,
+         onSaveDirty: MemorySaveDirty? = nil) {
+        self.root = root
+        self.fileName = fileName
+        self.title = title ?? fileName
+        self.store = MemoryDocumentStore(roots: [root])
+        self.onSaveDirty = onSaveDirty
+    }
 
     var body: some View {
-        Group {
-            if isEditing {
-                TextEditor(text: $editedContent)
-                    .font(.system(.caption, design: .monospaced))
-                    .padding(.horizontal, 8)
-            } else {
+        VStack(spacing: 0) {
+            if root.isReadOnly {
+                Label("Read-only", systemImage: "lock")
+                    .font(.caption)
+                    .padding(.top, 8)
+            }
+            if let snapshot = snapshot {
                 ScrollView {
-                    Text(content)
+                    Text(snapshot.exists ? snapshot.originalText : AppLocalized("This memory file has not been created."))
                         .font(.system(.caption, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()
                         .textSelection(.enabled)
                 }
+            } else {
+                Button("Reload") { reload() }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            Text("Share exports the saved snapshot, not a draft. It does not change group access.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    if isEditing {
-                        Button("Save") {
-                            save()
-                        }
-                    } else {
-                        Button {
-                            editedContent = content
-                            isEditing = true
-                        } label: {
-                            Image(systemName: "pencil")
-                        }
-                    }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    saved = false
+                    editingSnapshot = snapshot
+                } label: {
+                    Label("Edit", systemImage: "pencil")
                 }
-            
+                .disabled(root.isReadOnly || snapshot == nil || editingSnapshot != nil)
+            }
+            ToolbarItem(placement: .bottomBar) {
+                Button { shareSaved() } label: { Label("Share", systemImage: "square.and.arrow.up") }
+                    .disabled(editingSnapshot != nil || snapshot?.exists != true)
+            }
         }
         .overlay(alignment: .bottom) {
             if saved {
@@ -299,33 +371,46 @@ private struct MemoryContentView: View {
                     .padding(.vertical, 6)
                     .background(Color(UIColor.tertiarySystemFill), in: Capsule())
                     .padding(.bottom, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+        .onAppear { reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .memoryFilesDidChange)) { _ in
+            guard editingSnapshot == nil else { return }
+            reload()
+        }
+        .sheet(item: $editingSnapshot, onDismiss: { reload() }) { base in
+            NavigationView {
+                MemoryFileEditView(root: root, snapshot: base, onSaveDirty: onSaveDirty) { result in
+                    snapshot = result
+                    error = nil
+                    saved = true
+                }
+            }
+            .navigationViewStyle(StackNavigationViewStyle())
+            .interactiveDismissDisabled(true)
+        }
+        .sheet(item: $share) { MinisShareSheet(url: $0.url) }
+        .alert("Memory error", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("OK", role: .cancel) { error = nil }
+        } message: { Text(error ?? "") }
+    }
+
+    private func reload() {
+        guard editingSnapshot == nil else { return }
+        do {
+            snapshot = try store.readSnapshot(rootID: root.id, fileName: fileName)
+            error = nil
+        } catch {
+            snapshot = nil
+            saved = false
+            self.error = error.localizedDescription
         }
     }
 
-    private func save() {
-        guard let url = fileURL else { return }
-        do {
-            try editedContent.write(to: url, atomically: true, encoding: .utf8)
-            // SOUL.md needs the same side effects SoulStore.save() does:
-            // refresh the in-memory metadata cache (so the chat header /
-            // SystemPromptBuilder pick up the new identity) and mark it
-            // dirty for iCloud sync. Without these, edits in this sheet
-            // would land on disk but the running app + peer devices
-            // would keep using the stale identity until next launch.
-            if url.lastPathComponent == "SOUL.md" {
-                SoulStore.refreshCache()
-                Task { await ChatStore.shared.markDirty(recordType: "SoulV2", recordId: "soul") }
-            }
-            isEditing = false
-            withAnimation { saved = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                withAnimation { saved = false }
-            }
-        } catch {
-            // stay in editing mode on failure
-        }
+    private func shareSaved() {
+        guard editingSnapshot == nil, let snapshot = snapshot else { return }
+        do { share = MemoryShareItem(url: try store.export([snapshot])) }
+        catch { self.error = error.localizedDescription }
     }
 }
 

@@ -1182,9 +1182,23 @@ Do not create extraneous files: README.md, INSTALLATION_GUIDE.md, CHANGELOG.md, 
 
     // MARK: - Session Overrides
 
+    /// Runtime folder defaults are refreshed by the request owner; ids are home
+    /// ChatFolder ids, not provider/model groups. Session overrides always win.
+    private var folderDefaultsBySession: [String: [String: Bool]] = [:]
+
+    func setFolderSkillDefaults(_ defaults: [String: Bool], for sessionId: String) {
+        if folderDefaultsBySession[sessionId] != defaults {
+            folderDefaultsBySession[sessionId] = defaults
+            sessionOverrideVersion += 1
+        }
+    }
+
     func isEnabledForSession(_ skillId: String, sessionId: String) -> Bool {
         if let override = dbSessionOverride(sessionId: sessionId, skillId: skillId) {
             return override
+        }
+        if let folderDefault = folderDefaultsBySession[sessionId]?[skillId] {
+            return folderDefault
         }
         return skills.first(where: { $0.id == skillId })?.isEnabled ?? false
     }
@@ -1193,12 +1207,14 @@ Do not create extraneous files: README.md, INSTALLATION_GUIDE.md, CHANGELOG.md, 
     @Published private(set) var sessionOverrideVersion: Int = 0
 
     func setSessionOverride(skillId: String, sessionId: String, enabled: Bool) {
-        let defaultEnabled = skills.first(where: { $0.id == skillId })?.isEnabled ?? true
-        if enabled == defaultEnabled {
-            dbDeleteSessionOverride(sessionId: sessionId, skillId: skillId)
-        } else {
-            dbSetSessionOverride(sessionId: sessionId, skillId: skillId, enabled: enabled)
-        }
+        // Explicit selection stays explicit even when equal to today's default:
+        // a later folder edit must not silently erase this session's choice.
+        dbSetSessionOverride(sessionId: sessionId, skillId: skillId, enabled: enabled)
+        sessionOverrideVersion += 1
+    }
+
+    func clearSessionOverride(skillId: String, sessionId: String) {
+        dbDeleteSessionOverride(sessionId: sessionId, skillId: skillId)
         sessionOverrideVersion += 1
     }
 

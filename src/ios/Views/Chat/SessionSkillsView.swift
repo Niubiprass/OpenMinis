@@ -24,6 +24,8 @@ struct SessionSkillsView: View {
     /// draft is materialized on first toggle it holds the real id so the rest
     /// of the sheet stays consistent without re-creating the session.
     @State private var resolvedSessionId: String?
+    @State private var showSoulEditor = false
+    @State private var folderLoadError: String?
 
     init(sessionId: String?, ensureSessionId: (() async -> String)? = nil) {
         self.sessionId = sessionId
@@ -91,6 +93,16 @@ struct SessionSkillsView: View {
 
         NavigationStack {
             List {
+                Section {
+                    Button("会话灵魂提示词") { showSoulEditor = true }
+                    Button("技能恢复继承分组／全局") {
+                        if let sid = resolvedSessionId {
+                            for skill in store.skills { store.clearSessionOverride(skillId: skill.id, sessionId: sid) }
+                        }
+                    }
+                    .disabled(resolvedSessionId == nil)
+                    if let folderLoadError { Text(folderLoadError).foregroundColor(.red) }
+                }
                 if store.skills.isEmpty {
                     Section {
                         Text("No skills installed. Add skills in Settings.")
@@ -136,6 +148,17 @@ struct SessionSkillsView: View {
             .searchable(text: $searchQuery, placement: .navigationBarDrawer(displayMode: .always),
                         prompt: Text(AppLocalized("Search skills")))
             .onAppear { store.reload() }
+            .task(id: resolvedSessionId) {
+                guard let sid = resolvedSessionId else { return }
+                do {
+                    let context = try await ChatStore.shared.resolveFolderRuntimeContext(for: sid)
+                    store.setFolderSkillDefaults(context.configuration.skillDefaults, for: sid)
+                    folderLoadError = nil
+                } catch { folderLoadError = error.localizedDescription }
+            }
+            .sheet(isPresented: $showSoulEditor) {
+                SessionSoulPromptSheet(sessionId: resolvedSessionId, ensureSessionId: ensureSessionId)
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if !filteredSkills.isEmpty {
@@ -256,5 +279,62 @@ private struct SkillFilePreviewView: View {
                 content = store.readSkillFile(skillId, relativePath: relativePath) ?? ""
             }
         }
+    }
+}
+
+/// New session-level adapter. nil inherits; explicit empty suppresses the
+/// inherited personality body. Saving never rewrites the global SOUL.md.
+@MainActor
+private struct SessionSoulPromptSheet: View {
+    let sessionId: String?
+    let ensureSessionId: (() async -> String)?
+    @Environment(\.dismiss) private var dismiss
+    @State private var inherits = true
+    @State private var draft = ""
+    @State private var saving = false
+    @State private var failure: String?
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Toggle("继承分组／全局灵魂", isOn: $inherits)
+                if !inherits {
+                    TextEditor(text: $draft).frame(minHeight: 180)
+                    Text("显式留空表示本会话不使用继承的人格正文。名称、图标和系统能力不变。")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                if let failure { Text(failure).foregroundColor(.red) }
+                Text("保存后从下一轮请求生效；取消不改配置。此覆盖仅保存在本机。")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            .navigationTitle("会话灵魂提示词")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(saving) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") { Task { await save() } }.disabled(saving || (!inherits && SoulStore.isOverLimit(draft).isOverLimit))
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+        .interactiveDismissDisabled(saving)
+        .onAppear {
+            if let sid = sessionId, let value = UserDefaults.standard.string(forKey: "session.soul.body.\(sid)") {
+                inherits = false; draft = value
+            }
+        }
+    }
+
+    private func save() async {
+        saving = true
+        let sid: String?
+        if let existing = sessionId { sid = existing }
+        else { sid = await ensureSessionId?() }
+        guard let sid, !sid.isEmpty else { failure = "无法创建会话，配置未保存。"; saving = false; return }
+        let key = "session.soul.body.\(sid)"
+        if inherits { UserDefaults.standard.removeObject(forKey: key) }
+        else { UserDefaults.standard.set(draft, forKey: key) }
+        saving = false
+        dismiss()
     }
 }

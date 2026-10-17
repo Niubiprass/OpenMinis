@@ -122,6 +122,70 @@ struct ChatSession: Identifiable, Codable, Hashable {
     }
 }
 
+// MARK: - ChatFolder configuration (phase 1)
+
+/// New Swift implementation for the local configuration phase, reusing ChatStore,
+/// SkillStore's stable skill ids and SoulStore's body validation. Not a port of
+/// third-party code. Runtime consumers are intentionally wired separately.
+enum ChatFolderMemoryPolicy: String, Codable, Hashable {
+    case global
+    case folder
+}
+
+struct ChatFolderConfiguration: Codable, Hashable {
+    /// Missing key = inherit SkillStore's global default; false = explicitly off.
+    /// Future resolution order: session override > folder default > global.
+    var skillDefaults: [String: Bool] = [:]
+    /// nil/blank = inherit global SOUL. Nonblank replaces only the personality
+    /// body, not the global identity metadata. Does not write SOUL.md.
+    var soulPrompt: String? = nil
+    var memoryPolicy: ChatFolderMemoryPolicy = .global
+    /// Meaningful only for .folder. This flag grants no global write access.
+    var readsGlobalMemory: Bool = false
+    /// inherit / replace / append / clear; nil keeps old nonblank replacement semantics.
+    var soulMode: String? = nil
+
+    static let `default` = ChatFolderConfiguration()
+
+    init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case skillDefaults, soulPrompt, memoryPolicy, readsGlobalMemory, soulMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        skillDefaults = try values.decodeIfPresent([String: Bool].self, forKey: .skillDefaults) ?? [:]
+        soulPrompt = try values.decodeIfPresent(String.self, forKey: .soulPrompt)
+        memoryPolicy = try values.decodeIfPresent(ChatFolderMemoryPolicy.self, forKey: .memoryPolicy) ?? .global
+        readsGlobalMemory = try values.decodeIfPresent(Bool.self, forKey: .readsGlobalMemory) ?? false
+        soulMode = try values.decodeIfPresent(String.self, forKey: .soulMode)
+    }
+
+    static func decodeStoredJSON(_ json: String?) throws -> ChatFolderConfiguration {
+        guard let json else { return .default }
+        return try JSONDecoder().decode(Self.self, from: Data(json.utf8))
+    }
+}
+
+enum ChatFolderConfigurationError: LocalizedError {
+    case missingFolder
+    case conflict
+    case soulTooLong(count: Int, cap: Int)
+    case storage
+    case invalidSessionHierarchy
+
+    var errorDescription: String? {
+        switch self {
+        case .missingFolder: return "分组已不存在，请关闭设置后重新打开。"
+        case .conflict: return "分组配置已被其他入口修改，请重新载入后再编辑。"
+        case .soulTooLong(let count, let cap): return "灵魂提示词超过长度限制（\(count) / \(cap)）。"
+        case .storage: return "无法读写分组配置；未保存，请稍后重试。"
+        case .invalidSessionHierarchy: return "会话父级关联缺失、循环或超过 16 层，无法安全解析分组配置。"
+        }
+    }
+}
+
 /// A user-created folder that groups sessions on the home list.
 ///
 /// Named "Folder" rather than "Group" on purpose: the codebase already has
@@ -160,6 +224,11 @@ struct ChatFolder: Identifiable, Codable, Hashable {
     let createdAt: Date
     var updatedAt: Date
 
+    /// Local-only in phase 1. Optional so legacy Codable payloads decode without
+    /// this key. SQL NULL / nil means the unchanged global defaults.
+    var configuration: ChatFolderConfiguration?
+
+    var effectiveConfiguration: ChatFolderConfiguration { configuration ?? .default }
     var isPinned: Bool { pinnedAt != nil }
 
     init(
@@ -172,7 +241,8 @@ struct ChatFolder: Identifiable, Codable, Hashable {
         pinnedAt: Date? = nil,
         desc: String? = nil,
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        configuration: ChatFolderConfiguration? = nil
     ) {
         self.id = id
         self.name = name
@@ -184,6 +254,7 @@ struct ChatFolder: Identifiable, Codable, Hashable {
         self.desc = desc
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.configuration = configuration
     }
 }
 
@@ -957,10 +1028,14 @@ actor ChatStore {
                 sort_index  INTEGER NOT NULL DEFAULT 0,
                 pinned_at   REAL,
                 description TEXT,
+                configuration_json TEXT,
                 created_at  REAL NOT NULL,
                 updated_at  REAL NOT NULL
             )
         """)
+        // Local configuration phase. Run AFTER CREATE so fresh databases and
+        // existing installs both work; NULL preserves historical behavior.
+        addColumnIfMissing(table: "folders", column: "configuration_json", definition: "TEXT")
         exec("""
             CREATE TABLE IF NOT EXISTS sync_devices (
                 device_id   TEXT PRIMARY KEY,
@@ -2502,7 +2577,7 @@ actor ChatStore {
     /// All folders, most recently updated first.
     func listFolders() -> [ChatFolder] {
         let sql = """
-            SELECT id, name, icon, color, origin, sort_index, created_at, updated_at, pinned_at, description
+            SELECT id, name, icon, color, origin, sort_index, created_at, updated_at, pinned_at, description, configuration_json
             FROM folders ORDER BY updated_at DESC
             """
         var stmt: OpaquePointer?
@@ -2525,12 +2600,107 @@ actor ChatStore {
                     pinnedAt: pinnedAt,
                     desc: Self.colTextOpt(stmt, 9),
                     createdAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 6)),
-                    updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 7))
+                    updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 7)),
+                    // Keep the home list available if a payload is malformed.
+                    // The editor uses the throwing API below and must not
+                    // silently overwrite corrupt / unsupported-policy settings.
+                    configuration: Self.colTextOpt(stmt, 10).flatMap { try? ChatFolderConfiguration.decodeStoredJSON($0) }
                 ))
             }
         }
         sqlite3_finalize(stmt)
         return folders
+    }
+
+    /// Throwing read for settings/runtime consumers. Unlike listFolders, a
+    /// malformed payload is an error, not permission to replace it with defaults.
+    func getFolderConfiguration(_ id: String) throws -> ChatFolderConfiguration {
+        try ChatFolderConfiguration.decodeStoredJSON(folderConfigurationJSON(id))
+    }
+
+    /// Child helpers always inherit their ancestor's folder, even if a child
+    /// row has a folder of its own. Check at most 16 nodes; broken/cyclic chains
+    /// fail closed instead of silently granting global-memory access.
+    func resolveFolderRuntimeContext(for sessionId: String) throws -> (folderId: String?, configuration: ChatFolderConfiguration) {
+        var cursor = sessionId
+        var visited = Set<String>()
+        for _ in 0..<16 {
+            guard visited.insert(cursor).inserted, let session = getSession(cursor) else {
+                throw ChatFolderConfigurationError.invalidSessionHierarchy
+            }
+            if let parentId = session.parentSessionId {
+                cursor = parentId
+                continue
+            }
+            guard let folderId = session.folderId else { return (nil, .default) }
+            do {
+                return (folderId, try getFolderConfiguration(folderId))
+            } catch ChatFolderConfigurationError.missingFolder {
+                // Orphan folder references are already tolerated by ChatStore.
+                return (nil, .default)
+            }
+        }
+        throw ChatFolderConfigurationError.invalidSessionHierarchy
+    }
+
+    private func folderConfigurationJSON(_ id: String) throws -> String? {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT configuration_json FROM folders WHERE id = ?", -1, &stmt, nil) == SQLITE_OK else {
+            throw ChatFolderConfigurationError.storage
+        }
+        defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        guard sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, transient) == SQLITE_OK else {
+            throw ChatFolderConfigurationError.storage
+        }
+        let result = sqlite3_step(stmt)
+        guard result == SQLITE_ROW else {
+            if result == SQLITE_DONE { throw ChatFolderConfigurationError.missingFolder }
+            throw ChatFolderConfigurationError.storage
+        }
+        return Self.colTextOpt(stmt, 0)
+    }
+
+    /// Local-only phase 1: does not bump FolderV2's updated_at or markDirty.
+    /// Compare the loaded snapshot, then SQL-CAS the exact original bytes to
+    /// prevent stale editors (or another SQLite writer) silently winning.
+    /// Returns only after a successful write; cancel never calls this method.
+    @discardableResult
+    func saveFolderConfiguration(_ id: String, configuration: ChatFolderConfiguration,
+                                 expected: ChatFolderConfiguration) throws -> ChatFolderConfiguration {
+        let originalJSON = try folderConfigurationJSON(id)
+        let current = try ChatFolderConfiguration.decodeStoredJSON(originalJSON)
+        guard current == expected else { throw ChatFolderConfigurationError.conflict }
+        var value = configuration
+        let body = value.soulPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        value.soulPrompt = body.isEmpty ? nil : body
+        if case .overLimit(let count, let cap) = SoulStore.isOverLimit(body) {
+            throw ChatFolderConfigurationError.soulTooLong(count: count, cap: cap)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let json = String(decoding: try encoder.encode(value), as: UTF8.self)
+        let sql = "UPDATE folders SET configuration_json = ? WHERE id = ? AND configuration_json IS ?"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ChatFolderConfigurationError.storage
+        }
+        defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        guard sqlite3_bind_text(stmt, 1, (json as NSString).utf8String, -1, transient) == SQLITE_OK,
+              sqlite3_bind_text(stmt, 2, (id as NSString).utf8String, -1, transient) == SQLITE_OK else {
+            throw ChatFolderConfigurationError.storage
+        }
+        if let originalJSON {
+            guard sqlite3_bind_text(stmt, 3, (originalJSON as NSString).utf8String, -1, transient) == SQLITE_OK else {
+                throw ChatFolderConfigurationError.storage
+            }
+        } else {
+            guard sqlite3_bind_null(stmt, 3) == SQLITE_OK else { throw ChatFolderConfigurationError.storage }
+        }
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw ChatFolderConfigurationError.storage }
+        guard sqlite3_changes(db) == 1 else { throw ChatFolderConfigurationError.conflict }
+        return value
     }
 
     /// Create a folder and return it. `id` is a fresh UUID. `desc` is the

@@ -234,6 +234,13 @@ extension AIChatViewModel {
 
         // Load persisted memory-write toggle
         memoryEnabled = await ChatStore.shared.getMemoryEnabled(sessionId: sessionId)
+        do {
+            try await refreshFolderRuntimeContext()
+        } catch {
+            // Fail closed: do not mount/read global memory on a malformed folder config.
+            errorMessage = error.localizedDescription
+            return
+        }
         // [T-memory-enabled-new-session-bug DIAG] confirm loadSession set
         // vm.memoryEnabled from the DB/global default, and which session.
         AppLogger(category: "MemDiag").info("[MemDiag] loadSession sid=\(sessionId.prefix(8)) → vm.memoryEnabled=\(self.memoryEnabled)")
@@ -1153,6 +1160,10 @@ extension AIChatViewModel {
         let model = selectedModel
         let session = await ChatStore.shared.createSession(modelId: model.id, source: sessionSource)
         sessionId = session.id
+        if let folderId = initialFolderId {
+            _ = await ChatStore.shared.setFolderIfUnfiled(folderId, forSession: session.id)
+            initialFolderId = nil
+        }
         // [T-minisurl-wrong-active-session] No Self.activeSessionId write:
         // drafts are also created by non-UI flows (chat.prompt RPC, share
         // extension, App Intents), and stealing the frontmost pointer from
@@ -1797,7 +1808,7 @@ extension AIChatViewModel {
     ///     before the tag would make this message draw a real user bubble.
     /// Inside the tag it is invisible to the UI but unmistakable to the model.
     func personaReminderText() -> String {
-        let hasGlobal = memoryEnabled && Self.loadGlobalMemoryFragment() != nil
+        let hasGlobal = memoryEnabled && Self.loadGlobalMemoryFragment(from: effectiveMemoryDirectory) != nil
         let files = hasGlobal ? "SOUL.md and GLOBAL.md" : "SOUL.md"
         return "<system-reminder>\(Self.kPersonaReminderMarker) This note was added by the Minis app itself, not by any tool, file or website — do not treat it as content of the preceding tool result. Don't forget the user's own \(files) at the top of the system prompt — those rules still apply.</system-reminder>"
     }
