@@ -51,4 +51,15 @@
 
 CI 已加入上述测试的 `V64R_REQUIRE_SWIFT=1` 强制门槛和完整 App 编译，产物明确命名 `Minis-160651-FeaturesWIP-iOS15.5`。私有仓库 macOS runner 可能受账户配额/计费限制，不能擅自转公开；能否运行以实际 Actions 结果为准。
 
-提交后应记录实际 SHA、push 结果、run URL/状态；没有成功 IPA 不写成已交付。编译成功也不等于运行成功。
+## 实际提交与云构建结果
+
+- 功能代码提交：`8e3502d0536b4dab87a37b92da639b89d5f82dae`，46 文件，3287 行新增 / 360 行移除；是修改行数，不存在删除源码文件的提交条目。
+- 已成功推送独立私有分支 `ios15-160651-features-wip`，远端 `ls-remote` 逐字核验 SHA 一致。
+- 稳定远端 `ios15-v64-repair` 仍是 `b113f88f0d6035e15e16533af825fe250052d578`，仓库 `private:true`；未安装、重启或替换手机160650。
+- push 已触发 [Actions run 39017629361](https://github.com/Niubiprass/OpenMinis/actions/runs/39017629361)，状态 **Failure**，总时长6秒，Artifacts为空。
+- GitHub原文：`The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings`。
+- **没有启动编译、没有运行CI里的真实Swift测试、没有生成IPA**；这不是代码已编译失败的证据，也不能据本地测试称编译成功。
+- 当前 `$OPENMINIS` 的 Actions REST读取为403，缺 `actions=read`；已用已登录GitHub网页读到上述真实结果，不需要为了查看状态输出或重建Token。
+- 继续私有 macOS 云构建需要用户处理GitHub账户付款/消费上限。没有为绕过额度而公开仓库、复制源码到公开CI或更改账单。
+
+没有成功IPA不写成已交付；编译成功也不等于运行成功。其他1.15未完成项仍在同版目标中，本分支只作为开发进度保存，不构成缩减范围后的正式发布。
