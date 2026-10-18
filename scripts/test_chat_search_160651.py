@@ -72,7 +72,7 @@ class MessageListJumpSource(unittest.TestCase):
         self.assertIn('func handleSearchJump(_ jump: MessageSearchJump)', V3)
 
     def test_handler_scrolls_and_flashes(self):
-        self.assertIn('MessageListItem.messageId(of: $0) == target', V3)
+        self.assertIn('Coordinator.messageId(of: $0) == target', V3)
         self.assertIn('cv.scrollToItem(at: ip, at: .top, animated: true)', V3)
         self.assertIn('0x5EAC', V3)          # flash overlay tag
         self.assertIn('systemYellow.withAlphaComponent(0.28)', V3)
@@ -102,7 +102,7 @@ class ChatViewIntegrationSource(unittest.TestCase):
         self.assertNotIn('chatSearchJump = jump', sheet_body_zone)
 
     def test_list_instantiation_wires_jump(self):
-        self.assertIn('searchJump: chatSearchJump,', CHAT)
+        self.assertIn('searchJump: chatSearchJump', CHAT)
 
     def test_toolbar_host_opened_by_search_callback(self):
         self.assertIn('onSearch: {', CHAT)

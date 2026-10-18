@@ -1856,13 +1856,14 @@ final class ForegroundScreenKeepAlive {
     static let shared = ForegroundScreenKeepAlive()
 
     private var processingCount = 0
-    private var isEnabled = UserDefaults.standard.bool(forKey: Self.settingKey)
+    private var isEnabled: Bool
     private var isForeground = true
     private var observers: [NSObjectProtocol] = []
 
     static let settingKey = "appearance.keepScreenAwakeDuringTasks"
 
     private init() {
+        isEnabled = UserDefaults.standard.bool(forKey: Self.settingKey)
         let nc = NotificationCenter.default
         observers.append(nc.addObserver(
             forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main

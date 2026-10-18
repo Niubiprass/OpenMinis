@@ -578,7 +578,8 @@ struct ModelCatalogView: View {
 
     var body: some View {
         List {
-            ForEach(sections, id: \.instance.id) { section in
+            ForEach(sections.indices, id: \.self) { index in
+                let section = sections[index]
                 Section(section.instance.displayName) {
                     ForEach(section.entries) { entry in
                         catalogRow(entry)
@@ -632,7 +633,7 @@ struct ModelCatalogView: View {
                     meta("reasoning")
                 }
                 if let modality = m.modalityOverride {
-                    for badge in Self.modalityBadges(modality) {
+                    ForEach(Self.modalityBadges(modality), id: \.self) { badge in
                         meta(badge)
                     }
                 }

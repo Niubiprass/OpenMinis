@@ -8086,7 +8086,7 @@ private struct AppearanceSettingsView: View {
             // the coordinator re-reads the key and folds/unfolds in place.
             .onChange(of: collapseConsecutiveToolCalls) { _ in
                 NotificationCenter.default.post(
-                    name: CollectionViewMessageListV3.messageListNeedsResnapshot,
+                    name: .messageListNeedsResnapshot,
                     object: nil
                 )
             }

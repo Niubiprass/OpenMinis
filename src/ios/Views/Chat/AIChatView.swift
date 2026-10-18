@@ -2720,7 +2720,6 @@ _ios15Seg7
             CollectionViewMessageListV3(
                 vm: vm,
                 inputFocused: inputFocused,
-                searchJump: chatSearchJump,
                 onRetryMessage: { vm.retryFromMessage($0); vm.forceScrollToBottom.send() },
                 onRetryLast: { vm.retry(); vm.forceScrollToBottom.send() },
                 // [T-ios-assistant-header-open-soul] Routed through the same
@@ -2758,7 +2757,8 @@ _ios15Seg7
                 },
                 maxContentWidth: maxContentWidth ?? 0,
                 floatingBarHeight: floatingBarHeight,
-                inputBarHeight: inputBarHeight
+                inputBarHeight: inputBarHeight,
+                searchJump: chatSearchJump
             )
             // Empty/loading overlay for tap-to-dismiss-keyboard.
             // Placed BEFORE the directory timeline in the ZStack so the

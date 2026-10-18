@@ -1306,7 +1306,13 @@ extension AIChatViewModel {
             "status": "pending",
             "questions": questionsRaw,
         ]
-        let specText = ((try? JSONSerialization.data(withJSONObject: specJSON))?.flatMap { String(data: $0, encoding: .utf8) }) ?? "{}"
+        let specText: String
+        if let encoded = try? JSONSerialization.data(withJSONObject: specJSON),
+           let text = String(data: encoded, encoding: .utf8) {
+            specText = text
+        } else {
+            specText = "{}"
+        }
         if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
             messages[msgIdx].blocks[blockIdx].content = specText
             messages[msgIdx].blocks[blockIdx].toolStatus = .running
@@ -1361,7 +1367,13 @@ extension AIChatViewModel {
         } else {
             finalDict["status"] = "timeout"
         }
-        let finalText = ((try? JSONSerialization.data(withJSONObject: finalDict))?.flatMap { String(data: $0, encoding: .utf8) }) ?? specText
+        let finalText: String
+        if let encoded = try? JSONSerialization.data(withJSONObject: finalDict),
+           let text = String(data: encoded, encoding: .utf8) {
+            finalText = text
+        } else {
+            finalText = specText
+        }
         if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
             let block = messages[msgIdx].blocks[blockIdx]
             block.content = finalText

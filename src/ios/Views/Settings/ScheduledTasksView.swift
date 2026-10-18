@@ -63,7 +63,7 @@ struct ScheduledTasksView: View {
     private func row(_ job: AgentJob) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(job.title.isEmpty ? (job.label ?? job.id.prefix(8)) : job.title)
+                Text(job.title.isEmpty ? (job.label ?? String(job.id.prefix(8))) : job.title)
                     .font(.body.weight(.semibold))
                     .lineLimit(1)
                 stateBadge(job)
@@ -144,8 +144,9 @@ struct ScheduledTasksView: View {
             var titles: [String: String] = [:]
             for job in jobs {
                 guard let sid = job.creatorSessionId, titles[sid] == nil else { continue }
-                if let s = await ChatStore.shared.getSession(sid), !s.title.isEmpty {
-                    titles[sid] = s.title
+                if let s = await ChatStore.shared.getSession(sid),
+                   let title = s.title, !title.isEmpty {
+                    titles[sid] = title
                 }
             }
             sessionTitles = titles
@@ -239,7 +240,7 @@ struct ScheduledTaskDetailView: View {
             Section {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        Text(job.title.isEmpty ? (job.label ?? job.id.prefix(8)) : job.title)
+                        Text(job.title.isEmpty ? (job.label ?? String(job.id.prefix(8))) : job.title)
                             .font(.headline)
                         ScheduledTasksView.stateInfoBadge(job)
                     }
@@ -314,8 +315,9 @@ struct ScheduledTaskDetailView: View {
         .onAppear {
             guard let sid = job.creatorSessionId else { return }
             Task {
-                if let s = await ChatStore.shared.getSession(sid), !s.title.isEmpty {
-                    ownerName = "「\(s.title)」会话"
+                if let s = await ChatStore.shared.getSession(sid),
+                   let title = s.title, !title.isEmpty {
+                    ownerName = "「\(title)」会话"
                 }
             }
         }

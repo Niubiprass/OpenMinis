@@ -2735,6 +2735,7 @@ struct ToolLiveSheet: View {
         case .info: return "Minis"
         case .text: return "Minis"
         case .thinking: return "Minis"
+        case .questionCard: return "Minis is asking a question"
         }
     }
 
@@ -2769,6 +2770,7 @@ struct ToolLiveSheet: View {
         case .info: return .secondary
         case .text: return .primary
         case .thinking: return .blue
+        case .questionCard: return .indigo
         }
     }
 
@@ -3173,6 +3175,7 @@ private struct ToolPreviewThumbnail: View {
         case .info: return .secondary
         case .text: return .primary
         case .thinking: return .blue
+        case .questionCard: return .indigo
         }
     }
 

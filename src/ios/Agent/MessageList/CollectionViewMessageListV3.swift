@@ -4818,7 +4818,7 @@ extension CollectionViewMessageListV3 {
             guard let ds = dataSource, let cv = viewController?.collectionView else { return }
             let target = jump.messageId
             let item = ds.snapshot().itemIdentifiers.first(where: {
-                MessageListItem.messageId(of: $0) == target
+                Coordinator.messageId(of: $0) == target
             })
             guard let item, let ip = ds.indexPath(for: item) else {
                 AppLogger(category: "ChatSearch").warning("[ChatSearch] jump MISS msg=\(target.uuidString.prefix(8)) — not in snapshot")

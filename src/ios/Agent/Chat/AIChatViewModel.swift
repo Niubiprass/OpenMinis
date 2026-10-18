@@ -1813,7 +1813,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         guard let card = activeQuestionCard else { return }
         activeQuestionCard = nil
         card.timeoutTask?.cancel()
-        let json = ((try? JSONSerialization.data(withJSONObject: answers))?.flatMap { String(data: $0, encoding: .utf8) }) ?? "{}"
+        let json = (try? JSONSerialization.data(withJSONObject: answers))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         logger.info("[AskCard] user submitted \(answers.count) answer(s) — resuming run")
         card.resume(json)
     }
@@ -5544,6 +5545,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 case .memoryTool: return "memory"
                 case .delegateTool: return SubAgentDefinition.toolName
                 case .info: return "info"
+                case .questionCard: return "ask_user"
                 }
             }()
             let statusStr: String = {

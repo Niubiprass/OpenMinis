@@ -97,7 +97,7 @@ class ToolCallFoldingSource(unittest.TestCase):
         self.assertIn('private var collapseConsecutiveToolCalls: Bool = false', self.content)
         self.assertIn('Toggle(AppLocalized("Collapse Consecutive Tool Calls")', self.content)
         # Applying the setting must refresh the CURRENT chat immediately.
-        self.assertIn('CollectionViewMessageListV3.messageListNeedsResnapshot', self.content)
+        self.assertIn('name: .messageListNeedsResnapshot', self.content)
         self.assertIn('.onChange(of: collapseConsecutiveToolCalls)', self.content)
 
     def test_folding_never_reaches_model(self):
