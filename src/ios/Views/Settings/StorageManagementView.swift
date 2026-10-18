@@ -278,24 +278,31 @@ class StorageManagementViewModel: ObservableObject {
 
 struct StorageManagementView: View {
     @StateObject private var vm = StorageManagementViewModel()
+    /// [T-storage-swipe-delete-20261019] Session row queued for the
+    /// swipe-to-delete confirmation. Mirrors the provider list's swipe flow:
+    /// swipe reveals Delete, the destructive action still confirms first.
+    @State private var pendingClearSession: StorageManagementViewModel.SessionStorage?
 
     var body: some View {
         List {
             Section {
-                storageRow(icon: "terminal", color: .gray, label: "Shell Container", value: vm.format(vm.shellContainerSize))
-                storageRow(icon: "cylinder", color: .blue, label: "Chat Database", value: vm.format(vm.chatDatabaseSize))
-                storageRow(icon: "doc", color: .indigo, label: "Session Files", value: vm.format(vm.totalSessionSize))
-                storageRow(icon: "doc.text", color: .orange, label: "Logs & Caches", value: vm.format(vm.logsAndCachesSize))
-                storageRow(icon: "clock", color: .teal, label: "Temporary Files", value: vm.format(vm.temporarySize))
+                // [T-storage-l10n-20261019] storageRow takes a plain String, so passing
+// bare literals bypassed the string catalog and showed English inside an
+// otherwise Chinese UI. Route each label through AppLocalized explicitly.
+                storageRow(icon: "terminal", color: .gray, label: AppLocalized("Shell Container"), value: vm.format(vm.shellContainerSize))
+                storageRow(icon: "cylinder", color: .blue, label: AppLocalized("Chat Database"), value: vm.format(vm.chatDatabaseSize))
+                storageRow(icon: "doc", color: .indigo, label: AppLocalized("Session Files"), value: vm.format(vm.totalSessionSize))
+                storageRow(icon: "doc.text", color: .orange, label: AppLocalized("Logs & Caches"), value: vm.format(vm.logsAndCachesSize))
+                storageRow(icon: "clock", color: .teal, label: AppLocalized("Temporary Files"), value: vm.format(vm.temporarySize))
                 // Only shown when non-zero: these two are failure residue, and a
                 // permanent "0 bytes" row would read as a normal part of the app.
                 if vm.orphanedSessionSize > 0 {
-                    storageRow(icon: "questionmark.folder", color: .brown, label: "Orphaned Session Files", value: vm.format(vm.orphanedSessionSize))
+                    storageRow(icon: "questionmark.folder", color: .brown, label: AppLocalized("Orphaned Session Files"), value: vm.format(vm.orphanedSessionSize))
                 }
                 if vm.staleRootfsSize > 0 {
-                    storageRow(icon: "exclamationmark.triangle", color: .red, label: "Stale Shell Leftovers", value: vm.format(vm.staleRootfsSize))
+                    storageRow(icon: "exclamationmark.triangle", color: .red, label: AppLocalized("Stale Shell Leftovers"), value: vm.format(vm.staleRootfsSize))
                 }
-                storageRow(icon: "ellipsis", color: .gray, label: "Other", value: vm.format(vm.otherSize))
+                storageRow(icon: "ellipsis", color: .gray, label: AppLocalized("Other"), value: vm.format(vm.otherSize))
                 HStack {
                     Text("Total")
                     Spacer()
@@ -330,6 +337,17 @@ struct StorageManagementView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                        // [T-storage-swipe-delete-20261019] Swipe to reveal
+                        // Delete, same gesture as the provider list. Deletes
+                        // only the session's files (conversation preserved),
+                        // identical to "Clear Session Files" in the detail view.
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                pendingClearSession = session
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                     }
                 }
             }
@@ -337,6 +355,41 @@ struct StorageManagementView: View {
         .navigationTitle("Storage")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { vm.load() }
+        // [T-storage-swipe-delete-20261019] Destructive action stays behind a
+        // confirmation, matching the detail view's "Clear Session Files" alert.
+        .alert("Clear Session Files?", isPresented: Binding(
+            get: { pendingClearSession != nil },
+            set: { if !$0 { pendingClearSession = nil } }
+        )) {
+            Button("Clear \(vm.format(pendingClearSession?.totalSize ?? 0))", role: .destructive) {
+                if let session = pendingClearSession { clearFiles(for: session) }
+                pendingClearSession = nil
+            }
+            Button("Cancel", role: .cancel) { pendingClearSession = nil }
+        } message: {
+            Text("This will delete \(vm.format(pendingClearSession?.totalSize ?? 0)) of files. This action cannot be undone.")
+        }
+    }
+
+    /// [T-storage-swipe-delete-20261019] Same removal the detail view performs
+    /// ("Clear Session Files"): deletes this row's minis directory plus its
+    /// [T-child-delete-storage] descendant directories, then reloads sizes.
+    /// The conversation itself is preserved.
+    private func clearFiles(for session: StorageManagementViewModel.SessionStorage) {
+        let sessionId = session.id
+        let descendants = session.descendantIds
+        Task.detached(priority: .userInitiated) {
+            let fm = FileManager.default
+            let lib = fm.urls(for: .libraryDirectory, in: .userDomainMask).first!
+            let minisBase = lib.appendingPathComponent("MinisChat/minis", isDirectory: true)
+            for sid in [sessionId] + descendants {
+                SessionStorageCleanup.removeSessionDirectory(sid, minisBase: minisBase)
+            }
+
+            await MainActor.run {
+                vm.load()
+            }
+        }
     }
 
     private func storageRow(icon: String, color: Color, label: String, value: String) -> some View {
