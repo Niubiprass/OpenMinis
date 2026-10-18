@@ -153,7 +153,7 @@ extension AIChatViewModel {
                 ],
                 required: ["tool_title"],
                 propertyOrdering: ["tool_title", "scope", "keywords"]
-            ),
+            )
         }
         tools.append(AgentToolDefinition(
             name: "ask_user",
