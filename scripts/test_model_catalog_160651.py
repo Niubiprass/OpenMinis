@@ -9,7 +9,7 @@ import unittest
 
 from pathlib import Path
 
-ROOT = Path('/var/minis/shared/OpenMinis-160649')
+ROOT = Path(__file__).resolve().parent.parent
 VIEW = (ROOT / 'src/ios/Views/Providers/ProviderInstancesView.swift').read_text()
 
 

@@ -13,7 +13,7 @@ Verifies the exact behavior the user demanded and the fix for the hang:
 import unittest
 from pathlib import Path
 
-ROOT = Path('/var/minis/shared/OpenMinis-160649')
+ROOT = Path(__file__).resolve().parent.parent
 CHAT = (ROOT / 'src/ios/Views/Chat/AIChatView.swift').read_text()
 ATTACHMENTS = (ROOT / 'src/ios/Agent/Chat/AIChatViewModel+Attachments.swift').read_text()
 INPUTBAR = (ROOT / 'src/ios/Views/Chat/ChatInputBar.swift').read_text()
