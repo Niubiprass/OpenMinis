@@ -611,7 +611,7 @@ struct ModelCatalogView: View {
     }
 
     private func catalogSection(_ section: CatalogSection) -> some View {
-        Section(section.instance.displayName) {
+        Section(section.instance.label) {
             ForEach(Array(section.entries.enumerated()), id: \.offset) { _, entry in
                 catalogRow(entry)
             }
