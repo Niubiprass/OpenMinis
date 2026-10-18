@@ -476,6 +476,39 @@ extension AIChatViewModel {
         }
     }
 
+    /// Resolve a Photos picker image from its temporary file representation.
+    /// Copy bytes on disk instead of materializing full-resolution Data for each
+    /// selected photo, keeping large multi-select peak memory bounded.
+    func finalizeImagePlaceholder(id: UUID, from sourceURL: URL) {
+        guard attachments.contains(where: { $0.id == id }) else {
+            try? FileManager.default.removeItem(at: sourceURL)
+            return
+        }
+        let fm = FileManager.default
+        let dir = attachmentCacheDir
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let sourceExt = sourceURL.pathExtension.lowercased()
+        let knownImageExts = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "tiff"]
+        let ext = knownImageExts.contains(sourceExt) ? sourceExt : (Self.detectImageType(atFileURL: sourceURL) ?? "bin")
+        let fileName = "photo_\(UUID().uuidString.prefix(8)).\(ext)"
+        let destination = dir.appendingPathComponent(fileName)
+        defer { try? fm.removeItem(at: sourceURL) }
+        do {
+            try fm.copyItem(at: sourceURL, to: destination)
+            guard let index = attachments.firstIndex(where: { $0.id == id }) else {
+                try? fm.removeItem(at: destination)
+                return
+            }
+            attachments[index].fileName = fileName
+            attachments[index].cacheURL = destination
+            attachments[index].kind = .image
+            attachments[index].loadState = .ready
+        } catch {
+            logger.error("Failed to cache picked image file: \(error.localizedDescription)")
+            markPlaceholderFailed(id: id)
+        }
+    }
+
     /// Resolve a `.loading` video placeholder by copying the loaded file in and
     /// flipping to `.ready`. Mirrors `addFileAttachment` but targets an existing
     /// placeholder so the chip doesn't jump to the end.
@@ -509,6 +542,30 @@ extension AIChatViewModel {
     func markPlaceholderFailed(id: UUID) {
         guard let idx = attachments.firstIndex(where: { $0.id == id }) else { return }
         attachments[idx].loadState = .failed
+    }
+
+    // MARK: - Photo provider retention (timeout retry)
+
+    /// Retains `NSItemProvider`s for picked photos so a timed-out chip can be
+    /// retried in place without reopening the photo picker. Not persisted.
+    private(set) var pendingPhotoProviders: [UUID: NSItemProvider] = [:]
+
+    func rememberPhotoProvider(_ provider: NSItemProvider, for id: UUID) {
+        pendingPhotoProviders[id] = provider
+    }
+
+    func pendingPhotoProvider(for id: UUID) -> NSItemProvider? {
+        pendingPhotoProviders[id]
+    }
+
+    func attachmentLoadState(id: UUID) -> InputAttachment.LoadState? {
+        attachments.first(where: { $0.id == id })?.loadState
+    }
+
+    /// Flip a failed chip back to `.loading` so the caller can re-run the load.
+    func setAttachmentLoading(id: UUID) {
+        guard let idx = attachments.firstIndex(where: { $0.id == id }) else { return }
+        attachments[idx].loadState = .loading
     }
 
     /// True while any attachment is still loading — used to gate the send button.
@@ -646,6 +703,7 @@ extension AIChatViewModel {
     func removeAttachment(_ attachment: InputAttachment) {
         try? FileManager.default.removeItem(at: attachment.cacheURL)
         attachments.removeAll { $0.id == attachment.id }
+        pendingPhotoProviders.removeValue(forKey: attachment.id)
     }
 
     /// Move an attachment from one position to another (drag-to-reorder).

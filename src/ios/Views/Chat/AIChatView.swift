@@ -207,49 +207,120 @@ struct AIChatView: View {
 
     private func handlePHPickerResults(_ results: [PHPickerResult]) {
         guard !results.isEmpty else { return }
-        let kinds: [InputAttachment.Kind] = results.map { r in
-            r.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) ? .video : .image
+        let kinds: [InputAttachment.Kind] = results.map { result in
+            result.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) ? .video : .image
         }
         let placeholderIDs = vm.addLoadingPlaceholders(kinds: kinds)
-        let jobs = zip(placeholderIDs, results).map { (id: $0, result: $1,
+        let jobs = zip(placeholderIDs, results).map { (id: $0, provider: $1.itemProvider,
             isVideo: $1.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)) }
 
+        // Retain providers so a timed-out chip can be retried in place.
+        for job in jobs {
+            vm.rememberPhotoProvider(job.provider, for: job.id)
+        }
+
+        // One picker confirmation remains one attachment operation: start EVERY
+        // selected provider together and keep every placeholder in the same
+        // outgoing message. Never turn large selections into sequential
+        // user-visible upload batches.
+        for job in jobs {
+            startPhotoLoad(job, attempt: 1)
+        }
+    }
+
+    /// Launch one photo/video load with a 30s watchdog. iOS 15 Photos providers
+    /// occasionally never call back under many concurrent iCloud-backed loads,
+    /// which used to leave chips `.loading` forever and lock the send button.
+    /// Attempt 1 times out into one automatic retry; a second timeout surfaces
+    /// a tappable failed chip instead of hanging.
+    private func startPhotoLoad(_ job: (id: UUID, provider: NSItemProvider, isVideo: Bool), attempt: Int) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard vm.attachmentLoadState(id: job.id) == .loading else { return }
+            let shortID = job.id.uuidString.prefix(8)
+            if attempt == 1 {
+                AppLogger(category: "PhotoPicker").error("load timeout(30s) attempt1 id=\(shortID) — auto retrying")
+                startPhotoLoad(job, attempt: 2)
+            } else {
+                AppLogger(category: "PhotoPicker").error("load timeout(30s) attempt2 id=\(shortID) — failed chip, tap to retry")
+                vm.markPlaceholderFailed(id: job.id)
+            }
+        }
         Task {
-            await withTaskGroup(of: Void.self) { group in
-                for job in jobs {
-                    group.addTask {
-                        let provider = job.result.itemProvider
-                        if job.isVideo {
-                            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                                provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
-                                    defer { cont.resume() }
-                                    guard let exported = url,
-                                          let tmpDir = try? FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: exported, create: true),
-                                          let tmp = try? tmpDir.appendingPathComponent("picked-\(UUID().uuidString).\(exported.pathExtension)"),
-                                          (try? FileManager.default.copyItem(at: exported, to: tmp)) != nil
-                                    else {
-                                        Task { @MainActor in vm.markPlaceholderFailed(id: job.id) }
-                                        return
-                                    }
-                                    Task { @MainActor in vm.finalizeVideoPlaceholder(id: job.id, from: tmp) }
-                                }
+            await self.loadPHPickerJob(job)
+        }
+    }
+
+    /// Re-run the load for a failed chip. The provider is still retained in the
+    /// view model, so no second trip through the photo picker is needed.
+    private func retryPhotoLoad(id: UUID) {
+        guard let provider = vm.pendingPhotoProvider(for: id) else { return }
+        vm.setAttachmentLoading(id: id)
+        startPhotoLoad((id: id, provider: provider,
+                        isVideo: provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)), attempt: 1)
+    }
+
+    private func loadPHPickerJob(_ job: (id: UUID, provider: NSItemProvider, isVideo: Bool)) async {
+        let provider = job.provider
+        if job.isVideo {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
+                    guard let exported = url,
+                          let tmpDir = try? FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: exported, create: true),
+                          let tmp = try? tmpDir.appendingPathComponent("picked-\(UUID().uuidString).\(exported.pathExtension)"),
+                          (try? FileManager.default.copyItem(at: exported, to: tmp)) != nil else {
+                        let reason = error?.localizedDescription ?? "Photos did not provide a readable video file"
+                        AppLogger(category: "PhotoPicker").error("Video load failed: \(reason)")
+                        Task { @MainActor in
+                            vm.markPlaceholderFailed(id: job.id)
+                            cont.resume()
+                        }
+                        return
+                    }
+                    Task { @MainActor in
+                        vm.finalizeVideoPlaceholder(id: job.id, from: tmp)
+                        cont.resume()
+                    }
+                }
+            }
+        } else {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                // Prefer the file representation: copying bytes on disk keeps
+                // peak memory flat no matter how many photos were selected.
+                // Data is only a fallback for providers without a file export.
+                provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, _ in
+                    if let url {
+                        let tmpDir = try? FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: url, create: true)
+                        let tmp = tmpDir?.appendingPathComponent("photo-\(UUID().uuidString).\(url.pathExtension)")
+                        if let tmp, (try? FileManager.default.copyItem(at: url, to: tmp)) != nil {
+                            Task { @MainActor in
+                                vm.finalizeImagePlaceholder(id: job.id, from: tmp)
+                                cont.resume()
                             }
-                        } else {
-                            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
-                                    if let data = data {
-                                        Task { @MainActor in vm.finalizeImagePlaceholder(id: job.id, data: data, fileExtension: nil) }
-                                        cont.resume()
-                                        return
-                                    }
-                                    provider.loadObject(ofClass: UIImage.self) { obj, _ in
-                                        defer { cont.resume() }
-                                        if let img = obj as? UIImage, let png = img.pngData() ?? img.jpegData(compressionQuality: 0.9) {
-                                            Task { @MainActor in vm.finalizeImagePlaceholder(id: job.id, data: png, fileExtension: nil) }
-                                        } else {
-                                            Task { @MainActor in vm.markPlaceholderFailed(id: job.id) }
-                                        }
-                                    }
+                            return
+                        }
+                    }
+                    provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, error in
+                        if let data {
+                            Task { @MainActor in
+                                vm.finalizeImagePlaceholder(id: job.id, data: data, fileExtension: nil)
+                                cont.resume()
+                            }
+                            return
+                        }
+                        provider.loadObject(ofClass: UIImage.self) { object, fallbackError in
+                            if let image = object as? UIImage,
+                               let bytes = image.jpegData(compressionQuality: 0.9) {
+                                Task { @MainActor in
+                                    vm.finalizeImagePlaceholder(id: job.id, data: bytes, fileExtension: "jpg")
+                                    cont.resume()
+                                }
+                            } else {
+                                let reason = fallbackError?.localizedDescription ?? error?.localizedDescription ?? "Photos did not provide image data"
+                                AppLogger(category: "PhotoPicker").error("Image load failed: \(reason)")
+                                Task { @MainActor in
+                                    vm.markPlaceholderFailed(id: job.id)
+                                    cont.resume()
                                 }
                             }
                         }
@@ -4634,7 +4705,8 @@ _ios15Seg7
                 withAnimation(.easeInOut(duration: 0.2)) {
                     vm.moveAttachment(fromID: fromID, toID: toID)
                 }
-            }
+            },
+            onRetry: { attachment in retryPhotoLoad(id: attachment.id) }
         )
     }
 

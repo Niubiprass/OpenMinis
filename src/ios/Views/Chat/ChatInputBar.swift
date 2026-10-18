@@ -113,13 +113,18 @@ struct InputAttachmentGridView: View {
     var loadingVideoCount: Int = 0
     let onRemove: (InputAttachment) -> Void
     var onMove: ((_ fromID: UUID, _ toID: UUID) -> Void)?
+    /// Photo: re-run the failed provider load. Video: no-op (chip has no retry).
+    var onRetry: ((InputAttachment) -> Void)?
 
     @State private var draggingID: UUID?
 
     var body: some View {
         FlowLayout(hSpacing: 8, vSpacing: 8) {
             ForEach(attachments) { attachment in
-                AttachmentChip(attachment: attachment) {
+                AttachmentChip(attachment: attachment,
+                               onRetry: onRetry.map { retry in
+                                   { retry(attachment) }
+                               }) {
                     onRemove(attachment)
                 }
                 .opacity(draggingID == attachment.id ? 0.4 : 1)
@@ -187,6 +192,7 @@ private struct VideoLoadingChip: View {
 
 private struct AttachmentChip: View {
     let attachment: InputAttachment
+    var onRetry: (() -> Void)?
     let onRemove: () -> Void
     @State private var showPreview = false
     @State private var cachedImage: UIImage? = nil
@@ -244,21 +250,27 @@ private struct AttachmentChip: View {
     }
 
     /// [T-ios-photo-pick-placeholder] Error chip for a photo that failed to load.
-    /// Tappable × removes just this one; successfully-loaded siblings are kept.
+    /// Tap the body to retry the provider load in place; × removes just this
+    /// one (successfully-loaded siblings are kept).
     private var failedChip: some View {
         ZStack(alignment: .topTrailing) {
-            VStack(spacing: 4) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(.orange)
-                Text("Failed")
-                    .font(.caption2)
-                    .foregroundStyle(ChatColors.secondaryText)
+            Button {
+                onRetry?()
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.orange)
+                    Text("重试")
+                        .font(.caption2)
+                        .foregroundStyle(ChatColors.secondaryText)
+                }
+                .frame(width: 64, height: 64)
+                .background(ChatColors.secondaryBg)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.5), lineWidth: 0.5))
             }
-            .frame(width: 64, height: 64)
-            .background(ChatColors.secondaryBg)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.5), lineWidth: 0.5))
+            .buttonStyle(.plain)
 
             Button {
                 onRemove()

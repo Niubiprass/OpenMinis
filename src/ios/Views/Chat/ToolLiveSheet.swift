@@ -2770,7 +2770,7 @@ struct ToolLiveSheet: View {
         case .info: return .secondary
         case .text: return .primary
         case .thinking: return .blue
-        case .questionCard: return .indigo
+        case .questionCard: return .blue
         }
     }
 
@@ -3175,7 +3175,7 @@ private struct ToolPreviewThumbnail: View {
         case .info: return .secondary
         case .text: return .primary
         case .thinking: return .blue
-        case .questionCard: return .indigo
+        case .questionCard: return .blue
         }
     }
 

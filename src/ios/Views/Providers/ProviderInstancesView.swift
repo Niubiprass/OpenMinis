@@ -558,10 +558,16 @@ private struct ShadowVoiceRow: View {
 ///   - `sortedByReleaseRank` matches the picker's ordering so the catalog
 ///     reads consistently with the selection UI.
 struct ModelCatalogView: View {
+    private struct CatalogSection: Identifiable {
+        let instance: ProviderInstance
+        let entries: [ModelEntry]
+        var id: String { instance.id }
+    }
+
     @ObservedObject private var store = ProviderConfigStore.shared
     @State private var query = ""
 
-    private var sections: [(instance: ProviderInstance, entries: [ModelEntry])] {
+    private var sections: [CatalogSection] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return store.instances.compactMap { instance in
             var entries = ProviderConfigStore.sortedByReleaseRank(store.entries(for: instance.id))
@@ -572,14 +578,13 @@ struct ModelCatalogView: View {
                         || m.displayName.lowercased().contains(q)
                 }
             }
-            return entries.isEmpty ? nil : (instance, entries)
+            return entries.isEmpty ? nil : CatalogSection(instance: instance, entries: entries)
         }
     }
 
     var body: some View {
         List {
-            ForEach(sections.indices, id: \.self) { index in
-                let section = sections[index]
+            ForEach(sections) { section in
                 Section(section.instance.displayName) {
                     ForEach(section.entries) { entry in
                         catalogRow(entry)
