@@ -404,6 +404,7 @@ extension AIChatViewModel {
         case .memoryTool: toolName = "memory"
         case .delegateTool: toolName = SubAgentDefinition.toolName
         case .info: toolName = "info"
+        case .questionCard: toolName = "ask_user"
         }
 
         // [T-ios-tool-title-lost-in-status] Prefer the model-supplied

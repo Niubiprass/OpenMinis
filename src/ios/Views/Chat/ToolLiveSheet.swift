@@ -1356,6 +1356,8 @@ struct ToolLiveSheet: View {
             return "delegate_task(\(truncateParam(title)))"
         case .info:
             return ""
+        case .questionCard:
+            return "ask_user"
         }
     }
 
@@ -1377,6 +1379,7 @@ struct ToolLiveSheet: View {
         case .info: Image(systemName: "arrow.triangle.2.circlepath")
         case .text: Image(systemName: "text.alignleft")
         case .thinking: Image("ThinkingIcon")
+        case .questionCard: Image(systemName: "questionmark.circle")
         }
     }
 

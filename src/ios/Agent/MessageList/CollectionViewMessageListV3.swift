@@ -100,6 +100,9 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
     var maxContentWidth: CGFloat
     var floatingBarHeight: CGFloat
     var inputBarHeight: CGFloat
+    /// [T-115-chat-search] Pending jump-to-message request. The coordinator
+    /// consumes it (nonce-gated) in updateUIViewController.
+    var searchJump: MessageSearchJump? = nil
 
     func makeUIViewController(context: Context) -> MessageListViewController {
         let vc = MessageListViewController()
@@ -141,6 +144,14 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
         coord.onForceSync = onForceSync
         coord.onScreenshotImage = onScreenshotImage
         coord.maxContentWidth = maxContentWidth
+
+        // [T-115-chat-search] Consume search-jump requests. AIChatView sets
+        // searchJump only after the sheet has fully dismissed, so the list is
+        // visible and stable when the jump scrolls.
+        if let jump = searchJump, jump != coord.lastHandledSearchJump {
+            coord.lastHandledSearchJump = jump
+            coord.handleSearchJump(jump)
+        }
 
         // Bottom inset base = input bar + tool bar overlay height + breathing room.
         // applySubViewportCompensation is the only writer of cv.contentInset.bottom;
@@ -357,6 +368,7 @@ private struct BridgedAssistantBlockV3: View {
         case .memoryTool: return "assistantMemoryBlock"
         case .delegateTool: return "assistantDelegateBlock"
         case .info: return "assistantInfoBlock"
+        case .questionCard: return "assistantQuestionBlock"
         }
     }
 
@@ -806,6 +818,14 @@ private struct BridgedWholeMessageV3: View {
 /// Length is kept alongside the hash for the same reason
 /// `userBubbleHeightCache`'s key does: it makes an accidental hash collision
 /// between two different bodies vanishingly unlikely without storing the text.
+/// [T-115-chat-search] Jump-to-message request consumed by the message list.
+/// `nonce` must differ on every tap so re-jumping to the SAME message still
+/// fires after the search sheet dismisses.
+struct MessageSearchJump: Equatable {
+    let messageId: UUID
+    let nonce: Int
+}
+
 struct HeightCacheKey: Hashable {
     let contentLength: Int
     let contentHash: Int
@@ -883,6 +903,8 @@ private final class WholeMessageCellV3: SelfSizingCell {}
 private final class AssistantHeaderCellV3: SelfSizingCell {}
 private final class AssistantBlockCellV3: SelfSizingCell {}
 private final class AssistantFooterCellV3: SelfSizingCell {}
+/// [T-115-collapse-tools] Cell for a folded "Ran N tools" summary row.
+private final class ToolCallGroupCellV3: SelfSizingCell {}
 
 // MARK: - V3 Coordinator
 
@@ -973,6 +995,24 @@ extension CollectionViewMessageListV3 {
         /// one. Pruned alongside `cellBridges`.
         private var lastFooterShapeByMessage: [UUID: FooterHeightShape] = [:]
         private var snapshotMessages: [ChatMessage] = []
+
+        // === [T-115-collapse-tools] Folded tool-group expansion state ===
+        // UI-only: never touches message blocks, persistence or what the model
+        // sees. Keyed by (messageId, firstBlockId) so a run that grows keeps
+        // its expansion state.
+        private var expandedToolGroups: Set<ToolGroupKey> = []
+
+        private func toggleToolGroup(messageId: UUID, firstBlockId: UUID) {
+            let key = ToolGroupKey(messageId: messageId, firstBlockId: firstBlockId)
+            if expandedToolGroups.contains(key) {
+                expandedToolGroups.remove(key)
+            } else {
+                expandedToolGroups.insert(key)
+            }
+            if let msgs = vm?.messages {
+                applySnapshot(messages: msgs, caller: "toolGroupToggle")
+            }
+        }
 
         // === Bridges ===
         private var cellBridges: [UUID: CellStateBridgeV2] = [:]
@@ -1187,6 +1227,8 @@ extension CollectionViewMessageListV3 {
         private weak var viewController: MessageListViewController?
         private weak var vm: AIChatViewModel?
         private var dataSource: UICollectionViewDiffableDataSource<Section, MessageListItem>!
+        /// [T-115-chat-search] Last consumed jump request (nonce-gated).
+        var lastHandledSearchJump: MessageSearchJump? = nil
         private var subscriptions = Set<AnyCancellable>()
         private var contentSizeObservation: NSKeyValueObservation?
 
@@ -1229,6 +1271,10 @@ extension CollectionViewMessageListV3 {
                 [weak self] cell, indexPath, item in
                 self?.configureCell(cell, item: item, indexPath: indexPath)
             }
+            let groupReg = UICollectionView.CellRegistration<ToolCallGroupCellV3, MessageListItem> {
+                [weak self] cell, indexPath, item in
+                self?.configureCell(cell, item: item, indexPath: indexPath)
+            }
 
             dataSource = UICollectionViewDiffableDataSource<Section, MessageListItem>(
                 collectionView: collectionView
@@ -1242,6 +1288,8 @@ extension CollectionViewMessageListV3 {
                     return cv.dequeueConfiguredReusableCell(using: blockReg, for: indexPath, item: item)
                 case .assistantFooter:
                     return cv.dequeueConfiguredReusableCell(using: footerReg, for: indexPath, item: item)
+                case .toolCallGroup:
+                    return cv.dequeueConfiguredReusableCell(using: groupReg, for: indexPath, item: item)
                 }
             }
 
@@ -1487,6 +1535,25 @@ extension CollectionViewMessageListV3 {
                         message: message,
                         bridge: bridge,
                         maxWidth: width
+                    )
+                    .transaction { $0.disablesAnimations = true }
+                    .environmentObject(vm)
+                }.minSize(width: 0, height: 0).margins(.all, 0)
+                cell.applyContentConfiguration(config.ios15ContentIdentity(item))
+            }
+
+            case .toolCallGroup(let msgId, let firstBlockId):
+                guard let msgIdx = messageIndex[msgId], msgIdx < messages.count else { return }
+                let message = messages[msgIdx]
+                cell.backgroundColor = .clear
+                let config = UIHostingConfiguration {
+                    ToolCallGroupRowView(
+                        message: message,
+                        firstBlockId: firstBlockId,
+                        onToggle: { [weak self] in
+                            guard let self else { return }
+                            self.toggleToolGroup(messageId: msgId, firstBlockId: firstBlockId)
+                        }
                     )
                     .transaction { $0.disablesAnimations = true }
                     .environmentObject(vm)
@@ -3097,15 +3164,45 @@ extension CollectionViewMessageListV3 {
                         newItems.append(.assistantHeader(message.id))
                     }
                     lastSpeakerWasUser = false
-                    for block in message.blocks {
-                        // [T-subagent-control-row] Control calls are no longer
-                        // skipped here. They used to be: rendering one as an
-                        // EmptyView was not enough, because each block is its
-                        // own cell and an empty one still measured full height,
-                        // leaving a band of blank space. They now draw a real
-                        // real tool capsule, so the cell has content matching
-                        // its height and the gap cannot recur.
+                    // [T-115-collapse-tools] Consecutive SETTLED tool blocks fold
+                    // into one `.toolCallGroup` row when the appearance setting
+                    // "Collapse Consecutive Tool Calls" is on and the run has
+                    // >= 2 blocks. Live (running/streaming) blocks never fold —
+                    // the user keeps per-tool feedback while the turn executes —
+                    // and a run folds only once it is settled. The folded row is
+                    // a RENDERING item only: message blocks, persistence and the
+                    // model-visible context are untouched, and a folded group
+                    // expands back to its individual `.assistantBlock` items on
+                    // tap. Setting changes take effect on the next snapshot
+                    // (the settings toggle posts .messageListNeedsResnapshot).
+                    let collapseTools = UserDefaults.standard.bool(forKey: "appearance.collapseConsecutiveTools")
+                    let blocks = message.blocks
+                    var bi = 0
+                    while bi < blocks.count {
+                        let block = blocks[bi]
+                        if collapseTools, block.kind.isToolKind,
+                           !ToolCallRunPolicy.isLive(block) {
+                            let runEnd = ToolCallRunPolicy.runEnd(blocks: blocks, start: bi)
+                            if runEnd - bi >= 2 {
+                                let groupItem = MessageListItem.toolCallGroup(message.id, blocks[bi].id)
+                                if !expandedToolGroups.contains(.init(messageId: message.id, firstBlockId: blocks[bi].id)) {
+                                    // [T-subagent-control-row] Control calls are no
+                                    // longer skipped here. They used to be: rendering
+                                    // one as an EmptyView was not enough, because each
+                                    // block is its own cell and an empty one still
+                                    // measured full height, leaving a band of blank
+                                    // space. They now draw a real tool capsule, so the
+                                    // cell has content matching its height and the gap
+                                    // cannot recur. A folded group covers them with the
+                                    // summary row; expanding restores the capsules.
+                                    newItems.append(groupItem)
+                                    bi = runEnd
+                                    continue
+                                }
+                            }
+                        }
                         newItems.append(.assistantBlock(message.id, block.id))
+                        bi += 1
                     }
                     // Only emit a footer cell when it will actually render
                     // content. A footer with zero visible content (no typing
@@ -3342,6 +3439,11 @@ extension CollectionViewMessageListV3 {
                     }
 
                     switch item {
+                    case .toolCallGroup:
+                        // [T-115-collapse-tools] Fixed-height "Ran N tools"
+                        // summary row (no markdown / TextKit): exact 46pt.
+                        layout.setEstimatedHeight(46, at: i)
+
                     case .assistantHeader:
                         // Header is always a fixed "icon + name" label row.
                         // Was 28 when the icon was 18pt and the .body text
@@ -3506,6 +3608,12 @@ extension CollectionViewMessageListV3 {
                         case .info:
                             let infoLines = max(1, block.content.components(separatedBy: "\n").count)
                             layout.setEstimatedHeight(CGFloat(20 + infoLines * 16), at: i)
+                        case .questionCard:
+                            // [T-115-ask-card] Height depends on question count
+                            // / options / status — the estimate switch below
+                            // mirrors QuestionCardView's layout closely enough;
+                            // the real measured height corrects it on layout.
+                            layout.setEstimatedHeight(Self.estimateItemHeight(item, messages: messages, width: cvWidth), at: i)
                         default:
                             // Tool capsules (execute, browser, etc.) are 36pt
                             layout.setEstimatedHeight(36, at: i)
@@ -3824,6 +3932,7 @@ extension CollectionViewMessageListV3 {
                         case .readImageTool: "read_image"
                         case .memoryTool: "memory"
                         case .delegateTool: SubAgentDefinition.toolName
+                        case .questionCard: "ask_user"
                         default: "unknown"
                         }
                         AppLogger(category: "ToolLC").verbose("[ToolLifecycle] RENDERED_CHATUI toolId=\(block.toolUseId?.prefix(20) ?? "nil") tool=\(toolName) sid=\(sid) appState=\(appState) suspended=\(suspended) isProcessing=\(processing) caller=\(caller)")
@@ -4195,6 +4304,7 @@ extension CollectionViewMessageListV3 {
             case .assistantHeader(let id): return id
             case .assistantFooter(let id): return id
             case .assistantBlock(let mid, _): return mid
+            case .toolCallGroup(let mid, _): return mid
             }
         }
 
@@ -4274,6 +4384,12 @@ extension CollectionViewMessageListV3 {
                 guard let b = msg(mid)?.blocks.first(where: { $0.id == bid }) else { return "b#?" }
                 let c = b.content
                 return "b#\(digest(c))#\(c.count)#\(b.kind)"
+            case .toolCallGroup(let mid, let fid):
+                guard let m = msg(mid) else { return "g#?" }
+                let start = m.blocks.firstIndex(where: { $0.id == fid }) ?? 0
+                let end = ToolCallRunPolicy.runEnd(blocks: m.blocks, start: start)
+                let n = Swift.max(0, end - start)
+                return "g#\(n)#\(ToolCallRunPolicy.totalDuration(blocks: m.blocks, range: start..<end))"
             }
         }
         #endif
@@ -4296,6 +4412,11 @@ extension CollectionViewMessageListV3 {
                 let block = msg(mid)?.blocks.first(where: { $0.id == bid })
                 let n = block?.content.count ?? 0
                 return "b:\(mid.uuidString):\(bid.uuidString):\(n)"
+            case .toolCallGroup(let mid, let fid):
+                guard let m = msg(mid) else { return "g:\(mid.uuidString):\(fid.uuidString)" }
+                let start = m.blocks.firstIndex(where: { $0.id == fid }) ?? 0
+                let end = ToolCallRunPolicy.runEnd(blocks: m.blocks, start: start)
+                return "g:\(mid.uuidString):\(fid.uuidString):\(Swift.max(0, end - start))"
             }
         }
 
@@ -4424,10 +4545,19 @@ extension CollectionViewMessageListV3 {
                 case .info:
                     let lineCount = max(1, block.content.components(separatedBy: "\n").count)
                     return CGFloat(20 + lineCount * 16)
+                case .questionCard:
+                    // [T-115-ask-card] Coarse mirror of QuestionCardView:
+                    // header row + per-question text/input/option rows + submit
+                    // + footnote while waiting; condensed answer-summary rows
+                    // once answered. The measured height corrects on layout.
+                    return Self.estimateQuestionCardHeight(block, width: width)
                 default: return 36  // Tool capsules (execute, browser, etc.): no wrapper pad
                 }
             case .assistantFooter:
                 return 4
+            case .toolCallGroup:
+                // [T-115-collapse-tools] Fixed-height summary row; no markdown.
+                return 46
             }
         }
 
@@ -4526,6 +4656,46 @@ extension CollectionViewMessageListV3 {
             return max(total, lineHeight + 4) + 4
         }
 
+        /// [T-115-ask-card] Coarse height estimate for a question card block.
+        /// Mirrors QuestionCardView's layout: header (~34) + per-question rows
+        /// (text 19/line + 40pt input OR 34pt option row each) + submit (~42)
+        /// + footnote (~24) while waiting; condensed answer-summary rows (~30
+        /// each) once answered / unconfirmed. The real measured height
+        /// corrects this on layout, so precision here only affects pre-layout
+        /// scroll jumpiness, not final rendering.
+        static func estimateQuestionCardHeight(_ block: AssistantBlock, width: CGFloat) -> CGFloat {
+            let innerWidth = max(width - 56, 180)
+            let cpl = max(10, innerWidth / 13)   // ~13pt per CJK/wide glyph at 14pt
+            var h: CGFloat = 42                  // header pill row + paddings
+            guard let data = block.content.data(using: .utf8),
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                return 84
+            }
+            let questions = (obj["questions"] as? [[String: Any]]) ?? []
+            let status = (obj["status"] as? String) ?? "pending"
+            if status == "answered", let answers = obj["answers"] as? [String: String] {
+                if answers.isEmpty {
+                    h += 30
+                } else {
+                    for (qID, _) in answers {
+                        _ = qID
+                        h += 32
+                    }
+                }
+                return ceil(h + 12)
+            }
+            for q in questions {
+                guard let text = q["question"] as? String, !text.isEmpty else { continue }
+                let lines = max(1, ceil(CGFloat(text.count) / cpl))
+                h += 6 + lines * 19
+                let opts = (q["options"] as? [String]) ?? []
+                h += opts.isEmpty ? 42 : CGFloat(opts.count) * 35 + 6
+            }
+            h += 46   // submit button + its spacing
+            h += 24   // timeout footnote
+            return ceil(h)
+        }
+
         /// Estimate height for a Markdown image line by checking the image cache.
         /// Falls back to 200pt placeholder if the image hasn't been loaded yet.
         private static func estimateMarkdownImageHeight(line: String, containerWidth: CGFloat) -> CGFloat {
@@ -4614,6 +4784,7 @@ extension CollectionViewMessageListV3 {
             switch item {
             case .assistantBlock(let mid, _): return mid == messageId
             case .assistantFooter(let mid): return mid == messageId
+            case .toolCallGroup(let mid, _): return mid == messageId
             case .wholeMessage, .assistantHeader: return false
             }
         }
@@ -4639,6 +4810,40 @@ extension CollectionViewMessageListV3 {
             // Use adjustedContentInset to account for input bar + tool bar overlay insets.
             let maxOffset = cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom
             return maxOffset - cv.contentOffset.y < threshold
+        }
+
+        /// [T-115-chat-search] Scroll the collection view to the message and
+        /// flash its cell with a transient highlight. Consumers must change
+        /// `jump.nonce` for every user tap (same-message re-jumps included).
+        func handleSearchJump(_ jump: MessageSearchJump) {
+            guard let ds = dataSource, let cv = viewController?.collectionView else { return }
+            let target = jump.messageId
+            let item = ds.snapshot().itemIdentifiers.first(where: {
+                MessageListItem.messageId(of: $0) == target
+            })
+            guard let item, let ip = ds.indexPath(for: item) else {
+                AppLogger(category: "ChatSearch").warning("[ChatSearch] jump MISS msg=\(target.uuidString.prefix(8)) — not in snapshot")
+                return
+            }
+            AppLogger(category: "ChatSearch").info("[ChatSearch] jump \(ip.section).\(ip.item) msg=\(target.uuidString.prefix(8))")
+            cv.scrollToItem(at: ip, at: .top, animated: true)
+            // Flash the cell after the scroll animation settles. The cell may
+            // be reused by then in pathological cases; the highlight is a
+            // best-effort visual cue, so a miss just skips it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                guard let self, let cv = self.viewController?.collectionView else { return }
+                guard let cell = cv.cellForItem(at: ip) else { return }
+                cell.contentView.viewWithTag(0x5EAC)?.removeFromSuperview()
+                let overlay = UIView(frame: cell.bounds)
+                overlay.backgroundColor = UIColor.systemYellow.withAlphaComponent(0.28)
+                overlay.tag = 0x5EAC
+                overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                overlay.isUserInteractionEnabled = false
+                cell.contentView.addSubview(overlay)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    cell.contentView.viewWithTag(0x5EAC)?.removeFromSuperview()
+                }
+            }
         }
 
         func scrollToLastItem(animated: Bool = false) {
@@ -6150,5 +6355,88 @@ private struct SheetOverlayView: View {
                     onRevert: compactPresenter.onRevert
                 )
             }
+    }
+}
+
+// MARK: - [T-115-collapse-tools] Folded tool-call group row
+
+/// One "Ran N tools" summary row standing in for a run of consecutive SETTLED
+/// tool blocks (App Store 1.15 "折叠连续工具调用"). Rendered as a fixed-height
+/// row (no markdown / TextKit), so the V3 estimate of 46pt is exact and the
+/// row cannot disturb the iOS 15 height machinery. Tapping the row expands the
+/// group back to its individual tool capsules (see `toggleToolGroup`).
+///
+/// The row is a RENDERING artifact only: it never reads or mutates message
+/// blocks, persistence, logs or the model-visible context. While any tool in
+/// the run is still running/streaming, the run stays unfolded entirely.
+private struct ToolCallGroupRowView: View {
+    let message: ChatMessage
+    let firstBlockId: UUID
+    let onToggle: () -> Void
+
+    /// The live run: consecutive settled tool blocks starting at the block
+    /// identified by `firstBlockId`. Recomputed per render, so a run that
+    /// grows (a new tool appended to the message) updates N / total time
+    /// without any extra bookkeeping.
+    private var run: (blocks: [AssistantBlock], count: Int) {
+        let blocks = message.blocks
+        guard let start = blocks.firstIndex(where: { $0.id == firstBlockId }) else { return ([], 0) }
+        let end = ToolCallRunPolicy.runEnd(blocks: blocks, start: start)
+        guard end > start else { return ([], 0) }
+        return (Array(blocks[start..<end]), end - start)
+    }
+
+    private var count: Int { run.count }
+    private var failedCount: Int {
+        run.blocks.filter { if case .failed? = $0.toolStatus { return true }; return false }.count
+    }
+    private var totalTime: TimeInterval {
+        ToolCallRunPolicy.totalDuration(blocks: run.blocks, range: 0..<run.blocks.count)
+    }
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 8) {
+                Image(systemName: "hammer.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text("Ran \(count) tools")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.primary)
+                if failedCount > 0 {
+                    Text("\(failedCount) failed")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.orange)
+                }
+                Spacer(minLength: 4)
+                Text(Self.formatDuration(totalTime))
+                    .font(.system(size: 12, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(UIColor.secondarySystemBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .accessibilityIdentifier("toolCallGroupRow")
+    }
+
+    static func formatDuration(_ t: TimeInterval) -> String {
+        if t >= 60 { return String(format: "%d:%02d", Int(t) / 60, Int(t) % 60) }
+        if t >= 1 { return String(format: "%.1fs", t) }
+        return String(format: "%dms", Int(t * 1000))
     }
 }

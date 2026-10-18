@@ -90,6 +90,12 @@ struct AssistantBlockView: View {
                 // summary instead of the generic capsule's raw content.
                 HelperBlockView(block: block, detailBlock: $detailBlock)
             }
+        case .questionCard:
+            // [T-115-ask-card] Inline question/confirmation card. Interactive
+            // while the vm still holds the matching active card; read-only
+            // (answer summary / unconfirmed) otherwise.
+            QuestionCardView(block: block)
+                .padding(.vertical, 2)
         case .info:
             let allLines = block.content.components(separatedBy: "\n").filter { !$0.isEmpty }
             // Separate reason lines (⚠️) from the final switched line (✅)
@@ -314,7 +320,7 @@ struct ToolCapsuleView: View {
         case .readImageTool: toolName = "read_image"
         case .memoryTool:    toolName = "memory"
         case .delegateTool:  toolName = SubAgentDefinition.toolName
-        case .text, .thinking, .info: toolName = "unknown"
+        case .text, .thinking, .info, .questionCard: toolName = "unknown"
         }
 
         // Pretty-print the input JSON when possible; otherwise emit raw.

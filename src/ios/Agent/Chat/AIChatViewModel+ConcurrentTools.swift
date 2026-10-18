@@ -16,6 +16,42 @@ import UIKit
 
 private let ctLogger = AppLogger(category: "AIChatVM")
 
+/// Thread-safe one-shot bridge between cancellation/UI actions and the
+/// continuation suspended inside an ask_user tool call. Cancellation can run
+/// before the continuation has been installed, so `resume` must remember that
+/// state and let `install` complete the resume later.
+private final class AskUserContinuationState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<String?, Never>?
+    private var resumed = false
+
+    func install(_ continuation: CheckedContinuation<String?, Never>) {
+        var resumeImmediately = false
+        lock.lock()
+        if resumed {
+            resumeImmediately = true
+        } else {
+            self.continuation = continuation
+        }
+        lock.unlock()
+        if resumeImmediately {
+            continuation.resume(returning: nil)
+        }
+    }
+
+    func resume(_ value: String?) {
+        var pending: CheckedContinuation<String?, Never>?
+        lock.lock()
+        if !resumed {
+            resumed = true
+            pending = continuation
+            continuation = nil
+        }
+        lock.unlock()
+        pending?.resume(returning: value)
+    }
+}
+
 extension AIChatViewModel {
 
     /// Hard cap on simultaneous in-flight tool executions per agent turn.
@@ -370,6 +406,16 @@ extension AIChatViewModel {
 
         do {
         switch tu.name {
+        case "ask_user":
+            // [T-115-ask-card] Inline question card: publish the card, suspend
+            // THIS tool call until the user answers (or cancels / the timeout
+            // elapses), then resume the run. handleAskUser writes the card
+            // JSON to the block itself and returns the answers as the tool
+            // result (or the unconfirmed notice).
+            let askResult = await handleAskUser(argsJson: argsJson, tuId: tu.id, msgIdx: msgIdx, blockIdx: blockIdx)
+            toolOutput = askResult.output
+            toolSuccess = askResult.success
+            break
         case "shell_execute":
             let (command, timeout, delay) = parseToolInput(from: argsJson)
 
@@ -1220,5 +1266,111 @@ extension AIChatViewModel {
             snapshotItem: snapshotItem,
             cancelled: cancelledHere
         )
+    }
+
+    // MARK: - [T-115-ask-card] ask_user handler
+
+    /// Handle an `ask_user` call: parse the questions, seed the block's card
+    /// JSON (status = pending), publish `activeQuestionCard`, and suspend this
+    /// tool call until the user submits answers, explicitly cancels, or the
+    /// 10-minute timeout elapses. Then finalize the block and return the
+    /// model-facing result (answers JSON, or the "unconfirmed" notice).
+    ///
+    /// The run stays paused for the whole wait (the loop awaits this tool);
+    /// the card UI reads `activeQuestionCard` to render the interactive state.
+    /// Cancellation (stop button / session teardown) resumes with nil via the
+    /// cancellation handler — same "unconfirmed" outcome as the timeout.
+    private func handleAskUser(argsJson: String, tuId: String, msgIdx: Int, blockIdx: Int) async -> (output: String, success: Bool) {
+        guard let data = argsJson.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let questionsRaw = obj["questions"] as? [[String: Any]], !questionsRaw.isEmpty else {
+            return ("Error: ask_user requires a non-empty 'questions' array: [{\"id\":\"q1\",\"question\":\"...\",\"options\":[\"A\",\"B\"]}]", false)
+        }
+        struct ParsedQ {
+            let id: String
+            let text: String
+            let options: [String]
+        }
+        let parsed = questionsRaw.compactMap { q -> ParsedQ? in
+            guard let id = q["id"] as? String, !id.isEmpty,
+                  let text = q["question"] as? String, !text.isEmpty else { return nil }
+            return ParsedQ(id: id, text: text, options: (q["options"] as? [String]) ?? [])
+        }
+        guard !parsed.isEmpty else {
+            return ("Error: ask_user questions must each have a non-empty 'id' and 'question'.", false)
+        }
+
+        // Seed the block with the card payload.
+        let specJSON: [String: Any] = [
+            "type": "question_card",
+            "status": "pending",
+            "questions": questionsRaw,
+        ]
+        let specText = ((try? JSONSerialization.data(withJSONObject: specJSON))?.flatMap { String(data: $0, encoding: .utf8) }) ?? "{}"
+        if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+            messages[msgIdx].blocks[blockIdx].content = specText
+            messages[msgIdx].blocks[blockIdx].toolStatus = .running
+        }
+
+        // Wait for the user's answer. Cancellation also resumes (nil), so the
+        // loop never hangs if the run is stopped while a card is up.
+        let timeout: TimeInterval = 600
+        let waitState = AskUserContinuationState()
+
+        let answerJSON: String? = await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+                let card = ActiveQuestionCard(
+                    toolUseId: tuId,
+                    questions: parsed.map { .init(id: $0.id, text: $0.text, options: $0.options) },
+                    timeoutAt: Date().addingTimeInterval(timeout),
+                    resume: { ans in waitState.resume(ans) }
+                )
+                activeQuestionCard = card
+                card.timeoutTask = Task { [weak self] in
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    } catch {
+                        return
+                    }
+                    guard let self, self.activeQuestionCard?.toolUseId == tuId else { return }
+                    self.activeQuestionCard = nil
+                    ctLogger.info("[AskCard] ask_user timed out (\(Int(timeout))s) — resuming as unconfirmed")
+                    waitState.resume(nil)
+                }
+                // Install after publishing the card so a cancellation that
+                // happened before operation entry still leaves no orphan card.
+                waitState.install(cont)
+            }
+        }, onCancel: {
+            waitState.resume(nil)
+        })
+        // Whatever path resumed, cancel any remaining timeout task before
+        // clearing the live card. The card is a reference type, so this is the
+        // same task installed above rather than a copied struct value.
+        if let card = activeQuestionCard, card.toolUseId == tuId {
+            card.timeoutTask?.cancel()
+            activeQuestionCard = nil
+        }
+
+        // Finalize the block payload.
+        var finalDict = specJSON
+        if let answerJSON, let d = answerJSON.data(using: .utf8),
+           let ansObj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+            finalDict["status"] = "answered"
+            finalDict["answers"] = ansObj
+        } else {
+            finalDict["status"] = "timeout"
+        }
+        let finalText = ((try? JSONSerialization.data(withJSONObject: finalDict))?.flatMap { String(data: $0, encoding: .utf8) }) ?? specText
+        if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+            let block = messages[msgIdx].blocks[blockIdx]
+            block.content = finalText
+            block.toolStatus = answerJSON == nil ? .cancelled : .success
+        }
+
+        guard let answerJSON else {
+            return ("用户未确认（超时未回答）。如需继续，请以你提出的选项或合理默认继续，或再问一次更具体的问题。", true)
+        }
+        return (answerJSON, true)
     }
 }

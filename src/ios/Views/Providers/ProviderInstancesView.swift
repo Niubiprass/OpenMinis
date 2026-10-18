@@ -22,6 +22,18 @@ struct ProviderInstancesView: View {
 
     var body: some View {
         List {
+            // [T-115-model-catalog] Read-only global catalog of every model
+            // every configured provider lists. Outside the per-provider editing
+            // flows on purpose: browsing cannot change anything.
+            Section {
+                NavigationLink {
+                    ModelCatalogView()
+                } label: {
+                    Label("Model Catalog", systemImage: "books.vertical")
+                }
+            } footer: {
+                Text("Browse every listed model — context window, output limits, reasoning and modalities. Read-only.")
+            }
             // [T-mimo-shadow-voice] EVERY instance appears under its providerType
             // section now (no voice-only exclusion) — a mixed vendor like MiMo
             // shows its text models here AND a shadow voice row below ("dual
@@ -361,6 +373,7 @@ final class ProviderRowCredentialCache: @unchecked Sendable {
 private struct InstanceRow: View {
     let instance: ProviderInstance
     @ObservedObject private var store = ProviderConfigStore.shared
+    @ObservedObject private var quotaService = ProviderQuotaService.shared
 
     /// Both display properties come from one cached probe, so a body pass costs
     /// zero Keychain round-trips once warm.
@@ -427,10 +440,13 @@ private struct InstanceRow: View {
 
     var body: some View {
         let _ = store.authRevision  // subscribe to OAuth state changes
+        // [T-115-quota] Quota pill for this instance (nil = unsupported/unfetched).
+        let quota = quotaService.cachedQuota(instanceId: instance.id)
         HStack(spacing: 12) {
             Circle()
-                .fill(credentialDisplay.needsReauth ? Color.red
-                      : isConfigured && instance.isEnabled ? Color.green : Color(UIColor.quaternaryLabel))
+                .fill(quota?.highlighted == true ? Color.yellow
+                      : (credentialDisplay.needsReauth ? Color.red
+                         : isConfigured && instance.isEnabled ? Color.green : Color(UIColor.quaternaryLabel)))
                 .frame(width: 8, height: 8)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -457,6 +473,16 @@ private struct InstanceRow: View {
 
             Spacer()
 
+            if let quota {
+                Text(quota.displayText)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(quota.highlighted ? Color.yellow : .secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(quota.highlighted ? Color.yellow.opacity(0.12) : Color(UIColor.quaternarySystemFill))
+                    .clipShape(Capsule())
+            }
+
             if !instance.isEnabled {
                 Text("Disabled")
                     .font(.caption2.weight(.medium))
@@ -468,6 +494,11 @@ private struct InstanceRow: View {
             }
         }
         .padding(.vertical, 2)
+        .onAppear {
+            // [T-115-quota] Fetch the instance quota once per row appearance
+            // (cached 5 min; UI updates via quotaService.revision).
+            quotaService.refreshAllIfNeeded(instances: [instance])
+        }
     }
 
     /// `static` (was an instance method) so the credential-cache probe closure can
@@ -508,5 +539,131 @@ private struct ShadowVoiceRow: View {
         if asr > 0 { parts.append(AppLocalized("\(asr) speech-to-text", comment: "ASR model count")) }
         if tts > 0 { parts.append(AppLocalized("\(tts) text-to-speech", comment: "TTS model count")) }
         return parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - [T-115-model-catalog] Read-only global model catalog
+
+/// Read-only catalog of every model every configured provider lists
+/// (FEATURES-WIP 160651 "模型目录"; App Store 1.15 "多模型自由选择 / 新增模型").
+///
+/// Deliberate v1 constraints:
+///   - ZERO write paths: no selection, no overrides, no hiding, no group
+///     membership, no refresh — browsing cannot disturb saved configs, model
+///     groups, or provider routing. Entry is via Settings → Providers → Model
+///     Catalog, nowhere near the model picker's own guarded toolbar.
+///   - Metadata the provider does not report shows nothing (no fabricated
+///     capabilities): context window / output tokens / reasoning / modality
+///     badges appear only when the entry actually carries them.
+///   - `sortedByReleaseRank` matches the picker's ordering so the catalog
+///     reads consistently with the selection UI.
+struct ModelCatalogView: View {
+    @ObservedObject private var store = ProviderConfigStore.shared
+    @State private var query = ""
+
+    private var sections: [(instance: ProviderInstance, entries: [ModelEntry])] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return store.instances.compactMap { instance in
+            var entries = ProviderConfigStore.sortedByReleaseRank(store.entries(for: instance.id))
+            if !q.isEmpty {
+                entries = entries.filter { entry in
+                    let m = entry.model
+                    return m.id.lowercased().contains(q)
+                        || m.displayName.lowercased().contains(q)
+                }
+            }
+            return entries.isEmpty ? nil : (instance, entries)
+        }
+    }
+
+    var body: some View {
+        List {
+            ForEach(sections, id: \.instance.id) { section in
+                Section(section.instance.displayName) {
+                    ForEach(section.entries) { entry in
+                        catalogRow(entry)
+                    }
+                }
+            }
+            if sections.isEmpty {
+                Section {
+                    Text(query.isEmpty ? "No models available" : "No matches")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 20)
+                }
+            }
+        }
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search models")
+        .navigationTitle("Model Catalog")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func catalogRow(_ entry: ModelEntry) -> some View {
+        let m = entry.model
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(m.displayName)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                if entry.isCustom {
+                    meta("Custom", color: .blue)
+                }
+                if entry.isUnavailableFromProvider {
+                    Text("Not listed by provider")
+                        .font(.caption2)
+                        .foregroundStyle(.red.opacity(0.8))
+                }
+            }
+            Text(m.id)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            HStack(spacing: 6) {
+                if let ctx = m.contextWindow {
+                    meta(Self.formatTokens(ctx) + " context")
+                }
+                if let out = m.maxOutputTokens {
+                    meta("up to " + Self.formatTokens(out) + " out")
+                }
+                if m.supportsReasoning == true {
+                    meta("reasoning")
+                }
+                if let modality = m.modalityOverride {
+                    for badge in Self.modalityBadges(modality) {
+                        meta(badge)
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func meta(_ text: String, color: Color = .secondary) -> some View {
+        Text(text)
+            .font(.caption2)
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(color.opacity(0.12)))
+    }
+
+    static func formatTokens(_ n: Int) -> String {
+        n >= 1024 ? "\(n / 1024)K" : "\(n)"
+    }
+
+    /// Explicit modality flags only — a model without an override shows no
+    /// capability chips rather than a guess.
+    static func modalityBadges(_ m: ModelModality) -> [String] {
+        var out: [String] = []
+        if m.contains(.imageInput) { out.append("vision") }
+        if m.contains(.pdfInput) { out.append("PDF") }
+        if m.contains(.audioInput) { out.append("audio in") }
+        if m.contains(.audioOutput) { out.append("audio out") }
+        if m.contains(.videoInput) { out.append("video in") }
+        if m.contains(.imageOutput) { out.append("image out") }
+        return out
     }
 }

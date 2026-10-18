@@ -1827,3 +1827,85 @@ struct BackgroundInterruptionBanner: View {
             }
     }
 }
+
+// MARK: - [T-115-keep-awake] Foreground screen keep-alive lease
+
+/// Foreground-only screen keep-alive for long agent turns (App Store 1.15
+/// "前台长任务保持屏幕常亮").
+///
+/// `UIApplication.isIdleTimerDisabled` becomes true ONLY while ALL of:
+///   - the setting "Keep Screen Awake During Tasks" is on
+///     (UserDefaults "appearance.keepScreenAwakeDuringTasks"),
+///   - at least one chat task is actively processing (`taskStarted`/`taskEnded`
+///     refcount, wired from `AIChatView.handleProcessingChange`),
+///   - the app is in the foreground (an idle-timer setting is meaningless in
+///     the background and would just waste battery; entering the background
+///     releases it immediately).
+///
+/// Deliberate v1 limits (honest, documented):
+///   - "Dim during long tasks" is NOT implemented: system-brightness control
+///     risks surprising users and fighting the OS; the toggle only keeps the
+///     screen awake.
+///   - The refcount is global across sessions, so a cached VM that appears
+///     while already processing holds an extra lease. That only ever keeps the
+///     screen ON longer — never off — while the app is foreground, and
+///     toggling the setting off (or backgrounding) releases the screen
+///     immediately, so it is a safe conservative bias, not a leak that traps
+///     the user.
+final class ForegroundScreenKeepAlive {
+    static let shared = ForegroundScreenKeepAlive()
+
+    private var processingCount = 0
+    private var isEnabled = UserDefaults.standard.bool(forKey: Self.settingKey)
+    private var isForeground = true
+    private var observers: [NSObjectProtocol] = []
+
+    static let settingKey = "appearance.keepScreenAwakeDuringTasks"
+
+    private init() {
+        let nc = NotificationCenter.default
+        observers.append(nc.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.isForeground = true
+            self?.reconcile()
+        })
+        observers.append(nc.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.isForeground = false
+            self?.reconcile()
+        })
+        reconcile()
+    }
+
+    /// Called when any chat task transitioned to processing.
+    func taskStarted() {
+        processingCount += 1
+        reconcile()
+    }
+
+    /// Called when a chat task finished / was cancelled / errored.
+    func taskEnded() {
+        processingCount = max(0, processingCount - 1)
+        reconcile()
+    }
+
+    /// Called from the settings toggle (and once on appear to re-sync the
+    /// persisted value after launch).
+    func setEnabled(_ on: Bool) {
+        isEnabled = on
+        reconcile()
+    }
+
+    private func reconcile() {
+        let keepAwake = isEnabled && isForeground && processingCount > 0
+        // Only touch the global when it actually changes — UIKit KVO-style
+        // writes on every task edge are cheap, but no-op writes are free too.
+        if UIApplication.shared.isIdleTimerDisabled != keepAwake {
+            UIApplication.shared.isIdleTimerDisabled = keepAwake
+            AppLogger(category: "KeepAwake").info(
+                "idleTimerDisabled=\(keepAwake) enabled=\(isEnabled) fg=\(isForeground) cnt=\(processingCount)")
+        }
+    }
+}

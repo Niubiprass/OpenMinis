@@ -328,6 +328,7 @@ struct AIChatView: View {
     @ObservedObject private var configStore = ProviderConfigStore.shared
     @ObservedObject private var fontSettings = FontSettings.shared
     @ObservedObject private var deepLink = DeepLinkCoordinator.shared
+    @ObservedObject private var quotaService = ProviderQuotaService.shared
     @Environment(\.dismiss) private var dismiss
     @State private var inputFocused: Bool = false
     @State private var inputHasSelection: Bool = false
@@ -482,6 +483,14 @@ struct AIChatView: View {
     /// True while unsent share-extension content is in the input bar.
     @State private var hasInjectedShareContent = false
     @State private var showModelPicker = false
+    @State private var showChatSearch = false
+    /// [T-115-chat-search] Jump request handed to the message list once the
+    /// search sheet has fully dismissed (see the sheet's onDismiss).
+    @State private var chatSearchJump: MessageSearchJump? = nil
+    /// [T-115-export] Conversation export sheet (long image / PDF).
+    @State private var exportKind: ChatExportKind? = nil
+    /// [T-115-chat-search] Jump picked in the sheet, applied on dismiss.
+    @State private var pendingSearchJump: MessageSearchJump? = nil
     @State private var showThinkingLevelSheet = false
     @State private var showSessionSkills = false
     @State private var showSessionMCPs = false
@@ -866,6 +875,8 @@ struct AIChatView: View {
                 chatNavPrincipalContent
             }, trailing: {
                 trailingMenu
+            }, onSearch: {
+                showChatSearch = true
             })
             .equatable()
         )
@@ -1171,8 +1182,27 @@ struct AIChatView: View {
                 }
             }
         }
+        .sheet(isPresented: $showChatSearch, onDismiss: {
+            // Apply the jump only after the sheet is gone: the list must be
+            // visible and settled before it scrolls to the message.
+            if let j = pendingSearchJump {
+                chatSearchJump = j
+                pendingSearchJump = nil
+            }
+        }) {
+            ChatSearchView(sessionId: vm.sessionId) { jump in
+                pendingSearchJump = jump
+                showChatSearch = false
+            }
+        }
         .sheet(isPresented: $showTokenUsage) {
             TokenUsageSheet(vm: cached.vm)
+        }
+        .sheet(item: $exportKind) { kind in
+            // [T-115-export] Long-image / PDF export. sessionId is non-nil
+            // inside a chat; the sheet loads the FULL history from the store
+            // itself (never the possibly-partial visible list state).
+            ChatExportSheet(kind: kind, sessionId: vm.sessionId ?? "")
         }
         .sheet(item: $screenshotPreview) { preview in
             ChatScreenshotPreviewSheet(image: preview.image)
@@ -1612,6 +1642,18 @@ _ios15Seg7
         .onChange(of: vm.isProcessing) { processing in
             handleProcessingChange(processing)
         }
+        // [T-115-keep-awake] A cached VM that is ALREADY processing when this
+        // view (re)appears never fires the onChange above, so the screen
+        // keep-awake lease would silently miss it. Pair an explicit +1/-1 on
+        // appear/disappear around the visible period — matching the edges the
+        // onChange hook handles, so the shared refcount stays balanced per
+        // visible chat.
+        .onAppear {
+            if vm.isProcessing { ForegroundScreenKeepAlive.shared.taskStarted() }
+        }
+        .onDisappear {
+            if vm.isProcessing { ForegroundScreenKeepAlive.shared.taskEnded() }
+        }
         // [T-ios-retry-hide-when-processing] Inject the view model so deep
         // descendants (e.g. ToolCapsuleView's long-press menu) can react to
         // `vm.isProcessing` without threading the vm through every level.
@@ -1946,7 +1988,10 @@ _ios15Seg7
                 #if DEBUG
                 copySessionDataToClipboard()
                 #endif
-            }
+            },
+            // [T-115-export] Long-image / PDF export of the full conversation.
+            onExportImage: { exportKind = .longImage },
+            onExportPDF: { exportKind = .pdf }
         )
     }
 
@@ -2147,6 +2192,11 @@ _ios15Seg7
 
         let isAuthed = hasBinding || hasProviders
 
+        // [T-115-quota] Current instance for the model capsule's quota pill /
+        // yellow low-credit dot.
+        let quotaInstance = display.resolvedInstanceAndModel(for: vm.sessionId)?.instance
+        let quotaInfo = quotaInstance.flatMap { quotaService.cachedQuota(instanceId: $0.id) }
+
         let legacyLayout = !ProcessInfo.processInfo.isiOSAppOnMac && {
             if #available(iOS 26, *) { return false }
             return true
@@ -2256,6 +2306,14 @@ _ios15Seg7
             }
             .buttonStyle(.plain)
             .disabled(!canEditTitle)
+            .onAppear {
+                // [T-115-quota] Fetch (or refresh) the active instance's
+                // quota once per titleView appearance; UI updates via
+                // quotaService.revision.
+                if let inst = quotaInstance {
+                    quotaService.refreshAllIfNeeded(instances: [inst])
+                }
+            }
 
             // [T-navbar-group-provider-gap 2026-07-25] Legacy row gap 1 → -1:
             // on iOS 16-18 the provider·model line (row 2) sat flush against
@@ -2274,7 +2332,9 @@ _ios15Seg7
                     } label: {
                         HStack(spacing: 4) {
                             Circle()
-                                .fill(isAuthed ? Color.green : Color.orange)
+                                .fill(quotaInfo?.highlighted == true
+                                      ? Color.yellow
+                                      : (isAuthed ? Color.green : Color.orange))
                                 .frame(width: 6, height: 6)
                             if isGroupBound {
                                 Image(systemName: "square.stack.3d.up")
@@ -2286,6 +2346,11 @@ _ios15Seg7
                                 .foregroundStyle(ChatColors.secondaryText)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
+                            if let quotaText = quotaInfo?.displayText {
+                                Text(quotaText)
+                                    .font(.caption2)
+                                    .foregroundStyle(quotaInfo?.highlighted == true ? Color.yellow : ChatColors.tertiaryText)
+                            }
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 8, weight: .semibold))
                                 .foregroundStyle(ChatColors.tertiaryText)
@@ -2655,6 +2720,7 @@ _ios15Seg7
             CollectionViewMessageListV3(
                 vm: vm,
                 inputFocused: inputFocused,
+                searchJump: chatSearchJump,
                 onRetryMessage: { vm.retryFromMessage($0); vm.forceScrollToBottom.send() },
                 onRetryLast: { vm.retry(); vm.forceScrollToBottom.send() },
                 // [T-ios-assistant-header-open-soul] Routed through the same
@@ -5390,6 +5456,8 @@ private struct ChatToolbarHost<Title: View, Trailing: View>: View, Equatable {
     let key: ChatToolbarKey
     @ViewBuilder let title: () -> Title
     @ViewBuilder let trailing: () -> Trailing
+    /// [T-115-chat-search] Opens the in-chat search sheet from the magnifier.
+    let onSearch: () -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         let eq = lhs.key == rhs.key
@@ -5442,6 +5510,15 @@ private struct ChatToolbarHost<Title: View, Trailing: View>: View, Equatable {
             .allowsHitTesting(false)
             .toolbar {
                 ToolbarItem(placement: .principal) { title() }
+                // [T-115-chat-search] Magnifier opens the in-chat search
+                // sheet. Kept a plain Button (no menu) so toolbar re-pushes
+                // during streaming cannot refresh anything user-visible.
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { onSearch() } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .accessibilityLabel(AppLocalized("Search Messages"))
+                }
                 ToolbarItem(placement: .topBarTrailing) { trailing() }
             }
     }
@@ -5503,6 +5580,9 @@ private struct ChatTrailingMenu: View, Equatable {
     let onTokenUsage: () -> Void
     let onCopyRequests: () -> Void
     let onCopySessionData: () -> Void
+    /// [T-115-export] Long-image / PDF conversation export entries.
+    let onExportImage: () -> Void
+    let onExportPDF: () -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.messagesEmpty == rhs.messagesEmpty
@@ -5686,6 +5766,9 @@ private struct ChatTrailingMenuButton: UIViewRepresentable {
     let onTokenUsage: () -> Void
     let onCopyRequests: () -> Void
     let onCopySessionData: () -> Void
+    /// [T-115-export] Long-image / PDF conversation export entries.
+    let onExportImage: () -> Void
+    let onExportPDF: () -> Void
 
     /// The displayed-state snapshot — the ONLY trigger for a menu rebuild.
     struct Key: Equatable {
@@ -5804,6 +5887,19 @@ private struct ChatTrailingMenuButton: UIViewRepresentable {
         groups.append(UIMenu(options: .displayInline, children: [
             UIAction(title: AppLocalized("New Chat"),
                      image: UIImage(systemName: "square.and.pencil")) { _ in coordinator.parent.onNewChat() },
+        ]))
+
+        // [T-115-export] Conversation export (long image / PDF). Disabled for
+        // empty sessions; the export itself loads the full history from the
+        // store, so nothing is captured from the visible (possibly partial)
+        // view state.
+        groups.append(UIMenu(options: .displayInline, children: [
+            UIAction(title: AppLocalized("导出长图"),
+                     image: UIImage(systemName: "photo.on.rectangle.angled"),
+                     attributes: key.messagesEmpty ? [.disabled] : []) { _ in coordinator.parent.onExportImage() },
+            UIAction(title: AppLocalized("导出 PDF"),
+                     image: UIImage(systemName: "doc.richtext"),
+                     attributes: key.messagesEmpty ? [.disabled] : []) { _ in coordinator.parent.onExportPDF() },
         ]))
 
         // [T-chat-menu-compact-entry] Compact sits ABOVE Clear Chat in its own
@@ -7066,7 +7162,17 @@ private extension AIChatView {
 // ios15-port: 抽离超大 onChange 闭包体, 规避修饰符链上表达式
 // 的类型检查超时。
 private extension AIChatView {
-    func handleProcessingChange(_ processing: Bool) {            if !processing {
+    func handleProcessingChange(_ processing: Bool) {
+        // [T-115-keep-awake] Foreground screen keep-alive lease follows THIS
+        // chat's task lifecycle. Count-based inside the shared keeper, so
+        // concurrent sessions can't fight each other; entering background or
+        // toggling the setting off releases the screen regardless.
+        if processing {
+            ForegroundScreenKeepAlive.shared.taskStarted()
+        } else {
+            ForegroundScreenKeepAlive.shared.taskEnded()
+        }
+        if !processing {
                 // Reply reading is handled INCREMENTALLY during streaming (the
                 // SSE loop splits into sentences/titles + tool announcements and
                 // queues them as they arrive — see speakQueued/extractNewSentences).

@@ -40,6 +40,11 @@ struct SpeechPlayerControl: View {
     @State private var showFailureFlash = false
     @State private var showModelSelector = false
     @State private var modelLabel = ""
+    /// [T-115-volume-slider] Volume (0.0–1.0) for read-replies TTS. Seeded from
+    /// the persisted preference; writing it keeps VoiceOutputPreferences.volume
+    /// (cloud path) and SystemVoicePreferences.volume (system TTS path, legacy
+    /// "speechVolume" key) in lockstep so one slider controls every TTS route.
+    @State private var volume: Float = VoiceOutputPreferences.volume
     /// Persistent drag offset applied to the whole control. Plain @State (NOT
     /// @GestureState) so it survives the frequent parent re-renders during TTS
     /// playback — a @GestureState reset mid-drag was the flicker source.
@@ -536,6 +541,28 @@ struct SpeechPlayerControl: View {
                     .background(Capsule().fill(Color.secondary.opacity(0.15)))
             }
             .buttonStyle(.plain)
+
+            // [T-115-volume-slider] Compact volume slider for read-replies TTS
+            // (App Store 1.15 "朗读新增音量滑块"). Lives in the expanded capsule,
+            // next to the speed chip. Writes both the unified preference and the
+            // legacy system-TTS key so every TTS route is covered.
+            HStack(spacing: 3) {
+                Image(systemName: volume <= 0.02 ? "speaker.slash" : (volume < 0.5 ? "speaker.wave.1" : "speaker.wave.2"))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Slider(value: $volume, in: 0...1)
+                    .frame(width: 64)
+                    .controlSize(.mini)
+                    .onChange(of: volume) { newValue in
+                        VoiceOutputPreferences.volume = newValue
+                        SystemVoicePreferences.volume = newValue
+                        // Real-time: apply to the currently-playing unit too.
+                        VoiceOutputPlayer.shared.setVolume(newValue)
+                        VoiceOutputState.shared.activeController?.applySpeechVolume(newValue)
+                        VoiceLog.log(String(format: "[capsule] volume → %.2f", newValue))
+                        bumpIdle()
+                    }
+            }
 
             // Close (turn read-replies off).
             Button {

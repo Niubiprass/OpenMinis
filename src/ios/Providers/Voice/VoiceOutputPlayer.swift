@@ -34,6 +34,24 @@ enum VoiceOutputPreferences {
         set { UserDefaults.standard.set(newValue, forKey: mutedKey) }
     }
 
+    private static let volumeKey = "voice.output.volume"
+
+    /// Playback volume (0.0–1.0) for read-replies TTS (cloud + system paths).
+    /// Default 1.0. Persisted so it survives across replies.
+    /// [T-115-volume-slider] App Store 1.15 "朗读新增音量滑块": the floating
+    /// speech capsule's expanded mode carries a compact volume slider; both the
+    /// cloud AVAudioPlayer path and the AVSpeechSynthesizer path read this value
+    /// so a single control affects every TTS route. The System path used to read
+    /// `SystemVoicePreferences.volume` ("speechVolume") — the capsule now writes
+    /// BOTH keys for migration safety (see SpeechPlayerControl).
+    static var volume: Float {
+        get {
+            let v = UserDefaults.standard.object(forKey: volumeKey) as? Float ?? 1.0
+            return min(max(v, 0), 1)
+        }
+        set { UserDefaults.standard.set(min(max(newValue, 0), 1), forKey: volumeKey) }
+    }
+
     private static let offXKey = "voiceCapsule.anchorOffset.dx"
     private static let offYKey = "voiceCapsule.anchorOffset.dy"
 
@@ -330,6 +348,14 @@ final class VoiceOutputPlayer: NSObject, ObservableObject {
         player?.rate = rate
     }
 
+    /// [T-115-volume-slider] Apply a new volume to the CURRENTLY-playing cloud
+    /// audio immediately (real-time volume change). New units pick it up from
+    /// VoiceOutputPreferences.volume in `pumpPlayback`. No-op when nothing is
+    /// playing.
+    func setVolume(_ volume: Float) {
+        player?.volume = min(max(volume, 0), 1)
+    }
+
     /// Pause the currently-playing cloud audio (queue keeps filling in background).
     /// Sets `isPaused` even when there's no live `player` yet — an external
     /// recording can silence/stop our AVAudioPlayer BEFORE the pause signal
@@ -588,6 +614,9 @@ final class VoiceOutputPlayer: NSObject, ObservableObject {
             // so changing speed takes effect on the CURRENTLY-playing audio.
             p.enableRate = true
             p.rate = VoiceOutputPreferences.speedMultiplier
+            // [T-115-volume-slider] Volume applied at playback like rate, so a
+            // slider change takes effect on the currently-playing unit too.
+            p.volume = VoiceOutputPreferences.volume
             p.prepareToPlay()
             p.play()
             player = p

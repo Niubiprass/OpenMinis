@@ -575,6 +575,7 @@ extension AIChatViewModel {
                     case "browser_use": .browserTool(action: "")
                     case "read_image": .readImageTool(path: "")
                     case "memory_write", "memory_get": .memoryTool(action: name)
+                    case "ask_user": .questionCard
                     case SubAgentDefinition.toolName: .delegateTool(title: "")
                     default: .shellTool(command: name)
                     }

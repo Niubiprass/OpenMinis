@@ -5996,6 +5996,13 @@ extension RawMessage {
                 case "memory_write", "memory_get":
                     kind = .memoryTool(action: tu.name)
                     content = tu.name == "memory_write" ? "Writing memory..." : "Reading memory..."
+                case "ask_user":
+                    // [T-115-ask-card] The card payload is written by the tool
+                    // handler (handleAskUser) once the arguments are parsed; the
+                    // seeded content only needs to be non-empty for the capsule
+                    // fallback path.
+                    kind = .questionCard
+                    content = "向你提问"
                 case SubAgentDefinition.toolName:
                     kind = .delegateTool(title: tu.description ?? "")
                     content = "Delegating..."

@@ -55,6 +55,13 @@ protocol SpeechControlling: AnyObject {
     func stopSpeech()
     func nextSpeechSpeed()
     func disableSpeech(resetSpeed: Bool)
+    /// [T-115-volume-slider] Apply a new read-replies volume. The System
+    /// AVSpeechSynthesizer path cannot change volume mid-utterance — each
+    /// utterance snapshots its volume at creation — so implementations treat
+    /// this as "take effect from the next utterance" (the cloud AVAudioPlayer
+    /// path _is_ real-time; the capsule calls VoiceOutputPlayer.setVolume for
+    /// that separately, and this hook covers the System path's next unit).
+    func applySpeechVolume(_ volume: Float)
 }
 
 /// GLOBAL read-replies (TTS output) state — a single source of truth shared

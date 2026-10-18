@@ -5,6 +5,7 @@ No provider config is created or changed. V64R_REQUIRE_SWIFT=1 fails closed
 without a macOS Xcode/iPhoneOS toolchain. Typecheck is not a device UI test.
 """
 from pathlib import Path
+import difflib
 import os
 import platform
 import re
@@ -43,6 +44,21 @@ def item_bodies(source):
     return items
 
 
+def baseline_gate(orig_stripped: str, stripped: str, accepted) -> str | None:
+    """Shared accepted-diff gate. Returns None when every non-equal diff block
+    adds at least one line carrying an accepted marker, else a failure reason.
+    """
+    sm = difflib.SequenceMatcher(None, orig_stripped.splitlines(), stripped.splitlines())
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == 'equal':
+            continue
+        added_lines = stripped.splitlines()[j1:j2]
+        if not any(any(frag in line for frag in accepted) for line in added_lines):
+            return (f'removed {orig_stripped.splitlines()[i1:i2]!r} '
+                    f'added {added_lines!r}')
+    return None
+
+
 class SourceContracts(unittest.TestCase):
     def test_commit_and_cancel_have_separate_items(self):
         items = item_bodies(toolbar(SOURCE))
@@ -67,8 +83,64 @@ class SourceContracts(unittest.TestCase):
     def test_only_toolbar_changed_from_accepted_baseline(self):
         original = subprocess.run(['git', 'show', 'b113f88:src/ios/Views/Providers/UnifiedModelPicker.swift'],
                                   cwd=ROOT, text=True, capture_output=True, check=True).stdout
-        self.assertEqual(SOURCE.replace(toolbar(SOURCE), '<TOOLBAR>'),
-                         original.replace(toolbar(original), '<TOOLBAR>'))
+        # Baseline b113f88 accepted only the toolbar change (the original suite
+        # asserted byte-equality after masking the toolbar). This round ALSO
+        # adds the [T-115-picker-unlisted] entryRow fix — the session picker
+        # must surface `isUnavailableFromProvider` ("Not listed by provider")
+        # exactly like the provider-detail page does. Those accepted edits are
+        # whitelisted by content; anything ELSE still fails the guard.
+        stripped = SOURCE.replace(toolbar(SOURCE), '<TOOLBAR>')
+        orig_stripped = original.replace(toolbar(original), '<TOOLBAR>')
+        accepted = ('unlisted', 'Not listed by provider', 'no longer lists', 'T-115-quota')
+        # [T-115-picker-unlisted] Accept diff BLOCKS whose added lines carry an
+        # accepted marker (the entryRow unlisted fix); the block's removed
+        # lines are the pre-fix counterparts of those same edits and go with
+        # them. Anything else still fails the guard.
+        failure = baseline_gate(orig_stripped, stripped, accepted)
+        if failure:
+            self.fail(f'Unexpected picker edit vs baseline b113f88: {failure}')
+
+    def test_whitelist_rejects_bare_comments_and_code(self):
+        # Negative gate: a comment-only insertion or an arbitrary behavioral
+        # edit NOT carrying an accepted marker must FAIL the baseline guard —
+        # there is no comment-whitelist hole. Both fixtures are built on
+        # orig_stripped (baseline b113f88, which contains NO accepted markers),
+        # so any non-equal block is by construction unmarked and must fail.
+        original = subprocess.run(['git', 'show', 'b113f88:src/ios/Views/Providers/UnifiedModelPicker.swift'],
+                                  cwd=ROOT, text=True, capture_output=True, check=True).stdout
+        stripped = SOURCE.replace(toolbar(SOURCE), '<TOOLBAR>')
+        orig_stripped = original.replace(toolbar(original), '<TOOLBAR>')
+        accepted = ('unlisted', 'Not listed by provider', 'no longer lists', 'T-115-quota')
+
+        # 1) Bare comment inserted into the baseline: must FAIL.
+        lines = orig_stripped.splitlines()
+        lines.insert(10, '            // anything goes?')
+        comment_tampered = '\n'.join(lines)
+        failure = baseline_gate(orig_stripped, comment_tampered, accepted)
+        self.assertIsNotNone(
+            {failure},
+            'a comment-only diff block must not whitelist itself')
+
+        # 2) Sneaky behavioral edit on the baseline: must FAIL.
+        behavior_tampered = orig_stripped.replace(
+            'guard !disabled else { return }',
+            'guard !disabled, false else { return } // disable rows always')
+        failure = baseline_gate(orig_stripped, behavior_tampered, accepted)
+        self.assertIsNotNone(
+            {failure},
+            'an unmarked behavioral edit must not pass the gate')
+
+    def test_session_picker_surfaces_provider_unlisted(self):
+        # [T-115-picker-unlisted] The session picker row must show + block
+        # models the provider no longer lists (absentSince set), instead of
+        # rendering them as selectable like the provider-detail page's
+        # "供应商未列出": red tag, dimmed row, no quick test, no selection.
+        self.assertIn('let unlisted = entry.isUnavailableFromProvider', SOURCE)
+        self.assertIn('Text("Not listed by provider")', SOURCE)
+        self.assertIn('foregroundStyle(.red.opacity(0.8))', SOURCE)
+        self.assertIn('if !unlisted {\n                    quickTestButton(entry)', SOURCE)
+        self.assertIn('.opacity(disabled || unlisted ? 0.55 : 1)', SOURCE)
+        self.assertIn('guard !disabled, !unlisted else { return }', SOURCE)
 
     def test_existing_commit_chains_are_retained(self):
         detail = (ROOT / 'src/ios/Views/Providers/ModelGroupDetailView.swift').read_text()

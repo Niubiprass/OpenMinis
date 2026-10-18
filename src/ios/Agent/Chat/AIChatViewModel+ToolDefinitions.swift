@@ -153,6 +153,19 @@ extension AIChatViewModel {
                 ],
                 required: ["tool_title"],
                 propertyOrdering: ["tool_title", "scope", "keywords"]
+            ),
+            // [T-115-ask-card] App Store 1.15 "向用户提问": inline question /
+            // confirmation card. The run pauses until the user answers (or
+            // cancels); there is deliberately NO "always allow" — every
+            // confirmation is explicit. Timeout returns "unconfirmed".
+            AgentToolDefinition(
+                name: "ask_user",
+                description: "Ask the user a question or request confirmation INLINE in the conversation using a question card. The assistant run PAUSES until the user answers, so use this only when the next step genuinely needs the user's input (e.g. confirm before a destructive action, choose between options, request a missing detail). There is no 'always allow': the user answers per card. If the user does not answer within 10 minutes the call returns \"用户未确认\" (unconfirmed) and the run continues. Multiple questions are answered one by one on the card.",
+                parameters: [
+                    "questions": AgentToolParam(type: .array, description: "One or more questions. Each item: {\"id\": \"q1\" (unique short key), \"question\": \"...\" (the question text), \"options\": [\"A\", \"B\"] (OPTIONAL multiple-choice list; omit for a free-text answer)}. Keep each question short and concrete."),
+                ],
+                required: ["questions"],
+                propertyOrdering: ["questions"]
             ))
         }
 

@@ -3512,7 +3512,21 @@ struct ContentView: View {
                                 .id("select-\(session.id)")
                                 .listRowInsets(EdgeInsets())
                         } else {
+                            // [T-ios15-nav-pop] iOS 15: entering a session must
+                            // NOT depend on the per-row NavigationLink state —
+                            // the iOS 15 NavigationView drops that state whenever
+                            // the session list refreshes (any other session
+                            // finishing output re-renders the list) and pops the
+                            // open chat back to the root. Route the tap into
+                            // `openSession` → `commitNavigationPath` instead: the
+                            // root-level hidden isActive link (iOS15Compat
+                            // NavigationStack) performs the push and is untouched
+                            // by list refreshes. The row's background
+                            // NavigationLink(value:) stays for split/iPad and
+                            // never fires on the compact path (empty label).
                             erasedSessionRow(session, group: group)
+                                .contentShape(Rectangle())
+                                .onTapGesture { openSession(session.id) }
                         }
                         }  // if let session
                     }
@@ -7943,6 +7957,9 @@ private struct AppearanceSettingsView: View {
     /// streams. When false it stays collapsed until tapped. Read at
     /// block-mount time in ThinkingBlockView.
     @AppStorage("chat.autoExpandThinking") private var autoExpandThinking: Bool = true
+    /// [T-115-collapse-tools] When true, consecutive tool calls in a reply are
+    /// folded into a single "Ran N tools" row (App Store 1.15 折叠连续工具调用).
+    @AppStorage("appearance.collapseConsecutiveTools") private var collapseConsecutiveToolCalls: Bool = false
     @ObservedObject private var fontSettings = FontSettings.shared
 
     private let iconOptions: [AppIconOption] = [
@@ -8047,6 +8064,31 @@ private struct AppearanceSettingsView: View {
                 Text("Deep Thinking")
             } footer: {
                 Text("When on, a new thinking block expands automatically while the model is reasoning and collapses when it finishes. When off, thinking blocks stay collapsed — tap one to read it.")
+            }
+
+            // [T-115-collapse-tools] App Store 1.15 "折叠连续工具调用": when on,
+            // runs of CONSECUTIVE tool calls inside one assistant message fold
+            // into a single "Ran N tools" row with the total elapsed time (the
+            // sum of each block's toolDuration, or live elapsed for the running
+            // tail). Tapping the row expands it back to individual capsules.
+            // Render-side only — message model, persistence and logs are
+            // untouched; off by default so existing chat appearance is unchanged.
+            Section {
+                Toggle(AppLocalized("Collapse Consecutive Tool Calls"), isOn: $collapseConsecutiveToolCalls)
+            } header: {
+                Text("Tool Calls")
+            } footer: {
+                Text("When on, consecutive tool calls in a reply fold into one row showing how many ran and the total time. Tap the row to expand.")
+            }
+            // [T-115-collapse-tools] Applying the setting takes effect on the
+            // NEXT open chat (snapshot rebuilds read the key directly). For the
+            // CURRENT chat, ask the message list to re-snapshot immediately —
+            // the coordinator re-reads the key and folds/unfolds in place.
+            .onChange(of: collapseConsecutiveToolCalls) { _ in
+                NotificationCenter.default.post(
+                    name: CollectionViewMessageListV3.messageListNeedsResnapshot,
+                    object: nil
+                )
             }
 
             Section {

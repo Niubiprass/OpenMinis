@@ -16,6 +16,11 @@ struct EnhancedBackgroundSettingsView: View {
     /// reactively once the row reaches the expected state.
     @State private var focus: [String: Bool?] = [:]
 
+    /// [T-115-keep-awake] Foreground screen keep-alive toggle (App Store 1.15
+    /// "前台长任务保持屏幕常亮"). Read by ForegroundScreenKeepAlive; the
+    /// onChange below pushes live changes to it.
+    @AppStorage("appearance.keepScreenAwakeDuringTasks") private var keepAwakeDuringTasks = false
+
     private func shouldFocus(_ key: String, current: Bool) -> Bool {
         DeepLinkCoordinator.shouldFocus(key, current: current, in: focus)
     }
@@ -27,6 +32,22 @@ struct EnhancedBackgroundSettingsView: View {
                     .focusHighlight(shouldFocus("enhancedBackgroundExecution", current: keepAlive.enhancedBackgroundEnabled))
             } footer: {
                 Text("Keeps agent tasks running when the app is in the background. Shows progress via Live Activity on the Lock Screen and Dynamic Island. Also turns on Background Speak so text-to-speech narration keeps playing.")
+            }
+
+            // [T-115-keep-awake] Foreground keep-awake. Deliberately NOT system
+            // brightness dimming — that fights the OS and surprises users; this
+            // only holds `isIdleTimerDisabled` while a task runs AND the app is
+            // foreground, and releases on task end / background / toggle off.
+            Section {
+                Toggle("Keep Screen Awake During Tasks", isOn: $keepAwakeDuringTasks)
+            } footer: {
+                Text("While an agent task runs and the app is in the foreground, the screen stays on. It unlocks again when the task ends, the app goes to the background, or this is turned off.")
+            }
+            .onChange(of: keepAwakeDuringTasks) { value in
+                ForegroundScreenKeepAlive.shared.setEnabled(value)
+            }
+            .onAppear {
+                ForegroundScreenKeepAlive.shared.setEnabled(keepAwakeDuringTasks)
             }
 
             // [T-ipad16-liveactivity-restore-crash] Hidden on devices where

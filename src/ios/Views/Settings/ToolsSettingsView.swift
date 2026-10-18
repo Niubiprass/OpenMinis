@@ -125,6 +125,27 @@ struct ToolsSettingsView: View {
             } footer: {
                 Text(AppLocalized("Browse the web in the in-app browser: open pages, read them, click and type. Stable and on by default. When off, the tool is removed from every conversation — the model does not see it at all."))
             }
+            // [T-115-scheduled-detail] Management UI for minis-scheduled jobs.
+            Section {
+                NavigationLink {
+                    ScheduledTasksView()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "clock.badge.checkmark")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.secondary)
+                            .frame(width: 22)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(AppLocalized("Scheduled Tasks"))
+                            Text(AppLocalized("查看与管理定时任务"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            } footer: {
+                Text(AppLocalized("定时任务由 minis-scheduled 创建：这里查看状态、暂停恢复或删除。"))
+            }
             // [T-sub-agents-v1] No Agents section here, and deliberately not
             // even a read-only pointer row: the switch belongs to the Sub Agents
             // page, next to the definitions it governs.

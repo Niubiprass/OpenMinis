@@ -1775,6 +1775,51 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// When true, the agent loop pauses at the next checkpoint to let the user operate the browser.
     @Published var browserTakeoverActive = false
 
+    // MARK: - Question Card ([T-115-ask-card])
+
+    /// The live `ask_user` card waiting for the user's answer. Non-nil only
+    /// while the agent loop is suspended on an ask_user tool call; the run
+    /// resumes (and this clears) on submit / cancel / timeout / cancellation.
+    @Published var activeQuestionCard: ActiveQuestionCard?
+
+    /// [T-115-ask-card] The active ask_user card awaiting the user's answer.
+    final class ActiveQuestionCard {
+        struct Question: Identifiable {
+            let id: String
+            let text: String
+            let options: [String]
+        }
+        let toolUseId: String
+        let questions: [Question]
+        let timeoutAt: Date
+        /// Resumes the suspended tool call with the answers JSON (or nil =
+        /// unconfirmed). Called exactly once.
+        let resume: (String?) -> Void
+        var timeoutTask: Task<Void, Never>?
+    }
+
+    /// [T-115-ask-card] The user submitted answers for every question on the
+    /// active card: resume the suspended ask_user call with the answers JSON.
+    /// All answers are strings (free text or the chosen option).
+    func submitQuestionAnswers(_ answers: [String: String]) {
+        guard let card = activeQuestionCard else { return }
+        activeQuestionCard = nil
+        card.timeoutTask?.cancel()
+        let json = ((try? JSONSerialization.data(withJSONObject: answers))?.flatMap { String(data: $0, encoding: .utf8) }) ?? "{}"
+        logger.info("[AskCard] user submitted \(answers.count) answer(s) — resuming run")
+        card.resume(json)
+    }
+
+    /// [T-115-ask-card] The user declined / dismissed the card: resume the
+    /// suspended ask_user call as "unconfirmed" (same outcome as the timeout).
+    func cancelQuestionCard() {
+        guard let card = activeQuestionCard else { return }
+        activeQuestionCard = nil
+        card.timeoutTask?.cancel()
+        logger.info("[AskCard] user cancelled the question card — resuming as unconfirmed")
+        card.resume(nil)
+    }
+
     // MARK: - Prompt Queue
     /// Prompts queued by the user while the agent loop is running.
     @Published var promptQueue: [QueuedPrompt] = []
@@ -1824,6 +1869,18 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         let cur = VoiceOutputPreferences.speedMultiplier
         let idx = steps.firstIndex(of: cur) ?? 0
         setSpeechSpeed(steps[(idx + 1) % steps.count])
+    }
+
+    /// [T-115-volume-slider] SpeechControlling hook: persist the volume and let
+    /// the System synthesizer pick it up from the next utterance (its volume is
+    /// snapshotted at creation). Cloud playback is handled real-time by the
+    /// capsule via VoiceOutputPlayer.setVolume; this hook keeps the System path
+    /// consistent.
+    func applySpeechVolume(_ volume: Float) {
+        let clamped = min(max(volume, 0), 1)
+        VoiceOutputPreferences.volume = clamped
+        SystemVoicePreferences.volume = clamped
+        VoiceLog.log(String(format: "[tTS] volume → %.2f (next utterance)", clamped))
     }
 
     /// Pause or resume speech playback (handles both System + cloud engines).

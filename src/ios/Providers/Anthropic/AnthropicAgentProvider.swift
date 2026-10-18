@@ -869,6 +869,7 @@ final class AnthropicAgentProvider: AgentProvider {
                 case .string: .string
                 case .integer: .integer
                 case .boolean: .boolean
+                case .array: .array
                 }
                 properties[name] = JSONSchema.Property(
                     type: type,

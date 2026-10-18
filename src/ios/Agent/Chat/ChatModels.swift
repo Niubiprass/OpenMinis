@@ -629,6 +629,8 @@ final class AssistantBlock: Identifiable, ObservableObject {
             return action.isEmpty ? "Memory" : action
         case .info:
             return ""
+        case .questionCard:
+            return AppLocalized("向你提问")
         }
     }
 }
@@ -648,6 +650,13 @@ enum AssistantBlockKind: Equatable {
     /// helper runs and the result JSON afterwards.
     case delegateTool(title: String)
     case info
+    /// [T-115-ask-card] An inline question card (App Store 1.15 "向用户提问"):
+    /// the model asked the user and the run paused for the answer. The card
+    /// payload lives in `content` as JSON (type=question_card, status, questions,
+    /// answers); `toolStatus` carries the lifecycle — .running = waiting for the
+    /// user, .success = answered, .cancelled = unconfirmed (explicit cancel or
+    /// timeout).
+    case questionCard
 }
 
 enum KernelStatus: Equatable {

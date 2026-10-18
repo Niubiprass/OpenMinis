@@ -48,6 +48,8 @@ enum AgentParamType: String {
     case string
     case integer
     case boolean
+    /// [T-115-ask-card] JSON array (e.g. ask_user's `questions`).
+    case array
 }
 
 // MARK: - Agent Messages

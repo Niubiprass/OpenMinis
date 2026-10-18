@@ -283,6 +283,8 @@ struct ChatMessageRow: View {
                 if !block.content.isEmpty { parts.append("[Thinking]\n\(block.content)") }
             case .info:
                 if !block.content.isEmpty { parts.append(block.content) }
+            case .questionCard:
+                parts.append("[Question card]\n\(block.content)")
             }
         }
         return parts.joined(separator: "\n\n")

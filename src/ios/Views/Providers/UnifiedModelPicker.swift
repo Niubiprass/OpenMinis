@@ -252,6 +252,8 @@ struct UnifiedModelPicker: View {
     /// Observed so the System voice rows rebuild when the available-voices roster
     /// changes (Enhanced/Premium pack download, Personal Voice creation).
     @ObservedObject private var systemVoiceRoster = SystemVoiceRoster.shared
+    /// [T-115-quota] Provider quota pills (yellow when low).
+    @ObservedObject private var quotaService = ProviderQuotaService.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var searchText = ""
@@ -685,6 +687,9 @@ struct UnifiedModelPicker: View {
             loadSections()
             seedCollapse()
             SystemVoiceCatalog.startObservingVoiceChanges()
+            // [T-115-quota] Warm the quota cache for every configured instance
+            // (missing entries only; results cached 5 min).
+            quotaService.refreshAllIfNeeded(instances: store.instances)
         }
         .onDisappear { refreshTask?.cancel() }
         .onChange(of: sections == nil) { _ in seedCollapse() }
@@ -1109,6 +1114,18 @@ struct UnifiedModelPicker: View {
 
             Spacer()
 
+            // [T-115-quota] 行尾额度（仅支持余额查询的 API-key 实例显示）。
+            if let inst = store.instance(for: entry.providerInstanceId),
+               let q = quotaService.cachedQuota(instanceId: inst.id) {
+                Text(q.displayText)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(q.highlighted ? Color.yellow : .secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(q.highlighted ? Color.yellow.opacity(0.12) : Color.clear)
+                    .clipShape(Capsule())
+            }
+
             if isActive {
                 Text("Active")
                     .font(.caption2.weight(.medium))
@@ -1311,6 +1328,11 @@ struct UnifiedModelPicker: View {
 
     private func entryRow(_ entry: ModelEntry) -> some View {
         let disabled = config.isDisabled?(entry) ?? false
+        // [T-115-picker-unlisted] An unlisted model (absentSince set: provider
+        // no longer lists it) stays VISIBLE but cannot be chosen — routing
+        // would 400 — same policy as group-member rows ("Not listed by
+        // provider"). The session picker previously rendered it selectable.
+        let unlisted = entry.isUnavailableFromProvider
         let traits = entry.displayTraits
         let isSelected: Bool = {
             if isMulti { return selectedEntryIds.contains(entry.id) }
@@ -1341,7 +1363,7 @@ struct UnifiedModelPicker: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(entry.model.displayName)
                         .font(.subheadline)
-                        .foregroundStyle(disabled ? Color(UIColor.tertiaryLabel) : Color(UIColor.label))
+                        .foregroundStyle(disabled || unlisted ? Color(UIColor.tertiaryLabel) : Color(UIColor.label))
                     HStack(spacing: 4) {
                         // Subtitle from traits (e.g. "iOS built-in, works offline")
                         // for built-ins; the raw model id for cloud models.
@@ -1368,6 +1390,20 @@ struct UnifiedModelPicker: View {
                                 .font(.system(size: 9, weight: .medium))
                                 .foregroundStyle(.orange)
                         }
+                        // [T-115-picker-unlisted] Provider stopped listing this
+                        // model (absentSince set): surface it in the session
+                        // picker exactly like the provider-detail page does, so
+                        // "why can't I use GPT 6.1 Sol" is answerable from the
+                        // picker itself rather than only in Settings.
+                        if unlisted {
+                            Text("Not listed by provider")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.red.opacity(0.8))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.red.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                        }
                     }
                 }
 
@@ -1384,12 +1420,14 @@ struct UnifiedModelPicker: View {
                         .clipShape(Capsule())
                 }
 
-                quickTestButton(entry)
+                if !unlisted {
+                    quickTestButton(entry)
+                }
         }
-        .opacity(disabled ? 0.6 : 1)
+        .opacity(disabled || unlisted ? 0.55 : 1)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard !disabled else { return }
+            guard !disabled, !unlisted else { return }
             if isMulti {
                 toggleSelection(entry.id)
             } else {

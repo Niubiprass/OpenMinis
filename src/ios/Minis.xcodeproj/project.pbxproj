@@ -10,6 +10,11 @@
 		160649A00000000000000001 /* MemoryDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 160649A00000000000000002 /* MemoryDocumentStore.swift */; };
 		160649A00000000000000003 /* ScopedMemoryLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 160649A00000000000000004 /* ScopedMemoryLibraryView.swift */; };
 		IOS15COMPAT0000000000000B /* iOS15Compat.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOS15COMPAT0000000000000A /* iOS15Compat.swift */; };
+		E5QSRCH01 /* ChatSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5QSRCH01R /* ChatSearchView.swift */; };
+		E5SCHED01 /* ScheduledTasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5SCHED01R /* ScheduledTasksView.swift */; };
+		E5QCARD01 /* QuestionCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5QCARD01R /* QuestionCardView.swift */; };
+		E5QEXPT01 /* ChatExportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5QEXPT01R /* ChatExportView.swift */; };
+		E5QQUOT01 /* ProviderQuotaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5QQUOT01R /* ProviderQuotaService.swift */; };
 
 		21FED4B7BB6F6D9476C9992E /* VoiceProvider+System.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88993FC8E3F0199C6638F664 /* VoiceProvider+System.swift */; };
 		241D530017827D7F0EB604DE /* VoiceProviderFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2941B643B8A2F048A2B154E /* VoiceProviderFactory.swift */; };
@@ -641,6 +646,11 @@
 
 /* Begin PBXFileReference section */
 		160649A00000000000000002 /* MemoryDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDocumentStore.swift; sourceTree = "<group>"; };
+		E5QSRCH01R /* ChatSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChatSearchView.swift; path = Views/Chat/ChatSearchView.swift; sourceTree = SOURCE_ROOT; };
+		E5SCHED01R /* ScheduledTasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ScheduledTasksView.swift; path = Views/Settings/ScheduledTasksView.swift; sourceTree = SOURCE_ROOT; };
+		E5QCARD01R /* QuestionCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = QuestionCardView.swift; path = Views/Chat/QuestionCardView.swift; sourceTree = SOURCE_ROOT; };
+		E5QEXPT01R /* ChatExportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChatExportView.swift; path = Views/Chat/ChatExportView.swift; sourceTree = SOURCE_ROOT; };
+		E5QQUOT01R /* ProviderQuotaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProviderQuotaService.swift; path = Providers/ProviderQuotaService.swift; sourceTree = SOURCE_ROOT; };
 		160649A00000000000000004 /* ScopedMemoryLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScopedMemoryLibraryView.swift; sourceTree = "<group>"; };
 		IOS15COMPAT0000000000000A /* iOS15Compat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "iOS15Compat.swift"; sourceTree = "<group>"; };
 
@@ -2798,6 +2808,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				IOS15COMPAT0000000000000B /* iOS15Compat.swift in Sources */,
+				E5QSRCH01 /* ChatSearchView.swift in Sources */,
+				E5SCHED01 /* ScheduledTasksView.swift in Sources */,
+				E5QCARD01 /* QuestionCardView.swift in Sources */,
+				E5QEXPT01 /* ChatExportView.swift in Sources */,
+				E5QQUOT01 /* ProviderQuotaService.swift in Sources */,
 				AC0000202 /* ProviderCustomizationGenerated.swift in Sources */,
 				E54000AC1 /* DebugSkillGenerated.swift in Sources */,
 				E5FP00100 /* AppGroupChangeWatcher.swift in Sources */,

@@ -27,6 +27,15 @@ enum MessageListItem: Hashable {
     case assistantBlock(UUID, UUID)  // (messageId, blockId)
     /// Footer area: typing indicator, error, resume, usage.
     case assistantFooter(UUID)
+    /// [T-115-collapse-tools] ONE folded row standing in for a run of
+    /// consecutive settled tool blocks (App Store 1.15 "折叠连续工具调用").
+    /// Identity = (messageId, firstBlockId) — stable while the run grows
+    /// (a later tool appended to the same run keeps the same first block).
+    /// Only emitted when the appearance setting is on, the run has >= 2
+    /// blocks, none of them is live (running/streaming), and the group is
+    /// not expanded by the user. Purely a RENDERING item: it is never part
+    /// of ChatMessage.blocks and never reaches the model / persistence.
+    case toolCallGroup(UUID, UUID)  // (messageId, firstBlockId)
 
     /// Deterministic numeric diagnostic token (kind + UUIDs); never hashes body
     /// text. Correlates reuse/host/PLAF across a process without logging UUIDs.
@@ -39,6 +48,8 @@ enum MessageListItem: Hashable {
         case .assistantBlock(let message, let block):
             identity = "2:" + message.uuidString + ":" + block.uuidString
         case .assistantFooter(let id): identity = "3:" + id.uuidString
+        case .toolCallGroup(let message, let block):
+            identity = "4:" + message.uuidString + ":" + block.uuidString
         }
         return identity.utf8.reduce(UInt64(14695981039346656037)) {
             ($0 ^ UInt64($1)) &* 1099511628211
@@ -51,7 +62,66 @@ enum MessageListItem: Hashable {
         case .wholeMessage(let id), .assistantHeader(let id),
              .assistantFooter(let id): return id
         case .assistantBlock(let msgId, _): return msgId
+        case .toolCallGroup(let msgId, _): return msgId
         }
+    }
+}
+
+// MARK: - [T-115-collapse-tools] Consecutive tool-call folding (pure policy)
+
+/// Identity of one folded tool-call group: the message plus the FIRST block of
+/// the run. Stable while the run grows (a newly appended consecutive tool keeps
+/// the same first block, so its group row simply updates its N / total time).
+struct ToolGroupKey: Hashable {
+    let messageId: UUID
+    let firstBlockId: UUID
+}
+
+extension AssistantBlockKind {
+    /// True when this block renders a tool call (as opposed to text /
+    /// thinking / info rows).
+    var isToolKind: Bool {
+        switch self {
+        case .shellTool, .fileReadTool, .fileWriteTool, .fileEditTool,
+             .browserTool, .readImageTool, .memoryTool, .delegateTool:
+            return true
+        case .text, .thinking, .info, .questionCard:
+            return false
+        }
+    }
+}
+
+/// Pure policy for folding consecutive tool blocks into one "Ran N tools" row
+/// (App Store 1.15). Extracted so the CI contract test can execute the real
+/// Swift policy rather than mirror it in Python.
+enum ToolCallRunPolicy {
+    /// A block is "live" while its tool is still executing. Runs that contain a
+    /// live block stay unfolded so the user keeps per-tool feedback (and the
+    /// height does not churn mid-stream).
+    static func isLive(_ block: AssistantBlock) -> Bool {
+        switch block.toolStatus {
+        case .running, .streaming: return true
+        default: return false
+        }
+    }
+
+    /// End index (exclusive) of the run of consecutive, settled tool blocks
+    /// starting at `start`. Returns `start` when the block at `start` is not
+    /// itself foldable (non-tool or live), so callers can fall through to
+    /// emitting it as a single block.
+    static func runEnd(blocks: [AssistantBlock], start: Int) -> Int {
+        guard start >= 0, start < blocks.count, blocks[start].kind.isToolKind,
+              !isLive(blocks[start]) else { return start }
+        var j = start + 1
+        while j < blocks.count, blocks[j].kind.isToolKind, !isLive(blocks[j]) {
+            j += 1
+        }
+        return j
+    }
+
+    /// Sum of each block's `toolDuration` across a run.
+    static func totalDuration(blocks: [AssistantBlock], range: Range<Int>) -> TimeInterval {
+        blocks[range].reduce(0) { $0 + ($1.toolDuration ?? 0) }
     }
 }
 

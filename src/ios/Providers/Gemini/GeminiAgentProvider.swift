@@ -366,6 +366,7 @@ extension AgentParamType {
         case .string: return "STRING"
         case .integer: return "INTEGER"
         case .boolean: return "BOOLEAN"
+        case .array: return "ARRAY"
         }
     }
 }

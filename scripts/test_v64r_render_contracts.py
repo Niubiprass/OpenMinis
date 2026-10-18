@@ -58,7 +58,12 @@ class RenderContracts(unittest.TestCase):
         self.assertIn('hostedContentIdentity = config.contentIdentity', s)
         self.assertIn('ios15LastGoodFitH = 0', s)
         cells = source('src/ios/Agent/MessageList/CollectionViewMessageListV3.swift')
-        self.assertEqual(cells.count('applyContentConfiguration(config.ios15ContentIdentity(item))'), 4)
+        # Every MessageListItem cell type applies its content configuration by
+        # iOS-15 content identity — the point of the contract is "keyed by item,
+        # never by counter/index". The count tracks the cell types: wholeMessage,
+        # assistantHeader, assistantBlock, assistantFooter and (since
+        # [T-115-collapse-tools]) toolCallGroup — exactly 5 call sites.
+        self.assertEqual(cells.count('applyContentConfiguration(config.ios15ContentIdentity(item))'), 5)
 
     def test_width_contract(self):
         s = source('src/ios/iOS15Compat.swift')
