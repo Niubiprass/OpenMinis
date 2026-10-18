@@ -1603,6 +1603,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     @Published var attachments: [InputAttachment] = []
     /// Number of videos currently being imported from the photo picker.
     @Published var loadingVideoCount = 0
+    /// [photo-picker-watchdog] Retains `NSItemProvider`s for picked photos so a
+    /// timed-out chip can be retried in place without reopening the picker.
+    /// Not persisted; pruned when the chip is removed.
+    var pendingPhotoProviders: [UUID: NSItemProvider] = [:]
 
     // [T-paste-placeholder] Session-scoped buffer for long pasted texts.
     //

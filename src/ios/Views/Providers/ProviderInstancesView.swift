@@ -584,9 +584,9 @@ struct ModelCatalogView: View {
 
     var body: some View {
         List {
-            ForEach(sections) { section in
+            ForEach(sections, id: \.id) { section in
                 Section(section.instance.displayName) {
-                    ForEach(section.entries) { entry in
+                    ForEach(section.entries, id: \.id) { entry in
                         catalogRow(entry)
                     }
                 }

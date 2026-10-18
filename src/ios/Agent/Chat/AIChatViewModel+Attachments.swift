@@ -546,10 +546,6 @@ extension AIChatViewModel {
 
     // MARK: - Photo provider retention (timeout retry)
 
-    /// Retains `NSItemProvider`s for picked photos so a timed-out chip can be
-    /// retried in place without reopening the photo picker. Not persisted.
-    private(set) var pendingPhotoProviders: [UUID: NSItemProvider] = [:]
-
     func rememberPhotoProvider(_ provider: NSItemProvider, for id: UUID) {
         pendingPhotoProviders[id] = provider
     }
