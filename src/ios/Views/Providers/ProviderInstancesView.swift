@@ -583,13 +583,20 @@ struct ModelCatalogView: View {
     }
 
     var body: some View {
+        catalogList
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search models")
+            .navigationTitle("Model Catalog")
+            .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// [ci-fix-20261019] Split out of `body`: Swift 6.2 type-checks the whole
+    /// List+ForEach+Section expression over its budget ("unable to type-check
+    /// this expression in reasonable time"), so the list is built here and
+    /// `body` only applies the navigation modifiers.
+    private var catalogList: some View {
         List {
             ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
-                Section(section.instance.displayName) {
-                    ForEach(Array(section.entries.enumerated()), id: \.offset) { _, entry in
-                        catalogRow(entry)
-                    }
-                }
+                catalogSection(section)
             }
             if sections.isEmpty {
                 Section {
@@ -601,9 +608,14 @@ struct ModelCatalogView: View {
                 }
             }
         }
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search models")
-        .navigationTitle("Model Catalog")
-        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func catalogSection(_ section: CatalogSection) -> some View {
+        Section(section.instance.displayName) {
+            ForEach(Array(section.entries.enumerated()), id: \.offset) { _, entry in
+                catalogRow(entry)
+            }
+        }
     }
 
     private func catalogRow(_ entry: ModelEntry) -> some View {
