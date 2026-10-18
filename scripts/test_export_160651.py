@@ -43,7 +43,8 @@ check("long image renderer", "static func renderLongImage(" in exp)
 check("PDF renderer", "static func renderPDF(" in exp)
 check("header draws icon+model+date", "drawHeader(" in exp and "Minis · " in exp)
 check("light/dark via systemBackground", "UIColor.systemBackground" in exp)
-check("mode-following trait on renderer format", ".traitCollection = UITraitCollection.current" in exp)
+check("renderer uses supported trait initializer", "UIGraphicsImageRendererFormat(for: UITraitCollection.current)" in exp)
+check("no nonexistent renderer trait property", "format.traitCollection =" not in exp)
 
 # 2) Preview + share
 check("zoomable preview", "ZoomableImageScrollView" in exp)

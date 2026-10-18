@@ -136,8 +136,7 @@ enum ChatExportRenderer {
         total += pageMargin
         guard total > 0, total < 40_000 else { return nil }
 
-        let format = UIGraphicsImageRendererFormat()
-        format.traitCollection = UITraitCollection.current
+        let format = UIGraphicsImageRendererFormat(for: UITraitCollection.current)
         format.scale = 2
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: pageWidth, height: total), format: format)
 

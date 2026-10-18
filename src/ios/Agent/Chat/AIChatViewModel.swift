@@ -1796,6 +1796,14 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         /// unconfirmed). Called exactly once.
         let resume: (String?) -> Void
         var timeoutTask: Task<Void, Never>?
+
+        init(toolUseId: String, questions: [Question], timeoutAt: Date,
+             resume: @escaping (String?) -> Void) {
+            self.toolUseId = toolUseId
+            self.questions = questions
+            self.timeoutAt = timeoutAt
+            self.resume = resume
+        }
     }
 
     /// [T-115-ask-card] The user submitted answers for every question on the
