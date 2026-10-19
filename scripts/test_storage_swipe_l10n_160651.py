@@ -61,14 +61,35 @@ class StorageLabelLocalization(unittest.TestCase):
     ]
 
     def test_labels_localized(self):
-        for key in self.KEYS:
+        # Static rows pass the key straight to AppLocalized; the five swipeable
+        # buckets route through OverviewBucket.titleKey (also AppLocalized).
+        for key in ('Shell Container', 'Chat Database', 'Other'):
             self.assertIn('label: AppLocalized("{}")'.format(key), STORAGE, key)
+        for bucket in ('sessionFiles', 'logsAndCaches', 'temporaryFiles',
+                       'orphanedSessions', 'staleRootfs'):
+            self.assertIn('swipeableStorageRow(.{},'.format(bucket), STORAGE, bucket)
+        self.assertIn('label: AppLocalized(bucket.titleKey)', STORAGE)
 
     def test_no_bare_label_literals_regression(self):
         # Guard: the bare-literal bug must not come back — these keys may only
         # appear in this file wrapped by AppLocalized.
         for key in self.KEYS:
             self.assertNotIn('label: "{}"'.format(key), STORAGE, key)
+
+    def test_overview_buckets_declared(self):
+        # Every swipeable bucket must be a declared case with a title key, and
+        # the unsafe buckets must NOT be swipeable.
+        for bucket in ('logsAndCaches', 'temporaryFiles', 'sessionFiles',
+                       'orphanedSessions', 'staleRootfs'):
+            self.assertIn('case {}'.format(bucket), STORAGE, bucket)
+        for unsafe in ('case shellContainer', 'case chatDatabase'):
+            self.assertNotIn(unsafe, STORAGE, unsafe)
+
+    def test_overview_confirm_and_clear_wired(self):
+        self.assertIn('pendingOverviewBucket = bucket', STORAGE)
+        self.assertIn('private func clearBucket(_ bucket: OverviewBucket)', STORAGE)
+        self.assertIn('LoggingManager.shared.deleteAllLogs()', STORAGE)
+        self.assertIn('hasPrefix(".alpine-rootfs-broken-")', STORAGE)
 
     def test_translations_exist(self):
         strings = XCSTRINGS['strings']

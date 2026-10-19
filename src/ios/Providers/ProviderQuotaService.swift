@@ -166,7 +166,15 @@ final class ProviderQuotaService: ObservableObject {
         // full balance: a missing/failed usage endpoint means the balance is
         // unknown, especially for relays that only implement one endpoint.
         guard let totalUsed else { return nil }
-        if let hardLimit, hardLimit > 0 {
+        // [T-quota-relay-placeholder] Relays fake the OpenAI billing endpoint by
+        // returning a huge `hard_limit_usd` (commonly 100000000) meaning
+        // "unlimited". Subtracting real usage from that placeholder produced
+        // "剩 $99999977.88" on every relay — a number with no meaning, since a
+        // real OpenAI cap is tens/hundreds/thousands, never millions. Above the
+        // ceiling we report the only truthful figure the endpoint gives us
+        // (month-to-date usage) instead of a fabricated remainder, and never
+        // flag it low (we cannot know).
+        if let hardLimit, hardLimit > 0, hardLimit < Self.relayPlaceholderLimitUSD {
             let remaining = hardLimit - totalUsed
             let limit = softLimit ?? hardLimit
             let low = remaining < 3.0 || remaining < limit * 0.15
@@ -177,6 +185,12 @@ final class ProviderQuotaService: ObservableObject {
         }
         return nil
     }
+
+    /// Above this `hard_limit_usd` the value cannot be a real OpenAI spending
+    /// cap, so it is treated as a relay's "unlimited" placeholder. $1,000,000
+    /// sits far above any genuine per-account cap and far below the 1e8 values
+    /// relays actually send.
+    static let relayPlaceholderLimitUSD: Double = 1_000_000
 
     private static func fetchAnthropicSpend(key: String, baseURL: String) async -> QuotaInfo? {
         // Anthropic has no public billing-limit endpoint; report month-to-date
