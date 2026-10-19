@@ -61,7 +61,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // app then falls through to the Launch Session preference and opens
         // the wrong (new) session. The .onAppear registration in MinisApp
         // remains as an idempotent backstop.
-        if #available(iOS 16.0, *) { ShortcutNotificationDelegate.shared.register() }
+        ShortcutNotificationDelegate.shared.register()
 
         // Refresh the dynamic shortcut list every cold launch. The
         // items themselves are stable, but their localized titles

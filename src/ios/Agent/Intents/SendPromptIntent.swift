@@ -483,7 +483,11 @@ final class NotificationNavigationStore {
 }
 
 /// Handles notification tap → navigates to the session.
-@available(iOS 16.0, *) // ios15-port
+///
+/// [T-notification-tap-ios15] Was gated to iOS 16, which on this iOS 15.5
+/// build meant the delegate never registered at all: notifications arrived,
+/// but tapping one only reopened the app on whatever screen it already had.
+/// Nothing inside uses an iOS 16 API — the gate was inherited from the port.
 final class ShortcutNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     static let shared = ShortcutNotificationDelegate()
 
