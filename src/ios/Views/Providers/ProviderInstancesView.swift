@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 /// Lists all configured provider instances grouped by provider type.
 /// Replaces the old ProvidersView for the new multi-instance model.
@@ -474,12 +475,23 @@ private struct InstanceRow: View {
             Spacer()
 
             if let quota {
+                // [T-quota-newapi-balance] Green = a real remaining balance read
+                // from New API; grey = month-to-date usage only (the site has no
+                // balance API). Yellow still means "low", and only a real
+                // balance can legitimately trigger it.
+                let isBalance = quota.kind == .balance
                 Text(quota.displayText)
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(quota.highlighted ? Color.yellow : .secondary)
+                    .foregroundStyle(
+                        quota.highlighted ? Color.yellow : (isBalance ? Color.green : Color.secondary)
+                    )
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(quota.highlighted ? Color.yellow.opacity(0.12) : Color(UIColor.quaternarySystemFill))
+                    .background(
+                        quota.highlighted
+                            ? Color.yellow.opacity(0.12)
+                            : (isBalance ? Color.green.opacity(0.12) : Color(UIColor.quaternarySystemFill))
+                    )
                     .clipShape(Capsule())
             }
 
@@ -683,5 +695,136 @@ struct ModelCatalogView: View {
         if m.contains(.videoInput) { out.append("video in") }
         if m.contains(.imageOutput) { out.append("image out") }
         return out
+    }
+}
+
+// MARK: - [T-quota-newapi-balance] In-app sign-in for a relay dashboard
+
+/// Loads the relay's own site in a WKWebView that shares the app's persistent
+/// cookie store (the same `WKWebsiteDataStore.default()` BrowserUse writes to).
+///
+/// Why this exists: New API / One API relays expose the real remaining balance
+/// only at `GET {root}/api/user/self`, which accepts either a dashboard access
+/// token or the site's login session. The token flow covers users willing to
+/// copy one from the site's settings; this flow covers everyone else — sign in
+/// once here and the balance service reuses the cookies.
+///
+/// Safari's cookies are NOT reachable: iOS sandboxes each app's WKWebView
+/// store. That is deliberate, and it is why the sign-in happens in this sheet.
+struct ProviderQuotaLoginView: View {
+    let instance: ProviderInstance
+    /// Called after the sheet closes so the caller can refetch the balance.
+    var onFinished: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var isLoading = true
+    @State private var failedReason: String?
+
+    private var siteURL: URL? {
+        let raw = instance.effectiveCustomBaseURL ?? ""
+        guard !raw.isEmpty else { return nil }
+        return URL(string: ProviderQuotaService.apiRoot(raw))
+    }
+
+    var body: some View {
+        NavigationView {
+            Group {
+                if let url = siteURL {
+                    QuotaLoginWebView(
+                        url: url,
+                        isLoading: $isLoading,
+                        failedReason: $failedReason
+                    )
+                    .overlay {
+                        if isLoading {
+                            ProgressView()
+                                .padding(20)
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "link.badge.plus")
+                            .font(.system(size: 34))
+                            .foregroundStyle(.secondary)
+                        Text("此供应商没有可登录的网址")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle(Text("登录 \(instance.label)"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        onFinished()
+                        dismiss()
+                    }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("登录后点「完成」，Minis 会用这个登录状态读取余额。")
+                    Text("登录信息只保存在本机，不会上传。")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(.regularMaterial)
+            }
+            .alert("网页打开失败", isPresented: Binding(
+                get: { failedReason != nil },
+                set: { if !$0 { failedReason = nil } }
+            )) {
+                Button("好") { failedReason = nil }
+            } message: {
+                Text(failedReason ?? "")
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+}
+
+private struct QuotaLoginWebView: UIViewRepresentable {
+    let url: URL
+    @Binding var isLoading: Bool
+    @Binding var failedReason: String?
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.allowsBackForwardNavigationGestures = true
+        webView.load(URLRequest(url: url))
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {}
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        private let parent: QuotaLoginWebView
+        init(_ parent: QuotaLoginWebView) { self.parent = parent }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            parent.isLoading = false
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            parent.isLoading = false
+            parent.failedReason = error.localizedDescription
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            parent.isLoading = false
+            parent.failedReason = error.localizedDescription
+        }
     }
 }

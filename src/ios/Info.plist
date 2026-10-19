@@ -32,6 +32,22 @@
 				<string>com.openminis.app.minisbak</string>
 			</array>
 		</dict>
+		<!-- [T-memory-import] Accept Markdown so another app's share sheet can
+		     hand a .md file straight to Minis (which opens the import sheet).
+		     Alternate rank: Minis is a memory importer, not a Markdown editor. -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Markdown Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>net.daringfireball.markdown</string>
+				<string>public.plain-text</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleIcons</key>
 	<dict>

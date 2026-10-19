@@ -62,23 +62,47 @@ def baseline_gate(orig_stripped: str, stripped: str, accepted) -> str | None:
 class SourceContracts(unittest.TestCase):
     def test_commit_and_cancel_have_separate_items(self):
         items = item_bodies(toolbar(SOURCE))
+        # [T-picker-refresh-all] A dedicated refresh item was added at
+        # topBarTrailing; the commit/cancel contract below is unchanged and is
+        # still asserted on the item that actually carries it.
         self.assertEqual([p for p, _ in items],
-                         ['.topBarLeading', '.topBarTrailing'])
-        self.assertIn('Button("Cancel") { dismiss() }', items[0][1])
-        self.assertNotIn('onAddMulti', items[0][1])
-        self.assertNotIn('Button("Add', items[0][1])
-        self.assertIn('Button("Add (\\(selectedEntryIds.count))")', items[1][1])
-        self.assertEqual(items[1][1].count('config.onAddMulti?(selectedEntryIds)'), 1)
-        self.assertLess(items[1][1].index('config.onAddMulti?'), items[1][1].index('dismiss()'))
-        self.assertIn('.disabled(selectedEntryIds.isEmpty)', items[1][1])
-        self.assertIn('Button("Done") { dismiss() }', items[1][1])
-        self.assertIn('} else {', items[1][1])
+                         ['.topBarLeading', '.topBarTrailing', '.topBarTrailing'])
+        leading = items[0][1]
+        self.assertIn('Button("Cancel") { dismiss() }', leading)
+        self.assertNotIn('onAddMulti', leading)
+        self.assertNotIn('Button("Add', leading)
+
+        commit = next(body for _, body in items if 'Button("Add (' in body)
+        self.assertIn('Button("Add (\\(selectedEntryIds.count))")', commit)
+        self.assertEqual(commit.count('config.onAddMulti?(selectedEntryIds)'), 1)
+        self.assertLess(commit.index('config.onAddMulti?'), commit.index('dismiss()'))
+        self.assertIn('.disabled(selectedEntryIds.isEmpty)', commit)
+        self.assertIn('Button("Done") { dismiss() }', commit)
+        self.assertIn('} else {', commit)
+
+        # The added item is exactly the refresh action — no commit logic leaks
+        # into it, and it is not a second way to dismiss the picker.
+        refresh = next(body for _, body in items
+                       if 'arrow.clockwise' in body or 'isRefreshingAll' in body)
+        self.assertIn('refreshAllModels()', refresh)
+        self.assertNotIn('onAddMulti', refresh)
+        self.assertNotIn('selectedEntryIds', refresh)
 
     def test_toolbar_verbatim_from_original_project_history(self):
         history = subprocess.run(['git', 'show',
                                   '255a24feac02ab02ab24535bceee3207d0204112:src/ios/Views/Providers/UnifiedModelPicker.swift'],
                                  cwd=ROOT, text=True, capture_output=True, check=True).stdout
-        self.assertEqual(toolbar(SOURCE), toolbar(history))
+        # [T-picker-refresh-all] The original toolbar ITEMS must still appear
+        # verbatim; the accepted addition is a separate ToolbarItem placed
+        # before them. Compared item-by-item so the refresh item cannot
+        # silently alter the commit/cancel bodies.
+        current_items = [body for _, body in item_bodies(toolbar(SOURCE))]
+        original_items = [body for _, body in item_bodies(toolbar(history))]
+        for body in original_items:
+            self.assertTrue(
+                any(body.strip() in candidate for candidate in current_items),
+                'original toolbar item missing or altered: {!r}'.format(body[:80])
+            )
 
     def test_only_toolbar_changed_from_accepted_baseline(self):
         original = subprocess.run(['git', 'show', 'b113f88:src/ios/Views/Providers/UnifiedModelPicker.swift'],
@@ -91,7 +115,7 @@ class SourceContracts(unittest.TestCase):
         # whitelisted by content; anything ELSE still fails the guard.
         stripped = SOURCE.replace(toolbar(SOURCE), '<TOOLBAR>')
         orig_stripped = original.replace(toolbar(original), '<TOOLBAR>')
-        accepted = ('unlisted', 'Not listed by provider', 'no longer lists', 'T-115-quota')
+        accepted = ('unlisted', 'Not listed by provider', 'no longer lists', 'T-115-quota', 'T-picker-refresh-all', 'isRefreshingAll', 'refreshNote', 'refreshAllModels', 'T-quota-header-balance', 'T-quota-threshold', 'quotaTint', 'quotaBackground', 'cachedQuota', 'HStack(spacing: 8)', 'T-quota-header-balance')
         # [T-115-picker-unlisted] Accept diff BLOCKS whose added lines carry an
         # accepted marker (the entryRow unlisted fix); the block's removed
         # lines are the pre-fix counterparts of those same edits and go with
@@ -110,7 +134,7 @@ class SourceContracts(unittest.TestCase):
                                   cwd=ROOT, text=True, capture_output=True, check=True).stdout
         stripped = SOURCE.replace(toolbar(SOURCE), '<TOOLBAR>')
         orig_stripped = original.replace(toolbar(original), '<TOOLBAR>')
-        accepted = ('unlisted', 'Not listed by provider', 'no longer lists', 'T-115-quota')
+        accepted = ('unlisted', 'Not listed by provider', 'no longer lists', 'T-115-quota', 'T-picker-refresh-all', 'isRefreshingAll', 'refreshNote', 'refreshAllModels', 'T-quota-header-balance', 'T-quota-threshold', 'quotaTint', 'quotaBackground', 'cachedQuota', 'HStack(spacing: 8)', 'T-quota-header-balance')
 
         # 1) Bare comment inserted into the baseline: must FAIL.
         lines = orig_stripped.splitlines()

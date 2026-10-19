@@ -1,4 +1,5 @@
 import Foundation
+import WebKit
 
 // MARK: - [T-115-quota] 额度与余额一目了然 (App Store 1.15)
 
@@ -31,6 +32,38 @@ final class ProviderQuotaService: ObservableObject {
         /// True when remaining credit is low (official rule: below ~15 % of
         /// the limit, or under $3) — the model dot turns yellow.
         let highlighted: Bool
+        /// [T-quota-newapi-balance] How this figure was obtained. Drives the
+        /// badge tint and whether Settings offers the access-token hint.
+        var kind: Kind = .used
+        /// Real remaining balance in USD when known (`kind == .balance`).
+        var balanceUSD: Double? = nil
+
+        enum Kind {
+            /// Provider-reported month-to-date spend (no trustworthy limit).
+            case used
+            /// Trustworthy remaining balance from New API `/api/user/self`.
+            case balance
+        }
+    }
+
+    /// [T-quota-newapi-balance] Per-site `quota_per_unit`, read from the
+    /// public `/api/status` endpoint and cached for the process lifetime.
+    /// 500,000 is the New API default and the value every relay we probed
+    /// reports; a site that omits the field keeps that default.
+    private static var quotaPerUnitCache: [String: Double] = [:]
+    private static let quotaPerUnitLock = NSLock()
+    private static let defaultQuotaPerUnit: Double = 500_000
+
+    /// [T-quota-threshold] USD amount under which a real balance is flagged.
+    /// User-adjustable in Settings (default $3). Only ever applied to
+    /// `kind == .balance` — a usage-only figure has no scale to compare with,
+    /// so flagging it low would be a guess.
+    static let lowThresholdDefaultsKey = "quota.lowThresholdUSD"
+
+    static var lowThresholdUSD: Double {
+        let stored = UserDefaults.standard.object(forKey: lowThresholdDefaultsKey) as? Double
+        guard let stored, stored >= 0 else { return 3.0 }
+        return stored
     }
 
     private struct CacheEntry {
@@ -55,6 +88,15 @@ final class ProviderQuotaService: ObservableObject {
         lock.lock(); defer { lock.unlock() }
         guard let e = cache[instanceId] else { return true }
         return Date().timeIntervalSince(e.fetchedAt) >= ttl
+    }
+
+    /// Drops one instance's cached quota so the next read refetches. Called
+    /// after the balance access token or the site login changes.
+    func invalidate(instanceId: String) {
+        lock.lock()
+        cache.removeValue(forKey: instanceId)
+        lock.unlock()
+        Task { @MainActor in self.revision += 1 }
     }
 
     // MARK: Async fetch + cache
@@ -106,7 +148,11 @@ final class ProviderQuotaService: ObservableObject {
 
         switch instance.providerType {
         case .openAI, .openAIResponses:
-            return await fetchOpenAIQuota(key: key, baseURL: base)
+            return await fetchOpenAIQuota(
+                instanceId: instance.id,
+                key: key,
+                baseURL: base
+            )
         case .anthropic:
             return await fetchAnthropicSpend(key: key, baseURL: base)
         default:
@@ -114,8 +160,18 @@ final class ProviderQuotaService: ObservableObject {
         }
     }
 
-    private static func fetchOpenAIQuota(key: String, baseURL: String) async -> QuotaInfo? {
+    private static func fetchOpenAIQuota(instanceId: String, key: String, baseURL: String) async -> QuotaInfo? {
         let session = URLSession.shared
+
+        // 0) [T-quota-newapi-balance] New API / One API relays expose the REAL
+        // remaining balance at `GET {root}/api/user/self`, authenticated either
+        // by a user access token (preferred — it never expires) or by the
+        // logged-in web session cookies (fallback). Their OpenAI-compatible
+        // billing endpoints are implemented with a placeholder limit (1e8), so
+        // this is the only way to report a truthful "余额".
+        if let balance = await fetchNewAPIBalance(instanceId: instanceId, baseURL: baseURL) {
+            return balance
+        }
 
         // 1) Subscription -> hard/soft limit.
         guard let subURL = URL(string: baseURL + "/dashboard/billing/subscription") else { return nil }
@@ -177,11 +233,15 @@ final class ProviderQuotaService: ObservableObject {
         if let hardLimit, hardLimit > 0, hardLimit < Self.relayPlaceholderLimitUSD {
             let remaining = hardLimit - totalUsed
             let limit = softLimit ?? hardLimit
-            let low = remaining < 3.0 || remaining < limit * 0.15
+            let low = remaining < Self.lowThresholdUSD || remaining < limit * 0.15
             return QuotaInfo(displayText: String(format: "剩 $%.2f", max(remaining, 0)), highlighted: low)
         }
         if totalUsed > 0.001 {
-            return QuotaInfo(displayText: String(format: "已用 $%.2f", totalUsed), highlighted: false)
+            return QuotaInfo(
+                displayText: String(format: "已用 $%.2f", totalUsed),
+                highlighted: false,
+                kind: .used
+            )
         }
         return nil
     }
@@ -191,6 +251,118 @@ final class ProviderQuotaService: ObservableObject {
     /// sits far above any genuine per-account cap and far below the 1e8 values
     /// relays actually send.
     static let relayPlaceholderLimitUSD: Double = 1_000_000
+
+    // MARK: - [T-quota-newapi-balance] New API real balance
+
+    /// Strips the OpenAI-compatible `/v1` suffix so the New API management
+    /// endpoints (`/api/status`, `/api/user/self`) sit on the site root.
+    static func apiRoot(_ baseURL: String) -> String {
+        var root = baseURL
+        if root.hasSuffix("/v1") { root = String(root.dropLast(3)) }
+        while root.hasSuffix("/") { root = String(root.dropLast()) }
+        return root
+    }
+
+    /// `GET {root}/api/user/self` — the only source of a trustworthy remaining
+    /// balance on New API / One API relays. Authenticated by the user's access
+    /// token when one is saved; otherwise by the site's login cookies if the
+    /// user signed in through the in-app browser. Returns nil for non-New-API
+    /// sites or when neither credential exists, and the caller falls back to
+    /// the usage-only display.
+    private static func fetchNewAPIBalance(instanceId: String, baseURL: String) async -> QuotaInfo? {
+        let root = apiRoot(baseURL)
+        guard let url = URL(string: root + "/api/user/self") else { return nil }
+
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 12
+
+        if let token = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instanceId),
+           !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        } else if let cookie = await sessionCookieHeader(for: root) {
+            req.setValue(cookie, forHTTPHeaderField: "Cookie")
+        } else {
+            return nil
+        }
+
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        // New API wraps payloads in "data"; some forks answer flat.
+        let body = (obj["data"] as? [String: Any]) ?? obj
+        guard let quota = body["quota"] as? NSNumber else { return nil }
+
+        let perUnit = await quotaPerUnit(root: root)
+        let balance = quota.doubleValue / perUnit
+        return QuotaInfo(
+            displayText: String(format: "余额 $%.2f", balance),
+            highlighted: balance < lowThresholdUSD,
+            kind: .balance,
+            balanceUSD: balance
+        )
+    }
+
+    /// `1 USD = quota_per_unit` points, published by every New API site at
+    /// `/api/status`. Cached per root; 500,000 is the upstream default.
+    static func quotaPerUnit(root: String) async -> Double {
+        quotaPerUnitLock.lock()
+        if let cached = quotaPerUnitCache[root] {
+            quotaPerUnitLock.unlock()
+            return cached
+        }
+        quotaPerUnitLock.unlock()
+
+        var unit = defaultQuotaPerUnit
+        if let url = URL(string: root + "/api/status"),
+           let (data, resp) = try? await URLSession.shared.data(from: url),
+           let http = resp as? HTTPURLResponse, http.statusCode == 200,
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let payload = obj["data"] as? [String: Any],
+           let qpu = payload["quota_per_unit"] as? NSNumber,
+           qpu.doubleValue > 0 {
+            unit = qpu.doubleValue
+        }
+
+        quotaPerUnitLock.lock()
+        quotaPerUnitCache[root] = unit
+        quotaPerUnitLock.unlock()
+        return unit
+    }
+
+    /// Cookies for `root`'s host from the app's own WKWebView store. This is
+    /// the SAME store the in-app browser uses, so signing in through
+    /// `ProviderQuotaLoginView` makes the balances readable without the user
+    /// ever copying a token. Safari's cookies are unreachable by design.
+    static func sessionCookieHeader(for root: String) async -> String? {
+        guard let host = URL(string: root)?.host else { return nil }
+        // WKWebsiteDataStore is main-thread-bound; hop explicitly.
+        let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                WKWebsiteDataStore.default().httpCookieStore.getAllCookies { all in
+                    continuation.resume(returning: all)
+                }
+            }
+        }
+        let relevant = cookies.filter { cookie in
+            var domain = cookie.domain
+            if domain.hasPrefix(".") { domain = String(domain.dropFirst()) }
+            return host == domain || host.hasSuffix("." + domain)
+        }
+        guard !relevant.isEmpty else { return nil }
+        return relevant.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+    }
+
+    /// Whether this site currently has a usable balance credential (token or
+    /// login cookies). Drives the "未登录/未填写" state in Settings.
+    static func hasBalanceCredential(instanceId: String) async -> Bool {
+        if let token = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instanceId),
+           !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        return false
+    }
 
     private static func fetchAnthropicSpend(key: String, baseURL: String) async -> QuotaInfo? {
         // Anthropic has no public billing-limit endpoint; report month-to-date

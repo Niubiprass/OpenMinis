@@ -32,12 +32,14 @@ class RelayQuotaPlaceholder(unittest.TestCase):
     def test_placeholder_falls_back_to_usage(self):
         # Above the ceiling: report real month-to-date usage, never highlighted
         # (a fabricated "low balance" would be worse than no badge).
-        self.assertIn('return QuotaInfo(displayText: String(format: "已用 $%.2f", totalUsed), highlighted: false)', QUOTA)
+        self.assertIn('String(format: "已用 $%.2f", totalUsed)', QUOTA)
+        start = QUOTA.index('String(format: "已用 $%.2f", totalUsed)')
+        self.assertIn('kind: .used', QUOTA[start:start + 200])
 
     def test_real_caps_still_show_remaining(self):
         # A genuine cap (tens/hundreds/thousands) keeps the remaining display
         # and its low-balance highlighting.
-        self.assertIn('let low = remaining < 3.0 || remaining < limit * 0.15', QUOTA)
+        self.assertIn('let low = remaining < Self.lowThresholdUSD || remaining < limit * 0.15', QUOTA)
 
     def test_no_negative_remaining_rendered(self):
         # max(remaining, 0) keeps an over-quota account from showing "-$1.20".

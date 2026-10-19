@@ -227,6 +227,52 @@ final class MemoryDocumentStore {
         text.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
     }
 
+    /// [T-memory-import] Writes `text` as `fileName` under `rootID`, honouring
+    /// the caller's same-name decision. Deliberately separate from `save()`:
+    /// an import has no prior snapshot to compare against, so there is nothing
+    /// to CAS — the conflict policy IS the caller's explicit choice.
+    ///
+    /// `overwrite == false` never touches an existing file (`.conflict`), which
+    /// is what the "跳过" and "重命名" branches rely on.
+    @discardableResult
+    func importDocument(rootID: String, fileName: String, text: String, overwrite: Bool) throws -> Snapshot {
+        try locked {
+            let root = try authorizedRoot(rootID)
+            guard !root.isReadOnly else { throw Failure.readOnly }
+            let url = try documentURL(rootID: root.id, fileName: fileName)
+            guard url.pathExtension.lowercased() == "md" else { throw Failure.unsafePath }
+            if !overwrite, fm.fileExists(atPath: url.path) { throw Failure.conflict }
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            return try coordinated(at: url, writing: true) { coordinatedURL in
+                guard coordinatedURL.standardizedFileURL == url else { throw Failure.unsafePath }
+                guard self.fm.isWritableFile(atPath: url.deletingLastPathComponent().path) else {
+                    throw Failure.readOnly
+                }
+                let bytes = Data(text.utf8)
+                try bytes.write(to: url, options: .atomic)
+                return self.makeSnapshot(
+                    rootID: root.id,
+                    fileName: fileName,
+                    directory: url.deletingLastPathComponent(),
+                    bytes: bytes
+                )
+            }
+        }
+    }
+
+    /// Whether `fileName` already exists under `rootID` (drives the conflict
+    /// prompt before anything is written). An unreadable/invalid name reports
+    /// false: `importDocument` re-validates and throws the real error.
+    func documentExists(rootID: String, fileName: String) -> Bool {
+        guard let root = roots.first(where: { $0.id == rootID }) else { return false }
+        do {
+            let url = try documentURL(rootID: root.id, fileName: fileName)
+            return fm.fileExists(atPath: url.path)
+        } catch {
+            return false
+        }
+    }
+
     private func coordinated<T>(at url: URL, writing: Bool, _ operation: @escaping (URL) throws -> T) throws -> T {
         #if canImport(Darwin)
         let coordinator = NSFileCoordinator(filePresenter: nil)

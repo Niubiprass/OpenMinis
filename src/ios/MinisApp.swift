@@ -100,6 +100,8 @@ struct MinisApp: App {
     /// immersive WebView (back-edge swipe / programmatic dismiss).
     @State private var pendingWebAppPresentation: WebAppPresentation?
     @State private var pendingURLWhileLocked: URL?
+    /// [T-memory-import] A shared .md file awaiting the import sheet.
+    @State private var pendingMemoryImport: MemoryImportInbox.Payload?
 
     #if DEBUG
     let debugServer = DebugServer()
@@ -229,6 +231,11 @@ struct MinisApp: App {
                     pendingURLWhileLocked = nil
                     if BackupOpenRouter.handle(url) {
                         // .minisbak → restore flow, not the attachment pipeline.
+                    } else if MemoryImportInbox.handle(url) {
+                        // [T-memory-import] A Markdown file shared from another
+                        // app becomes a memory, not a chat attachment: the
+                        // import sheet asks which memory it belongs to.
+                        pendingMemoryImport = MemoryImportInbox.pending
                     } else if ExternalFileImporter.canIngest(url) {
                         ExternalFileImporter.ingest(url, into: shareCoordinator)
                         return
@@ -313,11 +320,30 @@ struct MinisApp: App {
                     }
                     if BackupOpenRouter.handle(url) {
                         // .minisbak → restore flow, not the attachment pipeline.
+                    } else if MemoryImportInbox.handle(url) {
+                        // [T-memory-import] A Markdown file shared from another
+                        // app becomes a memory, not a chat attachment: the
+                        // import sheet asks which memory it belongs to.
+                        pendingMemoryImport = MemoryImportInbox.pending
                     } else if ExternalFileImporter.canIngest(url) {
                         ExternalFileImporter.ingest(url, into: shareCoordinator)
                         return
                     }
                     DeepLinkRouter.handle(url: url, shareCoordinator: shareCoordinator)
+                }
+                // [T-memory-import] A .md shared from another app opens the
+                // import sheet with its content loaded; the user picks the
+                // destination and resolves same-name conflicts there.
+                .sheet(item: $pendingMemoryImport) { payload in
+                    MemoryImportView(
+                        store: MemoryDocumentStore(roots: [.sharedMemory]),
+                        prefill: MemoryImportView.Prefill(
+                            fileName: payload.fileName,
+                            text: payload.text
+                        )
+                    ) { _ in
+                        MemoryImportInbox.clear()
+                    }
                 }
                 // Fullscreen immersive WebView for HTML web-app shortcuts.
                 // Driven by `.openWebAppDeepLink` (posted by DeepLinkRouter

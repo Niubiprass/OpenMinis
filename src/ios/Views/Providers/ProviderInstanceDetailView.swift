@@ -30,6 +30,14 @@ struct ProviderInstanceDetailView: View {
     @State private var editingModelEntry: ModelEntry?
     @State private var pendingDeleteModelEntry: ModelEntry?
     @State private var showKeyRevealed = false
+    // [T-quota-newapi-balance] Balance credentials (access token / site login).
+    @State private var quotaTokenInput = ""
+    @State private var quotaTokenLoaded = false
+    @State private var showQuotaLogin = false
+    @State private var quotaRefreshing = false
+    @State private var quotaMessage: String?
+    /// [T-quota-threshold] Shared across providers; persisted in UserDefaults.
+    @AppStorage(ProviderQuotaService.lowThresholdDefaultsKey) private var quotaLowThreshold: Double = 3
 
     private var instance: ProviderInstance? {
         store.instance(for: instanceId)
@@ -104,6 +112,22 @@ struct ProviderInstanceDetailView: View {
                         Task { await store.refreshModels(for: instance) }
                     }
                 } }
+            }
+        }
+        .sheet(isPresented: $showQuotaLogin) {
+            if let instance = instance {
+                ProviderQuotaLoginView(instance: instance) {
+                    quotaRefreshing = true
+                    quotaMessage = nil
+                    Task {
+                        await ProviderQuotaService.shared.refreshQuota(for: instance)
+                        let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
+                        await MainActor.run {
+                            quotaRefreshing = false
+                            quotaMessage = info.map { _ in "已更新" } ?? "未获取到余额，站点可能不支持"
+                        }
+                    }
+                }
             }
         }
         .sheet(isPresented: $showManualTokenInput) {
@@ -220,6 +244,20 @@ struct ProviderInstanceDetailView: View {
                 Text(instance.credentialType == .apiKey
                      ? "API key is stored securely in the iOS Keychain."
                      : "OAuth tokens are stored per-instance in the iOS Keychain.")
+            }
+
+            // MARK: Balance [T-quota-newapi-balance]
+            // Only OpenAI-compatible / Responses instances: these are the ones
+            // whose relays speak New API's management API.
+            if instance.credentialType == .apiKey
+                && (instance.providerType == .openAI || instance.providerType == .openAIResponses) {
+                Section {
+                    quotaSection(instance)
+                } header: {
+                    Text("余额")
+                } footer: {
+                    Text("New API / One API 站点可显示真实余额：填访问令牌，或用 App 内置浏览器登录一次。两者都不填时只显示本月已用。")
+                }
             }
 
             // MARK: Custom Base URL
@@ -445,6 +483,103 @@ struct ProviderInstanceDetailView: View {
     // MARK: - Credential Section
 
     @ViewBuilder
+    // MARK: - [T-quota-newapi-balance] Balance section
+
+    /// Real-balance credentials for New API / One API relays.
+    ///
+    /// Two ways, either sufficient:
+    ///   1. Access token — `POST`-free, never expires, most reliable.
+    ///   2. In-app site login — WKWebView cookies from the app's own store.
+    /// The token wins when both exist (see `fetchNewAPIBalance`).
+    @ViewBuilder
+    private func quotaSection(_ instance: ProviderInstance) -> some View {
+        let current = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
+
+        HStack {
+            Text("当前")
+                .foregroundStyle(.secondary)
+            Spacer()
+            if let current {
+                Text(current.displayText)
+                    .foregroundStyle(current.kind == .balance ? Color.green : Color.secondary)
+            } else {
+                Text(quotaRefreshing ? "查询中…" : "未获取")
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        if quotaRefreshing {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("正在刷新余额…")
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        HStack {
+            Text("访问令牌")
+            Spacer()
+            TextField("可选", text: $quotaTokenInput)
+                .multilineTextAlignment(.trailing)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+                .onSubmit { saveQuotaToken(instance) }
+        }
+        .onAppear {
+            guard !quotaTokenLoaded else { return }
+            quotaTokenLoaded = true
+            quotaTokenInput = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instance.id) ?? ""
+        }
+
+        Button("在 App 内登录该站点") {
+            showQuotaLogin = true
+        }
+
+        Button(quotaRefreshing ? "刷新中…" : "测试并刷新余额") {
+            saveQuotaToken(instance)
+            quotaRefreshing = true
+            quotaMessage = nil
+            Task {
+                await ProviderQuotaService.shared.refreshQuota(for: instance)
+                let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
+                await MainActor.run {
+                    quotaRefreshing = false
+                    quotaMessage = info.map { _ in "已更新" } ?? "未获取到，站点可能不支持余额查询"
+                }
+            }
+        }
+        .disabled(quotaRefreshing)
+
+        if let quotaMessage {
+            Text(quotaMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        // [T-quota-threshold] User-adjustable low-balance cut-off. Applies to
+        // every provider at once (it is a display rule, not a per-site fact).
+        Stepper(value: $quotaLowThreshold, in: 0...1000, step: 1) {
+            HStack {
+                Text("低于此金额提醒")
+                Spacer()
+                Text(String(format: "$%.2f", quotaLowThreshold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        Text("余额低于这个金额时，供应商标题旁的余额标变黄。只对能读到真实余额的站点生效。")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+    }
+
+    private func saveQuotaToken(_ instance: ProviderInstance) {
+        let trimmed = quotaTokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            ProviderKeychainHelper.deleteQuotaAccessToken(instanceId: instance.id)
+        } else {
+            ProviderKeychainHelper.saveQuotaAccessToken(trimmed, instanceId: instance.id)
+        }
+    }
+
     private func credentialSection(_ instance: ProviderInstance) -> some View {
         switch instance.credentialType {
         case .apiKey:

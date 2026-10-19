@@ -286,6 +286,11 @@ struct UnifiedModelPicker: View {
     // spinner. A warm cache renders on the FIRST frame, so the sheet is never
     // waiting on the model list.
     @State private var sections: [InstanceSection]?
+    /// [T-picker-refresh-all] Refresh every enabled provider's model list from
+    /// inside the session picker, so "供应商未列出" updates without a trip to
+    /// Settings → AI 服务商.
+    @State private var isRefreshingAll = false
+    @State private var refreshNote: String?
     /// The `configRevision` the current `sections` were built from, so a refresh
     /// that produces identical input can skip re-publishing (and re-rendering).
     @State private var sectionsRevision: UInt?
@@ -699,6 +704,18 @@ struct UnifiedModelPicker: View {
             loadSections()
         }
         .toolbar { toolbarContent }
+        // [T-picker-refresh-all] Transient result banner (2.5s).
+        .overlay(alignment: .top) {
+            if let note = refreshNote {
+                Text(note)
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.top, 6)
+                    .transition(.opacity)
+            }
+        }
         .sheet(isPresented: $showCreateGroupSheet) {
             NavigationView {
                 UnifiedModelPicker(config: createGroupConfig())
@@ -808,6 +825,30 @@ struct UnifiedModelPicker: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Group {
+                // [T-picker-refresh-all] Refresh every enabled provider's model
+                // list in place. Mirrors Settings → AI 服务商 → 刷新, but stays
+                // in the conversation: one tap updates which models the sites
+                // still list, and the rows that vanished become
+                // "供应商未列出" (greyed + unselectable) instead of staying
+                // apparently usable.
+                if !isMulti {
+                    Button {
+                        refreshAllModels()
+                    } label: {
+                        if isRefreshingAll {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(isRefreshingAll)
+                    .accessibilityLabel(Text("刷新模型列表"))
+                }
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Group {
                 if isMulti {
                     Button("Add (\(selectedEntryIds.count))") {
                         config.onAddMulti?(selectedEntryIds)
@@ -819,6 +860,32 @@ struct UnifiedModelPicker: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+    }
+
+    /// [T-picker-refresh-all] Ask every ENABLED provider for its current model
+    /// list. Each site is queried with its own base URL and its own key — the
+    /// results are independent, so a slow or broken relay cannot affect the
+    /// others, and nothing is merged across sites. A model a site no longer
+    /// lists keeps its local entry but gains `absentSince`, which renders as
+    /// "供应商未列出" (greyed, unselectable) in this picker.
+    private func refreshAllModels() {
+        guard !isRefreshingAll else { return }
+        isRefreshingAll = true
+        refreshNote = nil
+        Task { @MainActor in
+            let targets = store.instances.filter { $0.isEnabled }
+            for target in targets {
+                await store.refreshModels(for: target)
+            }
+            loadSections()
+            isRefreshingAll = false
+            let unavailable = store.modelEntries.filter { $0.isUnavailableFromProvider }.count
+            refreshNote = unavailable > 0
+                ? "已刷新 \(targets.count) 个供应商 · \(unavailable) 个模型不再提供"
+                : "已刷新 \(targets.count) 个供应商 · 全部正常"
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            if !isRefreshingAll { refreshNote = nil }
         }
     }
 
@@ -1119,10 +1186,10 @@ struct UnifiedModelPicker: View {
                let q = quotaService.cachedQuota(instanceId: inst.id) {
                 Text(q.displayText)
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(q.highlighted ? Color.yellow : .secondary)
+                    .foregroundStyle(quotaTint(q))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
-                    .background(q.highlighted ? Color.yellow.opacity(0.12) : Color.clear)
+                    .background(quotaBackground(q))
                     .clipShape(Capsule())
             }
 
@@ -1296,9 +1363,27 @@ struct UnifiedModelPicker: View {
                 }
             }
         } header: {
-            HStack {
+            HStack(spacing: 8) {
                 Text(item.instance.label)
                 Spacer()
+                // [T-quota-header-balance] One balance per provider, on the
+                // section header — NOT per model row. The label line stays
+                // clean, and the number reads as "what this site costs",
+                // which is what the user is deciding between.
+                //
+                // Order: name → balance → collapse button. The balance is
+                // right-aligned but deliberately inset from the 28pt toggle
+                // so the tap target is never shared.
+                if let q = quotaService.cachedQuota(instanceId: item.instance.id) {
+                    Text(q.displayText)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(quotaTint(q))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(quotaBackground(q))
+                        .clipShape(Capsule())
+                        .textCase(nil)
+                }
                 if searchText.isEmpty && item.entries.count > 1 {
                     let collapsed = collapsedInstanceIds.contains(item.instance.id)
                     Button {
@@ -1322,6 +1407,25 @@ struct UnifiedModelPicker: View {
                 }
             }
         }
+    }
+
+    /// [T-quota-threshold] Colour rules for the header pill:
+    ///   green  = a real balance above the user's threshold
+    ///   yellow = a real balance BELOW the user's threshold
+    ///   grey   = month-to-date usage only (the site has no balance API, so
+    ///            there is nothing to be "low" relative to)
+    private func quotaTint(_ q: ProviderQuotaService.QuotaInfo) -> Color {
+        if q.kind == .balance {
+            return q.highlighted ? .yellow : .green
+        }
+        return .secondary
+    }
+
+    private func quotaBackground(_ q: ProviderQuotaService.QuotaInfo) -> Color {
+        if q.kind == .balance {
+            return (q.highlighted ? Color.yellow : Color.green).opacity(0.16)
+        }
+        return Color(UIColor.tertiarySystemFill)
     }
 
     // MARK: - Entry Row

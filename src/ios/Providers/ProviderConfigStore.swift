@@ -3428,6 +3428,63 @@ enum ProviderKeychainHelper {
         notifyAuthChanged(instanceId: instanceId)
     }
 
+    // MARK: - [T-quota-newapi-balance] Balance access token (per-instance)
+
+    /// New API sites expose the real remaining balance only at `/api/user/self`,
+    /// which wants a dashboard **access token** — a different credential from
+    /// the `sk-` API key. Stored locally (NOT iCloud-synced: it is a per-site
+    /// dashboard secret with no meaning on another device).
+    private static let quotaTokenAccount = "quota-access-token"
+
+    private static func quotaService(instanceId: String) -> String {
+        "com.openminis.app.provider.\(instanceId).quota"
+    }
+
+    static func saveQuotaAccessToken(_ token: String, instanceId: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: quotaService(instanceId: instanceId),
+            kSecAttrAccount as String: quotaTokenAccount,
+        ]
+        SecItemDelete(query as CFDictionary)
+        var add = query
+        add[kSecValueData as String] = Data(token.utf8)
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let status = SecItemAdd(add as CFDictionary, nil)
+        AppLogger(category: "Keychain").info(
+            "write quotaToken instanceId=\(instanceId.prefix(8)) len=\(token.count) status=\(status)"
+        )
+        Task { @MainActor in
+            ProviderQuotaService.shared.invalidate(instanceId: instanceId)
+        }
+    }
+
+    static func loadQuotaAccessToken(instanceId: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: quotaService(instanceId: instanceId),
+            kSecAttrAccount as String: quotaTokenAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func deleteQuotaAccessToken(instanceId: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: quotaService(instanceId: instanceId),
+            kSecAttrAccount as String: quotaTokenAccount,
+        ]
+        SecItemDelete(query as CFDictionary)
+        Task { @MainActor in
+            ProviderQuotaService.shared.invalidate(instanceId: instanceId)
+        }
+    }
+
     // MARK: - OAuth Token (per-instance)
 
     /// Called at the end of every credential write/delete. Bumps `authRevision`
