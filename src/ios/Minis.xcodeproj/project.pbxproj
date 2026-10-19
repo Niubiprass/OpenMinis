@@ -1628,6 +1628,7 @@
 				E5C000030 /* OpenAI */,
 				E7A000030 /* OpenRouter */,
 				EXA000030 /* xAI */,
+				E5MKEY01FR42F3B941A00049557 /* ProviderMultiKeys.swift */,
 				42A3821DABA8773E8A5BA57E /* Voice */,
 			);
 			path = Providers;
@@ -1927,8 +1928,6 @@
 				E5E0000A2 /* ExternalFileImporter.swift */,
 				E5MIMP01FR42F3B941A00049557 /* MemoryImportInbox.swift */,
 				E5CSPR01FR42F3B941A00049557 /* CSPRecovery.swift */,
-				E5MKYV01FR42F3B941A00049557 /* MultiKeyManagerView.swift */,
-				E5MKEY01FR42F3B941A00049557 /* ProviderMultiKeys.swift */,
 				E5E000017 /* SharedContainerStore.swift */,
 				AADDA9E02F6ECCF400B66649 /* ThumbnailCache.swift */,
 			);
@@ -2403,6 +2402,7 @@
 				E5MDT0011 /* ModelDisplayTraits.swift */,
 				0ED149397BEA7E0408C92688 /* GroupVoiceModelsView.swift */,
 				0F5379380323FA8C6477708C /* GroupSlotPicker.swift */,
+				E5MKYV01FR42F3B941A00049557 /* MultiKeyManagerView.swift */,
 			);
 			path = Providers;
 			sourceTree = "<group>";
