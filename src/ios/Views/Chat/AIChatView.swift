@@ -2388,13 +2388,10 @@ _ios15Seg7
             }
             .buttonStyle(.plain)
             .disabled(!canEditTitle)
-            // [T-quota-late-binding] Keyed on the resolved instance, not
-            // onAppear. When a session opens, `vm.sessionId` (and therefore
-            // `quotaInstance`) is still nil at first appearance, so the
-            // onAppear version never fetched anything for a session that took
-            // a moment to load — the balance simply never showed up. This
-            // re-runs as soon as the instance resolves.
-            .task(id: quotaInstance?.id) {
+            .onAppear {
+                // [T-115-quota] Fetch (or refresh) the active instance's
+                // quota once per titleView appearance; UI updates via
+                // quotaService.revision.
                 if let inst = quotaInstance {
                     quotaService.refreshAllIfNeeded(instances: [inst])
                 }
