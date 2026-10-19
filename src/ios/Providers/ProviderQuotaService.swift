@@ -185,7 +185,6 @@ final class ProviderQuotaService: ObservableObject {
         subReq.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         subReq.timeoutInterval = 12
         var hardLimit: Double?
-        var softLimit: Double?
         do {
             let (data, resp) = try await session.data(for: subReq)
             guard let http = resp as? HTTPURLResponse, http.statusCode == 200,
@@ -194,7 +193,6 @@ final class ProviderQuotaService: ObservableObject {
             }
             hardLimit = (obj["hard_limit_usd"] as? NSNumber)?.doubleValue
                 ?? (obj["soft_limit_usd"] as? NSNumber)?.doubleValue
-            softLimit = (obj["soft_limit_usd"] as? NSNumber)?.doubleValue
         } catch {
             return nil
         }
@@ -238,9 +236,21 @@ final class ProviderQuotaService: ObservableObject {
         // flag it low (we cannot know).
         if let hardLimit, hardLimit > 0, hardLimit < Self.relayPlaceholderLimitUSD {
             let remaining = hardLimit - totalUsed
-            let limit = softLimit ?? hardLimit
-            let low = remaining < Self.lowThresholdUSD || remaining < limit * 0.15
-            return QuotaInfo(displayText: String(format: "剩 $%.2f", max(remaining, 0)), highlighted: low)
+            // [T-quota-threshold-only] The user sets the cut-off; a second
+            // automatic "below 15 % of the limit" rule fought it. If you set
+            // $1, you mean $1 — a $200 cap quietly turning $30 yellow is the
+            // app second-guessing a number the user already chose.
+            let low = remaining < Self.lowThresholdUSD
+            // [T-quota-remaining-is-balance] This is a real remainder (a real
+            // cap minus real usage), so treat it like one: say 余额 like the
+            // New API path and carry `.balance` so it gets the green/yellow
+            // treatment. Leaving `kind` at its `.used` default made it the odd
+            // one out in the UI — grey text saying 剩 while every other
+            // readable site said 余额 in green.
+            return QuotaInfo(displayText: String(format: "余额 $%.2f", max(remaining, 0)),
+                             highlighted: low,
+                             kind: .balance,
+                             balanceUSD: max(remaining, 0))
         }
         if totalUsed > 0.001 {
             return QuotaInfo(

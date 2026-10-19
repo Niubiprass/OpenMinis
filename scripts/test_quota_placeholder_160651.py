@@ -27,7 +27,7 @@ class RelayQuotaPlaceholder(unittest.TestCase):
         # The remaining-credit branch must be guarded by the ceiling, so a
         # relay's 1e8 cap can never produce "剩 $99999977.88" again.
         self.assertIn('if let hardLimit, hardLimit > 0, hardLimit < Self.relayPlaceholderLimitUSD {', QUOTA)
-        self.assertIn('String(format: "剩 $%.2f", max(remaining, 0))', QUOTA)
+        self.assertIn('String(format: "余额 $%.2f", max(remaining, 0)', QUOTA)
 
     def test_placeholder_falls_back_to_usage(self):
         # Above the ceiling: report real month-to-date usage, never highlighted
@@ -39,7 +39,7 @@ class RelayQuotaPlaceholder(unittest.TestCase):
     def test_real_caps_still_show_remaining(self):
         # A genuine cap (tens/hundreds/thousands) keeps the remaining display
         # and its low-balance highlighting.
-        self.assertIn('let low = remaining < Self.lowThresholdUSD || remaining < limit * 0.15', QUOTA)
+        self.assertIn('let low = remaining < Self.lowThresholdUSD', QUOTA)
 
     def test_no_negative_remaining_rendered(self):
         # max(remaining, 0) keeps an over-quota account from showing "-$1.20".

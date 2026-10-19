@@ -2388,13 +2388,22 @@ _ios15Seg7
             }
             .buttonStyle(.plain)
             .disabled(!canEditTitle)
-            // [T-quota-late-binding] Keyed on the resolved instance, not
-            // onAppear. When a session opens, `vm.sessionId` (and therefore
-            // `quotaInstance`) is still nil at first appearance, so the
-            // onAppear version never fetched anything for a session that took
-            // a moment to load — the balance simply never showed up. This
-            // re-runs as soon as the instance resolves.
-            .task(id: quotaInstance?.id) {
+            // [T-quota-refresh-cheap] Deliberately NOT `.task(id:)`.
+            //
+            // That form re-runs whenever SwiftUI decides the identity changed,
+            // and this view is a navigation-bar title that gets rebuilt often.
+            // On the user's device it turned into a refresh storm and the UI
+            // stopped responding to taps — you could not leave a chat.
+            //
+            // onAppear + an explicit sessionId change is the same coverage
+            // without the lifecycle ambiguity: once when the screen appears,
+            // and once when the session actually changes.
+            .onAppear {
+                if let inst = quotaInstance {
+                    quotaService.refreshAllIfNeeded(instances: [inst])
+                }
+            }
+            .onChange(of: vm.sessionId) { _ in
                 if let inst = quotaInstance {
                     quotaService.refreshAllIfNeeded(instances: [inst])
                 }
