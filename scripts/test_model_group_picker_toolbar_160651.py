@@ -189,12 +189,23 @@ class IOSSwiftUITypecheck(unittest.TestCase):
         sdk = subprocess.run(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'],
                              text=True, capture_output=True, check=True).stdout.strip()
         wrapper = '''import SwiftUI
+struct ProviderInstance { var id: String; var isEnabled: Bool }
+struct ModelEntry { var isUnavailableFromProvider: Bool }
+class ProviderConfigStore: ObservableObject {
+    var instances: [ProviderInstance] = []
+    var modelEntries: [ModelEntry] = []
+    func refreshModels(for instance: ProviderInstance) async {}
+}
 struct PickerToolbarConfig { var onAddMulti: ((Set<String>) -> Void)? }
 struct PickerToolbarHarness: View {
     let isMulti: Bool
-    let selectedEntryIds: Set<String>
+    @State private var selectedEntryIds: Set<String> = []
+    @State private var isRefreshingAll = false
+    @State private var refreshNote: String?
+    @ObservedObject var store = ProviderConfigStore()
     let config: PickerToolbarConfig
     @Environment(\\.dismiss) private var dismiss
+    func loadSections() {}
     var body: some View { Text("Harness").toolbar { toolbarContent } }
 ''' + toolbar(SOURCE) + '\n}\n'
         with tempfile.TemporaryDirectory(prefix='model-picker-toolbar-') as temporary:
