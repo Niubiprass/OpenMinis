@@ -722,8 +722,18 @@ struct ProviderQuotaLoginView: View {
 
     private var siteURL: URL? {
         let raw = instance.effectiveCustomBaseURL ?? ""
-        guard !raw.isEmpty else { return nil }
-        return URL(string: ProviderQuotaService.apiRoot(raw))
+        guard !raw.isEmpty, let parsed = URL(string: raw),
+              let host = parsed.host, !host.isEmpty else { return nil }
+        // [T-quota-login-root] A login page always lives at the SITE ROOT,
+        // never under the API path. Deriving it from `apiRoot()` produced
+        // `https://opencsg.com/aigateway` for a base URL of
+        // `https://opencsg.com/aigateway/v1` — a 404, because only the API
+        // lives there. Strip down to scheme + host + port.
+        var comps = URLComponents()
+        comps.scheme = parsed.scheme
+        comps.host = host
+        comps.port = parsed.port
+        return comps.url
     }
 
     var body: some View {
@@ -762,6 +772,22 @@ struct ProviderQuotaLoginView: View {
                     Button("完成") {
                         onFinished()
                         dismiss()
+                    }
+                }
+                // [T-quota-external-browser] Escape hatch for sites this
+                // WebView cannot render, or that need a real browser to
+                // finish login. Opens the site root in whatever browser the
+                // user set as default — including Reynard. Cookies do NOT
+                // cross the sandbox boundary, so this is for signing in and
+                // copying an access token back, not for moving a session.
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if let url = siteURL {
+                        Button {
+                            UIApplication.shared.open(url)
+                        } label: {
+                            Image(systemName: "safari")
+                        }
+                        .accessibilityLabel(Text("用外部浏览器打开"))
                     }
                 }
             }
@@ -803,6 +829,7 @@ private struct QuotaLoginWebView: UIViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
+        context.coordinator.host = webView
         webView.load(URLRequest(url: url))
         return webView
     }
@@ -811,10 +838,20 @@ private struct QuotaLoginWebView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         private let parent: QuotaLoginWebView
+        weak var host: WKWebView?
+        /// [T-csp-recovery] URLs already re-rendered from their own DOM so a
+        /// single page can never loop.
+        private let cspRepaired = NSMutableSet()
+
         init(_ parent: QuotaLoginWebView) { self.parent = parent }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             parent.isLoading = false
+            // Give a healthy SPA a moment to boot before calling it stuck.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self, weak webView] in
+                guard let self = self, let webView = webView else { return }
+                CSPRecovery.repairIfStuck(webView, alreadyRepaired: self.cspRepaired)
+            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

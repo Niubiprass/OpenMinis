@@ -2268,6 +2268,17 @@ _ios15Seg7
         let quotaInstance = display.resolvedInstanceAndModel(for: vm.sessionId)?.instance
         let quotaInfo = quotaInstance.flatMap { quotaService.cachedQuota(instanceId: $0.id) }
 
+        /// [T-quota-chip-highlight] Tint for the balance capsule in the model
+        /// chip. Green for a real balance above the user's threshold, yellow
+        /// below it, grey for a usage-only figure (there is no total to be
+        /// "low" against, so colouring it would be a guess).
+        func chipQuotaTint(_ info: ProviderQuotaService.QuotaInfo?) -> Color {
+            guard let info = info else { return ChatColors.tertiaryText }
+            guard info.kind == .balance else { return ChatColors.tertiaryText }
+            return info.highlighted ? .yellow : .green
+        }
+
+
         let legacyLayout = !ProcessInfo.processInfo.isiOSAppOnMac && {
             if #available(iOS 26, *) { return false }
             return true
@@ -2418,9 +2429,20 @@ _ios15Seg7
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                             if let quotaText = quotaInfo?.displayText {
+                                // [T-quota-chip-highlight] The chip used to draw
+                                // the balance in tertiaryText at caption2 — it
+                                // read as disabled grey and was easy to miss.
+                                // Give it a tinted capsule so the number the
+                                // user actually opened this menu for stands out:
+                                // green = real balance, yellow = below the
+                                // threshold, grey = usage-only figure.
                                 Text(quotaText)
-                                    .font(.caption2)
-                                    .foregroundStyle(quotaInfo?.highlighted == true ? Color.yellow : ChatColors.tertiaryText)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(chipQuotaTint(quotaInfo))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(chipQuotaTint(quotaInfo).opacity(0.18))
+                                    .clipShape(Capsule())
                             }
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 8, weight: .semibold))

@@ -3290,11 +3290,55 @@ enum ModelRefreshError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noCredential:
-            return "No API key configured for this provider instance."
+            return "这个供应商还没有填 API Key，所以拿不到模型列表。"
         case .modelsDevNoMatch(let warnings):
-            let detail = warnings.isEmpty ? "" : "\n" + warnings.joined(separator: "\n")
-            return "Could not fetch models from API or models.dev fallback.\(detail)"
+            // [T-model-fetch-humanize] These warnings used to reach the user
+            // verbatim, e.g.
+            //   API returned empty model list
+            //   models.dev: no match for baseURL https://…
+            // which says nothing to anyone who does not already know what
+            // models.dev is. Log lines keep the raw English; only what the
+            // person reads is rewritten.
+            let lines = warnings.compactMap(Self.humanReadable).filter { !$0.isEmpty }
+            var text = "没能自动获取模型列表。"
+            if !lines.isEmpty {
+                text += "\n" + lines.joined(separator: "\n")
+            }
+            text += "\n可以手动添加模型 ID，或者先检查 API Key 和地址是否正确。"
+            return text
         }
+    }
+
+    /// Turns one raw warning into a line a non-technical reader can act on.
+    private static func humanReadable(_ warning: String) -> String? {
+        if warning.hasPrefix("API returned empty model list") {
+            return "· 站点返回了空的模型列表（有响应，但里面没有模型）"
+        }
+        if warning.hasPrefix("API fetch failed:") {
+            let reason = warning.replacingOccurrences(of: "API fetch failed: ", with: "")
+            return "· 请求失败：\(Self.explain(reason))"
+        }
+        if warning.hasPrefix("models.dev: no match") {
+            return "· models.dev 没有收录这个站点，没法拿来参考"
+        }
+        return "· " + warning
+    }
+
+    /// [T-model-fetch-humanize] The system's own NSError text is English and
+    /// jargon-heavy. Map the handful that actually occur when probing an
+    /// unreachable or misconfigured relay; anything else passes through so we
+    /// never invent a cause.
+    private static func explain(_ reason: String) -> String {
+        let r = reason.lowercased()
+        if r.contains("timed out") { return "请求超时，站点没有响应" }
+        if r.contains("offline") || r.contains("not connected") { return "网络没有连上" }
+        if r.contains("could not be found") || r.contains("hostname") { return "找不到这个域名，地址可能填错了" }
+        if r.contains("certificate") || r.contains("ssl") { return "这个站点的安全证书有问题" }
+        if r.contains("unauthorized") || r.contains("401") { return "API Key 不对或已失效" }
+        if r.contains("forbidden") || r.contains("403") { return "这个 Key 没有权限访问" }
+        if r.contains("not found") || r.contains("404") { return "地址路径不对，站点上没有这个接口" }
+        if r.contains("empty") { return "站点返回了空内容" }
+        return reason
     }
 }
 

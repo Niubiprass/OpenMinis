@@ -28,6 +28,8 @@ final class WebViewHolder: NSObject, ObservableObject {
     @Published var loadError: WebLoadError?
 
     private var observations: [NSKeyValueObservation] = []
+    /// [T-csp-recovery] URLs already re-rendered from their own DOM.
+    private let cspRepaired = NSMutableSet()
 
     /// Pending navigation request — deferred until `startIfNeeded()` is
     /// called by the hosting SwiftUI view in `.onAppear`. See the comment
@@ -386,6 +388,13 @@ extension WebViewHolder: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loadError = nil
+        // [T-csp-recovery] A page can download every script yet run none of
+        // them (nonce-empty CSP), leaving a splash on screen forever. Give a
+        // healthy page time to lay out, then recover if it never did.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self, weak webView] in
+            guard let self = self, let webView = webView else { return }
+            CSPRecovery.repairIfStuck(webView, alreadyRepaired: self.cspRepaired)
+        }
     }
 
     func webView(_ webView: WKWebView,
