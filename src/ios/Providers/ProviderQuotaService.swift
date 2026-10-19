@@ -77,11 +77,17 @@ final class ProviderQuotaService: ObservableObject {
 
     // MARK: Sync read for UI
 
+    /// [T-quota-stale-ok] Returns the last known figure even after `ttl`
+    /// expires.
+    ///
+    /// Dropping it on expiry made the balance blink out of the title bar every
+    /// five minutes and reappear a second later once the background refresh
+    /// landed — indistinguishable from "the setting broke". A stale number is
+    /// far less confusing than no number; `isMissing` is what decides whether a
+    /// request should go out.
     func cachedQuota(instanceId: String) -> QuotaInfo? {
         lock.lock(); defer { lock.unlock() }
-        guard let e = cache[instanceId] else { return nil }
-        guard Date().timeIntervalSince(e.fetchedAt) < ttl else { return nil }
-        return e.info
+        return cache[instanceId]?.info
     }
 
     func isMissing(instanceId: String) -> Bool {

@@ -810,10 +810,6 @@ private struct QuotaLoginWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
-        // [T-csp-script-rebuild] Rebuild blocked <script> tags at document
-        // start instead of re-rendering the page afterwards. Keeps the real
-        // origin/cookies/CSP; only the nonce check is worked around.
-        CSPRecovery.installScriptRebuild(in: config)
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
@@ -833,19 +829,13 @@ private struct QuotaLoginWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             parent.isLoading = false
             // Give a healthy SPA a moment to boot before calling it stuck.
-            // [T-csp-recovery-diag] Two passes: the first re-renders a page
-            // that never laid out; if the SAME page is still stuck after that
-            // (the re-render did not help), report why instead of silently
-            // spinning forever.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self, weak webView] in
-                guard let self = self, let webView = webView else { return }
-                // The rebuild script runs before parsing, so by now a page
-                // that still shows a splash genuinely failed for another
-                // reason. Report it instead of silently spinning.
-                CSPRecovery.diagnose(webView) { [weak self] info in
-                    guard let self = self else { return }
+            // [T-csp-recovery-diag] Log only. Showing the diagnostic JSON to
+            // the user was wrong: it fired on perfectly healthy sites that the
+            // heuristic misread, and a raw JSON blob is not an error message.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak webView] in
+                guard let webView = webView else { return }
+                CSPRecovery.diagnose(webView) { info in
                     NSLog("[CSPRecovery] still stuck: %@", info)
-                    self.parent.failedReason = info
                 }
             }
         }
