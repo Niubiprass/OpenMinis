@@ -47,8 +47,6 @@ final class WebAppWebViewController: UIViewController, WKNavigationDelegate, WKU
         view.backgroundColor = .black
 
         let cfg = WKWebViewConfiguration()
-        // [T-csp-script-rebuild] Same nonce workaround as the provider login sheet.
-        CSPRecovery.installScriptRebuild(in: cfg)
         // Persistent, per-shortcut-isolated storage so cookies / localStorage /
         // sessionStorage survive across launches (no repeated logins). iOS 17+
         // gives each shortcut its own on-disk store keyed by its UUID, so two

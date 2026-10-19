@@ -53,8 +53,6 @@ final class WebViewHolder: NSObject, ObservableObject {
         // BrowserUseManager so minis:// HTML opened from chat (which routes
         // through this holder, not the agent browser) can print too.
         config.userContentController.addUserScript(BrowserUseManager.printBridgeScript())
-        // [T-csp-script-rebuild] Same nonce workaround as the provider login sheet.
-        CSPRecovery.installScriptRebuild(in: config)
 
         if localFile {
             let prefs = config.preferences
