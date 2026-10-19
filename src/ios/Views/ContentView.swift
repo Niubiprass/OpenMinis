@@ -8991,25 +8991,23 @@ private struct ForceSyncToastBanner: View {
 }
 
 
-// ios15-port: NotificationNavigationStore 是 iOS 16 的通知深链类型。这里把垫片
-// 直接写进 ContentView.swift (在 .pbxproj 里, 必然参与编译), 调用点保持不变;
-// iOS 15 上深链静默 no-op (整个点击通知跳转功能本就是 iOS 16+)。标记 @MainActor
-// 以匹配 NotificationNavigationStore 的主线程隔离。
+// [T-notification-tap-ios15] These used to no-op below iOS 16, which is the
+// whole reason a notification tap landed on the home list instead of the
+// session it was about. Kept as named shims so the call sites stay untouched,
+// but they now forward on every supported OS.
 @MainActor
 func nnsMarkHandled() {
-    if #available(iOS 16.0, *) { NotificationNavigationStore.shared.markHandled() }
+    NotificationNavigationStore.shared.markHandled()
 }
 
 @MainActor
 func nnsTakePending() -> String? {
-    if #available(iOS 16.0, *) { return NotificationNavigationStore.shared.takePending() }
-    return nil
+    NotificationNavigationStore.shared.takePending()
 }
 
 @MainActor
 var nnsHandledRecently: Bool {
-    if #available(iOS 16.0, *) { return NotificationNavigationStore.shared.handledRecently }
-    return false
+    NotificationNavigationStore.shared.handledRecently
 }
 
 // V64R: global soft-budget settings; original hard-window safety stays intact.

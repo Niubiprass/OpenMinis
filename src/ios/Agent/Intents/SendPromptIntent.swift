@@ -440,7 +440,10 @@ enum ShortcutNotification {
 /// path (`.onReceive` did navigate) marks it handled so the launch-screen
 /// logic yields either way.
 @MainActor
-@available(iOS 16.0, *) // ios15-port
+/// [T-notification-tap-ios15] Was gated to iOS 16, with a shim that silently
+/// did nothing on iOS 15 — so tapping a completion notice only reopened the
+/// app where it already was. The class stores a String and two Dates; there
+/// is nothing here that needs 16.
 final class NotificationNavigationStore {
     static let shared = NotificationNavigationStore()
 
