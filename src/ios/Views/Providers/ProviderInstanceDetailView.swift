@@ -481,8 +481,6 @@ struct ProviderInstanceDetailView: View {
     }
 
     // MARK: - Credential Section
-
-    @ViewBuilder
     // MARK: - [T-quota-newapi-balance] Balance section
 
     /// Real-balance credentials for New API / One API relays.
@@ -580,6 +578,7 @@ struct ProviderInstanceDetailView: View {
         }
     }
 
+    @ViewBuilder
     private func credentialSection(_ instance: ProviderInstance) -> some View {
         switch instance.credentialType {
         case .apiKey:
