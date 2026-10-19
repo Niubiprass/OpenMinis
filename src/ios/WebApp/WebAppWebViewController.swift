@@ -22,8 +22,6 @@ private let webAppWebLogger = AppLogger(category: "WebAppWeb")
 ///     session is walled off from every other shortcut's.
 ///   - No `WKScriptMessageHandler` registered. `window.webkit` is unset.
 final class WebAppWebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
-    /// [T-csp-recovery] URLs already re-rendered from their own DOM.
-    private let cspRepaired = NSMutableSet()
 
     private let shortcut: WebAppShortcut
     private let resolved: WebAppPathResolver.Resolved
@@ -256,12 +254,8 @@ final class WebAppWebViewController: UIViewController, WKNavigationDelegate, WKU
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // [T-csp-recovery] Recover pages that fetched their scripts but were
-        // stopped by a nonce-empty CSP from running them.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self, weak webView] in
-            guard let self = self, let webView = webView else { return }
-            CSPRecovery.repairIfStuck(webView, alreadyRepaired: self.cspRepaired)
-        }
+        // [T-csp-script-rebuild] The rebuild script is injected at document
+        // start via the configuration, so there is nothing to do here.
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

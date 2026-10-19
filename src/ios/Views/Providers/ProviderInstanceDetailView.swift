@@ -34,6 +34,9 @@ struct ProviderInstanceDetailView: View {
     @State private var quotaTokenInput = ""
     @State private var quotaTokenLoaded = false
     @State private var showQuotaLogin = false
+    // [T-multikey] Key ring state shown in the credential area.
+    @State private var multiKeyEnabled = false
+    @State private var multiKeyCount = 0
     @State private var quotaRefreshing = false
     @State private var quotaMessage: String?
     /// [T-quota-threshold] Shared across providers; persisted in UserDefaults.
@@ -244,6 +247,36 @@ struct ProviderInstanceDetailView: View {
                 Text(instance.credentialType == .apiKey
                      ? "API key is stored securely in the iOS Keychain."
                      : "OAuth tokens are stored per-instance in the iOS Keychain.")
+            }
+
+            // MARK: Multi-key [T-multikey]
+            // Only API-key instances: an OAuth provider has one token, there
+            // is nothing to rotate.
+            if instance.credentialType == .apiKey {
+                Section {
+                    Toggle(isOn: $multiKeyEnabled) {
+                        Text("多 Key 模式")
+                    }
+                    .onChange(of: multiKeyEnabled) { on in
+                        ProviderMultiKeyManager.shared.setEnabled(on, for: instance.id)
+                    }
+                    if multiKeyEnabled {
+                        // iOS 15 没有 NavigationLink { } label: { } 这个写法（16 才有），
+                        // 这里必须用 destination:label: 的旧签名。
+                        NavigationLink(destination: MultiKeyManagerView(instance: instance)) {
+                            HStack {
+                                Text("多 Key 管理")
+                                Spacer()
+                                Text("\(multiKeyCount) 个")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("多 Key")
+                } footer: {
+                    Text("开启后，请求会在这几个 Key 之间轮换。某个 Key 报错会自动跳过，不再卡住对话。")
+                }
             }
 
             // MARK: Balance [T-quota-newapi-balance]
@@ -773,6 +806,13 @@ struct ProviderInstanceDetailView: View {
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
                 .onAppear { editingCustomBaseURL = instance.customBaseURL ?? "" }
+            .onAppear {
+                // [T-multikey] Reflect the persisted ring state every time the
+                // screen appears, so coming back from the manager page shows
+                // the current count instead of a stale zero.
+                multiKeyEnabled = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
+                multiKeyCount = ProviderMultiKeyManager.shared.keys(for: instance.id).count
+            }
                 .onSubmit { saveCustomBaseURL(instance) }
                 .onDisappear { saveCustomBaseURL(instance) }
 

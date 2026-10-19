@@ -63,11 +63,12 @@ class Wiring(unittest.TestCase):
 
     def test_chat_web_preview_uses_it(self):
         self.assertIn("CSPRecovery.installScriptRebuild(in: config)", PREVIEW)
-        self.assertIn("cspRepaired", PREVIEW)
+        # The old post-hoc repair path is gone: recovery happens in the config hook.
+        self.assertNotIn("repairIfStuck", PREVIEW)
 
     def test_webapp_uses_it(self):
         self.assertIn("CSPRecovery.installScriptRebuild(in: cfg)", WEBAPP)
-        self.assertIn("cspRepaired", WEBAPP)
+        self.assertNotIn("repairIfStuck", WEBAPP)
 
     def test_all_call_sites_install_the_hook(self):
         for name, src in [('login', LOGIN), ('preview', PREVIEW), ('webapp', WEBAPP)]:
@@ -81,11 +82,13 @@ class Wiring(unittest.TestCase):
         self.assertNotIn("installScriptRebuild", manager)
 
 
-class ExternalBrowser(unittest.TestCase):
-    def test_login_sheet_offers_an_escape_hatch(self):
-        self.assertIn("UIApplication.shared.open(url)", LOGIN)
-        self.assertIn('Image(systemName: "safari")', LOGIN)
-        self.assertIn("用外部浏览器打开", LOGIN)
+class NoDeadEscapeHatch(unittest.TestCase):
+    def test_external_browser_button_is_gone(self):
+        # It could never help: cookies do not cross the iOS sandbox boundary,
+        # so opening the site in Reynard/Safari changed nothing that the app
+        # could read. The user pointed this out; the button is removed.
+        self.assertNotIn("UIApplication.shared.open(url)", LOGIN)
+        self.assertNotIn("用外部浏览器打开", LOGIN)
 
 
 if __name__ == '__main__':

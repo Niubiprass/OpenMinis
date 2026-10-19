@@ -164,7 +164,7 @@ extension AIChatViewModel {
         case .anthropic:
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) else {
+                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 return AnthropicProvider(apiKey: key, model: entry.model, basePath: customBase, appendV1Suffix: appendV1, customUserAgent: ua)
@@ -183,7 +183,7 @@ extension AIChatViewModel {
         case .gemini:
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) else {
+                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 return GeminiProvider(apiKey: key, model: entry.model, customBasePath: customBase)
@@ -206,7 +206,7 @@ extension AIChatViewModel {
             let isMistral = (customBase ?? "").lowercased().contains("mistral.ai")
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) else {
+                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 let provider = OpenAIProvider(apiKey: key, model: entry.model, customBaseURL: customBase, appendV1Suffix: appendV1)
@@ -243,7 +243,7 @@ extension AIChatViewModel {
                let manualToken = ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") {
                 key = manualToken
             } else {
-                guard let storedKey = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) else {
+                guard let storedKey = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 key = storedKey
@@ -264,7 +264,7 @@ extension AIChatViewModel {
             // (T-model-use-codex-responses-api-34889).
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) else {
+                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 let respProvider = OpenAIProvider(apiKey: key, model: entry.model, customBaseURL: customBase, appendV1Suffix: appendV1)
@@ -292,7 +292,7 @@ extension AIChatViewModel {
             let xaiAppendV1 = customBase == nil ? false : appendV1
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) else {
+                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 return LLMProviderFactory.applyCustomUserAgent(OpenAIProvider(apiKey: key, model: entry.model, customBaseURL: xaiBase, appendV1Suffix: xaiAppendV1), instance: instance)
@@ -317,7 +317,7 @@ extension AIChatViewModel {
             let kimiAppendV1 = customBase == nil ? true : appendV1  // default base …/coding needs /v1 appended
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) else {
+                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 return LLMProviderFactory.applyCustomUserAgent(OpenAIProvider(apiKey: key, model: entry.model, customBaseURL: kimiBase, appendV1Suffix: kimiAppendV1), instance: instance)

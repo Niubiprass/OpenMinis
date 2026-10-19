@@ -774,22 +774,6 @@ struct ProviderQuotaLoginView: View {
                         dismiss()
                     }
                 }
-                // [T-quota-external-browser] Escape hatch for sites this
-                // WebView cannot render, or that need a real browser to
-                // finish login. Opens the site root in whatever browser the
-                // user set as default — including Reynard. Cookies do NOT
-                // cross the sandbox boundary, so this is for signing in and
-                // copying an access token back, not for moving a session.
-                ToolbarItem(placement: .navigationBarLeading) {
-                    if let url = siteURL {
-                        Button {
-                            UIApplication.shared.open(url)
-                        } label: {
-                            Image(systemName: "safari")
-                        }
-                        .accessibilityLabel(Text("用外部浏览器打开"))
-                    }
-                }
             }
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -843,9 +827,6 @@ private struct QuotaLoginWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         private let parent: QuotaLoginWebView
         weak var host: WKWebView?
-        /// [T-csp-recovery] URLs already re-rendered from their own DOM so a
-        /// single page can never loop.
-        private let cspRepaired = NSMutableSet()
 
         init(_ parent: QuotaLoginWebView) { self.parent = parent }
 

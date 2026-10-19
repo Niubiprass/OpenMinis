@@ -238,6 +238,8 @@
 		E5E0000A1 /* ExternalFileImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5E0000A2 /* ExternalFileImporter.swift */; };
 		E5MIMP01BF42F3B941A00049557 /* MemoryImportInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5MIMP01FR42F3B941A00049557 /* MemoryImportInbox.swift */; };
 		E5CSPR01BF42F3B941A00049557 /* CSPRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CSPR01FR42F3B941A00049557 /* CSPRecovery.swift */; };
+		E5MKYV01BF42F3B941A00049557 /* MultiKeyManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5MKYV01FR42F3B941A00049557 /* MultiKeyManagerView.swift */; };
+		E5MKEY01BF42F3B941A00049557 /* ProviderMultiKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5MKEY01FR42F3B941A00049557 /* ProviderMultiKeys.swift */; };
 		E5F000001 /* ISHExecutionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F000011 /* ISHExecutionCoordinator.swift */; };
 		E5F000002 /* MinisFsRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F000012 /* MinisFsRouter.swift */; };
 		E5F00001 /* LLMProviderFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F00002 /* LLMProviderFactory.swift */; };
@@ -935,6 +937,8 @@
 		E5E0000A2 /* ExternalFileImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalFileImporter.swift; sourceTree = "<group>"; };
 		E5MIMP01FR42F3B941A00049557 /* MemoryImportInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryImportInbox.swift; sourceTree = "<group>"; };
 		E5CSPR01FR42F3B941A00049557 /* CSPRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSPRecovery.swift; sourceTree = "<group>"; };
+		E5MKYV01FR42F3B941A00049557 /* MultiKeyManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiKeyManagerView.swift; sourceTree = "<group>"; };
+		E5MKEY01FR42F3B941A00049557 /* ProviderMultiKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderMultiKeys.swift; sourceTree = "<group>"; };
 		E5F000011 /* ISHExecutionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ISHExecutionCoordinator.swift; sourceTree = "<group>"; };
 		E5F000012 /* MinisFsRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MinisFsRouter.swift; sourceTree = "<group>"; };
 		E5F00002 /* LLMProviderFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMProviderFactory.swift; sourceTree = "<group>"; };
@@ -1923,6 +1927,8 @@
 				E5E0000A2 /* ExternalFileImporter.swift */,
 				E5MIMP01FR42F3B941A00049557 /* MemoryImportInbox.swift */,
 				E5CSPR01FR42F3B941A00049557 /* CSPRecovery.swift */,
+				E5MKYV01FR42F3B941A00049557 /* MultiKeyManagerView.swift */,
+				E5MKEY01FR42F3B941A00049557 /* ProviderMultiKeys.swift */,
 				E5E000017 /* SharedContainerStore.swift */,
 				AADDA9E02F6ECCF400B66649 /* ThumbnailCache.swift */,
 			);
@@ -3119,6 +3125,8 @@
 				E5E0000A1 /* ExternalFileImporter.swift in Sources */,
 				E5MIMP01BF42F3B941A00049557 /* MemoryImportInbox.swift in Sources */,
 				E5CSPR01BF42F3B941A00049557 /* CSPRecovery.swift in Sources */,
+				E5MKYV01BF42F3B941A00049557 /* MultiKeyManagerView.swift in Sources */,
+				E5MKEY01BF42F3B941A00049557 /* ProviderMultiKeys.swift in Sources */,
 				E5G000001 /* BackgroundKeepAliveManager.swift in Sources */,
 				E5G000002 /* AgentLiveActivityManager.swift in Sources */,
 				E5G000003 /* EnhancedBackgroundSettingsView.swift in Sources */,
