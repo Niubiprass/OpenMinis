@@ -2,10 +2,15 @@ import SwiftUI
 import UIKit
 
 struct AboutView: View {
+    /// [T-version-display] Shows ONLY the marketing version ("1.15").
+    ///
+    /// The build number used to be appended as "1.14 (160651)". The user's
+    /// requirement: the app should read as the current release (1.15) and the
+    /// internal build stamp must stay invisible — it is only needed to tell
+    /// builds apart during debugging, and `buildDate` below already answers
+    /// "which build is actually running?" on the device.
     private let appVersion: String = {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        return "\(version) (\(build))"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
     }()
 
     /// When this binary was built, from the executable's modification date.
