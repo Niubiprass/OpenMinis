@@ -37,6 +37,12 @@ final class ProviderQuotaService: ObservableObject {
         var kind: Kind = .used
         /// Real remaining balance in USD when known (`kind == .balance`).
         var balanceUSD: Double? = nil
+        /// [T-quota-multikey-perkey] The figure itself in USD, for whichever
+        /// kind this is — remaining for `.balance`, month-to-date spend for
+        /// `.used`. Added so the per-key rows can print a right-aligned number
+        /// (`$0.86`) instead of re-parsing `displayText`, which carries the
+        /// localized prefix and cannot be turned back into a value reliably.
+        var amountUSD: Double? = nil
 
         enum Kind {
             /// Provider-reported month-to-date spend (no trustworthy limit).
@@ -74,6 +80,41 @@ final class ProviderQuotaService: ObservableObject {
     private var cache: [String: CacheEntry] = [:]
     private let lock = NSLock()
     private let ttl: TimeInterval = 300
+
+    // MARK: - [T-quota-multikey-perkey] One row per key
+
+    /// One line in the detail page's 余额 section: the credential key, or one
+    /// key out of the rotation ring.
+    ///
+    /// The app has TWO key stores and they are not the same thing: `凭证`'s
+    /// single Keychain key (the "主 Key", the fallback when every ring key is
+    /// parked) and the multi-key ring. Balance used to be fetched for the
+    /// credential only, so with 多 Key 模式 on, the number on screen belonged to
+    /// a key that was not serving the requests. These rows make the ownership
+    /// explicit instead of picking a winner.
+    struct KeyQuota: Identifiable {
+        /// `main`, or the ring key's own UUID. Stable across refreshes.
+        let id: String
+        /// "主 Key" / "轮询 1".
+        let title: String
+        /// Short glyph inside the leading badge: "主" for the credential key,
+        /// the rotation index for a ring key.
+        let badge: String
+        /// Head…tail only — a key never reaches the UI whole.
+        let masked: String
+        let isMain: Bool
+        /// `nil` means "not answered": never queried, or queried and the site
+        /// has no balance endpoint.
+        var info: QuotaInfo? = nil
+        /// When this row was last queried. nil = never (the row then reads
+        /// 未查询 rather than pretending the key has no balance).
+        var queriedAt: Date? = nil
+
+        var isUnavailable: Bool { info == nil && queriedAt != nil }
+    }
+
+    /// Per-instance per-row results, keyed by `KeyQuota.id`.
+    private var keyCache: [String: [String: CacheEntry]] = [:]
 
     // MARK: Sync read for UI
 
@@ -115,7 +156,15 @@ final class ProviderQuotaService: ObservableObject {
     }
 
     func refreshAllIfNeeded(instances: [ProviderInstance]) {
-        let missing = instances.filter { isMissing(instanceId: $0.id) }
+        // [T-quota-multikey-perkey] A provider in 多 Key 模式 is left ALONE
+        // here. Its request-serving key is whichever ring key the rotation
+        // picks, so an automatic single-key fetch would paint the credential
+        // key's number next to a provider that is being billed elsewhere — a
+        // wrong answer is worse than a blank one. Those providers are refreshed
+        // only when the user asks, from the detail page.
+        let missing = instances
+            .filter { !ProviderMultiKeyManager.shared.isEnabled(for: $0.id) }
+            .filter { isMissing(instanceId: $0.id) }
         guard !missing.isEmpty else { return }
         Task {
             for instance in missing {
@@ -125,10 +174,137 @@ final class ProviderQuotaService: ObservableObject {
         }
     }
 
+    // MARK: - [T-quota-multikey-perkey] Per-key rows
+
+    /// The rows to draw for `instance`, in display order: the credential key
+    /// first, then the ring (numbered by ring order). Values come from the last
+    /// query; nothing is fetched here — a list body must never start network
+    /// work, and the user explicitly asked for manual refresh only.
+    func quotaRows(for instance: ProviderInstance) -> [KeyQuota] {
+        var rows: [KeyQuota] = []
+
+        if let main = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id),
+           !main.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            var row = KeyQuota(id: "main", title: AppLocalized("主 Key"),
+                               badge: AppLocalized("主"),
+                               masked: Self.mask(main), isMain: true)
+            attach(&row, instanceId: instance.id)
+            rows.append(row)
+        }
+
+        guard ProviderMultiKeyManager.shared.isEnabled(for: instance.id) else { return rows }
+        let ring = ProviderMultiKeyManager.shared.keys(for: instance.id)
+        for (index, key) in ring.enumerated() {
+            var row = KeyQuota(id: key.id,
+                               title: String(format: AppLocalized("轮询 %lld"), Int64(index + 1)),
+                               badge: "\(index + 1)",
+                               masked: key.masked,
+                               isMain: false)
+            attach(&row, instanceId: instance.id)
+            rows.append(row)
+        }
+        return rows
+    }
+
+    private func attach(_ row: inout KeyQuota, instanceId: String) {
+        lock.lock()
+        let entry = keyCache[instanceId]?[row.id]
+        lock.unlock()
+        row.info = entry?.info
+        row.queriedAt = entry?.fetchedAt
+    }
+
+    /// `sk-abc…7f2a` — same head/tail rule the ring uses, so the two kinds of
+    /// key read identically in the list.
+    static func mask(_ key: String) -> String {
+        guard key.count > 14 else { return String(repeating: "•", count: 10) }
+        return key.prefix(6) + "…" + key.suffix(4)
+    }
+
+    /// Query EVERY key of this provider — credential key and every ring key —
+    /// concurrently, publishing each result as it lands.
+    ///
+    /// Manual on purpose: this is the only place N requests are spent, and it
+    /// runs because the user tapped 测试并刷新余额. Concurrency matters here:
+    /// serially, four slow relays would stall the button for a minute.
+    func refreshAllKeys(for instance: ProviderInstance) async {
+        let rows = quotaRows(for: instance)
+        guard !rows.isEmpty else { return }
+
+        // Resolve each row id to the secret it stands for. The ring is read
+        // again (not carried from `rows`) because `KeyQuota` deliberately holds
+        // the masked form only.
+        var secrets: [String: String] = [:]
+        if let main = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) {
+            secrets["main"] = main
+        }
+        for key in ProviderMultiKeyManager.shared.keys(for: instance.id) {
+            secrets[key.id] = key.key
+        }
+
+        await withTaskGroup(of: (String, QuotaInfo?).self) { group in
+            for row in rows {
+                guard let secret = secrets[row.id] else { continue }
+                group.addTask {
+                    let info = await Self.fetchQuota(for: instance, key: secret)
+                    return (row.id, info)
+                }
+            }
+            for await (rowId, info) in group {
+                let entry = CacheEntry(info: info, fetchedAt: Date())
+                lock.lock()
+                keyCache[instance.id, default: [:]][rowId] = entry
+                lock.unlock()
+                if let info {
+                    AppLogger(category: "Quota").info(
+                        "[Quota][perKey] instance=\(instance.id.prefix(8)) row=\(rowId.prefix(8)) "
+                        + "kind=\(info.kind) text=\(info.displayText)")
+                } else {
+                    AppLogger(category: "Quota").info(
+                        "[Quota][perKey] instance=\(instance.id.prefix(8)) row=\(rowId.prefix(8)) unavailable")
+                }
+                await MainActor.run { self.revision += 1 }
+            }
+        }
+
+        publishAggregate(for: instance.id)
+        await MainActor.run { self.revision += 1 }
+    }
+
+    /// Roll the per-key answers into the ONE figure the rest of the app reads
+    /// (list row, picker, composer capsule): the LOWEST real balance, so a
+    /// nearly-spent key cannot hide behind a healthy sibling. Falls back to the
+    /// credential key's usage-only figure when no site gives a real balance.
+    private func publishAggregate(for instanceId: String) {
+        lock.lock()
+        let entries = keyCache[instanceId] ?? [:]
+        lock.unlock()
+        guard !entries.isEmpty else { return }
+
+        let balances: [Double] = entries.values.compactMap { entry in
+            guard let info = entry.info, info.kind == .balance else { return nil }
+            return info.balanceUSD
+        }
+        let aggregate: QuotaInfo?
+        if let lowest = balances.min() {
+            aggregate = QuotaInfo(
+                displayText: String(format: "余额 $%.2f", lowest),
+                highlighted: lowest < Self.lowThresholdUSD,
+                kind: .balance,
+                balanceUSD: lowest,
+                amountUSD: lowest)
+        } else {
+            aggregate = entries["main"]?.info
+        }
+        guard let aggregate else { return }
+        lock.lock()
+        cache[instanceId] = CacheEntry(info: aggregate, fetchedAt: Date())
+        lock.unlock()
+    }
+
     // MARK: Fetch
 
     static func fetchQuota(for instance: ProviderInstance) async -> QuotaInfo? {
-        guard instance.isEnabled else { return nil }
         // Only API-key instances: the billing endpoints are key-authenticated
         // (OAuth/manual-token flows have no stable way to reach them).
         let key: String?
@@ -139,6 +315,19 @@ final class ProviderQuotaService: ObservableObject {
             key = nil
         }
         guard let key, !key.isEmpty else { return nil }
+        return await fetchQuota(for: instance, key: key)
+    }
+
+    /// [T-quota-multikey-perkey] Same query, but for ONE explicit key.
+    ///
+    /// The per-key rows are the reason this exists: each line in the detail
+    /// page asks about its own key, so the answer can no longer be implied by
+    /// the instance id. Everything below — endpoint choice, placeholder
+    /// handling, threshold — is shared with the single-key path on purpose;
+    /// two implementations would drift.
+    static func fetchQuota(for instance: ProviderInstance, key: String) async -> QuotaInfo? {
+        guard instance.isEnabled else { return nil }
+        guard !key.isEmpty else { return nil }
 
         var base = instance.effectiveCustomBaseURL
         if base == nil {
@@ -250,13 +439,15 @@ final class ProviderQuotaService: ObservableObject {
             return QuotaInfo(displayText: String(format: "余额 $%.2f", max(remaining, 0)),
                              highlighted: low,
                              kind: .balance,
-                             balanceUSD: max(remaining, 0))
+                             balanceUSD: max(remaining, 0),
+                             amountUSD: max(remaining, 0))
         }
         if totalUsed > 0.001 {
             return QuotaInfo(
                 displayText: String(format: "已用 $%.2f", totalUsed),
                 highlighted: false,
-                kind: .used
+                kind: .used,
+                amountUSD: totalUsed
             )
         }
         return nil
@@ -316,7 +507,8 @@ final class ProviderQuotaService: ObservableObject {
             displayText: String(format: "余额 $%.2f", balance),
             highlighted: balance < lowThresholdUSD,
             kind: .balance,
-            balanceUSD: balance
+            balanceUSD: balance,
+            amountUSD: balance
         )
     }
 
@@ -410,7 +602,9 @@ final class ProviderQuotaService: ObservableObject {
         }
         let usd = cost["usd"] as? Double ?? 0
         if usd > 0.001 {
-            return QuotaInfo(displayText: String(format: "本月 $%.2f", usd), highlighted: false)
+            return QuotaInfo(displayText: String(format: "本月 $%.2f", usd),
+                             highlighted: false,
+                             amountUSD: usd)
         }
         return nil
     }

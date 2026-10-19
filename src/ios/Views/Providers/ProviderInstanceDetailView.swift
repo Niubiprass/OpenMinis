@@ -5,6 +5,10 @@ import SwiftUI
 struct ProviderInstanceDetailView: View {
     let instanceId: String
     @ObservedObject private var store = ProviderConfigStore.shared
+    /// [T-quota-multikey-perkey] The per-key rows fill in as each query lands,
+    /// so the view has to observe the service — without this the data arrived
+    /// and the screen kept showing 未查询 until something else redrew it.
+    @ObservedObject private var quotaService = ProviderQuotaService.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var editingLabel = ""
@@ -123,7 +127,14 @@ struct ProviderInstanceDetailView: View {
                     quotaRefreshing = true
                     quotaMessage = nil
                     Task {
-                        await ProviderQuotaService.shared.refreshQuota(for: instance)
+                        // Same rule as the button: a provider in 多 Key 模式 has
+                        // rows of its own, so the sign-in refresh covers them
+                        // all rather than only the credential key.
+                        if ProviderMultiKeyManager.shared.isEnabled(for: instance.id) {
+                            await ProviderQuotaService.shared.refreshAllKeys(for: instance)
+                        } else {
+                            await ProviderQuotaService.shared.refreshQuota(for: instance)
+                        }
                         let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
                         await MainActor.run {
                             quotaRefreshing = false
@@ -513,6 +524,95 @@ struct ProviderInstanceDetailView: View {
         }
     }
 
+    // MARK: - [T-quota-multikey-perkey] One balance line per key
+
+    /// Approved style B: leading glyph, name + masked key, right-aligned
+    /// tabular amount with a caption underneath.
+    ///
+    /// Right-aligned because several keys sit in one card: with `.monospacedDigit`
+    /// and a fixed trailing edge, `$12.34` / `$0.86` / `$310.00` line up and can
+    /// be compared by eye — the reason this layout was chosen over the pill
+    /// variant, where every amount has a different width.
+    @ViewBuilder
+    private func quotaKeyRow(_ row: ProviderQuotaService.KeyQuota) -> some View {
+        let low = row.info?.highlighted == true
+        let tint: Color = row.isMain ? .accentColor : (low ? .orange : .green)
+
+        HStack(spacing: 11) {
+            Text(row.badge)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(tint.opacity(0.16))
+                )
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text(row.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if low {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 6, height: 6)
+                    }
+                }
+                Text(row.masked)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 6)
+
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(quotaRowAmount(row))
+                    .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(quotaRowAmountColor(row))
+                Text(quotaRowCaption(row))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func quotaRowAmount(_ row: ProviderQuotaService.KeyQuota) -> String {
+        guard let info = row.info else {
+            // A dash, not "$0.00": unknown must never read as "empty".
+            return quotaRefreshing ? "…" : "—"
+        }
+        if let amount = info.amountUSD {
+            return String(format: "$%.2f", amount)
+        }
+        // Anthropic and a few relays report a figure without a numeric field;
+        // fall back to their own wording minus the label.
+        return info.displayText
+    }
+
+    private func quotaRowAmountColor(_ row: ProviderQuotaService.KeyQuota) -> Color {
+        guard let info = row.info else { return .secondary }
+        if info.highlighted { return .orange }
+        return info.kind == .balance ? .green : .secondary
+    }
+
+    private func quotaRowCaption(_ row: ProviderQuotaService.KeyQuota) -> String {
+        guard let info = row.info else {
+            if row.queriedAt != nil { return AppLocalized("不可用") }
+            return quotaRefreshing ? AppLocalized("查询中…") : AppLocalized("未查询")
+        }
+        if info.kind == .balance {
+            return info.highlighted
+                ? String(format: AppLocalized("低于 %@"), String(format: "$%.2f", ProviderQuotaService.lowThresholdUSD))
+                : AppLocalized("余额")
+        }
+        return AppLocalized("已用")
+    }
+
     // MARK: - Credential Section
     // MARK: - [T-quota-newapi-balance] Balance section
 
@@ -524,18 +624,32 @@ struct ProviderInstanceDetailView: View {
     /// The token wins when both exist (see `fetchNewAPIBalance`).
     @ViewBuilder
     private func quotaSection(_ instance: ProviderInstance) -> some View {
-        let current = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
+        // [T-quota-multikey-perkey] One row per key when the rotation ring is
+        // on. The app holds two key stores — the 凭证 Keychain key (the "主
+        // Key", also the fallback when every ring key is parked) and the ring —
+        // and a single "当前" line could only ever describe one of them, which
+        // is exactly the confusion this replaces: with 多 Key 模式 on, the
+        // number on screen belonged to a key that was not serving requests.
+        let rows = quotaService.quotaRows(for: instance)
+        let multiKeyOn = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
+            && rows.contains { !$0.isMain }
 
-        HStack {
-            Text("当前")
-                .foregroundStyle(.secondary)
-            Spacer()
-            if let current {
-                Text(current.displayText)
-                    .foregroundStyle(current.kind == .balance ? Color.green : Color.secondary)
-            } else {
-                Text(quotaRefreshing ? "查询中…" : "未获取")
+        if multiKeyOn {
+            ForEach(rows) { row in
+                quotaKeyRow(row)
+            }
+        } else {
+            HStack {
+                Text("当前")
                     .foregroundStyle(.secondary)
+                Spacer()
+                if let current = quotaService.cachedQuota(instanceId: instance.id) {
+                    Text(current.displayText)
+                        .foregroundStyle(current.kind == .balance ? Color.green : Color.secondary)
+                } else {
+                    Text(quotaRefreshing ? "查询中…" : "未获取")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
 
@@ -566,16 +680,34 @@ struct ProviderInstanceDetailView: View {
             showQuotaLogin = true
         }
 
-        Button(quotaRefreshing ? "刷新中…" : "测试并刷新余额") {
+        // Wording states the cost up front: this is the ONLY place that spends
+        // one request per key, and it is manual — nothing else in the app fires
+        // these queries behind the user's back.
+        Button(quotaRefreshing
+               ? "刷新中…"
+               : (multiKeyOn ? String(format: AppLocalized("测试并刷新余额（查全部 %lld 把）"), Int64(rows.count))
+                             : AppLocalized("测试并刷新余额"))) {
             saveQuotaToken(instance)
             quotaRefreshing = true
             quotaMessage = nil
             Task {
-                await ProviderQuotaService.shared.refreshQuota(for: instance)
-                let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
-                await MainActor.run {
-                    quotaRefreshing = false
-                    quotaMessage = info.map { _ in "已更新" } ?? "未获取到，站点可能不支持余额查询"
+                if multiKeyOn {
+                    await ProviderQuotaService.shared.refreshAllKeys(for: instance)
+                    let answered = ProviderQuotaService.shared.quotaRows(for: instance)
+                        .filter { $0.info != nil }.count
+                    await MainActor.run {
+                        quotaRefreshing = false
+                        quotaMessage = answered > 0
+                            ? String(format: AppLocalized("已更新 %lld 把，其余站点未返回余额"), Int64(answered))
+                            : AppLocalized("未获取到余额，站点可能不支持余额查询")
+                    }
+                } else {
+                    await ProviderQuotaService.shared.refreshQuota(for: instance)
+                    let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
+                    await MainActor.run {
+                        quotaRefreshing = false
+                        quotaMessage = info.map { _ in "已更新" } ?? "未获取到，站点可能不支持余额查询"
+                    }
                 }
             }
         }

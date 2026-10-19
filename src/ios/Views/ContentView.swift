@@ -140,12 +140,30 @@ struct SidebarGroup: Equatable, Identifiable {
     var anyActive = false
     var anyPaused = false
     var isCollapsed = false
+    /// Sessions the user individually tucked away INSIDE this group
+    /// ([T-sidebar-session-collapse]). Rendered as ONE strip row right under
+    /// the group card; they re-enter `ids` only while that strip is expanded.
+    /// Empty for date buckets (the feature is group-scoped).
+    var collapsedIds: [String] = []
+    /// Whether the collapsed strip is currently expanded (in-place peek).
+    var collapseStripExpanded = false
+    /// Aggregates over `collapsedIds` ONLY — the strip carries the running /
+    /// unread / paused signals its hidden members would otherwise show.
+    var collapsedAnyUnread = false
+    var collapsedAnyActive = false
+    var collapsedAnyPaused = false
     var isFolderPinned = false
     var latestDate: Date? = nil      // newest member updatedAt (nil = empty folder)
     var summaryTitle: String? = nil  // newest member's title, for the subtitle line
     /// True on the FIRST folder group only: renders the "Groups" divider
     /// label (styled like the date-bucket headers) above the folder block.
     var showsGroupsHeader = false
+
+    /// True when an EXPANDED group has at least one row to paint — a shown
+    /// member or the tuck strip. Drives the card's corner segmentation: with
+    /// every member tucked, the strip IS the bottom segment, so the card must
+    /// stop drawing its own bottom arc ([T-sidebar-session-collapse]).
+    var hasMemberRows: Bool { !ids.isEmpty || !collapsedIds.isEmpty }
 }
 
 /// A single composed-icon glyph. Small struct instead of a tuple because
@@ -181,6 +199,12 @@ private struct SidebarGroupsMemoKey: Equatable {
     let sessions: [SidebarSessionKey]
     let folders: [ChatFolder]
     let collapsedFolderIds: Set<String>
+    /// [T-sidebar-session-collapse] Per-session collapse state plus which
+    /// strips are open. BOTH belong in the key: they change the produced
+    /// `ids` / strip text, so a memo hit on stale values would render the
+    /// previous arrangement.
+    let collapsedSessionIds: Set<String>
+    let expandedCollapseStrips: Set<String>
     let pendingDraftId: String?
     let pendingDraftFolderId: String?
     let isSearching: Bool
@@ -1185,6 +1209,9 @@ private struct FolderPickerSheet: View {
 }
 
 private enum SessionMenuAction {
+    /// [T-sidebar-session-collapse] Tuck this session into (or pull it out of)
+    /// its group's strip. A UI-state action, never a data mutation.
+    case toggleSessionCollapse(String)
     case togglePin(String)
     case exportJSON(String)
     case exportText(String)
@@ -1453,6 +1480,15 @@ struct ContentView: View {
     /// noise, not signal).
     @State private var collapsedFolderIds: Set<String> =
         Set(UserDefaults.standard.stringArray(forKey: "collapsedFolderIds") ?? [])
+    /// [T-sidebar-session-collapse] Sessions the user individually collapsed
+    /// inside their group. Same contract as collapsedFolderIds: local view
+    /// state, persisted on this device, never synced.
+    @State private var collapsedSessionIds: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "collapsedSessionIds") ?? [])
+    /// Groups whose collapsed strip is currently open. Deliberately TRANSIENT
+    /// (not persisted): peeking is a momentary act, so a relaunch starts with
+    /// every group tidy.
+    @State private var expandedCollapseStripGroupIds: Set<String> = []
     /// Folder ids whose EXPANDED header card is currently scrolled out above
     /// the list's visible top — drives the floating mini-bar. A Set (not a
     /// single id) because "expanded" is the DEFAULT folder state: before the
@@ -1791,6 +1827,22 @@ struct ContentView: View {
     /// between two reasonable destinations, whereas this one decides whether to
     /// override where the user just chose to be.
     private static let pendingBackgroundNavigationTTL: TimeInterval = 90
+
+    /// [T-notification-tap-deferred-flush] Bounded retry budget for a deferred
+    /// push that arrives while the app is still `.background`.
+    ///
+    /// The flush used to be single-shot: if `applicationState` still read
+    /// `.background` at that instant it returned, and nothing tried again until
+    /// the NEXT foreground transition — which may never come, because the app
+    /// has meanwhile become active. Device log 2026-10-20 04:02:04 is exactly
+    /// that: the notification tap deferred at `.625`, `didBecomeActive` landed
+    /// at `.687`, and no `flushing deferred nav commit` line followed. The user
+    /// tapped a completion notice and the app stayed on the session list.
+    /// 10 × 200 ms covers the transition with room to spare and still gives up
+    /// long before the 90 s TTL.
+    private static let pendingFlushRetryDelay: TimeInterval = 0.2
+    private static let pendingFlushRetryLimit = 10
+    @State private var pendingFlushRetryCount = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -2582,6 +2634,19 @@ struct ContentView: View {
             selectedSessionId = sid
             deepLink.pendingSessionId = nil
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            // [T-notification-tap-deferred-flush] The authoritative release
+            // point for a push deferred while backgrounded.
+            //
+            // `.onChange(of: scenePhase)` is not enough on its own: SwiftUI's
+            // scenePhase can flip to `.active` before UIKit's
+            // `applicationState` does, so the flush invoked from there can still
+            // read `.background` and bail — which is exactly what the device log
+            // shows (defer at 04:02:04.625, didBecomeActive at .687, never
+            // flushed). This notification is posted AFTER the state has changed,
+            // so the guard inside the flush is guaranteed to pass here.
+            flushPendingBackgroundNavigation()
+        }
         .onChange(of: scenePhase) { phase in
             // [T-ios-scenephase-active-sigkill] Defer ALL .active work off the
             // synchronous callback. Writing @Published (SyncCore.isAppInBackground)
@@ -2840,6 +2905,11 @@ struct ContentView: View {
             },
             folders: folders,
             collapsedFolderIds: collapsedFolderIds,
+            // Searching is the one mode where collapse must NOT hide results —
+            // a tucked session has to stay findable — so the grouping runs
+            // with an empty set and every member renders.
+            collapsedSessionIds: isSearching ? [] : collapsedSessionIds,
+            expandedCollapseStrips: expandedCollapseStripGroupIds,
             pendingDraftId: pendingFolderDraft?.draftId,
             pendingDraftFolderId: pendingFolderDraft?.folderId,
             isSearching: isSearching,
@@ -2851,7 +2921,9 @@ struct ContentView: View {
             return sidebarGroupsMemo.groups
         }
         let groups = computeGroupedSessionIDs(
-            list, unreadIds: unreadIds, freshCornerIds: freshCornerIds, activeIds: activeIds)
+            list, unreadIds: unreadIds, freshCornerIds: freshCornerIds, activeIds: activeIds,
+            collapsedSessionIds: isSearching ? [] : collapsedSessionIds,
+            expandedCollapseStrips: expandedCollapseStripGroupIds)
         sidebarGroupsMemo.key = key
         sidebarGroupsMemo.groups = groups
         #if DEBUG
@@ -2889,7 +2961,9 @@ struct ContentView: View {
         _ list: [ChatSession],
         unreadIds: Set<String>,
         freshCornerIds: Set<String>,
-        activeIds: Set<String>
+        activeIds: Set<String>,
+        collapsedSessionIds: Set<String> = [],
+        expandedCollapseStrips: Set<String> = []
     ) -> [SidebarGroup] {
         let folderById = Dictionary(folders.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
 
@@ -2977,8 +3051,18 @@ struct ContentView: View {
             // recency-ordered `m` — latestDate/summary mean "newest activity",
             // not "first displayed row".
             let displayOrdered = m.filter(\.isPinned) + m.filter { !$0.isPinned }
-            var g = SidebarGroup(label: folder.name, ids: displayOrdered.map(\.id), folderId: fid)
+            // [T-sidebar-session-collapse] Split the group's members into the
+            // rows the user tucked away and the ones still on show. Collapse is
+            // GROUP-SCOPED and purely presentational: nothing leaves the folder,
+            // `totalCount` still counts everyone, and a collapsed member keeps
+            // whatever position it would have had once the strip is opened
+            // (displayOrdered is already in final row order).
+            let tuckedMembers = displayOrdered.filter { collapsedSessionIds.contains($0.id) }
+            let shownMembers = displayOrdered.filter { !collapsedSessionIds.contains($0.id) }
+            var g = SidebarGroup(label: folder.name, ids: shownMembers.map(\.id), folderId: fid)
             g.totalCount = m.count
+            g.collapsedIds = tuckedMembers.map(\.id)
+            g.collapseStripExpanded = expandedCollapseStrips.contains(fid)
             // Top-3 DISTINCT category glyphs by recency (m is recency-sorted).
             // Distinct because three code sessions rendering three identical
             // terminal glyphs carries no information.
@@ -3002,12 +3086,35 @@ struct ContentView: View {
                     if g.anyUnread, g.anyActive, g.anyPaused { break }
                 }
             }
+            // Same passthrough for the TUCKED members only: while they're
+            // hidden, the strip is the only place their running/unread state can
+            // surface, so it must not go dark. Separate loop, because the one
+            // above early-exits once the group-level flags are all lit and would
+            // otherwise stop before reaching everyone.
+            if !g.collapsedIds.isEmpty,
+               !unreadIds.isEmpty || !activeIds.isEmpty || !freshCornerIds.isEmpty {
+                for s in tuckedMembers {
+                    if !g.collapsedAnyUnread, unreadIds.contains(s.id) { g.collapsedAnyUnread = true }
+                    if !g.collapsedAnyActive, activeIds.contains(s.id) { g.collapsedAnyActive = true }
+                    if !g.collapsedAnyPaused, freshCornerIds.contains(s.id) { g.collapsedAnyPaused = true }
+                    if g.collapsedAnyUnread, g.collapsedAnyActive, g.collapsedAnyPaused { break }
+                }
+            }
             g.isCollapsed = collapsedFolderIds.contains(fid)
             g.isFolderPinned = folder.isPinned
             // m is recency-sorted, so .first is the newest member.
             g.latestDate = m.first?.updatedAt
             g.summaryTitle = m.first?.title
-            if g.isCollapsed { g.ids = [] }
+            if g.isCollapsed {
+                // Whole group shut: no member rows, and no strip either — the
+                // card's own badge is what carries state in that mode.
+                g.ids = []
+            } else if g.collapseStripExpanded {
+                // Peek: the tucked rows re-enter ABOVE the shown ones, right
+                // under the strip, so nothing below them shifts position
+                // between collapsed and expanded states.
+                g.ids = g.collapsedIds + g.ids
+            }
             folderGroups.append(g)
         }
         // Pinned folders float above unpinned ones. Within each half the
@@ -3030,31 +3137,24 @@ struct ContentView: View {
         return folderGroups + dateGroups
     }
 
-    /// Toggle a folder section collapsed/expanded and persist the set.
-    /// Expansion is EXCLUSIVE (accordion): opening a folder closes every
-    /// other one — only one folder interior is on screen at a time, which
-    /// keeps the wrapped-container look unambiguous and the list short.
+    /// Toggle ONE folder section and persist the set.
+    ///
+    /// [T-folder-independent-expand] Expansion is INDEPENDENT, not an
+    /// accordion. Every group keeps its own state: opening one leaves every
+    /// other group exactly as it was, and a group is only ever closed when the
+    /// user closes it. The previous accordion (opening a folder collapsed all
+    /// the others) is what produced the "分组只能显示一个" report — the list
+    /// appeared to throw away a group the user had deliberately opened.
+    ///
+    /// The scroll correction that used to live at the end of this function is
+    /// gone with it: that fix existed because closing the folder ABOVE the
+    /// tapped one dragged the tapped header out of the viewport. With no
+    /// sibling changing state, nothing above the tapped header moves — a
+    /// toggle only inserts or removes rows BELOW it.
     private func toggleFolderCollapsed(_ folderId: String, scrollProxy: ScrollViewProxy? = nil) {
-        // [T-ios-folder-accordion-scroll-anchor] Keep the tapped folder in view
-        // across the swap.
-        //
-        // Opening folder B closes folder A (accordion). When A sat ABOVE B and
-        // the user had scrolled deep into A's long member list, A's rows are
-        // removed from the List and everything below — including B, the folder
-        // they just tapped — slides UP by A's full expanded height. That height
-        // is routinely taller than the viewport, so B lands off-screen above the
-        // top edge and the user has to scroll back to find what they opened.
-        //
-        // Fix: after the state change, bring B's header back into view IF it
-        // left. This reuses the same anchor and proxy the mini-bar's "back to
-        // header" jump already uses, so no new scroll infrastructure is
-        // introduced. See the correction block at the end of this function for
-        // why the scroll is conditional rather than unconditional.
-        //
-        // Only on EXPAND — collapsing is self-anchoring (the header the user
-        // tapped stays exactly where it is; scrolling then would move content
-        // out from under the finger for no reason).
-        let willExpand = collapsedFolderIds.contains(folderId)
+        // `scrollProxy` stays in the signature (the header's call sites pass it
+        // through) but is deliberately unused now — see the doc note above.
+        _ = scrollProxy
 
         // Animated again by request — with the jitter history baked into the
         // parameters. The original shaking had two ingredients: per-row glass
@@ -3065,70 +3165,12 @@ struct ContentView: View {
         // that the List's per-frame self-size pass stays cheap.
         withAnimation(.easeInOut(duration: 0.25)) {
             if collapsedFolderIds.contains(folderId) {
-                collapsedFolderIds = Set(folders.map(\.id))
                 collapsedFolderIds.remove(folderId)
             } else {
                 collapsedFolderIds.insert(folderId)
             }
         }
         UserDefaults.standard.set(Array(collapsedFolderIds), forKey: "collapsedFolderIds")
-
-        // Deferred one runloop turn on purpose: the rows removed by the collapse
-        // are still in the List when this returns, so measuring now would read
-        // the pre-collapse geometry. Letting SwiftUI apply the structural change
-        // first means the probe values below describe the layout the user will
-        // actually see.
-        //
-        // MINIMAL CORRECTION, not "scroll to top". The first version of this fix
-        // called `scrollTo(anchor: .top)` unconditionally on every expand, which
-        // did keep the folder on screen but slammed it to the top edge even when
-        // it had never moved — the tap read as "jump to top" rather than "expand
-        // in place". Now the header's post-layout position is measured and a
-        // scroll happens ONLY when it actually left the viewport:
-        //
-        //   - still fully on screen  → do nothing at all (the true in-place case)
-        //   - pushed above the top   → bring it just inside the top edge
-        //   - pushed below the bottom→ bring it just inside, still near the top,
-        //                              since an expanded folder needs the space
-        //                              BELOW its header to show members
-        //
-        // `anchor: .top` is still the landing spot when a correction is needed —
-        // what changed is that it is now conditional. SwiftUI's ScrollViewProxy
-        // has no "scroll by delta" primitive, so top-anchoring is the only way to
-        // express "bring this into view"; the win is that the common case no
-        // longer triggers it.
-        if willExpand, let scrollProxy {
-            DispatchQueue.main.async {
-                let topEdge = folderMiniBarTopY
-                let bottomEdge = folderListBottomY
-                guard let headerY = folderHeaderTopY[folderId], bottomEdge > topEdge else {
-                    // No probe reading yet (header never rendered, e.g. expanded
-                    // programmatically while off screen). Fall back to the old
-                    // unconditional behaviour rather than risk leaving the user
-                    // staring at the wrong part of the list.
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        scrollProxy.scrollTo("folderHeader-\(folderId)", anchor: .top)
-                    }
-                    return
-                }
-
-                // Keep a little slack at the top so a header sitting *exactly* on
-                // the boundary isn't judged off-screen by a sub-point rounding
-                // difference, and so a corrected header lands visibly inside the
-                // edge rather than flush against it.
-                let slack: CGFloat = 8
-                let isAboveViewport = headerY < topEdge + slack
-                let isBelowViewport = headerY > bottomEdge - slack
-
-                guard isAboveViewport || isBelowViewport else {
-                    // In place — the whole point of this refinement.
-                    return
-                }
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    scrollProxy.scrollTo("folderHeader-\(folderId)", anchor: .top)
-                }
-            }
-        }
     }
 
     /// Probe report sink. Animated so the mini-bar's insertion/removal
@@ -3446,12 +3488,127 @@ struct ContentView: View {
                 // [T-ios-crash-contextmenu-uaf] Value-only menu view,
                 // no closure captures — see SessionContextMenu.
                 SessionContextMenu(
-                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, filed: session.isFiled),
+                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, filed: session.isFiled, collapsed: session.isFiled && collapsedSessionIds.contains(session.id)),
                     actions: menuActions
                 )
                 .equatable()
             })
         )
+    }
+
+    // MARK: - [T-sidebar-session-collapse] Tucked-sessions strip
+
+    /// One row that stands in for every session the user individually tucked
+    /// away inside this group.
+    ///
+    /// Deliberately a LIST ROW (not a section header, not an overlay): it has
+    /// to sit inside the expanded card, welded directly under the group card,
+    /// and only row-to-row adjacency is 0pt on every platform — the same
+    /// reason the folder card itself is a row (see `stackListBody`).
+    ///
+    /// Position is fixed at the TOP of the group's members, above every shown
+    /// row, so collapsing or expanding it never reorders what the user is
+    /// looking at below (the compact mockup's whole point).
+    private func collapseStrip(_ group: SidebarGroup) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "rectangle.compress.vertical")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color(UIColor.tertiaryLabel))
+            // Interpolation form on purpose (`Text("\(count) collapsed chats")`)
+            // so the catalog key is the "%lld collapsed chats" entry. A plain
+            // String here would bypass localization entirely — the mistake that
+            // shipped raw English into the storage settings page.
+            Group {
+                if group.collapseStripExpanded {
+                    Text("Collapse \(group.collapsedIds.count) chats")
+                } else {
+                    Text("\(group.collapsedIds.count) collapsed chats")
+                }
+            }
+            .font(.system(size: 14))
+            .foregroundStyle(Color(UIColor.secondaryLabel))
+            .lineLimit(1)
+
+            Spacer(minLength: 4)
+
+            // While tucked, these rows' own badges are off screen — the strip
+            // is their ONLY state surface, so it carries the same symbols the
+            // rows use. Order: running, paused (fresh corner badge), unread.
+            HStack(spacing: 5) {
+                if group.collapsedAnyActive {
+                    Circle().fill(Color.green).frame(width: 7, height: 7)
+                }
+                if group.collapsedAnyPaused {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.orange)
+                }
+                if group.collapsedAnyUnread {
+                    Circle().fill(Color.red).frame(width: 7, height: 7)
+                }
+            }
+
+            Image(systemName: "chevron.down")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color(UIColor.tertiaryLabel))
+                .rotationEffect(.degrees(group.collapseStripExpanded ? 0 : -90))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(UIColor.tertiarySystemFill))
+        )
+        .padding(.horizontal, 12)
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onTapGesture { toggleCollapseStrip(group.folderId) }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private func erasedCollapseStrip(_ group: SidebarGroup) -> AnyView {
+        AnyView(
+            collapseStrip(group)
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                // `middle`: the strip is a segment of the expanded card, so it
+                // paints the side walls and lets the header/members supply the
+                // corners — same tiling the member rows use.
+                // `isLast: ids.isEmpty` — when every member is tucked the
+                // strip is the card's LAST segment and has to supply the bottom
+                // corners; with members below it, it must not.
+                .listRowBackground(FolderMemberRowBackground(isLast: group.ids.isEmpty))
+                .modifier(SelectionDisabledIfAvailable())
+        )
+    }
+
+    /// Open/close ONE group's tucked strip. No scroll correction on purpose:
+    /// the strip does not move when its members appear (they are inserted
+    /// right below it, above the shown rows), so there is nothing to anchor.
+    private func toggleCollapseStrip(_ folderId: String?) {
+        guard let folderId else { return }
+        withAnimation(.easeInOut(duration: 0.22)) {
+            if expandedCollapseStripGroupIds.contains(folderId) {
+                expandedCollapseStripGroupIds.remove(folderId)
+            } else {
+                expandedCollapseStripGroupIds.insert(folderId)
+            }
+        }
+    }
+
+    /// Tuck one session into (or pull it back out of) its group's strip.
+    /// Persisted immediately: this is arrangement the user made by hand, so a
+    /// relaunch must not undo it (unlike the strip's own open state).
+    private func toggleSessionCollapse(_ sessionId: String) {
+        withAnimation(.easeInOut(duration: 0.22)) {
+            if collapsedSessionIds.contains(sessionId) {
+                collapsedSessionIds.remove(sessionId)
+            } else {
+                collapsedSessionIds.insert(sessionId)
+            }
+        }
+        UserDefaults.standard.set(Array(collapsedSessionIds), forKey: "collapsedSessionIds")
     }
 
     /// The folder card row, erased — four modifiers plus a custom modifier that
@@ -3501,6 +3658,12 @@ struct ContentView: View {
                     // sections short.)
                     if group.folderId != nil, !isSelecting {
                         erasedFolderSectionHeader(group, scrollProxy: scrollProxy)
+                    }
+                    // [T-sidebar-session-collapse] The tucked-sessions strip:
+                    // one row directly under the group card, above every member
+                    // row. Group-scoped, so date buckets never get one.
+                    if !group.collapsedIds.isEmpty, !group.isCollapsed, !isSelecting {
+                        erasedCollapseStrip(group)
                     }
                     ForEach(group.ids, id: \.self) { sessionId in
                         // [T-ios-session-list-equatable-jank] Resolve via the
@@ -3598,6 +3761,9 @@ struct ContentView: View {
                             .listRowBackground(Color.clear)
                             .modifier(SelectionDisabledIfAvailable())
                     }
+                    if !group.collapsedIds.isEmpty, !group.isCollapsed, !isSelecting {
+                        erasedCollapseStrip(group)
+                    }
                     ForEach(group.ids, id: \.self) { sessionId in
                         // [T-ios-session-list-equatable-jank] Resolve via the
                         // @State cache (sessionForRow), NOT a captured
@@ -3677,7 +3843,7 @@ struct ContentView: View {
                                         : session.id
                                     if let menuSid {
                                         SessionContextMenu(
-                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, filed: session.isFiled),
+                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, filed: session.isFiled, collapsed: session.isFiled && collapsedSessionIds.contains(menuSid)),
                                             actions: menuActions
                                         )
                                         .equatable()
@@ -4370,7 +4536,10 @@ struct ContentView: View {
     /// Apply a navigation change that was held back while backgrounded.
     /// Called from the `scenePhase == .active` observer.
     private func flushPendingBackgroundNavigation() {
-        guard let pending = pendingBackgroundNavigation else { return }
+        guard let pending = pendingBackgroundNavigation else {
+            pendingFlushRetryCount = 0
+            return
+        }
         // Re-check rather than trust the caller: the `.onAppear` backstop can
         // run while still backgrounded, and committing there would reinstate
         // exactly the synchronous background push this gate exists to prevent.
@@ -4379,7 +4548,17 @@ struct ContentView: View {
         // genuinely BACKGROUNDED app must hold the push back. Blocking on
         // `.inactive` here too would re-deny the flush during the very
         // foreground transition that is supposed to release it.
-        guard UIApplication.shared.applicationState != .background else { return }
+        //
+        // [T-notification-tap-deferred-flush] "Still background" is a TRANSIENT
+        // state, not a verdict — so retry instead of burning the only attempt.
+        // The retry is what the notification tap needed: `didBecomeActive` lands
+        // a few dozen milliseconds after the deferral, and the single-shot
+        // version had already returned by then.
+        guard UIApplication.shared.applicationState != .background else {
+            schedulePendingFlushRetry()
+            return
+        }
+        pendingFlushRetryCount = 0
         // Consume before the staleness check, not after: an expired request is
         // dropped for good. Leaving it parked would let a later foreground —
         // which is even further from the original intent — try again.
@@ -4394,6 +4573,30 @@ struct ContentView: View {
         tx.disablesAnimations = true
         withTransaction(tx) {
             navigationPath = pending.path
+        }
+        // The push itself is what the user is waiting for; log it so the next
+        // report can be checked against the destination rather than inferred
+        // from the absence of a failure line.
+        let target = pending.path.isEmpty ? "empty" : String(describing: pending.path.count)
+        shareLog.info("🔄SESSION deferred nav commit applied (pathCount=\(target))")
+    }
+
+    /// [T-notification-tap-deferred-flush] Re-attempt a flush that arrived while
+    /// the app was still `.background`, up to `pendingFlushRetryLimit` times.
+    ///
+    /// Bounded on purpose: an infinite retry would keep rescheduling itself for
+    /// as long as a pending push existed, and the TTL already decides when a
+    /// deferred destination is no longer wanted.
+    private func schedulePendingFlushRetry() {
+        guard pendingFlushRetryCount < Self.pendingFlushRetryLimit else {
+            shareLog.info("🔄SESSION deferred nav commit retry budget exhausted (count=\(pendingFlushRetryCount)) — waiting for the next foreground")
+            return
+        }
+        pendingFlushRetryCount += 1
+        let attempt = pendingFlushRetryCount
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pendingFlushRetryDelay) { [self] in
+            shareLog.info("🔄SESSION retrying deferred nav commit (attempt=\(attempt))")
+            flushPendingBackgroundNavigation()
         }
     }
 
@@ -4501,6 +4704,8 @@ struct ContentView: View {
     private func wireMenuActions() {
         menuActions.handler = { [self] action in
             switch action {
+            case .toggleSessionCollapse(let sid):
+                toggleSessionCollapse(sid)
             case .togglePin(let sid):
                 Task { @MainActor in
                     await ChatStore.shared.toggleSessionPin(sid)
@@ -4980,6 +5185,21 @@ struct ContentView: View {
             // sidebar rather than going stale after the first load.
             ViewModelCache.noteSessionsLoaded(sessions)
             folders = await ChatStore.shared.listFolders()
+            // [T-sidebar-session-collapse] Drop tuck marks whose session no
+            // longer exists. Deleted sessions never get a row again, so a stale
+            // id would only accumulate in UserDefaults forever (and would
+            // resurface as a surprise if an id were ever reused). Done here
+            // because this is the one place that sees the full, unfiltered
+            // session list — pruning during a body pass would mutate state
+            // inside AttributeGraph.
+            if !collapsedSessionIds.isEmpty {
+                let liveIds = Set(sessions.map(\.id))
+                let pruned = collapsedSessionIds.intersection(liveIds)
+                if pruned.count != collapsedSessionIds.count {
+                    collapsedSessionIds = pruned
+                    UserDefaults.standard.set(Array(pruned), forKey: "collapsedSessionIds")
+                }
+            }
             sessionRefreshInFlight = false
             lastRefreshFinishedAt = Date()
             if sessionRefreshPending {
@@ -5392,7 +5612,7 @@ struct ContentView: View {
     @ViewBuilder
     private func sectionHeader(index: Int, group: SidebarGroup) -> some View {
         if isSelecting {
-            let groupIds = Set(group.ids)
+            let groupIds = Set(group.ids).union(group.collapsedIds)
             let allSelected = !groupIds.isEmpty && groupIds.isSubset(of: selectedIds)
             Button {
                 if allSelected {
@@ -5584,7 +5804,7 @@ struct ContentView: View {
             // Mini-bar trigger: only an EXPANDED, populated group needs its
             // header tracked (a collapsed card scrolling away is just a card).
             .background {
-                if let fid = group.folderId, !group.isCollapsed, !group.ids.isEmpty {
+                if let fid = group.folderId, !group.isCollapsed, group.hasMemberRows {
                     FolderHeaderVisibilityProbe(
                         folderId: fid,
                         thresholdY: folderMiniBarTopY,
@@ -5593,7 +5813,7 @@ struct ContentView: View {
             }
             .modifier(FolderCardBackground(
                 isDropTarget: dropTargetFolderId == group.folderId,
-                isExpanded: !group.isCollapsed && !group.ids.isEmpty))
+                isExpanded: !group.isCollapsed && group.hasMemberRows))
             // Outer insets float the rounded card inside the list width —
             // the inset frame is what separates it from the full-bleed
             // session rows at a glance. (The glass/pre-26 card is what the
@@ -5607,7 +5827,7 @@ struct ContentView: View {
             .padding(.top, 4)
             // Expanded: no bottom gap — the card welds onto the first member
             // row's container segment.
-            .padding(.bottom, (group.isCollapsed || group.ids.isEmpty) ? 4 : 0)
+            .padding(.bottom, (group.isCollapsed || !group.hasMemberRows) ? 4 : 0)
         .onTapGesture {
             if let fid = group.folderId { toggleFolderCollapsed(fid, scrollProxy: scrollProxy) }
         }
@@ -6919,6 +7139,18 @@ private struct SessionContextMenu: View, Equatable {
             Label(LocalizedStringKey(key.pinned ? "Unpin" : "Pin"),
                   systemImage: key.pinned ? "pin.slash" : "pin")
         }
+        // [T-sidebar-session-collapse] Group members only — a session living in
+        // a date bucket has no strip to tuck into, so the item is absent rather
+        // than present-and-inert.
+        if key.filed {
+            Button {
+                actions.send(.toggleSessionCollapse(key.sid))
+            } label: {
+                Label(LocalizedStringKey(key.collapsed ? "Uncollapse" : "Collapse"),
+                      systemImage: key.collapsed ? "rectangle.expand.vertical"
+                                                 : "rectangle.compress.vertical")
+            }
+        }
         Menu {
             Button {
                 actions.send(.exportJSON(key.sid))
@@ -7039,6 +7271,15 @@ private struct MenuKey: Equatable {
     /// keeping this a pure value type — see the type comment above about the
     /// use-after-free that closures/reference captures caused here.
     let filed: Bool
+    /// Whether the session is currently tucked into its group's collapsed
+    /// strip — drives the "Collapse" / "Uncollapse" wording.
+    ///
+    /// Only meaningful together with `filed`: collapse is group-scoped (a
+    /// session outside any group has no strip to live in), which is why both
+    /// call sites pass `filed && …`. Declared AFTER `filed` on purpose — this
+    /// is a memberwise-init value type and callers pass arguments in
+    /// declaration order.
+    let collapsed: Bool
 }
 
 // MARK: - Session Row
