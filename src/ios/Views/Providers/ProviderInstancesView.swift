@@ -826,6 +826,10 @@ private struct QuotaLoginWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+        // [T-csp-script-rebuild] Rebuild blocked <script> tags at document
+        // start instead of re-rendering the page afterwards. Keeps the real
+        // origin/cookies/CSP; only the nonce check is worked around.
+        CSPRecovery.installScriptRebuild(in: config)
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
@@ -848,19 +852,36 @@ private struct QuotaLoginWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             parent.isLoading = false
             // Give a healthy SPA a moment to boot before calling it stuck.
+            // [T-csp-recovery-diag] Two passes: the first re-renders a page
+            // that never laid out; if the SAME page is still stuck after that
+            // (the re-render did not help), report why instead of silently
+            // spinning forever.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self, weak webView] in
                 guard let self = self, let webView = webView else { return }
-                CSPRecovery.repairIfStuck(webView, alreadyRepaired: self.cspRepaired)
+                // The rebuild script runs before parsing, so by now a page
+                // that still shows a splash genuinely failed for another
+                // reason. Report it instead of silently spinning.
+                CSPRecovery.diagnose(webView) { [weak self] info in
+                    guard let self = self else { return }
+                    NSLog("[CSPRecovery] still stuck: %@", info)
+                    self.parent.failedReason = info
+                }
             }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             parent.isLoading = false
+            // [T-csp-recovery-cancel] Re-rendering through loadHTMLString
+            // cancels the in-flight navigation, which arrives here as
+            // NSURLErrorCancelled (-999). That is us, not a failure — showing
+            // it as "网页打开失败" made a working repair look broken.
+            guard !CSPRecovery.isCancellation(error) else { return }
             parent.failedReason = error.localizedDescription
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             parent.isLoading = false
+            guard !CSPRecovery.isCancellation(error) else { return }
             parent.failedReason = error.localizedDescription
         }
     }

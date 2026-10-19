@@ -24,6 +24,20 @@ PBX = (ROOT / 'src/ios/Minis.xcodeproj/project.pbxproj').read_text()
 
 
 class SharedComponent(unittest.TestCase):
+    def test_rebuilds_scripts_at_document_start(self):
+        # Native injection is not subject to the page CSP; createElement-made
+        # scripts are trusted through 'strict-dynamic'.
+        self.assertIn("scriptRebuildSource", SHARED)
+        self.assertIn("injectionTime: .atDocumentStart", SHARED)
+        self.assertIn("createElement('script')", SHARED)
+        self.assertIn("installScriptRebuild", SHARED)
+
+    def test_keeps_original_navigation(self):
+        # Re-rendering via loadHTMLString changed the security context and left
+        # Discourse stuck; the rebuild path must not do that.
+        self.assertNotIn("loadHTMLString(", SHARED)
+        self.assertNotIn("repairIfStuck", SHARED)
+
     def test_probe_is_framework_agnostic(self):
         # Discourse-specific hint first, then a generic "scripts present but
         # nothing laid out" test so Vue/React sites are covered too.
@@ -36,19 +50,6 @@ class SharedComponent(unittest.TestCase):
         # so text length would mask the failure.
         self.assertNotIn("innerText.length", SHARED)
 
-    def test_rerenders_without_http_response(self):
-        self.assertIn("loadHTMLString(", SHARED)
-        self.assertIn('"<!DOCTYPE html>" + html', SHARED)
-        self.assertIn("baseURL: url", SHARED)
-
-    def test_never_loops(self):
-        self.assertIn("NSMutableSet", SHARED)
-        self.assertIn("guard !alreadyRepaired.contains(key) else { return }", SHARED)
-        self.assertIn("alreadyRepaired.add(key)", SHARED)
-
-    def test_rejects_tiny_documents(self):
-        self.assertIn("html.count > 1000", SHARED)
-
     def test_registered_in_project(self):
         self.assertIn("CSPRecovery.swift", PBX)
         self.assertGreaterEqual(PBX.count("CSPRecovery.swift"), 4)
@@ -56,29 +57,28 @@ class SharedComponent(unittest.TestCase):
 
 class Wiring(unittest.TestCase):
     def test_provider_login_uses_it(self):
-        self.assertIn("CSPRecovery.repairIfStuck(webView", LOGIN)
-        self.assertIn("NSMutableSet()", LOGIN)
+        self.assertIn("CSPRecovery.installScriptRebuild(in: config)", LOGIN)
         # The old per-site implementation must be gone.
         self.assertNotIn("repairIfSplashStuck", LOGIN)
 
     def test_chat_web_preview_uses_it(self):
-        self.assertIn("CSPRecovery.repairIfStuck(webView", PREVIEW)
+        self.assertIn("CSPRecovery.installScriptRebuild(in: config)", PREVIEW)
         self.assertIn("cspRepaired", PREVIEW)
 
     def test_webapp_uses_it(self):
-        self.assertIn("CSPRecovery.repairIfStuck(webView", WEBAPP)
+        self.assertIn("CSPRecovery.installScriptRebuild(in: cfg)", WEBAPP)
         self.assertIn("cspRepaired", WEBAPP)
 
-    def test_all_call_sites_wait_before_probing(self):
+    def test_all_call_sites_install_the_hook(self):
         for name, src in [('login', LOGIN), ('preview', PREVIEW), ('webapp', WEBAPP)]:
             with self.subTest(name):
-                self.assertIn("asyncAfter(deadline: .now() + 1.6)", src)
+                self.assertIn("installScriptRebuild", src)
 
     def test_automation_browser_is_not_wired(self):
         # BrowserUse drives pages programmatically; re-rendering would throw
         # away the DOM state it depends on.
         manager = (ROOT / 'src/ios/Agent/BrowserUse/BrowserUseManager.swift').read_text()
-        self.assertNotIn("CSPRecovery.repairIfStuck", manager)
+        self.assertNotIn("installScriptRebuild", manager)
 
 
 class ExternalBrowser(unittest.TestCase):

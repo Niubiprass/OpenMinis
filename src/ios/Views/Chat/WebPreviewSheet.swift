@@ -55,6 +55,8 @@ final class WebViewHolder: NSObject, ObservableObject {
         // BrowserUseManager so minis:// HTML opened from chat (which routes
         // through this holder, not the agent browser) can print too.
         config.userContentController.addUserScript(BrowserUseManager.printBridgeScript())
+        // [T-csp-script-rebuild] Same nonce workaround as the provider login sheet.
+        CSPRecovery.installScriptRebuild(in: config)
 
         if localFile {
             let prefs = config.preferences
@@ -400,10 +402,14 @@ extension WebViewHolder: WKNavigationDelegate {
     func webView(_ webView: WKWebView,
                  didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: Error) {
+        // [T-csp-recovery-cancel] A -999 here is our own loadHTMLString
+        // re-render cancelling the previous navigation, not a real failure.
+        guard !CSPRecovery.isCancellation(error) else { return }
         loadError = WebLoadError(error: error, failedURL: pendingURL)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard !CSPRecovery.isCancellation(error) else { return }
         loadError = WebLoadError(error: error, failedURL: pendingURL)
     }
 }
