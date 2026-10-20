@@ -782,3 +782,79 @@ final class ViewModelCache {
     }
 }
 
+
+// MARK: - [T-session-monitor] Which sessions report into the cross-session pill
+
+/// Per-session opt-in for the cross-session status pill.
+///
+/// The user's model (2026-10-20): nothing shows unless a session is explicitly
+/// marked 监看 from its long-press menu. That keeps the pill off by default —
+/// no global switch to find — and makes "whose status am I seeing" a fact the
+/// user set themselves rather than something the app guessed.
+///
+/// `startedAt` exists because the pill has to answer "多久了": the activity
+/// tracker knows WHICH sessions are running, not since when. Recording the first
+/// moment we saw a marked session running is enough for a per-session stopwatch,
+/// and it is dropped the moment that session stops so the next run starts clean.
+final class SessionMonitorStore: ObservableObject {
+    static let shared = SessionMonitorStore()
+
+    private static let defaultsKey = "monitoredSessionIds"
+
+    /// Session ids the user marked 监看. Local-only, never synced: it is a view
+    /// preference, not session data.
+    @Published private(set) var monitored: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: SessionMonitorStore.defaultsKey) ?? [])
+
+    /// First instant each monitored session was seen running.
+    private var startedAt: [String: Date] = [:]
+
+    private init() {}
+
+    func isMonitored(_ sessionId: String) -> Bool {
+        monitored.contains(sessionId)
+    }
+
+    /// Flip one session. Called from the sidebar's context menu.
+    func toggle(_ sessionId: String) {
+        if monitored.contains(sessionId) {
+            monitored.remove(sessionId)
+            startedAt.removeValue(forKey: sessionId)
+        } else {
+            monitored.insert(sessionId)
+        }
+        UserDefaults.standard.set(Array(monitored), forKey: Self.defaultsKey)
+    }
+
+    /// Reconcile with the live activity set: start a clock for every marked
+    /// session that just began running, drop the clock of one that stopped.
+    func sync(runningIds: Set<String>) {
+        var touched = false
+        for id in runningIds where monitored.contains(id) && startedAt[id] == nil {
+            startedAt[id] = Date()
+            touched = true
+        }
+        if !startedAt.isEmpty {
+            for id in startedAt.keys where !runningIds.contains(id) {
+                startedAt.removeValue(forKey: id)
+                touched = true
+            }
+        }
+        _ = touched
+    }
+
+    /// How long this monitored session has been running, or nil when it is idle.
+    func elapsed(_ sessionId: String) -> TimeInterval? {
+        startedAt[sessionId].map { Date().timeIntervalSince($0) }
+    }
+
+    /// Drop marks for sessions that no longer exist (deleted, or a draft that
+    /// never materialised), so the set cannot grow stale forever.
+    func prune(keeping liveIds: Set<String>) {
+        let pruned = monitored.intersection(liveIds)
+        guard pruned.count != monitored.count else { return }
+        monitored = pruned
+        startedAt = startedAt.filter { liveIds.contains($0.key) }
+        UserDefaults.standard.set(Array(pruned), forKey: Self.defaultsKey)
+    }
+}

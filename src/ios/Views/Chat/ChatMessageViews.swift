@@ -761,7 +761,10 @@ struct ChatMessageRow: View {
     }
 
     @ViewBuilder
-    private func inlineError(_ error: String) -> some View {
+    private func inlineError(_ rawError: String) -> some View {
+        // [T-friendly-error-text] Same display-edge sanitization as the banner
+        // above the transcript (cancellation suppressed, HTML dumps collapsed).
+        let error = FriendlyErrorText.sanitize(rawError) ?? AppLocalized("请求已取消")
         HStack(alignment: .center, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")

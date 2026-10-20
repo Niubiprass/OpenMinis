@@ -1212,6 +1212,8 @@ private enum SessionMenuAction {
     /// [T-sidebar-session-collapse] Tuck this session into (or pull it out of)
     /// its group's strip. A UI-state action, never a data mutation.
     case toggleSessionCollapse(String)
+    /// [T-session-monitor] Mark / unmark this session for the cross-session pill.
+    case toggleMonitor(String)
     case togglePin(String)
     case exportJSON(String)
     case exportText(String)
@@ -3505,7 +3507,7 @@ struct ContentView: View {
                 // [T-ios-crash-contextmenu-uaf] Value-only menu view,
                 // no closure captures — see SessionContextMenu.
                 SessionContextMenu(
-                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, filed: session.isFiled, collapsed: session.isFiled && collapsedSessionIds.contains(session.id)),
+                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, filed: session.isFiled, collapsed: session.isFiled && collapsedSessionIds.contains(session.id), monitored: SessionMonitorStore.shared.isMonitored(session.id)),
                     actions: menuActions
                 )
                 .equatable()
@@ -3860,7 +3862,7 @@ struct ContentView: View {
                                         : session.id
                                     if let menuSid {
                                         SessionContextMenu(
-                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, filed: session.isFiled, collapsed: session.isFiled && collapsedSessionIds.contains(menuSid)),
+                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, filed: session.isFiled, collapsed: session.isFiled && collapsedSessionIds.contains(menuSid), monitored: SessionMonitorStore.shared.isMonitored(menuSid)),
                                             actions: menuActions
                                         )
                                         .equatable()
@@ -4734,6 +4736,8 @@ struct ContentView: View {
             switch action {
             case .toggleSessionCollapse(let sid):
                 toggleSessionCollapse(sid)
+            case .toggleMonitor(let sid):
+                SessionMonitorStore.shared.toggle(sid)
             case .togglePin(let sid):
                 Task { @MainActor in
                     await ChatStore.shared.toggleSessionPin(sid)
@@ -7167,6 +7171,16 @@ private struct SessionContextMenu: View, Equatable {
             Label(LocalizedStringKey(key.pinned ? "Unpin" : "Pin"),
                   systemImage: key.pinned ? "pin.slash" : "pin")
         }
+        // [T-session-monitor] Opt THIS session into the cross-session pill.
+        // Present for every session (a group member, a date-bucket row, even an
+        // idle one — marking an idle session simply means "watch it the next
+        // time it runs").
+        Button {
+            actions.send(.toggleMonitor(key.sid))
+        } label: {
+            Label(LocalizedStringKey(key.monitored ? "取消监看" : "监看"),
+                  systemImage: key.monitored ? "smallcircle.filled.circle" : "circle")
+        }
         // [T-sidebar-session-collapse] Group members only — a session living in
         // a date bucket has no strip to tuck into, so the item is absent rather
         // than present-and-inert.
@@ -7308,6 +7322,10 @@ private struct MenuKey: Equatable {
     /// is a memberwise-init value type and callers pass arguments in
     /// declaration order.
     let collapsed: Bool
+    /// [T-session-monitor] Whether this session reports into the cross-session
+    /// pill. Carried in the key so the menu wording flips without a re-render
+    /// from elsewhere.
+    let monitored: Bool
 }
 
 // MARK: - Session Row

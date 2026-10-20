@@ -311,7 +311,14 @@ struct ProviderInstanceDetailView: View {
                 } header: {
                     Text("余额")
                 } footer: {
-                    Text("New API / One API 站点可显示真实余额：填访问令牌，或用 App 内置浏览器登录一次。两者都不填时只显示本月已用。")
+                    // [T-quota-perkey-token] The wording follows the mode: with a
+                    // ring the token lives on each key's row, so pointing at "填访问
+                    // 令牌" here would send the user to a field that no longer exists.
+                    if ProviderMultiKeyManager.shared.isEnabled(for: instance.id) {
+                        Text("每把 Key 点进去填它自己账号的访问令牌；同一个账号的多把 Key 共用一个。都不填该行会显示「未查询」。")
+                    } else {
+                        Text("New API / One API 站点可显示真实余额：填访问令牌，或用 App 内置浏览器登录一次。两者都不填时只显示本月已用。")
+                    }
                 }
             }
 
@@ -685,23 +692,31 @@ struct ProviderInstanceDetailView: View {
             }
         }
 
-        HStack {
-            Text("访问令牌")
-            Spacer()
-            TextField("可选", text: $quotaTokenInput)
-                .multilineTextAlignment(.trailing)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(true)
-                .onSubmit { saveQuotaToken(instance) }
-        }
-        .onAppear {
-            guard !quotaTokenLoaded else { return }
-            quotaTokenLoaded = true
-            quotaTokenInput = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instance.id) ?? ""
-        }
+        // [T-quota-perkey-token] With 多 Key 模式 on, the instance-wide token
+        // field is HIDDEN: every key carries its own, and showing both invites
+        // exactly the question the user asked — "主界面能填，点进去又能填，到底
+        // 填哪个". Each key's row is the only place a token goes in that mode.
+        // With the ring off there is a single key, so the original single field
+        // is still the right shape.
+        if !multiKeyOn {
+            HStack {
+                Text("访问令牌")
+                Spacer()
+                TextField("可选", text: $quotaTokenInput)
+                    .multilineTextAlignment(.trailing)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(true)
+                    .onSubmit { saveQuotaToken(instance) }
+            }
+            .onAppear {
+                guard !quotaTokenLoaded else { return }
+                quotaTokenLoaded = true
+                quotaTokenInput = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instance.id) ?? ""
+            }
 
-        Button("在 App 内登录该站点") {
-            showQuotaLogin = true
+            Button("在 App 内登录该站点") {
+                showQuotaLogin = true
+            }
         }
 
         // Wording states the cost up front: this is the ONLY place that spends
@@ -719,18 +734,26 @@ struct ProviderInstanceDetailView: View {
                     await ProviderQuotaService.shared.refreshAllKeys(for: instance)
                     let answered = ProviderQuotaService.shared.quotaRows(for: instance)
                         .filter { $0.info != nil }.count
+                    let firstReason = ProviderQuotaService.shared.quotaRows(for: instance)
+                        .compactMap { ProviderQuotaService.shared.failureNote(instanceId: instance.id, rowId: $0.id) }
+                        .first
                     await MainActor.run {
                         quotaRefreshing = false
-                        quotaMessage = answered > 0
-                            ? String(format: AppLocalized("已更新 %lld 把，其余站点未返回余额"), Int64(answered))
-                            : AppLocalized("未获取到余额，站点可能不支持余额查询")
+                        if answered > 0 {
+                            quotaMessage = String(format: AppLocalized("已更新 %lld 把，其余站点未返回余额"), Int64(answered))
+                        } else {
+                            quotaMessage = firstReason ?? AppLocalized("未获取到余额，站点可能不支持余额查询")
+                        }
                     }
                 } else {
                     await ProviderQuotaService.shared.refreshQuota(for: instance)
                     let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
+                    // [T-quota-failure-reason] Say WHY: unsupported endpoint,
+                    // missing credential and a 404 all used to read 「未获取」.
+                    let reason = ProviderQuotaService.shared.failureNote(instanceId: instance.id)
                     await MainActor.run {
                         quotaRefreshing = false
-                        quotaMessage = info.map { _ in "已更新" } ?? "未获取到，站点可能不支持余额查询"
+                        quotaMessage = info.map { _ in "已更新" } ?? (reason ?? "未获取到，站点可能不支持余额查询")
                     }
                 }
             }

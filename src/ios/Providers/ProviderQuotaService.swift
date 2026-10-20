@@ -116,6 +116,36 @@ final class ProviderQuotaService: ObservableObject {
     /// Per-instance per-row results, keyed by `KeyQuota.id`.
     private var keyCache: [String: [String: CacheEntry]] = [:]
 
+    /// [T-quota-failure-reason] WHY the last attempt produced nothing.
+    ///
+    /// "未获取" was the whole answer the UI could give, which is useless for
+    /// deciding whether the site does not support balances, the credential is
+    /// missing, or the endpoint answered 404 — the three cases look identical
+    /// on screen and need completely different actions from the user.
+    private var failureNotes: [String: String] = [:]
+
+    private func failureKey(_ instanceId: String, _ rowId: String) -> String {
+        "\(instanceId)|\(rowId)"
+    }
+
+    /// Recorded explanation for the last failed attempt of one key, if any.
+    func failureNote(instanceId: String, rowId: String = "main") -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return failureNotes[failureKey(instanceId, rowId)]
+    }
+
+    func noteFailure(_ text: String, instanceId: String, rowId: String = "main") {
+        lock.lock()
+        failureNotes[failureKey(instanceId, rowId)] = text
+        lock.unlock()
+    }
+
+    func clearFailure(instanceId: String, rowId: String = "main") {
+        lock.lock()
+        failureNotes.removeValue(forKey: failureKey(instanceId, rowId))
+        lock.unlock()
+    }
+
     // MARK: Sync read for UI
 
     /// [T-quota-stale-ok] Returns the last known figure even after `ttl`
@@ -499,17 +529,36 @@ final class ProviderQuotaService: ObservableObject {
         } else if let cookie = await sessionCookieHeader(for: root) {
             req.setValue(cookie, forHTTPHeaderField: "Cookie")
         } else {
+            ProviderQuotaService.shared.noteFailure(
+                AppLocalized("没有凭据：没填访问令牌，也没在这个站点登录过"), instanceId: instanceId, rowId: rowId)
             return nil
         }
 
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              let http = resp as? HTTPURLResponse, http.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let http = resp as? HTTPURLResponse else {
+            ProviderQuotaService.shared.noteFailure(
+                AppLocalized("连不上这个站点（网络或证书问题，也可能被代理拦了）"), instanceId: instanceId, rowId: rowId)
+            return nil
+        }
+        guard http.statusCode == 200 else {
+            ProviderQuotaService.shared.noteFailure(
+                String(format: AppLocalized("站点返回 HTTP %lld（这个路径可能不存在）"), Int64(http.statusCode)),
+                instanceId: instanceId, rowId: rowId)
+            return nil
+        }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            ProviderQuotaService.shared.noteFailure(
+                AppLocalized("返回的不是 JSON（可能不是一个 API 站）"), instanceId: instanceId, rowId: rowId)
             return nil
         }
         // New API wraps payloads in "data"; some forks answer flat.
         let body = (obj["data"] as? [String: Any]) ?? obj
-        guard let quota = body["quota"] as? NSNumber else { return nil }
+        guard let quota = body["quota"] as? NSNumber else {
+            ProviderQuotaService.shared.noteFailure(
+                AppLocalized("返回里没有 quota 字段（这站可能不是 New API 面板）"), instanceId: instanceId, rowId: rowId)
+            return nil
+        }
+        ProviderQuotaService.shared.clearFailure(instanceId: instanceId, rowId: rowId)
 
         let perUnit = await quotaPerUnit(root: root)
         let balance = quota.doubleValue / perUnit

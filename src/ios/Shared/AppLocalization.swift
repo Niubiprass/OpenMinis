@@ -95,3 +95,110 @@ func AppLocalizedFormat(_ key: String, _ args: CVarArg...) -> String {
            arguments: args)
 }
 
+
+// MARK: - [T-friendly-error-text] Human-readable error copy
+
+/// Turns whatever an error object says into something a person can read.
+///
+/// Two shapes kept reaching the red banner verbatim:
+///
+///  * `Error Domain=NSURLErrorDomain Code=-999 "已取消" UserInfo={…}` — the raw
+///    `NSError` description, English scaffolding wrapped around a Chinese word.
+///    -999 is `NSURLErrorCancelled`, which is NOT a failure: a superseded
+///    request, a stopped turn or a replaced stream all produce it, and showing
+///    it as an error trains the user to ignore the banner.
+///  * `服务商报错：HTTP 524: <!DOCTYPE html>…` — a relay answering with an HTML
+///    error page, dumped into the banner up to its 500-character cap.
+///
+/// Both are presentation problems, so they are fixed at presentation: the
+/// underlying error is untouched for logs and fallback decisions.
+enum FriendlyErrorText {
+
+    /// Nil means "do not show this at all" — cancellations.
+    static func sanitize(_ raw: String) -> String? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return nil }
+
+        if isCancellation(text) { return nil }
+
+        if let cleaned = rewriteRawNSError(text) { return cleaned }
+
+        return collapseHTMLDump(text)
+    }
+
+    /// `-999` / "已取消" / "cancelled" arriving as prose rather than a type.
+    private static func isCancellation(_ text: String) -> Bool {
+        if text.contains("Code=-999") { return true }
+        let lowered = text.lowercased()
+        if lowered == "cancelled" || lowered == "canceled" { return true }
+        if lowered.hasSuffix("已取消") && lowered.count <= 40 { return true }
+        return false
+    }
+
+    /// `Error Domain=NSURLErrorDomain Code=-1001 "请求超时。" UserInfo=…`
+    /// → `网络错误：请求超时。`
+    private static func rewriteRawNSError(_ text: String) -> String? {
+        guard text.hasPrefix("Error Domain=") else { return nil }
+        // The quoted segment is the system's own localized reason — keep it.
+        var reason: String?
+        if let firstQuote = text.firstIndex(of: "\""),
+           let secondQuote = text[text.index(after: firstQuote)...].firstIndex(of: "\"") {
+            reason = String(text[text.index(after: firstQuote)..<secondQuote])
+        }
+        let domain = text.contains("NSURLErrorDomain") ? "network"
+                   : (text.contains("NSCocoaErrorDomain") ? "file" : "other")
+        let fallback = reason ?? AppLocalized("未知错误")
+        switch domain {
+        case "network": return String(format: AppLocalized("网络错误：%@"), fallback)
+        case "file":    return String(format: AppLocalized("文件错误：%@"), fallback)
+        default:        return fallback
+        }
+    }
+
+    /// `HTTP 524: <!DOCTYPE html>…` → `HTTP 524：对方服务器没有及时响应`
+    private static func collapseHTMLDump(_ text: String) -> String {
+        let lowered = text.lowercased()
+        let looksLikeMarkup = lowered.contains("<!doctype") || lowered.contains("<html")
+            || lowered.contains("<head") || lowered.contains("<body")
+        guard looksLikeMarkup else {
+            return text.count > 300 ? String(text.prefix(300)) + "…" : text
+        }
+
+        // Keep whatever readable prefix precedes the markup — usually
+        // "HTTP 524: " or the provider's own one-line reason.
+        let markerIndex = lowered.range(of: "<!doctype").map { $0.lowerBound }
+            ?? lowered.range(of: "<html").map { $0.lowerBound }
+        let prefix = markerIndex.map { String(text[..<$0]) } ?? ""
+        let head = prefix.trimmingCharacters(in: CharacterSet(charactersIn: " :：,，;；"))
+
+        if head.isEmpty { return AppLocalized("服务商返回了一个错误页面（不是接口响应）") }
+        // "HTTP 524" → add the human meaning when the code is known.
+        if let code = httpStatusCode(head), let meaning = httpMeaning(code) {
+            return String(format: AppLocalized("%@：%@"), head, meaning)
+        }
+        return head
+    }
+
+    private static func httpStatusCode(_ text: String) -> Int? {
+        guard let range = text.range(of: "HTTP ") else { return nil }
+        let digits = text[range.upperBound...].prefix(3)
+        return Int(digits)
+    }
+
+    private static func httpMeaning(_ code: Int) -> String? {
+        switch code {
+        case 400: return AppLocalized("请求格式不对")
+        case 401: return AppLocalized("Key 无效或没有权限")
+        case 403: return AppLocalized("被拒绝访问")
+        case 404: return AppLocalized("接口地址不存在")
+        case 408: return AppLocalized("请求超时")
+        case 429: return AppLocalized("请求太频繁")
+        case 500: return AppLocalized("对方服务器内部错误")
+        case 502: return AppLocalized("网关错误")
+        case 503: return AppLocalized("对方服务暂时不可用")
+        case 504: return AppLocalized("网关超时")
+        case 520, 521, 522, 523, 524: return AppLocalized("对方服务器没有及时响应")
+        default: return nil
+        }
+    }
+}

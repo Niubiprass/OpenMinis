@@ -693,9 +693,13 @@ struct AIChatView: View {
             // Messages — floating tool preview overlaid at bottom
             messagesArea
                 .safeAreaInset(edge: .top, spacing: 0) {
-                    // Error banner
-                    if let error = vm.errorMessage {
-                        errorBanner(error)
+                    // Error banner. [T-friendly-error-text] Sanitized at the
+                    // display edge: a cancelled request (-999) shows NOTHING,
+                    // and a provider that answered with an HTML error page is
+                    // reduced to its status line instead of dumping markup.
+                    if let error = vm.errorMessage,
+                       let friendly = FriendlyErrorText.sanitize(error) {
+                        errorBanner(friendly)
                     }
                     // Transient notice (e.g. request-level image budget
                     // elision). Auto-dismisses after ~4s.
@@ -715,6 +719,13 @@ struct AIChatView: View {
                                 }
                             }
                     }
+                }
+                // [T-session-monitor] Cross-session pill, top-right of the
+                // transcript. An overlay (not a ZStack sibling) so it can never
+                // change the message list's layout or capture touches outside
+                // its own small frame.
+                .overlay(alignment: .topTrailing) {
+                    SessionMonitorPill(currentSessionId: vm.sessionId)
                 }
                 .overlay(alignment: .bottom) {
                     // Tool preview + input bar stacked at the bottom.
@@ -7077,9 +7088,11 @@ private struct ChatSendButton: View {
                     vm.cancel()
                 }
             } label: {
-                Image(systemName: "stop.circle.fill")
-                    .font(.system(size: 34))
-                    .foregroundStyle(.red)
+                // [T-thinking-timer-b2] The red circle now carries the elapsed
+                // time. Same tap target and same semantics as the old
+                // `stop.circle.fill` glyph; the seconds are drawn INSIDE the
+                // circle and a comet ring sweeps once a minute outside it.
+                StopButtonWithTimer()
             }
             // Hosted here rather than on the chat root: this button owns the
             // decision, and the existing "Task Running" alert up there belongs
@@ -7372,5 +7385,325 @@ private extension AIChatView {
                     withAnimation(.easeInOut(duration: 0.35)) { fallbackPulseOpacity = 0 }
                 }
             
+    }
+}
+
+// MARK: - [T-thinking-timer-b2] Stop button with an elapsed clock
+
+/// The composer's stop control: a red disc showing how long the current answer
+/// has been running, ringed by a comet that sweeps once a minute.
+///
+/// Why here (user's choice, 2026-10-20 after rejecting five other placements):
+/// the stop button is the one control the eye already goes to while waiting, it
+/// needs no new layout, and the number lives where the action is.
+///
+/// Kept as its own view on purpose: the tick state re-renders THIS subtree once
+/// a second and nothing else. Putting the counter on the composer would rebuild
+/// the input bar (and its UITextView bridge) every second.
+private struct StopButtonWithTimer: View {
+    /// Rule of the ring: 60 ticks = one turn. Past a minute the digits switch to
+    /// m:ss and the sweep simply starts again — an unbounded spinner would keep
+    /// the "how long is left" question alive, and the answer is unknowable.
+    private static let ticksPerTurn = 60
+    private static let discSize: CGFloat = 30
+    private static let ringSize: CGFloat = 38
+
+    @State private var seconds: Int = 0
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private var fraction: CGFloat {
+        CGFloat(seconds % Self.ticksPerTurn) / CGFloat(Self.ticksPerTurn)
+    }
+
+    private var label: String {
+        seconds < 60 ? "\(seconds)" : String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
+    var body: some View {
+        ZStack {
+            // Comet: bright at the head, transparent at the tail. Trim cuts the
+            // circle to the first `fraction`; the gradient below fades from
+            // clear to red across the SAME span, so the visible arc reads as a
+            // moving tail rather than a growing bar.
+            Circle()
+                .trim(from: 0, to: fraction)
+                .stroke(
+                    AngularGradient(
+                        gradient: Gradient(colors: [
+                            Color.red.opacity(0.0),
+                            Color.red.opacity(0.25),
+                            Color.red.opacity(0.85),
+                        ]),
+                        center: .center),
+                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                .frame(width: Self.ringSize, height: Self.ringSize)
+                .rotationEffect(.degrees(-90))
+                .opacity(seconds == 0 ? 0 : 1)
+
+            Circle()
+                .fill(Color.red)
+                .frame(width: Self.discSize, height: Self.discSize)
+
+            Text(label)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.white)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .padding(.horizontal, 3)
+                // The disc is only 30pt; a four-character m:ss needs the whole
+                // width, so cap it there rather than letting the text push out.
+                .frame(maxWidth: Self.discSize - 4)
+        }
+        // The frame is the tap target AND the layout size — identical to the
+        // 34pt symbol it replaced, so nothing around the composer moves.
+        .frame(width: Self.ringSize, height: Self.ringSize)
+        .contentShape(Circle())
+        .onReceive(tick) { _ in seconds += 1 }
+        .onAppear { seconds = 0 }
+    }
+}
+
+// MARK: - [T-session-monitor] Cross-session status pill
+
+/// A small, draggable capsule that reports what OTHER sessions are doing while
+/// the user reads this one.
+///
+/// Scope rules (agreed 2026-10-20):
+///  * Only sessions the user marked 监看 from the sidebar's long-press menu.
+///  * Only while they are actually running — an idle marked session shows
+///    nothing, and the capsule disappears entirely when none are running.
+///  * Never this session: watching yourself is noise.
+///
+/// Interaction: drag to move (position remembered), tap to expand into a short
+/// list, tap a row to jump to that session (reusing the app's existing
+/// `openSessionFromIntent` route), tap elsewhere to collapse.
+///
+/// Rendered as an overlay on the transcript so it cannot affect the message
+/// list's layout — the same reason the list's height cache never sees it.
+private struct SessionMonitorPill: View {
+    let currentSessionId: String?
+
+    @ObservedObject private var tracker = SessionActivityTracker.shared
+    @ObservedObject private var store = SessionMonitorStore.shared
+
+    /// Absolute position, remembered across launches. `-1` means "not placed
+    /// yet" → the default top-right anchor.
+    /// Offsets from the default top-right anchor. Negative x moves left, so the
+    /// pill can be parked anywhere without ever leaving the screen edge.
+    @AppStorage("sessionMonitor.pillDX") private var pillDX: Double = 0
+    @AppStorage("sessionMonitor.pillDY") private var pillDY: Double = 0
+
+    @State private var expanded = false
+    @State private var dragOffset: CGSize = .zero
+
+    /// One tick a second: the elapsed labels are the only thing that changes,
+    /// and keeping the timer inside this subtree means the chat body does not
+    /// re-render with it.
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private struct Row: Identifiable {
+        let id: String
+        let title: String
+        let detail: String
+        let elapsed: TimeInterval?
+    }
+
+    private var rows: [Row] {
+        let running = tracker.activeSessions
+        return running
+            .filter { store.isMonitored($0) && $0 != currentSessionId }
+            .sorted()
+            .map { id in
+                let info = tracker.sessionToolInfo[id]
+                let fallback = String(format: AppLocalized("会话 %@"), String(id.prefix(8)))
+                let title = (info?.title.isEmpty == false ? info!.title : nil) ?? fallback
+                let detail: String = {
+                    guard let info else { return AppLocalized("运行中") }
+                    if !info.toolStatus.isEmpty { return info.toolStatus }
+                    if !info.toolName.isEmpty { return String(format: AppLocalized("正在调用 %@"), info.toolName) }
+                    return AppLocalized("运行中")
+                }()
+                return Row(id: id, title: title, detail: detail,
+                           elapsed: store.elapsed(id))
+            }
+    }
+
+    private static func clock(_ seconds: TimeInterval?) -> String {
+        guard let seconds else { return "" }
+        let total = Int(seconds)
+        if total < 60 { return "\(total)s" }
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    var body: some View {
+        Group {
+            if rows.isEmpty {
+                EmptyView()
+            } else if expanded {
+                expandedCard
+            } else {
+                collapsedCapsule
+            }
+        }
+        .padding(.trailing, 12)
+        .padding(.top, 8)
+        .offset(x: min(0, max(-260, pillDX + dragOffset.width)),
+                y: min(560, max(-40, pillDY + dragOffset.height)))
+        .onReceive(tick) { _ in
+            // Publishing the tick through @State re-renders just this subtree,
+            // which is what refreshes the s/s labels once a second.
+            if !rows.isEmpty { tickRefresh &+= 1 }
+        }
+        .onAppear {
+            store.sync(runningIds: tracker.activeSessions)
+        }
+        .onChange(of: tracker.activeSessions) { ids in
+            store.sync(runningIds: ids)
+            if rows.isEmpty { expanded = false }
+        }
+    }
+
+    /// Bumped once a second purely to invalidate the elapsed labels.
+    @State private var tickRefresh: Int = 0
+
+    private var collapsedCapsule: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Color.green)
+                .frame(width: 6, height: 6)
+            Text(String(format: AppLocalized("%lld 个在运行"), Int64(rows.count)))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+            if let first = rows.first, let elapsed = first.elapsed {
+                Text(Self.clock(elapsed))
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.white.opacity(0.55))
+                    .monospacedDigit()
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            Capsule().fill(Color(white: 0.09).opacity(0.94))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.09), lineWidth: 0.5))
+        )
+        .shadow(color: .black.opacity(0.35), radius: 8, y: 4)
+        .contentShape(Capsule())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.18)) { expanded = true }
+            // Auto-collapse: the card is a peek, not a panel. Without this an
+            // expanded card stays open until the user taps a row, which on a
+            // phone reads as a stuck overlay.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                withAnimation(.easeInOut(duration: 0.18)) { expanded = false }
+            }
+        }
+        // Drag to reposition; persisted so the next launch puts it back.
+        .simultaneousGesture(
+            DragGesture()
+                .onChanged { dragOffset = $0.translation }
+                .onEnded { value in
+                    pillDX = min(0, max(-260, pillDX + value.translation.width))
+                    pillDY = min(560, max(-40, pillDY + value.translation.height))
+                    dragOffset = .zero
+                }
+        )
+        .accessibilityLabel(AppLocalized("其它会话状态"))
+    }
+
+    private var expandedCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // [T-session-monitor] Explicit way back to the capsule. The 8 s
+            // auto-collapse is a fallback, not the interaction: the user asked
+            // for "点一下收起", so the header they just tapped to open is the
+            // thing that closes it again.
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { expanded = false }
+            } label: {
+                HStack(spacing: 6) {
+                    Circle().fill(Color.green).frame(width: 6, height: 6)
+                    Text(String(format: AppLocalized("%lld 个在运行"), Int64(rows.count)))
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.85))
+                    Spacer(minLength: 6)
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color.white.opacity(0.45))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Divider().overlay(Color.white.opacity(0.07))
+
+            ForEach(rows.prefix(3)) { row in
+                Button {
+                    expandToSession(row.id)
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(row.title)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Spacer(minLength: 6)
+                        Text(Self.clock(row.elapsed))
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(Color.white.opacity(0.45))
+                            .monospacedDigit()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.top, 7)
+                    HStack(spacing: 6) {
+                        Text(row.detail)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(Color.white.opacity(0.5))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 7)
+                }
+                .buttonStyle(.plain)
+                if row.id != rows.prefix(3).last?.id {
+                    Divider().overlay(Color.white.opacity(0.07))
+                }
+            }
+        }
+        .frame(width: 196)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(white: 0.09).opacity(0.96))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.09), lineWidth: 0.5))
+        )
+        .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
+        .onTapGesture { }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 12)
+                .onChanged { dragOffset = $0.translation }
+                .onEnded { value in
+                    pillDX = min(0, max(-260, pillDX + value.translation.width))
+                    pillDY = min(560, max(-40, pillDY + value.translation.height))
+                    dragOffset = .zero
+                }
+        )
+        .background(
+            // Tap outside the card collapses it: an invisible full-size catcher
+            // behind the card would swallow the transcript, so instead the
+            // transcript's own tap is caught below by `collapseOnOutsideTap`.
+            Color.clear
+        )
+        .onDisappear { expanded = false }
+    }
+
+    private func expandToSession(_ id: String) {
+        expanded = false
+        NotificationCenter.default.post(
+            name: Notification.Name("openSessionFromIntent"),
+            object: nil,
+            userInfo: ["sessionId": id]
+        )
     }
 }

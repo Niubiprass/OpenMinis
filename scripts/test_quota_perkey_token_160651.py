@@ -87,5 +87,41 @@ class RowEditor(unittest.TestCase):
                       (ROOT / 'src/ios/Localizable.xcstrings').read_text())
 
 
+class NoDuplicateTokenField(unittest.TestCase):
+    """[T-quota-perkey-token] 用户反馈：主界面能填通用令牌，点进每把 Key 又能填，
+    到底填哪个 —— 多 Key 模式下通用令牌行必须消失。"""
+
+    def test_instance_token_row_hidden_when_ring_is_on(self):
+        i = DETAIL.index('private func quotaSection(_ instance: ProviderInstance) -> some View {')
+        body = DETAIL[i:DETAIL.index('// [T-quota-threshold]', i)]
+        self.assertIn('if !multiKeyOn {', body)
+        self.assertIn('Text("访问令牌")', body)
+
+    def test_footer_wording_follows_the_mode(self):
+        self.assertIn('每把 Key 点进去填它自己账号的访问令牌', DETAIL)
+
+
+class FailureReason(unittest.TestCase):
+    """[T-quota-failure-reason] 「未获取」必须说明原因：站点没有接口 / 没凭据 /
+    网络连不上，三种情况要用户做的事完全不同。"""
+
+    def test_reason_is_recorded_per_key(self):
+        self.assertIn('func failureNote(instanceId: String, rowId: String = "main") -> String?', QUOTA)
+        self.assertIn('func noteFailure(_ text: String, instanceId: String, rowId: String = "main")', QUOTA)
+
+    def test_distinct_reasons_for_distinct_failures(self):
+        for key in ('没有凭据：没填访问令牌，也没在这个站点登录过',
+                    '连不上这个站点（网络或证书问题，也可能被代理拦了）',
+                    '站点返回 HTTP %lld（这个路径可能不存在）',
+                    '返回里没有 quota 字段（这站可能不是 New API 面板）'):
+            self.assertIn(key, QUOTA)
+
+    def test_success_clears_the_note(self):
+        self.assertIn('clearFailure(instanceId: instanceId, rowId: rowId)', QUOTA)
+
+    def test_ui_shows_the_reason(self):
+        self.assertIn('ProviderQuotaService.shared.failureNote(instanceId: instance.id)', DETAIL)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
