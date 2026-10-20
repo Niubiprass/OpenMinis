@@ -1340,7 +1340,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// session's resolved model id.
     var currentTurnCostSuffix: String? {
         guard let entry = resolveCurrentEntry() else { return nil }
-        guard let usage = messages.last(where: { $0.role == .assistant && $0.tokenUsage != nil })?.tokenUsage
+        // `reversed().first(where:)` rather than `last(where:)`: on this build
+        // the latter resolved to the `last` PROPERTY and the call failed to
+        // type-check (CI 6a044ab — "cannot call value of non-function type
+        // 'ChatMessage?'"). Same element, unambiguous overload.
+        guard let usage = messages.reversed()
+            .first(where: { $0.role == .assistant && $0.tokenUsage != nil })?.tokenUsage
         else { return nil }
         return TurnCost.suffix(usage: usage, modelId: entry.model.id)
     }
