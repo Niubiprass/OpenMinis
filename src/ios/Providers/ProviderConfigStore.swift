@@ -3529,6 +3529,71 @@ enum ProviderKeychainHelper {
         }
     }
 
+    // MARK: - [T-quota-perkey-token] Quota access token per KEY
+
+    /// [T-quota-perkey-token] Same credential slot, scoped to ONE key of the
+    /// rotation ring.
+    ///
+    /// Why this exists: `/api/user/self` answers for an ACCOUNT, not for a
+    /// `sk-…` key. The user runs two accounts under one provider (one signed up
+    /// through GitHub, one through linux.do) and each needs its own access
+    /// token — with a single instance-wide token the second key was being
+    /// queried with the first account's credential and showed someone else's
+    /// numbers. `keyId` is `main` for the credential key or the ring key's
+    /// UUID, the same ids the balance rows already use.
+    ///
+    /// Falls back to the instance-wide token when no per-key one is saved, so
+    /// an existing single-account setup keeps working untouched.
+    private static func quotaKeyService(instanceId: String, keyId: String) -> String {
+        "com.openminis.app.provider.\(instanceId).quotakey.\(keyId)"
+    }
+
+    static func saveQuotaAccessToken(_ token: String, instanceId: String, keyId: String) {
+        let service = quotaKeyService(instanceId: instanceId, keyId: keyId)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: quotaTokenAccount,
+        ]
+        SecItemDelete(query as CFDictionary)
+        guard !token.isEmpty else {
+            AppLogger(category: "Keychain").info(
+                "cleared quotaKeyToken instanceId=\(instanceId.prefix(8)) key=\(keyId.prefix(8))")
+            return
+        }
+        var add = query
+        add[kSecValueData as String] = Data(token.utf8)
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let status = SecItemAdd(add as CFDictionary, nil)
+        AppLogger(category: "Keychain").info(
+            "write quotaKeyToken instanceId=\(instanceId.prefix(8)) key=\(keyId.prefix(8)) "
+            + "len=\(token.count) status=\(status)")
+    }
+
+    static func loadQuotaAccessToken(instanceId: String, keyId: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: quotaKeyService(instanceId: instanceId, keyId: keyId),
+            kSecAttrAccount as String: quotaTokenAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// The token to use for `keyId`: its own when set, else the instance-wide
+    /// one (the pre-existing single-account field).
+    static func resolvedQuotaAccessToken(instanceId: String, keyId: String) -> String? {
+        if let own = loadQuotaAccessToken(instanceId: instanceId, keyId: keyId),
+           !own.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return own
+        }
+        return loadQuotaAccessToken(instanceId: instanceId)
+    }
+
     // MARK: - OAuth Token (per-instance)
 
     /// Called at the end of every credential write/delete. Bumps `authRevision`

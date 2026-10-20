@@ -57,17 +57,19 @@ class PerKeyModel(unittest.TestCase):
 class PerKeyFetching(unittest.TestCase):
 
     def test_explicit_key_entry_point(self):
-        self.assertIn('static func fetchQuota(for instance: ProviderInstance, key: String) async -> QuotaInfo?', QUOTA)
+        # [T-quota-perkey-token] the signature grew a rowId (which key's token
+        # to use); the delegation contract is unchanged.
+        self.assertIn('static func fetchQuota(for instance: ProviderInstance, key: String,', QUOTA)
         # The single-key path must delegate, not duplicate the query.
         i = QUOTA.index('static func fetchQuota(for instance: ProviderInstance) async -> QuotaInfo? {')
-        body = QUOTA[i:QUOTA.index('static func fetchQuota(for instance: ProviderInstance, key: String)', i)]
+        body = QUOTA[i:i + 1200]
         self.assertIn('return await fetchQuota(for: instance, key: key)', body)
 
     def test_every_key_is_queried(self):
         i = QUOTA.index('func refreshAllKeys(for instance: ProviderInstance) async {')
         body = QUOTA[i:QUOTA.index('private func publishAggregate', i)]
         self.assertIn('for row in rows {', body)
-        self.assertIn('Self.fetchQuota(for: instance, key: secret)', body)
+        self.assertIn('Self.fetchQuota(for: instance, key: secret, rowId: row.id)', body)
         # Concurrent: four slow relays must not serialize into a minute-long tap.
         self.assertIn('withTaskGroup', body)
 

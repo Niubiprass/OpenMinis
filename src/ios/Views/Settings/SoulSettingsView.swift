@@ -15,8 +15,15 @@ struct SoulSettingsView: View {
     @State private var showIconOptions = false
     @State private var showEmojiPrompt = false
     @State private var emojiDraft = ""
-    @State private var showPhotoPicker = false
-    @State private var photoItem: PhotosPickerItem? = nil
+    /// [T-soul-icon-photo-ios15] Presenter for the icon photo picker.
+    ///
+    /// `.photosPicker` / `PhotosPickerItem` are iOS 16+, and this port floors at
+    /// 15 — the port stripped the modifier but LEFT the bindings behind, so
+    /// 「选择图片…」 set a flag that nothing ever read: tapping it did literally
+    /// nothing (reported 2026-10-20). A retrained PHPickerViewController is the
+    /// same picker iOS 15 can actually show, and it is the pattern the chat
+    /// composer already uses.
+    @StateObject private var iconPhotoPicker = SoulIconPhotoPicker()
     @State private var iconError: String? = nil
     @State private var style: String = SoulMetadata.default.style
     @State private var lang: String = SoulMetadata.default.lang
@@ -56,9 +63,33 @@ struct SoulSettingsView: View {
                     TextField(AppLocalized("e.g. Warm, direct, opinionated"), text: $style)
                         .multilineTextAlignment(.trailing)
                 }
-                Picker(AppLocalized("Language"), selection: $lang) {
+                // [T-soul-language-sticks] Was a `Picker`. On this iOS 15 build
+                // the selection did not stick: choosing 中文 left the row showing
+                // 自动 (reported 2026-10-20 with a screen recording). A `Menu` with
+                // explicit buttons is the same affordance — value on the right,
+                // chevron, one tap — but the write path is a plain assignment, so
+                // there is no Picker tag matching to get wrong on an older
+                // SwiftUI. The label mirrors the current value, which is also how
+                // the Picker looked.
+                Menu {
                     ForEach(Self.langOptions, id: \.value) { opt in
-                        Text(opt.label).tag(opt.value)
+                        Button {
+                            lang = opt.value
+                        } label: {
+                            if lang == opt.value {
+                                Label(opt.label, systemImage: "checkmark")
+                            } else {
+                                Text(opt.label)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text(AppLocalized("Language"))
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text(Self.langOptions.first { $0.value == lang }?.label ?? lang)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -116,7 +147,12 @@ struct SoulSettingsView: View {
                     .disabled(!isDirty || isBodyOverLimit)
             }
         }
-        .onAppear(perform: reload)
+        // [T-soul-language-sticks] `reload()` used to run on EVERY appear. The
+        // Language row pushes a child list on this iOS build, and coming back
+        // from it re-appeared the page → reload from disk → the choice the user
+        // had just made (not saved yet) was thrown away. Load once per view
+        // lifetime; a later sync is what updates the page, not a re-appear.
+        .onAppear { if !loadedRef.didLoad { reload() } }
         // Using .alert (not .confirmationDialog) so the dialog stays
         // centered on iPad / Mac. confirmationDialog without a source
         // rect renders as a popover anchored to the screen's top edge
@@ -134,8 +170,6 @@ struct SoulSettingsView: View {
             icon: $icon,
             showEmojiPrompt: $showEmojiPrompt,
             emojiDraft: $emojiDraft,
-            showPhotoPicker: $showPhotoPicker,
-            photoItem: $photoItem,
             iconError: $iconError
         ))
         .overlay(alignment: .bottom) {
@@ -213,7 +247,7 @@ struct SoulSettingsView: View {
                     emojiDraft = (icon.isEmpty || SoulIconImage.isDataURI(icon)) ? "" : icon
                     showEmojiPrompt = true
                 }
-                Button(AppLocalized("Choose Image…")) { showPhotoPicker = true }
+                Button(AppLocalized("Choose Image…")) { presentIconPhotoPicker() }
                 if !icon.isEmpty {
                     Button(AppLocalized("Use Default"), role: .destructive) { icon = "" }
                 }
@@ -316,6 +350,41 @@ struct SoulSettingsView: View {
         currentFile != loadedRef.value
     }
 
+    /// Validate and normalize a picked photo into the stored form.
+    ///
+    /// [T-soul-icon-opaque-rounded] Opaque images are accepted: transparency was
+    /// a presentation concern and moved to `SoulIconView`, which clips every
+    /// image to a rounded rectangle. Only an undecodable image is refused here,
+    /// so this path and the `minis-config` path apply exactly the same rule.
+    private func applyPickedImage(_ image: UIImage) {
+        switch SoulIconImage.encode(image) {
+        case .success(let uri):
+            icon = uri
+        case .failure:
+            iconError = AppLocalized("That image couldn't be read.")
+        }
+    }
+
+    /// Open the system image picker for the identity icon.
+    ///
+    /// PHPicker (not UIImagePickerController): it needs no photo-library usage
+    /// description and runs out of process, so a pick cannot hand the app a
+    /// library-scale memory spike. `UIKitPickerPresenter` is the same presenter
+    /// the chat composer uses — it waits for the menu/dialog to finish
+    /// dismissing before presenting, otherwise iOS drops the presentation.
+    private func presentIconPhotoPicker() {
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter = .images
+        config.selectionLimit = 1
+        config.preferredAssetRepresentationMode = .current
+        let picker = PHPickerViewController(configuration: config)
+        iconPhotoPicker.onPicked = { image in
+            applyPickedImage(image)
+        }
+        picker.delegate = iconPhotoPicker
+        UIKitPickerPresenter.present(picker)
+    }
+
     private func reload() {
         let file = SoulStore.load() ?? SoulFile(metadata: .default, body: "")
         name = file.metadata.name
@@ -325,6 +394,7 @@ struct SoulSettingsView: View {
         lang = file.metadata.lang
         bodyText = file.body
         loadedRef.value = file
+        loadedRef.didLoad = true
         saveError = nil
     }
 
@@ -377,6 +447,9 @@ struct SoulSettingsView: View {
 
     private final class LoadedFileRef: ObservableObject {
         var value: SoulFile = SoulFile(metadata: .default, body: "")
+        /// True once the on-disk file has been read into the form. Guards the
+        /// one-time load so a re-appear cannot wipe unsaved edits.
+        var didLoad = false
     }
 }
 
@@ -509,6 +582,27 @@ private struct SoulEmojiPickerSheet: View {
     }
 }
 
+/// One-shot PHPicker delegate for the Soul icon.
+///
+/// Lives in a `@StateObject` on the page rather than a struct-local variable:
+/// `PHPickerViewController.delegate` is weak, so a temporary would be gone by
+/// the time the user finishes picking and the callback would never arrive.
+private final class SoulIconPhotoPicker: NSObject, ObservableObject, PHPickerViewControllerDelegate {
+    var onPicked: ((UIImage) -> Void)?
+
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+        guard let provider = results.first?.itemProvider,
+              provider.canLoadObject(ofClass: UIImage.self) else { return }
+        provider.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
+            guard let image = object as? UIImage else { return }
+            // The picker calls back on a background queue; the icon is view
+            // state, so it must be written on the main actor.
+            DispatchQueue.main.async { self?.onPicked?(image) }
+        }
+    }
+}
+
 /// [T-soul-custom-icon] The icon picker's presentation chain, lifted out of
 /// `SoulSettingsView.body`.
 ///
@@ -520,8 +614,6 @@ private struct SoulIconEditing: ViewModifier {
     @Binding var icon: String
     @Binding var showEmojiPrompt: Bool
     @Binding var emojiDraft: String
-    @Binding var showPhotoPicker: Bool
-    @Binding var photoItem: PhotosPickerItem?
     @Binding var iconError: String?
 
     func body(content: Content) -> some View {
@@ -532,12 +624,6 @@ private struct SoulIconEditing: ViewModifier {
                 SoulEmojiPickerSheet(draft: $emojiDraft) { chosen in
                     icon = chosen
                 }
-            }
-            // Single-parameter form: the two-parameter `onChange` is iOS 17+,
-            // and this target still deploys lower.
-            .onChange(of: photoItem) { newItem in
-                guard let newItem else { return }
-                Task { await applyPickedImage(newItem) }
             }
             .alert(AppLocalized("Can't use that image"),
                    isPresented: Binding(get: { iconError != nil },
@@ -564,26 +650,5 @@ private struct SoulIconEditing: ViewModifier {
         icon = trimmed
     }
 
-    /// Load, validate and normalize a picked photo into the stored form.
-    private func applyPickedImage(_ item: PhotosPickerItem) async {
-        defer { photoItem = nil }
-        guard let data = try? await item.loadTransferable(type: Data.self),
-              let image = UIImage(data: data) else {
-            await MainActor.run { iconError = AppLocalized("That image couldn't be read.") }
-            return
-        }
-        // [T-soul-icon-opaque-rounded] Opaque images are accepted now — the
-        // transparency requirement was a presentation concern and moved to
-        // `SoulIconView`, which clips every image to a rounded rectangle. Only
-        // an undecodable image is refused here, so this path and the
-        // `minis-config` path apply exactly the same rule.
-        switch SoulIconImage.encode(image) {
-        case .success(let uri):
-            await MainActor.run { icon = uri }
-        case .failure:
-            await MainActor.run {
-                iconError = AppLocalized("That image couldn't be read.")
-            }
-        }
-    }
+
 }

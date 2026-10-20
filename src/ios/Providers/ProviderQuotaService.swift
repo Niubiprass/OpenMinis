@@ -246,7 +246,7 @@ final class ProviderQuotaService: ObservableObject {
             for row in rows {
                 guard let secret = secrets[row.id] else { continue }
                 group.addTask {
-                    let info = await Self.fetchQuota(for: instance, key: secret)
+                    let info = await Self.fetchQuota(for: instance, key: secret, rowId: row.id)
                     return (row.id, info)
                 }
             }
@@ -325,7 +325,11 @@ final class ProviderQuotaService: ObservableObject {
     /// the instance id. Everything below — endpoint choice, placeholder
     /// handling, threshold — is shared with the single-key path on purpose;
     /// two implementations would drift.
-    static func fetchQuota(for instance: ProviderInstance, key: String) async -> QuotaInfo? {
+    /// - Parameter rowId: which key of the provider this query is for —
+    ///   `main`, or a ring key's UUID. Selects that key's own access token
+    ///   ([T-quota-perkey-token]) and falls back to the instance-wide one.
+    static func fetchQuota(for instance: ProviderInstance, key: String,
+                           rowId: String = "main") async -> QuotaInfo? {
         guard instance.isEnabled else { return nil }
         guard !key.isEmpty else { return nil }
 
@@ -346,7 +350,8 @@ final class ProviderQuotaService: ObservableObject {
             return await fetchOpenAIQuota(
                 instanceId: instance.id,
                 key: key,
-                baseURL: base
+                baseURL: base,
+                rowId: rowId
             )
         case .anthropic:
             return await fetchAnthropicSpend(key: key, baseURL: base)
@@ -355,7 +360,8 @@ final class ProviderQuotaService: ObservableObject {
         }
     }
 
-    private static func fetchOpenAIQuota(instanceId: String, key: String, baseURL: String) async -> QuotaInfo? {
+    private static func fetchOpenAIQuota(instanceId: String, key: String, baseURL: String,
+                                        rowId: String) async -> QuotaInfo? {
         let session = URLSession.shared
 
         // 0) [T-quota-newapi-balance] New API / One API relays expose the REAL
@@ -364,7 +370,8 @@ final class ProviderQuotaService: ObservableObject {
         // logged-in web session cookies (fallback). Their OpenAI-compatible
         // billing endpoints are implemented with a placeholder limit (1e8), so
         // this is the only way to report a truthful "余额".
-        if let balance = await fetchNewAPIBalance(instanceId: instanceId, baseURL: baseURL) {
+        if let balance = await fetchNewAPIBalance(instanceId: instanceId, baseURL: baseURL,
+                                                 rowId: rowId) {
             return balance
         }
 
@@ -476,14 +483,17 @@ final class ProviderQuotaService: ObservableObject {
     /// user signed in through the in-app browser. Returns nil for non-New-API
     /// sites or when neither credential exists, and the caller falls back to
     /// the usage-only display.
-    private static func fetchNewAPIBalance(instanceId: String, baseURL: String) async -> QuotaInfo? {
+    private static func fetchNewAPIBalance(instanceId: String, baseURL: String,
+                                           rowId: String) async -> QuotaInfo? {
         let root = apiRoot(baseURL)
         guard let url = URL(string: root + "/api/user/self") else { return nil }
 
         var req = URLRequest(url: url)
         req.timeoutInterval = 12
 
-        if let token = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instanceId),
+        // [T-quota-perkey-token] This key's own token first; the instance-wide
+        // token is the fallback for a single-account setup.
+        if let token = ProviderKeychainHelper.resolvedQuotaAccessToken(instanceId: instanceId, keyId: rowId),
            !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         } else if let cookie = await sessionCookieHeader(for: root) {

@@ -123,6 +123,17 @@ extension AIChatViewModel {
         tools: [AgentToolDefinition],
         batchBudget: BatchImageBudget
     ) async -> ToolExecOutcome {
+        // [T-minisight-agent-signal] Every tool in the app funnels through this
+        // function, so this is the one place the MiniSight overlay needs: a
+        // burst opens here and closes on EVERY exit path (`defer` covers the
+        // early cancel checks, per-tool error returns and both catch blocks —
+        // the same reasoning the CPU probe below uses).
+        //
+        // Additive on purpose: no existing line is modified, and deleting these
+        // two lines restores the previous behaviour exactly.
+        MiniSightSignal.shared.begin()
+        defer { MiniSightSignal.shared.end() }
+
         let blockIdx = tu.blockIdx
 
         // [T-perf-cpu-probe] Every tool call in the app funnels through this
@@ -1384,5 +1395,129 @@ extension AIChatViewModel {
             return ("用户未确认（超时未回答）。如需继续，请以你提出的选项或合理默认继续，或再问一次更具体的问题。", true)
         }
         return (answerJSON, true)
+    }
+}
+
+// MARK: - [T-minisight-agent-signal] Darwin broadcast for the MiniSight overlay
+//
+// What this is for: a jailbreak tweak (MiniSight, repo Niubiprass/theos-ci →
+// debs/MiniSight) draws a 132×36 capsule at the top of the screen — "Minis 操作中"
+// with a pulsing dot — on top of everything, including other apps. Its only
+// input is a pair of Darwin notifications, and until now nothing in this app
+// posted them, so the capsule never appeared.
+//
+// Three rules, each chosen for a failure I did not want to ship:
+//
+//  * ONE pair per BURST, not per tool. Tools run concurrently and back-to-back;
+//    posting per call would strobe the capsule several times a second. A counter
+//    decides the only two interesting moments: 0→1 (show) and 1→0 (hide).
+//  * A minimum visible window. A cached shell command finishes inside one
+//    frame; without this the capsule would flash and vanish, which reads as a
+//    glitch rather than a status light.
+//  * No feature flag, no persistence, no I/O. Either the tweak is installed and
+//    these posts light it up, or it is not and they go nowhere. Posting is a
+//    few microseconds and cannot fail in a way the caller has to handle.
+//
+// Deliberately ADDITIVE: nothing else in the app reads this, and removing the
+// two call sites in `executeSingleToolUse` restores the previous behaviour
+// exactly. That is the whole point — the tool executor is the single funnel for
+// every tool in the app, so the safest change there is one that adds a signal
+// and touches nothing else.
+final class MiniSightSignal {
+    static let shared = MiniSightSignal()
+
+    /// Must match the tweak's `kMiniSightStarted` / `kMiniSightStopped`.
+    /// Pinned by scripts/test_minisight_signal_160651.py — a rename on either
+    /// side silently disables the capsule, which would be invisible in review.
+    static let startedNotification = "com.openminis.agent.started"
+    static let stoppedNotification = "com.openminis.agent.stopped"
+
+    /// Floor for how long the capsule stays up after the last tool ends.
+    /// The tweak's own fade is 0.18 s, so this leaves ~0.4 s of readable time.
+    private static let minimumVisible: TimeInterval = 0.6
+
+    private let lock = NSLock()
+    /// Tools currently executing. Only 0→1 / 1→0 post.
+    private var depth = 0
+    /// When the capsule was told to show — the base for `minimumVisible`.
+    private var shownAt: Date?
+    /// A scheduled hide for a burst that ended inside the floor; cancelled if
+    /// another tool starts first.
+    private var pendingHide: DispatchWorkItem?
+
+    private init() {}
+
+    /// A tool is about to run. Always paired with `end()` — the executor uses
+    /// `defer`, so a throw, a timeout or a user cancel still closes the burst.
+    func begin() {
+        var shouldPost = false
+        lock.lock()
+        depth += 1
+        if depth == 1 {
+            pendingHide?.cancel()
+            pendingHide = nil
+            shownAt = Date()
+            shouldPost = true
+        }
+        lock.unlock()
+        if shouldPost { Self.post(Self.startedNotification) }
+    }
+
+    /// That tool finished (or failed, or was cancelled).
+    func end() {
+        var shouldPostNow = false
+        var delay: TimeInterval = 0
+
+        lock.lock()
+        let previousDepth = depth
+        depth = max(0, depth - 1)
+        if depth == 0, previousDepth > 0 {
+            let elapsed = shownAt.map { Date().timeIntervalSince($0) } ?? Self.minimumVisible
+            delay = Self.minimumVisible - elapsed
+            if delay <= 0 {
+                shownAt = nil
+                shouldPostNow = true
+            } else {
+                let item = DispatchWorkItem { [weak self] in self?.hideIfIdle() }
+                pendingHide?.cancel()
+                pendingHide = item
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+            }
+        }
+        lock.unlock()
+
+        if shouldPostNow { Self.post(Self.stoppedNotification) }
+    }
+
+    /// Force the capsule away (used when a turn is stopped mid-burst). Safe to
+    /// call at any time, from any thread.
+    func reset() {
+        lock.lock()
+        depth = 0
+        shownAt = nil
+        pendingHide?.cancel()
+        pendingHide = nil
+        lock.unlock()
+        Self.post(Self.stoppedNotification)
+    }
+
+    private func hideIfIdle() {
+        lock.lock()
+        let idle = depth == 0
+        if idle {
+            shownAt = nil
+            pendingHide = nil
+        }
+        lock.unlock()
+        if idle { Self.post(Self.stoppedNotification) }
+    }
+
+    private static func post(_ name: String) {
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(name as CFString),
+            nil,
+            nil,
+            true)
     }
 }

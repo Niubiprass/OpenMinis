@@ -43,6 +43,12 @@ struct ProviderInstanceDetailView: View {
     @State private var multiKeyCount = 0
     @State private var quotaRefreshing = false
     @State private var quotaMessage: String?
+    /// [T-quota-perkey-token] Which key's access token is being edited. Each
+    /// key can belong to a DIFFERENT site account (the reported case: one
+    /// registered through GitHub, one through linux.do), and
+    /// `/api/user/self` answers per ACCOUNT, so a single instance-wide token
+    /// can only ever be right for one of them.
+    @State private var quotaTokenTarget: ProviderQuotaService.KeyQuota?
     /// [T-quota-threshold] Shared across providers; persisted in UserDefaults.
     @AppStorage(ProviderQuotaService.lowThresholdDefaultsKey) private var quotaLowThreshold: Double = 3
 
@@ -142,6 +148,11 @@ struct ProviderInstanceDetailView: View {
                         }
                     }
                 }
+            }
+        }
+        .sheet(item: $quotaTokenTarget) { row in
+            KeyQuotaTokenSheet(instanceId: instanceId, row: row) {
+                quotaTokenTarget = nil
             }
         }
         .sheet(isPresented: $showManualTokenInput) {
@@ -636,7 +647,20 @@ struct ProviderInstanceDetailView: View {
 
         if multiKeyOn {
             ForEach(rows) { row in
-                quotaKeyRow(row)
+                // Tappable: opens this key's own access-token editor. The
+                // chevron is the Form convention for "there is another page
+                // behind this row" and is the only affordance that says so.
+                Button {
+                    quotaTokenTarget = row
+                } label: {
+                    HStack(spacing: 6) {
+                        quotaKeyRow(row)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color(UIColor.tertiaryLabel))
+                    }
+                }
+                .buttonStyle(.plain)
             }
         } else {
             HStack {
@@ -2179,3 +2203,94 @@ private struct ProviderShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 
+
+// MARK: - [T-quota-perkey-token] Per-key access token
+
+/// Access-token editor for ONE key of a provider.
+///
+/// The instance-wide 访问令牌 row already exists and stays as the shared
+/// default. This sheet is for the case that made it insufficient: two keys from
+/// two different site accounts under one provider. `/api/user/self` returns the
+/// ACCOUNT's balance, so each account needs its own token — with a shared one
+/// the second key's row showed the first account's number.
+///
+/// Tokens are Keychain-only, local, and never synced: they are full read access
+/// to the billing side of that account.
+private struct KeyQuotaTokenSheet: View {
+    let instanceId: String
+    let row: ProviderQuotaService.KeyQuota
+    var onDismiss: () -> Void
+
+    @State private var token: String = ""
+    @State private var loaded = false
+
+    private var trimmed: String {
+        token.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    HStack(spacing: 10) {
+                        Text(row.title)
+                            .font(.system(size: 15, weight: .semibold))
+                        Spacer()
+                        Text(row.masked)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text(AppLocalized("Key"))
+                } footer: {
+                    Text(AppLocalized("这个令牌只用来查这一把 Key 的余额。"))
+                }
+
+                Section {
+                    TextField(AppLocalized("可选"), text: $token)
+                        // Not a password: it is a long-lived read credential,
+                        // and AutoFill offering to store it as an account
+                        // password is the behaviour issue #364 fixed elsewhere.
+                        .textContentType(.oneTimeCode)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.body, design: .monospaced))
+                } header: {
+                    Text(AppLocalized("访问令牌"))
+                } footer: {
+                    Text(AppLocalized("同一个账号下的多把 Key 共用一个令牌；不同账号各填各的。不填则用上面那个通用令牌。"))
+                }
+
+                if !trimmed.isEmpty {
+                    Section {
+                        Button(role: .destructive) {
+                            ProviderKeychainHelper.saveQuotaAccessToken("", instanceId: instanceId, keyId: row.id)
+                            token = ""
+                            onDismiss()
+                        } label: {
+                            Text(AppLocalized("清除这把 Key 的令牌"))
+                        }
+                    }
+                }
+            }
+            .navigationTitle(AppLocalized("访问令牌"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(AppLocalized("Cancel")) { onDismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(AppLocalized("Save")) {
+                        ProviderKeychainHelper.saveQuotaAccessToken(trimmed, instanceId: instanceId, keyId: row.id)
+                        onDismiss()
+                    }
+                }
+            }
+            .onAppear {
+                guard !loaded else { return }
+                loaded = true
+                token = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instanceId, keyId: row.id) ?? ""
+            }
+        }
+    }
+}

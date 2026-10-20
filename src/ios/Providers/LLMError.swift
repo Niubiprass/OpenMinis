@@ -20,23 +20,32 @@ enum LLMError: LocalizedError {
     case unknown(underlying: Error?)
 
     var errorDescription: String? {
+        // [T-error-copy-l10n] Every string here is user-facing: it is what the
+        // red banner in the transcript prints verbatim (and what the group
+        // trail repeats per model). They used to be English literals, so a
+        // Chinese UI still said "Rate limited — please try again later" — the
+        // report that started this. `AppLocalized` + a format string keeps the
+        // numbers/ids the provider sent while translating the sentence.
         switch self {
         case .invalidAPIKey(let detail):
-            return detail.isEmpty ? "Invalid API key" : "Invalid API key: \(detail)"
+            return detail.isEmpty
+                ? AppLocalized("Invalid API key")
+                : String(format: AppLocalized("Invalid API key: %@"), detail)
         case .networkError(let error):
-            return "Network error: \(error.localizedDescription)"
+            return String(format: AppLocalized("Network error: %@"), error.localizedDescription)
         case .providerError(let message):
-            return "Provider error: \(message)"
+            return String(format: AppLocalized("Provider error: %@"), message)
         case .transientError(let message, _):
-            return "Service temporarily unavailable: \(message)"
+            return String(format: AppLocalized("Service temporarily unavailable: %@"), message)
         case .decodingError(let error):
-            return "Decoding error: \(error.localizedDescription)"
+            return String(format: AppLocalized("Decoding error: %@"), error.localizedDescription)
         case .rateLimited:
-            return "Rate limited — please try again later"
+            return AppLocalized("Rate limited — please try again later")
         case .cancelled:
-            return "Request was cancelled"
+            return AppLocalized("Request was cancelled")
         case .unknown(let error):
-            return "Unknown error: \(error?.localizedDescription ?? "no details")"
+            return String(format: AppLocalized("Unknown error: %@"),
+                          error?.localizedDescription ?? AppLocalized("no details"))
         }
     }
 
@@ -63,11 +72,15 @@ enum LLMError: LocalizedError {
     /// Note: transientError and networkError are also fallbackable — after
     /// auto-retry is exhausted on the current model, group fallback kicks in.
     var fallbackReason: String {
+        // Same treatment as `errorDescription`: this reaches the user too, as
+        // one "⚠️ model (site): reason" line per attempted entry in the
+        // group-exhausted banner.
         switch self {
-        case .rateLimited: return "Rate limited"
-        case .invalidAPIKey: return "Invalid API key"
-        case .providerError(let msg): return "Provider error: \(String(msg.prefix(60)))"
-        default: return "Error"
+        case .rateLimited: return AppLocalized("Rate limited")
+        case .invalidAPIKey: return AppLocalized("Invalid API key")
+        case .providerError(let msg):
+            return String(format: AppLocalized("Provider error: %@"), String(msg.prefix(60)))
+        default: return AppLocalized("Error")
         }
     }
 
