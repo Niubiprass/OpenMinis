@@ -861,33 +861,41 @@ final class SessionMonitorStore: ObservableObject {
 
 // MARK: - [T-session-photo-icon] A session may use a photo instead of its category glyph
 
-/// Per-session custom icon: a small `data:image/png;base64,…` URI produced by
-/// `SoulIconImage.encode` (96 px, square, PNG), keyed by session id.
-///
-/// Why UserDefaults and not the session record: this is a display preference,
-/// it must survive iCloud sync untouched (a peer device should not inherit a
-/// local photo), and it is tiny — the encoder caps the edge at 96 px, so a few
-/// dozen sessions cost well under a megabyte. Storing it on the record would
-/// also mean a schema migration for a cosmetic field.
+/// Per-session custom icon, keyed by the persisted session id, never by a
+/// folder id. Existing 96px PNG data URIs remain readable; new sidebar picks
+/// use 132px (44pt @3x). These local display preferences do not change chat
+/// records or iCloud payloads.
 final class SessionIconStore: ObservableObject {
     static let shared = SessionIconStore()
     private static let defaultsKey = "sessionCustomIcons"
 
     @Published private(set) var icons: [String: String] =
         (UserDefaults.standard.dictionary(forKey: SessionIconStore.defaultsKey) as? [String: String]) ?? [:]
+    private var revisions: [String: UInt64] = [:]
+    private let imageCache = NSCache<NSString, UIImage>()
 
-    private init() {}
+    private init() { imageCache.countLimit = 64 }
 
     func icon(for sessionId: String) -> String? {
         icons[sessionId]
     }
 
+    /// Cheap snapshot for the sidebar's Equatable row, not a new row identity.
+    func revision(for sessionId: String) -> UInt64 { revisions[sessionId] ?? 0 }
+
     func image(for sessionId: String) -> UIImage? {
-        icons[sessionId].flatMap { SoulIconImage.decode($0) }
+        if let cached = imageCache.object(forKey: sessionId as NSString) { return cached }
+        guard let uri = icons[sessionId], let image = SoulIconImage.decode(uri) else { return nil }
+        imageCache.setObject(image, forKey: sessionId as NSString)
+        return image
     }
 
     func setIcon(_ dataURI: String?, for sessionId: String) {
-        if let dataURI, !dataURI.isEmpty {
+        let normalized: String? = dataURI?.isEmpty == false ? dataURI : nil
+        guard icons[sessionId] != normalized else { return }
+        imageCache.removeObject(forKey: sessionId as NSString)
+        revisions[sessionId] = (revisions[sessionId] ?? 0) &+ 1
+        if let dataURI = normalized {
             icons[sessionId] = dataURI
         } else {
             icons.removeValue(forKey: sessionId)
@@ -895,12 +903,83 @@ final class SessionIconStore: ObservableObject {
         UserDefaults.standard.set(icons, forKey: Self.defaultsKey)
     }
 
-    /// Drop icons whose session no longer exists, so a deleted session cannot
-    /// keep a photo alive forever.
+    /// Call only with a complete set of live IDs, never visible/search results.
     func prune(keeping liveIds: Set<String>) {
         let kept = icons.filter { liveIds.contains($0.key) }
         guard kept.count != icons.count else { return }
+        for id in icons.keys where !liveIds.contains(id) {
+            imageCache.removeObject(forKey: id as NSString)
+            revisions[id] = (revisions[id] ?? 0) &+ 1
+        }
         icons = kept
         UserDefaults.standard.set(icons, forKey: Self.defaultsKey)
+    }
+}
+
+// MARK: - [T-sidebar-icon-menu] Independent local folder photos
+
+/// A folder remains a container, not a session. Its photo lives in its OWN
+/// namespace, keyed by folder.id rather than name, latest member or session.id.
+/// Do not put a photo into ChatFolder.icon: that field is an iCloud-synced
+/// SF Symbol name. No database migration or sync change is needed here.
+final class FolderIconStore: ObservableObject {
+    static let shared = FolderIconStore()
+    private static let defaultsKey = "folderCustomIcons"
+    private let defaults: UserDefaults
+    @Published private(set) var icons: [String: String]
+    private let imageCache = NSCache<NSString, UIImage>()
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        icons = (defaults.dictionary(forKey: Self.defaultsKey) as? [String: String]) ?? [:]
+        imageCache.countLimit = 64
+    }
+
+    func icon(for folderId: String) -> String? { icons[folderId] }
+
+    func image(for folderId: String) -> UIImage? {
+        if let cached = imageCache.object(forKey: folderId as NSString) { return cached }
+        guard let uri = icons[folderId], let image = SoulIconImage.decode(uri) else { return nil }
+        imageCache.setObject(image, forKey: folderId as NSString)
+        return image
+    }
+
+    func setIcon(_ dataURI: String?, for folderId: String) {
+        let normalized: String? = dataURI?.isEmpty == false ? dataURI : nil
+        guard icons[folderId] != normalized else { return }
+        imageCache.removeObject(forKey: folderId as NSString)
+        if let normalized {
+            icons[folderId] = normalized
+        } else {
+            icons.removeValue(forKey: folderId)
+        }
+        defaults.set(icons, forKey: Self.defaultsKey)
+    }
+}
+
+/// Bound the render target BEFORE drawing. Unlike cropping an original-size
+/// square and then resizing it, this never allocates a full-resolution crop.
+/// Output keeps the existing SoulIconImage PNG data-URI format; the Soul's
+/// own 32pt / 96px policy is unchanged.
+enum SidebarIconImage {
+    static let storedPixels: CGFloat = 132
+
+    static func encode(_ image: UIImage) -> Result<String, SoulIconImage.RejectionReason> {
+        guard image.cgImage != nil, image.size.width > 0, image.size.height > 0 else {
+            return .failure(.unreadable)
+        }
+        let side = storedPixels
+        let scale = max(side / image.size.width, side / image.size.height)
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let rect = CGRect(x: (side - size.width) / 2, y: (side - size.height) / 2,
+                          width: size.width, height: size.height)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let rendered = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
+            image.draw(in: rect)
+        }
+        guard let png = rendered.pngData() else { return .failure(.unreadable) }
+        return .success(SoulIconImage.dataURI(fromPNG: png))
     }
 }

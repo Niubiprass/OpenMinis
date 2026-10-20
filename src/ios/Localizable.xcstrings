@@ -1,6 +1,8 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "更换图标" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Change Icon" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "更换图标" } } } },
+    "恢复默认图标" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Restore Default Icon" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "恢复默认图标" } } } },
     "自定义图标" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Custom icon" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自定义图标" } } } },
     "用这张照片" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Use this photo" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "用这张照片" } } } },
     "从照片选择" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Choose from Photos" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "从照片选择" } } } },

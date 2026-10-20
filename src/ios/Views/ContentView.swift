@@ -1112,7 +1112,7 @@ private struct FolderPickerSheet: View {
                                 // "N chats · context" subtitle (and thus the
                                 // same localization keys).
                                 HStack(spacing: 8) {
-                                    FolderComposedIcon(glyphs: item.glyphs, diameter: 40)
+                                    FolderPhotoIcon(folderId: item.folder.id, glyphs: item.glyphs, diameter: 40)
                                     VStack(alignment: .leading, spacing: 2) {
                                         // Folder names are user data — verbatim.
                                         Text(item.folder.name)
@@ -1209,7 +1209,53 @@ private struct FolderPickerSheet: View {
     }
 }
 
+/// [T-sidebar-icon-menu] The target is a value captured when the user opens
+/// the picker. A folder is NEVER converted to (or represented by) a session.
+private enum SidebarIconTarget: Hashable {
+    case session(String)
+    case folder(String)
+
+    // Per-target tickets: an old asynchronous load must not overwrite a newer
+    // pick or a restore-default action, including across the ChatStore await.
+    @MainActor private static var requests: [SidebarIconTarget: UUID] = [:]
+
+    @MainActor
+    func beginRequest() -> UUID {
+        let ticket = UUID()
+        Self.requests[self] = ticket
+        return ticket
+    }
+
+    @MainActor
+    func restoreDefault() {
+        _ = beginRequest()
+        switch self {
+        case .session(let id): SessionIconStore.shared.setIcon(nil, for: id)
+        case .folder(let id): FolderIconStore.shared.setIcon(nil, for: id)
+        }
+    }
+
+    /// The picker can finish after the row was deleted. Do not retain an
+    /// orphan photo, and never create a chat/folder just to save an icon.
+    @MainActor
+    func save(_ dataURI: String, request: UUID) async {
+        guard Self.requests[self] == request else { return }
+        switch self {
+        case .session(let id):
+            guard await ChatStore.shared.getSession(id) != nil else { return }
+            guard Self.requests[self] == request else { return }
+            SessionIconStore.shared.setIcon(dataURI, for: id)
+        case .folder(let id):
+            guard await ChatStore.shared.getFolder(id) != nil else { return }
+            guard Self.requests[self] == request else { return }
+            FolderIconStore.shared.setIcon(dataURI, for: id)
+        }
+    }
+}
+
 private enum SessionMenuAction {
+    case changeIcon(SidebarIconTarget)
+    case restoreIcon(SidebarIconTarget)
     /// [T-sidebar-session-collapse] Tuck this session into (or pull it out of)
     /// its group's strip. A UI-state action, never a data mutation.
     case toggleSessionCollapse(String)
@@ -1425,6 +1471,10 @@ struct ContentView: View {
     // aggregates when a badge flips. Row-level observation alone would only
     // refresh the rows, not the header pass.
     @ObservedObject private var sidebarBadgeStore = SessionBadgeStore.shared
+    // Snapshot per-session icon revisions into Equatable rows/menu keys. No
+    // List identity changes or database refresh is needed after a photo pick.
+    @ObservedObject private var sidebarIcons = SessionIconStore.shared
+    @StateObject private var sidebarPhotoPicker = SessionIconPhotoPicker()
     @ObservedObject private var sidebarConcurrencyManager = SessionConcurrencyManager.shared
     // [T-sidebar-subagent-running] The registry too: a conversation whose only
     // remaining work is a delegated sub agent is still running, and nothing in
@@ -3266,7 +3316,7 @@ struct ContentView: View {
                 }
             } label: {
                 HStack(spacing: 8) {
-                    FolderComposedIcon(glyphs: folderMiniBarGlyphs(folder.id), diameter: 30)
+                    FolderPhotoIcon(folderId: folder.id, glyphs: folderMiniBarGlyphs(folder.id), diameter: 30)
                     // Folder names are user data — verbatim.
                     Text(folder.name)
                         .font(.system(size: 14, weight: .semibold))
@@ -3463,7 +3513,8 @@ struct ContentView: View {
                 isActive: sessionIsRunning(session.id),
                 isSuspended: sidebarConcurrencyManager.isSuspended(session.id),
                 highlightQuery: isSearching ? searchText : nil,
-                matchSnippet: isSearching ? searchMatchSnippets[session.id] : nil
+                matchSnippet: isSearching ? searchMatchSnippets[session.id] : nil,
+                iconRevision: sidebarIcons.revision(for: session.id)
             )
             // [T-ios-session-list-equatable-jank] Gate
             // parent-driven re-eval on SessionRow's cheap
@@ -3506,7 +3557,7 @@ struct ContentView: View {
                 // [T-ios-crash-contextmenu-uaf] Value-only menu view,
                 // no closure captures — see SessionContextMenu.
                 SessionContextMenu(
-                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, filed: session.isFiled, collapsed: session.isFiled && collapsedSessionIds.contains(session.id)),
+                    key: MenuKey(sid: session.id, pinned: session.isPinned, title: session.title, filed: session.isFiled, collapsed: session.isFiled && collapsedSessionIds.contains(session.id), hasCustomIcon: sidebarIcons.icon(for: session.id) != nil),
                     actions: menuActions
                 )
                 .equatable()
@@ -3802,7 +3853,9 @@ struct ContentView: View {
                                 isActive: sessionIsRunning(session.id),
                                 isSuspended: sidebarConcurrencyManager.isSuspended(session.id),
                                 highlightQuery: isSearching ? searchText : nil,
-                                matchSnippet: isSearching ? searchMatchSnippets[session.id] : nil
+                                matchSnippet: isSearching ? searchMatchSnippets[session.id] : nil,
+                                iconSessionId: Self.isNewSessionId(session.id) ? newSessionRealId : session.id,
+                                iconRevision: sidebarIcons.revision(for: Self.isNewSessionId(session.id) ? (newSessionRealId ?? session.id) : session.id)
                             )
                                 // [T-ios-session-list-equatable-jank] Gate
                                 // parent-driven re-eval on SessionRow's cheap
@@ -3861,7 +3914,7 @@ struct ContentView: View {
                                         : session.id
                                     if let menuSid {
                                         SessionContextMenu(
-                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, filed: session.isFiled, collapsed: session.isFiled && collapsedSessionIds.contains(menuSid)),
+                                            key: MenuKey(sid: menuSid, pinned: session.isPinned, title: session.title, filed: session.isFiled, collapsed: session.isFiled && collapsedSessionIds.contains(menuSid), hasCustomIcon: sidebarIcons.icon(for: menuSid) != nil),
                                             actions: menuActions
                                         )
                                         .equatable()
@@ -4730,9 +4783,31 @@ struct ContentView: View {
         }
     }
 
+    /// [T-sidebar-icon-menu] Both long-press menus go directly to PHPicker,
+    /// not an edit sheet. Retain the delegate and capture this immutable target
+    /// (not selection, group membership or a whole ContentView value).
+    private func presentSidebarIconPicker(for target: SidebarIconTarget) {
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter = .images
+        config.selectionLimit = 1
+        config.preferredAssetRepresentationMode = .current
+        let picker = PHPickerViewController(configuration: config)
+        let request = target.beginRequest()
+        sidebarPhotoPicker.setCompletion({ image in
+            guard case .success(let uri) = SidebarIconImage.encode(image) else { return }
+            Task { @MainActor in await target.save(uri, request: request) }
+        }, for: picker)
+        picker.delegate = sidebarPhotoPicker
+        UIKitPickerPresenter.present(picker)
+    }
+
     private func wireMenuActions() {
         menuActions.handler = { [self] action in
             switch action {
+            case .changeIcon(let target):
+                presentSidebarIconPicker(for: target)
+            case .restoreIcon(let target):
+                target.restoreDefault()
             case .toggleSessionCollapse(let sid):
                 toggleSessionCollapse(sid)
             case .togglePin(let sid):
@@ -4832,6 +4907,7 @@ struct ContentView: View {
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
                         .contextMenu (menuItems: {
+                            SidebarIconMenu(target: .session(session.id), actions: menuActions)
                             Button {
                                 // [T-ios-state-publish-offmain-crash] @MainActor
                                 // so the @State write stays on the main thread.
@@ -5745,7 +5821,7 @@ struct ContentView: View {
         // alone; the accessibility action keeps the card activatable for
         // AX clients and the debug tap harness.
         HStack(spacing: 8) {
-                FolderComposedIcon(glyphs: group.glyphs)
+                FolderPhotoIcon(folderId: group.folderId ?? "", glyphs: group.glyphs)
                     // Same overlay corners as SessionRow: spinner ring for
                     // running, bottom-trailing badge for paused, top-trailing
                     // red dot for unread — the symbols the user already knows
@@ -5896,6 +5972,7 @@ struct ContentView: View {
                     Label(LocalizedStringKey(folder.isPinned ? "Unpin" : "Pin"),
                           systemImage: folder.isPinned ? "pin.slash" : "pin")
                 }
+                SidebarIconMenu(target: .folder(fid), actions: menuActions)
                 Button {
                     renameFolderText = folder.name
                     // [T-folder-rename-desc-wipe] Seed the description too.
@@ -7133,6 +7210,35 @@ private struct DraggableFAB<Label: View>: View {
     }
 }
 
+// MARK: - [T-sidebar-icon-menu] Shared direct icon actions
+
+/// The submenu observes the stores itself: a folder has no session menu key,
+/// and replacing photo A with B must update without rebuilding the List.
+private struct SidebarIconMenu: View {
+    let target: SidebarIconTarget
+    let actions: SessionMenuActionChannel
+    @ObservedObject private var sessions = SessionIconStore.shared
+    @ObservedObject private var folders = FolderIconStore.shared
+
+    private var hasCustomIcon: Bool {
+        switch target {
+        case .session(let id): return sessions.icon(for: id) != nil
+        case .folder(let id): return folders.icon(for: id) != nil
+        }
+    }
+
+    var body: some View {
+        Button { actions.send(.changeIcon(target)) } label: {
+            Label("更换图标", systemImage: "photo")
+        }
+        if hasCustomIcon {
+            Button { actions.send(.restoreIcon(target)) } label: {
+                Label("恢复默认图标", systemImage: "arrow.counterclockwise")
+            }
+        }
+    }
+}
+
 // MARK: - Equatable-gated context menu
 
 /// [T-ios-sidebar-contextmenu-memory] + [T-ios-crash-contextmenu-uaf]
@@ -7168,6 +7274,7 @@ private struct SessionContextMenu: View, Equatable {
             Label(LocalizedStringKey(key.pinned ? "Unpin" : "Pin"),
                   systemImage: key.pinned ? "pin.slash" : "pin")
         }
+        SidebarIconMenu(target: .session(key.sid), actions: actions)
         // [T-sidebar-session-collapse] Group members only — a session living in
         // a date bucket has no strip to tuck into, so the item is absent rather
         // than present-and-inert.
@@ -7309,6 +7416,8 @@ private struct MenuKey: Equatable {
     /// is a memberwise-init value type and callers pass arguments in
     /// declaration order.
     let collapsed: Bool
+    /// A menu snapshot, so the Equatable gate notices the first pick/reset.
+    let hasCustomIcon: Bool
 }
 
 // MARK: - Session Row
@@ -7403,6 +7512,51 @@ struct FolderComposedIcon: View {
     }
 }
 
+/// Photos observe only the local icon store; category glyphs keep their
+/// existing sizes and colors. Clip the PHOTO, not the row's outside badges.
+private struct SessionPhotoIcon: View {
+    let sessionId: String
+    let category: String?
+    @ObservedObject private var icons = SessionIconStore.shared
+
+    var body: some View {
+        if let image = icons.image(for: sessionId) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 44, height: 44)
+                .clipShape(Circle())
+        } else {
+            let icon = sessionCategoryIcon(for: category)
+            let size: CGFloat = (icon.systemName == "bubble.left.fill" || icon.systemName == "terminal.fill") ? 18 : 20
+            Image(systemName: icon.systemName)
+                .font(.system(size: size))
+                .foregroundStyle(icon.color)
+        }
+    }
+}
+
+/// Same independent folder photo on the header, mini-bar and folder picker.
+/// Default category glyph composition stays untouched as the fallback.
+private struct FolderPhotoIcon: View {
+    let folderId: String
+    let glyphs: [FolderGlyph]
+    var diameter: CGFloat = 44
+    @ObservedObject private var icons = FolderIconStore.shared
+
+    var body: some View {
+        if let image = icons.image(for: folderId) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: diameter, height: diameter)
+                .clipShape(Circle())
+        } else {
+            FolderComposedIcon(glyphs: glyphs, diameter: diameter)
+        }
+    }
+}
+
 private struct SessionRow: View, Equatable {
     // [T-ios-session-list-equatable-jank] Custom Equatable so `.equatable()` at
     // the call site gates parent-driven re-evaluation on a CHEAP compare of just
@@ -7429,9 +7583,13 @@ private struct SessionRow: View, Equatable {
             && lhs.matchSnippet == rhs.matchSnippet
             && lhs.isActiveOverride == rhs.isActiveOverride
             && lhs.isSuspendedOverride == rhs.isSuspendedOverride
+            && lhs.iconSessionId == rhs.iconSessionId
+            && lhs.iconRevision == rhs.iconRevision
     }
 
     let session: ChatSession
+    let iconSessionId: String
+    let iconRevision: UInt64
     var isHighlighted: Bool = false
     var highlightQuery: String? = nil
     /// When set, replaces the generic `lastMessage` preview in the subtitle
@@ -7465,8 +7623,12 @@ private struct SessionRow: View, Equatable {
          isActive: Bool? = nil,
          isSuspended: Bool? = nil,
          highlightQuery: String? = nil,
-         matchSnippet: String? = nil) {
+         matchSnippet: String? = nil,
+         iconSessionId: String? = nil,
+         iconRevision: UInt64 = 0) {
         self.session = session
+        self.iconSessionId = iconSessionId ?? session.id
+        self.iconRevision = iconRevision
         self.isHighlighted = isHighlighted
         self.isActiveOverride = isActive
         self.isSuspendedOverride = isSuspended
@@ -7738,22 +7900,7 @@ private struct SessionRow: View, Equatable {
 
     @ViewBuilder
     private var providerIcon: some View {
-        // [T-session-photo-icon] A photo chosen in 编辑会话 wins over the
-        // category glyph. Clipped to a circle so rows keep their shape
-        // whatever the image's aspect ratio.
-        if let image = SessionIconStore.shared.image(for: session.id) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 26, height: 26)
-                .clipShape(Circle())
-        } else {
-            let icon = categoryIcon
-            let size: CGFloat = (icon.systemName == "bubble.left.fill" || icon.systemName == "terminal.fill") ? 18 : 20
-            Image(systemName: icon.systemName)
-                .font(.system(size: size))
-                .foregroundStyle(icon.color)
-        }
+        SessionPhotoIcon(sessionId: iconSessionId, category: session.category)
     }
 
     private var iconBackgroundColor: Color {
@@ -7836,6 +7983,7 @@ private struct LockedRowEffect: ViewModifier {
 /// Row for a session synced from another device, with an iCloud badge on the icon.
 private struct RemoteSessionRow: View {
     let session: ChatSession
+    private var iconSessionId: String { session.id }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -7880,22 +8028,7 @@ private struct RemoteSessionRow: View {
 
     @ViewBuilder
     private var providerIcon: some View {
-        // [T-session-photo-icon] A photo chosen in 编辑会话 wins over the
-        // category glyph. Clipped to a circle so rows keep their shape
-        // whatever the image's aspect ratio.
-        if let image = SessionIconStore.shared.image(for: session.id) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 26, height: 26)
-                .clipShape(Circle())
-        } else {
-            let icon = categoryIcon
-            let size: CGFloat = (icon.systemName == "bubble.left.fill" || icon.systemName == "terminal.fill") ? 18 : 20
-            Image(systemName: icon.systemName)
-                .font(.system(size: size))
-                .foregroundStyle(icon.color)
-        }
+        SessionPhotoIcon(sessionId: iconSessionId, category: session.category)
     }
 }
 
@@ -7996,7 +8129,7 @@ struct SessionEditSheet: View {
                         Button(AppLocalized("从照片选择")) { presentPhotoPicker() }
                     }
                     Button {
-                        iconStore.setIcon(nil, for: session.id)
+                        SidebarIconTarget.session(session.id).restoreDefault()
                     } label: {
                         HStack {
                             Text(AppLocalized("清除（用回分类图标）"))
@@ -8054,24 +8187,20 @@ struct SessionEditSheet: View {
         }
     }
 
-    /// [T-session-photo-icon] Open the system photo picker for this session's
-    /// icon. PHPicker (iOS 14+) rather than `.photosPicker` (iOS 16+), matching
-    /// the rest of this iOS 15 port; the picked image goes through the same
-    /// 96 px square encoder the Soul icon uses, so both stay one format.
+    /// [T-session-photo-icon] Keep the original editor entry compatible with
+    /// direct long-press picks: same target tickets, 132px encode and storage.
     private func presentPhotoPicker() {
         var config = PHPickerConfiguration(photoLibrary: .shared())
         config.filter = .images
         config.selectionLimit = 1
         config.preferredAssetRepresentationMode = .current
         let picker = PHPickerViewController(configuration: config)
-        photoPicker.onPicked = { image in
-            switch SoulIconImage.encode(image) {
-            case .success(let uri):
-                iconStore.setIcon(uri, for: session.id)
-            case .failure:
-                break
-            }
-        }
+        let target = SidebarIconTarget.session(session.id)
+        let request = target.beginRequest()
+        photoPicker.setCompletion({ image in
+            guard case .success(let uri) = SidebarIconImage.encode(image) else { return }
+            Task { @MainActor in await target.save(uri, request: request) }
+        }, for: picker)
         picker.delegate = photoPicker
         UIKitPickerPresenter.present(picker)
     }
@@ -9436,19 +9565,26 @@ private struct AutoContextCompactionSettingsView: View {
 
 // MARK: - [T-session-photo-icon] PHPicker delegate for the session icon
 
-/// One-shot picker delegate. Held in a `@StateObject` on the edit sheet:
-/// `PHPickerViewController.delegate` is weak, so a temporary would be gone
-/// before the user finishes picking.
+/// One-shot picker delegate. Retained by its @StateObject owner because
+/// PHPicker's delegate is weak. Snapshot the completion BEFORE async loading:
+/// choosing A, then B must never send A's result to B's mutable callback.
 private final class SessionIconPhotoPicker: NSObject, ObservableObject, PHPickerViewControllerDelegate {
-    var onPicked: ((UIImage) -> Void)?
+    private var completions: [ObjectIdentifier: (UIImage) -> Void] = [:]
+
+    /// Bind to the actual picker, not a mutable "latest target". This also
+    /// isolates requests during UIKitPickerPresenter's delayed presentation.
+    func setCompletion(_ completion: @escaping (UIImage) -> Void, for picker: PHPickerViewController) {
+        completions[ObjectIdentifier(picker)] = completion
+    }
 
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        let completion = completions.removeValue(forKey: ObjectIdentifier(picker))
         picker.dismiss(animated: true)
         guard let provider = results.first?.itemProvider,
               provider.canLoadObject(ofClass: UIImage.self) else { return }
-        provider.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
+        provider.loadObject(ofClass: UIImage.self) { object, _ in
             guard let image = object as? UIImage else { return }
-            DispatchQueue.main.async { self?.onPicked?(image) }
+            DispatchQueue.main.async { completion?(image) }
         }
     }
 }

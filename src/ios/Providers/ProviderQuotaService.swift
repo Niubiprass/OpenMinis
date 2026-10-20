@@ -464,30 +464,37 @@ final class ProviderQuotaService: ObservableObject {
 
     private static func fetchOpenAIQuota(instanceId: String, key: String, baseURL: String,
                                         rowId: String) async -> QuotaInfo? {
-        let session = URLSession.shared
-
-        // 0) [T-quota-key-usage] THE zero-config path: New API answers
-        // `GET {root}/api/usage/token/` for the API KEY itself —
-        // `Authorization: Bearer sk-…` and nothing else. No user id header, no
-        // panel host, no second credential. This is what mainstream clients do
-        // (musistudio/claude-code-router `new-api.ts`: auth "provider-api-key",
-        // endpoint `${root}/api/usage/token/`, fields data.total_granted /
-        // total_available / total_used), and it is the only shape that lets a
-        // user copy ONE token and be done.
-        if let keyUsage = await fetchKeyUsage(key: key, baseURL: baseURL) {
-            return keyUsage
-        }
-
-        // 1) [T-quota-newapi-balance] New API / One API relays expose the REAL
-        // remaining balance at `GET {root}/api/user/self`, authenticated either
-        // by a user access token (preferred — it never expires) or by the
-        // logged-in web session cookies (fallback). Their OpenAI-compatible
-        // billing endpoints are implemented with a placeholder limit (1e8), so
-        // this is the only way to report a truthful "余额".
+        // [T-quota-balance-priority] Restore the saved access-token path FIRST.
+        // /api/usage/token/ can succeed with usage only (an unlimited API key).
+        // Returning that early skipped the user's configured balance token.
+        // Keep rowId: each ring key may belong to a different account.
         if let balance = await fetchNewAPIBalance(instanceId: instanceId, baseURL: baseURL,
                                                  rowId: rowId) {
             return balance
         }
+
+        // A real key balance is useful when the account query is unavailable.
+        // Usage is only a fallback: it must not hide a real billing balance.
+        let keyQuota = await fetchKeyUsage(key: key, baseURL: baseURL)
+        if let keyQuota, keyQuota.kind == .balance {
+            return keyQuota
+        }
+
+        let billingQuota = await fetchOpenAIBillingQuota(key: key, baseURL: baseURL)
+        if let billingQuota, billingQuota.kind == .balance {
+            return billingQuota
+        }
+
+        // Every supported balance path was tried. Preserve successful key
+        // usage even if billing is unsupported or fails, then month-to-date
+        // billing usage as the last resort. Both nil means unavailable.
+        return keyQuota ?? billingQuota
+    }
+
+    /// Existing OpenAI billing pair, isolated so its failure cannot discard
+    /// usage already obtained by the caller. Parsing and thresholds unchanged.
+    private static func fetchOpenAIBillingQuota(key: String, baseURL: String) async -> QuotaInfo? {
+        let session = URLSession.shared
 
         // 1) Subscription -> hard/soft limit.
         guard let subURL = URL(string: baseURL + "/dashboard/billing/subscription") else { return nil }

@@ -45,19 +45,26 @@ class Editing(unittest.TestCase):
         self.assertIn('final class SessionIconPhotoPicker: NSObject, ObservableObject, PHPickerViewControllerDelegate', CONTENT)
 
     def test_image_uses_the_shared_encoder(self):
-        self.assertIn('SoulIconImage.encode(image)', CONTENT)
+        self.assertIn('SidebarIconImage.encode(image)', CONTENT)
+        self.assertIn('SoulIconImage.dataURI(fromPNG: png)', STORE)
 
 
 class RowRendering(unittest.TestCase):
 
     def test_rows_prefer_the_photo(self):
-        # Both SessionRow and RemoteSessionRow go through `providerIcon`.
-        self.assertEqual(CONTENT.count('SessionIconStore.shared.image(for: session.id)'), 2)
+        # Both row types delegate to the SAME observed, full-circle leaf.
+        self.assertEqual(CONTENT.count('SessionPhotoIcon(sessionId: iconSessionId, category: session.category)'), 2)
+        i = CONTENT.index('private struct SessionPhotoIcon: View')
+        body = CONTENT[i:CONTENT.index('private struct FolderPhotoIcon: View', i)]
+        self.assertIn('@ObservedObject private var icons = SessionIconStore.shared', body)
+        self.assertLess(body.index('icons.image(for: sessionId)'), body.index('sessionCategoryIcon(for: category)'))
 
     def test_photo_is_clipped_to_a_circle(self):
-        i = CONTENT.index('SessionIconStore.shared.image(for: session.id)')
-        body = CONTENT[i:i + 300]
+        i = CONTENT.index('private struct SessionPhotoIcon: View')
+        body = CONTENT[i:CONTENT.index('private struct FolderPhotoIcon: View', i)]
+        self.assertIn('.frame(width: 44, height: 44)', body)
         self.assertIn('.clipShape(Circle())', body)
+        self.assertNotIn('.frame(width: 26, height: 26)', body)
 
 
 if __name__ == '__main__':

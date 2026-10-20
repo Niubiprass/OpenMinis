@@ -22,6 +22,17 @@ class FeatureCompileTests(unittest.TestCase):
             self.skipTest('swiftc unavailable; actual Swift validation NOT run')
         return compiler
 
+    def test_sidebar_icon_menu_regressions(self):
+        # This is an existing CI entry point. Only runs offline checks; actual
+        # Swift/iOS checks fail closed on the build host, skip honestly on iSH.
+        import sys
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/test_sidebar_icon_menu_160651.py')],
+            capture_output=True, text=True, timeout=360,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        print(result.stdout + result.stderr)
+
     def test_all_changed_swift_parses(self):
         compiler = self.compiler()
         changed = subprocess.check_output(

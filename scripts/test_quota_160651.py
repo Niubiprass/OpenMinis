@@ -9,6 +9,7 @@ the OpenAI /v1/dashboard/billing/* pair (same as the official Android
 port); Anthropic shows month spend. Unsupported hosts show nothing.
 """
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -78,6 +79,16 @@ check("chat warms quota onAppear", "quotaService.refreshAllIfNeeded(instances: [
 # 6) Safety
 check("no hardcoded secret handling", "print" not in q or "Keychain" in q)
 check("no iOS16-only API", "navigationDestination" not in q)
+
+# 7) [T-quota-balance-priority] This file is already a CI entry point. Run the
+# regression here too, so the saved-token bypass cannot slip past checks that
+# merely verify both endpoints exist. Swift fixtures run on the build host;
+# a compiler-less local environment explicitly reports their skip.
+priority = subprocess.run(
+    [sys.executable, str(ROOT / "scripts/test_quota_balance_priority_160651.py")],
+    timeout=180,
+)
+check("balance-before-usage regression suite", priority.returncode == 0)
 
 print()
 if FAILURES:
