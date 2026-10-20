@@ -75,3 +75,23 @@ func AppLocalized(_ key: String, comment: StaticString? = nil) -> String {
                       comment: comment.map { String(describing: $0) } ?? "")
 }
 
+/// [T-l10n-interpolation] Localized string WITH format arguments.
+///
+/// `AppLocalized("Message \(name) (@ to mention files)")` looks harmless and is
+/// NOT: Swift resolves the interpolation before the call, so the lookup key
+/// becomes the fully-written English sentence ("Message Minis (@ to mention
+/// files)") — a key that exists in no catalog. The result is English in a
+/// Chinese UI, and it fails silently, which is why it survived in 130+ places.
+///
+/// The catalog stores ONE parameterized entry per string ("Message %@ (@ to
+/// mention files)"), so the arguments have to be applied AFTER the lookup,
+/// which is all this does.
+///
+/// - Parameters:
+///   - key: the catalog key, containing `%@` / `%lld` placeholders.
+///   - args: the values for those placeholders, in order.
+func AppLocalizedFormat(_ key: String, _ args: CVarArg...) -> String {
+    String(format: NSLocalizedString(key, bundle: AppBundle.current, comment: ""),
+           arguments: args)
+}
+

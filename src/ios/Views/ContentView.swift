@@ -1724,6 +1724,19 @@ struct ContentView: View {
     @State private var isWideLayout = false
     /// Navigation path for stack (compact) layout.
     @State private var navigationPath = NavigationPath()
+    /// [T-ios15-stack-resync] Which session chat is ACTUALLY mounted in the
+    /// stack, as reported by the destination view itself.
+    ///
+    /// `navigationPath` and `currentStackSessionId` are intent, not reality:
+    /// both are written at commit time even if the simulated iOS 15 stack fails
+    /// to present the screen. Device log 2026-10-20 18:47 is the failure that
+    /// exposes it — a foreground blip suspended the streaming UI, the pushed
+    /// chat went away, and from then on EVERY tap (sessions and New Chat alike)
+    /// appended to a path whose screen no longer existed: forty openSession
+    /// calls, zero stackNav APPEAR, app unusable until relaunch. This state is
+    /// the reality half, so the next tap can repair the stack instead of
+    /// stacking another dead entry on it.
+    @State private var mountedStackChatId: String?
     /// Tracks the session ID currently visible on the compact navigation stack.
     @State private var currentStackSessionId: String?
     /// [T-ios-stacknav-transition-attributegraph-race] Compact-layout analogue
@@ -2739,6 +2752,7 @@ struct ContentView: View {
                         AIChatView(sessionId: Self.isNewSessionId(id) ? nil : id, draftId: Self.isNewSessionId(id) ? id : nil, initialGroupId: Self.extractGroupId(from: id), initialFolderId: initialFolderId(forDraft: id))
                             .id(id)
                             .onAppear {
+                                mountedStackChatId = id
                                 if currentStackSessionId != id {
                                     currentStackSessionId = id
                                     // [T-ios-stacknav-transition-attributegraph-race]
@@ -2762,7 +2776,10 @@ struct ContentView: View {
                                 SessionBadgeStore.shared.remove(.unread, for: id)
                                 shareLog.info("🔄SESSION stackNav APPEAR id=\(id)")
                             }
-                            .onDisappear { shareLog.info("🔄SESSION stackNav DISAPPEAR id=\(id)") }
+                            .onDisappear {
+                                if mountedStackChatId == id { mountedStackChatId = nil }
+                                shareLog.info("🔄SESSION stackNav DISAPPEAR id=\(id)")
+                            }
                     }
                 }
         }
@@ -4630,6 +4647,17 @@ struct ContentView: View {
             // [T-ios-bg-nav-push-watchdog] Append onto whatever the path WILL
             // be — a deferred commit is the newer truth, so basing the append
             // on the still-stale live `navigationPath` would drop it.
+            // [T-ios15-stack-resync] A path that says "a chat is open" while
+            // nothing is mounted means the stack lost its screen (the
+            // suspend/resume teardown above). Appending there grows a dead
+            // path — every tap is swallowed, sessions and New Chat alike.
+            // Replace instead of append: one commit, one screen, no history of
+            // screens that never existed.
+            if !navigationPath.isEmpty, mountedStackChatId == nil {
+                shareLog.info("🔄SESSION stack resync — pathCount=\(navigationPath.count) but nothing mounted; replacing with \(id.prefix(8))")
+                switchToSession(id)
+                return
+            }
             var next = pendingBackgroundNavigation?.path ?? navigationPath
             next.append(id)
             commitNavigationPath(next)

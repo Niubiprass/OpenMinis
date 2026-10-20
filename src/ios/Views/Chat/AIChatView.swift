@@ -3713,14 +3713,14 @@ _ios15Seg7
             // `%@` form ("Message %@ (@ to mention files)") as the lookup
             // key in Localizable.xcstrings, so translators get one
             // parameterized entry per locale instead of one per soul name.
-            placeholder: AppLocalized("Message \(soulName) (@ to mention files)"),
+            placeholder: AppLocalizedFormat("Message %@ (@ to mention files)", soulName),
             // [T-ios-composer-placeholder-rotation] Feature hints cycled
             // while the composer sits empty. Same parameterized-`%@` rule as
             // the default above: the soul name is interpolated INTO the
             // localized key, never concatenated onto it, so each hint stays
             // one translatable entry rather than one per soul name.
             placeholderRotation: [
-                AppLocalized("Try @ to mention files for \(soulName) to read"),
+                AppLocalizedFormat("Try @ to mention files for %@ to read", soulName),
                 AppLocalized("Type / for SKILLs and quick commands"),
                 AppLocalized("Try dragging text into the chat to send it"),
                 AppLocalized("Long-press anywhere in a reply to select and copy it all"),

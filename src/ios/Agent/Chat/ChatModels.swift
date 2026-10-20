@@ -288,7 +288,7 @@ struct ContextUsageHint: Equatable {
         // Interpolations extract as `%@`, so the key is "Context %@ used · %@"
         // — one translatable entry, and translations may reorder with
         // `%1$@` / `%2$@`.
-        let text = AppLocalized("Context \(pct) used · \(size)")
+        let text = AppLocalizedFormat("Context %@ used · %@", pct, size)
         return ContextUsageHint(generation: generation, text: text, highlights: [pct, size], tier: usage.tier)
     }
 }

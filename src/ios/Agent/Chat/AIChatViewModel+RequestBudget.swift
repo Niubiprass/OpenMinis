@@ -194,7 +194,7 @@ extension AIChatViewModel {
         // Surface to the user via Toast (already-existing infrastructure).
         let droppedCount = plan.droppedCount
         Task { @MainActor in
-            self.transientNotice = AppLocalized("Older \(droppedCount) image(s) elided from request to fit 25MB budget")
+            self.transientNotice = AppLocalizedFormat("Older %lld image(s) elided from request to fit 25MB budget", droppedCount)
         }
 
         return mutated
