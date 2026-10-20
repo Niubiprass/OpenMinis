@@ -49,6 +49,9 @@ struct ProviderInstanceDetailView: View {
     /// `/api/user/self` answers per ACCOUNT, so a single instance-wide token
     /// can only ever be right for one of them.
     @State private var quotaTokenTarget: ProviderQuotaService.KeyQuota?
+    /// [T-quota-panel-host] Panel host the balance lives on; empty = API host.
+    @State private var quotaPanelInput = ""
+    @State private var quotaPanelLoaded = false
     /// [T-quota-threshold] Shared across providers; persisted in UserDefaults.
     @AppStorage(ProviderQuotaService.lowThresholdDefaultsKey) private var quotaLowThreshold: Double = 3
 
@@ -717,6 +720,27 @@ struct ProviderInstanceDetailView: View {
             Button("在 App 内登录该站点") {
                 showQuotaLogin = true
             }
+        }
+
+        // [T-quota-panel-host] Optional panel host. Split-host relays serve the
+        // balance (and the login page) somewhere other than the API host —
+        // `wapi.wintoken.ai` answers 403 for /api/user/self while `cun.ai` is
+        // the real panel. Empty keeps the old behaviour.
+        HStack {
+            Text(AppLocalized("余额查询地址"))
+                .foregroundStyle(.primary)
+            Spacer()
+            TextField(AppLocalized("留空则用 API 地址"), text: $quotaPanelInput)
+                .multilineTextAlignment(.trailing)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .onSubmit { ProviderQuotaService.setPanelBaseURL(quotaPanelInput, instanceId: instance.id) }
+        }
+        .onAppear {
+            guard !quotaPanelLoaded else { return }
+            quotaPanelLoaded = true
+            quotaPanelInput = ProviderQuotaService.panelBaseURL(instanceId: instance.id) ?? ""
         }
 
         // Wording states the cost up front: this is the ONLY place that spends

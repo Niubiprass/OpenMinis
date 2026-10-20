@@ -721,6 +721,16 @@ struct ProviderQuotaLoginView: View {
     @State private var failedReason: String?
 
     private var siteURL: URL? {
+        // [T-quota-panel-host] The LOGIN page lives on the same host as the
+        // balance, and both may differ from the API host. Reported 2026-10-21:
+        // 「在 App 内登录该站点」 opened the API host and got a bare
+        // 「403 Forbidden / openresty」 page — that host serves only
+        // /v1/chat/completions, so no cookie could ever be captured there.
+        // The panel address the user configured for balance wins.
+        if let panel = ProviderQuotaService.panelBaseURL(instanceId: instance.id),
+           let url = URL(string: panel) {
+            return url
+        }
         let raw = instance.effectiveCustomBaseURL ?? ""
         guard !raw.isEmpty, let parsed = URL(string: raw),
               let host = parsed.host, !host.isEmpty else { return nil }

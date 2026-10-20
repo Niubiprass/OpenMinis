@@ -2022,7 +2022,7 @@ extension AIChatViewModel {
                     parts: unanswered.map { id, name in
                         AgentContentPart.toolResult(
                             id: id, name: name,
-                            content: "Tool execution was interrupted by an unexpected error.",
+                            content: AppLocalized("工具执行被意外中断了。"),
                             isError: true
                         )
                     }

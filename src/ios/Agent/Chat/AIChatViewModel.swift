@@ -820,9 +820,23 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// spends it, and it survives Retry.
     var sentPastExtrapolatedLimitThisLoop = false
 
+    /// [T-thinking-timer-b2] When the CURRENT turn started, so an elapsed
+    /// clock can be derived from it instead of from a view's own lifetime.
+    ///
+    /// A timer that counts inside the stop button resets every time the chat
+    /// view is rebuilt (leave the session, come back) — the user's report:
+    /// 「退出会话再进去加重新记录…那这记录有什么意义」. The run outlives the view,
+    /// so the timestamp has to live on the model.
+    @Published private(set) var processingStartedAt: Date?
+
     @Published var isProcessing = false {
         didSet {
             _deinitSnapshot = "isProcessing=\(isProcessing) session=\(sessionId ?? "nil") draft=\(draftId ?? "nil")"
+            if isProcessing, !oldValue {
+                processingStartedAt = Date()
+            } else if !isProcessing, oldValue {
+                processingStartedAt = nil
+            }
             if isProcessing && !oldValue {
                 // Agent loop starting — defer iCloud sync sends until completion.
                 // [T-p0-sync-defer-refcount] Owner-keyed: two sessions can run
@@ -6219,7 +6233,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             let placeholderParts = orphanedToolUses.map { (id, name) in
                 AgentContentPart.toolResult(
                     id: id, name: name,
-                    content: "Tool execution was interrupted by an unexpected error.",
+                    content: AppLocalized("工具执行被意外中断了。"),
                     isError: true
                 )
             }

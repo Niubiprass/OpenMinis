@@ -27,9 +27,22 @@ CHAT = (ROOT / 'src/ios/Views/Chat/AIChatView.swift').read_text()
 class Placement(unittest.TestCase):
 
     def test_stop_button_uses_the_timed_view(self):
-        self.assertIn('StopButtonWithTimer()', CHAT)
-        # The old plain glyph must be gone from the stop branch.
-        self.assertNotIn('Image(systemName: "stop.circle.fill")\n                    .font(.system(size: 34))', CHAT)
+        self.assertIn('StopButtonWithTimer(startedAt: vm.processingStartedAt)', CHAT)
+        # Kill switch must exist while the freeze is being investigated.
+        self.assertIn('static let isEnabled = false', CHAT)
+        # The plain glyph is the disabled fallback branch — still present, and
+        # that is deliberate.
+        self.assertIn('Image(systemName: "stop.circle.fill")', CHAT)
+
+    def test_clock_derives_from_the_turn_start(self):
+        # 「退出会话再进去加重新记录」 — the elapsed time must come from the
+        # model's turn timestamp, not from how long this view has existed.
+        self.assertIn('StopButtonWithTimer(startedAt: vm.processingStartedAt)', CHAT)
+        self.assertIn('guard let startedAt else { return 0 }', CHAT)
+        model = (ROOT / 'src/ios/Agent/Chat/AIChatViewModel.swift').read_text()
+        self.assertIn('@Published private(set) var processingStartedAt: Date?', model)
+        self.assertIn('processingStartedAt = Date()', model)
+        self.assertIn('processingStartedAt = nil', model)
 
     def test_counter_is_its_own_view(self):
         self.assertIn('private struct StopButtonWithTimer: View {', CHAT)

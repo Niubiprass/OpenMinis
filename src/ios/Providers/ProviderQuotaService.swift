@@ -66,6 +66,40 @@ final class ProviderQuotaService: ObservableObject {
     /// so flagging it low would be a guess.
     static let lowThresholdDefaultsKey = "quota.lowThresholdUSD"
 
+    /// [T-quota-panel-host] Where the BALANCE lives, when that is not the API
+    /// host.
+    ///
+    /// Relays routinely split them: one user's site answers chat completions at
+    /// `wapi.wintoken.ai` and its panel at `cun.ai` — `/api/user/self` on the
+    /// API host is 403 while the same path on the panel host is the real
+    /// endpoint. Without this field the query can only ever fall back to the
+    /// OpenAI billing pair, which reports month-to-date SPEND (「已用 $7.42」)
+    /// even though the dashboard shows a remaining balance (「$0.8808」).
+    ///
+    /// Stored per instance in UserDefaults: it is a URL, not a secret.
+    static func panelBaseURL(instanceId: String) -> String? {
+        let raw = UserDefaults.standard.string(forKey: "quota.panelBaseURL.\(instanceId)") ?? ""
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func setPanelBaseURL(_ url: String, instanceId: String) {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(trimmed, forKey: "quota.panelBaseURL.\(instanceId)")
+        shared.invalidate(instanceId: instanceId)
+    }
+
+    /// Root for the balance endpoints: the configured panel host when present,
+    /// else the API host with `/v1` stripped.
+    static func balanceRoot(instanceId: String, apiBase: String) -> String {
+        if var panel = panelBaseURL(instanceId: instanceId) {
+            panel = panel.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if panel.hasSuffix("/v1") { panel = String(panel.dropLast(3)) }
+            return panel
+        }
+        return apiRoot(apiBase)
+    }
+
     static var lowThresholdUSD: Double {
         let stored = UserDefaults.standard.object(forKey: lowThresholdDefaultsKey) as? Double
         guard let stored, stored >= 0 else { return 3.0 }
@@ -515,7 +549,9 @@ final class ProviderQuotaService: ObservableObject {
     /// the usage-only display.
     private static func fetchNewAPIBalance(instanceId: String, baseURL: String,
                                            rowId: String) async -> QuotaInfo? {
-        let root = apiRoot(baseURL)
+        // [T-quota-panel-host] Panel host wins when the user set one — see
+        // `panelBaseURL` for the split-host case this exists for.
+        let root = balanceRoot(instanceId: instanceId, apiBase: baseURL)
         guard let url = URL(string: root + "/api/user/self") else { return nil }
 
         var req = URLRequest(url: url)

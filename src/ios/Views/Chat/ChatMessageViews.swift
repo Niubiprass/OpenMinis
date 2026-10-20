@@ -325,7 +325,7 @@ struct ChatMessageRow: View {
                     Image(systemName: "arrow.down.right.and.arrow.up.left")
                         .font(.system(size: 10))
                 }
-                Text(message.content)
+                Text(CompactionCopy.localize(message.content))
                     .font(.system(size: 12, weight: .medium))
                 if !message.isCompactLoading && message.compactSummary != nil {
                     Button {
@@ -369,7 +369,7 @@ struct ChatMessageRow: View {
                     Image(systemName: icon)
                         .font(.system(size: 10))
                 }
-                Text(message.content)
+                Text(CompactionCopy.localize(message.content))
                     .font(.system(size: 12, weight: .medium))
                     .multilineTextAlignment(.center)
             }

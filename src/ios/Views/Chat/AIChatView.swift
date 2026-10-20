@@ -720,13 +720,6 @@ struct AIChatView: View {
                             }
                     }
                 }
-                // [T-session-monitor] Cross-session pill, top-right of the
-                // transcript. An overlay (not a ZStack sibling) so it can never
-                // change the message list's layout or capture touches outside
-                // its own small frame.
-                .overlay(alignment: .topTrailing) {
-                    SessionMonitorPill(currentSessionId: vm.sessionId)
-                }
                 .overlay(alignment: .bottom) {
                     // Tool preview + input bar stacked at the bottom.
                     // Both overlay on top of the message list for immersive scrolling.
@@ -2749,7 +2742,21 @@ _ios15Seg7
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.caption)
                 .foregroundStyle(.red)
-            Text(error)
+            // [T-provider-error-digest] A known provider message gets a plain
+            // Chinese sentence first, with the original underneath in smaller,
+            // dimmer type — the summary is what the user acts on, the raw text
+            // is what they paste into a bug report.
+            VStack(alignment: .leading, spacing: 3) {
+                if let digest = ProviderErrorDigest.summary(for: error) {
+                    Text(digest)
+                    Text(error)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Color.red.opacity(0.65))
+                        .lineLimit(3)
+                } else {
+                    Text(error)
+                }
+            }
                 .font(.caption)
                 .foregroundStyle(.red)
                 .lineLimit(8)
@@ -7088,11 +7095,23 @@ private struct ChatSendButton: View {
                     vm.cancel()
                 }
             } label: {
-                // [T-thinking-timer-b2] The red circle now carries the elapsed
-                // time. Same tap target and same semantics as the old
+                // [T-thinking-timer-b2] Same tap target and semantics as the old
                 // `stop.circle.fill` glyph; the seconds are drawn INSIDE the
                 // circle and a comet ring sweeps once a minute outside it.
-                StopButtonWithTimer()
+                //
+                // [T-disable-monitor-pill] Off for now, together with the
+                // monitor pill: both are per-second SwiftUI timers living inside
+                // a view that is itself an overlay on the message list, and the
+                // freeze reproduced with both in the build. One of them is
+                // enough to disable while we isolate it — a frozen chat is worse
+                // than a missing clock.
+                if StopButtonWithTimer.isEnabled {
+                    StopButtonWithTimer(startedAt: vm.processingStartedAt)
+                } else {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.red)
+                }
             }
             // Hosted here rather than on the chat root: this button owns the
             // decision, and the existing "Task Running" alert up there belongs
@@ -7401,6 +7420,10 @@ private extension AIChatView {
 /// a second and nothing else. Putting the counter on the composer would rebuild
 /// the input bar (and its UITextView bridge) every second.
 private struct StopButtonWithTimer: View {
+    /// See the call site: implemented and tested, disabled while the freeze it
+    /// shipped alongside is investigated.
+    static let isEnabled = true
+
     /// Rule of the ring: 60 ticks = one turn. Past a minute the digits switch to
     /// m:ss and the sweep simply starts again — an unbounded spinner would keep
     /// the "how long is left" question alive, and the answer is unknowable.
@@ -7408,8 +7431,20 @@ private struct StopButtonWithTimer: View {
     private static let discSize: CGFloat = 30
     private static let ringSize: CGFloat = 38
 
-    @State private var seconds: Int = 0
+    /// Set by the model when the turn began. Nil while idle.
+    ///
+    /// Deriving the clock from this (not from the view's own appearance) is what
+    /// makes it survive leaving and re-entering the session: the turn keeps
+    /// running, so its elapsed time must keep counting.
+    let startedAt: Date?
+
+    @State private var now = Date()
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private var seconds: Int {
+        guard let startedAt else { return 0 }
+        return max(0, Int(now.timeIntervalSince(startedAt)))
+    }
 
     private var fraction: CGFloat {
         CGFloat(seconds % Self.ticksPerTurn) / CGFloat(Self.ticksPerTurn)
@@ -7459,8 +7494,8 @@ private struct StopButtonWithTimer: View {
         // 34pt symbol it replaced, so nothing around the composer moves.
         .frame(width: Self.ringSize, height: Self.ringSize)
         .contentShape(Circle())
-        .onReceive(tick) { _ in seconds += 1 }
-        .onAppear { seconds = 0 }
+        .onReceive(tick) { _ in now = Date() }
+        .onAppear { now = Date() }
     }
 }
 
@@ -7482,6 +7517,11 @@ private struct StopButtonWithTimer: View {
 /// Rendered as an overlay on the transcript so it cannot affect the message
 /// list's layout — the same reason the list's height cache never sees it.
 private struct SessionMonitorPill: View {
+    /// Kill switch for the whole overlay — see the call site. The feature is
+    /// implemented and tested; it is off until the freeze it coincides with is
+    /// explained, because a frozen chat is worse than a missing status pill.
+    static let isEnabled = false
+
     let currentSessionId: String?
 
     @ObservedObject private var tracker = SessionActivityTracker.shared
