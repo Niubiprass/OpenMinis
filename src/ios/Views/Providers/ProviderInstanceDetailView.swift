@@ -49,9 +49,6 @@ struct ProviderInstanceDetailView: View {
     /// `/api/user/self` answers per ACCOUNT, so a single instance-wide token
     /// can only ever be right for one of them.
     @State private var quotaTokenTarget: ProviderQuotaService.KeyQuota?
-    /// [T-quota-panel-host] Panel host the balance lives on; empty = API host.
-    @State private var quotaPanelInput = ""
-    @State private var quotaPanelLoaded = false
     /// [T-quota-threshold] Shared across providers; persisted in UserDefaults.
     @AppStorage(ProviderQuotaService.lowThresholdDefaultsKey) private var quotaLowThreshold: Double = 3
 
@@ -318,9 +315,9 @@ struct ProviderInstanceDetailView: View {
                     // ring the token lives on each key's row, so pointing at "填访问
                     // 令牌" here would send the user to a field that no longer exists.
                     if ProviderMultiKeyManager.shared.isEnabled(for: instance.id) {
-                        Text("每把 Key 点进去填它自己账号的访问令牌；同一个账号的多把 Key 共用一个。都不填该行会显示「未查询」。")
+                        Text("每把 Key 可以单独填访问令牌；不填则用上面那个通用令牌。")
                     } else {
-                        Text("New API / One API 站点可显示真实余额：填访问令牌，或用 App 内置浏览器登录一次。两者都不填时只显示本月已用。")
+                        Text("填了访问令牌就尝试读真实余额；读不到（站点没这个接口，或还需要额外凭据）就显示用量，不需要再填别的。")
                     }
                 }
             }
@@ -701,46 +698,26 @@ struct ProviderInstanceDetailView: View {
         // 填哪个". Each key's row is the only place a token goes in that mode.
         // With the ring off there is a single key, so the original single field
         // is still the right shape.
-        if !multiKeyOn {
-            HStack {
-                Text("访问令牌")
-                Spacer()
-                TextField("可选", text: $quotaTokenInput)
-                    .multilineTextAlignment(.trailing)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled(true)
-                    .onSubmit { saveQuotaToken(instance) }
-            }
-            .onAppear {
-                guard !quotaTokenLoaded else { return }
-                quotaTokenLoaded = true
-                quotaTokenInput = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instance.id) ?? ""
-            }
-
-            Button("在 App 内登录该站点") {
-                showQuotaLogin = true
-            }
-        }
-
-        // [T-quota-panel-host] Optional panel host. Split-host relays serve the
-        // balance (and the login page) somewhere other than the API host —
-        // `wapi.wintoken.ai` answers 403 for /api/user/self while `cun.ai` is
-        // the real panel. Empty keeps the old behaviour.
+        // [T-quota-single-field] ONE field, as asked: paste the account's
+        // access token here. If it cannot produce a balance (the site needs a
+        // user-id header, or has no such endpoint) the query quietly falls back
+        // to the usage figure — 已用 — instead of asking for more input.
         HStack {
-            Text(AppLocalized("余额查询地址"))
-                .foregroundStyle(.primary)
+            Text("访问令牌")
             Spacer()
-            TextField(AppLocalized("留空则用 API 地址"), text: $quotaPanelInput)
+            TextField("可选", text: $quotaTokenInput)
                 .multilineTextAlignment(.trailing)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .onSubmit { ProviderQuotaService.setPanelBaseURL(quotaPanelInput, instanceId: instance.id) }
+                .onChange(of: quotaTokenInput) { newValue in
+                    ProviderKeychainHelper.saveQuotaAccessToken(newValue, instanceId: instance.id)
+                    ProviderQuotaService.shared.invalidate(instanceId: instance.id)
+                }
         }
         .onAppear {
-            guard !quotaPanelLoaded else { return }
-            quotaPanelLoaded = true
-            quotaPanelInput = ProviderQuotaService.panelBaseURL(instanceId: instance.id) ?? ""
+            guard !quotaTokenLoaded else { return }
+            quotaTokenLoaded = true
+            quotaTokenInput = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instance.id) ?? ""
         }
 
         // Wording states the cost up front: this is the ONLY place that spends

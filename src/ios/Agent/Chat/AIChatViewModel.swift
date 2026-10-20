@@ -904,7 +904,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                         logger.info("[ContextUsageHint] loop-end → dedup: mid-loop crossing hint for \(usage.tier) fired <\(Int(ContextTierCrossingTracker.minInterval))s ago (\(usage.usedTokens)/\(usage.windowTokens))")
                     } else {
                         contextUsageHintGeneration += 1
-                        contextUsageHint = ContextUsageHint.make(usage: usage, generation: contextUsageHintGeneration)
+                        contextUsageHint = ContextUsageHint.make(usage: usage, generation: contextUsageHintGeneration, costSuffix: currentTurnCostSuffix)
                         contextTierTracker.markFired(usage.tier, now: loopEndNow)
                         logger.info("[ContextUsageHint] loop-end → hint gen\(contextUsageHintGeneration) '\(contextUsageHint?.text ?? "")' (\(usage.usedTokens)/\(usage.windowTokens))")
                     }
@@ -1335,6 +1335,16 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// Context window size of the current model (from models.dev or heuristic).
     /// Resolved via `resolveCurrentEntry()` so the UI shows the same window the
     /// send path and capacity checks use (availability re-routing included).
+    /// [T-turn-cost] Price suffix for the context line, computed from the newest
+    /// assistant message's usage (the call that just finished) and this
+    /// session's resolved model id.
+    var currentTurnCostSuffix: String? {
+        guard let entry = resolveCurrentEntry() else { return nil }
+        guard let usage = messages.last(where: { $0.role == .assistant && $0.tokenUsage != nil })?.tokenUsage
+        else { return nil }
+        return TurnCost.suffix(usage: usage, modelId: entry.model.id)
+    }
+
     var currentModelContextWindow: Int? {
         guard let entry = resolveCurrentEntry() else { return nil }
         return effectiveContextWindow(for: entry.model)
@@ -1406,7 +1416,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // Deliberately not `markFired`: the next turn's loop-end line carries
         // the real reported size and must not be deduplicated against this
         // estimate.
-        contextUsageHint = ContextUsageHint.make(usage: usage, generation: contextUsageHintGeneration)
+        contextUsageHint = ContextUsageHint.make(usage: usage, generation: contextUsageHintGeneration, costSuffix: currentTurnCostSuffix)
         logger.info("[ContextUsageHint] post-compact → hint gen\(contextUsageHintGeneration) '\(contextUsageHint?.text ?? "")' (\(usage.usedTokens)/\(usage.windowTokens))")
     }
 
@@ -1430,7 +1440,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             return
         }
         contextUsageHintGeneration += 1
-        contextUsageHint = ContextUsageHint.make(usage: usage, generation: contextUsageHintGeneration)
+        contextUsageHint = ContextUsageHint.make(usage: usage, generation: contextUsageHintGeneration, costSuffix: currentTurnCostSuffix)
         contextTierTracker.markFired(usage.tier, now: now)
         logger.info("[ContextUsageHint] mid-loop crossing → \(usage.tier) hint gen\(contextUsageHintGeneration) '\(contextUsageHint?.text ?? "")' (\(usage.usedTokens)/\(usage.windowTokens))")
     }

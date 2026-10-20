@@ -282,14 +282,21 @@ struct ContextUsageHint: Equatable {
     let highlights: [String]
     let tier: ContextUsage.Tier
 
-    static func make(usage: ContextUsage, generation: Int) -> ContextUsageHint {
+    static func make(usage: ContextUsage, generation: Int, costSuffix: String? = nil) -> ContextUsageHint {
         let pct = "\(usage.percent)%"
-        let size = "\(TokenCountFormatter.short(usage.usedTokens)) / \(TokenCountFormatter.short(usage.windowTokens))"
+        // [T-turn-cost] Short separator, no spaces: the line already carries three
+        // figures and the user asked for a uniform, uncluttered run of text.
+        let size = "\(TokenCountFormatter.short(usage.usedTokens))/\(TokenCountFormatter.short(usage.windowTokens))"
         // Interpolations extract as `%@`, so the key is "Context %@ used · %@"
         // — one translatable entry, and translations may reorder with
         // `%1$@` / `%2$@`.
-        let text = AppLocalizedFormat("Context %@ used · %@", pct, size)
-        return ContextUsageHint(generation: generation, text: text, highlights: [pct, size], tier: usage.tier)
+        var text = AppLocalizedFormat("Context %@ used · %@", pct, size)
+        var highlights = [pct, size]
+        if let costSuffix, !costSuffix.isEmpty {
+            text += " · " + costSuffix
+            highlights.append(costSuffix)
+        }
+        return ContextUsageHint(generation: generation, text: text, highlights: highlights, tier: usage.tier)
     }
 }
 

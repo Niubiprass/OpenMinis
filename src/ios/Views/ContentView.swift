@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 import UIKit
 
@@ -7737,11 +7738,22 @@ private struct SessionRow: View, Equatable {
 
     @ViewBuilder
     private var providerIcon: some View {
-        let icon = categoryIcon
-        let size: CGFloat = (icon.systemName == "bubble.left.fill" || icon.systemName == "terminal.fill") ? 18 : 20
-        Image(systemName: icon.systemName)
-            .font(.system(size: size))
-            .foregroundStyle(icon.color)
+        // [T-session-photo-icon] A photo chosen in 编辑会话 wins over the
+        // category glyph. Clipped to a circle so rows keep their shape
+        // whatever the image's aspect ratio.
+        if let image = SessionIconStore.shared.image(for: session.id) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 26, height: 26)
+                .clipShape(Circle())
+        } else {
+            let icon = categoryIcon
+            let size: CGFloat = (icon.systemName == "bubble.left.fill" || icon.systemName == "terminal.fill") ? 18 : 20
+            Image(systemName: icon.systemName)
+                .font(.system(size: size))
+                .foregroundStyle(icon.color)
+        }
     }
 
     private var iconBackgroundColor: Color {
@@ -7868,11 +7880,22 @@ private struct RemoteSessionRow: View {
 
     @ViewBuilder
     private var providerIcon: some View {
-        let icon = categoryIcon
-        let size: CGFloat = (icon.systemName == "bubble.left.fill" || icon.systemName == "terminal.fill") ? 18 : 20
-        Image(systemName: icon.systemName)
-            .font(.system(size: size))
-            .foregroundStyle(icon.color)
+        // [T-session-photo-icon] A photo chosen in 编辑会话 wins over the
+        // category glyph. Clipped to a circle so rows keep their shape
+        // whatever the image's aspect ratio.
+        if let image = SessionIconStore.shared.image(for: session.id) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 26, height: 26)
+                .clipShape(Circle())
+        } else {
+            let icon = categoryIcon
+            let size: CGFloat = (icon.systemName == "bubble.left.fill" || icon.systemName == "terminal.fill") ? 18 : 20
+            Image(systemName: icon.systemName)
+                .font(.system(size: size))
+                .foregroundStyle(icon.color)
+        }
     }
 }
 
@@ -7896,6 +7919,8 @@ struct SessionEditSheet: View {
     @State private var editTitle: String = ""
     @State private var editCategory: String = ""
     @State private var isRegenerating = false
+    @ObservedObject private var iconStore = SessionIconStore.shared
+    @StateObject private var photoPicker = SessionIconPhotoPicker()
 
     private static let categories: [(key: String, label: String, icon: String, color: Color)] = [
         ("code",         "Code",         "terminal.fill",               .orange),
@@ -7949,6 +7974,42 @@ struct SessionEditSheet: View {
                     .padding(.vertical, 8)
                 }
 
+                // [T-session-photo-icon] Pick a photo as this session's icon.
+                // Two rows, matching the approved mockup: pick, then clear.
+                Section(AppLocalized("自定义图标")) {
+                    HStack(spacing: 12) {
+                        if let image = iconStore.image(for: session.id) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 44, height: 44)
+                                .clipShape(Circle())
+                        } else {
+                            Image(systemName: "photo")
+                                .font(.system(size: 17))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 44, height: 44)
+                                .background(Circle().fill(Color.secondary.opacity(0.12)))
+                        }
+                        Text(AppLocalized("用这张照片"))
+                        Spacer()
+                        Button(AppLocalized("从照片选择")) { presentPhotoPicker() }
+                    }
+                    Button {
+                        iconStore.setIcon(nil, for: session.id)
+                    } label: {
+                        HStack {
+                            Text(AppLocalized("清除（用回分类图标）"))
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text(AppLocalized("清除"))
+                                .foregroundStyle(iconStore.icon(for: session.id) == nil ? .secondary : .red)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(iconStore.icon(for: session.id) == nil)
+                }
+
                 Section {
                     Button {
                         regenerate()
@@ -7987,6 +8048,28 @@ struct SessionEditSheet: View {
                 editCategory = session.category ?? ""
             }
         }
+    }
+
+    /// [T-session-photo-icon] Open the system photo picker for this session's
+    /// icon. PHPicker (iOS 14+) rather than `.photosPicker` (iOS 16+), matching
+    /// the rest of this iOS 15 port; the picked image goes through the same
+    /// 96 px square encoder the Soul icon uses, so both stay one format.
+    private func presentPhotoPicker() {
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter = .images
+        config.selectionLimit = 1
+        config.preferredAssetRepresentationMode = .current
+        let picker = PHPickerViewController(configuration: config)
+        photoPicker.onPicked = { image in
+            switch SoulIconImage.encode(image) {
+            case .success(let uri):
+                iconStore.setIcon(uri, for: session.id)
+            case .failure:
+                break
+            }
+        }
+        picker.delegate = photoPicker
+        UIKitPickerPresenter.present(picker)
     }
 
     private func regenerate() {
@@ -8204,6 +8287,10 @@ private struct SteppedSlider: View {
 }
 
 private struct AppearanceSettingsView: View {
+    /// [T-turn-cost] Currency for the per-turn estimate; the rate only matters
+    /// for CNY. Both are display-only.
+    @AppStorage(TurnCost.currencyKey) private var costCurrency: String = "CNY"
+    @AppStorage(TurnCost.rateKey) private var costRate: Double = 7.3
     @AppStorage("appearanceMode") private var appearanceMode: Int = 0
     @AppStorage("appIconMode") private var appIconMode: Int = 0
     @AppStorage("appLanguage") private var appLanguage: String = ""
@@ -8241,6 +8328,23 @@ private struct AppearanceSettingsView: View {
 
     var body: some View {
         List {
+            // [T-turn-cost] Currency used by the per-turn estimate.
+            Section(AppLocalized("金额显示")) {
+                Picker(AppLocalized("币种"), selection: $costCurrency) {
+                    Text(AppLocalized("人民币")).tag("CNY")
+                    Text(AppLocalized("美元")).tag("USD")
+                }
+                if costCurrency != "USD" {
+                    HStack {
+                        Text(AppLocalized("汇率（1 美元 =）"))
+                        Spacer()
+                        TextField("7.3", value: $costRate, format: .number)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.decimalPad)
+                    }
+                }
+            }
+
             Section {
                 Picker("Theme", selection: $appearanceMode) {
                     Text("System").tag(0)
@@ -9322,5 +9426,25 @@ private struct AutoContextCompactionSettingsView: View {
         }
         .navigationTitle("Auto Context Compression")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+
+// MARK: - [T-session-photo-icon] PHPicker delegate for the session icon
+
+/// One-shot picker delegate. Held in a `@StateObject` on the edit sheet:
+/// `PHPickerViewController.delegate` is weak, so a temporary would be gone
+/// before the user finishes picking.
+private final class SessionIconPhotoPicker: NSObject, ObservableObject, PHPickerViewControllerDelegate {
+    var onPicked: ((UIImage) -> Void)?
+
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+        guard let provider = results.first?.itemProvider,
+              provider.canLoadObject(ofClass: UIImage.self) else { return }
+        provider.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
+            guard let image = object as? UIImage else { return }
+            DispatchQueue.main.async { self?.onPicked?(image) }
+        }
     }
 }

@@ -91,14 +91,17 @@ class NoDuplicateTokenField(unittest.TestCase):
     """[T-quota-perkey-token] 用户反馈：主界面能填通用令牌，点进每把 Key 又能填，
     到底填哪个 —— 多 Key 模式下通用令牌行必须消失。"""
 
-    def test_instance_token_row_hidden_when_ring_is_on(self):
+    def test_instance_token_row_is_present_again(self):
+        # [T-quota-single-field] The user settled on ONE field: the instance-wide
+        # 访问令牌. Per-key rows still open their own editor, but there is no
+        # user-id / panel-host box next to it.
         i = DETAIL.index('private func quotaSection(_ instance: ProviderInstance) -> some View {')
         body = DETAIL[i:DETAIL.index('// [T-quota-threshold]', i)]
-        self.assertIn('if !multiKeyOn {', body)
         self.assertIn('Text("访问令牌")', body)
+        self.assertNotIn('if !multiKeyOn {', body)
 
     def test_footer_wording_follows_the_mode(self):
-        self.assertIn('每把 Key 点进去填它自己账号的访问令牌', DETAIL)
+        self.assertIn('每把 Key 可以单独填访问令牌；不填则用上面那个通用令牌。', DETAIL)
 
 
 class FailureReason(unittest.TestCase):

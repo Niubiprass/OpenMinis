@@ -84,17 +84,55 @@ final class ProviderQuotaService: ObservableObject {
     }
 
     static func setPanelBaseURL(_ url: String, instanceId: String) {
-        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        UserDefaults.standard.set(trimmed, forKey: "quota.panelBaseURL.\(instanceId)")
+        let normalized = normalizePanelURL(url) ?? ""
+        UserDefaults.standard.set(normalized, forKey: "quota.panelBaseURL.\(instanceId)")
+        shared.invalidate(instanceId: instanceId)
+    }
+
+    /// Reduce whatever the user pasted to scheme + host + port.
+    ///
+    /// Reported 2026-10-21: the field held
+    /// `https://www.cun.ai/profile` — a full page URL copied from the browser —
+    /// so the balance request became `…/profile/api/user/self` and 404'd. A
+    /// panel address is a HOST, not a page; anything after the host is dropped,
+    /// and a bare `cun.ai` gets an https scheme so it is a usable URL.
+    static func normalizePanelURL(_ raw: String) -> String? {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        if !text.lowercased().hasPrefix("http://"), !text.lowercased().hasPrefix("https://") {
+            text = "https://" + text
+        }
+        guard let parsed = URL(string: text), let host = parsed.host, !host.isEmpty else { return nil }
+        var comps = URLComponents()
+        comps.scheme = parsed.scheme ?? "https"
+        comps.host = host
+        comps.port = parsed.port
+        return comps.url?.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    /// [T-quota-newapi-user] `New-Api-User` header value.
+    ///
+    /// New API's `/api/user/self` rejects an otherwise valid access token with
+    /// 「Unauthorized, New-Api-User header not provided」 unless the numeric user
+    /// id rides along in a header of that name. The id is printed on the site's
+    /// own dashboard ("用户 ID"), so it is one number the user copies once.
+    static func userID(instanceId: String) -> String? {
+        let raw = UserDefaults.standard.string(forKey: "quota.newAPIUserID.\(instanceId)") ?? ""
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func setUserID(_ value: String, instanceId: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(trimmed, forKey: "quota.newAPIUserID.\(instanceId)")
         shared.invalidate(instanceId: instanceId)
     }
 
     /// Root for the balance endpoints: the configured panel host when present,
     /// else the API host with `/v1` stripped.
     static func balanceRoot(instanceId: String, apiBase: String) -> String {
-        if var panel = panelBaseURL(instanceId: instanceId) {
-            panel = panel.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            if panel.hasSuffix("/v1") { panel = String(panel.dropLast(3)) }
+        if let stored = panelBaseURL(instanceId: instanceId),
+           let panel = normalizePanelURL(stored) {
             return panel
         }
         return apiRoot(apiBase)
@@ -428,7 +466,19 @@ final class ProviderQuotaService: ObservableObject {
                                         rowId: String) async -> QuotaInfo? {
         let session = URLSession.shared
 
-        // 0) [T-quota-newapi-balance] New API / One API relays expose the REAL
+        // 0) [T-quota-key-usage] THE zero-config path: New API answers
+        // `GET {root}/api/usage/token/` for the API KEY itself —
+        // `Authorization: Bearer sk-…` and nothing else. No user id header, no
+        // panel host, no second credential. This is what mainstream clients do
+        // (musistudio/claude-code-router `new-api.ts`: auth "provider-api-key",
+        // endpoint `${root}/api/usage/token/`, fields data.total_granted /
+        // total_available / total_used), and it is the only shape that lets a
+        // user copy ONE token and be done.
+        if let keyUsage = await fetchKeyUsage(key: key, baseURL: baseURL) {
+            return keyUsage
+        }
+
+        // 1) [T-quota-newapi-balance] New API / One API relays expose the REAL
         // remaining balance at `GET {root}/api/user/self`, authenticated either
         // by a user access token (preferred — it never expires) or by the
         // logged-in web session cookies (fallback). Their OpenAI-compatible
@@ -562,6 +612,10 @@ final class ProviderQuotaService: ObservableObject {
         if let token = ProviderKeychainHelper.resolvedQuotaAccessToken(instanceId: instanceId, keyId: rowId),
            !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            // [T-quota-newapi-user] Required by New API alongside the token.
+            if let uid = userID(instanceId: instanceId) {
+                req.setValue(uid, forHTTPHeaderField: "New-Api-User")
+            }
         } else if let cookie = await sessionCookieHeader(for: root) {
             req.setValue(cookie, forHTTPHeaderField: "Cookie")
         } else {
@@ -577,9 +631,22 @@ final class ProviderQuotaService: ObservableObject {
             return nil
         }
         guard http.statusCode == 200 else {
-            ProviderQuotaService.shared.noteFailure(
-                String(format: AppLocalized("站点返回 HTTP %lld（这个路径可能不存在）"), Int64(http.statusCode)),
-                instanceId: instanceId, rowId: rowId)
+            // [T-quota-diag] Log the status AND the body prefix: New API forks
+            // answer 401 with a message that names the missing piece (e.g.
+            // 「New-Api-User header not provided」), which is the only way to
+            // tell a wrong token from a missing header without a debugger.
+            AppLogger(category: "Quota").error(
+                "[Quota][newapi] \(root)/api/user/self → HTTP \(http.statusCode) body=\(String(data: data.prefix(240), encoding: .utf8) ?? "<binary>")")
+            let bodyText = String(data: data.prefix(240), encoding: .utf8) ?? ""
+            if bodyText.lowercased().contains("new-api-user") {
+                ProviderQuotaService.shared.noteFailure(
+                    AppLocalized("这个站还要求填「用户 ID」（在它后台的个人设置里）"),
+                    instanceId: instanceId, rowId: rowId)
+            } else {
+                ProviderQuotaService.shared.noteFailure(
+                    String(format: AppLocalized("站点返回 HTTP %lld（这个路径可能不存在）"), Int64(http.statusCode)),
+                    instanceId: instanceId, rowId: rowId)
+            }
             return nil
         }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -590,6 +657,8 @@ final class ProviderQuotaService: ObservableObject {
         // New API wraps payloads in "data"; some forks answer flat.
         let body = (obj["data"] as? [String: Any]) ?? obj
         guard let quota = body["quota"] as? NSNumber else {
+            AppLogger(category: "Quota").error(
+                "[Quota][newapi] \(root)/api/user/self → 200 but no quota field; keys=\(body.keys.sorted().prefix(12)) body=\(String(data: data.prefix(240), encoding: .utf8) ?? "")")
             ProviderQuotaService.shared.noteFailure(
                 AppLocalized("返回里没有 quota 字段（这站可能不是 New API 面板）"), instanceId: instanceId, rowId: rowId)
             return nil
@@ -598,6 +667,8 @@ final class ProviderQuotaService: ObservableObject {
 
         let perUnit = await quotaPerUnit(root: root)
         let balance = quota.doubleValue / perUnit
+        AppLogger(category: "Quota").info(
+            "[Quota][newapi] \(root)/api/user/self OK quota=\(quota.doubleValue) perUnit=\(perUnit) balance=\(balance)")
         return QuotaInfo(
             displayText: String(format: "余额 $%.2f", balance),
             highlighted: balance < lowThresholdUSD,
@@ -605,6 +676,69 @@ final class ProviderQuotaService: ObservableObject {
             balanceUSD: balance,
             amountUSD: balance
         )
+    }
+
+    /// `GET {root}/api/usage/token/` — the balance of ONE API key.
+    ///
+    /// Response shape (New API / One API): `{ "data": { "total_granted": …,
+    /// "total_used": …, "total_available": … } }` in quota points. Anything
+    /// else — 401, HTML, a different panel — returns nil so the caller can try
+    /// the next strategy, and the UI simply shows no balance.
+    private static func fetchKeyUsage(key: String, baseURL: String) async -> QuotaInfo? {
+        let root = apiRoot(baseURL)
+        guard let url = URL(string: root + "/api/usage/token/") else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 12
+        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let body = obj["data"] as? [String: Any] else {
+            return nil
+        }
+
+        let available = (body["total_available"] as? NSNumber)?.doubleValue
+        let granted = (body["total_granted"] as? NSNumber)?.doubleValue
+        let used = (body["total_used"] as? NSNumber)?.doubleValue
+        let unlimited = (body["unlimited_quota"] as? Bool) ?? false
+        let perUnit = await quotaPerUnit(root: root)
+
+        // [T-quota-key-usage] An UNLIMITED key has no remaining balance to
+        // report — `total_available` is negative by design. The honest figure
+        // is the usage, and saying so is better than drawing "余额 -$7.42" or
+        // showing nothing at all: this path needs the key the user already
+        // pasted, which is the whole point.
+        if unlimited {
+            let spent = (used ?? 0) / perUnit
+            AppLogger(category: "Quota").info(
+                "[Quota][keyusage] \(root) unlimited quota used=\(used ?? 0) spent=\(spent)")
+            // [T-quota-key-usage] No 「不限量」 wording: the user asked for it
+            // gone. An unlimited key simply reports what it has spent — the
+            // same 「已用 $X」 the billing fallback produces, so both paths read
+            // identically and the per-key rows inherit it for free.
+            return QuotaInfo(
+                displayText: String(format: "已用 $%.2f", spent),
+                highlighted: false,
+                kind: .used,
+                amountUSD: spent)
+        }
+
+        let quotaPoints: Double? = available ?? {
+            guard let granted, let used else { return nil }
+            return max(0, granted - used)
+        }()
+        guard let quotaPoints else { return nil }
+
+        let balance = quotaPoints / perUnit
+        AppLogger(category: "Quota").info(
+            "[Quota][keyusage] \(root)/api/usage/token/ OK available=\(quotaPoints) perUnit=\(perUnit) balance=\(balance)")
+        return QuotaInfo(
+            displayText: String(format: "余额 $%.2f", balance),
+            highlighted: balance < lowThresholdUSD,
+            kind: .balance,
+            balanceUSD: balance,
+            amountUSD: balance)
     }
 
     /// `1 USD = quota_per_unit` points, published by every New API site at

@@ -858,3 +858,49 @@ final class SessionMonitorStore: ObservableObject {
         UserDefaults.standard.set(Array(pruned), forKey: Self.defaultsKey)
     }
 }
+
+// MARK: - [T-session-photo-icon] A session may use a photo instead of its category glyph
+
+/// Per-session custom icon: a small `data:image/png;base64,…` URI produced by
+/// `SoulIconImage.encode` (96 px, square, PNG), keyed by session id.
+///
+/// Why UserDefaults and not the session record: this is a display preference,
+/// it must survive iCloud sync untouched (a peer device should not inherit a
+/// local photo), and it is tiny — the encoder caps the edge at 96 px, so a few
+/// dozen sessions cost well under a megabyte. Storing it on the record would
+/// also mean a schema migration for a cosmetic field.
+final class SessionIconStore: ObservableObject {
+    static let shared = SessionIconStore()
+    private static let defaultsKey = "sessionCustomIcons"
+
+    @Published private(set) var icons: [String: String] =
+        (UserDefaults.standard.dictionary(forKey: SessionIconStore.defaultsKey) as? [String: String]) ?? [:]
+
+    private init() {}
+
+    func icon(for sessionId: String) -> String? {
+        icons[sessionId]
+    }
+
+    func image(for sessionId: String) -> UIImage? {
+        icons[sessionId].flatMap { SoulIconImage.decode($0) }
+    }
+
+    func setIcon(_ dataURI: String?, for sessionId: String) {
+        if let dataURI, !dataURI.isEmpty {
+            icons[sessionId] = dataURI
+        } else {
+            icons.removeValue(forKey: sessionId)
+        }
+        UserDefaults.standard.set(icons, forKey: Self.defaultsKey)
+    }
+
+    /// Drop icons whose session no longer exists, so a deleted session cannot
+    /// keep a photo alive forever.
+    func prune(keeping liveIds: Set<String>) {
+        let kept = icons.filter { liveIds.contains($0.key) }
+        guard kept.count != icons.count else { return }
+        icons = kept
+        UserDefaults.standard.set(icons, forKey: Self.defaultsKey)
+    }
+}

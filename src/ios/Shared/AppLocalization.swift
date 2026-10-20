@@ -311,3 +311,48 @@ enum ProviderErrorDigest {
         return nil
     }
 }
+
+// MARK: - [T-turn-cost] What this turn cost, appended to the context line
+
+/// Formats an estimated price for one API call from its token usage.
+///
+/// Numbers only, no labels: the context line already says what it is, and the
+/// user asked for 「字体都对齐，统一一下」 — so the suffix is the same size and
+/// colour as the rest of the line, with tabular digits so it does not jitter.
+///
+/// The figure is an ESTIMATE by construction: prices come from the bundled
+/// models.dev catalog (official list prices), while relays bill at their own
+/// multiplier, which no API exposes. Hence the leading ≈.
+enum TurnCost {
+    /// `currency`: "CNY" or "USD". `rate`: CNY per USD (only used for CNY).
+    static let currencyKey = "cost.displayCurrency"
+    static let rateKey = "cost.usdToCnyRate"
+
+    static var currency: String {
+        UserDefaults.standard.string(forKey: currencyKey) ?? "CNY"
+    }
+
+    static var usdToCny: Double {
+        let stored = UserDefaults.standard.object(forKey: rateKey) as? Double
+        guard let stored, stored > 0 else { return 7.3 }
+        return stored
+    }
+
+    /// "≈¥0.0075" / "≈$0.0010", or nil when the model has no known price.
+    static func suffix(usage: TokenUsage, modelId: String?) -> String? {
+        guard let modelId,
+              let price = ModelsDevAPI.pricingPerMillion(for: modelId) else { return nil }
+        let inputTokens = Double(usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens)
+        let outputTokens = Double(usage.outputTokens)
+        let usd = (inputTokens * price.input + outputTokens * price.output) / 1_000_000
+        guard usd > 0 else { return nil }
+        return formatted(usd)
+    }
+
+    static func formatted(_ usd: Double) -> String {
+        if currency.uppercased() == "USD" {
+            return String(format: "≈$%.4f", usd)
+        }
+        return String(format: "≈¥%.4f", usd * usdToCny)
+    }
+}

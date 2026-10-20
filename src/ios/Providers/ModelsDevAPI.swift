@@ -69,6 +69,35 @@ enum ModelsDevAPI {
         return []
     }
 
+    /// [T-turn-cost] Per-million-token price for a model id, from the bundled
+    /// models.dev catalog.
+    ///
+    /// The catalog only carries `input` / `output` prices (no separate
+    /// cache-read tier), so the estimate bills every cached input token at the
+    /// input rate — an OVER-estimate for providers that discount cache hits,
+    /// which is the safe direction for a figure shown with 「≈」.
+    ///
+    /// Lookup is by exact model id across every provider in the catalog: the
+    /// session knows its model id (e.g. `deepseek-v4-flash`) but the provider
+    /// entry it resolved through may be a relay that models.dev does not list.
+    static func pricingPerMillion(for modelId: String) -> (input: Double, output: Double)? {
+        guard let registry = loadRegistry() else { return nil }
+        let wanted = modelId.lowercased()
+        // Prefer an exact id match; fall back to a suffix match so a relay's
+        // "vendor/model" id still finds the vendor's entry.
+        var best: ModelsDevCost?
+        for (_, provider) in registry {
+            for (_, model) in provider.models {
+                guard let cost = model.cost else { continue }
+                let id = model.id.lowercased()
+                if id == wanted { return (cost.input ?? 0, cost.output ?? 0) }
+                if best == nil, wanted.hasSuffix(id) || id.hasSuffix(wanted) { best = cost }
+            }
+        }
+        guard let best else { return nil }
+        return (best.input ?? 0, best.output ?? 0)
+    }
+
     private static func buildModels(from provider: ModelsDevProvider) -> [LLMModel] {
         provider.models.compactMap { (_, model) -> LLMModel? in
             let family = model.family?.lowercased() ?? ""
