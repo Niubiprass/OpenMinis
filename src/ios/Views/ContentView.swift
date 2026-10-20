@@ -8003,7 +8003,11 @@ struct SessionEditSheet: View {
                                 .foregroundStyle(.primary)
                             Spacer()
                             Text(AppLocalized("清除"))
-                                .foregroundStyle(iconStore.icon(for: session.id) == nil ? .secondary : .red)
+                                // Explicit `Color.` on BOTH branches: `.secondary`
+                                // is a HierarchicalShapeStyle and `.red` a Color, so
+                                // the mixed ternary fails to type-check (CI 60f3089).
+                                .foregroundStyle(iconStore.icon(for: session.id) == nil
+                                                 ? Color.secondary : Color.red)
                         }
                     }
                     .buttonStyle(.plain)
