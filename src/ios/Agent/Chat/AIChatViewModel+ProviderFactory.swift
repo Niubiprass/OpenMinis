@@ -100,7 +100,7 @@ extension AIChatViewModel {
             supportsKeyPool = instance.credentialType == .apiKey
         default: supportsKeyPool = false
         }
-        if allowsMultiKey, supportsKeyPool, ProviderMultiKeyManager.shared.isEnabled(for: instance.id) {
+        if allowsMultiKey, supportsKeyPool, ProviderMultiKeyManager.shared.isActive(for: instance.id) {
             let baseline = await makeAgentProvider(for: entry, resolveSessionId: resolveSessionId,
                                                    allowsMultiKey: false)
             return MultiKeyAgentProvider(instanceId: instance.id, baseline: baseline) { key in

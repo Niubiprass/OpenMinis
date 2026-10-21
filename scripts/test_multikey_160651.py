@@ -56,14 +56,17 @@ class Selection(unittest.TestCase):
         self.assertIn('func effectiveKey(for instanceId: String) -> String?', MODEL)
         self.assertIn('lease(for: instanceId)?.key', MODEL)
 
-    def test_every_key_parked_returns_nil_instead_of_a_dead_main_key(self):
-        # The previous fallback retried the exhausted main key forever. A
-        # request-scoped lease returns nil so the caller reports that no key is
-        # available rather than silently hitting the same dead credential.
+    def test_every_key_parked_falls_back_to_main_once(self):
+        # [T-multikey-last-resort] Two empty ring keys plus one funded main key
+        # used to end in "no usable Key" until the cooldown. When the pool is
+        # empty, main gets one last attempt; the caller's `excluding` set still
+        # stops a same-request retry loop.
         idx = MODEL.index('func lease(for instanceId:')
         end = MODEL.index('func recordSuccess(lease:', idx)
         body = MODEL[idx:end]
-        self.assertIn('guard !pool.isEmpty else { return nil }', body)
+        self.assertIn('guard !pool.isEmpty else {', body)
+        self.assertIn('guard !main.isEmpty, !excluding.contains("main") else { return nil }', body)
+        self.assertIn('return ProviderKeyLease(id: "main", key: main)', body)
 
     def test_round_robin_advances_a_cursor(self):
         self.assertIn('cursorPrefix', MODEL)
@@ -92,9 +95,9 @@ class Wiring(unittest.TestCase):
             self.assertIn('ProviderKeychainHelper.loadAPIKey', src)
 
     def test_detail_view_has_toggle_and_entry(self):
-        self.assertIn('Toggle(isOn: $multiKeyEnabled)', DETAIL)
+        self.assertIn('Toggle(isOn: Binding(', DETAIL)
         self.assertIn('MultiKeyManagerView(instance: instance)', DETAIL)
-        self.assertIn('ProviderMultiKeyManager.shared.setEnabled', DETAIL)
+        self.assertIn('ProviderMultiKeyManager.shared.setEnabled(on, for: instance.id)', DETAIL)
 
     def test_registered_in_project(self):
         self.assertIn('ProviderMultiKeys.swift', PBX)
@@ -150,10 +153,50 @@ class ManagementUi(unittest.TestCase):
         self.assertNotIn('Text(key.key)', VIEW)
 
 
+class EmptyRingAndLockIO(unittest.TestCase):
+    def test_empty_ring_is_single_key_mode(self):
+        # [T-multikey-empty-ring] A latched-on switch with zero ring keys must
+        # not wrap requests; otherwise the only saved key gets parked and every
+        # message reports "no usable Key".
+        idx = MODEL.index('func lease(for instanceId:')
+        end = MODEL.index('func recordSuccess(lease:', idx)
+        body = MODEL[idx:end]
+        self.assertIn('let ring = unlockedKeys(instanceId)', body)
+        self.assertIn('guard storedEnabled(for: instanceId), !ring.isEmpty else {', body)
+        self.assertIn('func isActive(for instanceId: String) -> Bool', MODEL)
+        self.assertIn('!keys(for: instanceId).isEmpty', MODEL)
+        self.assertIn('isActive(for: instance.id)', FACTORY)
+
+    def test_record_persists_outside_the_ring_lock(self):
+        # [T-multikey-lock-io] 05:52 device stackshot: main thread in
+        # keys(for:) waiting on `lock`, holder in recordSuccess ->
+        # saveMainState -> UserDefaults (cfprefsd). No persistence under `lock`.
+        for name in ['func recordSuccess(lease:', 'func recordFailure(lease:']:
+            i = MODEL.index(name)
+            j = MODEL.index('// MARK: - Selection', i)
+            body = MODEL[i:j]
+            unlock = body.index('lock.unlock()')
+            for persist in ['saveMainState(', 'unlockedSave(']:
+                k = body.index(persist)
+                self.assertGreater(k, unlock, f'{persist} still runs while holding lock')
+            self.assertIn('recordLock.lock()', body)
+
+    def test_detail_body_uses_cached_rows_not_keychain(self):
+        # The freeze path: quotaRows -> keys(for:) read from SwiftUI body.
+        detail = (ROOT / 'src/ios/Views/Providers/ProviderInstanceDetailView.swift').read_text()
+        i = detail.index('private func quotaSection(_ instance: ProviderInstance) -> some View {')
+        j = detail.index('if quotaRefreshing {', i)
+        body = detail[i:j]
+        self.assertIn('let rows = quotaRowsSnapshot', body)
+        self.assertNotIn('quotaRows(for: instance)', body)
+        self.assertNotIn('ProviderMultiKeyManager.shared.keys', body)
+        self.assertIn('Task.detached', detail)
+
+
 class FailoverWiring(unittest.TestCase):
     def test_chat_provider_is_wrapped_when_multi_key_is_on(self):
         self.assertIn('MultiKeyAgentProvider(instanceId: instance.id', FACTORY)
-        self.assertIn('ProviderMultiKeyManager.shared.isEnabled(for: instance.id)', FACTORY)
+        self.assertIn('ProviderMultiKeyManager.shared.isActive(for: instance.id)', FACTORY)
 
     def test_builder_receives_the_lease_key(self):
         self.assertIn('apiKeyOverride: key', FACTORY)

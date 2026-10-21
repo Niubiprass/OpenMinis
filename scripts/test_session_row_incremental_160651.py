@@ -29,16 +29,12 @@ class StoreRow(unittest.TestCase):
 
 
 class ViewPatch(unittest.TestCase):
-    def test_unthrottled_observer_patches_one_row(self):
-        self.assertIn('refreshSessionRow(sid)', VIEW)
-        self.assertIn('ChatStore.shared.sessionRow(id)', VIEW)
-
-    def test_row_patch_does_not_call_list_sessions(self):
-        start = VIEW.index('private func refreshSessionRow(')
-        end = VIEW.index('private func refreshSessionList()', start)
+    def test_session_update_uses_the_navigation_safe_full_refresh(self):
+        start = VIEW.index('private func handleSessionDidUpdate(')
+        end = VIEW.index('private func refreshSessionRow(', start)
         body = VIEW[start:end]
-        self.assertNotIn('listSessions()', body)
-        self.assertIn('sessions[index] = row', body)
+        self.assertIn('refreshSessionList()', body)
+        self.assertNotIn('refreshSessionRow(sid)', body)
 
     def test_full_refresh_remains_for_structural_changes(self):
         self.assertIn('refreshSessionList()', VIEW)

@@ -367,9 +367,9 @@ enum TurnCost {
     /// context percentage and token counts. The full four-decimal figure stays
     /// available in the detail sheet.
     static func compact(_ usd: Double, rate: Double? = nil) -> String {
-        if currency.uppercased() == "USD" {
-            return String(format: "≈$%.2f", usd)
-        }
-        return String(format: "≈¥%.2f", usd * (rate ?? usdToCny))
+        // No currency symbol in the composer: the shorter run keeps the
+        // context figures readable. The detail sheet keeps the full symbol.
+        let value = currency.uppercased() == "USD" ? usd : usd * (rate ?? usdToCny)
+        return String(format: "≈%.2f", value)
     }
 }

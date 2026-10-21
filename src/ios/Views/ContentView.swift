@@ -5245,9 +5245,12 @@ struct ContentView: View {
     /// notification closure in one pass.
     private func handleSessionDidUpdate(_ note: Notification) {
         Task { @MainActor in
-            if let sid = note.object as? String, !sid.isEmpty {
-                refreshSessionRow(sid)
-            }
+            // [T-ios15-nav-pop] Deliberately do NOT splice an individual row
+            // into `sessions` here. That mutation can land during a push and
+            // make iOS 15's simulated NavigationView drop the destination —
+            // the exact freeze/pop this project already fixed once. The full
+            // list refresh goes through `applySessions` and the root hidden
+            // link, which is the supported path.
             refreshSessionList()
         }
     }
@@ -5257,7 +5260,14 @@ struct ContentView: View {
     /// together as soon as the message is committed.
     @MainActor
     private func refreshSessionRow(_ id: String) {
+        // [T-ios15-nav-pop] Do not mutate the sidebar array while a chat is
+        // open or being pushed. On iOS 15 a row identity/order change during
+        // the navigation transition can drop the pushed session and bounce
+        // the user back to the list. The full refresh below still runs when
+        // they return, and while they are on the list this path is safe.
+        guard navigationPath.isEmpty, AIChatViewModel.activeSessionId == nil else { return }
         Task { @MainActor in
+            guard navigationPath.isEmpty, AIChatViewModel.activeSessionId == nil else { return }
             guard let row = await ChatStore.shared.sessionRow(id), !row.isChild else { return }
             guard let index = sessions.firstIndex(where: { $0.id == id }) else {
                 // A creation path deliberately uses the full invalidation

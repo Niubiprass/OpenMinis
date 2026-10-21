@@ -232,6 +232,11 @@ final class ProviderMultiKeyManager {
     private let strategyPrefix = "provider.multikey.strategy."
     private let cursorPrefix = "provider.multikey.cursor."
     private let lock = NSLock()
+    /// [T-multikey-lock-io] Serializes read-modify-write across recordSuccess /
+    /// recordFailure. Their persistence now happens after `lock` is released,
+    /// so without this two overlapping records could both read the old state
+    /// and one increment would be lost. Readers never take this lock.
+    private let recordLock = NSLock()
 
     // MARK: - Keychain
 
@@ -282,8 +287,27 @@ final class ProviderMultiKeyManager {
         return list
     }
 
-    func isEnabled(for instanceId: String) -> Bool {
+    /// The persisted switch only. `lease` already holds `lock`, so it must use
+    /// this instead of the locking `keys(for:)`.
+    private func storedEnabled(for instanceId: String) -> Bool {
         UserDefaults.standard.bool(forKey: enabledPrefix + instanceId)
+    }
+
+    /// The persisted switch, and only that. Cheap enough for a view body; it
+    /// must never read the Keychain there.
+    func isEnabled(for instanceId: String) -> Bool {
+        storedEnabled(for: instanceId)
+    }
+
+    /// Rotation really takes over only when the switch is on AND the ring has
+    /// a key. [T-multikey-empty-ring] A latched-on switch with an empty ring
+    /// used to keep wrapping requests: one failure parked the single saved
+    /// credential, and every message until the cooldown then reported "no
+    /// usable Key" although the user had merely deleted their extra keys.
+    /// Request paths call this; view bodies use `isEnabled` or cached state.
+    func isActive(for instanceId: String) -> Bool {
+        guard storedEnabled(for: instanceId) else { return false }
+        return !keys(for: instanceId).isEmpty
     }
 
     func strategy(for instanceId: String) -> MultiKeyStrategy {
@@ -387,12 +411,19 @@ final class ProviderMultiKeyManager {
         writeBlob(data, for: instanceId)
     }
 
-    /// One atomic pick including the main credential; no dead-main fallback.
+    /// One atomic pick including the main credential. The ring only takes part
+    /// when the switch is on and it actually contains a key; an empty ring is
+    /// single-key mode (`storedEnabled` alone must not engage rotation).
     func lease(for instanceId: String, excluding: Set<String> = []) -> ProviderKeyLease? {
         lock.lock(); defer { lock.unlock() }
         let main = ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard isEnabled(for: instanceId) else {
+        // [T-multikey-empty-ring] Read the ring under the lock we already hold
+        // and require it to be non-empty. An empty ring means single-key mode,
+        // so the saved credential is used even while it carries a cooldown
+        // from the ring's previous life.
+        let ring = unlockedKeys(instanceId)
+        guard storedEnabled(for: instanceId), !ring.isEmpty else {
             return main.isEmpty || excluding.contains("main") ? nil : ProviderKeyLease(id: "main", key: main)
         }
         let now = Date()
@@ -405,13 +436,23 @@ final class ProviderMultiKeyManager {
                 pool.append((ProviderKeyLease(id: "main", key: main), state.successCount + state.failureCount))
             }
         }
-        for entry in unlockedKeys(instanceId) {
+        for entry in ring {
             let key = entry.key.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty, seen.insert(key).inserted else { continue }
             guard !excluding.contains(entry.id), entry.isSelectable(recoveryInterval: Self.recoveryInterval, now: now) else { continue }
             pool.append((ProviderKeyLease(id: entry.id, key: key), entry.successCount + entry.failureCount))
         }
-        guard !pool.isEmpty else { return nil }
+        guard !pool.isEmpty else {
+            // [T-multikey-last-resort] Every ring key is parked or disabled.
+            // The saved credential may still be the only funded key (the
+            // reported 晨光 case: two empty ring keys plus one working main).
+            // Reporting "no usable Key" without trying it made a good key look
+            // broken for the whole cooldown. Try main once; a real provider
+            // error is more useful than the synthetic one, and `excluding`
+            // still prevents a same-request retry loop.
+            guard !main.isEmpty, !excluding.contains("main") else { return nil }
+            return ProviderKeyLease(id: "main", key: main)
+        }
         switch strategy(for: instanceId) {
         case .priority: return pool[0].lease
         case .random: return pool.randomElement()?.lease
@@ -425,32 +466,47 @@ final class ProviderMultiKeyManager {
     }
 
     func recordSuccess(lease: ProviderKeyLease, for instanceId: String) {
-        lock.lock(); defer { lock.unlock() }
+        recordLock.lock(); defer { recordLock.unlock() }
+        // [T-multikey-lock-io] Mutate under the lock, but never persist while
+        // holding it. `saveMainState` is a synchronous UserDefaults write; the
+        // observed 05:52 freeze had the main thread in `keys(for:)` waiting on
+        // this lock while this thread sat inside cfprefsd. Persist after unlock.
+        var stateToSave: MainState?
+        var listToSave: [ProviderAPIKey]?
+        lock.lock()
         if lease.id == "main" {
-            guard ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)?.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key else { return }
-            var state = mainState(lease.key, instanceId: instanceId)
-            state.successCount += 1
-            if state.lastFailureAt.map({ $0 <= lease.startedAt }) ?? true {
-                state.consecutiveFailures = 0; state.unavailableUntil = nil
+            if ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)?.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key {
+                var state = mainState(lease.key, instanceId: instanceId)
+                state.successCount += 1
+                if state.lastFailureAt.map({ $0 <= lease.startedAt }) ?? true {
+                    state.consecutiveFailures = 0; state.unavailableUntil = nil
+                }
+                stateToSave = state
             }
-            saveMainState(state, instanceId: instanceId)
         } else {
             var list = unlockedKeys(instanceId)
-            guard let index = list.firstIndex(where: { $0.id == lease.id && $0.key.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key }) else { return }
-            list[index].successCount += 1
-            list[index].lastUsed = Date()
-            if list[index].updatedAt <= lease.startedAt {
-                list[index].consecutiveFailures = 0; list[index].lastError = nil
-                list[index].unavailableUntil = nil
-                if list[index].isEnabled && list[index].status != .disabled { list[index].status = .active }
+            if let index = list.firstIndex(where: { $0.id == lease.id && $0.key.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key }) {
+                list[index].successCount += 1
+                list[index].lastUsed = Date()
+                if list[index].updatedAt <= lease.startedAt {
+                    list[index].consecutiveFailures = 0; list[index].lastError = nil
+                    list[index].unavailableUntil = nil
+                    if list[index].isEnabled && list[index].status != .disabled { list[index].status = .active }
+                }
+                listToSave = list
             }
-            unlockedSave(list, instanceId: instanceId)
         }
+        lock.unlock()
+        if let state = stateToSave { saveMainState(state, instanceId: instanceId) }
+        if let list = listToSave { unlockedSave(list, instanceId: instanceId) }
     }
 
     func recordFailure(lease: ProviderKeyLease, kind: MultiKeyFailureKind, for instanceId: String) {
         guard kind.mayTryAnotherKey else { return }
-        lock.lock(); defer { lock.unlock() }
+        recordLock.lock(); defer { recordLock.unlock() }
+        var stateToSave: MainState?
+        var listToSave: [ProviderAPIKey]?
+        lock.lock()
         let now = Date()
         func cooldown(_ failures: Int) -> TimeInterval? {
             switch kind {
@@ -461,22 +517,27 @@ final class ProviderMultiKeyManager {
             }
         }
         if lease.id == "main" {
-            guard ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)?.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key else { return }
-            var state = mainState(lease.key, instanceId: instanceId)
-            state.failureCount += 1; state.consecutiveFailures += 1; state.lastFailureAt = now
-            if let seconds = cooldown(state.consecutiveFailures) { state.unavailableUntil = now.addingTimeInterval(seconds) }
-            saveMainState(state, instanceId: instanceId)
+            if ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)?.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key {
+                var state = mainState(lease.key, instanceId: instanceId)
+                state.failureCount += 1; state.consecutiveFailures += 1; state.lastFailureAt = now
+                if let seconds = cooldown(state.consecutiveFailures) { state.unavailableUntil = now.addingTimeInterval(seconds) }
+                stateToSave = state
+            }
         } else {
             var list = unlockedKeys(instanceId)
-            guard let index = list.firstIndex(where: { $0.id == lease.id && $0.key.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key }) else { return }
-            list[index].failureCount += 1; list[index].consecutiveFailures += 1
-            list[index].lastUsed = now; list[index].updatedAt = now; list[index].lastError = kind.summary
-            if let seconds = cooldown(list[index].consecutiveFailures) {
-                list[index].unavailableUntil = now.addingTimeInterval(seconds)
-                if list[index].isEnabled && list[index].status != .disabled { list[index].status = .error }
+            if let index = list.firstIndex(where: { $0.id == lease.id && $0.key.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key }) {
+                list[index].failureCount += 1; list[index].consecutiveFailures += 1
+                list[index].lastUsed = now; list[index].updatedAt = now; list[index].lastError = kind.summary
+                if let seconds = cooldown(list[index].consecutiveFailures) {
+                    list[index].unavailableUntil = now.addingTimeInterval(seconds)
+                    if list[index].isEnabled && list[index].status != .disabled { list[index].status = .error }
+                }
+                listToSave = list
             }
-            unlockedSave(list, instanceId: instanceId)
         }
+        lock.unlock()
+        if let state = stateToSave { saveMainState(state, instanceId: instanceId) }
+        if let list = listToSave { unlockedSave(list, instanceId: instanceId) }
     }
 
     // MARK: - Selection

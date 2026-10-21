@@ -3122,6 +3122,11 @@ extension CollectionViewMessageListV3 {
             cellBridges = cellBridges.filter { currentIds.contains($0.key) }
             lastFooterShapeByMessage = lastFooterShapeByMessage.filter { currentIds.contains($0.key) }
 
+            // [T-ios-first-block-footer-gap] Precompute the last assistant id once.
+            // The inner loop below used to run `messages.last(where:)` for every
+            // assistant message, which is O(n²) on a long transcript and was
+            // visible in the device hang stacks as `applySnapshot` taking >2s.
+            let lastAssistantMessageId = messages.last(where: { $0.role == .assistant })?.id
             // Build items
             var newItems: [MessageListItem] = []
             // [T-ios-orphan-user-tail GH#262/#263] The Resume banner lives in
@@ -3210,7 +3215,7 @@ extension CollectionViewMessageListV3 {
                     // footer IS needed later (e.g. showUsage toggled by
                     // double-tap), the toggle triggers a snapshot refresh
                     // which re-evaluates this condition.
-                    let isLastAssistant = (message.id == messages.last(where: { $0.role == .assistant })?.id)
+                    let isLastAssistant = (message.id == lastAssistantMessageId)
                     let needsFooter = isLastAssistant
                         || message.error != nil
                         || message.streamInterruptCount > 0
@@ -3230,6 +3235,18 @@ extension CollectionViewMessageListV3 {
             // the first occurrence and log, so a data glitch costs one hidden
             // duplicate row instead of a crash.
             newItems = Self.uniqueItems(newItems, caller: caller)
+
+            // [T-ios-first-block-footer-gap] One O(n) pass instead of a
+            // `firstIndex(of:)` scan inside the per-message loop. The device
+            // hang stacks showed `Array.firstIndex(of:)` →
+            // `MessageListItem.__derived_enum_equals` at the top of 2s
+            // `applySnapshot` samples on long transcripts.
+            var footerIndexByMessage: [UUID: Int] = [:]
+            for (index, item) in newItems.enumerated() {
+                guard case .assistantFooter(let mid) = item,
+                      footerIndexByMessage[mid] == nil else { continue }
+                footerIndexByMessage[mid] = index
+            }
 
             syncThinkingLayoutSubscriptions(messages)
 
@@ -3267,7 +3284,7 @@ extension CollectionViewMessageListV3 {
                     let previous = lastBlockCountByMessage[message.id]
                     lastBlockCountByMessage[message.id] = count
                     guard previous == 0, count >= 1,
-                          let footerIdx = newItems.firstIndex(of: .assistantFooter(message.id))
+                          let footerIdx = footerIndexByMessage[message.id]
                     else { continue }
                     layout.invalidateHeight(at: footerIdx)
                     if let cv = viewController?.collectionView {

@@ -368,7 +368,7 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
         try Task.checkCancellation()
         let manager = ProviderMultiKeyManager.shared
         // Snapshot a finite budget. Adding keys during a request cannot grow it forever.
-        let budget = manager.isEnabled(for: instanceId) ? manager.keys(for: instanceId).count + 1 : 1
+        let budget = manager.isActive(for: instanceId) ? manager.keys(for: instanceId).count + 1 : 1
         let initialExclusions = takeResumeExclusions()
         return AsyncThrowingStream { continuation in
             let worker = Task {
@@ -425,12 +425,12 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                         }
                         try Task.checkCancellation()
                         for item in pending { continuation.yield(item) }
-                        if manager.isEnabled(for: instanceId) { manager.recordSuccess(lease: lease, for: instanceId) }
+                        if manager.isActive(for: instanceId) { manager.recordSuccess(lease: lease, for: instanceId) }
                         continuation.finish(); return
                     } catch {
                         if Task.isCancelled { continuation.finish(throwing: CancellationError()); return }
                         let kind = MultiKeyFailureKind.classify(error)
-                        if manager.isEnabled(for: instanceId) { manager.recordFailure(lease: lease, kind: kind, for: instanceId) }
+                        if manager.isActive(for: instanceId) { manager.recordFailure(lease: lease, kind: kind, for: instanceId) }
                         guard kind.mayTryAnotherKey else { continuation.finish(throwing: error); return }
                         lastError = error
                         if exposed {

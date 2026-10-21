@@ -43,10 +43,14 @@ struct ProviderInstanceDetailView: View {
     @State private var multiKeyCount = 0
     @State private var quotaRefreshing = false
     @State private var quotaMessage: String?
+    /// [T-multikey-lock-io] `quotaRows` reads the Keychain and the ring's lock;
+    /// doing that from `body` put the main thread behind a background
+    /// `recordSuccess` write (05:52 device freeze). Load it off-main once per
+    /// appearance and when a refresh finishes, then draw from this snapshot.
+    @State private var quotaRowsSnapshot: [ProviderQuotaService.KeyQuota] = []
     @ObservedObject private var pricingService = ProviderPricingService.shared
     @State private var pricingRefreshing = false
     @State private var pricingMessage: String?
-    @State private var showManualPrice = false
     @State private var showRateOverride = false
     /// [T-quota-perkey-token] Which key's access token is being edited. Each
     /// key can belong to a DIFFERENT site account (the reported case: one
@@ -64,7 +68,7 @@ struct ProviderInstanceDetailView: View {
         if let rate = pricingService.pricing(for: instance.id)?.exchangeRate {
             return String(format: "%.2f · 站点", rate)
         }
-        return String(format: "%.2f · 全局", TurnCost.usdToCny)
+        return String(format: "%.2f · 默认", TurnCost.usdToCny)
     }
 
     private var instance: ProviderInstance? {
@@ -75,6 +79,15 @@ struct ProviderInstanceDetailView: View {
         Group {
             if let instance = instance {
                 instanceContent(instance)
+                    .onAppear {
+                        // [T-multikey] Re-read the persisted ring state whenever
+                        // this screen appears. The old sync lived inside a
+                        // TextField and could be skipped or re-seed stale state.
+                        // `isEnabled` is a UserDefaults read; the ring itself is
+                        // loaded by `reloadQuotaRows` off the main thread.
+                        multiKeyEnabled = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
+                        reloadQuotaRows(instance)
+                    }
                     // [T-turn-cost-site-pricing] One background read per
                     // provider, only when this page is opened. It never runs
                     // in the chat path, so a slow/unreachable site cannot
@@ -159,17 +172,19 @@ struct ProviderInstanceDetailView: View {
                         // Same rule as the button: a provider in 多 Key 模式 has
                         // rows of its own, so the sign-in refresh covers them
                         // all rather than only the credential key.
-                        if ProviderMultiKeyManager.shared.isEnabled(for: instance.id) {
+                        if ProviderMultiKeyManager.shared.isActive(for: instance.id) {
                             await ProviderQuotaService.shared.refreshAllKeys(for: instance)
                         } else {
                             await ProviderQuotaService.shared.refreshQuota(for: instance)
                         }
-                        let multi = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
+                        let multi = ProviderMultiKeyManager.shared.isActive(for: instance.id)
                         let refreshed = ProviderQuotaService.shared.quotaRows(for: instance)
                         let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
                         let reason = ProviderQuotaService.shared.failureNote(instanceId: instance.id)
                         await MainActor.run {
                             quotaRefreshing = false
+                            quotaRowsSnapshot = refreshed
+                            multiKeyCount = refreshed.filter { !$0.isMain }.count
                             if multi {
                                 let balances = refreshed.filter { $0.info?.kind == .balance }.count
                                 let used = refreshed.filter { $0.info?.kind == .used }.count
@@ -193,11 +208,6 @@ struct ProviderInstanceDetailView: View {
                         }
                     }
                 }
-            }
-        }
-        .sheet(isPresented: $showManualPrice) {
-            if let instance = instance {
-                ManualPriceSheet(instanceId: instance.id)
             }
         }
         .sheet(isPresented: $showRateOverride) {
@@ -332,11 +342,22 @@ struct ProviderInstanceDetailView: View {
             // is nothing to rotate.
             if instance.credentialType == .apiKey {
                 Section {
-                    Toggle(isOn: $multiKeyEnabled) {
+                    Toggle(isOn: Binding(
+                        get: { multiKeyEnabled },
+                        set: { on in
+                            // Write through immediately. The old @State + onChange
+                            // pair could be re-seeded by a neighbouring .onAppear
+                            // before the write was observed, making the switch
+                            // look like it reverted after leaving the page.
+                            multiKeyEnabled = on
+                            ProviderMultiKeyManager.shared.setEnabled(on, for: instance.id)
+                            // Count comes from the snapshot; reading the ring
+                            // here would put a Keychain call on the tap's main
+                            // thread. `reloadQuotaRows` refreshes it on appear.
+                            multiKeyCount = quotaRowsSnapshot.filter { !$0.isMain }.count
+                        }
+                    )) {
                         Text("多 Key 模式")
-                    }
-                    .onChange(of: multiKeyEnabled) { on in
-                        ProviderMultiKeyManager.shared.setEnabled(on, for: instance.id)
                     }
                     if multiKeyEnabled {
                         // iOS 15 没有 NavigationLink { } label: { } 这个写法（16 才有），
@@ -370,7 +391,7 @@ struct ProviderInstanceDetailView: View {
                     // [T-quota-perkey-token] The wording follows the mode: with a
                     // ring the token lives on each key's row, so pointing at "填访问
                     // 令牌" here would send the user to a field that no longer exists.
-                    if ProviderMultiKeyManager.shared.isEnabled(for: instance.id) {
+                    if multiKeyEnabled {
                         Text("每把 Key 可以单独填访问令牌；不填则用上面那个通用令牌。")
                     } else {
                         Text("填了访问令牌就尝试读真实余额；读不到（站点没这个接口，或还需要额外凭据）就显示用量，不需要再填别的。")
@@ -385,11 +406,6 @@ struct ProviderInstanceDetailView: View {
                     if pricingService.summary(for: instance.id) == nil {
                         Text("未读取站点定价")
                             .foregroundStyle(.secondary)
-                    }
-                    Button {
-                        showManualPrice = true
-                    } label: {
-                        Label(AppLocalized("手动补价"), systemImage: "square.and.pencil")
                     }
                     Button {
                         pricingRefreshing = true
@@ -745,6 +761,21 @@ struct ProviderInstanceDetailView: View {
     // MARK: - Credential Section
     // MARK: - [T-quota-newapi-balance] Balance section
 
+    /// [T-multikey-lock-io] Build the per-key rows away from the main thread.
+    /// `quotaRows` touches the Keychain and `ProviderMultiKeyManager.lock`, so
+    /// it must never run while SwiftUI is evaluating `body`.
+    private func reloadQuotaRows(_ instance: ProviderInstance) {
+        let wanted = instance.id
+        Task.detached(priority: .userInitiated) {
+            let rows = ProviderQuotaService.shared.quotaRows(for: instance)
+            await MainActor.run {
+                guard instanceId == wanted else { return }
+                quotaRowsSnapshot = rows
+                multiKeyCount = rows.filter { !$0.isMain }.count
+            }
+        }
+    }
+
     /// Real-balance credentials for New API / One API relays.
     ///
     /// Two ways, either sufficient:
@@ -759,9 +790,10 @@ struct ProviderInstanceDetailView: View {
         // and a single "当前" line could only ever describe one of them, which
         // is exactly the confusion this replaces: with 多 Key 模式 on, the
         // number on screen belonged to a key that was not serving requests.
-        let rows = quotaService.quotaRows(for: instance)
-        let multiKeyOn = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
-            && rows.contains { !$0.isMain }
+        // [T-multikey-lock-io] Draw the snapshot loaded in `reloadQuotaRows`; never
+        // call `quotaRows(for:)` from the body.
+        let rows = quotaRowsSnapshot
+        let multiKeyOn = multiKeyEnabled && rows.contains { !$0.isMain }
 
         if multiKeyOn {
             ForEach(rows) { row in
@@ -851,6 +883,8 @@ struct ProviderInstanceDetailView: View {
                     let firstReason = refreshed.compactMap { $0.failureNote }.first
                     await MainActor.run {
                         quotaRefreshing = false
+                        quotaRowsSnapshot = refreshed
+                        multiKeyCount = refreshed.filter { !$0.isMain }.count
                         var parts: [String] = []
                         if balances > 0 { parts.append(String(format: AppLocalized("%lld 把有余额"), Int64(balances))) }
                         if used > 0 { parts.append(String(format: AppLocalized("%lld 把只有用量"), Int64(used))) }
@@ -862,8 +896,11 @@ struct ProviderInstanceDetailView: View {
                     await ProviderQuotaService.shared.refreshQuota(for: instance)
                     let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
                     let reason = ProviderQuotaService.shared.failureNote(instanceId: instance.id)
+                    let singleRows = ProviderQuotaService.shared.quotaRows(for: instance)
                     await MainActor.run {
                         quotaRefreshing = false
+                        quotaRowsSnapshot = singleRows
+                        multiKeyCount = singleRows.filter { !$0.isMain }.count
                         if info?.kind == .balance {
                             quotaMessage = AppLocalized("已更新余额")
                         } else if info?.kind == .used {
@@ -1115,13 +1152,6 @@ struct ProviderInstanceDetailView: View {
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
                 .onAppear { editingCustomBaseURL = instance.customBaseURL ?? "" }
-            .onAppear {
-                // [T-multikey] Reflect the persisted ring state every time the
-                // screen appears, so coming back from the manager page shows
-                // the current count instead of a stale zero.
-                multiKeyEnabled = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
-                multiKeyCount = ProviderMultiKeyManager.shared.keys(for: instance.id).count
-            }
                 .onSubmit { saveCustomBaseURL(instance) }
                 .onDisappear { saveCustomBaseURL(instance) }
 
@@ -2366,8 +2396,19 @@ private struct RateOverrideSheet: View {
     let instanceId: String
     let siteRate: Double?
     @ObservedObject private var pricing = ProviderPricingService.shared
+    @ObservedObject private var store = ProviderConfigStore.shared
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(TurnCost.rateKey) private var globalRate: Double = 7.3
     @State private var text = ""
+    @State private var selectedModelId = ""
+    @State private var inputPrice = ""
+    @State private var outputPrice = ""
+    @State private var manualEdited = false
+    @State private var manualError: String?
+
+    private var entries: [ModelEntry] {
+        store.entries(for: instanceId).filter { !$0.isHidden }
+    }
 
     var body: some View {
         NavigationView {
@@ -2389,11 +2430,63 @@ private struct RateOverrideSheet: View {
                 }
 
                 Section {
+                    Picker("模型", selection: $selectedModelId) {
+                        ForEach(entries, id: \.baseModel.id) { entry in
+                            Text(entry.model.displayName).tag(entry.baseModel.id)
+                        }
+                    }
+                    TextField("输入价，例如 3.00", text: Binding(
+                        get: { inputPrice },
+                        set: { inputPrice = $0; manualEdited = true }
+                    ))
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.trailing)
+                    TextField("输出价，例如 15.00", text: Binding(
+                        get: { outputPrice },
+                        set: { outputPrice = $0; manualEdited = true }
+                    ))
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.trailing)
+                    Button(role: .destructive) {
+                        pricing.setManualPrice(instanceId: instanceId, modelId: selectedModelId,
+                                               input: nil, output: nil)
+                        inputPrice = ""
+                        outputPrice = ""
+                        manualEdited = false
+                        manualError = nil
+                    } label: {
+                        Text("清除这个模型的手动价")
+                    }
+                    .disabled(selectedModelId.isEmpty)
+                    if let manualError {
+                        Text(manualError).font(.caption).foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("手动补价（可选，每百万 token 美元价）")
+                } footer: {
+                    Text("只给实际使用的模型填；填了会优先于站点定价。不填就跟随站点价或官方目录价。")
+                }
+
+                Section {
+                    HStack {
+                        Text("默认汇率")
+                        Spacer()
+                        TextField("7.30", value: $globalRate, format: .number)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.decimalPad)
+                    }
+                } header: {
+                    Text("全局默认")
+                } footer: {
+                    Text("所有供应商在没有站点汇率、也没有单独设置时使用这个值。修改后立即生效。")
+                }
+
+                Section {
                     Button {
                         pricing.setRateOverride(instanceId: instanceId, rate: nil)
                         dismiss()
                     } label: {
-                        Text("使用站点汇率 / 全局")
+                        Text("使用站点汇率 / 默认 \(String(format: "%.2f", globalRate))")
                     }
                 }
             }
@@ -2405,6 +2498,16 @@ private struct RateOverrideSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
+                        if manualEdited {
+                            let i = Double(inputPrice.trimmingCharacters(in: .whitespacesAndNewlines))
+                            let o = Double(outputPrice.trimmingCharacters(in: .whitespacesAndNewlines))
+                            guard let i, let o, i > 0, o > 0 else {
+                                manualError = "手动补价需要同时填写有效的输入价和输出价。"
+                                return
+                            }
+                            pricing.setManualPrice(instanceId: instanceId, modelId: selectedModelId,
+                                                   input: i, output: o)
+                        }
                         if let rate = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), rate > 0 {
                             pricing.setRateOverride(instanceId: instanceId, rate: rate)
                         }
@@ -2420,93 +2523,19 @@ private struct RateOverrideSheet: View {
                 } else {
                     text = String(format: "%.2f", TurnCost.usdToCny)
                 }
-            }
-        }
-    }
-}
-
-// MARK: - [T-turn-cost-site-pricing] Manual fallback
-
-/// One model at a time: the site pricing endpoint is absent or wrong, and the
-/// user knows the actual per-million price. Not a per-provider table; only the
-/// model being used needs a value.
-private struct ManualPriceSheet: View {
-    let instanceId: String
-    @ObservedObject private var store = ProviderConfigStore.shared
-    @ObservedObject private var pricing = ProviderPricingService.shared
-    @Environment(\.dismiss) private var dismiss
-    @State private var selectedModelId = ""
-    @State private var inputPrice = ""
-    @State private var outputPrice = ""
-    @State private var loaded = false
-
-    private var entries: [ModelEntry] {
-        store.entries(for: instanceId).filter { !$0.isHidden }
-    }
-
-    var body: some View {
-        NavigationView {
-            Form {
-                Section {
-                    Picker("模型", selection: $selectedModelId) {
-                        ForEach(entries, id: \.baseModel.id) { entry in
-                            Text(entry.model.displayName).tag(entry.baseModel.id)
-                        }
-                    }
-                } footer: {
-                    Text("只给实际使用的模型填，不用把所有模型都配一遍。")
-                }
-
-                Section {
-                    TextField("例如 3.00", text: $inputPrice)
-                        .keyboardType(.decimalPad)
-                    TextField("例如 15.00", text: $outputPrice)
-                        .keyboardType(.decimalPad)
-                } header: {
-                    Text("每百万 token 的美元价")
-                } footer: {
-                    Text("填了会优先于站点定价；留空并点“清除”则回到站点价或官方目录价。")
-                }
-
-                Section {
-                    Button(role: .destructive) {
-                        pricing.setManualPrice(instanceId: instanceId, modelId: selectedModelId, input: nil, output: nil)
-                        loadFields()
-                    } label: {
-                        Text("清除这个模型的手动价")
-                    }
-                    .disabled(selectedModelId.isEmpty)
-                }
-            }
-            .navigationTitle(Text("手动补价"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
-                        let input = Double(inputPrice.trimmingCharacters(in: .whitespacesAndNewlines))
-                        let output = Double(outputPrice.trimmingCharacters(in: .whitespacesAndNewlines))
-                        pricing.setManualPrice(instanceId: instanceId, modelId: selectedModelId,
-                                               input: input, output: output)
-                        dismiss()
-                    }
-                    .disabled(selectedModelId.isEmpty || Double(inputPrice) == nil || Double(outputPrice) == nil)
-                }
-            }
-            .onAppear {
-                guard !loaded else { return }
-                loaded = true
                 selectedModelId = entries.first?.baseModel.id ?? ""
-                loadFields()
+                loadManualFields()
             }
-            .onChange(of: selectedModelId) { _ in loadFields() }
+            .onChange(of: selectedModelId) { _ in
+                manualEdited = false
+                manualError = nil
+                loadManualFields()
+            }
         }
     }
 
-    private func loadFields() {
-        guard !selectedModelId.isEmpty else { inputPrice = ""; outputPrice = ""; return }
+    private func loadManualFields() {
+        guard !selectedModelId.isEmpty else { return }
         if let manual = pricing.manualPrice(instanceId: instanceId, modelId: selectedModelId) {
             inputPrice = manual.input.map { String(format: "%.2f", $0) } ?? ""
             outputPrice = manual.output.map { String(format: "%.2f", $0) } ?? ""
@@ -2517,6 +2546,7 @@ private struct ManualPriceSheet: View {
             inputPrice = ""
             outputPrice = ""
         }
+        manualEdited = false
     }
 }
 

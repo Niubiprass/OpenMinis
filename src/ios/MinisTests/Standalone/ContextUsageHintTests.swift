@@ -39,6 +39,10 @@ struct ContextUsage: Equatable {
 }
 enum TokenCountFormatter {
     static func short(_ count: Int) -> String {
+        if count >= 1_000_000 {
+            let m = Double(count) / 1_000_000.0
+            return m.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(m))M" : String(format: "%.1fM", m)
+        }
         if count >= 1000 {
             let k = Double(count) / 1000.0
             return k.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(k))k" : String(format: "%.1fk", k)
@@ -70,10 +74,12 @@ checkEq("1000 → 1k", TokenCountFormatter.short(1000), "1k")
 checkEq("1234 → 1.2k", TokenCountFormatter.short(1234), "1.2k")
 checkEq("124000 → 124k", TokenCountFormatter.short(124_000), "124k")
 checkEq("200000 → 200k", TokenCountFormatter.short(200_000), "200k")
+checkEq("1000000 → 1M", TokenCountFormatter.short(1_000_000), "1M")
+checkEq("1048576 → 1.0M", TokenCountFormatter.short(1_048_576), "1.0M")
 
 print("\n▶️  number segments are found by exact string, in any word order")
 let pct = "62%", size = "124k / 200k"
-for (locale, template) in [("en", "Context %@ used · %@"), ("zh-Hans", "上下文已用 %1$@ · %2$@"), ("ja", "コンテキスト使用率 %1$@ · %2$@")] {
+for (locale, template) in [("en", "Context %@ used · %@"), ("zh-Hans", "上下文用 %1$@ · %2$@"), ("ja", "コンテキスト使用率 %1$@ · %2$@")] {
     let text = String(format: template, pct, size)
     let ranges = highlightRanges(in: text, segments: [pct, size])
     checkEq("\(locale): both segments located", ranges.count, 2)
@@ -139,7 +145,7 @@ check("usage hidden when either side is unknown", vm.contains("(used > 0 && wind
 check("publishContextUsage is called where usage is written", vm.components(separatedBy: "publishContextUsage()").count - 1 >= 4)
 check("source warning threshold is 0.7 (critical 0.8)", models.contains("static let warningFraction: Double = 0.7") && models.contains("static let criticalFraction: Double = 0.8"))
 check("localization key present", xc.contains("\"Context %@ used · %@\" : {"))
-check("zh-Hans translation present", xc.contains("上下文已用 %1$@ · %2$@"))
+check("zh-Hans translation present", xc.contains("上下文用 %1$@ · %2$@"))
 check("no Android file touched by this feature", !FileManager.default.fileExists(atPath: root + "../android/CONTEXT_USAGE_MARKER"))
 
 print(failures == 0 ? "\n✅ All context-usage hint tests passed" : "\n❌ \(failures) failure(s)")

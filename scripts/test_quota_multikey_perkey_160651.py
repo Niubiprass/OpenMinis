@@ -119,10 +119,30 @@ class ManualOnly(unittest.TestCase):
 class DetailRendering(unittest.TestCase):
 
     def test_rows_render_only_when_multikey_is_on(self):
-        i = DETAIL.index('let multiKeyOn = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)')
-        body = DETAIL[i:i + 400]
+        # [T-multikey-lock-io] The body now reads the snapshot loaded off-main.
+        i = DETAIL.index('let rows = quotaRowsSnapshot')
+        body = DETAIL[i:i + 500]
+        self.assertIn('let multiKeyOn = multiKeyEnabled', body)
         self.assertIn('rows.contains { !$0.isMain }', body)
         self.assertIn('ForEach(rows) { row in', body)
+
+    def test_body_does_not_query_the_keychain(self):
+        i = DETAIL.index('private func quotaSection(_ instance: ProviderInstance) -> some View {')
+        j = DETAIL.index('if quotaRefreshing {', i)
+        body = DETAIL[i:j]
+        self.assertIn('let rows = quotaRowsSnapshot', body)
+        self.assertNotIn('quotaRows(for: instance)', body)
+        self.assertNotIn('ProviderMultiKeyManager.shared.keys', body)
+
+    def test_empty_ring_is_single_key_mode(self):
+        # Deleting every extra key must not leave the ring active: with no ring
+        # the request path uses the saved credential and reports its real error.
+        i = QUOTA.index('func quotaRows(for instance: ProviderInstance) -> [KeyQuota] {')
+        j = QUOTA.index('private func attach(', i)
+        body = QUOTA[i:j]
+        self.assertIn('guard ProviderMultiKeyManager.shared.isEnabled(for: instance.id) else { return rows }', body)
+        self.assertIn('let ring = ProviderMultiKeyManager.shared.keys(for: instance.id)', body)
+        self.assertIn('guard !ring.isEmpty else { return rows }', body)
 
     def test_rows_show_main_badge_and_index_badges(self):
         self.assertIn('Text(row.badge)', DETAIL)

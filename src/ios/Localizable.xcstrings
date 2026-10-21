@@ -7202,25 +7202,25 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Context %@ used · %@"
+            "value" : "Context %1$@ · %2$@"
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "コンテキスト使用率 %1$@ · %2$@"
+            "value" : "コンテキスト %1$@ · %2$@"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "上下文已用 %1$@ · %2$@"
+            "value" : "上下文用 %1$@ · %2$@"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "上下文已用 %1$@ · %2$@"
+            "value" : "上下文用 %1$@ · %2$@"
           }
         }
       }

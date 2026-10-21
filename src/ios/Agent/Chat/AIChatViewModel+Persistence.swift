@@ -172,6 +172,13 @@ extension AIChatViewModel {
     /// matching how they appeared during the live session.
     func loadSession() async {
         guard let sessionId else { return }
+        // [T-ios-entry-black-gap] A cached VM can have messages empty while
+        // hasCompletedInitialLoad is still true from its previous visit. The
+        // composer then paints a blank black message area with no loading
+        // card. Reset the flag for the duration of this load; the overlay
+        // only shows the card when messages are actually empty, so reloads
+        // with content on screen keep their existing UI.
+        hasCompletedInitialLoad = false
         // [T-turn-cost-ledger] A cached VM can be reused across a session
         // switch; never let the previous session's per-turn figures leak into
         // this one's detail sheet.

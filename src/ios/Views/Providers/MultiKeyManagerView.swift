@@ -248,9 +248,6 @@ struct MultiKeyManagerView: View {
                 }
             }
             reload()
-        }, onDelete: {
-            manager.remove(keyId: key.id, for: instance.id)
-            reload()
         })
     }
 
@@ -310,23 +307,19 @@ struct MultiKeyEditSheet: View {
     let existingKeys: [String]
     /// (name, replacement key, enabled)
     let onSave: (String?, String?, Bool) -> Void
-    let onDelete: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
     @State private var replacement: String = ""
     @State private var enabled: Bool
-    @State private var confirmDelete = false
     @State private var duplicateKey = false
 
     init(key: ProviderAPIKey,
          existingKeys: [String],
-         onSave: @escaping (String?, String?, Bool) -> Void,
-         onDelete: @escaping () -> Void) {
+         onSave: @escaping (String?, String?, Bool) -> Void) {
         self.key = key
         self.existingKeys = existingKeys
         self.onSave = onSave
-        self.onDelete = onDelete
         _name = State(initialValue: key.name ?? "")
         _enabled = State(initialValue: key.isEnabled)
     }
@@ -362,13 +355,6 @@ struct MultiKeyEditSheet: View {
                          : "已停用：不会参与轮询，记录仍保留。")
                 }
 
-                Section {
-                    Button(role: .destructive) {
-                        confirmDelete = true
-                    } label: {
-                        Text("删除这个 Key")
-                    }
-                }
             }
             .navigationTitle(Text("编辑 Key"))
             .navigationBarTitleDisplayMode(.inline)
@@ -395,15 +381,6 @@ struct MultiKeyEditSheet: View {
                 Button("知道了", role: .cancel) {}
             } message: {
                 Text("请换一把 Key，或保留当前 Key 不改。")
-            }
-            .confirmationDialog("删除这个 Key？", isPresented: $confirmDelete) {
-                Button("删除", role: .destructive) {
-                    onDelete()
-                    dismiss()
-                }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("删除后不再使用 \(key.masked)。当前正在进行的回复不会中断。")
             }
         }
     }

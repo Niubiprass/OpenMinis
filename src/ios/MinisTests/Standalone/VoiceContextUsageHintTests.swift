@@ -18,7 +18,7 @@ func checkEq<T: Equatable>(_ l: String, _ a: T, _ b: T) {
 }
 
 print("▶️  AttributedString segment location (as used by highlightedUsageLine)")
-let text = "上下文已用 62% · 124k / 200k"
+let text = "上下文用 62% · 124k / 200k"
 var attributed = AttributedString(text)
 var tinted = 0
 for segment in ["62%", "124k / 200k"] {

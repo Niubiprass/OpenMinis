@@ -49,8 +49,9 @@ class Pricing(unittest.TestCase):
         self.assertIn('func manualPrice(instanceId:', QUOTA)
         self.assertIn('func setManualPrice(instanceId:', QUOTA)
         self.assertIn('manualPrice(instanceId: instanceId, modelId: modelId)', QUOTA)
-        self.assertIn('struct ManualPriceSheet', DETAIL)
-        self.assertIn('手动补价', DETAIL)
+        self.assertNotIn('struct ManualPriceSheet', DETAIL)
+        self.assertIn('手动补价（可选', DETAIL)
+        self.assertIn('struct RateOverrideSheet', DETAIL)
 
 
 class Ledger(unittest.TestCase):

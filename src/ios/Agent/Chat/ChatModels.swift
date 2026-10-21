@@ -375,6 +375,14 @@ struct ContextTierCrossingTracker: Equatable {
 /// can never disagree on rounding.
 enum TokenCountFormatter {
     static func short(_ count: Int) -> String {
+        // A 1M context window should read 1M, not 1000k. Keep K for the
+        // 1,000..999,999 range and raw digits below 1,000.
+        if count >= 1_000_000 {
+            let m = Double(count) / 1_000_000.0
+            return m.truncatingRemainder(dividingBy: 1) == 0
+                ? "\(Int(m))M"
+                : String(format: "%.1fM", m)
+        }
         if count >= 1000 {
             let k = Double(count) / 1000.0
             return k.truncatingRemainder(dividingBy: 1) == 0

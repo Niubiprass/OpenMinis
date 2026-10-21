@@ -306,8 +306,11 @@ final class ProviderQuotaService: ObservableObject {
             rows.append(row)
         }
 
+        // [T-multikey-empty-ring] No ring means single-key mode: show the
+        // credential row only, even if the stored switch is still latched on.
         guard ProviderMultiKeyManager.shared.isEnabled(for: instance.id) else { return rows }
         let ring = ProviderMultiKeyManager.shared.keys(for: instance.id)
+        guard !ring.isEmpty else { return rows }
         for (index, key) in ring.enumerated() {
             var row = KeyQuota(id: key.id,
                                title: String(format: AppLocalized("轮询 %lld"), Int64(index + 1)),

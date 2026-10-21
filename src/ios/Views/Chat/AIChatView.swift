@@ -1493,6 +1493,13 @@ struct AIChatView: View {
         let _ios15Seg7 = _ios15Seg6
         .onAppear {
             wireComposerActions()
+            // [T-ios-entry-black-gap] Claim the loading state on the FIRST
+            // frame. Waiting for loadSession() to flip it left a black
+            // message area before the three dots appeared, especially for a
+            // cached VM whose flag was still true from its previous visit.
+            if sessionId != nil, vm.messages.isEmpty {
+                vm.hasCompletedInitialLoad = false
+            }
             QuestionAlertCenter.shared.setVisibleSession(sessionId)
             let sinceInit = (CFAbsoluteTimeGetCurrent() - AIChatViewModel.onAppearTimestamp) * 1000
             minisLogger.info("[SessionLoad] onAppear T+\(String(format: "%.0f", sinceInit))ms isNew=\(cached.isNew) msgs=\(vm.messages.count)")
