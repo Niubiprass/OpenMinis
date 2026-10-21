@@ -360,7 +360,14 @@ private final class SessionFolderResult: @unchecked Sendable {
     }
 
     private static func patch(_ original: ChatFolderConfiguration, json: String) throws -> ChatFolderConfiguration {
-        guard let object = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
+        // `.fragmentsAllowed` matters for the error contract: a bare `null`
+        // is valid JSON but not an object, so it must become
+        // invalid_configuration (like `[]`), not a generic parse failure.
+        // Genuinely malformed text such as `{bad` still throws and remains
+        // folder_operation_failed.
+        let parsed = try JSONSerialization.jsonObject(
+            with: Data(json.utf8), options: [.fragmentsAllowed])
+        guard let object = parsed as? [String: Any] else {
             throw SessionFolderBridgeError(code: "invalid_configuration", message: "config-json 必须是 JSON 对象。")
         }
         let allowed: Set<String> = ["skillDefaults", "soulPrompt", "memoryPolicy", "readsGlobalMemory", "soulMode"]
