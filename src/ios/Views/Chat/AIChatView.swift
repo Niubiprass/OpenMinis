@@ -6770,9 +6770,9 @@ private struct TokenUsageSheet: View {
                 let hasLedger = CostLedger.shared.hasEntries(for: ledgerSessionId)
 
                 Section {
-                    StatRow(label: AppLocalized("本次"), value: cost.lastUSD.map { TurnCost.formatted($0, rate: cost.exchangeRate) } ?? "—", icon: "creditcard")
-                    StatRow(label: AppLocalized("本轮（含工具调用）"), value: cost.turnUSD > 0 ? TurnCost.formatted(cost.turnUSD, rate: cost.exchangeRate) : "—", icon: "arrow.triangle.2.circlepath")
-                    StatRow(label: AppLocalized("本会话累计"), value: sessionCost > 0 ? TurnCost.formatted(sessionCost, rate: cost.exchangeRate) : "—", icon: "sum")
+                    StatRow(label: LocalizedStringKey("本次"), value: cost.lastUSD.map { TurnCost.formatted($0, rate: cost.exchangeRate) } ?? "—", icon: "creditcard")
+                    StatRow(label: LocalizedStringKey("本轮（含工具调用）"), value: cost.turnUSD > 0 ? TurnCost.formatted(cost.turnUSD, rate: cost.exchangeRate) : "—", icon: "arrow.triangle.2.circlepath")
+                    StatRow(label: LocalizedStringKey("本会话累计"), value: sessionCost > 0 ? TurnCost.formatted(sessionCost, rate: cost.exchangeRate) : "—", icon: "sum")
                 } header: {
                     Text(AppLocalized("费用"))
                 } footer: {

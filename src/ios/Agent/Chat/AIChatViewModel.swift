@@ -764,7 +764,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// acts on each generation exactly once (debounced there).
     @Published private(set) var contextUsageHint: ContextUsageHint?
     /// [T-turn-cost-ledger] Latest API call / current turn / session totals.
-    @Published private(set) var costSnapshot = CostSnapshot()
+    @Published var costSnapshot = CostSnapshot()
     /// Drives the cost-detail sheet from the composer's tappable cost run.
     @Published var showCostDetails = false
     private var contextUsageHintGeneration = 0

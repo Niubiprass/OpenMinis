@@ -2051,21 +2051,8 @@ struct ContentView: View {
             // frequency is the completion-measured cooldown in
             // refreshSessionList (SessionRefreshScheduler).
                 .throttle(for: .seconds(1), scheduler: RunLoop.main, latest: true)
-        ) { _ in
-            // [T-ios-state-publish-offmain-crash] force main-thread @State write
-            Task { @MainActor in
-                refreshSessionList()
-            }
-        }
-        // [T-ios-session-row-incremental] Patch ONLY the row that changed.
-        // The throttled observer above still handles structural changes; this
-        // one exists so the session the user is currently reading does not
-        // wait out the 1 s throttle + 3 s cooldown for a new preview.
-        .onReceive(NotificationCenter.default.publisher(for: .sessionDidUpdate)) { note in
-            guard let sid = note.object as? String, !sid.isEmpty else { return }
-            Task { @MainActor in
-                refreshSessionRow(sid)
-            }
+        ) { note in
+            handleSessionDidUpdate(note)
         }
         // [T-ios-listsessions-perf] The refresh cooldown timer. See
         // `sessionRefreshCooldownDeadline` for why this is a task keyed on a
@@ -5251,6 +5238,18 @@ struct ContentView: View {
         }
         outgoingPreviewRefreshWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+    }
+
+    /// Kept out of the already-large `body` expression so the Swift type
+    /// checker does not have to infer the whole GeometryReader tree plus this
+    /// notification closure in one pass.
+    private func handleSessionDidUpdate(_ note: Notification) {
+        Task { @MainActor in
+            if let sid = note.object as? String, !sid.isEmpty {
+                refreshSessionRow(sid)
+            }
+            refreshSessionList()
+        }
     }
 
     /// [T-ios-session-row-incremental] Replace one row in place. No

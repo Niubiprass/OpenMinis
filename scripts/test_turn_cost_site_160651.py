@@ -89,14 +89,14 @@ class Display(unittest.TestCase):
     def test_cost_detail_lives_in_token_usage_sheet(self):
         chat = (ROOT / 'src/ios/Views/Chat/AIChatView.swift').read_text()
         self.assertIn('Section("Context")', chat)
-        self.assertIn('AppLocalized("本会话累计")', chat)
+        self.assertIn('LocalizedStringKey("本会话累计")', chat)
         self.assertIn('CostLedger.shared.total(for: ledgerSessionId)', chat)
 
     def test_cost_breakdown_has_three_scopes(self):
         chat = (ROOT / 'src/ios/Views/Chat/AIChatView.swift').read_text()
-        self.assertIn('AppLocalized("本次")', chat)
-        self.assertIn('AppLocalized("本轮（含工具调用）")', chat)
-        self.assertIn('AppLocalized("本会话累计")', chat)
+        self.assertIn('LocalizedStringKey("本次")', chat)
+        self.assertIn('LocalizedStringKey("本轮（含工具调用）")', chat)
+        self.assertIn('LocalizedStringKey("本会话累计")', chat)
         self.assertIn('最终以站点账单为准', chat)
 
 
