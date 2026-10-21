@@ -1343,6 +1343,9 @@ extension AIChatViewModel {
                     resume: { ans in waitState.resume(ans) }
                 )
                 activeQuestionCard = card
+                QuestionAlertCenter.shared.questionAppeared(
+                    sessionId: sessionId, toolUseId: tuId,
+                    question: parsed.first?.text ?? "")
                 card.timeoutTask = Task { [weak self] in
                     do {
                         try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
@@ -1351,6 +1354,7 @@ extension AIChatViewModel {
                     }
                     guard let self, self.activeQuestionCard?.toolUseId == tuId else { return }
                     self.activeQuestionCard = nil
+                    QuestionAlertCenter.shared.questionEnded(toolUseId: tuId)
                     ctLogger.info("[AskCard] ask_user timed out (\(Int(timeout))s) — resuming as unconfirmed")
                     waitState.resume(nil)
                 }
@@ -1368,6 +1372,7 @@ extension AIChatViewModel {
             card.timeoutTask?.cancel()
             activeQuestionCard = nil
         }
+        QuestionAlertCenter.shared.questionEnded(toolUseId: tuId)
 
         // Finalize the block payload.
         var finalDict = specJSON

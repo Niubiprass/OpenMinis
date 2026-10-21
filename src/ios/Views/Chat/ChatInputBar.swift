@@ -850,9 +850,41 @@ private struct WebAppAddToHomeMenuModifier: ViewModifier {
     }
 }
 
+/// One open descriptor per image in the currently presented queued gallery.
+/// It survives the queue draining and unlinking its temporary file, closes
+/// when the gallery is dismissed, and downsamples off the main thread.
+private final class QueuedGalleryImageSource: @unchecked Sendable {
+    private let handle: FileHandle?
+
+    init(url: URL) {
+        handle = try? FileHandle(forReadingFrom: url)
+    }
+
+    deinit {
+        try? handle?.close()
+    }
+
+    func loadImage() async -> UIImage? {
+        await Task.detached(priority: .userInitiated) { [self] in
+            guard let handle,
+                  (try? handle.seek(toOffset: 0)) != nil,
+                  let data = try? handle.readToEnd(),
+                  let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceShouldCacheImmediately: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 2048
+                  ] as CFDictionary) else { return nil }
+            return UIImage(cgImage: image)
+        }.value
+    }
+}
+
 /// Async image tile — loads and decodes off the main thread, caches via NativeMediaImageCache.
 struct QueuedAttachmentPreview: View {
     let attachments: [InputAttachment]
+    @Environment(\.openImageGallery) private var openImageGallery
 
     private let tileSize: CGFloat = UserAttachmentTileMetrics.tile
 
@@ -861,8 +893,13 @@ struct QueuedAttachmentPreview: View {
             ForEach(attachments) { attachment in
                 switch attachment.kind {
                 case .image:
-                    AsyncCacheURLImageTile(cacheURL: attachment.cacheURL, tileSize: tileSize)
-                        .opacity(0.7)
+                    Button { openGallery(startingAt: attachment) } label: {
+                        AsyncCacheURLImageTile(cacheURL: attachment.cacheURL, tileSize: tileSize)
+                            .opacity(0.7)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(attachment.loadState != .ready)
+                    .accessibilityLabel(AppLocalized("预览图片"))
                 case .video:
                     placeholderTile(icon: "film", fileName: attachment.fileName)
                 case .document:
@@ -870,6 +907,19 @@ struct QueuedAttachmentPreview: View {
                 }
             }
         }
+    }
+
+    private func openGallery(startingAt tapped: InputAttachment) {
+        let images = attachments.filter { $0.kind == .image && $0.loadState == .ready }
+        guard let start = images.firstIndex(where: { $0.id == tapped.id }) else { return }
+        let items = images.map { attachment -> GalleryItem in
+            // Retain an open local handle, not the temporary path alone. Queue
+            // drain may unlink the original while the gallery is still open.
+            let source = QueuedGalleryImageSource(url: attachment.cacheURL)
+            return GalleryItem(id: "queued:\(attachment.id.uuidString)", title: attachment.fileName,
+                               load: { await source.loadImage() })
+        }
+        openImageGallery(GalleryPresentation(items: items, startIndex: start))
     }
 
     private func placeholderTile(icon: String, fileName: String) -> some View {
@@ -896,6 +946,8 @@ struct QueuedAttachmentPreview: View {
 class PastableUITextView: UITextView, UIDropInteractionDelegate {
     var onPasteImage: ((UIImage) -> Void)?
     var onPasteFile: ((URL) -> Void)?
+    /// [T-turn-cost-ledger] Tapping the cost run in the placeholder.
+    var onCostTap: (() -> Void)?
     /// [T-paste-placeholder] Long pasted text → the vm stashes it and returns
     /// the `[pasted#N]` literal to insert. nil (not wired) falls through to a
     /// plain text paste — never to the removed file conversion.
@@ -1435,6 +1487,51 @@ class PastableUITextView: UITextView, UIDropInteractionDelegate {
     }
 }
 
+/// A placeholder label whose trailing cost run is tappable. The label itself
+/// returns nil from hitTest everywhere else, so tapping the ghost text still
+/// focuses the real text view; only the invisible cost button consumes a tap.
+private final class CostHitLabel: UILabel {
+    private let costButton = UIButton(type: .custom)
+    private var costText: String?
+    var onCostTap: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        costButton.backgroundColor = .clear
+        costButton.isHidden = true
+        costButton.accessibilityLabel = AppLocalized("费用明细")
+        costButton.addTarget(self, action: #selector(tapped), for: .touchUpInside)
+        addSubview(costButton)
+        isUserInteractionEnabled = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setCost(_ text: String?) {
+        costText = text
+        costButton.isHidden = (text?.isEmpty ?? true)
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard !costButton.isHidden, let costText, !costText.isEmpty else { return }
+        let font = self.font ?? UIFont.systemFont(ofSize: 16)
+        let width = ceil((costText as NSString).size(withAttributes: [.font: font]).width) + 12
+        let height = ceil(font.lineHeight) + 4
+        costButton.frame = CGRect(x: max(0, bounds.width - width - 2),
+                                  y: max(0, bounds.height - height),
+                                  width: width, height: height)
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard !costButton.isHidden, costButton.frame.contains(point) else { return nil }
+        return costButton
+    }
+
+    @objc private func tapped() { onCostTap?() }
+}
+
 struct PastableTextView: UIViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
@@ -1460,6 +1557,9 @@ struct PastableTextView: UIViewRepresentable {
     /// `generation` once; nil (the default) leaves every other call site of
     /// this view untouched.
     var contextUsageHint: ContextUsageHint? = nil
+    /// [T-turn-cost-ledger] Called when the user taps the `¥…/次` run in the
+    /// composer placeholder. The rest of the placeholder still focuses typing.
+    var onCostTap: (() -> Void)? = nil
     var onPasteImage: (UIImage) -> Void
     var onPasteFile: (URL) -> Void
     /// [T-paste-placeholder] See PastableUITextView.onPasteLongText.
@@ -1533,6 +1633,7 @@ struct PastableTextView: UIViewRepresentable {
         tv.onPasteImage = onPasteImage
         tv.onPasteFile = onPasteFile
         tv.onPasteLongText = onPasteLongText
+        tv.onCostTap = onCostTap
         tv.onReturnKey = onReturnKey
         tv.onArrowUp = onArrowUp
         tv.onArrowDown = onArrowDown
@@ -1591,7 +1692,6 @@ struct PastableTextView: UIViewRepresentable {
             placeholderLabel.widthAnchor.constraint(equalTo: tv.widthAnchor),
         ])
         placeholderLabel.isHidden = !text.isEmpty
-
         return tv
     }
 
@@ -1745,6 +1845,7 @@ struct PastableTextView: UIViewRepresentable {
         tv.onPasteImage = onPasteImage
         tv.onPasteFile = onPasteFile
         tv.onPasteLongText = onPasteLongText
+        tv.onCostTap = onCostTap
         tv.onReturnKey = onReturnKey
         tv.onArrowUp = onArrowUp
         tv.onArrowDown = onArrowDown
@@ -2031,6 +2132,7 @@ struct PastableTextView: UIViewRepresentable {
             transientHintApplied = true
             let attributed = Self.attributedHint(hint, font: label.font)
             let apply = { label.attributedText = attributed }
+            (label as? CostHitLabel)?.setCost(hint.costText)
             // Reduce Motion: swap instantly, same as the rotation.
             if UIAccessibility.isReduceMotionEnabled {
                 apply()
@@ -2060,6 +2162,7 @@ struct PastableTextView: UIViewRepresentable {
             hasProtectedFirstFocus = false
             if let label = textView.viewWithTag(999) as? UILabel {
                 label.text = placeholderPool[0]
+                (label as? CostHitLabel)?.setCost(nil)
             }
         }
 
@@ -2123,6 +2226,7 @@ struct PastableTextView: UIViewRepresentable {
                 if let label = textView.viewWithTag(999) as? UILabel,
                    placeholderPoolIndex < placeholderPool.count {
                     label.text = placeholderPool[placeholderPoolIndex]
+                    (label as? CostHitLabel)?.setCost(nil)
                 }
             }
             // VoiceOver: swapping the label retriggers announcements and talks
@@ -2178,6 +2282,7 @@ struct PastableTextView: UIViewRepresentable {
                 if transientHintApplied, label.text != hint.text {
                     label.attributedText = Self.attributedHint(hint, font: label.font)
                 }
+                (label as? CostHitLabel)?.setCost(hint.costText)
                 return
             }
             let pool = placeholderPool
@@ -2188,6 +2293,7 @@ struct PastableTextView: UIViewRepresentable {
             }
             let text = pool[placeholderPoolIndex]
             if label.text != text { label.text = text }
+            (label as? CostHitLabel)?.setCost(nil)
         }
 
         /// [T-ios-composer-swipe-send-at-bottom] Track the at-bottom state while

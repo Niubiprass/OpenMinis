@@ -763,6 +763,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// One request per finished user-visible turn; the composer's Coordinator
     /// acts on each generation exactly once (debounced there).
     @Published private(set) var contextUsageHint: ContextUsageHint?
+    /// [T-turn-cost-ledger] Latest API call / current turn / session totals.
+    @Published private(set) var costSnapshot = CostSnapshot()
+    /// Drives the cost-detail sheet from the composer's tappable cost run.
+    @Published var showCostDetails = false
     private var contextUsageHintGeneration = 0
     /// [T-ctx-usage-after-compact] The message whose stamped usage was taken
     /// BEFORE the latest compaction in this session. Its `latestContextTokens`
@@ -1338,7 +1342,43 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// [T-turn-cost] Price suffix for the context line, computed from the newest
     /// assistant message's usage (the call that just finished) and this
     /// session's resolved model id.
+    // MARK: - [T-turn-cost-ledger] Per-call accounting
+
+    private func recordCallCost(usage: TokenUsage, modelId: String, instanceId: String,
+                                sessionId: String, messageId: String,
+                                turnCostUSD: inout Double) {
+        var amount: Double?
+        let sitePricing = ProviderPricingService.shared.pricing(for: instanceId)
+        if let site = sitePricing?.prices[modelId.lowercased()] {
+            if let fixed = site.fixed {
+                amount = fixed
+            } else if let input = site.input, let output = site.output {
+                amount = TurnCost.usd(usage: usage, inputPrice: input, outputPrice: output)
+            }
+        }
+        // No site pricing (or a per-call row without a price): fall back to the
+        // bundled catalog. Never invent a number when neither source exists.
+        if amount == nil, let catalog = ModelsDevAPI.pricingPerMillion(for: modelId) {
+            amount = TurnCost.usd(usage: usage, inputPrice: catalog.input, outputPrice: catalog.output)
+        }
+        guard let amount, amount > 0 else {
+            costSnapshot.lastUSD = nil
+            return
+        }
+        turnCostUSD += amount
+        CostLedger.shared.record(sessionId: sessionId, messageId: messageId,
+                                 modelId: modelId, instanceId: instanceId,
+                                 usage: usage, usd: amount)
+        costSnapshot = CostSnapshot(
+            lastUSD: amount,
+            turnUSD: turnCostUSD,
+            sessionUSD: CostLedger.shared.total(for: sessionId),
+            sessionHasLedger: true,
+            exchangeRate: ProviderPricingService.shared.effectiveRate(instanceId: instanceId))
+    }
+
     var currentTurnCostSuffix: String? {
+        if let label = costSnapshot.lastLabel { return label }
         guard let entry = resolveCurrentEntry() else { return nil }
         // Newest assistant message that reported usage. The field on
         // ChatMessage is `usage: TokenUsage?` (NOT `tokenUsage`, which is the
@@ -1847,6 +1887,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         guard let card = activeQuestionCard else { return }
         activeQuestionCard = nil
         card.timeoutTask?.cancel()
+        QuestionAlertCenter.shared.questionEnded(toolUseId: card.toolUseId)
         let json = (try? JSONSerialization.data(withJSONObject: answers))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         logger.info("[AskCard] user submitted \(answers.count) answer(s) — resuming run")
@@ -1859,6 +1900,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         guard let card = activeQuestionCard else { return }
         activeQuestionCard = nil
         card.timeoutTask?.cancel()
+        QuestionAlertCenter.shared.questionEnded(toolUseId: card.toolUseId)
         logger.info("[AskCard] user cancelled the question card — resuming as unconfirmed")
         card.resume(nil)
     }
@@ -2561,7 +2603,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             + "similarity <img1> <img2> [img3...] (feature-print based image similarity comparison with --threshold 0.0-1.0, returns pairwise distance/similarity scores and duplicate groups), "
             + "overlap <img1> <img2> [img3...] (detect vertical overlapping regions between consecutive image pairs — uses anchor row scan + multi-row verification to find exact stitch points; returns overlap_px, confidence, and region coordinates). Both similarity and overlap accept --threshold 0.0-1.0 (default 0.9). overlap also accepts --skip-top <px> and --skip-bottom <px> to exclude fixed UI (status bar, tab bar) that would cause false matches.\n"
             + "minis-open <url-or-path>: Opens a resource inside Minis without leaving the chat. Accepts http/https URLs (→ built-in WebKit preview) and chat-resource file paths under /var/minis/** (→ built-in file preview, routed by extension: images to the image viewer, .md to markdown preview, .html to HTML preview, .pdf/office docs to QuickLook, audio/video to the media player, else share sheet). Examples: `minis-open https://example.com`, `minis-open /var/minis/workspace/report.md`, `minis-open /var/minis/attachments/chart.png`. Prefer this over `apple-open` for anything that can be previewed in-app so the user doesn't lose conversation context. Use `apple-open` for non-web schemes (tel:, mailto:, maps://, settings, etc.) or when the user explicitly wants the system handler.\n"
-            + "minis-sessions-cli: Manage chat sessions. `list` recent or by date range, `search --keywords` cross-session, `messages --id` to read, `send` to create/continue a session, `retry` to re-run, `status` to check, `open` to navigate the app UI. Run --help for full options.\n"
+            + "minis-sessions-cli: Manage chat sessions. `list` recent or by date range, `search --keywords` cross-session, `messages --id` to read, `send` to create/continue a session, `retry` to re-run, `status` to check, `open` to navigate the app UI. New chats inherit the CALLING session's home folder by default. For a same-folder handoff use `send <handoff> --folder current --inherit-model` (pass a self-contained brief or --attach; history is not auto-copied). This verifies folder/memory scope before sending; failure must not fall back to an ungrouped chat. `--folder <folder-id|unique-name|none>` selects another folder or explicitly ungrouped. `folders list|get|create|rename|pin|move|merge|dissolve|configure|icon` manages CHAT folders, not provider ModelGroups; run --help for syntax. Mutation requires user authorization; merge/dissolve require --confirm and preserve conversations. Run --help for full options.\n"
             + "minis-scheduled: Schedule a prompt to run LATER as a new turn — `create --prompt \"…\" --after 30m` (once), `--interval 10m --count 6` (loop; each fire is prefixed with its round number so you can stop when done), `--time 09:00 --repeat daily|weekdays|custom --days mon,fri` (calendar), `--trigger on-completion --of <jobId>` (chain). `--target new` (default, a new chat) | `follow-up` (this chat)" + (Self.toolEnabled(.agents) && !isHelper ? " | `child-of-current` (a hidden helper whose answer is posted back here)" : "") + ". `list`, `delete --id`, `enable/disable --id`, `run --id`. Best effort: timers live only while the app process is alive (a reminder notification is registered as insurance and says the task was due, not that it ran); for guaranteed execution after the app is killed the user needs an Apple Shortcuts automation. Run --help for details.\n"
             + (Self.toolEnabled(.agents) && !isHelper ? "(Do NOT use minis-scheduled to delegate work you could hand to subagent_task.)\n" : "")
             + "minis-model-use: Invoke other LLM models pre-configured by the user. "
@@ -6141,6 +6183,13 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         var committedBlockCount = committedBlocks ?? 0
         self.committedBlockCount = committedBlockCount
         var turnUsage = TokenUsage()
+        let ledgerSessionId = sessionId ?? "draft-\(vmInstanceId)"
+        var turnCostUSD = 0.0
+        costSnapshot = CostSnapshot(
+            lastUSD: nil,
+            turnUSD: 0,
+            sessionUSD: CostLedger.shared.total(for: ledgerSessionId),
+            sessionHasLedger: CostLedger.shared.hasEntries(for: ledgerSessionId))
 
         // Log context baseline for offload diagnostics
         let estimatedTokens = estimateContextTokens()
@@ -7192,6 +7241,13 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             let toolEntries = streamResult.toolEntries
             let stopReason = streamResult.stopReason
             turnUsage = streamResult.turnUsage
+            let billingEntry = ProviderConfigStore.shared.entry(for: activeEntryId ?? entry.id)
+            recordCallCost(usage: turnUsage,
+                           modelId: billingEntry?.model.id ?? activeModel.id,
+                           instanceId: billingEntry?.providerInstanceId ?? entry.providerInstanceId,
+                           sessionId: ledgerSessionId,
+                           messageId: runMsgId.uuidString,
+                           turnCostUSD: &turnCostUSD)
             logger.info("📐 Context after API: latestContextTokens=\(turnUsage.latestContextTokens) (in:\(turnUsage.inputTokens) cache_read:\(turnUsage.cacheReadTokens) cache_create:\(turnUsage.cacheCreationTokens))")
             // [T-ios-context-usage-realtime-crossing] Every API call in the
             // loop reports a fresh context size; feed it to the glow and the
@@ -7338,7 +7394,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // Snapshot state for cache keep-alive warmup requests.
             // Phase B: must use effectiveAgentHistory so the keep-alive prefix matches
             // what we actually send to Anthropic (summary-prepended view).
-            if provider is AnthropicAgentProvider, let sid = sessionId {
+            if (provider is AnthropicAgentProvider || (provider as? MultiKeyAgentProvider)?.isAnthropic == true), let sid = sessionId {
                 keepAliveHistory = effectiveAgentHistory()
                 keepAliveSystemPrompt = userSystemPrompt
                 keepAliveTools = tools

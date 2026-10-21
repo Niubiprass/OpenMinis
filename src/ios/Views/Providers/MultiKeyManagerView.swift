@@ -14,6 +14,9 @@ struct MultiKeyManagerView: View {
     @State private var showAdd = false
     @State private var newKeyText = ""
     @State private var newKeyName = ""
+    @State private var editingKey: ProviderAPIKey?
+    @State private var deletingKey: ProviderAPIKey?
+    @State private var addDuplicate = false
 
     private var manager: ProviderMultiKeyManager { .shared }
 
@@ -62,7 +65,7 @@ struct MultiKeyManagerView: View {
             } header: {
                 Text("Key 列表")
             } footer: {
-                Text("出错的 Key 不会删除，只是暂时跳过。5 分钟后会自动再试一次，也可以右滑重新启用。")
+                Text("出错的 Key 不会删除，只是暂时跳过。5 分钟后会自动再试一次，也可以左滑恢复使用；点按 Key 可编辑或删除。")
             }
         }
         .navigationTitle(Text("多 Key 管理"))
@@ -73,6 +76,29 @@ struct MultiKeyManagerView: View {
         }
         .sheet(isPresented: $showAdd) {
             addSheet
+                .alert("这个 Key 已经添加过了", isPresented: $addDuplicate) {
+                    Button("知道了", role: .cancel) {}
+                } message: {
+                    Text("同一把 Key 不需要重复添加。")
+                }
+        }
+        .sheet(item: $editingKey) { key in
+            editSheet(for: key)
+        }
+        .confirmationDialog(
+            "删除这个 Key？",
+            isPresented: Binding(get: { deletingKey != nil },
+                                 set: { if !$0 { deletingKey = nil } }),
+            presenting: deletingKey
+        ) { key in
+            Button("删除", role: .destructive) {
+                manager.remove(keyId: key.id, for: instance.id)
+                deletingKey = nil
+                reload()
+            }
+            Button("取消", role: .cancel) { deletingKey = nil }
+        } message: { key in
+            Text("删除后不再使用 \(key.masked)。当前正在进行的回复不会中断。")
         }
     }
 
@@ -122,7 +148,31 @@ struct MultiKeyManagerView: View {
                     (selectable ? Color.green : Color.red).opacity(0.14),
                     in: Capsule()
                 )
+
+            Button {
+                editingKey = k
+            } label: {
+                Image(systemName: "pencil")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.blue)
+            .accessibilityLabel(Text("编辑 Key"))
+
+            Button {
+                deletingKey = k
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.red)
+            .accessibilityLabel(Text("删除 Key"))
         }
+        .contentShape(Rectangle())
+        .onTapGesture { editingKey = k }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             if !selectable {
                 Button {
@@ -133,6 +183,19 @@ struct MultiKeyManagerView: View {
                 }
                 .tint(.green)
             }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                deletingKey = k
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+            Button {
+                editingKey = k
+            } label: {
+                Label("编辑", systemImage: "pencil")
+            }
+            .tint(.blue)
         }
     }
 
@@ -160,6 +223,35 @@ struct MultiKeyManagerView: View {
         if s < 3600 { return "\(Int(s / 60)) 分钟前" }
         if s < 86400 { return "\(Int(s / 3600)) 小时前" }
         return "\(Int(s / 86400)) 天前"
+    }
+
+    private func editSheet(for key: ProviderAPIKey) -> some View {
+        MultiKeyEditSheet(key: key,
+                          existingKeys: keys.filter { $0.id != key.id }.map(\.key),
+                          onSave: { name, replacement, enabled in
+            manager.update(keyId: key.id, for: instance.id) { k in
+                k.name = name
+                if let replacement, !replacement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    k.key = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+                    // A changed credential must not inherit the old key's
+                    // cooldown or failure badge.
+                    k.status = .active
+                    k.consecutiveFailures = 0
+                    k.lastError = nil
+                    k.unavailableUntil = nil
+                }
+                k.isEnabled = enabled
+                if !enabled {
+                    k.status = .disabled
+                } else if k.status == .disabled {
+                    k.status = .active
+                }
+            }
+            reload()
+        }, onDelete: {
+            manager.remove(keyId: key.id, for: instance.id)
+            reload()
+        })
     }
 
     private var addSheet: some View {
@@ -191,6 +283,10 @@ struct MultiKeyManagerView: View {
                     Button("添加") {
                         let trimmed = newKeyText.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !trimmed.isEmpty else { return }
+                        if keys.contains(where: { $0.key == trimmed }) {
+                            addDuplicate = true
+                            return
+                        }
                         let name = newKeyName.trimmingCharacters(in: .whitespacesAndNewlines)
                         _ = manager.add(trimmed, name: name.isEmpty ? nil : name, for: instance.id)
                         showAdd = false
@@ -204,6 +300,112 @@ struct MultiKeyManagerView: View {
 
     private func reload() {
         keys = manager.keys(for: instance.id)
+    }
+}
+
+/// [T-multikey-edit] Edit an existing key without ever showing the full secret.
+/// An empty replacement field keeps the stored credential untouched.
+struct MultiKeyEditSheet: View {
+    let key: ProviderAPIKey
+    let existingKeys: [String]
+    /// (name, replacement key, enabled)
+    let onSave: (String?, String?, Bool) -> Void
+    let onDelete: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var replacement: String = ""
+    @State private var enabled: Bool
+    @State private var confirmDelete = false
+    @State private var duplicateKey = false
+
+    init(key: ProviderAPIKey,
+         existingKeys: [String],
+         onSave: @escaping (String?, String?, Bool) -> Void,
+         onDelete: @escaping () -> Void) {
+        self.key = key
+        self.existingKeys = existingKeys
+        self.onSave = onSave
+        self.onDelete = onDelete
+        _name = State(initialValue: key.name ?? "")
+        _enabled = State(initialValue: key.isEnabled)
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    TextField("给这个 Key 起个名字（可选）", text: $name)
+                } header: {
+                    Text("备注")
+                } footer: {
+                    Text("比如「主号」「小号」，只用于区分，不影响请求。")
+                }
+
+                Section {
+                    SecureField("留空则保持当前 Key", text: $replacement)
+                        .textContentType(.password)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .font(.system(.body, design: .monospaced))
+                } header: {
+                    Text("API Key")
+                } footer: {
+                    Text("当前：\(key.masked)\n只有填写新 Key 才会替换；保存后不会显示完整内容。")
+                }
+
+                Section {
+                    Toggle("启用这个 Key", isOn: $enabled)
+                } footer: {
+                    Text(enabled
+                         ? "关闭后不会再被请求选中，但不会删除。"
+                         : "已停用：不会参与轮询，记录仍保留。")
+                }
+
+                Section {
+                    Button(role: .destructive) {
+                        confirmDelete = true
+                    } label: {
+                        Text("删除这个 Key")
+                    }
+                }
+            }
+            .navigationTitle(Text("编辑 Key"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let trimmedKey = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmedKey.isEmpty, existingKeys.contains(trimmedKey) {
+                            duplicateKey = true
+                            return
+                        }
+                        onSave(trimmedName.isEmpty ? nil : trimmedName,
+                               trimmedKey.isEmpty ? nil : trimmedKey,
+                               enabled)
+                        dismiss()
+                    }
+                }
+            }
+            .alert("这个 Key 已经添加过了", isPresented: $duplicateKey) {
+                Button("知道了", role: .cancel) {}
+            } message: {
+                Text("请换一把 Key，或保留当前 Key 不改。")
+            }
+            .confirmationDialog("删除这个 Key？", isPresented: $confirmDelete) {
+                Button("删除", role: .destructive) {
+                    onDelete()
+                    dismiss()
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("删除后不再使用 \(key.masked)。当前正在进行的回复不会中断。")
+            }
+        }
     }
 }
 

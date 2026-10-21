@@ -1493,6 +1493,7 @@ struct AIChatView: View {
         let _ios15Seg7 = _ios15Seg6
         .onAppear {
             wireComposerActions()
+            QuestionAlertCenter.shared.setVisibleSession(sessionId)
             let sinceInit = (CFAbsoluteTimeGetCurrent() - AIChatViewModel.onAppearTimestamp) * 1000
             minisLogger.info("[SessionLoad] onAppear T+\(String(format: "%.0f", sinceInit))ms isNew=\(cached.isNew) msgs=\(vm.messages.count)")
             // [T-inputbar-stale-across-reentry] Re-arm the leading-edge seed on
@@ -1634,6 +1635,7 @@ struct AIChatView: View {
         }
         .onDisappear {
             isChatViewVisible = false
+            QuestionAlertCenter.shared.clearVisibleSession(sessionId)
             // [T-voice-inputbar-collapse-selfheal] The health probe must not
             // outlive the view — its report would describe a composer that no
             // longer exists.
@@ -6762,6 +6764,22 @@ private struct TokenUsageSheet: View {
         NavigationStack {
             List {
                 let s = vm.sessionTokenStats
+                let cost = vm.costSnapshot
+                let ledgerSessionId = vm.sessionId ?? "draft-\(vm.vmInstanceId)"
+                let sessionCost = CostLedger.shared.total(for: ledgerSessionId)
+                let hasLedger = CostLedger.shared.hasEntries(for: ledgerSessionId)
+
+                Section {
+                    StatRow(label: AppLocalized("本次"), value: cost.lastUSD.map { TurnCost.formatted($0, rate: cost.exchangeRate) } ?? "—", icon: "creditcard")
+                    StatRow(label: AppLocalized("本轮（含工具调用）"), value: cost.turnUSD > 0 ? TurnCost.formatted(cost.turnUSD, rate: cost.exchangeRate) : "—", icon: "arrow.triangle.2.circlepath")
+                    StatRow(label: AppLocalized("本会话累计"), value: sessionCost > 0 ? TurnCost.formatted(sessionCost, rate: cost.exchangeRate) : "—", icon: "sum")
+                } header: {
+                    Text(AppLocalized("费用"))
+                } footer: {
+                    Text(hasLedger
+                         ? AppLocalized("金额是预估，按站点定价和汇率换算；最终以站点账单为准。")
+                         : AppLocalized("账本从更新后开始记录，历史消息没有中间调用记录。"))
+                }
 
                 Section("Context") {
                     StatRow(label: "Context Used", value: formatted(s.context), icon: "text.alignleft")

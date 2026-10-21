@@ -43,6 +43,11 @@ struct ProviderInstanceDetailView: View {
     @State private var multiKeyCount = 0
     @State private var quotaRefreshing = false
     @State private var quotaMessage: String?
+    @ObservedObject private var pricingService = ProviderPricingService.shared
+    @State private var pricingRefreshing = false
+    @State private var pricingMessage: String?
+    @State private var showManualPrice = false
+    @State private var showRateOverride = false
     /// [T-quota-perkey-token] Which key's access token is being edited. Each
     /// key can belong to a DIFFERENT site account (the reported case: one
     /// registered through GitHub, one through linux.do), and
@@ -52,6 +57,16 @@ struct ProviderInstanceDetailView: View {
     /// [T-quota-threshold] Shared across providers; persisted in UserDefaults.
     @AppStorage(ProviderQuotaService.lowThresholdDefaultsKey) private var quotaLowThreshold: Double = 3
 
+    private func pricingRateText(_ instance: ProviderInstance) -> String {
+        if let rate = pricingService.rateOverride(instanceId: instance.id) {
+            return String(format: "%.2f · 手动", rate)
+        }
+        if let rate = pricingService.pricing(for: instance.id)?.exchangeRate {
+            return String(format: "%.2f · 站点", rate)
+        }
+        return String(format: "%.2f · 全局", TurnCost.usdToCny)
+    }
+
     private var instance: ProviderInstance? {
         store.instance(for: instanceId)
     }
@@ -60,6 +75,14 @@ struct ProviderInstanceDetailView: View {
         Group {
             if let instance = instance {
                 instanceContent(instance)
+                    // [T-turn-cost-site-pricing] One background read per
+                    // provider, only when this page is opened. It never runs
+                    // in the chat path, so a slow/unreachable site cannot
+                    // delay sending a message.
+                    .task(id: instance.id) {
+                        guard pricingService.summary(for: instance.id) == nil else { return }
+                        _ = try? await pricingService.refresh(for: instance)
+                    }
             } else {
                 Text("Instance not found")
                     .foregroundStyle(.secondary)
@@ -141,13 +164,46 @@ struct ProviderInstanceDetailView: View {
                         } else {
                             await ProviderQuotaService.shared.refreshQuota(for: instance)
                         }
+                        let multi = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
+                        let refreshed = ProviderQuotaService.shared.quotaRows(for: instance)
                         let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
+                        let reason = ProviderQuotaService.shared.failureNote(instanceId: instance.id)
                         await MainActor.run {
                             quotaRefreshing = false
-                            quotaMessage = info.map { _ in "已更新" } ?? "未获取到余额，站点可能不支持"
+                            if multi {
+                                let balances = refreshed.filter { $0.info?.kind == .balance }.count
+                                let used = refreshed.filter { $0.info?.kind == .used }.count
+                                let failed = refreshed.filter { $0.info == nil }.count
+                                var parts: [String] = []
+                                if balances > 0 { parts.append(String(format: AppLocalized("%lld 把有余额"), Int64(balances))) }
+                                if used > 0 { parts.append(String(format: AppLocalized("%lld 把只有用量"), Int64(used))) }
+                                if failed > 0 { parts.append(String(format: AppLocalized("%lld 把查询失败"), Int64(failed))) }
+                                let summary = parts.isEmpty ? AppLocalized("没有可查询的 Key") : parts.joined(separator: "，")
+                                let first = refreshed.compactMap { $0.failureNote }.first
+                                quotaMessage = first.map { "\(summary)：\($0)" } ?? summary
+                            } else if info?.kind == .balance {
+                                quotaMessage = AppLocalized("已更新余额")
+                            } else if info?.kind == .used {
+                                quotaMessage = reason.map { "\(AppLocalized("只查到用量"))：\($0)" }
+                                    ?? AppLocalized("只查到用量，没有返回剩余余额")
+                            } else {
+                                quotaMessage = reason.map { "\(AppLocalized("查询失败"))：\($0)" }
+                                    ?? AppLocalized("查询失败，站点可能不支持余额查询")
+                            }
                         }
                     }
                 }
+            }
+        }
+        .sheet(isPresented: $showManualPrice) {
+            if let instance = instance {
+                ManualPriceSheet(instanceId: instance.id)
+            }
+        }
+        .sheet(isPresented: $showRateOverride) {
+            if let instance = instance {
+                RateOverrideSheet(instanceId: instance.id,
+                                  siteRate: pricingService.pricing(for: instance.id)?.exchangeRate)
             }
         }
         .sheet(item: $quotaTokenTarget) { row in
@@ -319,6 +375,55 @@ struct ProviderInstanceDetailView: View {
                     } else {
                         Text("填了访问令牌就尝试读真实余额；读不到（站点没这个接口，或还需要额外凭据）就显示用量，不需要再填别的。")
                     }
+                }
+            }
+
+            // MARK: [T-turn-cost-site-pricing] Site pricing
+            if instance.credentialType == .apiKey,
+               instance.providerType == .openAI || instance.providerType == .openAIResponses {
+                Section {
+                    if pricingService.summary(for: instance.id) == nil {
+                        Text("未读取站点定价")
+                            .foregroundStyle(.secondary)
+                    }
+                    Button {
+                        showManualPrice = true
+                    } label: {
+                        Label(AppLocalized("手动补价"), systemImage: "square.and.pencil")
+                    }
+                    Button {
+                        pricingRefreshing = true
+                        pricingMessage = nil
+                        Task {
+                            do {
+                                _ = try await pricingService.refresh(for: instance)
+                                await MainActor.run {
+                                    pricingRefreshing = false
+                                    pricingMessage = AppLocalized("已读取")
+                                }
+                            } catch {
+                                await MainActor.run {
+                                    pricingRefreshing = false
+                                    pricingMessage = error.localizedDescription
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if pricingRefreshing { ProgressView().controlSize(.small) }
+                            Text(pricingRefreshing ? AppLocalized("读取中…") : AppLocalized("从站点读取定价"))
+                        }
+                    }
+                    .disabled(pricingRefreshing)
+                    if let pricingMessage {
+                        Text(pricingMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("费用")
+                } footer: {
+                    Text("自动读取站点的 /api/pricing；读不到时使用官方目录价估算。")
                 }
             }
 
@@ -582,6 +687,12 @@ struct ProviderInstanceDetailView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if row.info?.kind != .balance, let note = row.failureNote, !note.isEmpty {
+                    Text(note)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                }
             }
 
             Spacer(minLength: 6)
@@ -620,7 +731,7 @@ struct ProviderInstanceDetailView: View {
 
     private func quotaRowCaption(_ row: ProviderQuotaService.KeyQuota) -> String {
         guard let info = row.info else {
-            if row.queriedAt != nil { return AppLocalized("不可用") }
+            if row.queriedAt != nil { return AppLocalized("查询失败") }
             return quotaRefreshing ? AppLocalized("查询中…") : AppLocalized("未查询")
         }
         if info.kind == .balance {
@@ -733,28 +844,35 @@ struct ProviderInstanceDetailView: View {
             Task {
                 if multiKeyOn {
                     await ProviderQuotaService.shared.refreshAllKeys(for: instance)
-                    let answered = ProviderQuotaService.shared.quotaRows(for: instance)
-                        .filter { $0.info != nil }.count
-                    let firstReason = ProviderQuotaService.shared.quotaRows(for: instance)
-                        .compactMap { ProviderQuotaService.shared.failureNote(instanceId: instance.id, rowId: $0.id) }
-                        .first
+                    let refreshed = ProviderQuotaService.shared.quotaRows(for: instance)
+                    let balances = refreshed.filter { $0.info?.kind == .balance }.count
+                    let used = refreshed.filter { $0.info?.kind == .used }.count
+                    let failed = refreshed.filter { $0.info == nil }.count
+                    let firstReason = refreshed.compactMap { $0.failureNote }.first
                     await MainActor.run {
                         quotaRefreshing = false
-                        if answered > 0 {
-                            quotaMessage = String(format: AppLocalized("已更新 %lld 把，其余站点未返回余额"), Int64(answered))
-                        } else {
-                            quotaMessage = firstReason ?? AppLocalized("未获取到余额，站点可能不支持余额查询")
-                        }
+                        var parts: [String] = []
+                        if balances > 0 { parts.append(String(format: AppLocalized("%lld 把有余额"), Int64(balances))) }
+                        if used > 0 { parts.append(String(format: AppLocalized("%lld 把只有用量"), Int64(used))) }
+                        if failed > 0 { parts.append(String(format: AppLocalized("%lld 把查询失败"), Int64(failed))) }
+                        let summary = parts.isEmpty ? AppLocalized("没有可查询的 Key") : parts.joined(separator: "，")
+                        quotaMessage = firstReason.map { "\(summary)：\($0)" } ?? summary
                     }
                 } else {
                     await ProviderQuotaService.shared.refreshQuota(for: instance)
                     let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
-                    // [T-quota-failure-reason] Say WHY: unsupported endpoint,
-                    // missing credential and a 404 all used to read 「未获取」.
                     let reason = ProviderQuotaService.shared.failureNote(instanceId: instance.id)
                     await MainActor.run {
                         quotaRefreshing = false
-                        quotaMessage = info.map { _ in "已更新" } ?? (reason ?? "未获取到，站点可能不支持余额查询")
+                        if info?.kind == .balance {
+                            quotaMessage = AppLocalized("已更新余额")
+                        } else if info?.kind == .used {
+                            quotaMessage = reason.map { "\(AppLocalized("只查到用量"))：\($0)" }
+                                ?? AppLocalized("只查到用量，没有返回剩余余额")
+                        } else {
+                            quotaMessage = reason.map { "\(AppLocalized("查询失败"))：\($0)" }
+                                ?? AppLocalized("查询失败，站点可能不支持余额查询")
+                        }
                     }
                 }
             }
@@ -765,6 +883,17 @@ struct ProviderInstanceDetailView: View {
             Text(quotaMessage)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+
+        Button {
+            showRateOverride = true
+        } label: {
+            HStack {
+                Text("汇率")
+                Spacer()
+                Text(pricingRateText(instance))
+                    .foregroundStyle(.secondary)
+            }
         }
 
         // [T-quota-threshold] User-adjustable low-balance cut-off. Applies to
@@ -2227,6 +2356,169 @@ private struct ProviderShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 
+
+// MARK: - [T-turn-cost-site-pricing] Per-provider rate
+
+/// Exchange rate lives with the provider that bills in USD, not in the global
+/// Appearance page. Most sites publish their own rate; this is only an override
+/// for the ones that do not, or whose published rate is stale.
+private struct RateOverrideSheet: View {
+    let instanceId: String
+    let siteRate: Double?
+    @ObservedObject private var pricing = ProviderPricingService.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    HStack {
+                        Text("站点汇率")
+                        Spacer()
+                        Text(siteRate.map { String(format: "%.2f", $0) } ?? "未提供")
+                            .foregroundStyle(.secondary)
+                    }
+                    TextField("1 美元 = 人民币", text: $text)
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                } header: {
+                    Text("汇率")
+                } footer: {
+                    Text("只影响这个供应商。留空并点“使用站点汇率”，则优先站点汇率，再退回全局汇率。")
+                }
+
+                Section {
+                    Button {
+                        pricing.setRateOverride(instanceId: instanceId, rate: nil)
+                        dismiss()
+                    } label: {
+                        Text("使用站点汇率 / 全局")
+                    }
+                }
+            }
+            .navigationTitle(Text("供应商汇率"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        if let rate = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), rate > 0 {
+                            pricing.setRateOverride(instanceId: instanceId, rate: rate)
+                        }
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear {
+                if let override = pricing.rateOverride(instanceId: instanceId) {
+                    text = String(format: "%.2f", override)
+                } else if let siteRate {
+                    text = String(format: "%.2f", siteRate)
+                } else {
+                    text = String(format: "%.2f", TurnCost.usdToCny)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - [T-turn-cost-site-pricing] Manual fallback
+
+/// One model at a time: the site pricing endpoint is absent or wrong, and the
+/// user knows the actual per-million price. Not a per-provider table; only the
+/// model being used needs a value.
+private struct ManualPriceSheet: View {
+    let instanceId: String
+    @ObservedObject private var store = ProviderConfigStore.shared
+    @ObservedObject private var pricing = ProviderPricingService.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedModelId = ""
+    @State private var inputPrice = ""
+    @State private var outputPrice = ""
+    @State private var loaded = false
+
+    private var entries: [ModelEntry] {
+        store.entries(for: instanceId).filter { !$0.isHidden }
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    Picker("模型", selection: $selectedModelId) {
+                        ForEach(entries, id: \.baseModel.id) { entry in
+                            Text(entry.model.displayName).tag(entry.baseModel.id)
+                        }
+                    }
+                } footer: {
+                    Text("只给实际使用的模型填，不用把所有模型都配一遍。")
+                }
+
+                Section {
+                    TextField("例如 3.00", text: $inputPrice)
+                        .keyboardType(.decimalPad)
+                    TextField("例如 15.00", text: $outputPrice)
+                        .keyboardType(.decimalPad)
+                } header: {
+                    Text("每百万 token 的美元价")
+                } footer: {
+                    Text("填了会优先于站点定价；留空并点“清除”则回到站点价或官方目录价。")
+                }
+
+                Section {
+                    Button(role: .destructive) {
+                        pricing.setManualPrice(instanceId: instanceId, modelId: selectedModelId, input: nil, output: nil)
+                        loadFields()
+                    } label: {
+                        Text("清除这个模型的手动价")
+                    }
+                    .disabled(selectedModelId.isEmpty)
+                }
+            }
+            .navigationTitle(Text("手动补价"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        let input = Double(inputPrice.trimmingCharacters(in: .whitespacesAndNewlines))
+                        let output = Double(outputPrice.trimmingCharacters(in: .whitespacesAndNewlines))
+                        pricing.setManualPrice(instanceId: instanceId, modelId: selectedModelId,
+                                               input: input, output: output)
+                        dismiss()
+                    }
+                    .disabled(selectedModelId.isEmpty || Double(inputPrice) == nil || Double(outputPrice) == nil)
+                }
+            }
+            .onAppear {
+                guard !loaded else { return }
+                loaded = true
+                selectedModelId = entries.first?.baseModel.id ?? ""
+                loadFields()
+            }
+            .onChange(of: selectedModelId) { _ in loadFields() }
+        }
+    }
+
+    private func loadFields() {
+        guard !selectedModelId.isEmpty else { inputPrice = ""; outputPrice = ""; return }
+        if let manual = pricing.manualPrice(instanceId: instanceId, modelId: selectedModelId) {
+            inputPrice = manual.input.map { String(format: "%.2f", $0) } ?? ""
+            outputPrice = manual.output.map { String(format: "%.2f", $0) } ?? ""
+        } else if let site = pricing.price(instanceId: instanceId, modelId: selectedModelId) {
+            inputPrice = site.input.map { String(format: "%.2f", $0) } ?? ""
+            outputPrice = site.output.map { String(format: "%.2f", $0) } ?? ""
+        } else {
+            inputPrice = ""
+            outputPrice = ""
+        }
+    }
+}
 
 // MARK: - [T-quota-perkey-token] Per-key access token
 

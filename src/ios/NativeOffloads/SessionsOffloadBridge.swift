@@ -10,6 +10,12 @@ import Foundation
 
 private let logger = AppLogger(category: "SessionsOffload")
 
+private struct SessionFolderSendError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
+}
+
 @objc public class SessionsOffloadBridge: NSObject {
 
     // MARK: - List / Search Sessions
@@ -257,17 +263,77 @@ private let logger = AppLogger(category: "SessionsOffload")
     /// `send()` silently returns while `isProcessing` is true, so a send into
     /// a busy session — including an agent sending to ITSELF from a
     /// shell_execute — reported success and did nothing.
+    @objc public static func callerSessionId(fsContext: UInt64) -> String? {
+        // Captured on the guest thread, before any actor hop. Never infer the
+        // caller from the visible UI or the last globally mounted session.
+        MinisFsRouter.shared.sid(for: fsContext)
+    }
+
     @objc public static func sendPrompt(
         sessionId: String?,
         prompt: String,
         attachmentPaths: [String],
         modelEntryId: String?,
-        source: String
+        source: String,
+        folder: String?,
+        callerSessionId: String?,
+        inheritModel: Bool
     ) -> NSDictionary {
         let sem = DispatchSemaphore(value: 0)
         var output: [String: Any] = [:]
 
         Task { @MainActor in
+            // Resolve everything before creating a session or dispatching a prompt.
+            let store = ProviderConfigStore.shared
+            if let entryId = modelEntryId, !entryId.isEmpty, store.entry(for: entryId) == nil {
+                output = ["ok": false, "error": "model_not_found", "model_entry_id": entryId]
+                sem.signal()
+                return
+            }
+            let isNewRequest = sessionId?.isEmpty != false
+            var destination: String?
+            do {
+                if let selector = folder {
+                    if selector == "none" {
+                        destination = nil
+                    } else if selector == "current" {
+                        guard let callerSessionId else { throw SessionFolderSendError("无法识别调用会话，不能确定当前分组。") }
+                        let context = try await ChatStore.shared.resolveFolderRuntimeContext(for: callerSessionId)
+                        guard let fid = context.folderId else { throw SessionFolderSendError("当前会话未归入分组；未创建或发送。") }
+                        destination = fid
+                    } else {
+                        let folders = await ChatStore.shared.listFolders()
+                        if let exact = folders.first(where: { $0.id == selector }) {
+                            destination = exact.id
+                        } else {
+                            let matches = folders.filter { $0.name.caseInsensitiveCompare(selector.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame }
+                            guard matches.count == 1 else { throw SessionFolderSendError("分组不存在或名称重复，请使用分组 ID。") }
+                            destination = matches[0].id
+                        }
+                    }
+                } else if isNewRequest, let callerSessionId {
+                    destination = try await ChatStore.shared.resolveFolderRuntimeContext(for: callerSessionId).folderId
+                }
+                if let destination {
+                    _ = try await ChatStore.shared.getFolderConfiguration(destination)
+                }
+                if !isNewRequest, folder != nil, let sid = sessionId {
+                    guard let existing = await ChatStore.shared.getSession(sid), existing.folderId == destination else {
+                        throw SessionFolderSendError("目标会话不在指定分组；请使用 folders move 显式移动，未发送消息。")
+                    }
+                }
+                if inheritModel {
+                    guard isNewRequest, let callerSessionId,
+                          await ChatStore.shared.sessionExists(id: callerSessionId) else {
+                        throw SessionFolderSendError("继承模型需要从已有会话创建新会话。")
+                    }
+                }
+            } catch {
+                output = ["ok": false, "error": "folder_resolution_failed", "message": error.localizedDescription]
+                sem.signal()
+                return
+            }
+
             // Resolve / create the VM.
             let vm: AIChatViewModel
             let isNew: Bool
@@ -279,6 +345,7 @@ private let logger = AppLogger(category: "SessionsOffload")
             } else {
                 vm = ViewModelCache.shared.createDraft()
                 vm.sessionSource = source.isEmpty ? "cli" : source
+                vm.initialFolderId = destination
                 _ = await vm.ensureSessionReturningId()
                 isNew = true
             }
@@ -290,6 +357,41 @@ private let logger = AppLogger(category: "SessionsOffload")
                 ]
                 sem.signal()
                 return
+            }
+
+            // Verify persistence BEFORE the first prompt; a failed/stale folder
+            // must never start the handoff with global memory instead.
+            do {
+                guard let saved = await ChatStore.shared.getSession(sid) else {
+                    throw SessionFolderSendError("新会话未成功保存，未发送消息。")
+                }
+                if isNew || folder != nil {
+                    guard saved.folderId == destination else {
+                        throw SessionFolderSendError("会话分组保存失败，未发送消息。")
+                    }
+                }
+                try await vm.refreshFolderRuntimeContext()
+                if isNew || folder != nil {
+                    guard vm.folderRuntimeContext?.folderId == destination else {
+                        throw SessionFolderSendError("会话记忆上下文与目标分组不一致，未发送消息。")
+                    }
+                }
+            } catch {
+                output = ["ok": false, "error": "folder_verification_failed", "session_id": sid,
+                          "message": error.localizedDescription]
+                sem.signal()
+                return
+            }
+
+            if inheritModel, let callerSessionId {
+                if let original = store.binding(for: callerSessionId) {
+                    let binding = SessionModelBinding(sessionId: sid, primarySource: original.primarySource,
+                                                      subModelSource: original.subModelSource)
+                    store.setBinding(binding, for: sid)
+                }
+                if let config = store.inferenceConfig(for: callerSessionId) {
+                    store.setInferenceConfig(config, for: sid)
+                }
             }
 
             // Apply model override if requested.
@@ -331,6 +433,8 @@ private let logger = AppLogger(category: "SessionsOffload")
                     "action": "send",
                     "session_id": sid,
                     "is_new_session": isNew,
+                    "folder_id": vm.folderRuntimeContext?.folderId as Any? ?? NSNull(),
+                    "memory_policy": vm.folderRuntimeContext?.configuration.memoryPolicy.rawValue ?? "global",
                     "model_name": modelName,
                     "status": outcome == .sent ? "Running" : "Queued",
                     "queued": outcome == .queued,

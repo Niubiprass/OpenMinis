@@ -325,3 +325,129 @@ extension AgentProvider {
     }
 }
 
+
+// MARK: - Request-scoped credential failover
+
+/// Keeps the same model, headers and history; changes only the API credential.
+/// Never print builder arguments or the lease (both contain secrets).
+final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
+    typealias Builder = @MainActor (String) async -> any AgentProvider
+    private let instanceId: String
+    private let baseline: any AgentProvider
+    private let builder: Builder
+    private let lock = NSLock()
+    private var metadata: [String: ToolCallMetadata] = [:]
+    private var resumeExclusions: Set<String> = []
+    var name: String { baseline.name }
+    var model: LLMModel { baseline.model }
+    var defaultMaxTokens: Int { baseline.defaultMaxTokens }
+    var isAnthropic: Bool { baseline is AnthropicAgentProvider }
+
+    init(instanceId: String, baseline: any AgentProvider, builder: @escaping Builder) {
+        self.instanceId = instanceId; self.baseline = baseline; self.builder = builder
+    }
+
+    func restoreToolCallMetadata(_ values: [String: ToolCallMetadata]) {
+        lock.lock(); defer { lock.unlock() }
+        metadata.merge(values) { _, new in new }
+    }
+    private func metadataSnapshot() -> [String: ToolCallMetadata] {
+        lock.lock(); defer { lock.unlock() }; return metadata
+    }
+    private func takeResumeExclusions() -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        let ids = resumeExclusions; resumeExclusions.removeAll(); return ids
+    }
+    private func excludeOnResume(_ id: String) {
+        lock.lock(); defer { lock.unlock() }; resumeExclusions.insert(id)
+    }
+
+    func streamAgentMessageClamped(messages: [AgentMessage], systemPrompt: String?,
+                                   tools: [AgentToolDefinition], maxTokens: Int,
+                                   thinkingLevel: ThinkingLevel) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
+        try Task.checkCancellation()
+        let manager = ProviderMultiKeyManager.shared
+        // Snapshot a finite budget. Adding keys during a request cannot grow it forever.
+        let budget = manager.isEnabled(for: instanceId) ? manager.keys(for: instanceId).count + 1 : 1
+        let initialExclusions = takeResumeExclusions()
+        return AsyncThrowingStream { continuation in
+            let worker = Task {
+                var attempted = initialExclusions
+                var attemptedSecrets = Set<String>()
+                var lastError: Error?
+                for _ in 0..<budget {
+                    do { try Task.checkCancellation() }
+                    catch { continuation.finish(throwing: error); return }
+                    guard let lease = manager.lease(for: instanceId, excluding: attempted) else { break }
+                    attempted.insert(lease.id)
+                    guard attemptedSecrets.insert(lease.key).inserted else { continue }
+                    var exposed = false
+                    var pending: [AgentStreamEvent] = []
+                    do {
+                        let provider = await builder(lease.key)
+                        let signatures = metadataSnapshot()
+                        await MainActor.run {
+                            if let gemini = provider as? GeminiAgentProvider {
+                                gemini.restoreToolCallMetadata(signatures)
+                            } else if let antigravity = provider as? AntigravityAgentProvider {
+                                antigravity.restoreToolCallMetadata(signatures)
+                            }
+                        }
+                        let stream = try await provider.streamAgentMessageClamped(
+                            messages: messages, systemPrompt: systemPrompt, tools: tools,
+                            maxTokens: maxTokens, thinkingLevel: thinkingLevel)
+                        for try await event in stream {
+                            try Task.checkCancellation()
+                            // Keep non-visible prelude local until the first substantive event.
+                            // A rejected stream may announce its model or an empty block first.
+                            let prelude: Bool
+                            switch event {
+                            case .responseModel, .usage, .contentBlockStart(.text): prelude = true
+                            case .textDelta(let text), .thinkingDelta(let text): prelude = text.isEmpty
+                            default: prelude = false
+                            }
+                            if !exposed && prelude {
+                                // Bound malformed preludes; never buffer unbounded provider output.
+                                if pending.count < 16 { pending.append(event) }
+                                continue
+                            }
+                            if !exposed {
+                                for item in pending { continuation.yield(item) }
+                                pending.removeAll(); exposed = true
+                            }
+                            if case .toolCallComplete(let id, _, _, let info) = event, let info {
+                                restoreToolCallMetadata([id: info])
+                                await MainActor.run {
+                                    (provider as? GeminiAgentProvider)?.recordToolCallMetadata(id: id, metadata: info)
+                                }
+                            }
+                            continuation.yield(event)
+                        }
+                        try Task.checkCancellation()
+                        for item in pending { continuation.yield(item) }
+                        if manager.isEnabled(for: instanceId) { manager.recordSuccess(lease: lease, for: instanceId) }
+                        continuation.finish(); return
+                    } catch {
+                        if Task.isCancelled { continuation.finish(throwing: CancellationError()); return }
+                        let kind = MultiKeyFailureKind.classify(error)
+                        if manager.isEnabled(for: instanceId) { manager.recordFailure(lease: lease, kind: kind, for: instanceId) }
+                        guard kind.mayTryAnotherKey else { continuation.finish(throwing: error); return }
+                        lastError = error
+                        if exposed {
+                            // Existing agent-loop recovery clears ONLY its uncommitted tail
+                            // and re-dispatches. Never append a second answer/tool stream here.
+                            excludeOnResume(lease.id)
+                            continuation.finish(throwing: error); return
+                        }
+                        // No content or tool escaped: another key may safely serve this request.
+                        // Yield cooperatively, with no same-key retry or infinite loop.
+                        await Task.yield()
+                    }
+                }
+                continuation.finish(throwing: lastError ?? LLMError.providerError(
+                    message: "本供应商没有可用的 Key；所有 Key 已停用或暂时不可用，请检查余额、权限或稍后重试。"))
+            }
+            continuation.onTermination = { _ in worker.cancel() }
+        }
+    }
+}

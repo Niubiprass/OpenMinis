@@ -224,6 +224,7 @@ struct MinisApp: App {
                 // copy). It lays itself out full-screen (bottom-trailing capsule +
                 // tap-to-dismiss catcher), so no positioning wrapper here.
                 SpeechPlayerControl()
+                QuestionAlertBanner()
                 AppLockOverlay()
             }
                 .onReceive(SessionLockStore.shared.$appIsLocked) { locked in

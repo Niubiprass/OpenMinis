@@ -33,6 +33,18 @@ class FeatureCompileTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         print(result.stdout + result.stderr)
 
+    def test_session_folders_cli_regressions(self):
+        import sys
+        env = dict(os.environ)
+        if shutil.which('swiftc'):
+            env['SESSION_FOLDERS_REQUIRE_SWIFT'] = '1'
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/test_session_folders_cli_160651.py')],
+            env=env, capture_output=True, text=True, timeout=450,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        print(result.stdout + result.stderr)
+
     def test_all_changed_swift_parses(self):
         compiler = self.compiler()
         changed = subprocess.check_output(

@@ -111,6 +111,21 @@ check("no PageTabViewStyle in card view", "PageTabViewStyle" not in qcv)
 # 12) Negative: no always-allow concept added anywhere.
 check("no 'always allow' persisted", "alwaysAllow" not in ct and "AlwaysAllow" not in ct)
 
+# 13) [T-115-ask-alert] Waiting question stays discoverable outside its chat.
+life = read("src/ios/Agent/Chat/ChatLifecycleSupport.swift")
+check("alert center exists", "final class QuestionAlertCenter" in life)
+check("alert registers the waiting card", "func questionAppeared(sessionId: String?, toolUseId: String" in life)
+check("alert clears on answer/cancel/timeout", "func questionEnded(toolUseId: String)" in life)
+check("alert posts a local notification", "UNNotificationRequest(" in life and '"sessionId": item.sessionId' in life)
+check("alert notification does not expose the question", 'content.body = AppLocalized("打开 Minis 查看并回答，任务正在等待。")' in life)
+check("alert has an in-app banner", "struct QuestionAlertBanner" in life)
+check("handler registers alert when card appears", "QuestionAlertCenter.shared.questionAppeared(" in ct)
+check("submit clears alert", "QuestionAlertCenter.shared.questionEnded(toolUseId: card.toolUseId)" in vm)
+app = read("src/ios/MinisApp.swift")
+check("banner mounted at app root", "QuestionAlertBanner()" in app)
+chat = read("src/ios/Views/Chat/AIChatView.swift")
+check("chat reports its visible session", "QuestionAlertCenter.shared.setVisibleSession(sessionId)" in chat)
+
 print()
 if FAILURES:
     print(f"FAILED: {len(FAILURES)} check(s): {FAILURES}")

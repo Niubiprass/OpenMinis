@@ -37,14 +37,32 @@
                                             prompt:(NSString * _Nonnull)prompt
                                    attachmentPaths:(NSArray<NSString *> * _Nonnull)attachmentPaths
                                       modelEntryId:(NSString * _Nullable)modelEntryId
-                                            source:(NSString * _Nonnull)source;
+                                            source:(NSString * _Nonnull)source
+                                            folder:(NSString * _Nullable)folder
+                                   callerSessionId:(NSString * _Nullable)callerSessionId
+                                      inheritModel:(BOOL)inheritModel;
++ (NSString * _Nullable)callerSessionIdWithFsContext:(uint64_t)fsContext;
 + (NSDictionary * _Nonnull)retryMessageWithSessionId:(NSString * _Nonnull)sessionId
                                            messageId:(NSString * _Nullable)messageId
                                      attachmentPaths:(NSArray<NSString *> * _Nonnull)attachmentPaths;
 + (NSDictionary * _Nonnull)getSessionStatusWithSessionId:(NSString * _Nonnull)sessionId;
 + (NSDictionary * _Nonnull)openSessionWithSessionId:(NSString * _Nonnull)sessionId;
 @end
+@interface SessionFoldersBridge : NSObject
++ (NSDictionary * _Nonnull)performWithAction:(NSString * _Nonnull)action
+                                      args:(NSDictionary * _Nonnull)args
+                           callerSessionId:(NSString * _Nullable)callerSessionId;
+@end
 #endif
+
+// Read the caller's task token synchronously on the native guest thread.
+// Import after the generated Swift header to keep iSH C types out of it.
+#include "kernel/task.h"
+
+static NSString *caller_session_id(void) {
+    uint64_t context = (current && current->group) ? current->group->fs_context : 0;
+    return [SessionsOffloadBridge callerSessionIdWithFsContext:context];
+}
 
 static NSString *const TOOL_NAME = @"minis-sessions-cli";
 
@@ -59,6 +77,7 @@ static NSString *const HELP_TEXT =
      "  search    Search message content across sessions (requires --keywords)\n"
      "  messages  Read messages from a specific session (requires --id)\n"
      "  send      Send a prompt (new session or follow-up an existing one)\n"
+     "  folders   会话分组通用操作（与模型分组不同，见下方）\n"
      "  retry     Re-run from a specific user message\n"
      "  status    Get current status of a session\n"
      "  open      Navigate the app UI to a session (positional <session_id>)\n"
@@ -81,6 +100,27 @@ static NSString *const HELP_TEXT =
      "  --source <tag>           Session source tag written to DB (default: \"cli\")\n"
      "  NOTE: Returns immediately with status \"Running\" once dispatched.\n"
      "        Poll with 'status --id <session_id>' to check for completion.\n"
+     "\n"
+     "会话分组：\n"
+     "  send <prompt> --folder current --inherit-model  # 在本组交接，沿用模型及推理设置\n"
+     "  新会话默认继承调用会话分组；--folder none 明确建到未分组。\n"
+     "  --folder <ID|唯一名称|current|none>；current 无分组时报错，绝不悄悄建到外面。\n"
+     "  不会自动复制聊天记录；请在 prompt 或 --attach 中提供交接记录。\n"
+     "  send --session <ID> 仅发送；指定 --folder 时检查归属，不会偷偷移动已有会话。\n"
+     "  folders list\n"
+     "  folders get --id <ID|唯一名称|current>\n"
+     "  folders create --name <名称> [--description <说明>]\n"
+     "  folders rename --id <分组> --name <名称> [--description <说明>]\n"
+     "  folders pin --id <分组> --pinned true|false\n"
+     "  folders move --ids <会话ID,current,...> --target <分组|none>\n"
+     "  folders merge --id <源分组> --target <目标分组> --confirm\n"
+     "  folders dissolve --id <分组> --confirm  # 只解散，保留全部会话和记忆文件\n"
+     "  folders configure --id <分组> --config-json '<部分配置JSON>'\n"
+     "    字段：skillDefaults/soulPrompt/soulMode/memoryPolicy/readsGlobalMemory\n"
+     "    soulMode: inherit|replace|append|clear；memoryPolicy: global|folder\n"
+     "    不迁移记忆，不修改全局设置；运行中的会话在下一轮应用配置。\n"
+     "  folders icon --id <分组> --path <照片绝对路径|none>\n"
+     "  修改需用户授权；合并和解散必须带 --confirm，重名须用 ID。\n"
      "\n"
      "RETRY OPTIONS:\n"
      "  --session <id>           Session to retry in (required)\n"
@@ -175,17 +215,41 @@ static NSString *first_positional(int argc, char **argv) {
 
 static int cmd_send(int argc, char **argv, int stdout_fd, int stderr_fd,
                     BOOL compact, BOOL quiet) {
-    NSString *prompt = first_positional(argc, argv);
-    if (!prompt || prompt.length == 0) {
-        noff_emit_help(stderr_fd, HELP_TEXT);
-        NSDictionary *err = noff_json_error(TOOL_NAME, @"send",
-                                             NOFF_ERR_INVALID_ARGS,
-                                             @"send requires a prompt argument. "
-                                              "Example: minis-sessions-cli send \"hello\"");
+    // Parse booleans explicitly: the generic positional helper assumes every
+    // --flag consumes a value and would eat a prompt after --inherit-model.
+    NSString *prompt = nil;
+    NSSet *valueOptions = [NSSet setWithArray:@[@"--session", @"--attach", @"--model", @"--source", @"--folder"]];
+    NSMutableSet *seen = [NSMutableSet set];
+    for (int i = 2; i < argc; i++) {
+        NSString *flag = [NSString stringWithUTF8String:argv[i]];
+        if ([@[@"--inherit-model", @"--compact", @"--quiet", @"-q"] containsObject:flag]) continue;
+        if (![flag hasPrefix:@"--"]) {
+            if (prompt != nil || [flag hasPrefix:@"-"]) {
+                NSDictionary *err = noff_json_error(TOOL_NAME, @"send", NOFF_ERR_INVALID_ARGS,
+                    @"send 只接受一个提示词参数，请用引号包裹完整交接内容。");
+                noff_emit_json(stdout_fd, err, compact, quiet);
+                return NOFF_EXIT_INVALID_ARGS;
+            }
+            prompt = flag;
+            continue;
+        }
+        if (![valueOptions containsObject:flag] ||
+            (![flag isEqualToString:@"--attach"] && [seen containsObject:flag]) ||
+            i + 1 >= argc || strlen(argv[i + 1]) == 0 || strncmp(argv[i + 1], "--", 2) == 0) {
+            NSDictionary *err = noff_json_error(TOOL_NAME, @"send", NOFF_ERR_INVALID_ARGS,
+                [NSString stringWithFormat:@"参数无效、重复或缺少值：%@", flag]);
+            noff_emit_json(stdout_fd, err, compact, quiet);
+            return NOFF_EXIT_INVALID_ARGS;
+        }
+        [seen addObject:flag];
+        i++;
+    }
+    if (prompt.length == 0) {
+        NSDictionary *err = noff_json_error(TOOL_NAME, @"send", NOFF_ERR_INVALID_ARGS,
+            @"send 需要提示词，例如 minis-sessions-cli send \"交接内容\" --folder current --inherit-model");
         noff_emit_json(stdout_fd, err, compact, quiet);
         return NOFF_EXIT_INVALID_ARGS;
     }
-
     NSString *sessionId = noff_find_arg(argc, argv, "--session");
     NSString *modelEntryId = noff_find_arg(argc, argv, "--model");
     NSString *sourceTag = noff_find_arg(argc, argv, "--source");
@@ -196,11 +260,48 @@ static int cmd_send(int argc, char **argv, int stdout_fd, int stderr_fd,
                                                                   prompt:prompt
                                                          attachmentPaths:attachments
                                                             modelEntryId:modelEntryId
-                                                                  source:sourceTag];
+                                                                  source:sourceTag
+                                                                  folder:noff_find_arg(argc, argv, "--folder")
+                                                         callerSessionId:caller_session_id()
+                                                            inheritModel:noff_has_flag(argc, argv, "--inherit-model")];
 
-    NSDictionary *result = noff_json_envelope(TOOL_NAME, @"send", data);
+    NSMutableDictionary *result = [noff_json_envelope(TOOL_NAME, @"send", data) mutableCopy];
+    if ([data[@"ok"] isEqual:@NO]) result[@"ok"] = @NO;
     noff_emit_json(stdout_fd, result, compact, quiet);
-    return NOFF_EXIT_SUCCESS;
+    return [data[@"ok"] isEqual:@NO] ? NOFF_EXIT_ERROR : NOFF_EXIT_SUCCESS;
+}
+
+// ── Subcommand: folders ──
+
+static int cmd_folders(int argc, char **argv, int stdout_fd, BOOL compact, BOOL quiet) {
+    NSString *action = argc > 2 ? [NSString stringWithUTF8String:argv[2]] : @"list";
+    NSMutableDictionary *args = [NSMutableDictionary dictionary];
+    NSSet *valueFlags = [NSSet setWithArray:@[@"id", @"name", @"description", @"pinned", @"ids", @"target", @"config-json", @"path"]];
+    NSString *argumentError = nil;
+    for (int i = 3; i < argc; i++) {
+        NSString *flag = [NSString stringWithUTF8String:argv[i]];
+        if ([@[@"--compact", @"-q", @"--quiet"] containsObject:flag]) continue;
+        if ([flag isEqualToString:@"--confirm"]) { args[@"confirm"] = @YES; continue; }
+        NSString *key = [flag hasPrefix:@"--"] ? [flag substringFromIndex:2] : @"";
+        if (![valueFlags containsObject:key] || args[key] || i + 1 >= argc || strncmp(argv[i + 1], "--", 2) == 0) {
+            argumentError = [NSString stringWithFormat:@"参数无效、重复或缺少值：%@", flag];
+            break;
+        }
+        args[key] = [NSString stringWithUTF8String:argv[++i]];
+    }
+    NSDictionary *data;
+    if (argumentError) {
+        data = @{@"ok": @NO, @"error": @"invalid_args", @"message": argumentError};
+    } else {
+        if (args[@"path"] && ![args[@"path"] isEqualToString:@"none"]) {
+            args[@"path"] = noff_resolve_host_path(args[@"path"]) ?: args[@"path"];
+        }
+        data = [SessionFoldersBridge performWithAction:action args:args callerSessionId:caller_session_id()];
+    }
+    NSMutableDictionary *result = [noff_json_envelope(TOOL_NAME, @"folders", data) mutableCopy];
+    if ([data[@"ok"] isEqual:@NO]) result[@"ok"] = @NO;
+    noff_emit_json(stdout_fd, result, compact, quiet);
+    return [data[@"ok"] isEqual:@NO] ? NOFF_EXIT_ERROR : NOFF_EXIT_SUCCESS;
 }
 
 // ── Subcommand: retry ──
@@ -416,6 +517,8 @@ static int sessions_handler(int argc, char **argv,
         return cmd_search(argc, argv, stdout_fd, stderr_fd, compact, quiet);
     } else if ([subcmd isEqualToString:@"messages"]) {
         return cmd_messages(argc, argv, stdout_fd, stderr_fd, compact, quiet);
+    } else if ([subcmd isEqualToString:@"folders"]) {
+        return cmd_folders(argc, argv, stdout_fd, compact, quiet);
     } else if ([subcmd isEqualToString:@"send"]) {
         return cmd_send(argc, argv, stdout_fd, stderr_fd, compact, quiet);
     } else if ([subcmd isEqualToString:@"retry"]) {

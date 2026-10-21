@@ -186,7 +186,7 @@ enum LLMProviderFactory {
 
     // MARK: - Per-Provider Builders
 
-    static func makeAnthropicProvider(instance: ProviderInstance, model: LLMModel) -> AnthropicProvider {
+    static func makeAnthropicProvider(instance: ProviderInstance, model: LLMModel, apiKeyOverride: String? = nil) -> AnthropicProvider {
         let customBase = instance.effectiveCustomBaseURL
         let appendV1 = instance.appendV1Suffix
         // Only custom-base Anthropic-compat (proxy/relay) instances get a custom UA.
@@ -195,7 +195,7 @@ enum LLMProviderFactory {
         let ua = instance.supportsCustomUserAgent ? instance.effectiveCustomUserAgent : nil
         switch instance.credentialType {
         case .apiKey:
-            let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+            let key = apiKeyOverride ?? ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
             // No user custom UA → send the app default (Minis/<marketing>) so the
             // SDK (which sets no UA itself) doesn't fall back to URLSession's
             // build-number default. OAuth branches below keep nil so the
@@ -215,11 +215,11 @@ enum LLMProviderFactory {
         }
     }
 
-    static func makeGeminiProvider(instance: ProviderInstance, model: LLMModel) async -> GeminiProvider {
+    static func makeGeminiProvider(instance: ProviderInstance, model: LLMModel, apiKeyOverride: String? = nil) async -> GeminiProvider {
         let customBase = instance.effectiveCustomBaseURL
         switch instance.credentialType {
         case .apiKey:
-            let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+            let key = apiKeyOverride ?? ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
             return GeminiProvider(apiKey: key, model: model, customBasePath: customBase)
         case .oauth:
             if let manualToken = ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") {
@@ -239,7 +239,7 @@ enum LLMProviderFactory {
         }
     }
 
-    static func makeOpenAIProvider(instance: ProviderInstance, model: LLMModel) -> OpenAIProvider {
+    static func makeOpenAIProvider(instance: ProviderInstance, model: LLMModel, apiKeyOverride: String? = nil) -> OpenAIProvider {
         let customBase = instance.effectiveCustomBaseURL
         let appendV1 = instance.appendV1Suffix
         // Mistral's chat-completions endpoint rejects `max_completion_tokens`
@@ -263,7 +263,7 @@ enum LLMProviderFactory {
         }
         switch instance.credentialType {
         case .apiKey:
-            let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+            let key = apiKeyOverride ?? ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
             return applyAzure(applyCustomUserAgent(configure(OpenAIProvider(apiKey: key, model: model, customBaseURL: customBase, appendV1Suffix: appendV1)), instance: instance), instance: instance)
         case .oauth:
             if let manualToken = ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") {
@@ -279,13 +279,13 @@ enum LLMProviderFactory {
         }
     }
 
-    static func makeOpenRouterProvider(instance: ProviderInstance, model: LLMModel) -> OpenAIProvider {
+    static func makeOpenRouterProvider(instance: ProviderInstance, model: LLMModel, apiKeyOverride: String? = nil) -> OpenAIProvider {
         let key: String
         if instance.credentialType == .oauth,
            let manualToken = ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") {
             key = manualToken
         } else {
-            key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+            key = apiKeyOverride ?? ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
         }
         let customBase = instance.effectiveCustomBaseURL
         let provider = OpenAIProvider(apiKey: key, model: model, customBaseURL: customBase ?? "https://openrouter.ai/api", appendV1Suffix: customBase == nil)
@@ -297,7 +297,7 @@ enum LLMProviderFactory {
         return applyCustomUserAgent(provider, instance: instance)
     }
 
-    static func makeOpenAIResponsesProvider(instance: ProviderInstance, model: LLMModel) -> OpenAIProvider {
+    static func makeOpenAIResponsesProvider(instance: ProviderInstance, model: LLMModel, apiKeyOverride: String? = nil) -> OpenAIProvider {
         let customBase = instance.effectiveCustomBaseURL
         let appendV1 = instance.appendV1Suffix
         // Both credential types are valid for Responses API instances
@@ -308,7 +308,7 @@ enum LLMProviderFactory {
         // call fails" case (T-model-use-codex-responses-api-34889).
         switch instance.credentialType {
         case .apiKey:
-            let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+            let key = apiKeyOverride ?? ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
             let provider = OpenAIProvider(apiKey: key, model: model, customBaseURL: customBase, appendV1Suffix: appendV1)
             provider.forceResponsesAPI = true
             return applyAzure(applyCustomUserAgent(provider, instance: instance), instance: instance)
@@ -372,7 +372,7 @@ enum LLMProviderFactory {
         return provider
     }
 
-    static func makeKimiProvider(instance: ProviderInstance, model: LLMModel) -> OpenAIProvider {
+    static func makeKimiProvider(instance: ProviderInstance, model: LLMModel, apiKeyOverride: String? = nil) -> OpenAIProvider {
         let customBase = instance.effectiveCustomBaseURL ?? "https://api.kimi.com/coding"
         // The default Kimi coding base is `…/coding` WITHOUT `/v1`; the real
         // endpoints are `/coding/v1/chat/completions` and `/coding/v1/models`
@@ -382,7 +382,7 @@ enum LLMProviderFactory {
         let appendV1 = instance.effectiveCustomBaseURL == nil ? true : instance.appendV1Suffix
         switch instance.credentialType {
         case .apiKey:
-            let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+            let key = apiKeyOverride ?? ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
             return applyCustomUserAgent(OpenAIProvider(apiKey: key, model: model, customBaseURL: customBase, appendV1Suffix: appendV1), instance: instance)
         case .oauth:
             // [T-kimi-manual-token-ignored] A manually-pasted bearer token has
@@ -414,13 +414,13 @@ enum LLMProviderFactory {
         }
     }
 
-    static func makeXAIProvider(instance: ProviderInstance, model: LLMModel) -> OpenAIProvider {
+    static func makeXAIProvider(instance: ProviderInstance, model: LLMModel, apiKeyOverride: String? = nil) -> OpenAIProvider {
         let customBase = instance.effectiveCustomBaseURL ?? "https://api.x.ai/v1"
         // Custom base ships with /v1 — never re-append.
         let appendV1 = instance.effectiveCustomBaseURL == nil ? false : instance.appendV1Suffix
         switch instance.credentialType {
         case .apiKey:
-            let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+            let key = apiKeyOverride ?? ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
             return applyCustomUserAgent(OpenAIProvider(apiKey: key, model: model, customBaseURL: customBase, appendV1Suffix: appendV1), instance: instance)
         case .oauth:
             if let manualToken = ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") {

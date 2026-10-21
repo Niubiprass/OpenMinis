@@ -53,7 +53,9 @@ extension AIChatViewModel {
     /// it after the first use is what left every later provider blind.
     func applyPendingThoughtSignatures(to provider: AgentProvider) {
         guard !pendingThoughtSignatures.isEmpty else { return }
-        if let gemini = provider as? GeminiAgentProvider {
+        if let pooled = provider as? MultiKeyAgentProvider {
+            pooled.restoreToolCallMetadata(pendingThoughtSignatures)
+        } else if let gemini = provider as? GeminiAgentProvider {
             gemini.restoreToolCallMetadata(pendingThoughtSignatures)
         } else if let antigravity = provider as? AntigravityAgentProvider {
             antigravity.restoreToolCallMetadata(pendingThoughtSignatures)
@@ -81,12 +83,30 @@ extension AIChatViewModel {
     /// is resolved per request rather than captured at construction.
     static func makeAgentProvider(
         for entry: ModelEntry,
-        resolveSessionId: @escaping @Sendable () -> String?
+        resolveSessionId: @escaping @Sendable () -> String?,
+        apiKeyOverride: String? = nil,
+        allowsMultiKey: Bool = true
     ) async -> AgentProvider {
         let store = ProviderConfigStore.shared
         guard let instance = store.instance(for: entry.providerInstanceId) else {
             logger.error("No ProviderInstance found for entry \(entry.id)")
             return AnthropicAgentProvider(provider: AnthropicProvider(apiKey: "", model: entry.model))
+        }
+        // Key selection belongs to EACH request, not just provider construction.
+        // OAuth-only providers are intentionally outside this credential pool.
+        let supportsKeyPool: Bool
+        switch instance.providerType {
+        case .anthropic, .gemini, .openAI, .openRouter, .openAIResponses, .xAI, .kimiCode:
+            supportsKeyPool = instance.credentialType == .apiKey
+        default: supportsKeyPool = false
+        }
+        if allowsMultiKey, supportsKeyPool, ProviderMultiKeyManager.shared.isEnabled(for: instance.id) {
+            let baseline = await makeAgentProvider(for: entry, resolveSessionId: resolveSessionId,
+                                                   allowsMultiKey: false)
+            return MultiKeyAgentProvider(instanceId: instance.id, baseline: baseline) { key in
+                await makeAgentProvider(for: entry, resolveSessionId: resolveSessionId,
+                                        apiKeyOverride: key, allowsMultiKey: false)
+            }
         }
         // [T-model-custom-params] / [T-opencode-dedicated-channel] One seam for
         // every OpenAI-family branch below: the dedicated OpenCode channel,
@@ -104,21 +124,21 @@ extension AIChatViewModel {
         }
         switch instance.providerType {
         case .anthropic:
-            return AnthropicAgentProvider(provider: LLMProviderFactory.makeAnthropicProvider(instance: instance, model: entry.model))
+            return AnthropicAgentProvider(provider: LLMProviderFactory.makeAnthropicProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride))
         case .gemini:
-            return GeminiAgentProvider(provider: await LLMProviderFactory.makeGeminiProvider(instance: instance, model: entry.model))
+            return GeminiAgentProvider(provider: await LLMProviderFactory.makeGeminiProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride))
         case .openAI:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIProvider(instance: instance, model: entry.model)))
+            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride)))
         case .antigravity:
             return AntigravityAgentProvider(provider: await LLMProviderFactory.makeAntigravityProvider(instance: instance, model: entry.model))
         case .openRouter:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenRouterProvider(instance: instance, model: entry.model)))
+            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenRouterProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride)))
         case .openAIResponses:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIResponsesProvider(instance: instance, model: entry.model)))
+            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIResponsesProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride)))
         case .xAI:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeXAIProvider(instance: instance, model: entry.model)))
+            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeXAIProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride)))
         case .kimiCode:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeKimiProvider(instance: instance, model: entry.model)))
+            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeKimiProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride)))
         case .githubCopilot:
             // [T-copilot-no-chat-warning] No warning in the chat.
             //

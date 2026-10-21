@@ -30,7 +30,11 @@ class Model(unittest.TestCase):
 
     def test_cooldown_makes_error_keys_come_back(self):
         self.assertIn('recoveryInterval', MODEL)
-        self.assertIn('now.timeIntervalSince(updatedAt) >= recoveryInterval', MODEL)
+        # Request-scoped leases park a key with an absolute deadline; the old
+        # updatedAt-only arithmetic would let a key fail on every request as
+        # soon as the cooldown had elapsed once.
+        self.assertIn('if let until = unavailableUntil, now < until', MODEL)
+        self.assertIn('now >= (unavailableUntil ?? updatedAt.addingTimeInterval(recoveryInterval))', MODEL)
 
     def test_park_after_three_consecutive(self):
         self.assertIn('maxConsecutiveFailures = 3', MODEL)
@@ -47,10 +51,19 @@ class Model(unittest.TestCase):
 
 
 class Selection(unittest.TestCase):
-    def test_falls_back_to_single_key(self):
-        # Multi-key off (or every key parked) must behave exactly like before.
+    def test_single_key_when_multi_key_is_off(self):
+        # Multi-key off still uses the instance's main credential.
         self.assertIn('func effectiveKey(for instanceId: String) -> String?', MODEL)
-        self.assertIn('return ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)', MODEL)
+        self.assertIn('lease(for: instanceId)?.key', MODEL)
+
+    def test_every_key_parked_returns_nil_instead_of_a_dead_main_key(self):
+        # The previous fallback retried the exhausted main key forever. A
+        # request-scoped lease returns nil so the caller reports that no key is
+        # available rather than silently hitting the same dead credential.
+        idx = MODEL.index('func lease(for instanceId:')
+        end = MODEL.index('func recordSuccess(lease:', idx)
+        body = MODEL[idx:end]
+        self.assertIn('guard !pool.isEmpty else { return nil }', body)
 
     def test_round_robin_advances_a_cursor(self):
         self.assertIn('cursorPrefix', MODEL)
@@ -103,6 +116,60 @@ class Ui(unittest.TestCase):
 
     def test_strategy_explains_itself(self):
         self.assertIn('s.explanation', VIEW)
+
+
+class ManagementUi(unittest.TestCase):
+    def test_existing_key_can_be_edited(self):
+        self.assertIn('MultiKeyEditSheet', VIEW)
+        self.assertIn('manager.update(keyId: key.id', VIEW)
+        self.assertIn('SecureField("留空则保持当前 Key"', VIEW)
+        self.assertIn('只有填写新 Key 才会替换', VIEW)
+
+    def test_existing_key_can_be_deleted(self):
+        self.assertIn('manager.remove(keyId:', VIEW)
+        self.assertIn('Button("删除", role: .destructive)', VIEW)
+        self.assertIn('删除后不再使用', VIEW)
+
+    def test_row_opens_editor_and_has_explicit_trailing_delete(self):
+        self.assertIn('.onTapGesture { editingKey = k }', VIEW)
+        self.assertIn('.swipeActions(edge: .trailing', VIEW)
+        self.assertIn('Label("删除", systemImage: "trash")', VIEW)
+        self.assertIn('Image(systemName: "pencil")', VIEW)
+        self.assertIn('Image(systemName: "trash")', VIEW)
+        # A leading-only swipeActions implementation was the reason the row
+        # looked untouchable on device; the trailing action is the regression
+        # guard.
+        self.assertIn('Label("恢复使用", systemImage: "arrow.clockwise")', VIEW)
+
+    def test_duplicate_keys_are_rejected(self):
+        self.assertIn('existingKeys.contains(trimmedKey)', VIEW)
+        self.assertIn('keys.contains(where: { $0.key == trimmed })', VIEW)
+
+    def test_key_never_rendered_in_clear(self):
+        self.assertNotIn('Text(k.key)', VIEW)
+        self.assertNotIn('Text(key.key)', VIEW)
+
+
+class FailoverWiring(unittest.TestCase):
+    def test_chat_provider_is_wrapped_when_multi_key_is_on(self):
+        self.assertIn('MultiKeyAgentProvider(instanceId: instance.id', FACTORY)
+        self.assertIn('ProviderMultiKeyManager.shared.isEnabled(for: instance.id)', FACTORY)
+
+    def test_builder_receives_the_lease_key(self):
+        self.assertIn('apiKeyOverride: key', FACTORY)
+        self.assertIn('apiKeyOverride ?? ProviderKeychainHelper.loadAPIKey', MODEL + (ROOT / 'src/ios/Providers/LLMProviderFactory.swift').read_text())
+
+    def test_failover_is_request_scoped_and_bounded(self):
+        WRAP = (ROOT / 'src/ios/Providers/AgentProvider.swift').read_text()
+        self.assertIn('manager.keys(for: instanceId).count + 1', WRAP)
+        self.assertIn('manager.lease(for: instanceId, excluding: attempted)', WRAP)
+        self.assertIn('attemptedSecrets.insert(lease.key).inserted', WRAP)
+
+    def test_partial_response_is_not_replayed_on_another_key(self):
+        WRAP = (ROOT / 'src/ios/Providers/AgentProvider.swift').read_text()
+        self.assertIn('if exposed {', WRAP)
+        self.assertIn('excludeOnResume(lease.id)', WRAP)
+        self.assertIn('continuation.finish(throwing: error)', WRAP)
 
 
 if __name__ == '__main__':

@@ -342,17 +342,34 @@ enum TurnCost {
     static func suffix(usage: TokenUsage, modelId: String?) -> String? {
         guard let modelId,
               let price = ModelsDevAPI.pricingPerMillion(for: modelId) else { return nil }
-        let inputTokens = Double(usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens)
-        let outputTokens = Double(usage.outputTokens)
-        let usd = (inputTokens * price.input + outputTokens * price.output) / 1_000_000
+        let usd = usd(usage: usage, inputPrice: price.input, outputPrice: price.output)
         guard usd > 0 else { return nil }
         return formatted(usd)
     }
 
-    static func formatted(_ usd: Double) -> String {
+    /// Cost from explicit USD prices per 1M tokens. The site-pricing path uses
+    /// this; the catalog path above remains the fallback for sites without a
+    /// pricing endpoint.
+    static func usd(usage: TokenUsage, inputPrice: Double, outputPrice: Double) -> Double {
+        let inputTokens = Double(usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens)
+        let outputTokens = Double(usage.outputTokens)
+        return (inputTokens * inputPrice + outputTokens * outputPrice) / 1_000_000
+    }
+
+    static func formatted(_ usd: Double, rate: Double? = nil) -> String {
         if currency.uppercased() == "USD" {
             return String(format: "≈$%.4f", usd)
         }
-        return String(format: "≈¥%.4f", usd * usdToCny)
+        return String(format: "≈¥%.4f", usd * (rate ?? usdToCny))
+    }
+
+    /// Compact composer suffix: two decimals, because the line also carries
+    /// context percentage and token counts. The full four-decimal figure stays
+    /// available in the detail sheet.
+    static func compact(_ usd: Double, rate: Double? = nil) -> String {
+        if currency.uppercased() == "USD" {
+            return String(format: "≈$%.2f", usd)
+        }
+        return String(format: "≈¥%.2f", usd * (rate ?? usdToCny))
     }
 }

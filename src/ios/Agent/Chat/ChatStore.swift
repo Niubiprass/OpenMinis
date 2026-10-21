@@ -87,16 +87,15 @@ struct ChatSession: Identifiable, Codable, Hashable {
     // __derived_struct_equals → _stringCompareSlow → _NFCNormalizer). Release
     // optimizes it away, which is why Release didn't stall.
     //
-    // Replace with an explicit cheap comparison: identity + the short
-    // change-driving fields, using `updatedAt` as the proxy for the heavy
-    // `lastMessage` (and any other body content) — every content mutation bumps
-    // `updatedAt`, so we never need to NFC-compare the long string to detect a
-    // change. `title`/`category`/`source` ARE compared (they can change without
-    // a content write, e.g. rename / categorize) but they're short. Net: the
-    // sidebar diff no longer touches the long strings.
+    // Keep the explicit rendered-field comparison. updatedAt is NOT a
+    // content revision: parts rewrites and inbound merges can replace the
+    // preview without changing activity time. lastMessage is the bounded
+    // sidebar snippet (normally <=100 characters), never the message body;
+    // comparing it is necessary to publish preview-only changes.
     static func == (lhs: ChatSession, rhs: ChatSession) -> Bool {
         lhs.id == rhs.id
             && lhs.updatedAt == rhs.updatedAt
+            && lhs.lastMessage == rhs.lastMessage
             && lhs.pinnedAt == rhs.pinnedAt
             // `folderId` MUST be compared: moving a session between folders
             // changes neither `updatedAt` nor any other compared field, so
@@ -111,8 +110,7 @@ struct ChatSession: Identifiable, Codable, Hashable {
             && lhs.lastSyncedAt == rhs.lastSyncedAt
             && lhs.remoteDeviceId == rhs.remoteDeviceId
             && lhs.remoteDeviceName == rhs.remoteDeviceName
-        // Intentionally NOT comparing `lastMessage` (long string; `updatedAt`
-        // is its change proxy) or the immutable `modelId` / `createdAt`.
+        // Immutable modelId / createdAt are not rendered change signals.
     }
 
     func hash(into hasher: inout Hasher) {
@@ -1660,7 +1658,8 @@ actor ChatStore {
                    (SELECT m.parts_json FROM messages m
                      WHERE m.session_id = s.id
                        AND m.role = 'user'
-                       AND (m.part_flags & \(userMask)) != 0
+                       AND ((m.part_flags & \(userMask)) != 0
+                       OR m.parts_json LIKE '%"type":"mediaRef"%')
                      ORDER BY m.sort_order DESC LIMIT 1),
                    s.source, s.last_synced_at,
                    s.remote_origin_device_id, s.pinned_at,
@@ -1674,7 +1673,8 @@ actor ChatStore {
                    (SELECT m.sort_order FROM messages m
                      WHERE m.session_id = s.id
                        AND m.role = 'user'
-                       AND (m.part_flags & \(userMask)) != 0
+                       AND ((m.part_flags & \(userMask)) != 0
+                       OR m.parts_json LIKE '%"type":"mediaRef"%')
                      ORDER BY m.sort_order DESC LIMIT 1),
                    -- Appended LAST on purpose: the decode below reads columns
                    -- by index, so a new column goes at the end to leave every
@@ -1994,6 +1994,7 @@ actor ChatStore {
                 // readable line, never as its XML envelope.
                 if let cb = AgentCallback.parse(t) {
                     lastTextPreview = String(cb.previewLine.prefix(100))
+                    lastToolUse = nil
                     continue
                 }
                 if let start = t.range(of: "<user-attached-files>") {
@@ -2009,6 +2010,7 @@ actor ChatStore {
                     .trimmingCharacters(in: .whitespaces)
                 guard !clean.isEmpty else { continue }
                 lastTextPreview = String(clean.prefix(100))
+                lastToolUse = nil
             default:
                 continue
             }
@@ -2503,6 +2505,23 @@ actor ChatStore {
         sqlite3_finalize(stmt)
 
         return session
+    }
+
+    /// [T-ios-session-row-incremental] One sidebar row with its CURRENT stored
+    /// preview. `getSession` intentionally omits preview_text (it serves other
+    /// callers); using it here would blank the row. The shared list SQL keeps
+    /// the column indices identical to `decodeSessionRow`.
+    func sessionRow(_ id: String) -> ChatSession? {
+        let sql = Self.sessionListSQL(whereClause: " WHERE s.id = ?")
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(stmt)
+            return nil
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return decodeSessionRow(stmt, id: id).session
     }
 
     func updateSessionModelId(_ id: String, modelId: String) {
@@ -3408,60 +3427,19 @@ actor ChatStore {
 
     // MARK: - Persisted session preview [T-ios-listsessions-perf]
 
-    /// Apply a freshly-written message to its session's stored preview.
-    ///
-    /// The rule reproduces exactly what listSessions used to derive by
-    /// re-reading both candidate rows on every refresh: the latest ASSISTANT
-    /// message with text or a tool_use wins, UNLESS the latest USER text
-    /// message is strictly newer by sort_order (the user has just sent
-    /// something the assistant has not answered yet). Ties go to the
-    /// assistant, matching the old `uo > ao` comparison.
-    ///
-    /// Applied incrementally, that becomes: overwrite the stored preview when
-    /// this message's sort_order is >= the stored one (it is at least as
-    /// recent), and additionally require that a user message not displace an
-    /// assistant message at the SAME sort_order. Because sort_order increases
-    /// monotonically per session, a message arriving now always has the
-    /// highest sort_order in its session, so the common path is a plain
-    /// overwrite — the comparison only matters for out-of-order arrivals from
-    /// an iCloud merge.
-    ///
-    /// Messages carrying no displayable part (a tool_result, an empty
-    /// assistant row) leave the stored preview alone: they are exactly the
-    /// rows the old SQL's part_flags filter excluded.
+    /// Fold a successful local append into the stored preview. nextSortOrder
+    /// assigns MAX(sort_order)+1 on this actor; remote merges use recompute.
+    /// Do not compare against preview_sort_order: a previous repair may have
+    /// re-ranked messages while leaving an old, larger preview watermark.
     private func updateStoredPreview(
         sessionId: String, parts: [ContentPart], partsJSON: String,
         role: MessageRole, sortOrder: Int
     ) {
-        let flags = Self.partFlags(for: parts)
-        // Assistant rows qualify on text OR tool_use; user rows on text only.
-        let qualifies = role == .assistant
-            ? (flags & (Self.partFlagHasText | Self.partFlagHasToolUse)) != 0
-            : (flags & Self.partFlagHasText) != 0
-        guard qualifies else { return }
-
-        // `partsJSON` is the string the caller just bound into the INSERT —
-        // reuse it rather than encoding `parts` a second time per message.
+        guard role == .assistant || role == .user else { return }
+        // The extractor handles text, tools and image-only user prompts.
+        // tool_result-only rows yield nil and must not displace the preview.
         guard let preview = extractTextFromPartsJSON(partsJSON) else { return }
-
-        // `>=` for an assistant row (it wins ties), `>` for a user row (it must
-        // be strictly newer to displace the assistant).
-        let comparison = role == .assistant ? ">=" : ">"
-        let sql = """
-            UPDATE sessions
-               SET preview_text = ?, preview_sort_order = ?
-             WHERE id = ?
-               AND (preview_sort_order IS NULL OR ? \(comparison) preview_sort_order)
-            """
-        var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            sqlite3_bind_text(stmt, 1, (preview as NSString).utf8String, -1, nil)
-            sqlite3_bind_int64(stmt, 2, Int64(sortOrder))
-            sqlite3_bind_text(stmt, 3, (sessionId as NSString).utf8String, -1, nil)
-            sqlite3_bind_int64(stmt, 4, Int64(sortOrder))
-            sqlite3_step(stmt)
-        }
-        sqlite3_finalize(stmt)
+        storePreview(sessionId: sessionId, text: preview, sortOrder: sortOrder)
     }
 
     /// Recompute one session's preview from its messages the way listSessions
@@ -3480,7 +3458,8 @@ actor ChatStore {
                 ORDER BY m.sort_order DESC LIMIT 1),
               (SELECT m.parts_json FROM messages m
                 WHERE m.session_id = ? AND m.role = 'user'
-                  AND (m.part_flags & \(userMask)) != 0
+                  AND ((m.part_flags & \(userMask)) != 0
+                       OR m.parts_json LIKE '%"type":"mediaRef"%')
                 ORDER BY m.sort_order DESC LIMIT 1),
               (SELECT m.sort_order FROM messages m
                 WHERE m.session_id = ? AND m.role = 'assistant'
@@ -3488,7 +3467,8 @@ actor ChatStore {
                 ORDER BY m.sort_order DESC LIMIT 1),
               (SELECT m.sort_order FROM messages m
                 WHERE m.session_id = ? AND m.role = 'user'
-                  AND (m.part_flags & \(userMask)) != 0
+                  AND ((m.part_flags & \(userMask)) != 0
+                       OR m.parts_json LIKE '%"type":"mediaRef"%')
                 ORDER BY m.sort_order DESC LIMIT 1)
             """
         var stmt: OpaquePointer?
@@ -3542,6 +3522,7 @@ actor ChatStore {
     /// Unconditional write of the preview pair (used by the recompute paths,
     /// which have already decided the winner).
     private func storePreview(sessionId: String, text: String?, sortOrder: Int?) {
+        invalidateSessionListCache(sessionId: sessionId)
         let sql = "UPDATE sessions SET preview_text = ?, preview_sort_order = ? WHERE id = ?"
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
@@ -3621,6 +3602,7 @@ actor ChatStore {
             }
 
             var stmt: OpaquePointer?
+            var inserted = false
             let prepRC = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
             if prepRC == SQLITE_OK {
                 sqlite3_bind_text(stmt, 1, (message.id as NSString).utf8String, -1, nil)
@@ -3650,6 +3632,7 @@ actor ChatStore {
                     let errMsg = String(cString: sqlite3_errmsg(db))
                     logger.error("[Store] INSERT step failed rc=\(stepRC) sid=\(message.sessionId.prefix(8)) mid=\(message.id.prefix(8)) so=\(sortOrder) err=\(errMsg)")
                 } else {
+                    inserted = true
                     logger.info("[Store] INSERT ok sid=\(message.sessionId.prefix(8)) mid=\(message.id.prefix(8)) so=\(sortOrder) role=\(message.role.rawValue)")
                 }
             } else {
@@ -3657,6 +3640,8 @@ actor ChatStore {
                 logger.error("[Store] INSERT prepare failed rc=\(prepRC) sid=\(message.sessionId.prefix(8)) err=\(errMsg)")
             }
             sqlite3_finalize(stmt)
+
+            guard inserted else { continue }
 
             // [T-ios-listsessions-perf] Fold this message into the session's
             // stored preview while its parts and sort_order are in hand — the
@@ -4053,21 +4038,29 @@ actor ChatStore {
         let partFlags = Self.partFlags(for: parts)
         let sql = "UPDATE messages SET parts_json = ?, updated_at = ?, part_flags = ? WHERE id = ?"
         var stmt: OpaquePointer?
+        var updated = false
         if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_text(stmt, 1, (partsJSON as NSString).utf8String, -1, nil)
             sqlite3_bind_double(stmt, 2, Date().timeIntervalSince1970)
             sqlite3_bind_int64(stmt, 3, Int64(partFlags))
             sqlite3_bind_text(stmt, 4, (messageId as NSString).utf8String, -1, nil)
             let rc = sqlite3_step(stmt)
+            updated = rc == SQLITE_DONE && sqlite3_changes(db) > 0
             logger.info("[updateMessageParts] id=\(messageId.prefix(8)) parts=\(parts.count) stepRC=\(rc)")
         }
         sqlite3_finalize(stmt)
+        guard updated else { return }
         // Mark dirty so the rewritten row syncs to iCloud.
         markDirty(recordType: "Message", recordId: messageId)
         // [T-ios-listsessions-perf] Rewriting a message's parts can change the
         // preview in either direction (text replaced, or emptied out), so
         // recompute rather than fold forward.
-        if let sid = previewSession { recomputeStoredPreview(sessionId: sid) }
+        if let sid = previewSession {
+            recomputeStoredPreview(sessionId: sid)
+            // Notify after the derived preview is written. A parts-only rewrite
+            // need not move the conversation's activity date or list position.
+            NotificationCenter.default.post(name: .sessionDidUpdate, object: sid)
+        }
     }
 
     /// Delete all message rows AFTER the first `keepCount` rows (ordered by
@@ -5118,6 +5111,9 @@ actor ChatStore {
             }
         }
         sqlite3_finalize(updStmt)
+        // sort_order is also the preview's cursor. Recompute in this same
+        // transaction so later appends never compete with a pre-repair rank.
+        if report.sortOrderFixed > 0 { recomputeStoredPreview(sessionId: sessionId) }
 
         // Step 3: upgrade legacy markers. Build a (oldSortOrder -> id) map first, then
         // find each nil-firstKeptMessageId marker and fill it in using firstKeptSortOrder.

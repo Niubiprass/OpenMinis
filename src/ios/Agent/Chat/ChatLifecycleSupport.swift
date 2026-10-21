@@ -1,6 +1,8 @@
 import Combine
 import Foundation
+import SwiftUI
 import UIKit
+import UserNotifications
 
 private let logger = AppLogger(category: "AIChatVM")
 
@@ -307,7 +309,8 @@ final class KeepScreenAwakeController {
 final class SessionConcurrencyManager: ObservableObject {
     static let shared = SessionConcurrencyManager()
 
-    let maxConcurrent: Int = 5
+    // Shared by ordinary chat sessions regardless of provider/model.
+    let maxConcurrent: Int = 10
 
     @Published private(set) var runningSessions: Set<String> = []
     @Published private(set) var suspendedSessions: [String] = []
@@ -957,7 +960,360 @@ final class FolderIconStore: ObservableObject {
     }
 }
 
-/// Bound the render target BEFORE drawing. Unlike cropping an original-size
+/// [T-115-ask-alert] Keeps an ask_user card discoverable after the user
+/// leaves its chat: an in-app banner while Minis is open elsewhere, and one
+/// local notification when the app goes to the background. Tapping either
+/// returns to the session that is waiting. The card itself remains the only
+/// place to answer, so this never chooses or submits anything.
+@MainActor
+final class QuestionAlertCenter: ObservableObject {
+    static let shared = QuestionAlertCenter()
+
+    struct Pending: Identifiable, Equatable {
+        let id: String          // toolUseId: stable per question card
+        let sessionId: String
+        let question: String
+    }
+
+    @Published private(set) var pending: Pending?
+    @Published private(set) var visibleSessionId: String?
+    @Published private(set) var bannerDismissed = false
+
+    private var backgroundObserver: NSObjectProtocol?
+    private var activeObserver: NSObjectProtocol?
+
+    private init() {}
+
+    var shouldShowBanner: Bool {
+        guard let pending else { return false }
+        return !bannerDismissed
+            && UIApplication.shared.applicationState == .active
+            && visibleSessionId != pending.sessionId
+    }
+
+    func setVisibleSession(_ id: String?) {
+        guard visibleSessionId != id else { return }
+        visibleSessionId = id
+        if id == pending?.sessionId { bannerDismissed = true }
+    }
+
+    func clearVisibleSession(_ id: String?) {
+        guard let id, visibleSessionId == id else { return }
+        visibleSessionId = nil
+        // Leaving the waiting chat must make the banner eligible again; the
+        // flag is only there to suppress it while that chat is on screen.
+        if pending?.sessionId == id { bannerDismissed = false }
+    }
+
+    func questionAppeared(sessionId: String?, toolUseId: String, question: String) {
+        guard let sessionId, !sessionId.isEmpty else { return }
+        if pending?.id == toolUseId { return }
+        if let old = pending { removeNotification(id: old.id) }
+        pending = Pending(id: toolUseId, sessionId: sessionId,
+                          question: question.trimmingCharacters(in: .whitespacesAndNewlines))
+        bannerDismissed = false
+        installObserversIfNeeded()
+        if UIApplication.shared.applicationState != .active, let pending {
+            postNotification(for: pending)
+        }
+    }
+
+    func questionEnded(toolUseId: String) {
+        if pending?.id == toolUseId { pending = nil }
+        removeNotification(id: toolUseId)
+    }
+
+    func dismissBanner() { bannerDismissed = true }
+
+    func open(_ item: Pending) {
+        removeNotification(id: item.id)
+        NotificationCenter.default.post(
+            name: Notification.Name("openSessionFromIntent"),
+            object: nil,
+            userInfo: ["sessionId": item.sessionId]
+        )
+        dismissBanner()
+    }
+
+    private func installObserversIfNeeded() {
+        if backgroundObserver == nil {
+            backgroundObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.postIfNeeded() }
+            }
+        }
+        if activeObserver == nil {
+            activeObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didBecomeActiveNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    if let self, let id = self.pending?.id {
+                        self.removeNotification(id: id)
+                    }
+                    self?.objectWillChange.send()
+                }
+            }
+        }
+    }
+
+    private func postIfNeeded() {
+        guard let pending, UIApplication.shared.applicationState != .active else { return }
+        postNotification(for: pending)
+    }
+
+    private static func identifier(_ id: String) -> String { "ask-user-\(id)" }
+
+    private func removeNotification(id: String) {
+        let center = UNUserNotificationCenter.current()
+        let ids = [Self.identifier(id)]
+        center.removeDeliveredNotifications(withIdentifiers: ids)
+        center.removePendingNotificationRequests(withIdentifiers: ids)
+    }
+
+    private func postNotification(for item: Pending) {
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: "QUESTION_WAITING", actions: [], intentIdentifiers: [])
+        ])
+        let content = UNMutableNotificationContent()
+        content.title = AppLocalized("有问题等你回答")
+        // Deliberately no question text: the notification can be seen on a
+        // lock screen. The card remains the place where the question is read.
+        content.body = AppLocalized("打开 Minis 查看并回答，任务正在等待。")
+        content.sound = .default
+        content.categoryIdentifier = "QUESTION_WAITING"
+        content.userInfo = [
+            "sessionId": item.sessionId,
+            "questionToolUseId": item.id,
+        ]
+        let request = UNNotificationRequest(
+            identifier: Self.identifier(item.id),
+            content: content,
+            trigger: nil
+        )
+        center.add(request) { error in
+            if let error {
+                AppLogger(category: "AskAlert").error("[AskAlert] notification failed: \(error.localizedDescription)")
+            }
+        }
+    }
+}
+
+/// Top-edge reminder shown while the app is open on a different screen.
+/// Visual language follows `BackgroundInterruptionBanner`: one compact row,
+/// rounded 16pt, same shadow and edge padding; no modal takeover.
+struct QuestionAlertBanner: View {
+    @ObservedObject private var center = QuestionAlertCenter.shared
+
+    var body: some View {
+        if let item = center.pending, center.shouldShowBanner {
+            Button {
+                center.open(item)
+            } label: {
+                HStack(spacing: 11) {
+                    Image(systemName: "questionmark.bubble.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(Color.accentColor))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("有问题等你回答")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text("点一下回到会话，任务正在等待")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(UIColor.secondarySystemBackground))
+                        .shadow(color: .black.opacity(0.15), radius: 9, y: 4)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.primary.opacity(0.07), lineWidth: 0.5)
+                )
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+            }
+            .buttonStyle(.plain)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .accessibilityLabel(Text("有问题等你回答，点一下回到会话"))
+        }
+    }
+}
+
+/// [T-turn-cost-ledger] Independent, best-effort cost ledger. It deliberately
+/// does not touch the message table or `TokenUsage`: a failed write only loses
+/// a cost row, never chat history. Historical messages have no rows, so the UI
+/// must say "since this update" instead of pretending the total is complete.
+struct CostSnapshot: Equatable {
+    var lastUSD: Double? = nil
+    var turnUSD: Double = 0
+    var sessionUSD: Double = 0
+    var sessionHasLedger = false
+    /// Site's own USD→CNY rate when the pricing button read it; nil falls back
+    /// to the user's existing global rate.
+    var exchangeRate: Double? = nil
+
+    var lastLabel: String? {
+        guard let lastUSD else { return nil }
+        return TurnCost.compact(lastUSD, rate: exchangeRate) + "/次"
+    }
+}
+
+final class CostLedger {
+    static let shared = CostLedger()
+
+    struct Entry: Codable {
+        let sessionId: String
+        let messageId: String
+        let modelId: String
+        let instanceId: String
+        let usd: Double
+        let inputTokens: Int
+        let outputTokens: Int
+        let cacheReadTokens: Int
+        let cacheCreationTokens: Int
+        let at: Date
+    }
+
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "com.openminis.cost-ledger", qos: .utility)
+    private var entries: [Entry] = []
+    private var totals: [String: Double] = [:]
+
+    private init() { load() }
+
+    private var fileURL: URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                  in: .userDomainMask).first else { return nil }
+        let dir = base.appendingPathComponent("OpenMinis", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("cost-ledger.json")
+    }
+
+    private func load() {
+        guard let url = fileURL, let data = try? Data(contentsOf: url) else { return }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let decoded = try? decoder.decode([Entry].self, from: data) else { return }
+        entries = decoded
+        for e in decoded { totals[e.sessionId, default: 0] += e.usd }
+    }
+
+    func record(sessionId: String, messageId: String, modelId: String,
+                instanceId: String, usage: TokenUsage, usd: Double) {
+        guard usd > 0 else { return }
+        let entry = Entry(sessionId: sessionId, messageId: messageId,
+                          modelId: modelId, instanceId: instanceId,
+                          usd: usd, inputTokens: usage.inputTokens,
+                          outputTokens: usage.outputTokens,
+                          cacheReadTokens: usage.cacheReadTokens,
+                          cacheCreationTokens: usage.cacheCreationTokens,
+                          at: Date())
+        lock.lock()
+        entries.append(entry)
+        if entries.count > 20_000 { entries.removeFirst(entries.count - 20_000) }
+        totals[sessionId, default: 0] += usd
+        let snapshot = entries
+        lock.unlock()
+        queue.async { [weak self] in self?.write(snapshot) }
+    }
+
+    func total(for sessionId: String) -> Double {
+        lock.lock(); defer { lock.unlock() }
+        return totals[sessionId] ?? 0
+    }
+
+    func hasEntries(for sessionId: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return (totals[sessionId] ?? 0) > 0
+    }
+
+    private func write(_ snapshot: [Entry]) {
+        guard let url = fileURL else { return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(snapshot) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
+/// [T-turn-cost-ledger] Read-only breakdown. The composer line deliberately
+/// carries only the per-call figure; turn and session totals live here so the
+/// input field does not grow three numbers wide.
+struct CostDetailSheet: View {
+    @ObservedObject var vm: AIChatViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    private var sessionId: String { vm.sessionId ?? "draft-\(vm.vmInstanceId)" }
+    private var sessionTotal: Double { CostLedger.shared.total(for: sessionId) }
+    private var hasLedger: Bool { CostLedger.shared.hasEntries(for: sessionId) }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    HStack {
+                        Text("本次")
+                        Spacer()
+                        Text(vm.costSnapshot.lastUSD.map { TurnCost.formatted($0) } ?? "—")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("本轮（含工具调用）")
+                        Spacer()
+                        Text(vm.costSnapshot.turnUSD > 0
+                             ? TurnCost.formatted(vm.costSnapshot.turnUSD, rate: vm.costSnapshot.exchangeRate) : "—")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("本会话累计")
+                        Spacer()
+                        Text(sessionTotal > 0
+                             ? TurnCost.formatted(sessionTotal, rate: vm.costSnapshot.exchangeRate) : "—")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("汇率")
+                        Spacer()
+                        Text(vm.costSnapshot.exchangeRate.map { String(format: "%.2f · 站点", $0) }
+                             ?? String(format: "%.2f · 全局", TurnCost.usdToCny))
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("费用")
+                } footer: {
+                    Text(hasLedger
+                         ? "金额是预估，按站点定价和你的汇率换算；最终以站点账单为准。"
+                         : "这里的账本从更新后开始记录，历史消息没有中间调用记录，所以不会显示旧会话的完整总额。")
+                }
+            }
+            .navigationTitle(Text("费用明细"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+}
+    /// Bound the render target BEFORE drawing. Unlike cropping an original-size
 /// square and then resizing it, this never allocates a full-resolution crop.
 /// Output keeps the existing SoulIconImage PNG data-URI format; the Soul's
 /// own 32pt / 96px policy is unchanged.

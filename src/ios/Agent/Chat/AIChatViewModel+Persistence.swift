@@ -172,6 +172,13 @@ extension AIChatViewModel {
     /// matching how they appeared during the live session.
     func loadSession() async {
         guard let sessionId else { return }
+        // [T-turn-cost-ledger] A cached VM can be reused across a session
+        // switch; never let the previous session's per-turn figures leak into
+        // this one's detail sheet.
+        costSnapshot = CostSnapshot(
+            lastUSD: nil, turnUSD: 0,
+            sessionUSD: CostLedger.shared.total(for: sessionId),
+            sessionHasLedger: CostLedger.shared.hasEntries(for: sessionId))
 
         let sinceAppear = (CFAbsoluteTimeGetCurrent() - Self.onAppearTimestamp) * 1000
         logger.info("[SessionLoad] loadSession START T+\(String(format: "%.0f", sinceAppear))ms session=\(sessionId) msgs=\(self.messages.count)")

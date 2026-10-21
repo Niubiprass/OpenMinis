@@ -281,6 +281,10 @@ struct ContextUsageHint: Equatable {
     let text: String
     let highlights: [String]
     let tier: ContextUsage.Tier
+    /// The cost segment (`¥0.07/次`) when present. Kept separately so the
+    /// composer can put a transparent tap target over exactly that run
+    /// without adding an icon or changing the text layout.
+    var costText: String? = nil
 
     static func make(usage: ContextUsage, generation: Int, costSuffix: String? = nil) -> ContextUsageHint {
         let pct = "\(usage.percent)%"
@@ -296,7 +300,8 @@ struct ContextUsageHint: Equatable {
             text += " · " + costSuffix
             highlights.append(costSuffix)
         }
-        return ContextUsageHint(generation: generation, text: text, highlights: highlights, tier: usage.tier)
+        return ContextUsageHint(generation: generation, text: text, highlights: highlights,
+                                tier: usage.tier, costText: costSuffix)
     }
 }
 

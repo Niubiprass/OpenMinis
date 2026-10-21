@@ -1601,7 +1601,7 @@ struct ContentView: View {
     /// Dictionary.== → ChatSession.==; Instruments: app-update phase 60–587ms
     /// spikes). @State is diffed by storage-box identity, not by deep value, so
     /// reading it from the row closure costs nothing per frame. Rebuilt only
-    /// when `sessions` changes (see .onChange below).
+    /// when a list snapshot is applied (see applySessions).
     @State private var sessionsByIdCache: [String: ChatSession] = [:]
     /// Soul name shown as the sidebar title. Sourced from SOUL.md, falls
     /// back to "Minis". Refreshed whenever SoulStore posts .soulMdChanged.
@@ -2057,6 +2057,16 @@ struct ContentView: View {
                 refreshSessionList()
             }
         }
+        // [T-ios-session-row-incremental] Patch ONLY the row that changed.
+        // The throttled observer above still handles structural changes; this
+        // one exists so the session the user is currently reading does not
+        // wait out the 1 s throttle + 3 s cooldown for a new preview.
+        .onReceive(NotificationCenter.default.publisher(for: .sessionDidUpdate)) { note in
+            guard let sid = note.object as? String, !sid.isEmpty else { return }
+            Task { @MainActor in
+                refreshSessionRow(sid)
+            }
+        }
         // [T-ios-listsessions-perf] The refresh cooldown timer. See
         // `sessionRefreshCooldownDeadline` for why this is a task keyed on a
         // Date rather than a stored DispatchWorkItem.
@@ -2306,7 +2316,7 @@ struct ContentView: View {
         .task {
             // [T-p1-delegate-task] Hidden child sessions never reach the
             // sidebar; they are entered from their parent's helper block.
-            sessions = await ChatStore.shared.listSessions().filter { !$0.isChild }
+            applySessions(await ChatStore.shared.listSessions().filter { !$0.isChild })
             // [T-ios-moveto-seed] Hand the sidebar's freshly-loaded list to the
             // Move-to sheet's seed, so opening the picker paints populated
             // instead of waiting on the ChatStore actor.
@@ -2445,13 +2455,6 @@ struct ContentView: View {
             Task { @MainActor in
                 refreshSessionList()
             }
-        }
-        // [T-ios-session-list-equatable-jank] Keep the id→session lookup cache
-        // in sync with `sessions`. Rebuilding here (on actual list mutation)
-        // instead of per body-eval is what removes the per-frame Dictionary.==
-        // / ChatSession.== diff from the scroll transaction.
-        .onChange(of: sessions) { _ in
-            rebuildSessionsByIdCache()
         }
         .onChange(of: selectedSessionId) { newValue in
             // [T-ios-session-switch-attributegraph-race] Hosting-view race
@@ -3359,12 +3362,14 @@ struct ContentView: View {
         .padding(.horizontal, 24)
     }
 
-    /// [T-ios-session-list-equatable-jank] Rebuild the id→ChatSession cache.
-    /// Called from `.onChange(of: sessions)` — NOT per body eval — so the
-    /// dictionary value is stable between session-list mutations and the row
-    /// closures never trigger a per-frame Dictionary.== / ChatSession.== diff.
-    private func rebuildSessionsByIdCache() {
-        sessionsByIdCache = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    /// Publish the rows and their lookup snapshot together, without waiting
+    /// for an onChange callback or depending on ChatSession's diff policy.
+    /// Keep rebuilding outside body evaluation and leave the grouping memo
+    /// keyed on grouping inputs: a new subtitle needs no list regrouping.
+    @MainActor
+    private func applySessions(_ loaded: [ChatSession]) {
+        sessionsByIdCache = Dictionary(loaded.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        sessions = loaded
     }
 
     /// Resolve a session for a sidebar row by id, reading the @State cache.
@@ -5248,6 +5253,29 @@ struct ContentView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
     }
 
+    /// [T-ios-session-row-incremental] Replace one row in place. No
+    /// `listSessions()` scan, no cooldown; the timestamp and preview move
+    /// together as soon as the message is committed.
+    @MainActor
+    private func refreshSessionRow(_ id: String) {
+        Task { @MainActor in
+            guard let row = await ChatStore.shared.sessionRow(id), !row.isChild else { return }
+            guard let index = sessions.firstIndex(where: { $0.id == id }) else {
+                // A creation path deliberately uses the full invalidation
+                // route; fall back rather than dropping a new row.
+                refreshSessionList()
+                return
+            }
+            // An older notification can land after a newer one; never let it
+            // roll the row's preview back. Equal timestamps are allowed
+            // because a parts-only rewrite changes text without moving time.
+            guard row.updatedAt >= sessions[index].updatedAt else { return }
+            // ChatSession.== includes lastMessage, so this assignment publishes
+            // even when updatedAt did not move (parts-only rewrite).
+            sessions[index] = row
+        }
+    }
+
     /// [T-ios-listsessions-refresh-coalesce] Single serialized entry point for
     /// refreshing `sessions` from the store. If a refresh is already running,
     /// mark one trailing run pending instead of spawning a concurrent Task —
@@ -5284,7 +5312,7 @@ struct ContentView: View {
         Task(priority: .utility) { @MainActor in
             // [T-p1-delegate-task] Hidden child sessions never reach the
             // sidebar; they are entered from their parent's helper block.
-            sessions = await ChatStore.shared.listSessions().filter { !$0.isChild }
+            applySessions(await ChatStore.shared.listSessions().filter { !$0.isChild })
             // [T-ios-moveto-seed] Keep the picker's seed current: this refresh
             // runs on every list-affecting change, so the snapshot tracks the
             // sidebar rather than going stale after the first load.
@@ -6327,7 +6355,7 @@ struct ContentView: View {
             selectedSessionId = nil
         }
         withAnimation {
-            sessions.removeAll { $0.id == session.id }
+            applySessions(sessions.filter { $0.id != session.id })
         }
         Task { @MainActor in
             await Self.tearDownForDeletion([session.id])
@@ -6358,7 +6386,7 @@ struct ContentView: View {
             selectedSessionId = nil
         }
         withAnimation {
-            sessions.removeAll { ids.contains($0.id) }
+            applySessions(sessions.filter { !ids.contains($0.id) })
         }
         // Clear deleteInfo to signal onDismiss that deletion occurred;
         // isSelecting and selectedIds are reset in sheet's onDismiss to avoid animation conflicts.
@@ -8422,8 +8450,6 @@ private struct SteppedSlider: View {
 private struct AppearanceSettingsView: View {
     /// [T-turn-cost] Currency for the per-turn estimate; the rate only matters
     /// for CNY. Both are display-only.
-    @AppStorage(TurnCost.currencyKey) private var costCurrency: String = "CNY"
-    @AppStorage(TurnCost.rateKey) private var costRate: Double = 7.3
     @AppStorage("appearanceMode") private var appearanceMode: Int = 0
     @AppStorage("appIconMode") private var appIconMode: Int = 0
     @AppStorage("appLanguage") private var appLanguage: String = ""
@@ -8461,23 +8487,6 @@ private struct AppearanceSettingsView: View {
 
     var body: some View {
         List {
-            // [T-turn-cost] Currency used by the per-turn estimate.
-            Section(AppLocalized("金额显示")) {
-                Picker(AppLocalized("币种"), selection: $costCurrency) {
-                    Text(AppLocalized("人民币")).tag("CNY")
-                    Text(AppLocalized("美元")).tag("USD")
-                }
-                if costCurrency != "USD" {
-                    HStack {
-                        Text(AppLocalized("汇率（1 美元 =）"))
-                        Spacer()
-                        TextField("7.3", value: $costRate, format: .number)
-                            .multilineTextAlignment(.trailing)
-                            .keyboardType(.decimalPad)
-                    }
-                }
-            }
-
             Section {
                 Picker("Theme", selection: $appearanceMode) {
                     Text("System").tag(0)

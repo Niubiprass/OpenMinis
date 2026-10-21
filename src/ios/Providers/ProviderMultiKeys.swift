@@ -1,5 +1,118 @@
 import Foundation
 import Security
+import CryptoKit
+
+/// Request-local identity. Do not print a lease: it contains a credential.
+struct ProviderKeyLease {
+    let id: String
+    let key: String
+    // A late success must not reactivate a key parked by a newer request.
+    var startedAt: Date = Date()
+}
+
+enum MultiKeyFailureKind {
+    case credential, quota, rateLimit, transient, other
+
+    var mayTryAnotherKey: Bool {
+        switch self {
+        case .other: return false
+        default: return true
+        }
+    }
+
+    /// Only these category summaries, never provider bodies, reach storage.
+    fileprivate var summary: String {
+        switch self {
+        case .credential: return AppLocalized("Invalid API key")
+        case .quota: return AppLocalized("Insufficient balance or quota")
+        case .rateLimit: return AppLocalized("Rate limited")
+        case .transient: return AppLocalized("Service temporarily unavailable")
+        case .other: return AppLocalized("Request failed")
+        }
+    }
+
+    static func classify(_ error: Error) -> MultiKeyFailureKind {
+        guard !isCancellation(error) else { return .other }
+        return classifyUncancelled(error, depth: 0)
+    }
+
+    private static func isCancellation(_ error: Error, depth: Int = 0) -> Bool {
+        guard depth < 16 else { return false }
+        if error is CancellationError { return true }
+        if let llm = error as? LLMError {
+            switch llm {
+            case .cancelled: return true
+            case .networkError(let e), .decodingError(let e):
+                return isCancellation(e, depth: depth + 1)
+            case .unknown(let e):
+                if let e { return isCancellation(e, depth: depth + 1) }
+            default: break
+            }
+        }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return true }
+        if let e = ns.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isCancellation(e, depth: depth + 1)
+        }
+        return false
+    }
+
+    private static func classifyUncancelled(_ error: Error, depth: Int) -> MultiKeyFailureKind {
+        guard depth < 16 else { return .other }
+        if let llm = error as? LLMError {
+            switch llm {
+            case .invalidAPIKey: return .credential
+            case .rateLimited: return .rateLimit
+            case .networkError, .transientError: return .transient
+            case .providerError(let message): return classifyProviderMessage(message)
+            case .unknown(let e):
+                if let e { return classifyUncancelled(e, depth: depth + 1) }
+                return .other
+            case .cancelled, .decodingError: return .other
+            }
+        }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain { return .transient }
+        if let e = ns.userInfo[NSUnderlyingErrorKey] as? Error {
+            return classifyUncancelled(e, depth: depth + 1)
+        }
+        return .other
+    }
+
+    private static func classifyProviderMessage(_ text: String) -> MultiKeyFailureKind {
+        let message = text.lowercased()
+        // Only a leading HTTP status / [status] is evidence, not numbers in a body.
+        let pattern = #"(?i)^\s*(?:HTTP\s*(?:\[\s*(\d{3})\s*\]|(\d{3}))|\[\s*(\d{3})\s*\])(?=$|[\s:;,\.\-])"#
+        if let regex = try? NSRegularExpression(pattern: pattern),
+           let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+           let code = (1..<match.numberOfRanges).compactMap({ index -> Int? in
+               guard let range = Range(match.range(at: index), in: text) else { return nil }
+               return Int(text[range])
+           }).first {
+            switch code {
+            case 401, 403: return .credential
+            case 402: return .quota
+            case 429: return .rateLimit
+            case 408, 500...599: return .transient
+            case 400: break // Some relays report exhausted credit with HTTP 400; inspect its explicit reason.
+            default: break
+            }
+        }
+        if ["context length", "context_length", "maximum context", "invalid schema",
+            "invalid_schema", "content policy", "content_policy", "content_filter",
+            "model not found", "model_not_found"].contains(where: { message.contains($0) }) { return .other }
+        if ["insufficient balance", "insufficient_balance", "insufficient quota", "insufficient_quota",
+            "quota exhausted", "quota_exhausted", "quota exceeded", "quota_exceeded",
+            "balance exhausted", "insufficient credits", "credit balance too low", "credits exhausted",
+            "余额不足", "额度耗尽", "额度不足"].contains(where: { message.contains($0) }) { return .quota }
+        if ["invalid api key", "invalid_api_key", "incorrect api key", "authentication",
+            "unauthorized", "permission denied", "permission_denied", "insufficient permissions",
+            "does not have permission", "access denied"].contains(where: { message.contains($0) }) { return .credential }
+        if ["rate limit", "rate_limit", "too many requests", "限流", "请求过于频繁"]
+            .contains(where: { message.contains($0) }) { return .rateLimit }
+        return .other
+    }
+}
 
 /// [T-multikey] One API key under a provider, plus the bookkeeping needed to
 /// route around it when it starts failing.
@@ -31,6 +144,8 @@ struct ProviderAPIKey: Codable, Identifiable, Hashable {
     var lastUsed: Date?
     var lastError: String?
     var updatedAt: Date
+    /// Optional for old Keychain blobs; rate limits can recover sooner than 5 min.
+    var unavailableUntil: Date? = nil
 
     init(key: String, name: String? = nil) {
         self.id = UUID().uuidString
@@ -55,14 +170,15 @@ struct ProviderAPIKey: Codable, Identifiable, Hashable {
     /// True when the key is currently selectable. `error` keys come back once
     /// `recoveryInterval` has passed since they were marked.
     func isSelectable(recoveryInterval: TimeInterval, now: Date = Date()) -> Bool {
-        guard isEnabled else { return false }
+        guard isEnabled, !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if let until = unavailableUntil, now < until { return false }
         switch status {
         case .active:
             return true
         case .disabled:
             return false
         case .error:
-            return now.timeIntervalSince(updatedAt) >= recoveryInterval
+            return now >= (unavailableUntil ?? updatedAt.addingTimeInterval(recoveryInterval))
         }
     }
 }
@@ -230,6 +346,139 @@ final class ProviderMultiKeyManager {
         }
     }
 
+    // MARK: - Request-scoped leases
+
+    private struct MainState: Codable {
+        let fingerprint: String
+        var successCount = 0
+        var failureCount = 0
+        var consecutiveFailures = 0
+        var unavailableUntil: Date?
+        var lastFailureAt: Date?
+    }
+
+    private func fingerprint(_ key: String) -> String {
+        SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func mainState(_ key: String, instanceId: String) -> MainState {
+        let fp = fingerprint(key)
+        if let data = UserDefaults.standard.data(forKey: "provider.multikey.mainState." + instanceId),
+           let state = try? JSONDecoder().decode(MainState.self, from: data), state.fingerprint == fp {
+            return state
+        }
+        return MainState(fingerprint: fp)
+    }
+
+    private func saveMainState(_ state: MainState, instanceId: String) {
+        // Only a one-way fingerprint and counters. Credentials stay in Keychain.
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        UserDefaults.standard.set(data, forKey: "provider.multikey.mainState." + instanceId)
+    }
+
+    private func unlockedKeys(_ instanceId: String) -> [ProviderAPIKey] {
+        guard let data = readBlob(for: instanceId),
+              let list = try? JSONDecoder().decode([ProviderAPIKey].self, from: data) else { return [] }
+        return list
+    }
+
+    private func unlockedSave(_ list: [ProviderAPIKey], instanceId: String) {
+        guard let data = try? JSONEncoder().encode(list) else { return }
+        writeBlob(data, for: instanceId)
+    }
+
+    /// One atomic pick including the main credential; no dead-main fallback.
+    func lease(for instanceId: String, excluding: Set<String> = []) -> ProviderKeyLease? {
+        lock.lock(); defer { lock.unlock() }
+        let main = ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard isEnabled(for: instanceId) else {
+            return main.isEmpty || excluding.contains("main") ? nil : ProviderKeyLease(id: "main", key: main)
+        }
+        let now = Date()
+        var pool: [(lease: ProviderKeyLease, uses: Int)] = []
+        var seen = Set<String>()
+        if !main.isEmpty {
+            seen.insert(main)
+            let state = mainState(main, instanceId: instanceId)
+            if !excluding.contains("main"), state.unavailableUntil.map({ $0 <= now }) ?? true {
+                pool.append((ProviderKeyLease(id: "main", key: main), state.successCount + state.failureCount))
+            }
+        }
+        for entry in unlockedKeys(instanceId) {
+            let key = entry.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            guard !excluding.contains(entry.id), entry.isSelectable(recoveryInterval: Self.recoveryInterval, now: now) else { continue }
+            pool.append((ProviderKeyLease(id: entry.id, key: key), entry.successCount + entry.failureCount))
+        }
+        guard !pool.isEmpty else { return nil }
+        switch strategy(for: instanceId) {
+        case .priority: return pool[0].lease
+        case .random: return pool.randomElement()?.lease
+        case .leastUsed: return pool.min { $0.uses < $1.uses }?.lease
+        case .roundRobin:
+            let cursor = max(0, UserDefaults.standard.integer(forKey: cursorPrefix + instanceId))
+            let index = cursor % pool.count
+            UserDefaults.standard.set(cursor == Int.max ? 0 : cursor + 1, forKey: cursorPrefix + instanceId)
+            return pool[index].lease
+        }
+    }
+
+    func recordSuccess(lease: ProviderKeyLease, for instanceId: String) {
+        lock.lock(); defer { lock.unlock() }
+        if lease.id == "main" {
+            guard ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)?.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key else { return }
+            var state = mainState(lease.key, instanceId: instanceId)
+            state.successCount += 1
+            if state.lastFailureAt.map({ $0 <= lease.startedAt }) ?? true {
+                state.consecutiveFailures = 0; state.unavailableUntil = nil
+            }
+            saveMainState(state, instanceId: instanceId)
+        } else {
+            var list = unlockedKeys(instanceId)
+            guard let index = list.firstIndex(where: { $0.id == lease.id && $0.key.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key }) else { return }
+            list[index].successCount += 1
+            list[index].lastUsed = Date()
+            if list[index].updatedAt <= lease.startedAt {
+                list[index].consecutiveFailures = 0; list[index].lastError = nil
+                list[index].unavailableUntil = nil
+                if list[index].isEnabled && list[index].status != .disabled { list[index].status = .active }
+            }
+            unlockedSave(list, instanceId: instanceId)
+        }
+    }
+
+    func recordFailure(lease: ProviderKeyLease, kind: MultiKeyFailureKind, for instanceId: String) {
+        guard kind.mayTryAnotherKey else { return }
+        lock.lock(); defer { lock.unlock() }
+        let now = Date()
+        func cooldown(_ failures: Int) -> TimeInterval? {
+            switch kind {
+            case .credential, .quota: return Self.recoveryInterval
+            case .rateLimit: return 60
+            case .transient: return failures >= Self.maxConsecutiveFailures ? 30 : nil
+            case .other: return nil
+            }
+        }
+        if lease.id == "main" {
+            guard ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)?.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key else { return }
+            var state = mainState(lease.key, instanceId: instanceId)
+            state.failureCount += 1; state.consecutiveFailures += 1; state.lastFailureAt = now
+            if let seconds = cooldown(state.consecutiveFailures) { state.unavailableUntil = now.addingTimeInterval(seconds) }
+            saveMainState(state, instanceId: instanceId)
+        } else {
+            var list = unlockedKeys(instanceId)
+            guard let index = list.firstIndex(where: { $0.id == lease.id && $0.key.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key }) else { return }
+            list[index].failureCount += 1; list[index].consecutiveFailures += 1
+            list[index].lastUsed = now; list[index].updatedAt = now; list[index].lastError = kind.summary
+            if let seconds = cooldown(list[index].consecutiveFailures) {
+                list[index].unavailableUntil = now.addingTimeInterval(seconds)
+                if list[index].isEnabled && list[index].status != .disabled { list[index].status = .error }
+            }
+            unlockedSave(list, instanceId: instanceId)
+        }
+    }
+
     // MARK: - Selection
 
     /// [T-multikey] The key this request should actually use.
@@ -240,10 +489,7 @@ final class ProviderMultiKeyManager {
     ///   would be worse than trying).
     /// Multi-key OFF → the single saved key, exactly as before.
     func effectiveKey(for instanceId: String) -> String? {
-        if isEnabled(for: instanceId), let picked = nextKey(for: instanceId) {
-            return picked.key
-        }
-        return ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)
+        lease(for: instanceId)?.key
     }
 
 

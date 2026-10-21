@@ -181,6 +181,10 @@ final class ProviderQuotaService: ObservableObject {
         /// When this row was last queried. nil = never (the row then reads
         /// 未查询 rather than pretending the key has no balance).
         var queriedAt: Date? = nil
+        /// Why the last attempt could not produce a real balance. Kept per
+        /// key so one bad token cannot hide behind a sibling's success. nil
+        /// after a successful balance query.
+        var failureNote: String? = nil
 
         var isUnavailable: Bool { info == nil && queriedAt != nil }
     }
@@ -251,7 +255,15 @@ final class ProviderQuotaService: ObservableObject {
     // MARK: Async fetch + cache
 
     func refreshQuota(for instance: ProviderInstance) async {
+        clearFailure(instanceId: instance.id)
         let info = await Self.fetchQuota(for: instance)
+        if info?.kind == .balance {
+            clearFailure(instanceId: instance.id)
+        } else if info == nil, failureNote(instanceId: instance.id) == nil {
+            noteFailure(AppLocalized("站点没有返回可用余额（可能不支持余额查询）"), instanceId: instance.id)
+        } else if info?.kind == .used, failureNote(instanceId: instance.id) == nil {
+            noteFailure(AppLocalized("站点只返回了用量，没有返回剩余余额"), instanceId: instance.id)
+        }
         lock.lock()
         cache[instance.id] = CacheEntry(info: info, fetchedAt: Date())
         lock.unlock()
@@ -311,9 +323,10 @@ final class ProviderQuotaService: ObservableObject {
     private func attach(_ row: inout KeyQuota, instanceId: String) {
         lock.lock()
         let entry = keyCache[instanceId]?[row.id]
-        lock.unlock()
         row.info = entry?.info
         row.queriedAt = entry?.fetchedAt
+        row.failureNote = failureNotes[failureKey(instanceId, row.id)]
+        lock.unlock()
     }
 
     /// `sk-abc…7f2a` — same head/tail rule the ring uses, so the two kinds of
@@ -348,7 +361,21 @@ final class ProviderQuotaService: ObservableObject {
             for row in rows {
                 guard let secret = secrets[row.id] else { continue }
                 group.addTask {
+                    ProviderQuotaService.shared.clearFailure(instanceId: instance.id, rowId: row.id)
                     let info = await Self.fetchQuota(for: instance, key: secret, rowId: row.id)
+                    if info?.kind == .balance {
+                        ProviderQuotaService.shared.clearFailure(instanceId: instance.id, rowId: row.id)
+                    } else if info == nil,
+                       ProviderQuotaService.shared.failureNote(instanceId: instance.id, rowId: row.id) == nil {
+                        ProviderQuotaService.shared.noteFailure(
+                            AppLocalized("站点没有返回可用余额（可能不支持余额查询）"),
+                            instanceId: instance.id, rowId: row.id)
+                    } else if info?.kind == .used,
+                              ProviderQuotaService.shared.failureNote(instanceId: instance.id, rowId: row.id) == nil {
+                        ProviderQuotaService.shared.noteFailure(
+                            AppLocalized("站点只返回了用量，没有返回剩余余额"),
+                            instanceId: instance.id, rowId: row.id)
+                    }
                     return (row.id, info)
                 }
             }
@@ -649,6 +676,12 @@ final class ProviderQuotaService: ObservableObject {
                 ProviderQuotaService.shared.noteFailure(
                     AppLocalized("这个站还要求填「用户 ID」（在它后台的个人设置里）"),
                     instanceId: instanceId, rowId: rowId)
+            } else if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let message = (obj["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !message.isEmpty {
+                ProviderQuotaService.shared.noteFailure(
+                    String(format: AppLocalized("余额接口拒绝：%@"), message),
+                    instanceId: instanceId, rowId: rowId)
             } else {
                 ProviderQuotaService.shared.noteFailure(
                     String(format: AppLocalized("站点返回 HTTP %lld（这个路径可能不存在）"), Int64(http.statusCode)),
@@ -659,6 +692,19 @@ final class ProviderQuotaService: ObservableObject {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             ProviderQuotaService.shared.noteFailure(
                 AppLocalized("返回的不是 JSON（可能不是一个 API 站）"), instanceId: instanceId, rowId: rowId)
+            return nil
+        }
+        // New API often answers HTTP 200 with success:false when the token is
+        // invalid or the user id header is missing. Treat it as a failure, not
+        // as an empty balance — otherwise the UI quietly falls back to 已用 and
+        // hides the actual reason.
+        if (obj["success"] as? Bool) == false {
+            let raw = (obj["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let reason = (raw?.isEmpty == false ? raw : nil)
+                ?? AppLocalized("访问令牌无效或权限不足")
+            ProviderQuotaService.shared.noteFailure(
+                String(format: AppLocalized("余额接口拒绝：%@"), reason),
+                instanceId: instanceId, rowId: rowId)
             return nil
         }
         // New API wraps payloads in "data"; some forks answer flat.
@@ -843,5 +889,202 @@ final class ProviderQuotaService: ObservableObject {
                              amountUSD: usd)
         }
         return nil
+    }
+}
+
+// MARK: - [T-turn-cost-site-pricing] Auto-read New API / One API pricing
+
+/// Reads a site's own `/api/pricing` endpoint and turns its ratios into
+/// per-million-token USD prices. Triggered only by the user's button; this
+/// never runs in the chat path, so an unreachable site cannot delay a message.
+final class ProviderPricingService: ObservableObject {
+    static let shared = ProviderPricingService()
+
+    struct ModelPrice: Codable, Equatable {
+        /// USD per 1M input tokens. nil for per-call models.
+        var input: Double?
+        /// USD per 1M output tokens. nil for per-call models.
+        var output: Double?
+        /// USD per call for quota_type != 0 models.
+        var fixed: Double?
+    }
+
+    struct SitePricing: Codable, Equatable {
+        var group: String
+        var groupRatio: Double
+        var quotaPerUnit: Double
+        var fetchedAt: Date
+        var prices: [String: ModelPrice]
+        /// Site's `/api/status.usd_exchange_rate`, when provided.
+        var exchangeRate: Double? = nil
+    }
+
+    @Published private(set) var revision = 0
+    private let keyPrefix = "pricing.site."
+    private let manualPrefix = "pricing.manual."
+    private let ratePrefix = "pricing.rateOverride."
+    private let lock = NSLock()
+    private var cache: [String: SitePricing] = [:]
+
+    private init() {}
+
+    func pricing(for instanceId: String) -> SitePricing? {
+        lock.lock(); defer { lock.unlock() }
+        if let cached = cache[instanceId] { return cached }
+        guard let data = UserDefaults.standard.data(forKey: keyPrefix + instanceId),
+              let decoded = try? JSONDecoder().decode(SitePricing.self, from: data) else { return nil }
+        cache[instanceId] = decoded
+        return decoded
+    }
+
+    /// A user-entered override for one model. Manual beats site pricing: it
+    /// exists precisely for sites whose endpoint is absent or wrong.
+    func manualPrice(instanceId: String, modelId: String) -> ModelPrice? {
+        guard let data = UserDefaults.standard.data(forKey: manualPrefix + instanceId),
+              let map = try? JSONDecoder().decode([String: ModelPrice].self, from: data) else { return nil }
+        return map[modelId.lowercased()]
+    }
+
+    func setManualPrice(instanceId: String, modelId: String, input: Double?, output: Double?) {
+        var map: [String: ModelPrice] = [:]
+        if let data = UserDefaults.standard.data(forKey: manualPrefix + instanceId),
+           let decoded = try? JSONDecoder().decode([String: ModelPrice].self, from: data) {
+            map = decoded
+        }
+        if let input, let output, input > 0, output > 0 {
+            map[modelId.lowercased()] = ModelPrice(input: input, output: output, fixed: nil)
+        } else {
+            map.removeValue(forKey: modelId.lowercased())
+        }
+        if let data = try? JSONEncoder().encode(map) {
+            UserDefaults.standard.set(data, forKey: manualPrefix + instanceId)
+        }
+        DispatchQueue.main.async { self.revision += 1 }
+    }
+
+    func price(instanceId: String, modelId: String) -> ModelPrice? {
+        manualPrice(instanceId: instanceId, modelId: modelId)
+            ?? pricing(for: instanceId)?.prices[modelId.lowercased()]
+    }
+
+    /// Per-provider conversion override. nil means "use the rate the site
+    /// publishes, then the global display rate". Stored by instance because
+    /// relays quote different CNY rates.
+    func rateOverride(instanceId: String) -> Double? {
+        let value = UserDefaults.standard.double(forKey: ratePrefix + instanceId)
+        return value > 0 ? value : nil
+    }
+
+    func setRateOverride(instanceId: String, rate: Double?) {
+        let key = ratePrefix + instanceId
+        if let rate, rate > 0 {
+            UserDefaults.standard.set(rate, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        DispatchQueue.main.async { self.revision += 1 }
+    }
+
+    func effectiveRate(instanceId: String) -> Double? {
+        rateOverride(instanceId: instanceId)
+            ?? pricing(for: instanceId)?.exchangeRate
+    }
+
+    func summary(for instanceId: String) -> (count: Int, date: Date?)? {
+        guard let p = pricing(for: instanceId) else { return nil }
+        return (p.prices.count, p.fetchedAt)
+    }
+
+    /// Public `/api/status` carries the site's own CNY rate. This is display
+    /// metadata only; no credential is sent.
+    private static func siteExchangeRate(root: String) async -> Double? {
+        guard let url = URL(string: root + "/api/status") else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 8
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = obj["data"] as? [String: Any],
+              let rate = (payload["usd_exchange_rate"] as? NSNumber)?.doubleValue,
+              rate > 0 else { return nil }
+        return rate
+    }
+
+    /// One explicit request. Returns the number of models read.
+    func refresh(for instance: ProviderInstance) async throws -> Int {
+        var base = instance.effectiveCustomBaseURL
+        if base == nil {
+            switch instance.providerType {
+            case .openAI, .openAIResponses: base = "https://api.openai.com"
+            case .anthropic: base = "https://api.anthropic.com"
+            default: throw NSError(domain: "ProviderPricing", code: 1,
+                                   userInfo: [NSLocalizedDescriptionKey: AppLocalized("该供应商不支持站点定价")])
+            }
+        }
+        guard let base, !base.isEmpty else {
+            throw NSError(domain: "ProviderPricing", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: AppLocalized("没有可用的站点地址")])
+        }
+        let root = ProviderQuotaService.balanceRoot(instanceId: instance.id, apiBase: base)
+        guard let url = URL(string: root + "/api/pricing") else {
+            throw NSError(domain: "ProviderPricing", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: AppLocalized("站点地址无效")])
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 15
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw NSError(domain: "ProviderPricing", code: Int(code),
+                          userInfo: [NSLocalizedDescriptionKey: String(format: AppLocalized("站点没有开放定价接口（HTTP %lld）"), Int64(code))])
+        }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = obj["data"] as? [[String: Any]] else {
+            throw NSError(domain: "ProviderPricing", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: AppLocalized("返回格式不是 New API 定价")])
+        }
+        if (obj["success"] as? Bool) == false {
+            throw NSError(domain: "ProviderPricing", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: AppLocalized("站点拒绝读取定价")])
+        }
+
+        let groupRatios = (obj["group_ratio"] as? [String: Any]) ?? [:]
+        let group = groupRatios["default"] != nil ? "default" : (groupRatios.keys.sorted().first ?? "default")
+        let groupRatio = (groupRatios[group] as? NSNumber)?.doubleValue ?? 1.0
+        let qpu = await ProviderQuotaService.quotaPerUnit(root: root)
+        let siteRate = await Self.siteExchangeRate(root: root)
+
+        var prices: [String: ModelPrice] = [:]
+        for row in rows {
+            guard let name = (row["model_name"] as? String)?.lowercased(), !name.isEmpty else { continue }
+            let ratio = (row["model_ratio"] as? NSNumber)?.doubleValue ?? 0
+            let completion = (row["completion_ratio"] as? NSNumber)?.doubleValue ?? 1
+            let quotaType = (row["quota_type"] as? NSNumber)?.intValue ?? 0
+            let modelPrice = (row["model_price"] as? NSNumber)?.doubleValue ?? 0
+            if quotaType != 0 {
+                if modelPrice > 0 { prices[name] = ModelPrice(input: nil, output: nil, fixed: modelPrice) }
+                continue
+            }
+            guard ratio > 0, qpu > 0 else { continue }
+            let input = ratio * groupRatio * 1_000_000.0 / qpu
+            let output = input * completion
+            if input > 0 { prices[name] = ModelPrice(input: input, output: output, fixed: nil) }
+        }
+        guard !prices.isEmpty else {
+            throw NSError(domain: "ProviderPricing", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: AppLocalized("站点没有返回可用的模型价格")])
+        }
+        let value = SitePricing(group: group, groupRatio: groupRatio,
+                                quotaPerUnit: qpu, fetchedAt: Date(), prices: prices,
+                                exchangeRate: siteRate)
+        lock.lock()
+        cache[instance.id] = value
+        lock.unlock()
+        if let encoded = try? JSONEncoder().encode(value) {
+            UserDefaults.standard.set(encoded, forKey: keyPrefix + instance.id)
+        }
+        await MainActor.run { self.revision += 1 }
+        return prices.count
     }
 }
