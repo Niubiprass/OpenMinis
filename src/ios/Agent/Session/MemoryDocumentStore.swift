@@ -7,7 +7,17 @@ struct MemoryLibraryRoot: Identifiable {
     let isReadOnly: Bool
     let isGlobal: Bool
     /// Optional section filter (daily vs GLOBAL.md) for roots sharing one directory.
-    let nameFilter: ((String) -> Bool)? = nil
+    let nameFilter: ((String) -> Bool)?
+
+    init(id: String, title: String, directory: URL, isReadOnly: Bool, isGlobal: Bool,
+         nameFilter: ((String) -> Bool)? = nil) {
+        self.id = id
+        self.title = title
+        self.directory = directory
+        self.isReadOnly = isReadOnly
+        self.isGlobal = isGlobal
+        self.nameFilter = nameFilter
+    }
 }
 
 /// Only caller-supplied directories are authorized; no session or global-root lookup.
