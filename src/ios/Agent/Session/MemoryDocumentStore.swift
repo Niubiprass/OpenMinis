@@ -194,7 +194,7 @@ final class MemoryDocumentStore {
                               snapshot.originalBytes ?? Data()))
             }
             guard !files.isEmpty else { throw Failure.unsavedExport }
-            let data = SkillStore.buildZipArchive(files: files)
+            let data = MemoryZipWriter.archive(files: files)
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.dateFormat = "yyyyMMdd-HHmm"
@@ -369,5 +369,102 @@ final class MemoryDocumentStore {
         #else
         return try operation(url)
         #endif
+    }
+}
+
+/// Minimal store-only ZIP writer local to the memory library. Keeping it here
+/// (instead of calling SkillStore) matters for the standalone typecheck
+/// harness: the memory module must not depend on an unrelated feature file to
+/// compile. The format is the same one already used for skill archives.
+private enum MemoryZipWriter {
+    static func archive(files: [(relativePath: String, data: Data)]) -> Data {
+        var archive = Data()
+        var centralDirectory = Data()
+        var offset: UInt32 = 0
+
+        for file in files {
+            let nameData = Data(file.relativePath.utf8)
+            let nameLen = UInt16(nameData.count)
+            let fileSize = UInt32(file.data.count)
+            let crc = crc32(file.data)
+
+            var local = Data()
+            local.appendLE32(0x04034B50)
+            local.appendLE16(20)
+            local.appendLE16(0)
+            local.appendLE16(0)
+            local.appendLE16(0)
+            local.appendLE16(0)
+            local.appendLE32(crc)
+            local.appendLE32(fileSize)
+            local.appendLE32(fileSize)
+            local.appendLE16(nameLen)
+            local.appendLE16(0)
+            local.append(nameData)
+            local.append(file.data)
+
+            var cd = Data()
+            cd.appendLE32(0x02014B50)
+            cd.appendLE16(20)
+            cd.appendLE16(20)
+            cd.appendLE16(0)
+            cd.appendLE16(0)
+            cd.appendLE16(0)
+            cd.appendLE16(0)
+            cd.appendLE32(crc)
+            cd.appendLE32(fileSize)
+            cd.appendLE32(fileSize)
+            cd.appendLE16(nameLen)
+            cd.appendLE16(0)
+            cd.appendLE16(0)
+            cd.appendLE16(0)
+            cd.appendLE16(0)
+            cd.appendLE32(0)
+            cd.appendLE32(offset)
+            cd.append(nameData)
+
+            archive.append(local)
+            centralDirectory.append(cd)
+            offset += UInt32(local.count)
+        }
+
+        let cdOffset = offset
+        let cdSize = UInt32(centralDirectory.count)
+        archive.append(centralDirectory)
+
+        var eocd = Data()
+        eocd.appendLE32(0x06054B50)
+        eocd.appendLE16(0)
+        eocd.appendLE16(0)
+        eocd.appendLE16(UInt16(files.count))
+        eocd.appendLE16(UInt16(files.count))
+        eocd.appendLE32(cdSize)
+        eocd.appendLE32(cdOffset)
+        eocd.appendLE16(0)
+        archive.append(eocd)
+        return archive
+    }
+
+    private static func crc32(_ data: Data) -> UInt32 {
+        var crc: UInt32 = 0xFFFFFFFF
+        for byte in data {
+            crc ^= UInt32(byte)
+            for _ in 0..<8 {
+                crc = (crc >> 1) ^ (crc & 1 != 0 ? 0xEDB88320 : 0)
+            }
+        }
+        return crc ^ 0xFFFFFFFF
+    }
+}
+
+private extension Data {
+    mutating func appendLE16(_ value: UInt16) {
+        var v = value.littleEndian
+        append(Data(bytes: &v, count: 2))
+    }
+
+    mutating func appendLE32(_ value: UInt32) {
+        var v = value.littleEndian
+        append(Data(bytes: &v, count: 4))
     }
 }
