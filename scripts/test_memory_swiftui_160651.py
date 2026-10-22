@@ -90,7 +90,7 @@ struct NavigationStack<Content: View>: View {
     }
 }
 
-struct AgentPersona: Identifiable, Equatable {
+struct AgentPersona: Identifiable, Equatable, Codable {
     let id: String
     var name: String
     var icon: String
@@ -123,6 +123,53 @@ func AppLocalizedFormat(_ format: String, _ args: CVarArg...) -> String { format
 enum MemoryMaintenance {
     struct Result { let warning: String? }
     static func runIfNeeded() -> Result { Result(warning: nil) }
+}
+extension Notification.Name {
+    static let personaDidChange = Notification.Name("HarnessPersonaDidChange")
+}
+struct ModelEntry {}
+final class ProviderConfigStore {
+    static let shared = ProviderConfigStore()
+    var resolvedAgentLoopEntries: [ModelEntry] = []
+}
+struct MonthlyMemoryDigest {
+    let month: String
+    let summary: String
+    let sourceDays: Int
+}
+enum MemoryMonthlySummarizer {
+    static func digest(month: String,
+                       dailyTexts: [(day: String, text: String)],
+                       maxChars: Int = 24000,
+                       summarize: (String) async throws -> String) async throws -> MonthlyMemoryDigest {
+        MonthlyMemoryDigest(month: month, summary: "", sourceDays: 0)
+    }
+}
+enum MemoryMonthlyAIIO {
+    static func dailyTexts(in directory: URL, month: String) -> [(day: String, text: String)] { [] }
+    static func writeAISummary(_ digest: MonthlyMemoryDigest, in directory: URL) throws {}
+}
+struct AgentToolDefinition {}
+enum ThinkingLevel { case off }
+struct AgentMessage {
+    enum Role { case user }
+    enum Part { case text(String) }
+    let role: Role
+    let parts: [Part]
+    init(role: Role, parts: [Part]) { self.role = role; self.parts = parts }
+}
+enum HarnessAgentEvent { case textDelta(String) }
+final class HarnessAgentProvider {
+    func streamAgentMessage(messages: [AgentMessage], systemPrompt: String?,
+                            tools: [AgentToolDefinition], maxTokens: Int,
+                            thinkingLevel: ThinkingLevel) async throws -> AsyncThrowingStream<HarnessAgentEvent, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+}
+extension AIChatViewModel {
+    static func makeAgentProvider(for entry: ModelEntry, sessionId: String?) async -> HarnessAgentProvider {
+        HarnessAgentProvider()
+    }
 }
 '''
 
