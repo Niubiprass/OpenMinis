@@ -1374,7 +1374,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             turnUSD: turnCostUSD,
             sessionUSD: CostLedger.shared.total(for: sessionId),
             sessionHasLedger: true,
-            exchangeRate: ProviderPricingService.shared.effectiveRate(instanceId: instanceId))
+            exchangeRate: ProviderPricingService.shared.effectiveRate(instanceId: instanceId),
+            currency: ProviderPricingService.shared.displayCurrency(instanceId: instanceId))
     }
 
     var currentTurnCostSuffix: String? {
@@ -6189,7 +6190,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             lastUSD: nil,
             turnUSD: 0,
             sessionUSD: CostLedger.shared.total(for: ledgerSessionId),
-            sessionHasLedger: CostLedger.shared.hasEntries(for: ledgerSessionId))
+            sessionHasLedger: CostLedger.shared.hasEntries(for: ledgerSessionId),
+            currency: ProviderPricingService.shared.displayCurrency(instanceId: entry.id))
 
         // Log context baseline for offload diagnostics
         let estimatedTokens = estimateContextTokens()

@@ -1168,10 +1168,12 @@ struct CostSnapshot: Equatable {
     /// Site's own USD→CNY rate when the pricing button read it; nil falls back
     /// to the user's existing global rate.
     var exchangeRate: Double? = nil
+    /// Per-provider display currency. nil = the global setting.
+    var currency: String? = nil
 
     var lastLabel: String? {
         guard let lastUSD else { return nil }
-        return TurnCost.compact(lastUSD, rate: exchangeRate) + "/次"
+        return TurnCost.compact(lastUSD, rate: exchangeRate, currency: currency) + "/次"
     }
 }
 
@@ -1271,21 +1273,21 @@ struct CostDetailSheet: View {
                     HStack {
                         Text("本次")
                         Spacer()
-                        Text(vm.costSnapshot.lastUSD.map { TurnCost.formatted($0) } ?? "—")
+                        Text(vm.costSnapshot.lastUSD.map { TurnCost.formatted($0, currency: vm.costSnapshot.currency) } ?? "—")
                             .foregroundStyle(.secondary)
                     }
                     HStack {
                         Text("本轮（含工具调用）")
                         Spacer()
                         Text(vm.costSnapshot.turnUSD > 0
-                             ? TurnCost.formatted(vm.costSnapshot.turnUSD, rate: vm.costSnapshot.exchangeRate) : "—")
+                             ? TurnCost.formatted(vm.costSnapshot.turnUSD, rate: vm.costSnapshot.exchangeRate, currency: vm.costSnapshot.currency) : "—")
                             .foregroundStyle(.secondary)
                     }
                     HStack {
                         Text("本会话累计")
                         Spacer()
                         Text(sessionTotal > 0
-                             ? TurnCost.formatted(sessionTotal, rate: vm.costSnapshot.exchangeRate) : "—")
+                             ? TurnCost.formatted(sessionTotal, rate: vm.costSnapshot.exchangeRate, currency: vm.costSnapshot.currency) : "—")
                             .foregroundStyle(.secondary)
                     }
                     HStack {

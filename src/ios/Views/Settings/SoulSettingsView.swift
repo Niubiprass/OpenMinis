@@ -682,8 +682,15 @@ private struct PersonaListView: View {
     var body: some View {
         List {
             if store.personas.isEmpty {
-                Text(AppLocalized("还没有人格；点右上角新建一个。"))
-                    .foregroundStyle(.secondary)
+                Section {
+                    Button {
+                        creating = true
+                    } label: {
+                        Label(AppLocalized("新建人格"), systemImage: "plus.circle.fill")
+                    }
+                } footer: {
+                    Text(AppLocalized("还没有人格；点这里新建，或点右上角 +。"))
+                }
             } else {
                 ForEach(store.personas) { persona in
                     Button {
@@ -719,15 +726,13 @@ private struct PersonaListView: View {
         .navigationTitle(AppLocalized("人格"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Button {
                     exportPersonas()
                 } label: {
                     Image(systemName: "square.and.arrow.up")
                 }
                 .disabled(store.personas.isEmpty)
-            }
-            ToolbarItem(placement: .primaryAction) {
                 Button {
                     creating = true
                 } label: {

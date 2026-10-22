@@ -82,13 +82,14 @@ class QuotaUI(unittest.TestCase):
         self.assertIn('quotaSection(instance)', DETAIL)
         self.assertIn('Text("余额")', DETAIL)
 
-    def test_single_token_field_only(self):
-        # [T-quota-single-field] Exactly ONE input in this section — the access
-        # token. No user id, no panel host, no in-app login: anything else the
-        # site demands is not asked for; the query falls back to 已用.
-        self.assertIn('Text("访问令牌")', DETAIL)
+    def test_balance_credentials_have_both_fields(self):
+        # [T-quota-one-entry] Both values live in the per-key sheet; the old
+        # duplicate instance-wide fields are gone.
+        self.assertIn('Text(AppLocalized("访问令牌"))', DETAIL)
+        self.assertIn('Text(AppLocalized("用户 ID"))', DETAIL)
+        self.assertIn('ProviderQuotaService.setUserID', DETAIL)
+        self.assertIn('userID = ProviderQuotaService.userID', DETAIL)
         self.assertNotIn('Button("在 App 内登录该站点")', DETAIL)
-        self.assertNotIn('AppLocalized("用户 ID")', DETAIL)
         self.assertNotIn('AppLocalized("面板地址")', DETAIL)
         self.assertIn('/api/usage/token/', QUOTA)
 

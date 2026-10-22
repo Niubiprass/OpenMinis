@@ -9,6 +9,22 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 
+private enum MemoryTab: String, CaseIterable, Identifiable {
+    case daily
+    case global
+    case persona
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .daily: return AppLocalized("日记忆")
+        case .global: return AppLocalized("全局")
+        case .persona: return AppLocalized("人格")
+        }
+    }
+}
+
 struct MemoryManagementView: View {
     @State private var forceSyncToast: String?
     /// [T-memory-global-toggle-settings-ui-ios] Global default for whether
@@ -24,58 +40,146 @@ struct MemoryManagementView: View {
     @ObservedObject private var sharedStore = SharedMemoryStore.shared
     @State private var folderMemoryRoots: [MemoryLibraryRoot] = []
     @State private var memoryWarning: String?
+    @State private var tab: MemoryTab = .daily
+    @State private var exportShare: MemoryShareItem?
 
-    /// Daily logs and GLOBAL.md share one directory; the persona root is a
-    /// subdirectory. Group memory stays under each group's configuration.
+    private var memoryDirectory: URL { AIChatViewModel.minisMemoryPersistentDir }
+    private var personaDirectory: URL {
+        memoryDirectory.appendingPathComponent("personas", isDirectory: true)
+    }
+
+    private func dayStamp(_ date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private func monthStamp(_ date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM"
+        return formatter.string(from: date)
+    }
+
+    /// The page is split into three tabs. Keeping the roots tab-specific is
+    /// what stops one long list of daily + global + every persona + every
+    /// group from being shown at once.
     private var memoryRoots: [MemoryLibraryRoot] {
-        let dir = AIChatViewModel.minisMemoryPersistentDir
-        let personaDir = dir.appendingPathComponent("personas", isDirectory: true)
-        let daily = MemoryLibraryRoot(
-            id: "daily-memory",
-            title: AppLocalized("日记忆"),
+        switch tab {
+        case .daily:
+            return dailyRoots + folderMemoryRoots
+        case .global:
+            return [globalRoot]
+        case .persona:
+            return personaRoots
+        }
+    }
+
+    private var dailyRoots: [MemoryLibraryRoot] {
+        let dir = memoryDirectory
+        let today = dayStamp()
+        let month = monthStamp()
+        let dayPattern = #"^\d{4}-\d{2}-\d{2}\.md$"#
+        let monthPattern = #"^\d{4}-\d{2}\.md$"#
+        let todayRoot = MemoryLibraryRoot(
+            id: "daily-today",
+            title: AppLocalized("今天"),
+            directory: dir,
+            isReadOnly: false,
+            isGlobal: false,
+            nameFilter: { $0 == "\(today).md" },
+            sectionTitle: AppLocalized("今天"))
+        let monthRoot = MemoryLibraryRoot(
+            id: "daily-month",
+            title: AppLocalized("本月"),
             directory: dir,
             isReadOnly: false,
             isGlobal: false,
             nameFilter: { name in
-                name.range(of: #"^\d{4}-\d{2}-\d{2}\.md$"#, options: .regularExpression) != nil
-                    || name.range(of: #"^\d{4}-\d{2}\.md$"#, options: .regularExpression) != nil
-            }
-        )
-        let global = MemoryLibraryRoot(
-            id: "global-memory",
-            title: AppLocalized("全局记忆"),
+                name != "\(today).md"
+                    && name.hasPrefix("\(month)-")
+                    && name.hasSuffix(".md")
+            },
+            sectionTitle: AppLocalized("本月"))
+        let olderDailyRoot = MemoryLibraryRoot(
+            id: "daily-older",
+            title: AppLocalized("更早（月记忆）"),
             directory: dir,
             isReadOnly: false,
-            isGlobal: true,
-            nameFilter: { $0 == "GLOBAL.md" }
-        )
-        let knownFiles = Set(personaStore.personas.map { "\($0.id).md" })
-        let orphanRoot = MemoryLibraryRoot(
-            id: "persona-orphan",
-            title: AppLocalized("未归属 · 人格记忆"),
-            directory: personaDir,
+            isGlobal: false,
+            nameFilter: { name in
+                name.range(of: dayPattern, options: .regularExpression) != nil
+                    && !name.hasPrefix("\(month)-")
+            },
+            sectionTitle: AppLocalized("更早（月记忆）"))
+        let monthlyRoot = MemoryLibraryRoot(
+            id: "daily-monthly",
+            title: AppLocalized("更早（月记忆）"),
+            directory: dir,
             isReadOnly: false,
             isGlobal: false,
-            nameFilter: { !knownFiles.contains($0) }
-        )
-        var personaRoots: [MemoryLibraryRoot] = personaStore.personas.map { persona in
-            MemoryLibraryRoot(
+            nameFilter: { $0.range(of: monthPattern, options: .regularExpression) != nil },
+            sectionTitle: AppLocalized("更早（月记忆）"))
+        return [todayRoot, monthRoot, monthlyRoot, olderDailyRoot]
+    }
+
+    private var globalRoot: MemoryLibraryRoot {
+        MemoryLibraryRoot(
+            id: "global-memory",
+            title: AppLocalized("全局记忆"),
+            directory: memoryDirectory,
+            isReadOnly: false,
+            isGlobal: true,
+            nameFilter: { $0 == "GLOBAL.md" },
+            sectionTitle: AppLocalized("全局记忆"),
+            itemTitle: "GLOBAL.md",
+            alwaysShow: true)
+    }
+
+    private var personaRoots: [MemoryLibraryRoot] {
+        let personaDir = personaDirectory
+        let knownFiles = Set(personaStore.personas.map { "\($0.id).md" })
+        var roots: [MemoryLibraryRoot] = personaStore.personas.map { persona in
+            let subtitle = persona.style.isEmpty
+                ? AppLocalized("还没有记忆")
+                : persona.style
+            return MemoryLibraryRoot(
                 id: "persona-\(persona.id)",
-                title: "\(AppLocalized("人格记忆")) · \(persona.name)",
+                title: AppLocalized("人格记忆"),
                 directory: personaDir,
                 isReadOnly: false,
                 isGlobal: false,
-                nameFilter: { $0 == "\(persona.id).md" }
-            )
+                nameFilter: { $0 == "\(persona.id).md" },
+                sectionTitle: AppLocalized("人格记忆"),
+                itemTitle: persona.name,
+                itemSubtitle: subtitle)
         }
-        personaRoots.append(orphanRoot)
-        return [daily, global] + personaRoots + folderMemoryRoots
+        roots.append(MemoryLibraryRoot(
+            id: "persona-orphan",
+            title: AppLocalized("未归属"),
+            directory: personaDir,
+            isReadOnly: false,
+            isGlobal: false,
+            nameFilter: { !knownFiles.contains($0) },
+            sectionTitle: AppLocalized("未归属")))
+        return roots
     }
 
     var body: some View {
-        // One real shared directory, not a per-model/group facade. The library
-        // reuses MemoryContentView -> MemoryFileEditView for document actions.
-        ScopedMemoryLibraryView(title: AppLocalized("Memory"), roots: memoryRoots) {
+        VStack(spacing: 0) {
+            Picker(AppLocalized("记忆分类"), selection: $tab) {
+                ForEach(MemoryTab.allCases) { item in
+                    Text(item.title).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
+            // One real shared directory, not a per-model/group facade. The library
+            // reuses MemoryContentView -> MemoryFileEditView for document actions.
+            ScopedMemoryLibraryView(title: AppLocalized("Memory"), roots: memoryRoots) {
             Section {
                 Toggle(AppLocalized("settings_memory_global_enabled"), isOn: $memoryGlobalEnabled)
                 if let memoryWarning {
@@ -98,6 +202,8 @@ struct MemoryManagementView: View {
             } footer: {
                 Text(AppLocalized("共享记忆是只读快照；点“复制到我的记忆”后才进入你自己的人格记忆。"))
             }
+            }
+            .id(tab)
         }
         .onAppear {
             try? FileManager.default.createDirectory(
@@ -127,6 +233,11 @@ struct MemoryManagementView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button {
+                            exportAllMemory()
+                        } label: {
+                            Label(AppLocalized("导出全部记忆"), systemImage: "square.and.arrow.up")
+                        }
+                        Button {
                             Task { if #available(iOS 17.0, *) { await forceSyncMemory() } }
                         } label: {
                             Label(AppLocalized("Force iCloud Sync"),
@@ -138,6 +249,7 @@ struct MemoryManagementView: View {
                 }
             
         }
+        .sheet(item: $exportShare) { MinisShareSheet(url: $0.url) }
         .sheet(isPresented: $showImport) {
             MemoryImportView(store: MemoryDocumentStore(roots: [.sharedMemory])) { message in
                 importToast = message
@@ -171,6 +283,21 @@ struct MemoryManagementView: View {
         .animation(.spring(response: 0.3), value: forceSyncToast)
     }
 
+    /// [T-memory-export-all] One ZIP with every memory file. The existing
+    /// per-file share stays; this is the "take everything" entry. Store-only
+    /// ZIP writer is the one already used for skill archives, so no new
+    /// dependency and no full backup pipeline.
+    private func exportAllMemory() {
+        let roots = dailyRoots + [globalRoot] + personaRoots + folderMemoryRoots
+        let store = MemoryDocumentStore(roots: roots)
+        do {
+            exportShare = MemoryShareItem(url: try store.exportArchive())
+        } catch {
+            forceSyncToast = AppLocalized("没有可导出的记忆")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { forceSyncToast = nil }
+        }
+    }
+
     /// Only folders that actually chose independent memory get a section.
     private func loadFolderMemoryRoots() async {
         let folders = await ChatStore.shared.listFolders()
@@ -182,10 +309,11 @@ struct MemoryManagementView: View {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             roots.append(MemoryLibraryRoot(
                 id: "folder-\(folder.id)",
-                title: "\(AppLocalized("分组记忆")) · \(folder.name)",
+                title: folder.name,
                 directory: dir,
                 isReadOnly: false,
-                isGlobal: false))
+                isGlobal: false,
+                sectionTitle: AppLocalized("分组记忆")))
         }
         await MainActor.run { folderMemoryRoots = roots }
     }

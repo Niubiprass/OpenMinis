@@ -458,7 +458,7 @@ final class LoggingManager: ObservableObject {
         ) else { return [] }
 
         return files
-            .filter { $0.pathExtension == "log" }
+            .filter { $0.pathExtension == "log" || $0.pathExtension == "ips" }
             .compactMap { url -> (String, URL, Date, Int64, String)? in
                 let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
                 let size = Int64(values?.fileSize ?? 0)
@@ -467,7 +467,7 @@ final class LoggingManager: ObservableObject {
                 let type: String
                 if name.hasPrefix("minis-") {
                     type = "running"
-                } else if name.hasPrefix("crash-") {
+                } else if name.hasPrefix("crash-") || name.hasSuffix(".ips") {
                     type = "crash"
                 } else {
                     type = "other"
@@ -516,6 +516,30 @@ final class LoggingManager: ObservableObject {
                 self.logFileHandle = nil
                 self.currentLogDate = ""
             }
+        }
+    }
+
+    /// Copy a user-selected `.ips` report into the app's Logs directory so
+    /// the unified crash list can parse it. The picker hands us a security-
+    /// scoped URL from Files; the copy is what makes it readable later.
+    @discardableResult
+    func importCrashReport(from url: URL) -> Bool {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let fm = FileManager.default
+        var name = url.lastPathComponent
+        if name.isEmpty { name = "imported-\(UUID().uuidString.prefix(8)).ips" }
+        var destination = logDirectory.appendingPathComponent(name)
+        if fm.fileExists(atPath: destination.path) {
+            let stem = url.deletingPathExtension().lastPathComponent
+            let stamp = Int(Date().timeIntervalSince1970)
+            destination = logDirectory.appendingPathComponent("\(stem)-\(stamp).ips")
+        }
+        do {
+            try fm.copyItem(at: url, to: destination)
+            return true
+        } catch {
+            return false
         }
     }
 

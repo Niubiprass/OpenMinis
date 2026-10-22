@@ -116,15 +116,33 @@ final class ProviderQuotaService: ObservableObject {
     /// 「Unauthorized, New-Api-User header not provided」 unless the numeric user
     /// id rides along in a header of that name. The id is printed on the site's
     /// own dashboard ("用户 ID"), so it is one number the user copies once.
-    static func userID(instanceId: String) -> String? {
-        let raw = UserDefaults.standard.string(forKey: "quota.newAPIUserID.\(instanceId)") ?? ""
+    static func userID(instanceId: String, keyId: String? = nil) -> String? {
+        let defaults = UserDefaults.standard
+        // Per-key first: two keys under one provider can belong to two
+        // different site accounts, each with its own numeric user id.
+        if let keyId, !keyId.isEmpty {
+            let raw = defaults.string(forKey: "quota.newAPIUserID.\(instanceId).\(keyId)") ?? ""
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        let raw = defaults.string(forKey: "quota.newAPIUserID.\(instanceId)") ?? ""
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    static func setUserID(_ value: String, instanceId: String) {
+    static func setUserID(_ value: String, instanceId: String, keyId: String? = nil) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        UserDefaults.standard.set(trimmed, forKey: "quota.newAPIUserID.\(instanceId)")
+        let key: String
+        if let keyId, !keyId.isEmpty {
+            key = "quota.newAPIUserID.\(instanceId).\(keyId)"
+        } else {
+            key = "quota.newAPIUserID.\(instanceId)"
+        }
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: key)
+        }
         shared.invalidate(instanceId: instanceId)
     }
 
@@ -280,9 +298,9 @@ final class ProviderQuotaService: ObservableObject {
             .filter { !ProviderMultiKeyManager.shared.isEnabled(for: $0.id) }
             .filter { isMissing(instanceId: $0.id) }
         guard !missing.isEmpty else { return }
-        Task {
+        Task.detached(priority: .utility) {
             for instance in missing {
-                await refreshQuota(for: instance)
+                await ProviderQuotaService.shared.refreshQuota(for: instance)
             }
             await MainActor.run { self.revision += 1 }
         }
@@ -650,7 +668,7 @@ final class ProviderQuotaService: ObservableObject {
            !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             // [T-quota-newapi-user] Required by New API alongside the token.
-            if let uid = userID(instanceId: instanceId) {
+            if let uid = userID(instanceId: instanceId, keyId: rowId) {
                 req.setValue(uid, forHTTPHeaderField: "New-Api-User")
             }
         } else if let cookie = await sessionCookieHeader(for: root) {
@@ -677,7 +695,7 @@ final class ProviderQuotaService: ObservableObject {
             let bodyText = String(data: data.prefix(240), encoding: .utf8) ?? ""
             if bodyText.lowercased().contains("new-api-user") {
                 ProviderQuotaService.shared.noteFailure(
-                    AppLocalized("这个站还要求填「用户 ID」（在它后台的个人设置里）"),
+                    AppLocalized("这个站还要求填「用户 ID」；点这把 Key 填上（在站点后台个人设置里）"),
                     instanceId: instanceId, rowId: rowId)
             } else if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let message = (obj["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -926,6 +944,7 @@ final class ProviderPricingService: ObservableObject {
     private let keyPrefix = "pricing.site."
     private let manualPrefix = "pricing.manual."
     private let ratePrefix = "pricing.rateOverride."
+    private let currencyPrefix = "pricing.currency."
     private let lock = NSLock()
     private var cache: [String: SitePricing] = [:]
 
@@ -991,6 +1010,22 @@ final class ProviderPricingService: ObservableObject {
     func effectiveRate(instanceId: String) -> Double? {
         rateOverride(instanceId: instanceId)
             ?? pricing(for: instanceId)?.exchangeRate
+    }
+
+    /// Per-provider display currency. The global Settings value remains the
+    /// fallback for providers the user never opened.
+    func displayCurrency(instanceId: String) -> String {
+        let key = currencyPrefix + instanceId
+        guard let stored = UserDefaults.standard.string(forKey: key)?.uppercased(),
+              stored == "CNY" || stored == "USD" else { return TurnCost.currency }
+        return stored
+    }
+
+    func setDisplayCurrency(instanceId: String, currency: String) {
+        let code = currency.uppercased()
+        guard code == "CNY" || code == "USD" else { return }
+        UserDefaults.standard.set(code, forKey: currencyPrefix + instanceId)
+        DispatchQueue.main.async { self.revision += 1 }
     }
 
     func summary(for instanceId: String) -> (count: Int, date: Date?)? {

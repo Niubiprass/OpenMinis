@@ -1293,6 +1293,203 @@ final class PersonaStore: ObservableObject {
         guard let id else { return nil }
         return personas.first { $0.id == id }
     }
+
+    // MARK: - [T-persona-memory-move] Move (not share) memory between owners
+
+    /// Move the whole of `sourceId`'s memory into `targetId`'s memory.
+    ///
+    /// Sharing (`SharedMemoryStore.copyToTarget`) is a snapshot and leaves the
+    /// source alone. Moving is the cleanup path for the opposite case: the
+    /// notes ended up on the wrong persona. The target is append-only and the
+    /// source is the only side that gets emptied, in that order — target first,
+    /// source second — so a failure at any point leaves the text in at least
+    /// one file.
+    ///
+    /// The source file survives as an empty document. Deleting it would make
+    /// the persona's memory page read as "not created" and would race the
+    /// library, which lists persona files by UUID.
+    ///
+    /// - Returns: `false` for a same-id move, an unknown persona, a missing or
+    ///   blank source, or any write failure. Never throws, never deletes a
+    ///   persona.
+    @discardableResult
+    func moveMemory(fromPersonaId sourceId: String, toPersonaId targetId: String) -> Bool {
+        guard sourceId != targetId else { return false }
+        guard let source = persona(id: sourceId), let target = persona(id: targetId) else { return false }
+
+        let sourceURL = memoryURL(for: source.id)
+        guard regularFileType(at: sourceURL) == .typeRegular,
+              let raw = readMemoryText(at: sourceURL) else { return false }
+        let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return false }
+
+        let block = "\n\n## 从 \(source.name) 移入 · \(memoryTimestamp())\n\n\(content)"
+        // Target first: if this fails, the source has not been touched yet.
+        guard appendMemoryText(block, to: memoryURL(for: target.id)) else { return false }
+
+        // Source second: a failed clear leaves a duplicate, never a loss.
+        guard clearMemoryFile(at: sourceURL) else {
+            NotificationCenter.default.post(name: .memoryFilesDidChange, object: nil)
+            return false
+        }
+        NotificationCenter.default.post(name: .memoryFilesDidChange, object: nil)
+        return true
+    }
+
+    /// Move a file that no persona currently owns out of `memory/personas/`.
+    ///
+    /// Deleting a persona deliberately leaves `<uuid>.md` behind (see
+    /// `memoryURL(for:)`), which is what the 「未归属」 section lists. This is
+    /// how one of those files is claimed: `targetId` appends it to that
+    /// persona's memory, while `nil` appends it to the global `GLOBAL.md`.
+    /// Unlike `SharedMemoryStore`, the source file is removed afterwards.
+    ///
+    /// Only a bare `*.md` name directly inside `personas/` is accepted, so a
+    /// caller cannot reach a sibling or the global directory by name.
+    ///
+    /// - Returns: `false` for an unsafe name, a missing/invalid/blank source,
+    ///   an unknown target persona, a target equal to the source, or any write
+    ///   failure. A failed delete leaves a duplicate rather than losing text.
+    @discardableResult
+    func moveMemoryFile(named fileName: String, toPersonaId targetId: String?) -> Bool {
+        guard let sourceURL = validatedMemoryFileURL(named: fileName),
+              regularFileType(at: sourceURL) == .typeRegular,
+              let raw = readMemoryText(at: sourceURL) else { return false }
+        let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return false }
+
+        let targetURL: URL
+        let heading: String
+        if let targetId {
+            guard let target = persona(id: targetId) else { return false }
+            targetURL = memoryURL(for: target.id)
+            heading = "从 \(fileName) 移入"
+        } else {
+            targetURL = AIChatViewModel.minisMemoryPersistentDir.appendingPathComponent("GLOBAL.md")
+            heading = "从未归属移入"
+        }
+        // `personas/<id>.md` is also persona `<id>`'s target. Appending to it
+        // and then deleting it would destroy the text instead of moving it.
+        guard targetURL.standardizedFileURL.path != sourceURL.standardizedFileURL.path else { return false }
+
+        let block = "\n\n## \(heading) · \(memoryTimestamp())\n\n\(content)"
+        // Target first, source deletion second: same invariant as moveMemory.
+        guard appendMemoryText(block, to: targetURL) else { return false }
+        guard deleteMemoryFile(at: sourceURL) else {
+            NotificationCenter.default.post(name: .memoryFilesDidChange, object: nil)
+            return false
+        }
+        NotificationCenter.default.post(name: .memoryFilesDidChange, object: nil)
+        return true
+    }
+
+    /// On-disk URL for a bare file name in `personas/`, or nil when the name is
+    /// unsafe or the file is absent. Read-only: the memory page uses this to
+    /// decide whether a row may offer a move, without re-implementing the path
+    /// rules. It never creates anything.
+    func memoryFileURL(named fileName: String) -> URL? {
+        guard let url = validatedMemoryFileURL(named: fileName),
+              regularFileType(at: url) == .typeRegular else { return nil }
+        return url
+    }
+
+    private var personasDirectory: URL {
+        AIChatViewModel.minisMemoryPersistentDir
+            .appendingPathComponent(memoryFolder, isDirectory: true)
+    }
+
+    /// Bare, single-component Markdown name. Mirrors `MemoryDocumentStore`'s
+    /// rule so the library and the mover cannot disagree about what is a file;
+    /// `..` is rejected outright because `personas/` has no subdirectories.
+    private func isValidMemoryFileName(_ fileName: String) -> Bool {
+        guard fileName.count > 3, fileName.hasSuffix(".md"), !fileName.hasPrefix("."),
+              !fileName.contains("/"), !fileName.contains("\\"), !fileName.contains(":"),
+              !fileName.contains(".."),
+              !fileName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        else { return false }
+        return true
+    }
+
+    private func validatedMemoryFileURL(named fileName: String) -> URL? {
+        guard isValidMemoryFileName(fileName) else { return nil }
+        let directory = personasDirectory.standardizedFileURL
+        let url = directory.appendingPathComponent(fileName)
+        // Direct child only: the standardized parent has to be the directory
+        // built above, so no component can widen the path. Compare `path`
+        // rather than `URL` so a trailing-slash difference cannot matter.
+        guard url.deletingLastPathComponent().standardizedFileURL.path == directory.path else { return nil }
+        // A symlink or a directory named `*.md` is not a memory document.
+        if let type = regularFileType(at: url), type != .typeRegular { return nil }
+        return url
+    }
+
+    /// `attributesOfItem` reports a symlink as `.typeSymbolicLink`, so callers
+    /// comparing against `.typeRegular` reject links rather than follow them.
+    private func regularFileType(at url: URL) -> FileAttributeType? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
+            return nil
+        }
+        return attributes[.type] as? FileAttributeType
+    }
+
+    private func readMemoryText(at url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        return text
+    }
+
+    /// Append `block` to `url`, creating the directory and file when missing.
+    /// `.atomic` keeps a failed write from truncating existing memory, and an
+    /// unreadable target is refused instead of being overwritten.
+    private func appendMemoryText(_ block: String, to url: URL) -> Bool {
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(at: url.deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            var existing = ""
+            if let type = regularFileType(at: url) {
+                guard type == .typeRegular, let current = readMemoryText(at: url) else { return false }
+                existing = current
+            }
+            guard let data = (existing + block).data(using: .utf8) else { return false }
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Empty the file but keep it: a persona's memory page treats a missing
+    /// file as "not created", and the library lists persona files by UUID.
+    private func clearMemoryFile(at url: URL) -> Bool {
+        do {
+            try Data().write(to: url, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// A move, not a copy: the row disappears from 「未归属」.
+    private func deleteMemoryFile(at url: URL) -> Bool {
+        do {
+            try FileManager.default.removeItem(at: url)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// `yyyy-MM-dd HH:mm` in the device's zone, with a POSIX locale so the
+    /// header does not change shape with the user's calendar settings.
+    private func memoryTimestamp(_ date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
 }
 
 
@@ -1344,6 +1541,20 @@ enum MemoryMaintenance {
             let monthNames = names.filter { isDaily($0) && $0.hasPrefix(month) }.sorted()
             guard !monthNames.isEmpty else { continue }
             var parts: [String] = ["# \(month) 月记忆", "> 由 \(monthNames.count) 份日记忆合并；原始文件在 archive/raw/\(month)/。"]
+            // Extractive index, not an AI summary: headings/first lines make a
+            // long month scannable without another network call or model.
+            var index: [String] = ["## 本月索引"]
+            for name in monthNames {
+                let url = dir.appendingPathComponent(name)
+                guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                let firstLine = text.split(separator: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .first { !$0.isEmpty && !$0.hasPrefix("<!--") }
+                    ?? ""
+                let clipped = firstLine.count > 80 ? String(firstLine.prefix(80)) + "…" : firstLine
+                index.append("- \(String(name.dropLast(3))): \(clipped)")
+            }
+            parts.append(index.joined(separator: "\n"))
             for name in monthNames {
                 let url = dir.appendingPathComponent(name)
                 guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }

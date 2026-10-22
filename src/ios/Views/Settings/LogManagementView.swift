@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 // MARK: - View Model
 
@@ -40,7 +41,13 @@ class LogManagementViewModel: ObservableObject {
             LogFile(id: $0.name, name: $0.name, url: $0.url, date: $0.date, size: $0.size, type: $0.type)
         }
         totalSize = LoggingManager.shared.totalLogSize()
-        crashGroups = CrashReportIndex.groups(from: crashFiles)
+        // Parsing .ips can read hundreds of KB per report. Never do it while
+        // SwiftUI is evaluating the Logs page; publish the finished groups.
+        let crashFiles = self.crashFiles
+        DispatchQueue.global(qos: .utility).async {
+            let groups = CrashReportIndex.groups(from: crashFiles)
+            DispatchQueue.main.async { self.crashGroups = groups }
+        }
     }
 }
 
@@ -117,6 +124,9 @@ struct CrashReportEntry: Identifiable {
     let type: String
     let category: CrashReportCategory
     let frames: [String]
+    /// Non-nil only for `.ips`; the detail page uses the parsed/symbolicated
+    /// form instead of dumping the raw 700 KB JSON.
+    let ipsReport: CrashIPSReport?
 }
 
 struct CrashReportGroup: Identifiable {
@@ -149,6 +159,20 @@ enum CrashReportIndex {
     }
 
     static func parse(_ file: LogManagementViewModel.LogFile) -> CrashReportEntry {
+        if file.name.lowercased().hasSuffix(".ips"),
+           let parsed = CrashIPSParser.parse(url: file.url) {
+            let report = CrashSymbolicator.symbolicate(parsed)
+            let text = report.displayLines.joined(separator: "\n")
+            return CrashReportEntry(id: file.id,
+                                    name: file.name,
+                                    url: file.url,
+                                    date: report.date,
+                                    size: file.size,
+                                    type: report.exceptionType,
+                                    category: category(type: report.exceptionType, text: text),
+                                    frames: report.frames.map { $0.display },
+                                    ipsReport: report)
+        }
         let text = LoggingManager.shared.readLog(at: file.url, maxBytes: 1_048_576)
         let date = parseDate(in: text) ?? file.date
         let type = value(of: "Type:", in: text) ?? ""
@@ -159,7 +183,8 @@ enum CrashReportIndex {
                                 size: file.size,
                                 type: type,
                                 category: category(type: type, text: text),
-                                frames: keyFrames(in: text))
+                                frames: keyFrames(in: text),
+                                ipsReport: nil)
     }
 
     static func parseDate(in text: String) -> Date? {
@@ -244,6 +269,7 @@ struct LogManagementView: View {
     @ObservedObject private var loggingManager = LoggingManager.shared
     @State private var showDeleteAllConfirm = false
     @State private var showShareSheet = false
+    @State private var showIPSPicker = false
 
     /// Selected top-level tab. Bound to a deep-link query string so
     /// `minis://settings/logs?tab=config-audit` lands users straight on
@@ -398,6 +424,15 @@ struct LogManagementView: View {
 
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
+                        showIPSPicker = true
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
+                    }
+                    .accessibilityLabel("导入 .ips 崩溃报告")
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
                         showShareSheet = true
                     } label: {
                         Image(systemName: "square.and.arrow.up")
@@ -407,6 +442,22 @@ struct LogManagementView: View {
         }
         .sheet(isPresented: $showShareSheet) {
             LogShareSheet(urls: vm.logFiles.map(\.url))
+        }
+        .fileImporter(isPresented: $showIPSPicker,
+                      allowedContentTypes: [.data],
+                      allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                if LoggingManager.shared.importCrashReport(from: url) {
+                    vm.load()
+                    ShareFeedbackToast.show("已导入 .ips 报告")
+                } else {
+                    ShareFeedbackToast.show("导入失败")
+                }
+            case .failure(let error):
+                ShareFeedbackToast.show(error.localizedDescription)
+            }
         }
         .alert("Delete All Logs?", isPresented: $showDeleteAllConfirm) {
             Button("Delete All", role: .destructive) {
@@ -460,6 +511,44 @@ struct LogDetailView: View {
             }.value
             content = loaded
             isLoading = false
+        }
+    }
+}
+
+// MARK: - [T-crash-ips] Parsed .ips detail
+
+/// Readable form for an Apple `.ips` report: exception, termination, faulting
+/// thread, and the app/system frames. Symbolication is best-effort and only
+/// applies where the image UUID matches a library loaded in this process.
+struct CrashIPSDetailView: View {
+    let entry: CrashReportEntry
+
+    var body: some View {
+        Group {
+            if let report = entry.ipsReport {
+                LogTextView(text: report.displayLines.joined(separator: "\n"))
+            } else {
+                Text("无法解析这份 .ips 报告")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle(entry.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    if !ExternalFileImporter.ingest(entry.url, into: ShareCoordinator.shared,
+                                                    accompanyingText: "帮我分析这个崩溃日志") {
+                        ShareFeedbackToast.show("发送失败，请稍后再试")
+                    }
+                } label: {
+                    Image(systemName: "paperplane")
+                }
+                .accessibilityLabel("发送到会话")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                MinisShareLinkButton(item: entry.url)
+            }
         }
     }
 }
@@ -533,7 +622,11 @@ struct CrashReportGroupDetailView: View {
             Section {
                 ForEach(group.entries) { entry in
                     NavigationLink {
-                        LogDetailView(url: entry.url, name: entry.name)
+                        if entry.ipsReport != nil {
+                            CrashIPSDetailView(entry: entry)
+                        } else {
+                            LogDetailView(url: entry.url, name: entry.name)
+                        }
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.name)

@@ -118,13 +118,16 @@ class ManualOnly(unittest.TestCase):
 
 class DetailRendering(unittest.TestCase):
 
-    def test_rows_render_only_when_multikey_is_on(self):
-        # [T-multikey-lock-io] The body now reads the snapshot loaded off-main.
+    def test_rows_render_in_every_mode(self):
+        # [T-quota-one-entry] The main key is a row in single-key mode too;
+        # the old "当前" branch hid the only credential entry.
         i = DETAIL.index('let rows = quotaRowsSnapshot')
-        body = DETAIL[i:i + 500]
+        j = DETAIL.index('if quotaRefreshing {', i)
+        body = DETAIL[i:j]
         self.assertIn('let multiKeyOn = multiKeyEnabled', body)
         self.assertIn('rows.contains { !$0.isMain }', body)
         self.assertIn('ForEach(rows) { row in', body)
+        self.assertIn('if rows.isEmpty', body)
 
     def test_body_does_not_query_the_keychain(self):
         i = DETAIL.index('private func quotaSection(_ instance: ProviderInstance) -> some View {')

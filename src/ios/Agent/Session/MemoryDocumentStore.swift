@@ -8,15 +8,34 @@ struct MemoryLibraryRoot: Identifiable {
     let isGlobal: Bool
     /// Optional section filter (daily vs GLOBAL.md) for roots sharing one directory.
     let nameFilter: ((String) -> Bool)?
+    /// Section header shown by the memory library. Defaults to `title`; several
+    /// roots can share one section (e.g. all persona files under 「人格记忆」).
+    let sectionTitle: String
+    /// Row label when the file name is not what the user recognizes. Persona
+    /// memory files are named by UUID, so the row shows the persona name.
+    let itemTitle: String?
+    /// Optional second line under `itemTitle` (style/count instead of raw text).
+    let itemSubtitle: String?
+    /// Keep the section visible even when the file does not exist yet. Used for
+    /// GLOBAL.md's "not created" placeholder.
+    let alwaysShow: Bool
 
     init(id: String, title: String, directory: URL, isReadOnly: Bool, isGlobal: Bool,
-         nameFilter: ((String) -> Bool)? = nil) {
+         nameFilter: ((String) -> Bool)? = nil,
+         sectionTitle: String? = nil,
+         itemTitle: String? = nil,
+         itemSubtitle: String? = nil,
+         alwaysShow: Bool = false) {
         self.id = id
         self.title = title
         self.directory = directory
         self.isReadOnly = isReadOnly
         self.isGlobal = isGlobal
         self.nameFilter = nameFilter
+        self.sectionTitle = sectionTitle ?? title
+        self.itemTitle = itemTitle
+        self.itemSubtitle = itemSubtitle
+        self.alwaysShow = alwaysShow
     }
 }
 
@@ -63,28 +82,30 @@ final class MemoryDocumentStore {
     }
 
     func list() throws -> [Snapshot] {
-        try locked {
-            var result: [Snapshot] = []
-            for root in roots {
-                let directory = try authorizedDirectory(rootID: root.id)
-                var names: [String] = []
-                if try fileType(at: directory) != nil {
-                    names = try fm.contentsOfDirectory(atPath: directory.path).filter {
-                        $0.hasSuffix(".md") && !$0.hasPrefix(".") && $0.caseInsensitiveCompare("SOUL.md") != .orderedSame
-                    }
-                }
-                if root.isGlobal && !names.contains("GLOBAL.md") { names.append("GLOBAL.md") }
-                for name in names.sorted(by: { a, b in
-                    if a == "GLOBAL.md" { return b != a }
-                    if b == "GLOBAL.md" { return false }
-                    return a > b
-                }) {
-                    // No recursion; a directory or symlink named *.md is an explicit error.
-                    result.append(try readUnlocked(rootID: root.id, fileName: name))
+        try locked { try listUnlocked() }
+    }
+
+    private func listUnlocked() throws -> [Snapshot] {
+        var result: [Snapshot] = []
+        for root in roots {
+            let directory = try authorizedDirectory(rootID: root.id)
+            var names: [String] = []
+            if try fileType(at: directory) != nil {
+                names = try fm.contentsOfDirectory(atPath: directory.path).filter {
+                    $0.hasSuffix(".md") && !$0.hasPrefix(".") && $0.caseInsensitiveCompare("SOUL.md") != .orderedSame
                 }
             }
-            return result
+            if root.isGlobal && !names.contains("GLOBAL.md") { names.append("GLOBAL.md") }
+            for name in names.sorted(by: { a, b in
+                if a == "GLOBAL.md" { return b != a }
+                if b == "GLOBAL.md" { return false }
+                return a > b
+            }) {
+                // No recursion; a directory or symlink named *.md is an explicit error.
+                result.append(try readUnlocked(rootID: root.id, fileName: name))
+            }
         }
+        return result
     }
 
     func readSnapshot(rootID: String, fileName: String) throws -> Snapshot {
@@ -143,6 +164,50 @@ final class MemoryDocumentStore {
             try Data(sections.joined(separator: "\n---\n\n").utf8).write(to: url, options: .atomic)
             return url
         }
+    }
+
+    /// [T-memory-export-all] ZIP with one entry per real memory file. Roots
+    /// share directories (daily/global/persona), so `nameFilter` is applied
+    /// here; otherwise exporting the persona tab would write every persona
+    /// file N times.
+    func exportArchive() throws -> URL {
+        try locked {
+            var files: [(relativePath: String, data: Data)] = []
+            var seen = Set<String>()
+            for snapshot in try listUnlocked() where snapshot.exists {
+                let root = try authorizedRoot(snapshot.rootID)
+                guard root.nameFilter?(snapshot.fileName) ?? true else { continue }
+                let key = root.directory.path + "/" + snapshot.fileName
+                guard !seen.contains(key) else { continue }
+                seen.insert(key)
+                let prefix: String
+                if root.id.hasPrefix("folder-") {
+                    prefix = "groups/" + Self.archiveName(root.title)
+                } else if root.id.hasPrefix("persona-") {
+                    prefix = "personas"
+                } else if root.id == "global-memory" {
+                    prefix = "global"
+                } else {
+                    prefix = "daily"
+                }
+                files.append(("\(prefix)/\(Self.archiveName(snapshot.fileName))",
+                              snapshot.originalBytes ?? Data()))
+            }
+            guard !files.isEmpty else { throw Failure.unsavedExport }
+            let data = SkillStore.buildZipArchive(files: files)
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyyMMdd-HHmm"
+            let url = fm.temporaryDirectory
+                .appendingPathComponent("memory-export-\(formatter.string(from: Date())).zip")
+            try data.write(to: url, options: .atomic)
+            return url
+        }
+    }
+
+    private static func archiveName(_ value: String) -> String {
+        value.replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
     }
 
     private func locked<T>(_ operation: () throws -> T) rethrows -> T {

@@ -185,7 +185,9 @@ extension AIChatViewModel {
         costSnapshot = CostSnapshot(
             lastUSD: nil, turnUSD: 0,
             sessionUSD: CostLedger.shared.total(for: sessionId),
-            sessionHasLedger: CostLedger.shared.hasEntries(for: sessionId))
+            sessionHasLedger: CostLedger.shared.hasEntries(for: sessionId),
+            currency: ProviderPricingService.shared.displayCurrency(
+                instanceId: resolveCurrentEntry()?.id ?? ""))
 
         let sinceAppear = (CFAbsoluteTimeGetCurrent() - Self.onAppearTimestamp) * 1000
         logger.info("[SessionLoad] loadSession START T+\(String(format: "%.0f", sinceAppear))ms session=\(sessionId) msgs=\(self.messages.count)")

@@ -280,6 +280,7 @@
 		E5IP00001 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = E5IP00010 /* InfoPlist.strings */; };
 		E5J000001 /* LoggingManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5J000011 /* LoggingManager.swift */; };
 		E5J000002 /* LogManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5J000012 /* LogManagementView.swift */; };
+		E5IPS0001 /* CrashIPSSymbolicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5IPS0011 /* CrashIPSSymbolicator.swift */; };
 		E5J000003 /* ConfigAuditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5J000013 /* ConfigAuditView.swift */; };
 		E5J000020 /* FileHandleSafeWrite.m in Sources */ = {isa = PBXBuildFile; fileRef = E5J000021 /* FileHandleSafeWrite.m */; };
 		E5J000030 /* NSTextContainerSetSizeGuard.m in Sources */ = {isa = PBXBuildFile; fileRef = E5J000031 /* NSTextContainerSetSizeGuard.m */; };
@@ -998,6 +999,7 @@
 		E5IP00028 /* hr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = hr; path = hr.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		E5J000011 /* LoggingManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoggingManager.swift; sourceTree = "<group>"; };
 		E5J000012 /* LogManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManagementView.swift; sourceTree = "<group>"; };
+		E5IPS0011 /* CrashIPSSymbolicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashIPSSymbolicator.swift; sourceTree = "<group>"; };
 		E5J000013 /* ConfigAuditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigAuditView.swift; sourceTree = "<group>"; };
 		E5J000021 /* FileHandleSafeWrite.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = FileHandleSafeWrite.m; sourceTree = "<group>"; };
 		E5J000022 /* FileHandleSafeWrite.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FileHandleSafeWrite.h; sourceTree = "<group>"; };
@@ -2354,6 +2356,7 @@
 				E5G000013 /* EnhancedBackgroundSettingsView.swift */,
 				E5P000012 /* EnvironmentVariablesView.swift */,
 				E5J000012 /* LogManagementView.swift */,
+				E5IPS0011 /* CrashIPSSymbolicator.swift */,
 				E5J000013 /* ConfigAuditView.swift */,
 				E5N0000142F3B941A00049557 /* MemoryManagementView.swift */,
 				E8A000013 /* OffloadPermissionSettingsView.swift */,
@@ -3141,6 +3144,7 @@
 				E5J000001 /* LoggingManager.swift in Sources */,
 				E5BADGE001 /* SessionBadgeStore.swift in Sources */,
 				E5J000002 /* LogManagementView.swift in Sources */,
+				E5IPS0001 /* CrashIPSSymbolicator.swift in Sources */,
 				E5J000003 /* ConfigAuditView.swift in Sources */,
 				E5J000020 /* FileHandleSafeWrite.m in Sources */,
 				E5J000050 /* ObjCExceptionCatcher.m in Sources */,

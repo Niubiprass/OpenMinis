@@ -35,8 +35,6 @@ struct ProviderInstanceDetailView: View {
     @State private var pendingDeleteModelEntry: ModelEntry?
     @State private var showKeyRevealed = false
     // [T-quota-newapi-balance] Balance credentials (access token / site login).
-    @State private var quotaTokenInput = ""
-    @State private var quotaTokenLoaded = false
     @State private var showQuotaLogin = false
     // [T-multikey] Key ring state shown in the credential area.
     @State private var multiKeyEnabled = false
@@ -390,9 +388,9 @@ struct ProviderInstanceDetailView: View {
                     // ring the token lives on each key's row, so pointing at "填访问
                     // 令牌" here would send the user to a field that no longer exists.
                     if multiKeyEnabled {
-                        Text("每把 Key 可以单独填访问令牌；不填则用上面那个通用令牌。")
+                        Text("每把 Key 点进去单独填访问令牌和用户 ID；不同账号各填各的。")
                     } else {
-                        Text("填了访问令牌就尝试读真实余额；读不到（站点没这个接口，或还需要额外凭据）就显示用量，不需要再填别的。")
+                        Text("点上面的 Key 行填访问令牌和用户 ID；只有这一处。读不到真实余额时显示用量。")
                     }
                 }
             }
@@ -749,11 +747,21 @@ struct ProviderInstanceDetailView: View {
         let rows = quotaRowsSnapshot
         let multiKeyOn = multiKeyEnabled && rows.contains { !$0.isMain }
 
-        if multiKeyOn {
+        // [T-quota-one-entry] One credential entry per key, in every mode.
+        // The old single-key shape had an instance-wide token field AND a
+        // per-key sheet, which is exactly the duplicate the user rejected.
+        // The main key is just another tappable row now, so a one-key provider
+        // has one place to fill and a multi-key provider has one per key.
+        if rows.isEmpty {
+            HStack {
+                Text("当前")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(quotaRefreshing ? "查询中…" : "未获取")
+                    .foregroundStyle(.secondary)
+            }
+        } else {
             ForEach(rows) { row in
-                // Tappable: opens this key's own access-token editor. The
-                // chevron is the Form convention for "there is another page
-                // behind this row" and is the only affordance that says so.
                 Button {
                     quotaTokenTarget = row
                 } label: {
@@ -766,19 +774,6 @@ struct ProviderInstanceDetailView: View {
                 }
                 .buttonStyle(.plain)
             }
-        } else {
-            HStack {
-                Text("当前")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if let current = quotaService.cachedQuota(instanceId: instance.id) {
-                    Text(current.displayText)
-                        .foregroundStyle(current.kind == .balance ? Color.green : Color.secondary)
-                } else {
-                    Text(quotaRefreshing ? "查询中…" : "未获取")
-                        .foregroundStyle(.secondary)
-                }
-            }
         }
 
         if quotaRefreshing {
@@ -789,33 +784,13 @@ struct ProviderInstanceDetailView: View {
             }
         }
 
-        // [T-quota-perkey-token] With 多 Key 模式 on, the instance-wide token
-        // field is HIDDEN: every key carries its own, and showing both invites
-        // exactly the question the user asked — "主界面能填，点进去又能填，到底
-        // 填哪个". Each key's row is the only place a token goes in that mode.
-        // With the ring off there is a single key, so the original single field
-        // is still the right shape.
-        // [T-quota-single-field] ONE field, as asked: paste the account's
-        // access token here. If it cannot produce a balance (the site needs a
-        // user-id header, or has no such endpoint) the query quietly falls back
-        // to the usage figure — 已用 — instead of asking for more input.
-        HStack {
-            Text("访问令牌")
-            Spacer()
-            TextField("可选", text: $quotaTokenInput)
-                .multilineTextAlignment(.trailing)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .onChange(of: quotaTokenInput) { newValue in
-                    ProviderKeychainHelper.saveQuotaAccessToken(newValue, instanceId: instance.id)
-                    ProviderQuotaService.shared.invalidate(instanceId: instance.id)
-                }
-        }
-        .onAppear {
-            guard !quotaTokenLoaded else { return }
-            quotaTokenLoaded = true
-            quotaTokenInput = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instance.id) ?? ""
-        }
+        // [T-quota-one-entry] There is deliberately no instance-wide token or
+        // user-id field here. The only entry is the key row above: one row for
+        // a one-key provider, one row per key for a multi-key provider. This
+        // removes the duplicate "outside / inside" question entirely.
+        Text("点上面的 Key 填访问令牌和用户 ID；每把 Key 独立保存，只有这一处。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
 
         // Wording states the cost up front: this is the ONLY place that spends
         // one request per key, and it is manual — nothing else in the app fires
@@ -824,13 +799,22 @@ struct ProviderInstanceDetailView: View {
                ? "刷新中…"
                : (multiKeyOn ? String(format: AppLocalized("测试并刷新余额（查全部 %lld 把）"), Int64(rows.count))
                              : AppLocalized("测试并刷新余额"))) {
-            saveQuotaToken(instance)
             quotaRefreshing = true
             quotaMessage = nil
             Task {
                 if multiKeyOn {
-                    await ProviderQuotaService.shared.refreshAllKeys(for: instance)
-                    let refreshed = ProviderQuotaService.shared.quotaRows(for: instance)
+                    // Both the per-key refresh and the row building touch the
+                    // Keychain and the ring lock. Running them in the button's
+                    // inherited MainActor task put that work on the main
+                    // thread — the same class of freeze the per-key patch was
+                    // supposed to remove. Detach the prefix, then only publish
+                    // the finished rows on the main actor.
+                    await Task.detached(priority: .userInitiated) {
+                        await ProviderQuotaService.shared.refreshAllKeys(for: instance)
+                    }.value
+                    let refreshed = await Task.detached(priority: .userInitiated) {
+                        ProviderQuotaService.shared.quotaRows(for: instance)
+                    }.value
                     let balances = refreshed.filter { $0.info?.kind == .balance }.count
                     let used = refreshed.filter { $0.info?.kind == .used }.count
                     let failed = refreshed.filter { $0.info == nil }.count
@@ -847,10 +831,18 @@ struct ProviderInstanceDetailView: View {
                         quotaMessage = firstReason.map { "\(summary)：\($0)" } ?? summary
                     }
                 } else {
-                    await ProviderQuotaService.shared.refreshQuota(for: instance)
-                    let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
-                    let reason = ProviderQuotaService.shared.failureNote(instanceId: instance.id)
-                    let singleRows = ProviderQuotaService.shared.quotaRows(for: instance)
+                    await Task.detached(priority: .userInitiated) {
+                        await ProviderQuotaService.shared.refreshQuota(for: instance)
+                    }.value
+                    let result = await Task.detached(priority: .userInitiated) {
+                        let service = ProviderQuotaService.shared
+                        return (service.cachedQuota(instanceId: instance.id),
+                                service.failureNote(instanceId: instance.id),
+                                service.quotaRows(for: instance))
+                    }.value
+                    let info = result.0
+                    let reason = result.1
+                    let singleRows = result.2
                     await MainActor.run {
                         quotaRefreshing = false
                         quotaRowsSnapshot = singleRows
@@ -900,15 +892,6 @@ struct ProviderInstanceDetailView: View {
         Text("余额低于这个金额时，供应商标题旁的余额标变黄。只对能读到真实余额的站点生效。")
             .font(.caption2)
             .foregroundStyle(.secondary)
-    }
-
-    private func saveQuotaToken(_ instance: ProviderInstance) {
-        let trimmed = quotaTokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            ProviderKeychainHelper.deleteQuotaAccessToken(instanceId: instance.id)
-        } else {
-            ProviderKeychainHelper.saveQuotaAccessToken(trimmed, instanceId: instance.id)
-        }
     }
 
     @ViewBuilder
@@ -2370,6 +2353,12 @@ private struct RateOverrideSheet: View {
         store.instance(for: instanceId)
     }
 
+    private var currencyBinding: Binding<String> {
+        Binding(
+            get: { pricing.displayCurrency(instanceId: instanceId) },
+            set: { pricing.setDisplayCurrency(instanceId: instanceId, currency: $0) })
+    }
+
     var body: some View {
         NavigationView {
             Form {
@@ -2383,10 +2372,14 @@ private struct RateOverrideSheet: View {
                     TextField("1 美元 = 人民币", text: $text)
                         .keyboardType(.decimalPad)
                         .multilineTextAlignment(.trailing)
+                    Picker("显示币种", selection: currencyBinding) {
+                        Text("人民币（¥）").tag("CNY")
+                        Text("美元（$）").tag("USD")
+                    }
                 } header: {
                     Text("汇率")
                 } footer: {
-                    Text("只影响这个供应商。留空并点“使用站点汇率”，则优先站点汇率，再退回全局汇率。")
+                    Text("只影响这个供应商。留空并点“使用站点汇率”，则优先站点汇率，再退回全局汇率。币种只改变金额显示，不改变实际计费。")
                 }
 
                 Section {
@@ -2569,6 +2562,7 @@ private struct KeyQuotaTokenSheet: View {
     var onDismiss: () -> Void
 
     @State private var token: String = ""
+    @State private var userID: String = ""
     @State private var loaded = false
 
     private var trimmed: String {
@@ -2605,13 +2599,28 @@ private struct KeyQuotaTokenSheet: View {
                 } header: {
                     Text(AppLocalized("访问令牌"))
                 } footer: {
-                    Text(AppLocalized("同一个账号下的多把 Key 共用一个令牌；不同账号各填各的。不填则用上面那个通用令牌。"))
+                    Text(AppLocalized("同一个账号下的多把 Key 共用一个令牌；不同账号各填各的。不填则回退到以前保存的通用令牌（如果有）。"))
+                }
+
+                Section {
+                    TextField(AppLocalized("可选"), text: $userID)
+                        .keyboardType(.numberPad)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.body, design: .monospaced))
+                } header: {
+                    Text(AppLocalized("用户 ID"))
+                } footer: {
+                    Text(AppLocalized("站点后台个人设置里的数字 ID。不同账号各填各的；不填则用上面的通用用户 ID。"))
                 }
 
                 if !trimmed.isEmpty {
                     Section {
                         Button(role: .destructive) {
                             ProviderKeychainHelper.saveQuotaAccessToken("", instanceId: instanceId, keyId: row.id)
+                            if row.isMain {
+                                ProviderKeychainHelper.deleteQuotaAccessToken(instanceId: instanceId)
+                            }
                             token = ""
                             onDismiss()
                         } label: {
@@ -2620,7 +2629,7 @@ private struct KeyQuotaTokenSheet: View {
                     }
                 }
             }
-            .navigationTitle(AppLocalized("访问令牌"))
+            .navigationTitle(AppLocalized("Key 凭据"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -2629,6 +2638,13 @@ private struct KeyQuotaTokenSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(AppLocalized("Save")) {
                         ProviderKeychainHelper.saveQuotaAccessToken(trimmed, instanceId: instanceId, keyId: row.id)
+                        ProviderQuotaService.setUserID(userID, instanceId: instanceId, keyId: row.id)
+                        if trimmed.isEmpty, row.isMain {
+                            ProviderKeychainHelper.deleteQuotaAccessToken(instanceId: instanceId)
+                        }
+                        if userID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, row.isMain {
+                            ProviderQuotaService.setUserID("", instanceId: instanceId)
+                        }
                         onDismiss()
                     }
                 }
@@ -2636,7 +2652,10 @@ private struct KeyQuotaTokenSheet: View {
             .onAppear {
                 guard !loaded else { return }
                 loaded = true
-                token = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instanceId, keyId: row.id) ?? ""
+                token = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instanceId, keyId: row.id)
+                    ?? ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instanceId)
+                    ?? ""
+                userID = ProviderQuotaService.userID(instanceId: instanceId, keyId: row.id) ?? ""
             }
         }
     }

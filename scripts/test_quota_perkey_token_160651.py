@@ -83,25 +83,27 @@ class RowEditor(unittest.TestCase):
         self.assertIn('.textContentType(.oneTimeCode)', body)
 
     def test_editor_explains_the_account_rule(self):
-        self.assertIn('同一个账号下的多把 Key 共用一个令牌；不同账号各填各的。不填则用上面那个通用令牌。',
-                      (ROOT / 'src/ios/Localizable.xcstrings').read_text())
+        self.assertIn('同一个账号下的多把 Key 共用一个令牌；不同账号各填各的。不填则回退到以前保存的通用令牌（如果有）。',
+                      DETAIL)
 
 
 class NoDuplicateTokenField(unittest.TestCase):
     """[T-quota-perkey-token] 用户反馈：主界面能填通用令牌，点进每把 Key 又能填，
     到底填哪个 —— 多 Key 模式下通用令牌行必须消失。"""
 
-    def test_instance_token_row_is_present_again(self):
-        # [T-quota-single-field] The user settled on ONE field: the instance-wide
-        # 访问令牌. Per-key rows still open their own editor, but there is no
-        # user-id / panel-host box next to it.
+    def test_instance_token_row_is_gone(self):
+        # [T-quota-one-entry] The user rejected "outside and inside" fields.
+        # The main key row is the only entry, whether the ring is on or off.
         i = DETAIL.index('private func quotaSection(_ instance: ProviderInstance) -> some View {')
         body = DETAIL[i:DETAIL.index('// [T-quota-threshold]', i)]
-        self.assertIn('Text("访问令牌")', body)
-        self.assertNotIn('if !multiKeyOn {', body)
+        self.assertNotIn('Text("访问令牌")', body)
+        self.assertNotIn('Text("用户 ID")', body)
+        self.assertIn('点上面的 Key 填访问令牌和用户 ID', body)
+        self.assertIn('只有这一处', body)
 
-    def test_footer_wording_follows_the_mode(self):
-        self.assertIn('每把 Key 可以单独填访问令牌；不填则用上面那个通用令牌。', DETAIL)
+    def test_footer_wording_is_unified(self):
+        self.assertIn('每把 Key 点进去单独填访问令牌和用户 ID', DETAIL)
+        self.assertIn('点上面的 Key 行填访问令牌和用户 ID；只有这一处。', DETAIL)
 
 
 class FailureReason(unittest.TestCase):

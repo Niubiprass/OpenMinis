@@ -2,6 +2,12 @@ import SwiftUI
 
 typealias MemorySaveDirty = (MemoryLibraryRoot, String) -> Void
 
+private struct MemoryRootSection: Identifiable {
+    let title: String
+    let roots: [MemoryLibraryRoot]
+    var id: String { title }
+}
+
 /// Caller-supplied roots describe real directories only. This view does not
 /// create per-group stores or change the agent's memory visibility.
 @MainActor
@@ -13,6 +19,8 @@ struct ScopedMemoryLibraryView<Header: View>: View {
     private let header: Header
     @State private var documents: [MemoryDocumentStore.Snapshot] = []
     @State private var isLibraryVisible = false
+    @State private var loaded = false
+    @State private var reloadGeneration = 0
     @State private var query = ""
     @State private var selecting = false
     @State private var selected: Set<String> = []
@@ -31,33 +39,55 @@ struct ScopedMemoryLibraryView<Header: View>: View {
     var body: some View {
         List {
             header
-            ForEach(roots) { root in
-                Section {
-                    if root.isReadOnly {
-                        Label("Read-only", systemImage: "lock")
-                    }
-                    ForEach(filtered(root)) { document in
-                        if selecting {
-                            Button {
-                                if !selected.insert(document.id).inserted { selected.remove(document.id) }
-                            } label: {
-                                HStack {
-                                    Image(systemName: selected.contains(document.id) ? "checkmark.circle.fill" : "circle")
-                                    row(document)
+            if !loaded {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                }
+                .padding(.vertical, 24)
+            } else if sections.isEmpty {
+                Text(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                     ? AppLocalized("No memory documents")
+                     : AppLocalized("No matching memories"))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(sections) { section in
+                    Section {
+                        ForEach(section.roots) { root in
+                            if root.title != section.title {
+                                Text(root.title)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            if root.isReadOnly {
+                                Label("Read-only", systemImage: "lock")
+                            }
+                            ForEach(filtered(root)) { document in
+                                if selecting {
+                                    Button {
+                                        if !selected.insert(document.id).inserted { selected.remove(document.id) }
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: selected.contains(document.id) ? "checkmark.circle.fill" : "circle")
+                                            row(document, root: root)
+                                        }
+                                    }
+                                    .disabled(!document.exists)
+                                } else {
+                                    NavigationLink {
+                                        MemoryContentView(root: root, fileName: document.fileName, onSaveDirty: onSaveDirty)
+                                    } label: { row(document, root: root) }
                                 }
                             }
-                            .disabled(!document.exists)
-                        } else {
-                            NavigationLink {
-                                MemoryContentView(root: root, fileName: document.fileName, onSaveDirty: onSaveDirty)
-                            } label: { row(document) }
                         }
-                    }
-                } header: { Text(root.title) }
-                footer: { Text("Sharing saved Markdown does not change memory visibility or group access.") }
+                    } header: { Text(section.title) }
+                }
+                Section {
+                } footer: {
+                    Text("Sharing saved Markdown does not change memory visibility or group access.")
+                }
             }
-            if documents.isEmpty { Text("No memory documents") }
-            else if roots.allSatisfy({ filtered($0).isEmpty }) { Text("No matching memories") }
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
@@ -85,6 +115,12 @@ struct ScopedMemoryLibraryView<Header: View>: View {
             guard isLibraryVisible else { return }
             reload()
         }
+        .onChange(of: roots.map { $0.id }) { _ in
+            // Persona list / group list can arrive after the first render (the
+            // folder lookup is async). Without this, the rows came from the
+            // previous root set and the new section looked empty.
+            reload()
+        }
         .onChange(of: query) { _ in
             // Hidden search results must not be accidentally shared.
             selected.formIntersection(Set(roots.flatMap { filtered($0) }.map { $0.id }))
@@ -105,21 +141,56 @@ struct ScopedMemoryLibraryView<Header: View>: View {
         }
     }
 
-    private func row(_ document: MemoryDocumentStore.Snapshot) -> some View {
+    /// Group roots under one visible header (all personas under 「人格记忆」,
+    /// all group memories under 「分组记忆」) and drop empty sections. This is
+    /// what removes the long wall of empty headers on the memory page.
+    private var sections: [MemoryRootSection] {
+        var order: [String] = []
+        var buckets: [String: [MemoryLibraryRoot]] = [:]
+        for root in roots {
+            let hasRows = !filtered(root).isEmpty
+            guard root.alwaysShow || hasRows else { continue }
+            if buckets[root.sectionTitle] == nil { order.append(root.sectionTitle) }
+            buckets[root.sectionTitle, default: []].append(root)
+        }
+        return order.map { MemoryRootSection(title: $0, roots: buckets[$0] ?? []) }
+    }
+
+    private func row(_ document: MemoryDocumentStore.Snapshot, root: MemoryLibraryRoot) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(document.fileName)
-            Text(document.exists ? String(document.originalText.prefix(140)) : AppLocalized("Not created — open to create GLOBAL.md"))
+            Text(root.itemTitle ?? document.fileName)
+            Text(root.itemSubtitle
+                 ?? (document.exists
+                     ? String(document.originalText.prefix(140))
+                     : AppLocalized("Not created — open to create GLOBAL.md")))
                 .font(.caption).foregroundColor(.secondary).lineLimit(2)
         }
     }
 
     private func reload() {
-        do {
-            documents = try store.list()
-            selected.formIntersection(Set(roots.flatMap { filtered($0) }.filter { $0.exists }.map { $0.id }))
-            error = nil
-        } catch {
-            documents = []; selected.removeAll(); self.error = error.localizedDescription
+        // File I/O belongs off the main thread: the memory page can contain
+        // hundreds of daily/group files, and a synchronous `list()` here was
+        // one more way to hold up the first frame. A generation counter drops
+        // an older result if the user switched tabs/roots while it ran.
+        reloadGeneration += 1
+        let generation = reloadGeneration
+        let store = self.store
+        Task.detached(priority: .userInitiated) {
+            let result = Result { try store.list() }
+            await MainActor.run {
+                guard generation == reloadGeneration else { return }
+                switch result {
+                case .success(let list):
+                    documents = list
+                    selected.formIntersection(Set(roots.flatMap { filtered($0) }.filter { $0.exists }.map { $0.id }))
+                    error = nil
+                case .failure(let failure):
+                    documents = []
+                    selected.removeAll()
+                    error = failure.localizedDescription
+                }
+                loaded = true
+            }
         }
     }
 

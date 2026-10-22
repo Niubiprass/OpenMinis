@@ -312,11 +312,20 @@ struct MemoryContentView: View {
     @State private var saved = false
     @State private var share: MemoryShareItem?
     @State private var shareToPersona = false
+    @State private var moveMemory = false
+    @Environment(\.dismiss) private var dismiss
 
     private var sourcePersona: AgentPersona? {
         guard root.id.hasPrefix("persona-") else { return nil }
         let id = String(root.id.dropFirst("persona-".count))
         return PersonaStore.shared.persona(id: id)
+    }
+
+    /// Persona memory and orphan files can be moved. GLOBAL.md is the
+    /// destination side, not a source: moving it would empty the global memory.
+    private var canMoveMemory: Bool {
+        guard snapshot?.exists == true else { return false }
+        return sourcePersona != nil || root.id == "persona-orphan"
     }
 
     init(root: MemoryLibraryRoot, fileName: String, title: String? = nil,
@@ -353,6 +362,16 @@ struct MemoryContentView: View {
                 } label: {
                     Label(AppLocalizedFormat("分享给其他人格（来自 %@）", persona.name),
                           systemImage: "person.line.dotted.person")
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 4)
+            }
+            if canMoveMemory {
+                Button {
+                    moveMemory = true
+                } label: {
+                    Label(AppLocalized("移动到其他人格 / 全局记忆"),
+                          systemImage: "arrow.turn.up.right")
                 }
                 .padding(.horizontal)
                 .padding(.bottom, 4)
@@ -411,6 +430,11 @@ struct MemoryContentView: View {
                 PersonaShareSheet(source: persona, title: fileName, content: snapshot.originalText)
             }
         }
+        .sheet(isPresented: $moveMemory) {
+            PersonaMemoryMoveSheet(root: root, fileName: fileName, sourcePersona: sourcePersona) { moved in
+                if moved { dismiss() }
+            }
+        }
         .sheet(item: $share) { MinisShareSheet(url: $0.url) }
         .alert("Memory error", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK", role: .cancel) { error = nil }
@@ -433,6 +457,99 @@ struct MemoryContentView: View {
         guard editingSnapshot == nil, let snapshot = snapshot else { return }
         do { share = MemoryShareItem(url: try store.export([snapshot])) }
         catch { self.error = error.localizedDescription }
+    }
+}
+
+// MARK: - [T-persona-memory-move] Move a memory to another persona/global
+
+private struct PersonaMoveTarget: Identifiable {
+    let id: String
+    let name: String
+    let icon: String
+    let personaId: String?
+}
+
+struct PersonaMemoryMoveSheet: View {
+    let root: MemoryLibraryRoot
+    let fileName: String
+    let sourcePersona: AgentPersona?
+    let completion: (Bool) -> Void
+
+    @ObservedObject private var store = PersonaStore.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var error: String?
+
+    private var targets: [PersonaMoveTarget] {
+        var list = store.personas
+            .filter { $0.id != sourcePersona?.id }
+            .map { PersonaMoveTarget(id: $0.id, name: $0.name,
+                                     icon: $0.icon.isEmpty ? "🙂" : $0.icon,
+                                     personaId: $0.id) }
+        list.append(PersonaMoveTarget(id: "global", name: AppLocalized("全局记忆"),
+                                      icon: "🌐", personaId: nil))
+        return list
+    }
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    ForEach(targets) { target in
+                        Button {
+                            move(to: target)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Text(target.icon)
+                                    .font(.system(size: 20))
+                                    .frame(width: 30)
+                                Text(target.name)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } footer: {
+                    Text(sourcePersona == nil
+                         ? AppLocalized("移动后原文件会删除；人格本身不会被删除。")
+                         : AppLocalized("移动后原人格的记忆会清空；人格本身不会被删除。"))
+                }
+                if let error {
+                    Section {
+                        Text(error).foregroundStyle(.red).font(.caption)
+                    }
+                }
+            }
+            .navigationTitle(AppLocalized("移动记忆"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(AppLocalized("取消")) { dismiss() }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+
+    private func move(to target: PersonaMoveTarget) {
+        let ok: Bool
+        if let source = sourcePersona {
+            if let targetId = target.personaId {
+                ok = store.moveMemory(fromPersonaId: source.id, toPersonaId: targetId)
+            } else {
+                ok = store.moveMemoryFile(named: "\(source.id).md", toPersonaId: nil)
+            }
+        } else {
+            ok = store.moveMemoryFile(named: fileName, toPersonaId: target.personaId)
+        }
+        if ok {
+            completion(true)
+            dismiss()
+        } else {
+            error = AppLocalized("移动失败：目标为空或文件不可读。")
+        }
     }
 }
 
