@@ -29,9 +29,19 @@ import SwiftUI
 import Foundation
 
 // Application services only. No memory store/editor/library/share-view doubles.
+struct ChatFolder {
+    let id: String
+    let name: String
+}
+enum HarnessMemoryPolicy { case global, folder }
+struct ChatFolderConfiguration {
+    var memoryPolicy: HarnessMemoryPolicy = .global
+}
 actor ChatStore {
     static let shared = ChatStore()
     func markDirty(recordType: String, recordId: String) {}
+    func listFolders() -> [ChatFolder] { [] }
+    func getFolderConfiguration(_ id: String) throws -> ChatFolderConfiguration { ChatFolderConfiguration() }
 }
 @MainActor enum SoulStore { static func refreshCache() {} }
 func AppLocalized(_ key: String) -> String { key }
@@ -60,8 +70,11 @@ struct HarnessBlock {
     var content = ""
 }
 final class AIChatViewModel: ObservableObject {
-    // This URL is never read/written: the harness typechecks, it does not run UI.
+    // These URLs are never read/written: the harness typechecks, it does not run UI.
     static let minisMemoryPersistentDir = URL(fileURLWithPath: "/memory-compile-harness")
+    static func minisFolderMemoryPersistentDir(for folderId: String) -> URL {
+        minisMemoryPersistentDir.appendingPathComponent(folderId, isDirectory: true)
+    }
     @Published var messages: [HarnessMessage] = []
     var folderRuntimeContext: HarnessFolderContext?
     func refreshFolderRuntimeContext() async throws {}
@@ -75,6 +88,36 @@ struct NavigationStack<Content: View>: View {
     var body: some View {
         NavigationView { content }.navigationViewStyle(StackNavigationViewStyle())
     }
+}
+
+struct AgentPersona: Identifiable, Equatable {
+    let id: String
+    var name: String
+    var icon: String
+    var style: String
+}
+final class PersonaStore: ObservableObject {
+    static let shared = PersonaStore()
+    @Published var personas: [AgentPersona] = []
+    var blankByDefault = true
+    func persona(id: String?) -> AgentPersona? { nil }
+}
+struct SharedMemoryRecord: Identifiable { let id: String }
+final class SharedMemoryStore: ObservableObject {
+    static let shared = SharedMemoryStore()
+    @Published var records: [SharedMemoryRecord] = []
+}
+struct SharedMemoryListView: View { var body: some View { EmptyView() } }
+struct PersonaShareSheet: View {
+    let source: AgentPersona
+    let title: String
+    let content: String
+    var body: some View { EmptyView() }
+}
+func AppLocalizedFormat(_ format: String, _ args: CVarArg...) -> String { format }
+enum MemoryMaintenance {
+    struct Result { let warning: String? }
+    static func runIfNeeded() -> Result { Result(warning: nil) }
 }
 '''
 
