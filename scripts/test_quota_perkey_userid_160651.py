@@ -36,6 +36,8 @@ class PerKeyUserID(unittest.TestCase):
         self.assertIn('Text(AppLocalized("用户 ID"))', sheet)
         self.assertIn('ProviderQuotaService.setUserID(userID, instanceId: instanceId, keyId: row.id)', sheet)
         self.assertIn('ProviderQuotaService.userID(instanceId: instanceId, keyId: row.id)', sheet)
+        self.assertNotIn(".keyboardType(.numberPad)", sheet)
+        self.assertIn("数字、字母或中文", sheet)
 
     def test_warning_points_at_the_entry(self):
         self.assertIn("点这把 Key 填上", QUOTA)

@@ -564,6 +564,7 @@ struct AIChatView: View {
     @State private var pendingSearchJump: MessageSearchJump? = nil
     @State private var showThinkingLevelSheet = false
     @State private var showSessionSkills = false
+    @State private var showSessionPersona = false
     @State private var showSessionMCPs = false
     @State private var showSessionMemory = false
     @State private var showEnhancedCacheAlert = false
@@ -1290,6 +1291,14 @@ struct AIChatView: View {
             SessionSkillsView(sessionId: vm.sessionId) {
                 await vm.ensureSessionReturningId()
             }
+        }
+        .sheet(isPresented: $showSessionPersona) {
+            // One tap from the chat menu. Previously this was only reachable
+            // inside Skills in Session, which made it look like there was no
+            // persona entry at all.
+            PersonaPickerSheet(sessionId: vm.sessionId,
+                               ensureSessionId: { await vm.ensureSessionReturningId() },
+                               onResolved: { _ in })
         }
 
         let _ios15Seg6 = _ios15Seg5
@@ -2025,6 +2034,7 @@ _ios15Seg7
             onOpenTerminal: { showTerminal = true },
             onOpenBrowser: { showBrowserSheet = true },
             onBrowseFiles: { showFileBrowser = true },
+            onPersona: { showSessionPersona = true },
             onSkills: { showSessionSkills = true },
             onMCPs: { showSessionMCPs = true },
             onMemories: { showSessionMemory = true },
@@ -5705,6 +5715,7 @@ private struct ChatTrailingMenu: View, Equatable {
     let onOpenTerminal: () -> Void
     let onOpenBrowser: () -> Void
     let onBrowseFiles: () -> Void
+    let onPersona: () -> Void
     let onSkills: () -> Void
     let onMCPs: () -> Void
     let onMemories: () -> Void
@@ -5787,6 +5798,10 @@ private struct ChatTrailingMenu: View, Equatable {
             }
 
             Divider()
+
+            Button { onPersona() } label: {
+                Label(AppLocalized("会话人格"), systemImage: "person.crop.circle")
+            }
 
             Button { onSkills() } label: {
                 Label(AppLocalized("Skills in Session"), systemImage: "puzzlepiece.extension")
@@ -5891,6 +5906,7 @@ private struct ChatTrailingMenuButton: UIViewRepresentable {
     let onOpenTerminal: () -> Void
     let onOpenBrowser: () -> Void
     let onBrowseFiles: () -> Void
+    let onPersona: () -> Void
     let onSkills: () -> Void
     let onMCPs: () -> Void
     let onMemories: () -> Void
@@ -6073,6 +6089,8 @@ private struct ChatTrailingMenuButton: UIViewRepresentable {
         ]))
 
         var sessionGroup: [UIMenuElement] = [
+            UIAction(title: AppLocalized("会话人格"),
+                     image: UIImage(systemName: "person.crop.circle")) { _ in coordinator.parent.onPersona() },
             UIAction(title: AppLocalized("Skills in Session"),
                      image: UIImage(systemName: "puzzlepiece.extension")) { _ in coordinator.parent.onSkills() },
             UIAction(title: AppLocalized("MCPs in Session"),

@@ -186,6 +186,8 @@ extension AIChatViewModel {
             lastUSD: nil, turnUSD: 0,
             sessionUSD: CostLedger.shared.total(for: sessionId),
             sessionHasLedger: CostLedger.shared.hasEntries(for: sessionId),
+            exchangeRate: ProviderPricingService.shared.effectiveDisplayRate(
+                instanceId: resolveCurrentEntry()?.id ?? ""),
             currency: ProviderPricingService.shared.displayCurrency(
                 instanceId: resolveCurrentEntry()?.id ?? ""))
 

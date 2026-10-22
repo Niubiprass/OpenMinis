@@ -1,5 +1,7 @@
 import SwiftUI
 import PhotosUI
+import UIKit
+import UniformTypeIdentifiers
 
 /// Settings page for SOUL.md — Minis's persistent personality file.
 /// Lives between Skills and Memory in the Agent Runtime section.
@@ -870,6 +872,7 @@ private struct PersonaEditorView: View {
 
 struct SharedMemoryListView: View {
     @ObservedObject private var store = SharedMemoryStore.shared
+    @State private var showCompose = false
 
     var body: some View {
         List {
@@ -899,6 +902,132 @@ struct SharedMemoryListView: View {
         }
         .navigationTitle(AppLocalized("共享给我"))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showCompose = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("粘贴或导入共享记忆")
+            }
+        }
+        .sheet(isPresented: $showCompose) {
+            SharedMemoryComposeSheet()
+        }
+    }
+}
+
+/// External entry for the local shared-memory inbox. There is no network
+/// service behind 「共享给我」; this sheet is where text pasted from another
+/// app, or a Markdown file, becomes a read-only record for a chosen persona.
+struct SharedMemoryComposeSheet: View {
+    @ObservedObject private var store = SharedMemoryStore.shared
+    @ObservedObject private var personaStore = PersonaStore.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var sourceName = "外部导入"
+    @State private var content = ""
+    @State private var targetId = ""
+    @State private var showFilePicker = false
+    @State private var error: String?
+
+    private var target: AgentPersona? {
+        personaStore.personas.first { $0.id == targetId }
+    }
+
+    private var canSave: Bool {
+        target != nil
+            && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    TextField(AppLocalized("标题"), text: $title)
+                    TextField(AppLocalized("来源名称"), text: $sourceName)
+                    if personaStore.personas.isEmpty {
+                        Text(AppLocalized("还没有人格；先到人格页新建一个。"))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker(AppLocalized("给哪个人格"), selection: $targetId) {
+                            ForEach(personaStore.personas) { persona in
+                                Text(persona.name).tag(persona.id)
+                            }
+                        }
+                    }
+                } footer: {
+                    Text(AppLocalized("「共享给我」是本地收件箱，不会联网；粘贴或导入后，只有目标人格能复制到自己的记忆。"))
+                }
+
+                Section {
+                    TextEditor(text: $content)
+                        .frame(minHeight: 180)
+                    Button {
+                        showFilePicker = true
+                    } label: {
+                        Label(AppLocalized("从文件导入 Markdown"), systemImage: "doc.badge.plus")
+                    }
+                } header: {
+                    Text(AppLocalized("内容"))
+                } footer: {
+                    if let error {
+                        Text(error).foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle(AppLocalized("导入共享记忆"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(AppLocalized("取消")) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(AppLocalized("保存")) { save() }
+                        .disabled(!canSave)
+                }
+            }
+            .onAppear {
+                if targetId.isEmpty { targetId = personaStore.personas.first?.id ?? "" }
+            }
+            .fileImporter(isPresented: $showFilePicker,
+                          allowedContentTypes: [.plainText, .data],
+                          allowsMultipleSelection: false) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    let scoped = url.startAccessingSecurityScopedResource()
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                    do {
+                        let text = try String(contentsOf: url, encoding: .utf8)
+                        content = text
+                        if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            title = url.deletingPathExtension().lastPathComponent
+                        }
+                        error = nil
+                    } catch {
+                        self.error = error.localizedDescription
+                    }
+                case .failure(let error):
+                    self.error = error.localizedDescription
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+
+    private func save() {
+        guard let target else { return }
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty, !trimmedContent.isEmpty else { return }
+        let source = AgentPersona(name: sourceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  ? AppLocalized("外部导入") : sourceName)
+        store.share(source: source, target: target, title: trimmedTitle, content: trimmedContent)
+        ShareFeedbackToast.show(AppLocalizedFormat("已导入给 %@", target.name))
+        dismiss()
     }
 }
 
@@ -945,13 +1074,95 @@ struct SharedMemoryDetailView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    if let url = store.exportURL(record) { share = MemoryShareItem(url: url) }
+                    // PDF, not Markdown: a shared snapshot should not look
+                    // like an editable memory file. The recipient can still
+                    // copy text into their own memory explicitly.
+                    if let url = SharedMemoryPDFExporter.export(record) {
+                        share = MemoryShareItem(url: url)
+                    }
                 } label: {
                     Image(systemName: "square.and.arrow.up")
                 }
             }
         }
         .sheet(item: $share) { MinisShareSheet(url: $0.url) }
+    }
+}
+
+/// [T-shared-memory-readonly] Renders a shared persona-memory snapshot as a
+/// paginated PDF. The source Markdown is still available to the sender, but
+/// the shared artifact is a document rather than an editable `.md`.
+enum SharedMemoryPDFExporter {
+    static func export(_ record: SharedMemoryRecord) -> URL? {
+        let page = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let renderer = UIGraphicsPDFRenderer(bounds: page)
+        let data = renderer.pdfData { context in
+            let margin: CGFloat = 40
+            let width = page.width - margin * 2
+            var y: CGFloat = margin
+
+            func beginPage() {
+                context.beginPage()
+                y = margin
+            }
+
+            beginPage()
+            let titleAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.boldSystemFont(ofSize: 18),
+                .foregroundColor: UIColor.label
+            ]
+            let metaAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 10),
+                .foregroundColor: UIColor.secondaryLabel
+            ]
+            let bodyAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 11),
+                .foregroundColor: UIColor.label
+            ]
+
+            (record.title as NSString).draw(
+                with: CGRect(x: margin, y: y, width: width, height: 26),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: titleAttrs, context: nil)
+            y += 28
+            let meta = "只读快照 · 来自 \(record.sourcePersonaName) · 给 \(record.targetPersonaName) · \(dateText(record.sharedAt))"
+            (meta as NSString).draw(
+                with: CGRect(x: margin, y: y, width: width, height: 16),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: metaAttrs, context: nil)
+            y += 24
+
+            for rawLine in record.content.components(separatedBy: .newlines) {
+                let line = rawLine.isEmpty ? " " : rawLine
+                let bounding = (line as NSString).boundingRect(
+                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: bodyAttrs, context: nil)
+                if y + bounding.height > page.height - margin {
+                    beginPage()
+                }
+                (line as NSString).draw(
+                    with: CGRect(x: margin, y: y, width: width, height: bounding.height),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: bodyAttrs, context: nil)
+                y += bounding.height
+            }
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shared-memory-\(record.id.prefix(8)).pdf")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    private static func dateText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_Hans_CN")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
     }
 }
 

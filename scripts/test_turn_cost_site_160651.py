@@ -46,7 +46,7 @@ class Pricing(unittest.TestCase):
         self.assertIn('func setRateOverride(instanceId:', QUOTA)
         self.assertIn('Text("汇率")', DETAIL)
         self.assertIn('RateOverrideSheet', DETAIL)
-        self.assertIn('effectiveRate(instanceId: instanceId)', VM)
+        self.assertIn('effectiveDisplayRate(instanceId: instanceId)', VM)
 
     def test_appearance_has_no_amount_section(self):
         appearance = (ROOT / 'src/ios/Views/ContentView.swift').read_text()

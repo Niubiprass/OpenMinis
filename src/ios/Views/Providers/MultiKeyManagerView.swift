@@ -29,10 +29,17 @@ struct MultiKeyManagerView: View {
             }
 
             Section {
-                NavigationLink(destination: MultiKeyStrategyView(selection: $strategy)
-                        .onDisappear {
-                            manager.setStrategy(strategy, for: instance.id)
-                        }) {
+                NavigationLink(destination: MultiKeyStrategyView(selection: Binding(
+                    get: { strategy },
+                    set: { newValue in
+                        strategy = newValue
+                        // Write on selection, not onDisappear: iOS 15's
+                        // NavigationLink does not guarantee the callback when
+                        // the user swipes back, which made 顺序优先 look like
+                        // it reverted to 轮询 on the next visit.
+                        manager.setStrategy(newValue, for: instance.id)
+                    }
+                ))) {
                     HStack {
                         Text("负载均衡策略")
                         Spacer()

@@ -202,7 +202,7 @@ enum MultiKeyStrategy: String, Codable, CaseIterable {
     var explanation: String {
         switch self {
         case .roundRobin: return "依次使用每个 Key，用完最后一个再回到第一个。最均衡，推荐。"
-        case .priority:   return "只用第一个，它报错了才换下一个。适合有主备之分的情况。"
+        case .priority:   return "固定用列表第一个；成功也继续用它，只有报错或被停用时才换下一个。"
         case .random:     return "每次随机挑一个。分散得最开，但不好预期。"
         case .leastUsed:  return "优先选累计用得最少的那个。长期最省。"
         }
@@ -333,10 +333,15 @@ final class ProviderMultiKeyManager {
 
     func setEnabled(_ on: Bool, for instanceId: String) {
         UserDefaults.standard.set(on, forKey: enabledPrefix + instanceId)
+        // Preferences are small and the user expects the switch to survive an
+        // immediate app exit. Force the cfprefsd write instead of waiting for
+        // the periodic flush.
+        UserDefaults.standard.synchronize()
     }
 
     func setStrategy(_ s: MultiKeyStrategy, for instanceId: String) {
         UserDefaults.standard.set(s.rawValue, forKey: strategyPrefix + instanceId)
+        UserDefaults.standard.synchronize()
     }
 
     func add(_ key: String, name: String? = nil, for instanceId: String) -> ProviderAPIKey {
@@ -460,7 +465,11 @@ final class ProviderMultiKeyManager {
             return ProviderKeyLease(id: "main", key: main)
         }
         switch strategy(for: instanceId) {
-        case .priority: return pool[0].lease
+        case .priority:
+            // The management screen lists the ring keys, not the saved
+            // credential. "First" must mean the first visible Key; the main
+            // credential is the last-resort fallback, not a hidden head start.
+            return (pool.first { $0.lease.id != "main" } ?? pool[0]).lease
         case .random: return pool.randomElement()?.lease
         case .leastUsed: return pool.min { $0.uses < $1.uses }?.lease
         case .roundRobin:

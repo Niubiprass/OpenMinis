@@ -117,7 +117,7 @@ class FailureReason(unittest.TestCase):
     def test_distinct_reasons_for_distinct_failures(self):
         for key in ('没有凭据：没填访问令牌，也没在这个站点登录过',
                     '连不上这个站点（网络或证书问题，也可能被代理拦了）',
-                    '站点返回 HTTP %lld（这个路径可能不存在）',
+                    '站点没有余额查询接口（不影响对话）',
                     '返回里没有 quota 字段（这站可能不是 New API 面板）'):
             self.assertIn(key, QUOTA)
 

@@ -1293,9 +1293,17 @@ struct CostDetailSheet: View {
                     HStack {
                         Text("汇率")
                         Spacer()
-                        Text(vm.costSnapshot.exchangeRate.map { String(format: "%.2f · 站点", $0) }
-                             ?? String(format: "%.2f · 全局", TurnCost.usdToCny))
-                            .foregroundStyle(.secondary)
+                        Group {
+                            if let code = vm.costSnapshot.currency,
+                               code != "CNY", code != "USD",
+                               let rate = vm.costSnapshot.exchangeRate {
+                                Text(String(format: "%.4f · 自定义 %@", rate, code))
+                            } else {
+                                Text(vm.costSnapshot.exchangeRate.map { String(format: "%.2f · 站点", $0) }
+                                     ?? String(format: "%.2f · 全局", TurnCost.usdToCny))
+                            }
+                        }
+                        .foregroundStyle(.secondary)
                     }
                 } header: {
                     Text("费用")

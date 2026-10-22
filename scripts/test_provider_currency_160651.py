@@ -45,7 +45,26 @@ class ProviderCurrencyContracts(unittest.TestCase):
         self.assertIn('Picker("显示币种", selection: currencyBinding)', src)
         self.assertIn('Text("人民币（¥）").tag("CNY")', src)
         self.assertIn('Text("美元（$）").tag("USD")', src)
-        self.assertIn("pricing.setDisplayCurrency(instanceId: instanceId, currency: $0)", src)
+        self.assertIn("pricing.setDisplayCurrency(instanceId: instanceId, currency: newValue)", src)
+
+    def test_custom_currency_has_code_and_rate(self):
+        src = read("Views/Providers/ProviderInstanceDetailView.swift")
+        store = read("Providers/ProviderQuotaService.swift")
+        self.assertIn('Text("自定义").tag("CUSTOM")', src)
+        self.assertIn('TextField("例如 EUR", text: $customCode)', src)
+        self.assertIn("pricing.setCustomCurrency", src)
+        self.assertIn("func customCurrency(instanceId: String) -> String?", store)
+        self.assertIn("func effectiveDisplayRate(instanceId: String) -> Double?", store)
+        self.assertIn('return String(format: "≈%@ %.4f", code, usd * (rate ?? 1))',
+                      read("Shared/AppLocalization.swift"))
+
+    def test_currency_choices_are_inline_with_rate_input(self):
+        # The user rejected a two-value subpage: both choices sit in the rate
+        # section, and the exchange rate stays editable.
+        src = read("Views/Providers/ProviderInstanceDetailView.swift")
+        self.assertIn('.pickerStyle(.segmented)', src)
+        self.assertIn('Text("自定义汇率")', src)
+        self.assertIn('TextField("7.30", text: $text)', src)
 
 
 if __name__ == "__main__":

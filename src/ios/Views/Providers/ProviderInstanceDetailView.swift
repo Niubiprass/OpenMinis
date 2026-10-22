@@ -2344,6 +2344,10 @@ private struct RateOverrideSheet: View {
     @State private var manualError: String?
     @State private var pricingRefreshing = false
     @State private var pricingMessage: String?
+    @State private var currencyChoice = "CNY"
+    @State private var customCode = ""
+    @State private var customRateText = ""
+    @State private var customError: String?
 
     private var entries: [ModelEntry] {
         store.entries(for: instanceId).filter { !$0.isHidden }
@@ -2355,8 +2359,19 @@ private struct RateOverrideSheet: View {
 
     private var currencyBinding: Binding<String> {
         Binding(
-            get: { pricing.displayCurrency(instanceId: instanceId) },
-            set: { pricing.setDisplayCurrency(instanceId: instanceId, currency: $0) })
+            get: { currencyChoice },
+            set: { newValue in
+                currencyChoice = newValue
+                customError = nil
+                if newValue == "CUSTOM" {
+                    if customCode.isEmpty { customCode = "EUR" }
+                    if customRateText.isEmpty { customRateText = "1.0" }
+                } else {
+                    pricing.setDisplayCurrency(instanceId: instanceId, currency: newValue)
+                    customCode = ""
+                    customRateText = ""
+                }
+            })
     }
 
     var body: some View {
@@ -2369,17 +2384,55 @@ private struct RateOverrideSheet: View {
                         Text(siteRate.map { String(format: "%.2f", $0) } ?? "未提供")
                             .foregroundStyle(.secondary)
                     }
-                    TextField("1 美元 = 人民币", text: $text)
-                        .keyboardType(.decimalPad)
-                        .multilineTextAlignment(.trailing)
+                    HStack(spacing: 6) {
+                        Text("自定义汇率")
+                        Spacer()
+                        Text("1 美元 =")
+                            .foregroundStyle(.secondary)
+                        TextField("7.30", text: $text)
+                            .keyboardType(.decimalPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(maxWidth: 92)
+                        Text("人民币")
+                            .foregroundStyle(.secondary)
+                    }
+                    // Three inline choices; no second page. CUSTOM exposes a
+                    // code + units-per-USD field so EUR/JPY/... work without
+                    // a built-in symbol table.
                     Picker("显示币种", selection: currencyBinding) {
                         Text("人民币（¥）").tag("CNY")
                         Text("美元（$）").tag("USD")
+                        Text("自定义").tag("CUSTOM")
+                    }
+                    .pickerStyle(.segmented)
+
+                    if currencyChoice == "CUSTOM" {
+                        HStack(spacing: 6) {
+                            Text("币种代码")
+                            Spacer()
+                            TextField("例如 EUR", text: $customCode)
+                                .textInputAutocapitalization(.characters)
+                                .autocorrectionDisabled()
+                                .multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 110)
+                        }
+                        HStack(spacing: 6) {
+                            Text("1 美元 =")
+                                .foregroundStyle(.secondary)
+                            TextField("例如 0.92", text: $customRateText)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                            Text(customCode.isEmpty ? "自定义单位" : customCode.uppercased())
+                                .foregroundStyle(.secondary)
+                        }
+                        if let customError {
+                            Text(customError).font(.caption).foregroundStyle(.red)
+                        }
                     }
                 } header: {
                     Text("汇率")
                 } footer: {
-                    Text("只影响这个供应商。留空并点“使用站点汇率”，则优先站点汇率，再退回全局汇率。币种只改变金额显示，不改变实际计费。")
+                    Text("只影响这个供应商。自定义币种按「1 美元 = 你填的数字」换算；只改变金额显示，不改变实际计费。")
                 }
 
                 Section {
@@ -2502,6 +2555,22 @@ private struct RateOverrideSheet: View {
                             pricing.setManualPrice(instanceId: instanceId, modelId: selectedModelId,
                                                    input: i, output: o)
                         }
+                        if currencyChoice == "CUSTOM" {
+                            let code = customCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                            let rate = Double(customRateText.trimmingCharacters(in: .whitespacesAndNewlines))
+                            guard code.count >= 2, code.count <= 8,
+                                  code.unicodeScalars.allSatisfy({ CharacterSet.uppercaseLetters.contains($0) }) else {
+                                customError = "币种代码用 2–8 个英文字母，例如 EUR。"
+                                return
+                            }
+                            guard let rate, rate > 0 else {
+                                customError = "请填写大于 0 的汇率，例如 0.92。"
+                                return
+                            }
+                            pricing.setCustomCurrency(instanceId: instanceId, code: code, rate: rate)
+                        } else {
+                            pricing.setCustomCurrency(instanceId: instanceId, code: nil, rate: nil)
+                        }
                         if let rate = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), rate > 0 {
                             pricing.setRateOverride(instanceId: instanceId, rate: rate)
                         }
@@ -2516,6 +2585,15 @@ private struct RateOverrideSheet: View {
                     text = String(format: "%.2f", siteRate)
                 } else {
                     text = String(format: "%.2f", TurnCost.usdToCny)
+                }
+                if let custom = pricing.customCurrency(instanceId: instanceId) {
+                    currencyChoice = "CUSTOM"
+                    customCode = custom
+                    customRateText = pricing.customRate(instanceId: instanceId).map {
+                        String(format: "%.4f", $0)
+                    } ?? ""
+                } else {
+                    currencyChoice = pricing.displayCurrency(instanceId: instanceId)
                 }
                 selectedModelId = entries.first?.baseModel.id ?? ""
                 loadManualFields()
@@ -2604,14 +2682,13 @@ private struct KeyQuotaTokenSheet: View {
 
                 Section {
                     TextField(AppLocalized("可选"), text: $userID)
-                        .keyboardType(.numberPad)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
                 } header: {
                     Text(AppLocalized("用户 ID"))
                 } footer: {
-                    Text(AppLocalized("站点后台个人设置里的数字 ID。不同账号各填各的；不填则用上面的通用用户 ID。"))
+                    Text(AppLocalized("按站点后台显示填，数字、字母或中文都可以；不同账号各填各的。不填则用以前保存的通用用户 ID（如果有）。"))
                 }
 
                 if !trimmed.isEmpty {

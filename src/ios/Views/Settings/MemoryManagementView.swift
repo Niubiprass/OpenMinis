@@ -39,6 +39,7 @@ struct MemoryManagementView: View {
     @ObservedObject private var personaStore = PersonaStore.shared
     @ObservedObject private var sharedStore = SharedMemoryStore.shared
     @State private var folderMemoryRoots: [MemoryLibraryRoot] = []
+    @State private var personaEntryCounts: [String: Int] = [:]
     @State private var memoryWarning: String?
     @State private var tab: MemoryTab = .daily
     @State private var exportShare: MemoryShareItem?
@@ -141,9 +142,11 @@ struct MemoryManagementView: View {
         let personaDir = personaDirectory
         let knownFiles = Set(personaStore.personas.map { "\($0.id).md" })
         var roots: [MemoryLibraryRoot] = personaStore.personas.map { persona in
-            let subtitle = persona.style.isEmpty
-                ? AppLocalized("还没有记忆")
-                : persona.style
+            let count = personaEntryCounts[persona.id] ?? 0
+            let countText = count > 0
+                ? String(format: AppLocalized("%lld 条"), Int64(count))
+                : AppLocalized("还没有记忆")
+            let subtitle = persona.style.isEmpty ? countText : "\(countText) · \(persona.style)"
             return MemoryLibraryRoot(
                 id: "persona-\(persona.id)",
                 title: AppLocalized("人格记忆"),
@@ -179,7 +182,10 @@ struct MemoryManagementView: View {
 
             // One real shared directory, not a per-model/group facade. The library
             // reuses MemoryContentView -> MemoryFileEditView for document actions.
-            ScopedMemoryLibraryView(title: AppLocalized("Memory"), roots: memoryRoots) {
+            ScopedMemoryLibraryView(title: AppLocalized("Memory"), roots: memoryRoots,
+                                    onShare: { url in
+                                        exportShare = MemoryShareItem(url: url)
+                                    }) {
             Section {
                 Toggle(AppLocalized("settings_memory_global_enabled"), isOn: $memoryGlobalEnabled)
                 if let memoryWarning {
@@ -212,10 +218,17 @@ struct MemoryManagementView: View {
         }
         .task {
             await loadFolderMemoryRoots()
+            refreshPersonaCounts()
             let result = await Task.detached(priority: .utility) {
                 MemoryMaintenance.runIfNeeded()
             }.value
             await MainActor.run { memoryWarning = result.warning }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .personaDidChange)) { _ in
+            refreshPersonaCounts()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .memoryFilesDidChange)) { _ in
+            refreshPersonaCounts()
         }
         .toolbar {
 
@@ -283,6 +296,17 @@ struct MemoryManagementView: View {
         .animation(.spring(response: 0.3), value: forceSyncToast)
     }
 
+    private func refreshPersonaCounts() {
+        let ids = personaStore.personas.map { $0.id }
+        Task.detached(priority: .utility) {
+            var counts: [String: Int] = [:]
+            for id in ids {
+                counts[id] = PersonaStore.shared.memoryEntryCount(for: id)
+            }
+            await MainActor.run { personaEntryCounts = counts }
+        }
+    }
+
     /// [T-memory-export-all] One ZIP with every memory file. The existing
     /// per-file share stays; this is the "take everything" entry. Store-only
     /// ZIP writer is the one already used for skill archives, so no new
@@ -290,8 +314,16 @@ struct MemoryManagementView: View {
     private func exportAllMemory() {
         let roots = dailyRoots + [globalRoot] + personaRoots + folderMemoryRoots
         let store = MemoryDocumentStore(roots: roots)
+        var extras: [(relativePath: String, data: Data)] = []
+        if let data = try? JSONEncoder().encode(personaStore.personas) {
+            extras.append(("personas.json", data))
+        }
+        let soul = memoryDirectory.appendingPathComponent("SOUL.md")
+        if let data = try? Data(contentsOf: soul) {
+            extras.append(("soul/SOUL.md", data))
+        }
         do {
-            exportShare = MemoryShareItem(url: try store.exportArchive())
+            exportShare = MemoryShareItem(url: try store.exportArchive(extraFiles: extras))
         } catch {
             forceSyncToast = AppLocalized("没有可导出的记忆")
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { forceSyncToast = nil }

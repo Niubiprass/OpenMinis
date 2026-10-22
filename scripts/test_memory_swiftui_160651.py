@@ -101,6 +101,7 @@ final class PersonaStore: ObservableObject {
     @Published var personas: [AgentPersona] = []
     var blankByDefault = true
     func persona(id: String?) -> AgentPersona? { nil }
+    func memoryEntryCount(for personaId: String) -> Int { 0 }
     @discardableResult
     func moveMemory(fromPersonaId sourceId: String, toPersonaId targetId: String) -> Bool { false }
     @discardableResult

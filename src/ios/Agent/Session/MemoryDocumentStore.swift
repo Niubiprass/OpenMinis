@@ -170,7 +170,7 @@ final class MemoryDocumentStore {
     /// share directories (daily/global/persona), so `nameFilter` is applied
     /// here; otherwise exporting the persona tab would write every persona
     /// file N times.
-    func exportArchive() throws -> URL {
+    func exportArchive(extraFiles: [(relativePath: String, data: Data)] = []) throws -> URL {
         try locked {
             var files: [(relativePath: String, data: Data)] = []
             var seen = Set<String>()
@@ -192,6 +192,12 @@ final class MemoryDocumentStore {
                 }
                 files.append(("\(prefix)/\(Self.archiveName(snapshot.fileName))",
                               snapshot.originalBytes ?? Data()))
+            }
+            for extra in extraFiles {
+                let name = extra.relativePath
+                guard !name.isEmpty, !seen.contains(name) else { continue }
+                seen.insert(name)
+                files.append((name, extra.data))
             }
             guard !files.isEmpty else { throw Failure.unsavedExport }
             let data = MemoryZipWriter.archive(files: files)

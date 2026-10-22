@@ -16,6 +16,10 @@ struct ScopedMemoryLibraryView<Header: View>: View {
     private let roots: [MemoryLibraryRoot]
     private let store: MemoryDocumentStore
     private let onSaveDirty: MemorySaveDirty?
+    /// Optional parent-owned presentation. iOS 15 can silently drop a sheet
+    /// attached to a toolbar inside a nested list; the settings page passes
+    /// this so its own sheet host presents the export reliably.
+    private let onShare: ((URL) -> Void)?
     private let header: Header
     @State private var documents: [MemoryDocumentStore.Snapshot] = []
     @State private var isLibraryVisible = false
@@ -28,11 +32,13 @@ struct ScopedMemoryLibraryView<Header: View>: View {
     @State private var share: MemoryShareItem?
 
     init(title: String, roots: [MemoryLibraryRoot], onSaveDirty: MemorySaveDirty? = nil,
+         onShare: ((URL) -> Void)? = nil,
          @ViewBuilder header: () -> Header) {
         self.title = title
         self.roots = roots
         self.store = MemoryDocumentStore(roots: roots)
         self.onSaveDirty = onSaveDirty
+        self.onShare = onShare
         self.header = header()
     }
 
@@ -195,8 +201,22 @@ struct ScopedMemoryLibraryView<Header: View>: View {
     }
 
     private func shareSelected() {
-        do { share = MemoryShareItem(url: try store.export(documents.filter { selected.contains($0.id) })) }
-        catch { self.error = error.localizedDescription }
+        let snapshots = documents.filter { selected.contains($0.id) }
+        guard !snapshots.isEmpty else {
+            error = AppLocalized("先选择要导出的文件")
+            return
+        }
+        do {
+            let url = try store.export(snapshots)
+            if let onShare {
+                onShare(url)
+            } else {
+                share = MemoryShareItem(url: url)
+            }
+        } catch {
+            self.error = error.localizedDescription
+            ShareFeedbackToast.show(error.localizedDescription)
+        }
     }
 }
 

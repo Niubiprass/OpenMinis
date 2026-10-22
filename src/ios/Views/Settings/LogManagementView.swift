@@ -522,19 +522,38 @@ struct LogDetailView: View {
 /// applies where the image UUID matches a library loaded in this process.
 struct CrashIPSDetailView: View {
     let entry: CrashReportEntry
+    @State private var displayReport: CrashIPSReport?
+    @State private var showDSYMPicker = false
+    @State private var dsymMessage: String?
 
     var body: some View {
-        Group {
-            if let report = entry.ipsReport {
+        VStack(spacing: 0) {
+            if let report = displayReport ?? entry.ipsReport {
                 LogTextView(text: report.displayLines.joined(separator: "\n"))
             } else {
                 Text("无法解析这份 .ips 报告")
                     .foregroundStyle(.secondary)
             }
+            if let dsymMessage {
+                Text(dsymMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+            }
         }
         .navigationTitle(entry.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showDSYMPicker = true
+                } label: {
+                    Image(systemName: "doc.badge.plus")
+                }
+                .accessibilityLabel("导入 dSYM")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     if !ExternalFileImporter.ingest(entry.url, into: ShareCoordinator.shared,
@@ -548,6 +567,24 @@ struct CrashIPSDetailView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 MinisShareLinkButton(item: entry.url)
+            }
+        }
+        .fileImporter(isPresented: $showDSYMPicker,
+                      allowedContentTypes: [.folder, .data],
+                      allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                guard let store = DSYMStore(dsymURL: url), let report = entry.ipsReport else {
+                    dsymMessage = "无法读取这个 dSYM；请选择 .dSYM 目录或其中的 DWARF 文件。"
+                    return
+                }
+                displayReport = DSYMSymbolicator.symbolicate(report, store: store)
+                dsymMessage = "已用 \(url.lastPathComponent) 符号化；只填充 UUID 匹配且原本没有符号的帧。"
+            case .failure(let error):
+                dsymMessage = error.localizedDescription
             }
         }
     }

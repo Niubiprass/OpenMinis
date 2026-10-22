@@ -1374,7 +1374,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             turnUSD: turnCostUSD,
             sessionUSD: CostLedger.shared.total(for: sessionId),
             sessionHasLedger: true,
-            exchangeRate: ProviderPricingService.shared.effectiveRate(instanceId: instanceId),
+            exchangeRate: ProviderPricingService.shared.effectiveDisplayRate(instanceId: instanceId),
             currency: ProviderPricingService.shared.displayCurrency(instanceId: instanceId))
     }
 
@@ -6191,6 +6191,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             turnUSD: 0,
             sessionUSD: CostLedger.shared.total(for: ledgerSessionId),
             sessionHasLedger: CostLedger.shared.hasEntries(for: ledgerSessionId),
+            exchangeRate: ProviderPricingService.shared.effectiveDisplayRate(instanceId: entry.id),
             currency: ProviderPricingService.shared.displayCurrency(instanceId: entry.id))
 
         // Log context baseline for offload diagnostics

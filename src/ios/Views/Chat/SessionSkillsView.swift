@@ -308,7 +308,7 @@ private struct SkillFilePreviewView: View {
     }
 }
 
-private struct PersonaPickerSheet: View {
+struct PersonaPickerSheet: View {
     let sessionId: String?
     let ensureSessionId: (() async -> String)?
     let onResolved: (String) -> Void

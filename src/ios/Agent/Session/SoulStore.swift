@@ -1393,6 +1393,20 @@ final class PersonaStore: ObservableObject {
         return url
     }
 
+    /// Number of memory entries for the persona list badge. Counts `##`
+    /// headings (the format the agent writes); a file with only prose counts
+    /// as one entry. Read-only; callers should run it off the main thread.
+    func memoryEntryCount(for personaId: String) -> Int {
+        guard let text = try? String(contentsOf: memoryURL(for: personaId), encoding: .utf8) else {
+            return 0
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 0 }
+        let headings = text.components(separatedBy: "\n## ").count - 1
+        if headings > 0 { return headings }
+        return 1
+    }
+
     private var personasDirectory: URL {
         AIChatViewModel.minisMemoryPersistentDir
             .appendingPathComponent(memoryFolder, isDirectory: true)

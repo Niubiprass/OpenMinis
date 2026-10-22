@@ -481,7 +481,12 @@ enum TurnCost {
         if code == "USD" {
             return String(format: "≈$%.4f", usd)
         }
-        return String(format: "≈¥%.4f", usd * (rate ?? usdToCny))
+        if code == "CNY" {
+            return String(format: "≈¥%.4f", usd * (rate ?? usdToCny))
+        }
+        // Arbitrary user code (EUR/JPY/...): use the code as the prefix so
+        // no symbol table or network lookup is required.
+        return String(format: "≈%@ %.4f", code, usd * (rate ?? 1))
     }
 
     /// Compact composer suffix: two decimals, because the line also carries

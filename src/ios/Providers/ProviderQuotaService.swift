@@ -703,6 +703,13 @@ final class ProviderQuotaService: ObservableObject {
                 ProviderQuotaService.shared.noteFailure(
                     String(format: AppLocalized("余额接口拒绝：%@"), message),
                     instanceId: instanceId, rowId: rowId)
+            } else if http.statusCode == 404 {
+                // Many relays simply do not implement /api/user/self. That is
+                // not a token problem and not a reason to keep showing a raw
+                // HTTP error; the usage-only fallback is the correct answer.
+                ProviderQuotaService.shared.noteFailure(
+                    AppLocalized("站点没有余额查询接口（不影响对话）"),
+                    instanceId: instanceId, rowId: rowId)
             } else {
                 ProviderQuotaService.shared.noteFailure(
                     String(format: AppLocalized("站点返回 HTTP %lld（这个路径可能不存在）"), Int64(http.statusCode)),
@@ -945,6 +952,8 @@ final class ProviderPricingService: ObservableObject {
     private let manualPrefix = "pricing.manual."
     private let ratePrefix = "pricing.rateOverride."
     private let currencyPrefix = "pricing.currency."
+    private let customCurrencyPrefix = "pricing.customCurrency."
+    private let customRatePrefix = "pricing.customRate."
     private let lock = NSLock()
     private var cache: [String: SitePricing] = [:]
 
@@ -1015,6 +1024,7 @@ final class ProviderPricingService: ObservableObject {
     /// Per-provider display currency. The global Settings value remains the
     /// fallback for providers the user never opened.
     func displayCurrency(instanceId: String) -> String {
+        if let custom = customCurrency(instanceId: instanceId) { return custom }
         let key = currencyPrefix + instanceId
         guard let stored = UserDefaults.standard.string(forKey: key)?.uppercased(),
               stored == "CNY" || stored == "USD" else { return TurnCost.currency }
@@ -1025,7 +1035,52 @@ final class ProviderPricingService: ObservableObject {
         let code = currency.uppercased()
         guard code == "CNY" || code == "USD" else { return }
         UserDefaults.standard.set(code, forKey: currencyPrefix + instanceId)
+        // Choosing a built-in currency must clear a previous custom override,
+        // otherwise the cost would keep using the hidden custom code.
+        clearCustomCurrency(instanceId: instanceId)
         DispatchQueue.main.async { self.revision += 1 }
+    }
+
+    /// A user-entered ISO-style code, e.g. EUR. Returns nil when not configured.
+    func customCurrency(instanceId: String) -> String? {
+        let raw = UserDefaults.standard.string(forKey: customCurrencyPrefix + instanceId) ?? ""
+        let code = raw.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard code.count >= 2, code.count <= 8,
+              code.unicodeScalars.allSatisfy({ CharacterSet.uppercaseLetters.contains($0) }),
+              customRate(instanceId: instanceId) != nil else { return nil }
+        return code
+    }
+
+    /// Units of the custom currency per 1 USD.
+    func customRate(instanceId: String) -> Double? {
+        let value = UserDefaults.standard.double(forKey: customRatePrefix + instanceId)
+        return value > 0 ? value : nil
+    }
+
+    func setCustomCurrency(instanceId: String, code: String?, rate: Double?) {
+        let normalized = (code ?? "").uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.count >= 2, normalized.count <= 8,
+           normalized.unicodeScalars.allSatisfy({ CharacterSet.uppercaseLetters.contains($0) }),
+           let rate, rate > 0 {
+            UserDefaults.standard.set(normalized, forKey: customCurrencyPrefix + instanceId)
+            UserDefaults.standard.set(rate, forKey: customRatePrefix + instanceId)
+        } else {
+            clearCustomCurrency(instanceId: instanceId)
+        }
+        DispatchQueue.main.async { self.revision += 1 }
+    }
+
+    private func clearCustomCurrency(instanceId: String) {
+        UserDefaults.standard.removeObject(forKey: customCurrencyPrefix + instanceId)
+        UserDefaults.standard.removeObject(forKey: customRatePrefix + instanceId)
+    }
+
+    /// Rate used by the cost display: custom units/USD, else site/global CNY.
+    func effectiveDisplayRate(instanceId: String) -> Double? {
+        if customCurrency(instanceId: instanceId) != nil {
+            return customRate(instanceId: instanceId)
+        }
+        return effectiveRate(instanceId: instanceId)
     }
 
     func summary(for instanceId: String) -> (count: Int, date: Date?)? {
