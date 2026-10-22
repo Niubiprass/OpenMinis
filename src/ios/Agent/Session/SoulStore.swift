@@ -1712,6 +1712,51 @@ final class SharedMemoryStore: ObservableObject {
         }
     }
 
+    /// JSON archive for cross-device transfer. The receiver imports it and
+    /// chooses a local target persona; foreign persona ids are never trusted.
+    func exportArchive() -> URL? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(records) else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shared-memory-\(Int(Date().timeIntervalSince1970)).json")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    /// Import records into one local persona. Returns the number added.
+    @discardableResult
+    func importArchive(_ data: Data, target: AgentPersona) -> Int {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let incoming = try? decoder.decode([SharedMemoryRecord].self, from: data) else {
+            return 0
+        }
+        var added = 0
+        for item in incoming {
+            let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let content = item.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, !content.isEmpty else { continue }
+            records.insert(SharedMemoryRecord(
+                id: UUID().uuidString,
+                sourcePersonaId: item.sourcePersonaId,
+                sourcePersonaName: item.sourcePersonaName,
+                targetPersonaId: target.id,
+                targetPersonaName: target.name,
+                title: title,
+                content: content,
+                sharedAt: Date()), at: 0)
+            added += 1
+        }
+        if added > 0 { persist() }
+        return added
+    }
+
     func exportURL(_ record: SharedMemoryRecord) -> URL? {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("shared-\(record.id.prefix(8)).md")

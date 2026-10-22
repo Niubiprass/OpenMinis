@@ -43,6 +43,8 @@ struct MemoryManagementView: View {
     @State private var memoryWarning: String?
     @State private var tab: MemoryTab = .daily
     @State private var exportShare: MemoryShareItem?
+    @State private var showAISummaryConfirm = false
+    @State private var aiSummaryRunning = false
 
     private var memoryDirectory: URL { AIChatViewModel.minisMemoryPersistentDir }
     private var personaDirectory: URL {
@@ -122,7 +124,15 @@ struct MemoryManagementView: View {
             isGlobal: false,
             nameFilter: { $0.range(of: monthPattern, options: .regularExpression) != nil },
             sectionTitle: AppLocalized("更早（月记忆）"))
-        return [todayRoot, monthRoot, monthlyRoot, olderDailyRoot]
+        let aiSummaryRoot = MemoryLibraryRoot(
+            id: "monthly-ai-summary",
+            title: AppLocalized("AI 月摘要"),
+            directory: dir,
+            isReadOnly: false,
+            isGlobal: false,
+            nameFilter: { $0.range(of: #"^\d{4}-\d{2}-AI\.md$"#, options: .regularExpression) != nil },
+            sectionTitle: AppLocalized("AI 月摘要"))
+        return [todayRoot, monthRoot, aiSummaryRoot, monthlyRoot, olderDailyRoot]
     }
 
     private var globalRoot: MemoryLibraryRoot {
@@ -246,6 +256,16 @@ struct MemoryManagementView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button {
+                            showAISummaryConfirm = true
+                        } label: {
+                            Label(aiSummaryRunning
+                                  ? AppLocalized("正在生成 AI 摘要…")
+                                  : AppLocalized("生成 AI 月摘要"),
+                                  systemImage: "sparkles")
+                        }
+                        .disabled(aiSummaryRunning)
+
+                        Button {
                             exportAllMemory()
                         } label: {
                             Label(AppLocalized("导出全部记忆"), systemImage: "square.and.arrow.up")
@@ -261,6 +281,14 @@ struct MemoryManagementView: View {
                     }
                 }
             
+        }
+        .confirmationDialog(AppLocalized("生成 AI 月摘要？"),
+                            isPresented: $showAISummaryConfirm,
+                            titleVisibility: .visible) {
+            Button(AppLocalized("生成")) { generateAISummary() }
+            Button(AppLocalized("取消"), role: .cancel) {}
+        } message: {
+            Text(AppLocalized("会调用当前默认模型，消耗 tokens；只总结本月日记忆，生成结果放在「AI 月摘要」里。"))
         }
         .sheet(item: $exportShare) { MinisShareSheet(url: $0.url) }
         .sheet(isPresented: $showImport) {
@@ -294,6 +322,72 @@ struct MemoryManagementView: View {
             }
         }
         .animation(.spring(response: 0.3), value: forceSyncToast)
+    }
+
+    /// Manual AI digest. One model call, one month; the result goes to a
+    /// separate `YYYY-MM-AI.md` so it never overwrites the mechanical monthly
+    /// merge or the raw daily files.
+    private func generateAISummary() {
+        guard !aiSummaryRunning else { return }
+        let month = monthStamp()
+        let dir = memoryDirectory
+        guard let entry = ProviderConfigStore.shared.resolvedAgentLoopEntries.first else {
+            forceSyncToast = AppLocalized("没有可用模型")
+            clearToastSoon()
+            return
+        }
+        aiSummaryRunning = true
+        Task {
+            let dailyTexts = await Task.detached(priority: .userInitiated) {
+                MemoryMonthlyAIIO.dailyTexts(in: dir, month: month)
+            }.value
+            guard !dailyTexts.isEmpty else {
+                aiSummaryRunning = false
+                forceSyncToast = AppLocalized("本月还没有日记忆")
+                clearToastSoon()
+                return
+            }
+            do {
+                let digest = try await MemoryMonthlySummarizer.digest(
+                    month: month,
+                    dailyTexts: dailyTexts
+                ) { prompt in
+                    let provider = await AIChatViewModel.makeAgentProvider(for: entry, sessionId: nil)
+                    let stream = try await provider.streamAgentMessage(
+                        messages: [AgentMessage(role: .user, parts: [.text(prompt)])],
+                        systemPrompt: "你只输出月记忆摘要正文，不要复述提示。",
+                        tools: [],
+                        maxTokens: 1200,
+                        thinkingLevel: .off)
+                    var output = ""
+                    for try await event in stream {
+                        if case .textDelta(let delta) = event { output += delta }
+                    }
+                    return output
+                }
+                await MainActor.run {
+                    writeAISummary(digest)
+                    aiSummaryRunning = false
+                    forceSyncToast = AppLocalizedFormat("已生成 %@ AI 摘要", digest.month)
+                    clearToastSoon()
+                }
+            } catch {
+                await MainActor.run {
+                    aiSummaryRunning = false
+                    forceSyncToast = error.localizedDescription
+                    clearToastSoon()
+                }
+            }
+        }
+    }
+
+    private func writeAISummary(_ digest: MonthlyMemoryDigest) {
+        try? MemoryMonthlyAIIO.writeAISummary(digest, in: memoryDirectory)
+        NotificationCenter.default.post(name: .memoryFilesDidChange, object: nil)
+    }
+
+    private func clearToastSoon() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { forceSyncToast = nil }
     }
 
     private func refreshPersonaCounts() {

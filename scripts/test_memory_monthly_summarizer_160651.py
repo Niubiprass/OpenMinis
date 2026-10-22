@@ -248,10 +248,10 @@ class FileShape(unittest.TestCase):
         self.assertTrue(SWIFT.is_file(), "missing " + str(SWIFT))
         self.assertEqual(shape_problems(SOURCE), [])
 
-    def test_xcode_project_was_not_touched(self):
-        # Deliberately registered nowhere: `Agent/Session` is a plain group, and
-        # editing project.pbxproj was out of scope for this change.
-        self.assertNotIn("MemoryMonthlySummarizer.swift", PROJECT.read_text(encoding="utf-8"))
+    def test_xcode_project_registers_the_file(self):
+        project = PROJECT.read_text(encoding="utf-8")
+        self.assertIn("MemoryMonthlySummarizer.swift in Sources", project)
+        self.assertIn('path = MemoryMonthlySummarizer.swift', project)
 
 
 class PromptContract(unittest.TestCase):
@@ -334,3 +334,17 @@ class ChecksCanFail(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+class MonthlySummaryWiring(unittest.TestCase):
+    def test_memory_page_has_manual_ai_action(self):
+        from pathlib import Path
+        view = Path('/var/minis/shared/OpenMinis-160649/src/ios/Views/Settings/MemoryManagementView.swift').read_text()
+        self.assertIn('generateAISummary()', view)
+        self.assertIn('MemoryMonthlySummarizer.digest', view)
+        self.assertIn('YYYY-MM-AI.md', view)
+        self.assertIn('生成 AI 月摘要', view)
+        self.assertIn('会调用当前默认模型', view)
+
+    def test_service_is_in_app_target(self):
+        from pathlib import Path
+        project = Path('/var/minis/shared/OpenMinis-160649/src/ios/Minis.xcodeproj/project.pbxproj').read_text()
+        self.assertIn('MemoryMonthlySummarizer.swift in Sources', project)

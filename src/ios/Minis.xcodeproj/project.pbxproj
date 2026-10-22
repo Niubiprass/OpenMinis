@@ -282,6 +282,8 @@
 		E5J000002 /* LogManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5J000012 /* LogManagementView.swift */; };
 		E5IPS0001 /* CrashIPSSymbolicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5IPS0011 /* CrashIPSSymbolicator.swift */; };
 		E5DSY0001 /* DSYMSymbolicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5DSY0011 /* DSYMSymbolicator.swift */; };
+		E5AIS0001 /* MemoryMonthlySummarizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5AIS0011 /* MemoryMonthlySummarizer.swift */; };
+		E5AIO0001 /* MemoryMonthlyAIIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5AIO0011 /* MemoryMonthlyAIIO.swift */; };
 		E5J000003 /* ConfigAuditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5J000013 /* ConfigAuditView.swift */; };
 		E5J000020 /* FileHandleSafeWrite.m in Sources */ = {isa = PBXBuildFile; fileRef = E5J000021 /* FileHandleSafeWrite.m */; };
 		E5J000030 /* NSTextContainerSetSizeGuard.m in Sources */ = {isa = PBXBuildFile; fileRef = E5J000031 /* NSTextContainerSetSizeGuard.m */; };
@@ -1002,6 +1004,8 @@
 		E5J000012 /* LogManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManagementView.swift; sourceTree = "<group>"; };
 		E5IPS0011 /* CrashIPSSymbolicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashIPSSymbolicator.swift; sourceTree = "<group>"; };
 		E5DSY0011 /* DSYMSymbolicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DSYMSymbolicator.swift; sourceTree = "<group>"; };
+		E5AIS0011 /* MemoryMonthlySummarizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryMonthlySummarizer.swift; sourceTree = "<group>"; };
+		E5AIO0011 /* MemoryMonthlyAIIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryMonthlyAIIO.swift; sourceTree = "<group>"; };
 		E5J000013 /* ConfigAuditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigAuditView.swift; sourceTree = "<group>"; };
 		E5J000021 /* FileHandleSafeWrite.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = FileHandleSafeWrite.m; sourceTree = "<group>"; };
 		E5J000022 /* FileHandleSafeWrite.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FileHandleSafeWrite.h; sourceTree = "<group>"; };
@@ -2220,6 +2224,8 @@
 			isa = PBXGroup;
 			children = (
 				160649A00000000000000002 /* MemoryDocumentStore.swift */,
+				E5AIS0011 /* MemoryMonthlySummarizer.swift */,
+				E5AIO0011 /* MemoryMonthlyAIIO.swift */,
 				E5S000013 /* SessionForkManager.swift */,
 				E5LOCK101 /* SessionLockStore.swift */,
 				E5N0000112F3B941A00049557 /* SkillStore.swift */,
@@ -3182,6 +3188,8 @@
 				E5N0000042F3B941A00049557 /* MemoryManagementView.swift in Sources */,
 				E5N0000052F3B941A00049557 /* SessionMemoryView.swift in Sources */,
 				160649A00000000000000001 /* MemoryDocumentStore.swift in Sources */,
+				E5AIS0001 /* MemoryMonthlySummarizer.swift in Sources */,
+				E5AIO0001 /* MemoryMonthlyAIIO.swift in Sources */,
 				160649A00000000000000003 /* ScopedMemoryLibraryView.swift in Sources */,
 				E5N0000062F3B941A00049557 /* AlarmListView.swift in Sources */,
 				E5P000001 /* EnvVarStore.swift in Sources */,

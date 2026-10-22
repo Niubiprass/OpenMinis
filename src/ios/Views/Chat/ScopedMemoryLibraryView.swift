@@ -214,8 +214,10 @@ struct ScopedMemoryLibraryView<Header: View>: View {
                 share = MemoryShareItem(url: url)
             }
         } catch {
+            // The in-page alert is the feedback. Do not depend on the app's
+            // global toast here: this file is compiled standalone by the
+            // memory typecheck harness, where ShareFeedbackToast is absent.
             self.error = error.localizedDescription
-            ShareFeedbackToast.show(error.localizedDescription)
         }
     }
 }

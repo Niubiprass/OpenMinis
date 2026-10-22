@@ -872,7 +872,12 @@ private struct PersonaEditorView: View {
 
 struct SharedMemoryListView: View {
     @ObservedObject private var store = SharedMemoryStore.shared
+    @ObservedObject private var personaStore = PersonaStore.shared
     @State private var showCompose = false
+    @State private var share: MemoryShareItem?
+    @State private var showJSONPicker = false
+    @State private var pendingImport: Data?
+    @State private var showTargetPicker = false
 
     var body: some View {
         List {
@@ -903,17 +908,76 @@ struct SharedMemoryListView: View {
         .navigationTitle(AppLocalized("共享给我"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     showCompose = true
                 } label: {
                     Image(systemName: "plus")
                 }
                 .accessibilityLabel("粘贴或导入共享记忆")
+
+                Menu {
+                    Button {
+                        if let url = store.exportArchive() {
+                            share = MemoryShareItem(url: url)
+                        } else {
+                            ShareFeedbackToast.show("没有可导出的共享记忆")
+                        }
+                    } label: {
+                        Label(AppLocalized("导出共享记录 JSON"), systemImage: "square.and.arrow.up")
+                    }
+                    Button {
+                        if personaStore.personas.isEmpty {
+                            ShareFeedbackToast.show("先新建一个人格，才能导入")
+                        } else {
+                            showJSONPicker = true
+                        }
+                    } label: {
+                        Label(AppLocalized("导入共享记录 JSON"), systemImage: "square.and.arrow.down")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
             }
         }
         .sheet(isPresented: $showCompose) {
             SharedMemoryComposeSheet()
+        }
+        .sheet(item: $share) { MinisShareSheet(url: $0.url) }
+        .fileImporter(isPresented: $showJSONPicker,
+                      allowedContentTypes: [.json],
+                      allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    pendingImport = try Data(contentsOf: url)
+                    showTargetPicker = true
+                } catch {
+                    ShareFeedbackToast.show(error.localizedDescription)
+                }
+            case .failure(let error):
+                ShareFeedbackToast.show(error.localizedDescription)
+            }
+        }
+        .confirmationDialog(AppLocalized("导入给哪个人格？"),
+                            isPresented: $showTargetPicker,
+                            titleVisibility: .visible) {
+            ForEach(personaStore.personas) { persona in
+                Button(persona.name) {
+                    guard let data = pendingImport else { return }
+                    let count = store.importArchive(data, target: persona)
+                    pendingImport = nil
+                    ShareFeedbackToast.show(count > 0
+                                            ? AppLocalizedFormat("已导入 %lld 条", Int64(count))
+                                            : AppLocalized("没有可导入的记录"))
+                }
+            }
+            Button(AppLocalized("取消"), role: .cancel) { pendingImport = nil }
+        } message: {
+            Text(AppLocalized("记录会复制到选中的本地人格；不会覆盖已有记录。"))
         }
     }
 }
