@@ -35,9 +35,24 @@ class Digest(unittest.TestCase):
         self.assertIn('-> String?', body)
         self.assertIn('return nil', LOC[LOC.index('enum ProviderErrorDigest'):])
 
-    def test_banner_shows_summary_then_raw(self):
-        self.assertIn('ProviderErrorDigest.summary(for: error)', CHAT)
+    def test_banner_and_bubble_show_chinese_only(self):
+        # [T-provider-error-digest] The banner keeps its original two-line
+        # shape (main sentence + small detail); the bubble keeps its original
+        # single Text. Only the words change — no new boxes or fonts.
+        self.assertIn('ProviderErrorDigest.display(for: error)', CHAT)
+        self.assertIn('display.title', CHAT)
+        self.assertIn('display.secondaryLine', CHAT)
         self.assertIn('.font(.system(size: 10.5))', CHAT)
+        self.assertIn('ProviderErrorDigest.composed(for: error) ?? error', BUBBLE)
+        self.assertNotIn('VStack(alignment: .leading, spacing: 2)', BUBBLE)
+
+    def test_http_and_provider_codes_are_mapped(self):
+        i = LOC.index('enum ProviderErrorDigest')
+        body = LOC[i:]
+        for needle in ('status == 401', 'status == 402', 'status == 403',
+                       'status == 404', 'status == 429', 'status == 400',
+                       '供应商鉴权失败（HTTP 401）', '可能是 Key 没权限', 'code?.hasPrefix("AUTH")'):
+            self.assertIn(needle, body)
 
     def test_tool_interruption_is_chinese(self):
         model = (ROOT / 'src/ios/Agent/Chat/AIChatViewModel.swift').read_text()

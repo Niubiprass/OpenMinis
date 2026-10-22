@@ -20,16 +20,96 @@ struct MemoryManagementView: View {
     /// [T-memory-import] Sheet + result toast.
     @State private var showImport = false
     @State private var importToast: String?
+    @ObservedObject private var personaStore = PersonaStore.shared
+    @ObservedObject private var sharedStore = SharedMemoryStore.shared
+    @State private var folderMemoryRoots: [MemoryLibraryRoot] = []
+    @State private var memoryWarning: String?
+
+    /// Daily logs and GLOBAL.md share one directory; the persona root is a
+    /// subdirectory. Group memory stays under each group's configuration.
+    private var memoryRoots: [MemoryLibraryRoot] {
+        let dir = AIChatViewModel.minisMemoryPersistentDir
+        let personaDir = dir.appendingPathComponent("personas", isDirectory: true)
+        let daily = MemoryLibraryRoot(
+            id: "daily-memory",
+            title: AppLocalized("日记忆"),
+            directory: dir,
+            isReadOnly: false,
+            isGlobal: false,
+            nameFilter: { name in
+                name.range(of: #"^\d{4}-\d{2}-\d{2}\.md$"#, options: .regularExpression) != nil
+                    || name.range(of: #"^\d{4}-\d{2}\.md$"#, options: .regularExpression) != nil
+            }
+        )
+        let global = MemoryLibraryRoot(
+            id: "global-memory",
+            title: AppLocalized("全局记忆"),
+            directory: dir,
+            isReadOnly: false,
+            isGlobal: true,
+            nameFilter: { $0 == "GLOBAL.md" }
+        )
+        let knownFiles = Set(personaStore.personas.map { "\($0.id).md" })
+        let orphanRoot = MemoryLibraryRoot(
+            id: "persona-orphan",
+            title: AppLocalized("未归属 · 人格记忆"),
+            directory: personaDir,
+            isReadOnly: false,
+            isGlobal: false,
+            nameFilter: { !knownFiles.contains($0) }
+        )
+        var personaRoots: [MemoryLibraryRoot] = personaStore.personas.map { persona in
+            MemoryLibraryRoot(
+                id: "persona-\(persona.id)",
+                title: "\(AppLocalized("人格记忆")) · \(persona.name)",
+                directory: personaDir,
+                isReadOnly: false,
+                isGlobal: false,
+                nameFilter: { $0 == "\(persona.id).md" }
+            )
+        }
+        personaRoots.append(orphanRoot)
+        return [daily, global] + personaRoots + folderMemoryRoots
+    }
 
     var body: some View {
         // One real shared directory, not a per-model/group facade. The library
         // reuses MemoryContentView -> MemoryFileEditView for document actions.
-        ScopedMemoryLibraryView(title: AppLocalized("Memory"), roots: [.sharedMemory]) {
+        ScopedMemoryLibraryView(title: AppLocalized("Memory"), roots: memoryRoots) {
             Section {
                 Toggle(AppLocalized("settings_memory_global_enabled"), isOn: $memoryGlobalEnabled)
+                if let memoryWarning {
+                    Text(memoryWarning).font(.caption).foregroundStyle(.orange)
+                }
             } footer: {
                 Text(AppLocalized("settings_memory_global_enabled_footer"))
             }
+            Section {
+                NavigationLink {
+                    SharedMemoryListView()
+                } label: {
+                    HStack {
+                        Label(AppLocalized("共享给我"), systemImage: "tray.full")
+                        Spacer()
+                        Text("\(sharedStore.records.count)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } footer: {
+                Text(AppLocalized("共享记忆是只读快照；点“复制到我的记忆”后才进入你自己的人格记忆。"))
+            }
+        }
+        .onAppear {
+            try? FileManager.default.createDirectory(
+                at: AIChatViewModel.minisMemoryPersistentDir.appendingPathComponent("personas", isDirectory: true),
+                withIntermediateDirectories: true)
+        }
+        .task {
+            await loadFolderMemoryRoots()
+            let result = await Task.detached(priority: .utility) {
+                MemoryMaintenance.runIfNeeded()
+            }.value
+            await MainActor.run { memoryWarning = result.warning }
         }
         .toolbar {
 
@@ -89,6 +169,25 @@ struct MemoryManagementView: View {
             }
         }
         .animation(.spring(response: 0.3), value: forceSyncToast)
+    }
+
+    /// Only folders that actually chose independent memory get a section.
+    private func loadFolderMemoryRoots() async {
+        let folders = await ChatStore.shared.listFolders()
+        var roots: [MemoryLibraryRoot] = []
+        for folder in folders {
+            guard let config = try? await ChatStore.shared.getFolderConfiguration(folder.id),
+                  config.memoryPolicy == .folder else { continue }
+            let dir = AIChatViewModel.minisFolderMemoryPersistentDir(for: folder.id)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            roots.append(MemoryLibraryRoot(
+                id: "folder-\(folder.id)",
+                title: "\(AppLocalized("分组记忆")) · \(folder.name)",
+                directory: dir,
+                isReadOnly: false,
+                isGlobal: false))
+        }
+        await MainActor.run { folderMemoryRoots = roots }
     }
 
     @available(iOS 17.0, *)

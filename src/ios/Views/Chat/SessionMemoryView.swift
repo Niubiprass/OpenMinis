@@ -311,6 +311,13 @@ struct MemoryContentView: View {
     @State private var error: String?
     @State private var saved = false
     @State private var share: MemoryShareItem?
+    @State private var shareToPersona = false
+
+    private var sourcePersona: AgentPersona? {
+        guard root.id.hasPrefix("persona-") else { return nil }
+        let id = String(root.id.dropFirst("persona-".count))
+        return PersonaStore.shared.persona(id: id)
+    }
 
     init(root: MemoryLibraryRoot, fileName: String, title: String? = nil,
          onSaveDirty: MemorySaveDirty? = nil) {
@@ -339,6 +346,16 @@ struct MemoryContentView: View {
             } else {
                 Button("Reload") { reload() }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if let persona = sourcePersona, let snapshot, snapshot.exists {
+                Button {
+                    shareToPersona = true
+                } label: {
+                    Label(AppLocalizedFormat("分享给其他人格（来自 %@）", persona.name),
+                          systemImage: "person.line.dotted.person")
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 4)
             }
             Text("Share exports the saved snapshot, not a draft. It does not change group access.")
                 .font(.caption)
@@ -388,6 +405,11 @@ struct MemoryContentView: View {
             }
             .navigationViewStyle(StackNavigationViewStyle())
             .interactiveDismissDisabled(true)
+        }
+        .sheet(isPresented: $shareToPersona) {
+            if let persona = sourcePersona, let snapshot {
+                PersonaShareSheet(source: persona, title: fileName, content: snapshot.originalText)
+            }
         }
         .sheet(item: $share) { MinisShareSheet(url: $0.url) }
         .alert("Memory error", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {

@@ -411,9 +411,10 @@ final class ProviderMultiKeyManager {
         writeBlob(data, for: instanceId)
     }
 
-    /// One atomic pick including the main credential. The ring only takes part
-    /// when the switch is on and it actually contains a key; an empty ring is
-    /// single-key mode (`storedEnabled` alone must not engage rotation).
+    /// One atomic pick. The switch is the gate: OFF (or an empty ring) means the
+    /// normal single main key; ON means main + added rotation keys all go
+    /// through the selected strategy. The main key is also the last-resort
+    /// fallback when every pooled key is parked.
     func lease(for instanceId: String, excluding: Set<String> = []) -> ProviderKeyLease? {
         lock.lock(); defer { lock.unlock() }
         let main = ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)?
@@ -429,6 +430,11 @@ final class ProviderMultiKeyManager {
         let now = Date()
         var pool: [(lease: ProviderKeyLease, uses: Int)] = []
         var seen = Set<String>()
+        // [T-multikey-all-keys] When the switch is ON, every key in the pool
+        // follows the selected strategy — the saved credential (主 Key) and
+        // the added rotation keys alike. Switch OFF (or an empty ring) is the
+        // normal single-key path and never reaches this block. The main key is
+        // also the last-resort fallback when every pooled key is parked.
         if !main.isEmpty {
             seen.insert(main)
             let state = mainState(main, instanceId: instanceId)

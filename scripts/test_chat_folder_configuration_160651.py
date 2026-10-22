@@ -25,7 +25,7 @@ class SourceContracts(unittest.TestCase):
                      "var memoryPolicy: ChatFolderMemoryPolicy = .global", "var readsGlobalMemory: Bool = false",
                      "guard let json else { return .default }"):
             self.assertIn(text, STORE)
-        self.assertEqual(STORE.count("try values.decodeIfPresent("), 5)
+        self.assertEqual(STORE.count("try values.decodeIfPresent("), 6)
         self.assertIn('soulMode = try values.decodeIfPresent(String.self, forKey: .soulMode)', STORE)
         self.assertIn('column: "configuration_json", definition: "TEXT"', STORE)
         self.assertLess(STORE.index("CREATE TABLE IF NOT EXISTS folders ("), STORE.index('column: "configuration_json"'))

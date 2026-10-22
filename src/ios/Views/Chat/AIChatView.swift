@@ -2751,17 +2751,18 @@ _ios15Seg7
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.caption)
                 .foregroundStyle(.red)
-            // [T-provider-error-digest] A known provider message gets a plain
-            // Chinese sentence first, with the original underneath in smaller,
-            // dimmer type — the summary is what the user acts on, the raw text
-            // is what they paste into a bug report.
+            // [T-provider-error-digest] Same two-line banner shape as before:
+            // main Chinese sentence, then the reason/code in smaller type.
+            // The raw provider JSON is gone; long-press copy still has it.
             VStack(alignment: .leading, spacing: 3) {
-                if let digest = ProviderErrorDigest.summary(for: error) {
-                    Text(digest)
-                    Text(error)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Color.red.opacity(0.65))
-                        .lineLimit(3)
+                if let display = ProviderErrorDigest.display(for: error) {
+                    Text(display.title)
+                    if let secondary = display.secondaryLine {
+                        Text(secondary)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Color.red.opacity(0.65))
+                            .lineLimit(3)
+                    }
                 } else {
                     Text(error)
                 }

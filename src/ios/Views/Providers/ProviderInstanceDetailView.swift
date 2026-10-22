@@ -49,8 +49,6 @@ struct ProviderInstanceDetailView: View {
     /// appearance and when a refresh finishes, then draw from this snapshot.
     @State private var quotaRowsSnapshot: [ProviderQuotaService.KeyQuota] = []
     @ObservedObject private var pricingService = ProviderPricingService.shared
-    @State private var pricingRefreshing = false
-    @State private var pricingMessage: String?
     @State private var showRateOverride = false
     /// [T-quota-perkey-token] Which key's access token is being edited. Each
     /// key can belong to a DIFFERENT site account (the reported case: one
@@ -396,50 +394,6 @@ struct ProviderInstanceDetailView: View {
                     } else {
                         Text("填了访问令牌就尝试读真实余额；读不到（站点没这个接口，或还需要额外凭据）就显示用量，不需要再填别的。")
                     }
-                }
-            }
-
-            // MARK: [T-turn-cost-site-pricing] Site pricing
-            if instance.credentialType == .apiKey,
-               instance.providerType == .openAI || instance.providerType == .openAIResponses {
-                Section {
-                    if pricingService.summary(for: instance.id) == nil {
-                        Text("未读取站点定价")
-                            .foregroundStyle(.secondary)
-                    }
-                    Button {
-                        pricingRefreshing = true
-                        pricingMessage = nil
-                        Task {
-                            do {
-                                _ = try await pricingService.refresh(for: instance)
-                                await MainActor.run {
-                                    pricingRefreshing = false
-                                    pricingMessage = AppLocalized("已读取")
-                                }
-                            } catch {
-                                await MainActor.run {
-                                    pricingRefreshing = false
-                                    pricingMessage = error.localizedDescription
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 8) {
-                            if pricingRefreshing { ProgressView().controlSize(.small) }
-                            Text(pricingRefreshing ? AppLocalized("读取中…") : AppLocalized("从站点读取定价"))
-                        }
-                    }
-                    .disabled(pricingRefreshing)
-                    if let pricingMessage {
-                        Text(pricingMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("费用")
-                } footer: {
-                    Text("自动读取站点的 /api/pricing；读不到时使用官方目录价估算。")
                 }
             }
 
@@ -2405,9 +2359,15 @@ private struct RateOverrideSheet: View {
     @State private var outputPrice = ""
     @State private var manualEdited = false
     @State private var manualError: String?
+    @State private var pricingRefreshing = false
+    @State private var pricingMessage: String?
 
     private var entries: [ModelEntry] {
         store.entries(for: instanceId).filter { !$0.isHidden }
+    }
+
+    private var instance: ProviderInstance? {
+        store.instance(for: instanceId)
     }
 
     var body: some View {
@@ -2465,6 +2425,47 @@ private struct RateOverrideSheet: View {
                     Text("手动补价（可选，每百万 token 美元价）")
                 } footer: {
                     Text("只给实际使用的模型填；填了会优先于站点定价。不填就跟随站点价或官方目录价。")
+                }
+
+                Section {
+                    if pricing.summary(for: instanceId) == nil {
+                        Text("未读取站点定价")
+                            .foregroundStyle(.secondary)
+                    }
+                    Button {
+                        guard let instance = instance else { return }
+                        pricingRefreshing = true
+                        pricingMessage = nil
+                        Task {
+                            do {
+                                _ = try await pricing.refresh(for: instance)
+                                await MainActor.run {
+                                    pricingRefreshing = false
+                                    pricingMessage = AppLocalized("已读取")
+                                }
+                            } catch {
+                                await MainActor.run {
+                                    pricingRefreshing = false
+                                    pricingMessage = error.localizedDescription
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if pricingRefreshing { ProgressView().controlSize(.small) }
+                            Text(pricingRefreshing ? AppLocalized("读取中…") : AppLocalized("从站点读取定价"))
+                        }
+                    }
+                    .disabled(pricingRefreshing || instance == nil)
+                    if let pricingMessage {
+                        Text(pricingMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("费用")
+                } footer: {
+                    Text("自动读取站点的 /api/pricing；读不到时使用官方目录价估算。")
                 }
 
                 Section {

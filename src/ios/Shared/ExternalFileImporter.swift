@@ -22,7 +22,8 @@ enum ExternalFileImporter {
     /// bracket the read with start/stopAccessingSecurityScopedResource and copy
     /// into our sandbox before the scope is released.
     @discardableResult
-    static func ingest(_ url: URL, into coordinator: ShareCoordinator) -> Bool {
+    static func ingest(_ url: URL, into coordinator: ShareCoordinator,
+                       accompanyingText: String? = nil) -> Bool {
         guard url.isFileURL else { return false }
         guard let dir = SharedContainerStore.sharedFileDirectory else {
             importLog.error("[Share] ingest: sharedFileDirectory is nil — cannot stage \(url.lastPathComponent)")
@@ -59,10 +60,15 @@ enum ExternalFileImporter {
             return false
         }
 
-        let share = PendingShare(
-            items: [PendingShare.Item(kind: .attachment, value: stagedName)],
-            timestamp: Date()
-        )
+        var items: [PendingShare.Item] = []
+        if let text = accompanyingText?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty {
+            // A crash report is sent to chat with one short instruction already
+            // in the composer, so the user only has to hit send.
+            items.append(PendingShare.Item(kind: .inlineText, value: text))
+        }
+        items.append(PendingShare.Item(kind: .attachment, value: stagedName))
+        let share = PendingShare(items: items, timestamp: Date())
         SharedContainerStore.savePendingShare(share)
         importLog.info("[Share] ingest: staged \(url.lastPathComponent) as \(stagedName) and raising pending share")
         Task { @MainActor in coordinator.raisePendingShare() }

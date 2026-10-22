@@ -270,7 +270,12 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
 private struct BridgedAssistantHeaderV3: View {
     @ObservedObject var message: ChatMessage
     var maxWidth: CGFloat = 0
+    /// Persona assigned to this chat/folder, if any. The id is resolved by the
+    /// coordinator (session override first, then folder); the cell only reads
+    /// the library. Refreshed on .personaDidChange.
+    var personaId: String? = nil
     @State private var soulMeta: SoulMetadata = SoulStore.cachedMetadata
+    @State private var persona: AgentPersona? = nil
     /// [T-ios-assistant-header-open-soul] Injected, NOT read from the
     /// environment.
     ///
@@ -282,6 +287,27 @@ private struct BridgedAssistantHeaderV3: View {
     /// navigation happened, and no deep-link log line appeared.) So the handler
     /// is threaded down the same way every other cell callback already is.
     var onOpenSoulSettings: (() -> Void)?
+
+    private var displayName: String {
+        if let name = persona?.name.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        return soulMeta.name.isEmpty ? "Minis" : soulMeta.name
+    }
+
+    private var displayIcon: String {
+        if let icon = persona?.icon, !icon.isEmpty { return icon }
+        return soulMeta.icon
+    }
+
+    private func refreshPersona() {
+        guard let pid = personaId, !pid.isEmpty else {
+            persona = nil
+            return
+        }
+        persona = PersonaStore.shared.persona(id: pid)
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             // [T-soul-custom-icon] Honours a user-chosen emoji or image;
@@ -293,7 +319,7 @@ private struct BridgedAssistantHeaderV3: View {
             // so it — not the text — sets the row height; the estimated
             // height seed below was re-measured to match.
             SoulIconView(
-                icon: soulMeta.icon,
+                icon: displayIcon,
                 size: 22,
                 sparkleGradient: LinearGradient(
                     colors: [Color(red: 0.72, green: 0.69, blue: 0.59),
@@ -303,7 +329,7 @@ private struct BridgedAssistantHeaderV3: View {
                 ),
                 cornerRadius: 5
             )
-            Text(soulMeta.name.isEmpty ? "Minis" : soulMeta.name)
+            Text(displayName)
                 .font(.body.weight(.semibold))
                 .foregroundStyle(ChatColors.primaryText)
         }
@@ -335,6 +361,10 @@ private struct BridgedAssistantHeaderV3: View {
         .accessibilityHint(AppLocalized("Change the assistant's name, icon and personality"))
         .onReceive(NotificationCenter.default.publisher(for: .soulMdChanged)) { _ in
             soulMeta = SoulStore.cachedMetadata
+        }
+        .onAppear { refreshPersona() }
+        .onReceive(NotificationCenter.default.publisher(for: .personaDidChange)) { _ in
+            refreshPersona()
         }
         .padding(.top, 4)
         .padding(.bottom, 0)
@@ -1427,6 +1457,18 @@ extension CollectionViewMessageListV3 {
         private var cellConfigCount: Int = 0
         private var firstCellConfigTime: CFAbsoluteTime = 0
 
+        private func headerPersonaId() -> String? {
+            if let sid = vm?.sessionId,
+               let pid = UserDefaults.standard.string(forKey: "session.persona.id.\(sid)") {
+                return pid.isEmpty ? nil : pid
+            }
+            if let pid = vm?.folderRuntimeContext?.configuration.personaId,
+               !pid.isEmpty {
+                return pid
+            }
+            return nil
+        }
+
         private func configureCell(_ cell: SelfSizingCell, item: MessageListItem, indexPath: IndexPath) {
             guard let vm else { return }
             cell.scrollDiagnosticID = item.scrollDiagnosticID
@@ -1486,6 +1528,7 @@ extension CollectionViewMessageListV3 {
                 cell.backgroundColor = .clear
                 let config = UIHostingConfiguration {
                     BridgedAssistantHeaderV3(message: message, maxWidth: width,
+                                            personaId: headerPersonaId(),
                                             onOpenSoulSettings: onOpenSoulSettings)
                         .transaction { $0.disablesAnimations = true }
                         .environmentObject(vm)

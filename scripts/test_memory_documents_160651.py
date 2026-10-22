@@ -151,7 +151,7 @@ class SourceContracts(unittest.TestCase):
         self.assertIn('Button("Save") { save() }.disabled(root.isReadOnly)', EDITOR)
         self.assertIn(".disabled(root.isReadOnly || snapshot == nil || editingSnapshot != nil)", CONTENT)
         self.assertIn("NavigationView {", CONTENT)
-        self.assertIn("ScopedMemoryLibraryView(title: AppLocalized(\"Memory\"), roots: [.sharedMemory])", MANAGEMENT)
+        self.assertIn("ScopedMemoryLibraryView(title: AppLocalized(\"Memory\"), roots: memoryRoots)", MANAGEMENT)
         for source in (VIEW, CONTENT):
             self.assertIn(".sheet(item: $share) { MinisShareSheet(url: $0.url) }", source)
         for source in (VIEW, CONTENT, EDITOR):

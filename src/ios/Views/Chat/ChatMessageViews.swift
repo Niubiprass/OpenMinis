@@ -786,7 +786,7 @@ struct ChatMessageRow: View {
                 // needs an explicit invalidateHeight round trip (see the
                 // stale-height family in CollectionViewMessageListV3). A static
                 // limit is measured correctly at first layout and cannot desync.
-                Text(error)
+                Text(ProviderErrorDigest.composed(for: error) ?? error)
                     .font(.caption)
                     .foregroundStyle(.red)
                     .lineLimit(8)

@@ -142,13 +142,16 @@ struct ChatFolderConfiguration: Codable, Hashable {
     var readsGlobalMemory: Bool = false
     /// inherit / replace / append / clear; nil keeps old nonblank replacement semantics.
     var soulMode: String? = nil
+    /// [T-persona-library] nil = inherit global; "" = explicit blank;
+    /// non-empty = a PersonaStore id. Takes precedence over soulPrompt.
+    var personaId: String? = nil
 
     static let `default` = ChatFolderConfiguration()
 
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case skillDefaults, soulPrompt, memoryPolicy, readsGlobalMemory, soulMode
+        case skillDefaults, soulPrompt, memoryPolicy, readsGlobalMemory, soulMode, personaId
     }
 
     init(from decoder: Decoder) throws {
@@ -158,6 +161,7 @@ struct ChatFolderConfiguration: Codable, Hashable {
         memoryPolicy = try values.decodeIfPresent(ChatFolderMemoryPolicy.self, forKey: .memoryPolicy) ?? .global
         readsGlobalMemory = try values.decodeIfPresent(Bool.self, forKey: .readsGlobalMemory) ?? false
         soulMode = try values.decodeIfPresent(String.self, forKey: .soulMode)
+        personaId = try values.decodeIfPresent(String.self, forKey: .personaId)
     }
 
     static func decodeStoredJSON(_ json: String?) throws -> ChatFolderConfiguration {

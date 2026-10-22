@@ -753,6 +753,7 @@ private struct ChatFolderSettingsSheet: View {
     let onSaved: () -> Void
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var skills = SkillStore.shared
+    @ObservedObject private var personaStore = PersonaStore.shared
     @State private var original: ChatFolderConfiguration?
     @State private var draft = ChatFolderConfiguration.default
     @State private var isLoading = true
@@ -771,6 +772,7 @@ private struct ChatFolderSettingsSheet: View {
                     ProgressView()
                 } else if original != nil {
                     skillSection.disabled(isSaving)
+                    personaSection.disabled(isSaving)
                     soulSection.disabled(isSaving)
                     policySection.disabled(isSaving)
                 }
@@ -872,6 +874,31 @@ private struct ChatFolderSettingsSheet: View {
         }
     }
 
+    private var personaSection: some View {
+        Section {
+            Picker("分组人格", selection: Binding(
+                get: { draft.personaId ?? "__inherit__" },
+                set: { value in
+                    switch value {
+                    case "__inherit__": draft.personaId = nil
+                    case "__blank__": draft.personaId = ""
+                    default: draft.personaId = value
+                    }
+                }
+            )) {
+                Text("跟随全局").tag("__inherit__")
+                Text("无（空白）").tag("__blank__")
+                ForEach(personaStore.personas) { persona in
+                    Text(persona.name).tag(persona.id)
+                }
+            }
+        } header: {
+            Text("分组人格")
+        } footer: {
+            Text("只影响这个分组里没有单独选人格的会话；选“无（空白）”就不继承任何人格。分组记忆是下面的独立开关。")
+        }
+    }
+
     private var policySection: some View {
         Section {
             Picker("记忆策略（候选）", selection: $draft.memoryPolicy) {
@@ -908,6 +935,7 @@ private struct ChatFolderSettingsSheet: View {
         failure = nil
         do {
             _ = try await ChatStore.shared.saveFolderConfiguration(folder.id, configuration: draft, expected: original)
+            NotificationCenter.default.post(name: .personaDidChange, object: nil)
             onSaved()
             dismiss()
         } catch {

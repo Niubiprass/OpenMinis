@@ -68,6 +68,19 @@ class Selection(unittest.TestCase):
         self.assertIn('guard !main.isEmpty, !excluding.contains("main") else { return nil }', body)
         self.assertIn('return ProviderKeyLease(id: "main", key: main)', body)
 
+    def test_switch_on_puts_all_keys_through_the_strategy(self):
+        # [T-multikey-all-keys] 开关打开：主 Key + 轮询 Key 全部进池，按用户
+        # 选的策略走；开关关闭或空环：只走主 Key，不轮询。
+        idx = MODEL.index('func lease(for instanceId:')
+        end = MODEL.index('switch strategy(for: instanceId)', idx)
+        body = MODEL[idx:end]
+        self.assertIn('if !main.isEmpty {', body)
+        self.assertIn('pool.append((ProviderKeyLease(id: "main"', body)
+        self.assertIn('guard storedEnabled(for: instanceId), !ring.isEmpty else {', body)
+        self.assertIn('return main.isEmpty || excluding.contains("main") ? nil : ProviderKeyLease(id: "main", key: main)', body)
+        self.assertIn('guard !main.isEmpty, !excluding.contains("main") else { return nil }', body)
+        self.assertIn('return ProviderKeyLease(id: "main", key: main)', body)
+
     def test_round_robin_advances_a_cursor(self):
         self.assertIn('cursorPrefix', MODEL)
         self.assertIn('(idx + 1) % usable.count', MODEL)

@@ -69,7 +69,7 @@ class MemoryManagementWiring(unittest.TestCase):
 
     def test_global_settings_use_one_real_shared_library(self):
         settings, editor = MANAGEMENT.split("struct MemoryFileEditView: View", 1)
-        for token in ('ScopedMemoryLibraryView(title: AppLocalized("Memory"), roots: [.sharedMemory])',
+        for token in ('ScopedMemoryLibraryView(title: AppLocalized("Memory"), roots: memoryRoots)',
                       '@AppStorage("memory.global.enabled")', 'Toggle(AppLocalized("settings_memory_global_enabled")',
                       'MemoryLibraryRoot(id: "shared-memory"', "directory: AIChatViewModel.minisMemoryPersistentDir",
                       "isReadOnly: false, isGlobal: true", "ForceSyncHelper.markMemoryDirty()",

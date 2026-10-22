@@ -1182,3 +1182,321 @@ struct AssistantSoulName: View {
             }
     }
 }
+
+// MARK: - [T-persona-library] Multiple personas
+
+/// One saved persona. Kept separate from SOUL.md: SOUL.md remains the global
+/// default identity, while a persona can be selected per session/folder later.
+struct AgentPersona: Codable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var icon: String
+    var style: String
+    var lang: String
+    var body: String
+    var createdAt: Date
+    var updatedAt: Date
+
+    init(name: String, icon: String = "🙂", style: String = "",
+         lang: String = "auto", body: String = "") {
+        self.id = UUID().uuidString
+        self.name = name
+        self.icon = icon
+        self.style = style
+        self.lang = lang
+        self.body = body
+        self.createdAt = Date()
+        self.updatedAt = Date()
+    }
+}
+
+/// Local persona library. Deliberately small and independent from SOUL.md;
+/// runtime selection (session/folder assignment) is wired separately so the
+/// existing single-soul path is untouched until then.
+final class PersonaStore: ObservableObject {
+    static let shared = PersonaStore()
+
+    @Published private(set) var personas: [AgentPersona] = []
+    /// New chats start with no personality unless the user assigns one.
+    /// Turning this off restores the legacy "global SOUL.md always applies".
+    @Published var blankByDefault: Bool = (UserDefaults.standard.object(forKey: "persona.blankDefault") as? Bool ?? true) {
+        didSet { UserDefaults.standard.set(blankByDefault, forKey: "persona.blankDefault") }
+    }
+
+    private let defaultsKey = "persona.library.v1"
+    private let memoryFolder = "personas"
+
+    private init() {
+        load()
+    }
+
+    func load() {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+              let list = try? JSONDecoder().decode([AgentPersona].self, from: data) else {
+            personas = []
+            return
+        }
+        personas = list.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(personas) else { return }
+        UserDefaults.standard.set(data, forKey: defaultsKey)
+    }
+
+    @discardableResult
+    func add(name: String) -> AgentPersona {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let persona = AgentPersona(name: trimmed.isEmpty ? "新人格" : trimmed)
+        personas.insert(persona, at: 0)
+        persist()
+        ensureMemoryFile(for: persona.id)
+        NotificationCenter.default.post(name: .personaDidChange, object: nil)
+        return persona
+    }
+
+    /// Persona memory lives in `memory/personas/<id>.md`, separate from daily
+    /// logs. Deleting a persona deliberately leaves the file behind; it can be
+    /// moved to another persona/global from the memory page.
+    func memoryURL(for personaId: String) -> URL {
+        AIChatViewModel.minisMemoryPersistentDir
+            .appendingPathComponent(memoryFolder, isDirectory: true)
+            .appendingPathComponent("\(personaId).md")
+    }
+
+    private func ensureMemoryFile(for personaId: String) {
+        let url = memoryURL(for: personaId)
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: url.path) {
+            fm.createFile(atPath: url.path, contents: Data())
+        }
+    }
+
+    func update(_ persona: AgentPersona) {
+        guard let index = personas.firstIndex(where: { $0.id == persona.id }) else { return }
+        var value = persona
+        value.updatedAt = Date()
+        personas[index] = value
+        personas.sort { $0.updatedAt > $1.updatedAt }
+        persist()
+        NotificationCenter.default.post(name: .personaDidChange, object: nil)
+    }
+
+    func delete(id: String) {
+        personas.removeAll { $0.id == id }
+        persist()
+        NotificationCenter.default.post(name: .personaDidChange, object: nil)
+    }
+
+    func persona(id: String?) -> AgentPersona? {
+        guard let id else { return nil }
+        return personas.first { $0.id == id }
+    }
+}
+
+
+extension Notification.Name {
+    /// Posted when a persona is assigned to a session or the library changes.
+    static let personaDidChange = Notification.Name("MinisPersonaDidChange")
+}
+
+// MARK: - [T-memory-monthly] Monthly digest + size warning
+
+/// Mechanical maintenance, not an AI summary: daily logs older than 90 days
+/// are concatenated into `YYYY-MM.md`, and the original daily files are moved
+/// to `archive/raw/YYYY-MM/` so nothing is lost. Runs at most once a day.
+enum MemoryMaintenance {
+    struct Result {
+        let warning: String?
+        let compressedMonths: Int
+    }
+
+    private static let lastRunKey = "memory.maintenance.lastRun"
+    private static let cutoffDays = 90
+    private static let warningBytes: Int64 = 50 * 1024 * 1024
+
+    static func runIfNeeded() -> Result {
+        let fm = FileManager.default
+        let dir = AIChatViewModel.minisMemoryPersistentDir
+        let today = dayString(Date())
+        let warning = sizeWarning(fm: fm, dir: dir)
+
+        if UserDefaults.standard.string(forKey: lastRunKey) == today {
+            return Result(warning: warning, compressedMonths: 0)
+        }
+        UserDefaults.standard.set(today, forKey: lastRunKey)
+
+        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else {
+            return Result(warning: warning, compressedMonths: 0)
+        }
+        let cutoff = Calendar.current.date(byAdding: .day, value: -cutoffDays, to: Date()) ?? Date()
+        var months: [String: [String]] = [:]
+        for name in names where isDaily(name) {
+            guard let date = date(fromDaily: name), date < cutoff else { continue }
+            let month = String(name.prefix(7))
+            months[month, default: []].append(name)
+        }
+        guard !months.isEmpty else { return Result(warning: warning, compressedMonths: 0) }
+
+        var compressed = 0
+        for (month, _) in months {
+            let monthNames = names.filter { isDaily($0) && $0.hasPrefix(month) }.sorted()
+            guard !monthNames.isEmpty else { continue }
+            var parts: [String] = ["# \(month) 月记忆", "> 由 \(monthNames.count) 份日记忆合并；原始文件在 archive/raw/\(month)/。"]
+            for name in monthNames {
+                let url = dir.appendingPathComponent(name)
+                guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                parts.append("## \(String(name.dropLast(3)))\n\n\(text.trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
+            let monthURL = dir.appendingPathComponent("\(month).md")
+            guard let data = parts.joined(separator: "\n\n").data(using: .utf8) else { continue }
+            do { try data.write(to: monthURL, options: .atomic) } catch { continue }
+
+            let archive = dir.appendingPathComponent("archive/raw/\(month)", isDirectory: true)
+            try? fm.createDirectory(at: archive, withIntermediateDirectories: true)
+            var movedAll = true
+            for name in monthNames {
+                let from = dir.appendingPathComponent(name)
+                let to = archive.appendingPathComponent(name)
+                do {
+                    if fm.fileExists(atPath: to.path) { try fm.removeItem(at: to) }
+                    try fm.moveItem(at: from, to: to)
+                } catch {
+                    movedAll = false
+                }
+            }
+            if movedAll { compressed += 1 }
+        }
+        if compressed > 0 {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .memoryFilesDidChange, object: nil)
+            }
+        }
+        return Result(warning: sizeWarning(fm: fm, dir: dir), compressedMonths: compressed)
+    }
+
+    private static func isDaily(_ name: String) -> Bool {
+        name.range(of: #"^\d{4}-\d{2}-\d{2}\.md$"#, options: .regularExpression) != nil
+    }
+
+    private static func date(fromDaily name: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: String(name.dropLast(3)))
+    }
+
+    private static func dayString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private static func sizeWarning(fm: FileManager, dir: URL) -> String? {
+        guard let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { return nil }
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+                  let size = values.fileSize else { continue }
+            total += Int64(size)
+        }
+        guard total > warningBytes else { return nil }
+        let mb = Double(total) / 1024.0 / 1024.0
+        return String(format: AppLocalized("记忆已用 %.1f MB，超过 50 MB；建议导出或清理旧记忆。"), mb)
+    }
+}
+
+// MARK: - [T-persona-memory-share] Read-only shared memory
+
+/// A persona memory snapshot shared to another persona. The record is a copy,
+/// not a live reference: the recipient cannot edit it, and "copy to my memory"
+/// appends the text to their own editable persona memory file.
+struct SharedMemoryRecord: Codable, Identifiable, Equatable {
+    let id: String
+    let sourcePersonaId: String
+    let sourcePersonaName: String
+    let targetPersonaId: String
+    let targetPersonaName: String
+    let title: String
+    let content: String
+    let sharedAt: Date
+}
+
+final class SharedMemoryStore: ObservableObject {
+    static let shared = SharedMemoryStore()
+
+    @Published private(set) var records: [SharedMemoryRecord] = []
+    private let key = "shared.memory.v1"
+
+    private init() { load() }
+
+    func load() {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let list = try? JSONDecoder().decode([SharedMemoryRecord].self, from: data) else {
+            records = []
+            return
+        }
+        records = list.sorted { $0.sharedAt > $1.sharedAt }
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(records) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+        objectWillChange.send()
+    }
+
+    func share(source: AgentPersona, target: AgentPersona, title: String, content: String) {
+        let record = SharedMemoryRecord(
+            id: UUID().uuidString,
+            sourcePersonaId: source.id,
+            sourcePersonaName: source.name,
+            targetPersonaId: target.id,
+            targetPersonaName: target.name,
+            title: title,
+            content: content,
+            sharedAt: Date())
+        records.insert(record, at: 0)
+        persist()
+    }
+
+    func delete(id: String) {
+        records.removeAll { $0.id == id }
+        persist()
+    }
+
+    /// Append the shared snapshot to the target persona's own editable memory.
+    @discardableResult
+    func copyToTarget(_ record: SharedMemoryRecord) -> Bool {
+        guard let persona = PersonaStore.shared.persona(id: record.targetPersonaId) else { return false }
+        let url = PersonaStore.shared.memoryURL(for: persona.id)
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let header = "\n\n## 来自 \(record.sourcePersonaName) · \(record.title)\n\n"
+        let body = record.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let combined = existing + header + body
+        do {
+            guard let data = combined.data(using: .utf8) else { return false }
+            try data.write(to: url, options: .atomic)
+            NotificationCenter.default.post(name: .memoryFilesDidChange, object: nil)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func exportURL(_ record: SharedMemoryRecord) -> URL? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shared-\(record.id.prefix(8)).md")
+        let header = "# \(record.title)\n\n> 来自 \(record.sourcePersonaName) · 只读分享\n\n"
+        guard let data = (header + record.content).data(using: .utf8) else { return nil }
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+}

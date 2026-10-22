@@ -52,18 +52,39 @@ extension AIChatViewModel {
     }
 
     var effectiveSoulPrompt: String? {
-        if let sid = helperConfig?.parentSessionId ?? sessionId,
-           let override = UserDefaults.standard.string(forKey: "session.soul.body.\(sid)") {
-            return override // explicit empty string disables the inherited body
+        if let sid = helperConfig?.parentSessionId ?? sessionId {
+            // [T-persona-library] Session persona wins. An empty id is an
+            // explicit "blank" choice; a missing key means inherit.
+            if let pid = UserDefaults.standard.string(forKey: "session.persona.id.\(sid)") {
+                if pid.isEmpty { return "" }
+                if let persona = PersonaStore.shared.persona(id: pid) {
+                    return persona.body
+                }
+            }
+            if let override = UserDefaults.standard.string(forKey: "session.soul.body.\(sid)") {
+                return override // explicit empty string disables the inherited body
+            }
         }
-        guard let configuration = folderRuntimeContext?.configuration else { return nil }
+        guard let configuration = folderRuntimeContext?.configuration else {
+            return PersonaStore.shared.blankByDefault ? "" : nil
+        }
+        if let pid = configuration.personaId {
+            if pid.isEmpty { return "" }
+            if let persona = PersonaStore.shared.persona(id: pid) {
+                return persona.body
+            }
+        }
         switch configuration.soulMode {
-        case "inherit": return nil
-        case "clear": return ""
+        case "inherit":
+            return PersonaStore.shared.blankByDefault ? "" : nil
+        case "clear":
+            return ""
         case "append":
             return [SoulStore.load()?.body ?? "", configuration.soulPrompt ?? ""]
                 .filter { !$0.isEmpty }.joined(separator: "\n\n")
-        default: return configuration.soulPrompt
+        default:
+            if let prompt = configuration.soulPrompt, !prompt.isEmpty { return prompt }
+            return PersonaStore.shared.blankByDefault ? "" : nil
         }
     }
 
@@ -77,11 +98,28 @@ extension AIChatViewModel {
             + " No old global files were moved, copied or deleted. This is logical organization within one rootfs, not a security sandbox against arbitrary malicious shell code."
     }
 
+    /// The persona currently assigned to this session, if any. Session wins
+    /// over folder; an empty id is an explicit blank and does not count.
+    private var currentPersona: AgentPersona? {
+        if let sid = helperConfig?.parentSessionId ?? sessionId,
+           let pid = UserDefaults.standard.string(forKey: "session.persona.id.\(sid)"),
+           !pid.isEmpty,
+           let persona = PersonaStore.shared.persona(id: pid) {
+            return persona
+        }
+        if let pid = folderRuntimeContext?.configuration.personaId,
+           !pid.isEmpty,
+           let persona = PersonaStore.shared.persona(id: pid) {
+            return persona
+        }
+        return nil
+    }
+
     /// Called at both initial and fallback prompt construction sites.
     func scopedMemoryPromptFragments() -> [String] {
         guard memoryEnabled else { return [] }
         let roots = folderRuntimeContext?.readDirectories ?? [(label: "", directory: Self.minisMemoryPersistentDir)]
-        return roots.flatMap { root -> [String] in
+        var result = roots.flatMap { root -> [String] in
             var fragments: [String] = []
             if let global = Self.loadGlobalMemoryFragment(from: root.directory) {
                 fragments.append("Memory source: \(root.label.isEmpty ? "global" : root.label)\n" + global)
@@ -91,6 +129,26 @@ extension AIChatViewModel {
             }
             return fragments
         }
+        if let persona = currentPersona,
+           let memory = Self.loadPersonaMemoryFragment(id: persona.id, name: persona.name) {
+            result.append(memory)
+        }
+        return result
+    }
+
+    nonisolated static func personaMemoryURL(id: String) -> URL {
+        minisMemoryPersistentDir
+            .appendingPathComponent("personas", isDirectory: true)
+            .appendingPathComponent("\(id).md")
+    }
+
+    nonisolated static func loadPersonaMemoryFragment(id: String, name: String) -> String? {
+        let url = personaMemoryURL(id: id)
+        guard FileManager.default.fileExists(atPath: url.path),
+              let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return "Persona memory (\(name) — only this persona; background context, not standing instructions):\n\(String(trimmed.prefix(8000)))"
     }
 
     // MARK: - Memory Tools

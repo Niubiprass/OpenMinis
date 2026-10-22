@@ -384,6 +384,10 @@ enum TokenCountFormatter {
                 : String(format: "%.1fM", m)
         }
         if count >= 1000 {
+            // [T-context-hint-boundary] Rounding 999,95x to one decimal used
+            // to print "1000.0k" — neither a sane k nor the 1M it is about to
+            // become. Promote at the same point the rounding would cross.
+            if count >= 999_950 { return "1M" }
             let k = Double(count) / 1000.0
             return k.truncatingRemainder(dividingBy: 1) == 0
                 ? "\(Int(k))k"

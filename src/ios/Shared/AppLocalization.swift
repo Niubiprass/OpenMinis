@@ -272,41 +272,161 @@ enum CompactionCopy {
 /// worse than none.
 enum ProviderErrorDigest {
 
-    static func summary(for raw: String) -> String? {
-        let text = raw.lowercased()
+    /// Chinese-only text for one provider error. `code` is the provider's own
+    /// code (for support), never the whole JSON body.
+    struct Display {
+        let title: String
+        let detail: String?
+        let code: String?
 
-        if text.contains("thinking") && (text.contains("not supported") || text.contains("unsupported")) {
-            return AppLocalized("这个模型不支持「思考」参数，把思考关掉再试")
+        /// The banner's original second line: the reason, plus the provider
+        /// code when there is one. Kept separate so the existing two-line
+        /// banner layout (main sentence + smaller detail) is untouched.
+        var secondaryLine: String? {
+            var parts: [String] = []
+            if let detail, !detail.isEmpty { parts.append(detail) }
+            if let code, !code.isEmpty { parts.append(AppLocalized("代码") + " " + code) }
+            return parts.isEmpty ? nil : parts.joined(separator: " ")
         }
-        if text.contains("content[].thinking") || text.contains("must be passed back") {
-            return AppLocalized("这条会话的思考内容没收全，重试一次；还不行就换模型")
+    }
+
+    /// Full display mapping. `summary` is kept as the title-only entry point
+    /// for existing call sites and tests.
+    static func display(for raw: String) -> Display? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        let lower = text.lowercased()
+        let status = httpStatus(in: text)
+        let code = providerCode(in: text)
+
+        // Protocol-level messages first: a 400 carrying one of these is not an
+        // auth failure, even though providers sometimes label it that way.
+        if lower.contains("thinking") && (lower.contains("not supported") || lower.contains("unsupported")) {
+            return Display(title: AppLocalized("这个模型不支持「思考」参数"),
+                           detail: AppLocalized("把「思考」关掉再试。"), code: code)
         }
-        if text.contains("invalid api key") || text.contains("incorrect api key")
-            || text.contains("unauthorized") || text.contains("invalid_api_key") {
-            return AppLocalized("Key 无效或没有权限")
+        if lower.contains("content[].thinking") || lower.contains("must be passed back") {
+            return Display(title: AppLocalized("这条会话的思考内容没收全"),
+                           detail: AppLocalized("重试一次；还不行就换模型。"), code: code)
         }
-        if text.contains("insufficient") && (text.contains("quota") || text.contains("balance")) {
-            return AppLocalized("账户余额不足")
+        if lower.contains("context length") || lower.contains("context_length_exceeded")
+            || lower.contains("too many tokens") || lower.contains("maximum context") {
+            return Display(title: AppLocalized("上下文超出供应商限制"),
+                           detail: AppLocalized("压缩对话，或换一个上下文更大的模型。"), code: code)
         }
-        if text.contains("model") && (text.contains("not found") || text.contains("does not exist")
-            || text.contains("unknown model") || text.contains("no such model")) {
-            return AppLocalized("这个模型在该站不存在或已下线")
+        if lower.contains("content filter") || lower.contains("content_policy")
+            || lower.contains("safety") || lower.contains("moderation") {
+            return Display(title: AppLocalized("被供应商的内容审核拦截"),
+                           detail: AppLocalized("换个说法再试。"), code: code)
         }
-        if text.contains("context length") || text.contains("context_length_exceeded")
-            || text.contains("too many tokens") || text.contains("maximum context") {
-            return AppLocalized("上下文超出模型上限，压缩一下或换长窗口模型")
+
+        // 401 is not proof the key string is wrong: relays also use it for
+        // account restrictions and short bursts. Say that, instead of
+        // "API Key 无效" over a raw JSON body.
+        if status == 401 || lower.contains("invalid api key") || lower.contains("incorrect api key")
+            || lower.contains("invalid_api_key") || lower.contains("unauthorized")
+            || lower.contains("api key 无效") || (code?.hasPrefix("AUTH") == true) {
+            return Display(title: AppLocalized("供应商鉴权失败（HTTP 401）"),
+                           detail: AppLocalized("可能是 Key 没权限、账号被限制，或短时请求过多。"),
+                           code: code)
         }
-        if text.contains("rate limit") || text.contains("too many requests") || text.contains("429") {
-            return AppLocalized("请求太频繁，稍后再试")
+        if status == 402
+            || (lower.contains("insufficient") && (lower.contains("quota") || lower.contains("balance")))
+            || lower.contains("余额不足") || lower.contains("额度耗尽") {
+            return Display(title: AppLocalized("供应商账户余额不足"),
+                           detail: AppLocalized("充值，或换一个有余额的 Key 再试。"), code: code)
         }
-        if text.contains("content filter") || text.contains("safety") || text.contains("moderation") {
-            return AppLocalized("被服务商的内容审核拦了，换个说法再试")
+        if status == 403 || lower.contains("permission denied") || lower.contains("forbidden") {
+            return Display(title: AppLocalized("供应商拒绝访问（HTTP 403）"),
+                           detail: AppLocalized("Key 没有这个模型或分组的权限。"), code: code)
         }
-        if text.contains("overloaded") || text.contains("503") || text.contains("service unavailable") {
-            return AppLocalized("服务商过载或暂时不可用，稍后再试")
+        if status == 404 || (lower.contains("model") && (lower.contains("not found")
+            || lower.contains("does not exist") || lower.contains("unknown model")
+            || lower.contains("no such model"))) {
+            return Display(title: AppLocalized("供应商没有这个模型"),
+                           detail: AppLocalized("检查模型名或接口地址。"), code: code)
         }
-        if text.contains("timeout") || text.contains("timed out") {
-            return AppLocalized("请求超时，网络或服务商响应太慢")
+        if status == 429 || lower.contains("rate limit") || lower.contains("too many requests")
+            || lower.contains("429") {
+            return Display(title: AppLocalized("请求太频繁，被供应商限流"),
+                           detail: AppLocalized("等几十秒再试。"), code: code)
+        }
+        if (status.map { (500...599).contains($0) } ?? false)
+            || lower.contains("overloaded") || lower.contains("service unavailable") {
+            let codeText = status.map { String($0) } ?? "5xx"
+            return Display(title: String(format: AppLocalized("供应商服务暂时不可用（HTTP %@）"), codeText),
+                           detail: AppLocalized("稍后再试。"), code: code)
+        }
+        if status == 408 || lower.contains("timeout") || lower.contains("timed out") {
+            return Display(title: AppLocalized("请求超时或网络连接失败"),
+                           detail: AppLocalized("检查网络后重试。"), code: code)
+        }
+        if status == 400 {
+            return Display(title: AppLocalized("供应商拒绝了请求（HTTP 400）"),
+                           detail: AppLocalized("请求格式或参数不对。"), code: code)
+        }
+        if let code {
+            return Display(title: AppLocalized("供应商返回错误"),
+                           detail: AppLocalized("供应商没有提供可翻译的说明，请把下面的代码发给供应商。"),
+                           code: code)
+        }
+        return nil
+    }
+
+    /// Title only, for the existing banner/test contract.
+    static func summary(for raw: String) -> String? {
+        display(for: raw)?.title
+    }
+
+    /// One paragraph, exactly the shape the old bubble rendered: title,
+    /// reason and the provider's code in a single Text. The bubble keeps its
+    /// original font, padding and self-sizing; only the words change.
+    static func composed(for raw: String) -> String? {
+        guard let display = display(for: raw) else { return nil }
+        var text = display.title
+        if let detail = display.detail, !detail.isEmpty {
+            text += "：" + detail
+        }
+        if let code = display.code, !code.isEmpty {
+            text += "（" + AppLocalized("代码") + " " + code + "）"
+        }
+        return text
+    }
+
+    private static func httpStatus(in text: String) -> Int? {
+        let patterns = [
+            #"(?i)\bhttp\s*:?\s*([45]\d{2})\b"#,
+            #"(?i)\bstatus(?:code)?\s*[=:]\s*([45]\d{2})\b"#,
+            #"\[\s*([45]\d{2})\s*\]"#
+        ]
+        for pattern in patterns {
+            if let re = try? NSRegularExpression(pattern: pattern),
+               let match = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+               let range = Range(match.range(at: 1), in: text) {
+                return Int(text[range])
+            }
+        }
+        return nil
+    }
+
+    private static func providerCode(in text: String) -> String? {
+        let patterns = [
+            #""code"\s*:\s*"([^"]+)""#,
+            #"(?i)\bcode\s*[=:]\s*([A-Za-z0-9._-]+)"#
+        ]
+        for pattern in patterns {
+            if let re = try? NSRegularExpression(pattern: pattern),
+               let match = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+               let range = Range(match.range(at: 1), in: text) {
+                let value = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty { return value }
+            }
+        }
+        // Provider-style codes such as AUTH-ERR-5.
+        if let re = try? NSRegularExpression(pattern: #"\b[A-Z][A-Z0-9]{2,}-[A-Z0-9-]{2,}\b"#),
+           let match = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+           let range = Range(match.range, in: text) {
+            return String(text[range])
         }
         return nil
     }

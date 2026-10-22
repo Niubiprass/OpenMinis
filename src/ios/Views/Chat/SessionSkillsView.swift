@@ -19,12 +19,14 @@ struct SessionSkillsView: View {
     var ensureSessionId: (() async -> String)?
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var store = SkillStore.shared
+    @ObservedObject private var personaStore = PersonaStore.shared
     @State private var searchQuery = ""
     /// The id reads/writes resolve against. Seeded from `sessionId`; once a
     /// draft is materialized on first toggle it holds the real id so the rest
     /// of the sheet stays consistent without re-creating the session.
     @State private var resolvedSessionId: String?
     @State private var showSoulEditor = false
+    @State private var showPersonaPicker = false
     @State private var folderLoadError: String?
 
     init(sessionId: String?, ensureSessionId: (() async -> String)? = nil) {
@@ -87,6 +89,15 @@ struct SessionSkillsView: View {
         }
     }
 
+    private var personaLabel: String {
+        guard let sid = resolvedSessionId,
+              let pid = UserDefaults.standard.string(forKey: "session.persona.id.\(sid)") else {
+            return "跟随分组"
+        }
+        if pid.isEmpty { return "空白" }
+        return PersonaStore.shared.persona(id: pid)?.name ?? "未知人格"
+    }
+
     var body: some View {
         // Reference the version counter so SwiftUI refreshes on override changes.
         let _ = store.sessionOverrideVersion
@@ -94,6 +105,16 @@ struct SessionSkillsView: View {
         NavigationStack {
             List {
                 Section {
+                    Button {
+                        showPersonaPicker = true
+                    } label: {
+                        HStack {
+                            Text("会话人格")
+                            Spacer()
+                            Text(personaLabel)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Button("会话灵魂提示词") { showSoulEditor = true }
                     Button("技能恢复继承分组／全局") {
                         if let sid = resolvedSessionId {
@@ -155,6 +176,11 @@ struct SessionSkillsView: View {
                     store.setFolderSkillDefaults(context.configuration.skillDefaults, for: sid)
                     folderLoadError = nil
                 } catch { folderLoadError = error.localizedDescription }
+            }
+            .sheet(isPresented: $showPersonaPicker) {
+                PersonaPickerSheet(sessionId: resolvedSessionId,
+                                   ensureSessionId: ensureSessionId,
+                                   onResolved: { resolvedSessionId = $0 })
             }
             .sheet(isPresented: $showSoulEditor) {
                 SessionSoulPromptSheet(sessionId: resolvedSessionId, ensureSessionId: ensureSessionId)
@@ -277,6 +303,100 @@ private struct SkillFilePreviewView: View {
         .onAppear {
             if !isImage {
                 content = store.readSkillFile(skillId, relativePath: relativePath) ?? ""
+            }
+        }
+    }
+}
+
+private struct PersonaPickerSheet: View {
+    let sessionId: String?
+    let ensureSessionId: (() async -> String)?
+    let onResolved: (String) -> Void
+
+    @ObservedObject private var store = PersonaStore.shared
+    @Environment(\.dismiss) private var dismiss
+
+    private var current: String? {
+        guard let sid = sessionId else { return nil }
+        return UserDefaults.standard.string(forKey: "session.persona.id.\(sid)")
+    }
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    option("跟随分组", "用分组或全局的默认人格", selected: current == nil) {
+                        apply(nil)
+                    }
+                    option("无（空白）", "不注入任何人格提示词", selected: current == "") {
+                        apply("")
+                    }
+                }
+                Section("人格") {
+                    if store.personas.isEmpty {
+                        Text("还没有人格；先到设置 → 灵魂里新建。")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(store.personas) { persona in
+                            option(persona.name,
+                                   persona.style.isEmpty ? "未设置风格" : persona.style,
+                                   selected: current == persona.id) {
+                                apply(persona.id)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("会话人格")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+
+    private func option(_ title: String, _ subtitle: String,
+                        selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if selected {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.tint)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func apply(_ personaId: String?) {
+        Task {
+            let sid: String
+            if let sessionId {
+                sid = sessionId
+            } else if let made = await ensureSessionId?() {
+                sid = made
+            } else {
+                return
+            }
+            await MainActor.run {
+                if let personaId {
+                    UserDefaults.standard.set(personaId, forKey: "session.persona.id.\(sid)")
+                } else {
+                    UserDefaults.standard.removeObject(forKey: "session.persona.id.\(sid)")
+                }
+                onResolved(sid)
+                NotificationCenter.default.post(name: .personaDidChange, object: nil)
+                dismiss()
             }
         }
     }

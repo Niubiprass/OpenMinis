@@ -31,6 +31,16 @@ class Pricing(unittest.TestCase):
         self.assertIn('.task(id: instance.id)', DETAIL)
         self.assertNotIn('pricingService.refresh(for: instance)\n', VM)
 
+    def test_cost_section_lives_inside_rate_sheet(self):
+        # [T-turn-cost-site-pricing] The site-pricing "费用" section belongs in
+        # the "供应商汇率" sheet, not as a separate section on the detail page.
+        i = DETAIL.index('private struct RateOverrideSheet')
+        body = DETAIL[i:]
+        self.assertIn('Text("费用")', body)
+        self.assertIn('从站点读取定价', body)
+        self.assertIn('pricing.refresh(for: instance)', body)
+        self.assertEqual(DETAIL.count('Text("费用")'), 1)
+
     def test_rate_override_lives_with_provider(self):
         self.assertIn('ratePrefix = "pricing.rateOverride."', QUOTA)
         self.assertIn('func setRateOverride(instanceId:', QUOTA)

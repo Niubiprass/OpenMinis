@@ -98,7 +98,9 @@ struct ScopedMemoryLibraryView<Header: View>: View {
     private func filtered(_ root: MemoryLibraryRoot) -> [MemoryDocumentStore.Snapshot] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return documents.filter {
-            $0.rootID == root.id && (term.isEmpty || $0.fileName.localizedCaseInsensitiveContains(term) ||
+            $0.rootID == root.id
+                && (root.nameFilter?($0.fileName) ?? true)
+                && (term.isEmpty || $0.fileName.localizedCaseInsensitiveContains(term) ||
                 root.title.localizedCaseInsensitiveContains(term) || $0.originalText.localizedCaseInsensitiveContains(term))
         }
     }

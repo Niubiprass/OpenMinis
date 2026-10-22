@@ -37,6 +37,7 @@ struct SoulSettingsView: View {
     /// shows / hides reactively when the user toggles iCloud sync in
     /// Settings. Same pattern as SkillDetailView (#440 / 3a4fe546).
     @AppStorage("cloudSync.v2.enabled") private var iCloudSyncEnabled: Bool = false
+    @ObservedObject private var personaStore = PersonaStore.shared
 
     private static var langOptions: [(label: String, value: String)] {
         [
@@ -48,6 +49,24 @@ struct SoulSettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                NavigationLink {
+                    PersonaListView()
+                } label: {
+                    HStack {
+                        Label(AppLocalized("人格列表"), systemImage: "person.2")
+                        Spacer()
+                        Text("\(personaStore.personas.count) 个")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Toggle(AppLocalized("新建会话默认空白"), isOn: $personaStore.blankByDefault)
+            } header: {
+                Text(AppLocalized("人格"))
+            } footer: {
+                Text(AppLocalized("默认空白：新会话不注入人格；想用哪个人格，再在会话里选。关掉则继续用全局 SOUL.md。"))
+            }
+
             Section {
                 previewCard
             }
@@ -651,4 +670,328 @@ private struct SoulIconEditing: ViewModifier {
     }
 
 
+}
+// MARK: - [T-persona-library] Persona list / editor
+
+private struct PersonaListView: View {
+    @ObservedObject private var store = PersonaStore.shared
+    @State private var editing: AgentPersona?
+    @State private var creating = false
+    @State private var share: MemoryShareItem?
+
+    var body: some View {
+        List {
+            if store.personas.isEmpty {
+                Text(AppLocalized("还没有人格；点右上角新建一个。"))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(store.personas) { persona in
+                    Button {
+                        editing = persona
+                    } label: {
+                        HStack(spacing: 10) {
+                            Text(persona.icon.isEmpty ? "🙂" : persona.icon)
+                                .font(.system(size: 22))
+                                .frame(width: 34, height: 34)
+                                .background(Color.secondary.opacity(0.12), in: Circle())
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(persona.name)
+                                let subtitle = persona.style.isEmpty
+                                    ? AppLocalized("未设置风格") : persona.style
+                                Text(subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                .onDelete { offsets in
+                    let ids = offsets.map { store.personas[$0].id }
+                    for id in ids { store.delete(id: id) }
+                }
+            }
+        }
+        .navigationTitle(AppLocalized("人格"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    exportPersonas()
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .disabled(store.personas.isEmpty)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    creating = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+            }
+        }
+        .sheet(item: $share) { MinisShareSheet(url: $0.url) }
+        .sheet(isPresented: $creating) {
+            PersonaEditorView(persona: nil)
+        }
+        .sheet(item: $editing) { persona in
+            PersonaEditorView(persona: persona)
+        }
+    }
+
+    private func exportPersonas() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(store.personas) else { return }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("personas-\(UUID().uuidString).json")
+        do {
+            try data.write(to: url, options: .atomic)
+            share = MemoryShareItem(url: url)
+        } catch {
+            // Export is best-effort; the list stays usable.
+        }
+    }
+}
+
+private struct PersonaEditorView: View {
+    let persona: AgentPersona?
+
+    @ObservedObject private var store = PersonaStore.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var style = ""
+    @State private var lang = "auto"
+    @State private var bodyText = ""
+    @State private var loaded = false
+
+    private var isOverLimit: Bool {
+        SoulStore.isOverLimit(bodyText).isOverLimit
+    }
+
+    private var langLabel: String {
+        switch lang {
+        case "zh": return AppLocalized("Chinese")
+        case "en": return AppLocalized("English")
+        default: return AppLocalized("Auto")
+        }
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(AppLocalized("标识")) {
+                    TextField(AppLocalized("名称"), text: $name)
+                    TextField(AppLocalized("风格"), text: $style)
+                    Menu {
+                        Button(AppLocalized("Auto")) { lang = "auto" }
+                        Button(AppLocalized("Chinese")) { lang = "zh" }
+                        Button(AppLocalized("English")) { lang = "en" }
+                    } label: {
+                        HStack {
+                            Text(AppLocalized("语言"))
+                            Spacer()
+                            Text(langLabel).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section {
+                    TextEditor(text: $bodyText)
+                        .frame(minHeight: 180)
+                } header: {
+                    Text(AppLocalized("人格提示词"))
+                } footer: {
+                    if isOverLimit {
+                        Text(AppLocalized("提示词超过 2000 tokens，请缩短。"))
+                            .foregroundStyle(.red)
+                    } else {
+                        Text(AppLocalized("只写说话方式、立场和语气；不要写“你是某某”的身份句。"))
+                    }
+                }
+            }
+            .navigationTitle(persona == nil
+                             ? AppLocalized("新建人格")
+                             : AppLocalized("编辑人格"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(AppLocalized("取消")) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(AppLocalized("保存")) { save() }
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isOverLimit)
+                }
+            }
+            .onAppear {
+                guard !loaded else { return }
+                loaded = true
+                if let persona {
+                    name = persona.name
+                    style = persona.style
+                    lang = persona.lang
+                    bodyText = persona.body
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+
+    private func save() {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if var value = persona {
+            value.name = trimmed
+            value.style = style
+            value.lang = lang
+            value.body = bodyText
+            store.update(value)
+        } else {
+            var value = store.add(name: trimmed)
+            value.style = style
+            value.lang = lang
+            value.body = bodyText
+            store.update(value)
+        }
+        dismiss()
+    }
+}
+// MARK: - [T-persona-memory-share] Shared memory inbox
+
+struct SharedMemoryListView: View {
+    @ObservedObject private var store = SharedMemoryStore.shared
+
+    var body: some View {
+        List {
+            if store.records.isEmpty {
+                Text(AppLocalized("还没有共享记忆。在人格记忆里点分享，选另一个人格。"))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(store.records) { record in
+                    NavigationLink {
+                        SharedMemoryDetailView(record: record)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(record.title)
+                            Text(AppLocalizedFormat("来自 %@ · 给 %@ · 只读",
+                                                     record.sourcePersonaName,
+                                                     record.targetPersonaName))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .onDelete { offsets in
+                    let ids = offsets.map { store.records[$0].id }
+                    for id in ids { store.delete(id: id) }
+                }
+            }
+        }
+        .navigationTitle(AppLocalized("共享给我"))
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct SharedMemoryDetailView: View {
+    let record: SharedMemoryRecord
+    @ObservedObject private var store = SharedMemoryStore.shared
+    @State private var share: MemoryShareItem?
+    @State private var message: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Label(AppLocalizedFormat("只读 · 来自 %@", record.sourcePersonaName),
+                      systemImage: "lock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(record.title).font(.headline)
+                Text(record.content)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                Button {
+                    if store.copyToTarget(record) {
+                        message = AppLocalized("已复制到你的人格记忆")
+                    } else {
+                        message = AppLocalized("复制失败，人格可能已被删除")
+                    }
+                } label: {
+                    Label(AppLocalizedFormat("复制到我的记忆（%@）", record.targetPersonaName),
+                          systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.borderedProminent)
+                if let message {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                }
+                Text(AppLocalized("共享内容是只读快照；复制后才会进入你自己的人格记忆，之后可以编辑。"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+        }
+        .navigationTitle(AppLocalized("共享记忆"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    if let url = store.exportURL(record) { share = MemoryShareItem(url: url) }
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+            }
+        }
+        .sheet(item: $share) { MinisShareSheet(url: $0.url) }
+    }
+}
+
+struct PersonaShareSheet: View {
+    let source: AgentPersona
+    let title: String
+    let content: String
+    @ObservedObject private var store = PersonaStore.shared
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            List {
+                if store.personas.filter({ $0.id != source.id }).isEmpty {
+                    Text(AppLocalized("先新建另一个人格，才能分享。"))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(store.personas.filter { $0.id != source.id }) { target in
+                        Button {
+                            SharedMemoryStore.shared.share(source: source, target: target,
+                                                            title: title, content: content)
+                            ShareFeedbackToast.show(AppLocalizedFormat("已分享给 %@", target.name))
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 10) {
+                                Text(target.icon.isEmpty ? "🙂" : target.icon)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(target.name)
+                                    Text(target.style.isEmpty ? AppLocalized("未设置风格") : target.style)
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .navigationTitle(AppLocalized("分享给其他人格"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(AppLocalized("取消")) { dismiss() }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
 }
