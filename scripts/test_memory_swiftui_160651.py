@@ -101,6 +101,10 @@ final class PersonaStore: ObservableObject {
     @Published var personas: [AgentPersona] = []
     var blankByDefault = true
     func persona(id: String?) -> AgentPersona? { nil }
+    @discardableResult
+    func moveMemory(fromPersonaId sourceId: String, toPersonaId targetId: String) -> Bool { false }
+    @discardableResult
+    func moveMemoryFile(named fileName: String, toPersonaId targetId: String?) -> Bool { false }
 }
 struct SharedMemoryRecord: Identifiable { let id: String }
 final class SharedMemoryStore: ObservableObject {
