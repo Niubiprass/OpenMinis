@@ -166,7 +166,8 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
         // and the composer top. Restored to the historical +8.
         let bottomPad: CGFloat = inputBarHeight + floatingBarHeight + 8
         let baseChanged = abs(coord.baseBottomInset - bottomPad) > 0.5
-        if baseChanged {
+        // [T-sheet-inset-hold] 面板打开期间不跟着改内边距，避免列表被推一下。
+        if baseChanged && !coord.insetHold {
             let cv = vc.collectionView!
             let previousBase = coord.baseBottomInset
             let wasSmaller = previousBase < bottomPad
@@ -986,6 +987,11 @@ extension CollectionViewMessageListV3 {
         #endif
 
         // === Scroll mode (replaces V2's 6+ mechanisms) ===
+        /// [T-sheet-inset-hold] true 时忽略底部内边距变化（面板打开期间）。
+        var insetHold = false
+        /// [T-settle-no-jump] 松手后待校正的高度，等下次交互再处理。
+        var pendingSettleFlush = false
+
         var scrollMode: ScrollMode = .autoScrolling {
             didSet {
                 // Mirror to the layout so its invalidationContext can glue the
@@ -2176,6 +2182,21 @@ extension CollectionViewMessageListV3 {
                     if newCount != oldCount {
                         let totalBlocks = msgs.reduce(0) { $0 + $1.blocks.count }
                         AppLogger(category: "BlocksLost").info("[BlocksLost] SNAPSHOT REBUILT snapshotItems \(oldCount)→\(newCount) memoryBlocks=\(totalBlocks)")
+                    }
+                }
+                .store(in: &subscriptions)
+
+            // 1d. [T-sheet-inset-hold]
+            vm.insetHoldSignal
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] hold in
+                    guard let self else { return }
+                    self.insetHold = hold
+                    if !hold, let vc = self.viewController, let cv = vc.collectionView {
+                        let pad = self.inputBarHeight + self.floatingBarHeight + 8
+                        if abs(cv.contentInset.bottom - pad) > 0.5 {
+                            cv.contentInset.bottom = pad
+                        }
                     }
                 }
                 .store(in: &subscriptions)
@@ -5897,6 +5918,13 @@ extension CollectionViewMessageListV3 {
         // MARK: - UIScrollViewDelegate
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            // [T-settle-no-jump] 手指已经在动，先补上次欠下的高度校正。
+            if pendingSettleFlush {
+                pendingSettleFlush = false
+                settleAfterInteraction(scrollView)
+            }
+            // [T-settle-no-jump] 手指已经在动，此时校正高度最不容易被看出。
+            performPendingSettleFlush()
             AppLogger(category: "ScrollDiag").info("[ScrollDiag][willBeginDragging] offset=\(String(format: "%.0f", scrollView.contentOffset.y)) contentSize=\(String(format: "%.0f", scrollView.contentSize.height)) visibleCells=\(viewController?.collectionView?.visibleCells.count ?? -1)")
             #if DEBUG
             // [DecelDisplayLink] Safety: if the user grabs again mid-decel, stop
@@ -5931,7 +5959,12 @@ extension CollectionViewMessageListV3 {
 
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
             if !decelerate {
-                settleAfterInteraction(scrollView)
+                // [T-settle-no-jump] 松手不立刻重排：此时换高度会让整段内容
+                // 位移一次（"抖一下停在不认识的位置"）。留到下次开始滑动时做。
+                if isWithinBottom(reacquireAutoScrollThreshold) {
+                    scrollMode = .autoScrolling
+                }
+                pendingSettleFlush = true
             }
         }
 
@@ -5970,7 +6003,12 @@ extension CollectionViewMessageListV3 {
                 decelStartTime = 0
             }
             DispatchQueue.main.async { [weak self] in
-                self?.settleAfterInteraction(scrollView)
+                guard let self else { return }
+                // [T-settle-no-jump] 减速结束也不重排，等下次交互。
+                if self.isWithinBottom(self.reacquireAutoScrollThreshold) {
+                    self.scrollMode = .autoScrolling
+                }
+                self.pendingSettleFlush = true
             }
         }
 

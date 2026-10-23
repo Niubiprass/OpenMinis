@@ -1174,6 +1174,20 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// (send, enqueue, session reuse) — NOT during streaming, so user scroll position is respected.
     let forceScrollToBottom = PassthroughSubject<Void, Never>()
 
+    /// [T-no-yank-on-reply] 只有用户本来就在底部附近，才把他滚到最新；
+    /// 如果他在往上翻旧消息，新回复开始/恢复时**不许**把他拽回去
+    /// （对照：大厂 UI 教程「02 翻记录不被拽走」）。
+    private func followBottomIfUserWasThere() {
+        guard isNearBottom else { return }
+        forceScrollToBottom.send()
+    }
+
+    /// [T-sheet-inset-hold] 底部面板（Bottom Sheet）打开期间冻结列表的
+    /// 底部内边距：sheet 一present，SwiftUI 会重新测量输入区/工具浮条，
+    /// baseBottomInset 随之变化，列表为了贴底就整体挪一下 —— 这就是
+    /// "面板后面在抖"。冻结后内容照常更新、滚动照常，只是不再改内边距。
+    let insetHoldSignal = PassthroughSubject<Bool, Never>()
+
     /// Force scroll-to-top (first message). Used by the floating "scroll to
     /// first message" button — a counterpart to forceScrollToBottom that does
     /// NOT change auto-scroll mode (jumping to the top is always a browse action).
@@ -3746,8 +3760,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         let existingMsgIdx = messages.count - 1
         let existingBlockCount = lastMsg.blocks.count
         isProcessing = true
-        isNearBottom = true
-        forceScrollToBottom.send()
+        followBottomIfUserWasThere()
 
         ensureKernelBooted()
         beginBackgroundProcessing()
@@ -4030,8 +4043,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // has no counterpart here: the new reply starts from an empty row.
         committedBlockCount = 0
         isProcessing = true
-        isNearBottom = true
-        forceScrollToBottom.send()
+        followBottomIfUserWasThere()
 
         ensureKernelBooted()
         beginBackgroundProcessing()
@@ -4431,7 +4443,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         }
 
         isProcessing = true
-        forceScrollToBottom.send()
+        followBottomIfUserWasThere()
 
         ensureKernelBooted()
         beginBackgroundProcessing()

@@ -2674,6 +2674,9 @@ _ios15Seg7
                 }
             )
             .thinkingLevelSheetPresentation()
+            // [T-sheet-inset-hold] 面板打开/关闭时冻结再恢复底部内边距。
+            .onAppear { vm.insetHoldSignal.send(true) }
+            .onDisappear { vm.insetHoldSignal.send(false) }
 
         }
     }
