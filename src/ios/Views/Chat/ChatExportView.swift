@@ -127,14 +127,58 @@ enum ChatExportRenderer {
 
     // MARK: Long image
 
+    /// [T-export-longimage-split] 超长会话自动切成多张长图。
+    ///
+    /// 单张长图必须远低于 40000pt：scale=2 时那是 80000 像素高、约 250MB 位图，
+    /// 再高就被系统杀掉。1060 条的会话内容高 91268pt，旧代码直接返回 nil，
+    /// 界面只剩"生成失败"。这里按行高把内容切成若干段，每段各自渲染成一张
+    /// （每张都有自己的小标题和「第 n/N 张」），全部成功才返回；任何一张失败
+    /// 就整体失败，避免给出缺段的导出。
+    static func renderLongImages(rows: [Row], pageWidth: CGFloat = 390,
+                                 modelName: String, dateText: String,
+                                 maxSegmentHeight: CGFloat = 12_000) -> [UIImage] {
+        guard !rows.isEmpty else { return [] }
+
+        var segments: [[Row]] = []
+        var current: [Row] = []
+        var currentHeight = headerSize(pageWidth: pageWidth) + pageMargin * 2
+
+        for row in rows {
+            let h = rowHeight(row, pageWidth: pageWidth) + rowGap
+            if !current.isEmpty && currentHeight + h > maxSegmentHeight {
+                segments.append(current)
+                current = []
+                currentHeight = headerSize(pageWidth: pageWidth) + pageMargin * 2
+            }
+            current.append(row)
+            currentHeight += h
+        }
+        if !current.isEmpty { segments.append(current) }
+
+        var images: [UIImage] = []
+        for (index, segment) in segments.enumerated() {
+            let title = segments.count > 1
+                ? "\(dateText) · 第 \(index + 1)/\(segments.count) 张"
+                : dateText
+            guard let image = renderLongImage(rows: segment, pageWidth: pageWidth,
+                                              modelName: modelName, dateText: title,
+                                              maxHeight: maxSegmentHeight) else {
+                return []
+            }
+            images.append(image)
+        }
+        return images
+    }
+
     static func renderLongImage(rows: [Row], pageWidth: CGFloat = 390,
-                                modelName: String, dateText: String) -> UIImage? {
+                                modelName: String, dateText: String,
+                                maxHeight: CGFloat = 40_000) -> UIImage? {
         var total: CGFloat = headerSize(pageWidth: pageWidth) + pageMargin
         for row in rows {
             total += rowHeight(row, pageWidth: pageWidth) + rowGap
         }
         total += pageMargin
-        guard total > 0, total < 40_000 else { return nil }
+        guard total > 0, total < maxHeight else { return nil }
 
         let format = UIGraphicsImageRendererFormat(for: UITraitCollection.current)
         format.scale = 2
@@ -294,6 +338,8 @@ struct ChatExportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var messages: [RawMessage] = []
     @State private var image: UIImage?
+    /// [T-export-longimage-split] 长会话会被切成多张，预览只显示第一张。
+    @State private var images: [UIImage] = []
     @State private var pdfURL: URL?
     @State private var errorText: String?
     @State private var generating = false
@@ -313,7 +359,15 @@ struct ChatExportSheet: View {
         NavigationView {
             Group {
                 if let image {
-                    ZoomableImageScrollView(image: image)
+                    VStack(spacing: 6) {
+                        if images.count > 1 {
+                            Text("\(images.count) 张长图，分享时会一起导出")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 4)
+                        }
+                        ZoomableImageScrollView(image: image)
+                    }
                 } else if let pdfURL {
                     QLPreviewWrapper(url: pdfURL)
                 } else if let errorText {
@@ -366,9 +420,13 @@ struct ChatExportSheet: View {
         Task.detached(priority: .userInitiated) {
             switch kind {
             case .longImage:
-                let img = ChatExportRenderer.renderLongImage(
+                let rendered = ChatExportRenderer.renderLongImages(
                     rows: rows, modelName: modelName, dateText: dateText)
-                await MainActor.run { self.image = img; if img == nil { self.errorText = AppLocalized("生成失败") } }
+                await MainActor.run {
+                    self.images = rendered
+                    self.image = rendered.first
+                    if rendered.isEmpty { self.errorText = AppLocalized("生成失败") }
+                }
             case .pdf:
                 let data = ChatExportRenderer.renderPDF(
                     rows: rows, modelName: modelName, dateText: dateText)
@@ -388,17 +446,26 @@ struct ChatExportSheet: View {
 
     private func share() {
         guard let presenter = UIApplication.shared.windows.first?.rootViewController else { return }
-        let url: URL?
-        if let image {
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("MinisChat-\(UUID().uuidString.prefix(6)).png")
-            try? image.pngData()?.write(to: tmp)
-            url = tmp
-        } else {
-            url = pdfURL
+        var items: [URL] = []
+        if !images.isEmpty {
+            let base = UUID().uuidString.prefix(6)
+            var urls: [URL] = []
+            for (idx, img) in images.enumerated() {
+                let name = images.count > 1
+                    ? "MinisChat-\(base)-\(idx + 1).png"
+                    : "MinisChat-\(base).png"
+                let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+                if let data = img.pngData() {
+                    try? data.write(to: tmp)
+                    urls.append(tmp)
+                }
+            }
+            items = urls
+        } else if let pdfURL {
+            items = [pdfURL]
         }
-        guard let url else { return }
-        let avc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        guard !items.isEmpty else { return }
+        let avc = UIActivityViewController(activityItems: items, applicationActivities: nil)
         avc.popoverPresentationController?.sourceView = presenter.view
         presenter.present(avc, animated: true)
     }

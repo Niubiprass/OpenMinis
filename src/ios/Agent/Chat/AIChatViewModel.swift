@@ -1173,6 +1173,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// Force scroll-to-bottom AND re-enable auto-scroll. Used only for explicit user actions
     /// (send, enqueue, session reuse) — NOT during streaming, so user scroll position is respected.
     let forceScrollToBottom = PassthroughSubject<Void, Never>()
+
     /// Force scroll-to-top (first message). Used by the floating "scroll to
     /// first message" button — a counterpart to forceScrollToBottom that does
     /// NOT change auto-scroll mode (jumping to the top is always a browse action).

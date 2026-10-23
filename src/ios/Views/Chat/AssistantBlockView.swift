@@ -1196,13 +1196,18 @@ struct ThinkingLevelSheetView: View {
                     thinkingToggle
                 }
                 .padding(.horizontal, 16)
-                .padding(.bottom, 22)
+                // [T-thinking-panel-clip] 32pt：最后一行「思考过程」开关本来
+                // 正好压在 sheet 底边上、被圆角裁掉一半。
+                .padding(.bottom, 32)
             }
         }
         .background(Color(UIColor.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .padding(.horizontal, 12)
-        .padding(.bottom, 12)
+        // [T-thinking-panel-clip] 底部不能再留 12pt：sheet 高度是固定的
+        // （medium detent），外边距会把可用高度压掉 12pt，最后一行
+        // 「思考过程」开关就被推到底边之外、看起来被裁掉。左右留边保留，
+        // 底部改为贴住 sheet（内层 ScrollView 自己还有 22pt 内边距）。
         .background(Color.clear)
     }
 

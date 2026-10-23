@@ -490,6 +490,12 @@ struct AIChatView: View {
     }
 
     @State private var floatingBarHeight: CGFloat = 0
+    /// [T-floatbar-stable-inset] 浮条在两次工具调用之间会消失又出现，
+    /// 实测底部内边距在 187↔224pt 之间来回跳（差 37pt），每次跳都把列表
+    /// 内容整体推一下 —— 这就是"后面的内容一直抖"的来源。
+    /// 记住见过的最大高度，在一次运行期间始终按它预留，只在整轮开始/结束时
+    /// 变化一次。
+    @State private var floatingBarMaxHeight: CGFloat = 0
     // [T-p2-agent-in-toolbar] Agent blocks now live in the floating tool bar
     // like every other tool; this sheet target only serves the notification-
     // tap / debug-RPC `openHelperSheet` route.
@@ -2668,6 +2674,7 @@ _ios15Seg7
                 }
             )
             .thinkingLevelSheetPresentation()
+
         }
     }
 
@@ -2902,7 +2909,7 @@ _ios15Seg7
                     screenshotPreview = ChatScreenshotPreview(image: image)
                 },
                 maxContentWidth: maxContentWidth ?? 0,
-                floatingBarHeight: floatingBarHeight,
+                floatingBarHeight: vm.isProcessing ? max(floatingBarHeight, floatingBarMaxHeight) : floatingBarHeight,
                 inputBarHeight: inputBarHeight,
                 searchJump: chatSearchJump
             )
@@ -3036,6 +3043,7 @@ _ios15Seg7
                     proxy.size.height
                 } action: { newH in
                     floatingBarHeight = newH
+                    if newH > floatingBarMaxHeight { floatingBarMaxHeight = newH }
                 }
                 .onDisappear {
                     floatingBarHeight = 0
