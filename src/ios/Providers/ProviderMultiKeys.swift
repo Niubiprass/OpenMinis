@@ -202,7 +202,7 @@ enum MultiKeyStrategy: String, Codable, CaseIterable {
     var explanation: String {
         switch self {
         case .roundRobin: return "依次使用每个 Key，用完最后一个再回到第一个。最均衡，推荐。"
-        case .priority:   return "固定用列表第一个；成功也继续用它，只有报错或被停用时才换下一个。"
+        case .priority:   return "固定用主 Key；主 Key 报错或被停用后，才按列表顺序用轮询 1、2、3。"
         case .random:     return "每次随机挑一个。分散得最开，但不好预期。"
         case .leastUsed:  return "优先选累计用得最少的那个。长期最省。"
         }
@@ -466,10 +466,10 @@ final class ProviderMultiKeyManager {
         }
         switch strategy(for: instanceId) {
         case .priority:
-            // The management screen lists the ring keys, not the saved
-            // credential. "First" must mean the first visible Key; the main
-            // credential is the last-resort fallback, not a hidden head start.
-            return (pool.first { $0.lease.id != "main" } ?? pool[0]).lease
+            // The user's "first key" is the main credential, then the ring
+            // keys in list order. Do not rotate on success; only a parked,
+            // disabled or failed key is skipped.
+            return pool[0].lease
         case .random: return pool.randomElement()?.lease
         case .leastUsed: return pool.min { $0.uses < $1.uses }?.lease
         case .roundRobin:

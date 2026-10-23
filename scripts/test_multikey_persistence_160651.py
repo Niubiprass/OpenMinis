@@ -24,16 +24,18 @@ class Persistence(unittest.TestCase):
 
 
 class PriorityOrder(unittest.TestCase):
-    def test_priority_uses_first_ring_key_and_main_last(self):
+    def test_priority_uses_main_then_ring_order(self):
         switch = MODEL.index("switch strategy(for: instanceId) {")
         i = MODEL.index("case .priority:", switch)
         j = MODEL.index("case .random:", i)
         body = MODEL[i:j]
-        self.assertIn('pool.first { $0.lease.id != "main" }', body)
-        self.assertIn("?? pool[0]", body)
+        self.assertIn("return pool[0].lease", body)
+        # pool is built with main first, then ring keys in stored order.
+        self.assertIn("if !main.isEmpty {", MODEL)
+        self.assertIn("for entry in ring {", MODEL)
 
     def test_copy_explains_no_same_request_retry(self):
-        self.assertIn("成功也继续用它，只有报错或被停用时才换下一个", MODEL)
+        self.assertIn("固定用主 Key；主 Key 报错或被停用后", MODEL)
 
 
 if __name__ == "__main__":
