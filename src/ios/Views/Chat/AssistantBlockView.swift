@@ -1246,9 +1246,11 @@ struct ThinkingLevelSheetView: View {
                     let rawX = levels.count > 1
                         ? inset + usable * CGFloat(index) / CGFloat(levels.count - 1)
                         : geo.size.width / 2
-                    // 两端标签不能越出边界，夹回半宽
-                    let halfWidth = min(44, geo.size.width / CGFloat(max(2, levels.count)))
-                    let x = min(max(rawX, halfWidth), geo.size.width - halfWidth)
+                    // [T-thinking-labels-align] 只用「文字自身半宽」做边界夹取。
+                    // 之前夹的是 min(44, 宽/n)，第一档被从 17pt 推到 44pt，
+                    // 「低」就明显偏离了最左边的圆点。现在夹取量按标签实际宽度
+                    // 算，最多少偏几 pt，视觉上压在圆点下面。
+                    let x = min(max(rawX, 22), geo.size.width - 22)
                     Text(level.displayName)
                         .font(.system(size: levels.count > 5 ? 10 : 10.5,
                                       weight: level == selectedLevel ? .semibold : .regular))
@@ -1256,8 +1258,7 @@ struct ThinkingLevelSheetView: View {
                                          ? Color.accentColor
                                          : Color.secondary)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.65)
-                        .frame(width: halfWidth * 2)
+                        .fixedSize()
                         .position(x: x, y: 8)
                 }
             }

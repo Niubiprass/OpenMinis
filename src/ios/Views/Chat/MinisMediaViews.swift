@@ -95,7 +95,7 @@ final class MinisMediaCache {
 }
 
 /// Downsample an image from data using ImageIO to avoid decoding the full bitmap.
-func downsampleImage(data: Data, maxPixelSize: CGFloat = 2048) -> UIImage? {
+func downsampleImage(data: Data, maxPixelSize: CGFloat = 1600) -> UIImage? {
     let options: [CFString: Any] = [
         kCGImageSourceShouldCache: false
     ]

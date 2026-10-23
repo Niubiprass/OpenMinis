@@ -159,7 +159,7 @@ struct MultiKeyManagerView: View {
             Text(k.masked)
                 .font(.system(size: 14, design: .monospaced))
                 .lineLimit(1)
-                .frame(width: 132, alignment: .leading)
+                .frame(width: 118, alignment: .leading)
 
             Text(selectable ? "正常" : badgeText(k))
                 .font(.system(size: 10.5, weight: .medium))
@@ -178,12 +178,18 @@ struct MultiKeyManagerView: View {
 
             Spacer(minLength: 6)
 
-            Text(subtitle(for: k, selectable: selectable))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .layoutPriority(1)
-                .multilineTextAlignment(.trailing)
+            // [T-multikey-usage-two-line] 一行塞「成功 113 次 · 3 分钟前」会被
+            // 截成「成功 113 次 · 3…」，时间永远看不到。拆成两行右对齐：
+            // 上行次数、下行相对时间，宽度够、信息完整，行高只多一行 caption2。
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("\(k.successCount) 次")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(usageTime(k))
+                    .font(.caption2)
+                    .foregroundStyle(Color(UIColor.tertiaryLabel))
+            }
+            .fixedSize(horizontal: true, vertical: false)
         }
         .contentShape(Rectangle())
         .onTapGesture { editingKey = k }
@@ -217,6 +223,12 @@ struct MultiKeyManagerView: View {
         if !k.isEnabled { return "已停用" }
         if k.status == .error { return "错误" }
         return "不可用"
+    }
+
+    /// 最近使用时间；从没用过就直说，不要显示「20000 天前」。
+    private func usageTime(_ k: ProviderAPIKey) -> String {
+        guard let used = k.lastUsed else { return "未用过" }
+        return Self.relative(used)
     }
 
     private func subtitle(for k: ProviderAPIKey, selectable: Bool) -> String {

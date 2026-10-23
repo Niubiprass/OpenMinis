@@ -353,6 +353,13 @@ struct SelectableMarkdownTheme {
     var codeBlockBackground: UIColor {
         UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.15, alpha: 1) : .black }
     }
+    /// [T-codeblock-no-box] 左侧竖条的颜色（替代原来的整块底色）
+    var codeBlockBarColor: UIColor {
+        UIColor { $0.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 0.18)
+            : UIColor(white: 0.0, alpha: 0.14) }
+    }
+
     var codeBlockTextColor: UIColor {
         UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.55, green: 0.95, blue: 0.55, alpha: 1) : .systemGreen }
     }
@@ -1650,9 +1657,13 @@ final class CodeBlockAttachment: NSTextAttachment {
         let contentWidth = max(usableWidth - inset, 50)
 
         let container = UIView()
-        container.backgroundColor = theme.codeBlockBackground
-        container.layer.cornerRadius = theme.codeBlockCornerRadius
-        container.clipsToBounds = true
+        // [T-codeblock-no-box] 不再画整块灰底圆角框：聊天气泡里每个代码块都
+        // 变成一个独立的深色卡片，连着几块就像堆了一屏盒子。改成只留左侧
+        // 3pt 竖条 + 透明背景 —— 几何、高度、复制按钮、语言标签全都不动，
+        // 只换外观，因此不影响 attachmentBounds 和 cell 高度估算。
+        container.backgroundColor = .clear
+        container.layer.cornerRadius = 0
+        container.clipsToBounds = false
 
         var topOffset: CGFloat = 12
 
@@ -1666,6 +1677,12 @@ final class CodeBlockAttachment: NSTextAttachment {
             container.addSubview(langLabel)
             topOffset = 28
         }
+
+        // 左侧竖条：替代原来的整块底色，用来把代码和正文分开
+        let bar = UIView()
+        bar.backgroundColor = theme.codeBlockBarColor
+        bar.layer.cornerRadius = 1.5
+        container.addSubview(bar)
 
         // Scrollable code area (own the pan gesture here for reliable horizontal scroll)
         let scrollView = UIScrollView()
@@ -1746,6 +1763,9 @@ final class CodeBlockAttachment: NSTextAttachment {
 
         let totalHeight = topOffset + scrollHeight + bottomPadding
         container.frame = CGRect(x: inset, y: 0, width: contentWidth, height: totalHeight)
+        // 左侧竖条：高度跟随容器（流式增长时自动拉伸）
+        bar.frame = CGRect(x: 0, y: 4, width: 3, height: max(8, totalHeight - 8))
+        bar.autoresizingMask = [.flexibleHeight]
         // [V565-CODEBLOCK] 把框架层真实高度回报给 attachmentBounds 的诊断段,
         // 好让日志并排打出「排版给的位置 cH」与「实际画的框 viewH」。
         // ★这是本探针**唯一**的写入点, 且写的是本对象自己的字段 ——
