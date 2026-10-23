@@ -13,6 +13,8 @@ struct ModelGroupsView: View {
     /// until the confirmation alert is answered.
     @State private var editingGroupId: String?
     @State private var pendingDeleteGroup: ModelGroup?
+    /// [T-groups-reorder-affordance] Explicit editor state for the 排序 toggle.
+    @State private var editMode: EditMode = .inactive
     @AppStorage("cloudSync.v2.enabled") private var iCloudSyncEnabled: Bool = false
 
     var body: some View {
@@ -67,18 +69,35 @@ struct ModelGroupsView: View {
                             .tint(.blue)
                         }
                     }
+                    // [T-groups-reorder-affordance] Reorder only. Deletion
+                    // lives on the left-swipe (which routes through the same
+                    // confirmation alert); a red minus in this mode duplicated
+                    // it and made 编辑 feel like it did nothing.
                     .onMove(perform: moveGroups)
-                    // Retained so the EditButton's red-minus delete still
-                    // exists; it now routes through `pendingDeleteGroup` and
-                    // therefore asks for confirmation like the swipe does.
-                    .onDelete(perform: deleteGroups)
                 } header: {
                     HStack {
-                        Text("Groups")
+                        Text(editMode == .active
+                             ? AppLocalized("Drag the handles to reorder")
+                             : AppLocalized("Groups"))
                         Spacer()
-                        EditButton()
-                            .font(.caption)
-                            .textCase(nil)
+                        // [T-groups-reorder-affordance] This used to be a bare
+                        // `EditButton()`. On iOS 15 it sits inside a Section
+                        // header, so tapping it only flashed the button — the
+                        // list never entered edit mode — and even when it did,
+                        // the only edits it offered (minus-delete + drag) were
+                        // already reachable by swipe and long-press. Renamed to
+                        // 排序 and driven by an explicit EditMode binding: it now
+                        // does exactly one thing, reordering, and says so.
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                editMode = (editMode == .active) ? .inactive : .active
+                            }
+                        } label: {
+                            Text(editMode == .active ? AppLocalized("Done") : AppLocalized("Reorder"))
+                                .font(.caption)
+                        }
+                        .textCase(nil)
+                        .accessibilityLabel(Text(editMode == .active ? "完成排序" : "排序分组"))
                     }
                 }
             }
@@ -135,6 +154,7 @@ struct ModelGroupsView: View {
             AgentLoopModelsSection(showAddModels: $showAddAgentModels,
                                    showAddGroups: $showAddAgentGroups)
         }
+        .environment(\.editMode, $editMode)
         .navigationTitle("Model Groups")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showAddAgentModels) {
@@ -212,12 +232,17 @@ struct ModelGroupsView: View {
         } message: { group in
             Text("Delete \"\(group.name)\"? Any default, voice, or vision selection pointing at this group will be cleared. The models themselves are not deleted.")
         }
-        .alert("New Group", isPresented: $showCreateGroup) {
-            TextField("Group name", text: $newGroupName)
-            Button("Create") { createGroup() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Enter a name for the new model group.")
+        // [T-new-group-sheet] A TextField inside `.alert` only exists on
+        // iOS 16+. On this 15.5 build the alert rendered title + message +
+        // buttons and NO input, so the user could never name a group. Use a
+        // small sheet with a real field instead.
+        .sheet(isPresented: $showCreateGroup) {
+            NewGroupSheet(name: $newGroupName) {
+                createGroup()
+                showCreateGroup = false
+            } onCancel: {
+                showCreateGroup = false
+            }
         }
     }
 
@@ -260,6 +285,54 @@ struct ModelGroupsView: View {
         forceSyncToast = AppLocalized("Syncing model groups via iCloud")
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             forceSyncToast = nil
+        }
+    }
+}
+
+// MARK: - New Group Sheet
+
+/// [T-new-group-sheet] Naming a new group needs a text field, and iOS 15 does
+/// not put TextFields inside alerts. Small form: name, Create, Cancel.
+private struct NewGroupSheet: View {
+    @Binding var name: String
+    var onCreate: () -> Void
+    var onCancel: () -> Void
+    @FocusState private var focused: Bool
+
+    private var trimmed: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    TextField(AppLocalized("Group name"), text: $name)
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
+                        .focused($focused)
+                        .submitLabel(.done)
+                        .onSubmit { if !trimmed.isEmpty { onCreate() } }
+                } footer: {
+                    Text("Enter a name for the new model group.")
+                }
+            }
+            .navigationTitle(AppLocalized("New Group"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(AppLocalized("Cancel")) { onCancel() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(AppLocalized("Create")) { onCreate() }
+                        .disabled(trimmed.isEmpty)
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+        .onAppear {
+            name = ""
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { focused = true }
         }
     }
 }

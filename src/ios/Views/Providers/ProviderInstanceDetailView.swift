@@ -46,6 +46,9 @@ struct ProviderInstanceDetailView: View {
     /// `recordSuccess` write (05:52 device freeze). Load it off-main once per
     /// appearance and when a refresh finishes, then draw from this snapshot.
     @State private var quotaRowsSnapshot: [ProviderQuotaService.KeyQuota] = []
+    /// [T-quota-row-usage] 每把 Key 的使用摘要（成功次数 · 最近使用），
+    /// 用来填满「名字」与「金额」之间那条空列。
+    @State private var keyUsageById: [String: String] = [:]
     @ObservedObject private var pricingService = ProviderPricingService.shared
     @State private var showRateOverride = false
     /// [T-quota-perkey-token] Which key's access token is being edited. Each
@@ -629,7 +632,12 @@ struct ProviderInstanceDetailView: View {
         let low = row.info?.highlighted == true
         let tint: Color = row.isMain ? .accentColor : (low ? .orange : .green)
 
-        HStack(spacing: 11) {
+        // [T-quota-row-single-line] 原来是两行：左边「主 Key / sk-…」，
+        // 金额被 Spacer 顶到最右，中间空出一大条。改成单行：
+        // 徽标 · 名字 · 密钥连着排，金额和说明右对齐。
+        // 名字+密钥把行填满，中间不再有空白列；金额仍右对齐（等宽数字），
+        // 多把 Key 的余额時仍然能一眼对比。
+        HStack(spacing: 9) {
             Text(row.badge)
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(tint)
@@ -639,31 +647,40 @@ struct ProviderInstanceDetailView: View {
                         .fill(tint.opacity(0.16))
                 )
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    Text(row.title)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    if low {
-                        Circle()
-                            .fill(Color.orange)
-                            .frame(width: 6, height: 6)
-                    }
-                }
-                Text(row.masked)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
+            Text(row.title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Text(row.masked)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            // [T-quota-row-usage] 用真实数据占掉名字与金额之间的空列。
+            if let usage = keyUsageById[row.id], !usage.isEmpty {
+                Text(usage)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color(UIColor.tertiaryLabel))
                     .lineLimit(1)
-                if row.info?.kind != .balance, let note = row.failureNote, !note.isEmpty {
-                    Text(note)
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.orange)
-                        .lineLimit(2)
-                }
             }
 
-            Spacer(minLength: 6)
+            // 站点只给了用量/查询失败时，把原因直接写在这一行里，
+            // 不要只留一个「—」。
+            if row.info?.kind != .balance, let note = row.failureNote, !note.isEmpty {
+                Text(note)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            }
+
+            if low {
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 6, height: 6)
+            }
+
+            Spacer(minLength: 10)
 
             VStack(alignment: .trailing, spacing: 2) {
                 Text(quotaRowAmount(row))
@@ -676,6 +693,15 @@ struct ProviderInstanceDetailView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// [T-quota-row-usage] 与多 Key 管理页一致的相对时间措辞。
+    private static func relativeUsage(_ date: Date) -> String {
+        let s = Date().timeIntervalSince(date)
+        if s < 60 { return "刚刚用过" }
+        if s < 3600 { return "\(Int(s / 60)) 分钟前" }
+        if s < 86400 { return "\(Int(s / 3600)) 小时前" }
+        return "\(Int(s / 86400)) 天前"
     }
 
     private func quotaRowAmount(_ row: ProviderQuotaService.KeyQuota) -> String {
@@ -720,10 +746,22 @@ struct ProviderInstanceDetailView: View {
         let wanted = instance.id
         Task.detached(priority: .userInitiated) {
             let rows = ProviderQuotaService.shared.quotaRows(for: instance)
+            // [T-quota-row-usage] 使用摘要也在后台算：keys(for:) 会拿
+            // ProviderMultiKeyManager 的锁，绝不能在 body 里调用。
+            let ringKeys = ProviderMultiKeyManager.shared.keys(for: instance.id)
+            var usage: [String: String] = [:]
+            // 主 Key 不参与轮询，但也不能在行里留空：写清它的角色。
+            usage["main"] = AppLocalized("主凭据 · 轮询兜底")
+            for key in ringKeys {
+                var parts: [String] = ["成功 \(key.successCount) 次"]
+                if let used = key.lastUsed { parts.append(Self.relativeUsage(used)) }
+                usage[key.id] = parts.joined(separator: " · ")
+            }
             await MainActor.run {
                 guard instanceId == wanted else { return }
                 quotaRowsSnapshot = rows
                 multiKeyCount = rows.filter { !$0.isMain }.count
+                keyUsageById = usage
             }
         }
     }
@@ -770,6 +808,7 @@ struct ProviderInstanceDetailView: View {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(Color(UIColor.tertiaryLabel))
+                        Spacer(minLength: 0)
                     }
                 }
                 .buttonStyle(.plain)

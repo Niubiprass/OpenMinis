@@ -544,11 +544,27 @@ struct UnifiedModelPicker: View {
             let matching = query.isEmpty
                 ? groups
                 : groups.filter { matchScore($0.name, query: query) > 0 }
-            // [T-picker-pin-selected] Keep the group containing the currently
-            // selected model at the top.
-            // This is derived from the live session binding, never persisted as a
-            // user-defined group order or pinned preference.
-            guard let selectedGroupId = config.currentGroupId?(),
+            // [T-picker-pin-selected] Keep the group holding the current
+            // selection at the top. Derived from the live binding, never
+            // persisted as a user-defined order.
+            //
+            // [T-picker-pin-entry-fallback] `currentGroupId` is nil whenever the
+            // session is bound to a DIRECT entry — the common case after picking
+            // a model, and the exact state in which the user reported "I picked
+            // the third group and it never moved up". Resolve through the entry
+            // as well: whichever group lists that entry is the group to pin.
+            let pinnedGroupId: String? = {
+                if let gid = config.currentGroupId?(),
+                   matching.contains(where: { $0.id == gid }) {
+                    return gid
+                }
+                if let eid = config.currentEntryId?(),
+                   let host = matching.first(where: { $0.memberEntryIds.contains(eid) }) {
+                    return host.id
+                }
+                return nil
+            }()
+            guard let selectedGroupId = pinnedGroupId,
                   let selectedIndex = matching.firstIndex(where: { $0.id == selectedGroupId })
             else { return matching }
             var ordered = matching

@@ -23,39 +23,20 @@ struct MultiKeyManagerView: View {
 
     var body: some View {
         List {
+            // [T-multikey-compact] 概览和策略合成一张卡。以前它们是两个
+            // Section，iOS 15 在每个 Section 之间留 ~110pt，屏幕上一半是空白；
+            // 合并后同样的信息密度翻倍。
             Section {
-                HStack(spacing: 7) {
-                    Circle()
-                        .fill(badCount > 0 ? Color.orange : Color.green)
-                        .frame(width: 8, height: 8)
-                    Text("\(keys.count) 个 Key")
-                    Text("·").foregroundStyle(.tertiary)
-                    Text("\(okCount) 正常")
-                        .foregroundStyle(okCount > 0 ? Color.green : Color.secondary)
-                    if badCount > 0 {
-                        Text("·").foregroundStyle(.tertiary)
-                        Text("\(badCount) 错误").foregroundStyle(.red)
-                    }
-                    Spacer()
+                // [T-multikey-compact] 两张卡各自独立，只把 iOS 15 默认的
+                // ~110pt Section 间距压到 12pt。之前把它们合并成一张，等于把
+                // 「概览」和「策略」混成一坨 —— 用户要的是收紧留白，不是合并。
+                VStack(spacing: 12) {
+                    summaryCard
+                    strategyCard
                 }
-                .font(.system(size: 14, weight: .medium))
-            }
-
-            Section {
-                Button {
-                    showStrategyPicker = true
-                } label: {
-                    HStack {
-                        Text("负载均衡策略")
-                        Spacer()
-                        Text(strategy.displayName)
-                            .foregroundStyle(.secondary)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
 
             Section {
@@ -65,6 +46,7 @@ struct MultiKeyManagerView: View {
                 } else {
                     ForEach(keys) { k in
                         keyRow(k)
+                            .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 14))
                     }
                     .onDelete { indexSet in
                         for i in indexSet { manager.remove(keyId: keys[i].id, for: instance.id) }
@@ -140,21 +122,21 @@ struct MultiKeyManagerView: View {
     @ViewBuilder
     private func keyRow(_ k: ProviderAPIKey) -> some View {
         let selectable = k.isSelectable(recoveryInterval: ProviderMultiKeyManager.recoveryInterval)
-        HStack(alignment: .center, spacing: 10) {
+        // [T-multikey-inline-status] 徽标原来被 Spacer 推到行的最右边，
+        // 一把 Key 名字只有 ~10 个字符，中间就空出一大条。改成紧贴 Key 名字，
+        // 中间不再留空；右侧余量是卡片内边距，不是“两块内容之间的空”。
+        HStack(alignment: .center, spacing: 12) {
             Circle()
                 .fill(selectable ? Color.green : Color.red)
                 .frame(width: 8, height: 8)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(k.masked)
-                    .font(.system(size: 14, design: .monospaced))
-                Text(subtitle(for: k, selectable: selectable))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-
-            Spacer()
+            // 固定列宽：每行的 Key 名字长度不同，徽标如果紧贴名字就会
+            // 一行一个位置。给名字一个固定宽度，徽标就垂直对齐在同一条线上；
+            // 名字与徽标之间留 12pt，不再贴在一起。
+            Text(k.masked)
+                .font(.system(size: 14, design: .monospaced))
+                .lineLimit(1)
+                .frame(width: 132, alignment: .leading)
 
             Text(selectable ? "正常" : badgeText(k))
                 .font(.system(size: 10.5, weight: .medium))
@@ -166,6 +148,14 @@ struct MultiKeyManagerView: View {
                     in: Capsule()
                 )
 
+            Spacer(minLength: 6)
+
+            Text(subtitle(for: k, selectable: selectable))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .layoutPriority(1)
+                .multilineTextAlignment(.trailing)
         }
         .contentShape(Rectangle())
         .onTapGesture { editingKey = k }
@@ -193,6 +183,62 @@ struct MultiKeyManagerView: View {
             }
             .tint(.blue)
         }
+    }
+
+    private var cardBackground: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(Color(UIColor.secondarySystemGroupedBackground))
+    }
+
+    /// 概览：数量、健康度、一句结论。
+    private var summaryCard: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(keys.count) 个 Key")
+                    .font(.system(size: 17, weight: .semibold))
+                Text(healthSummary)
+                    .font(.caption)
+                    .foregroundStyle(badCount > 0 ? Color.orange : Color.secondary)
+            }
+            Spacer()
+            Text(okCount == keys.count && !keys.isEmpty ? "全部可用" : "\(okCount)/\(keys.count)")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(okCount > 0 ? Color.green : Color.secondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background((okCount > 0 ? Color.green : Color.secondary).opacity(0.13), in: Capsule())
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(cardBackground)
+    }
+
+    private var healthSummary: String {
+        if keys.isEmpty { return "添加至少一把，才会启用多 Key 轮换" }
+        if badCount > 0 { return "\(badCount) 把暂时跳过，其余正常参与轮换" }
+        return "全部正常，按下面的策略轮换使用"
+    }
+
+    private var strategyCard: some View {
+        Button {
+            showStrategyPicker = true
+        } label: {
+            HStack {
+                Text("负载均衡策略")
+                Spacer()
+                Text(strategy.displayName)
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func badgeText(_ k: ProviderAPIKey) -> String {
