@@ -69,16 +69,16 @@ struct ModelGroupsView: View {
                             .tint(.blue)
                         }
                     }
-                    // [T-groups-reorder-affordance] Reorder only. Deletion
-                    // lives on the left-swipe (which routes through the same
-                    // confirmation alert); a red minus in this mode duplicated
-                    // it and made 编辑 feel like it did nothing.
                     .onMove(perform: moveGroups)
+                    // [T-groups-edit-indent] 只保留 .onMove 时，进入编辑态
+                    // SwiftUI 仍会给整行留出左侧约 40pt 的编辑缩进，却没有
+                    // 任何控件填进去 —— 用户看到的就是卡片左边空出竖着一条。
+                    // 把 .onDelete 接回来，缩进处就是红色减号（删除仍走确认
+                    // 弹窗），右边是拖动把手，两个控件各就各位。
+                    .onDelete(perform: deleteGroups)
                 } header: {
                     HStack {
-                        Text(editMode == .active
-                             ? AppLocalized("Drag the handles to reorder")
-                             : AppLocalized("Groups"))
+                        Text(editMode == .active ? "拖动右侧把手排序" : "分组")
                         Spacer()
                         // [T-groups-reorder-affordance] This used to be a bare
                         // `EditButton()`. On iOS 15 it sits inside a Section
@@ -93,7 +93,7 @@ struct ModelGroupsView: View {
                                 editMode = (editMode == .active) ? .inactive : .active
                             }
                         } label: {
-                            Text(editMode == .active ? AppLocalized("Done") : AppLocalized("Reorder"))
+                            Text(editMode == .active ? "完成" : "编辑")
                                 .font(.caption)
                         }
                         .textCase(nil)

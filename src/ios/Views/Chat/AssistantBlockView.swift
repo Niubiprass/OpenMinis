@@ -1181,6 +1181,10 @@ struct ThinkingLevelSheetView: View {
     }
 
     var body: some View {
+        // [T-thinking-panel-inset] 面板不再铺满整张 sheet：左右各留 12pt、
+        // 底部留 12pt，圆角 26。sheet 本身的高度/下拉关闭/抓手都不变，
+        // 只是内容收成一张浮在底部的卡片（iOS 15 的 sheet 没有宽度 inset API，
+        // 只能靠内边距实现）。
         VStack(spacing: 0) {
             header
             ScrollView(.vertical, showsIndicators: false) {
@@ -1195,7 +1199,11 @@ struct ThinkingLevelSheetView: View {
                 .padding(.bottom, 22)
             }
         }
-        .background(Color(UIColor.systemGroupedBackground))
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
+        .background(Color.clear)
     }
 
     private var header: some View {
@@ -1226,8 +1234,21 @@ struct ThinkingLevelSheetView: View {
             ThinkingSlider(levels: levels, selected: selectedBinding)
                 .padding(.horizontal, 8)
                 .opacity(thinkingEnabled ? 1 : 0.45)
-            HStack(spacing: 0) {
-                ForEach(levels, id: \.self) { level in
+            // [T-thinking-labels-align] 圆点在滑块里是按
+            // `17 + (宽-34) × i/(n-1)` 摆的（两端给圆钮留半径），
+            // 而原来是等分 HStack 居中，两套坐标越靠两端差得越多，
+            // 「低」「极高」几乎对不上点。这里改成同一套坐标定位。
+            GeometryReader { geo in
+                let thumb: CGFloat = 34
+                let inset = thumb / 2
+                let usable = max(1, geo.size.width - thumb)
+                ForEach(Array(levels.enumerated()), id: \.offset) { index, level in
+                    let rawX = levels.count > 1
+                        ? inset + usable * CGFloat(index) / CGFloat(levels.count - 1)
+                        : geo.size.width / 2
+                    // 两端标签不能越出边界，夹回半宽
+                    let halfWidth = min(44, geo.size.width / CGFloat(max(2, levels.count)))
+                    let x = min(max(rawX, halfWidth), geo.size.width - halfWidth)
                     Text(level.displayName)
                         .font(.system(size: levels.count > 5 ? 10 : 10.5,
                                       weight: level == selectedLevel ? .semibold : .regular))
@@ -1236,9 +1257,11 @@ struct ThinkingLevelSheetView: View {
                                          : Color.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.65)
-                        .frame(maxWidth: .infinity)
+                        .frame(width: halfWidth * 2)
+                        .position(x: x, y: 8)
                 }
             }
+            .frame(height: 16)
             Text(AppLocalized("Drag the slider or tap a dot. Levels follow the current model."))
                 .font(.system(size: 11))
                 .foregroundStyle(Color.secondary)
@@ -1247,7 +1270,7 @@ struct ThinkingLevelSheetView: View {
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(UIColor.secondarySystemGroupedBackground))
+                .fill(Color(UIColor.tertiarySystemGroupedBackground))
         )
     }
 
@@ -1269,7 +1292,7 @@ struct ThinkingLevelSheetView: View {
         .padding(.vertical, 13)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(UIColor.secondarySystemGroupedBackground))
+                .fill(Color(UIColor.tertiarySystemGroupedBackground))
         )
     }
 
@@ -1483,7 +1506,15 @@ private struct ThinkingSheetDetentsConfigurator: UIViewControllerRepresentable {
         sheet.detents = [.medium(), .large()]
         sheet.prefersGrabberVisible = true
         sheet.prefersScrollingExpandsWhenScrolledToEdge = false
-        sheet.preferredCornerRadius = 20
+        sheet.preferredCornerRadius = 26
+        // [T-thinking-panel-inset] 让 sheet 自身透明，面板左右/底部的留边
+        // 才能露出后面被暗化的聊天内容，看起来是一张浮卡而不是整块白板。
+        root?.view.backgroundColor = .clear
+        root?.view.isOpaque = false
+        for sub in root?.view.subviews ?? [] {
+            sub.backgroundColor = .clear
+            sub.isOpaque = false
+        }
     }
 }
 

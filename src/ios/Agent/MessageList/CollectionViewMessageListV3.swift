@@ -206,7 +206,19 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
                     AppLogger(category: "ScrollDiag").info("[ScrollDiag][baseInsetShrink] \(String(format: "%.2f", previousBase))→\(String(format: "%.2f", bottomPad)) inputBar=\(String(format: "%.2f", inputBarHeight)) offset=\(String(format: "%.1f", cv.contentOffset.y)) — re-pinning to hide the UIKit clamp")
                 }
                 coord.scrollMode = .autoScrolling
-                coord.scrollToBottomNow(animated: false)
+                // [T-inset-change-smooth] 底部浮条出现/消失会让 bottomPad 一次
+                // 跳 120pt 以上（今天日志 310.33→186.67），原来直接改
+                // contentOffset，屏幕上就是"内容猛地一抖"。缩小时改成 0.18s
+                // 的过渡：位置一样正确，但看起来是滑过去而不是跳过去。
+                if !wasSmaller {
+                    UIView.animate(withDuration: 0.18,
+                                   delay: 0,
+                                   options: [.beginFromCurrentState, .allowUserInteraction]) {
+                        coord.scrollToBottomNow(animated: false)
+                    }
+                } else {
+                    coord.scrollToBottomNow(animated: false)
+                }
             }
         }
 
@@ -1354,28 +1366,43 @@ extension CollectionViewMessageListV3 {
                 // where width changes (sidebar) and async image loads produce many
                 // contentSize KVO fires before the layout truly stabilizes.
                 if self.clampAfterSessionLoad {
-                    let maxOff = max(0, newH - cv.bounds.height + cv.adjustedContentInset.bottom)
-                    if maxOff > 0 { cv.contentOffset.y = maxOff }
-                    if Date() >= self.clampDeadline {
+                    // [T-scroll-user-gesture-wins] The 8 s first-load clamp used
+                    // to force the offset to the bottom no matter what, so a user
+                    // who opened a long session and immediately scrolled up was
+                    // yanked back on every height settle. A finger on the screen
+                    // (or its deceleration) ends the clamp immediately and falls
+                    // through to the normal branches below.
+                    if cv.isTracking || cv.isDecelerating {
                         self.clampAfterSessionLoad = false
+                    } else {
+                        let maxOff = max(0, newH - cv.bounds.height + cv.adjustedContentInset.bottom)
+                        if maxOff > 0 { cv.contentOffset.y = maxOff }
+                        if Date() >= self.clampDeadline {
+                            self.clampAfterSessionLoad = false
+                        }
+                        self.vm?.contentSizeDeltaSignal.send(delta)
+                        return
                     }
-                    self.vm?.contentSizeDeltaSignal.send(delta)
-                    return
                 }
 
                 if delta > 0 && self.scrollMode == .autoScrolling {
-                    // Pin to bottom — but if an animated scroll is in flight, directly
-                    // mutating contentOffset corrupts UIKit's animation interpolation.
-                    // Defer to a coalesced scroll that fires after the animation ends.
-                    if self.isAnimatingScrollToBottom {
+                    // [T-scroll-user-gesture-wins] 手指在屏幕上（或它还在惯性
+                    // 减速）时，自动跟随必须让位：以前这里只打一行
+                    // "MODE SHOULD BE userBrowsing" 的日志，然后照样把 offset
+                    // 改到底部 —— 设备日志里 8 次 tracking=true 的
+                    // PIN-WHILE-SCROLLING 就是这么来的。
+                    if cv.isTracking || cv.isDecelerating {
+                        self.scrollMode = .userBrowsing
+                        self.clampAfterSessionLoad = false
+                        self.viewController?.messageListLayout?.deferSelfSizing = true
+                        AppLogger(category: "ScrollDiag").info("[ScrollDiag][userGestureWins] contentSize +\(String(format: "%.0f", delta)) while tracking=\(cv.isTracking) decel=\(cv.isDecelerating) — auto→browse, offset kept at \(String(format: "%.0f", cv.contentOffset.y))")
+                    } else if self.isAnimatingScrollToBottom {
+                        // An animated scroll is in flight: mutating contentOffset
+                        // now would corrupt UIKit's interpolation.
                         self.scheduleCoalescedScroll()
                     } else {
                         let maxOff = newH - cv.bounds.height + cv.adjustedContentInset.bottom
                         if maxOff > 0 {
-                            // [DIAG-3] If tracking/decel, auto-scroll mode is fighting user gesture
-                            if cv.isTracking || cv.isDecelerating {
-                                AppLogger(category: "StreamDiag").info("[KVO] ⚠️ PIN-WHILE-SCROLLING contentSize grew +\(String(format: "%.0f", delta)) offset \(String(format: "%.0f", cv.contentOffset.y))→\(String(format: "%.0f", maxOff)) tracking=\(cv.isTracking) decel=\(cv.isDecelerating) — MODE SHOULD BE userBrowsing")
-                            }
                             cv.contentOffset.y = max(cv.contentOffset.y, maxOff)
                         }
                     }
