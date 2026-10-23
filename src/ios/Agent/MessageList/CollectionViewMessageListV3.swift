@@ -3622,15 +3622,10 @@ extension CollectionViewMessageListV3 {
                                         tag: Self.stableCellTag(for: item, messages: messages, messageIndex: messageIndex))
                                 }
                                 #endif
-                            } else if block.content.isEmpty {
-                                // [T-ios-empty-textblock-gap] A content-less text
-                                // block renders EmptyView (AssistantBlockView gates
-                                // on !content.isEmpty), so it must occupy 0pt — the
-                                // heuristic's one-line floor made it a phantom
-                                // blank row above the next tool capsule while
-                                // streaming defers the corrective measure. When
-                                // content arrives, blockContentFilledSignal
-                                // invalidates the height and reconfigures the cell.
+                            } else if block.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                // Match AssistantBlockView: whitespace-only markdown
+                                // renders no view and must not receive the 200pt
+                                // fallback estimate or participate in self-sizing.
                                 layout.setEstimatedHeight(0, at: i)
                             } else {
                                 // Streaming text — no cachedAttributedString yet,
@@ -4621,10 +4616,9 @@ extension CollectionViewMessageListV3 {
         }
 
         static func estimateTextBlockHeight(_ content: String, width: CGFloat, scale: CGFloat, lineHeight: CGFloat) -> CGFloat {
-            // [T-ios-empty-textblock-gap] An empty text block renders nothing
-            // (EmptyView) — the one-line floor below is only for non-empty
-            // streaming placeholders whose first delta is about to land.
-            guard !content.isEmpty else { return 0 }
+            // Whitespace-only markdown renders no visible Text view. Keep the
+            // estimator aligned with AssistantBlockView and snapshot seeding.
+            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return 0 }
             let hPad: CGFloat = 80
             let tw = max(width - hPad, 100)
             let cpl = tw / (scale * 0.5)

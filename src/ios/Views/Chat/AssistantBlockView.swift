@@ -24,7 +24,8 @@ struct AssistantBlockView: View {
     var body: some View {
         switch block.kind {
         case .text:
-            if !block.content.isEmpty {
+            let hasVisibleText = !block.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if hasVisibleText {
                 textBlockView
                     .padding(.vertical, 2)
                     .background(
@@ -1134,40 +1135,346 @@ struct TypingIndicator: View {
 struct ThinkingLevelSheetView: View {
     let currentLevel: ThinkingLevel
     let availableLevels: [ThinkingLevel]
+    let contextUsage: ContextUsage?
+    let contextFixedTokens: Int
     let onSelect: (ThinkingLevel) -> Void
 
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedLevel: ThinkingLevel
+    @State private var thinkingEnabled: Bool
+
+    init(currentLevel: ThinkingLevel,
+         availableLevels: [ThinkingLevel],
+         contextUsage: ContextUsage? = nil,
+         contextFixedTokens: Int = 0,
+         onSelect: @escaping (ThinkingLevel) -> Void) {
+        let levels = availableLevels.isEmpty ? [ThinkingLevel.medium] : availableLevels
+        let initial: ThinkingLevel
+        if currentLevel.isEnabled {
+            initial = levels.contains(currentLevel)
+                ? currentLevel
+                : (levels.last(where: { $0 <= currentLevel }) ?? levels[0])
+        } else {
+            initial = levels[0]
+        }
+        self.currentLevel = currentLevel
+        self.availableLevels = availableLevels
+        self.contextUsage = contextUsage
+        self.contextFixedTokens = contextFixedTokens
+        self.onSelect = onSelect
+        _selectedLevel = State(initialValue: initial)
+        _thinkingEnabled = State(initialValue: currentLevel.isEnabled)
+    }
+
+    private var levels: [ThinkingLevel] {
+        availableLevels.isEmpty ? [.medium] : availableLevels
+    }
+
+    private var selectedBinding: Binding<ThinkingLevel> {
+        Binding(
+            get: { selectedLevel },
+            set: { level in
+                selectedLevel = level
+                thinkingEnabled = true
+            }
+        )
+    }
+
     var body: some View {
-        NavigationStack {
-            List {
-                thinkingRow(level: .off, isSelected: !currentLevel.isEnabled)
-                Section {
-                    ForEach(availableLevels, id: \.self) { level in
-                        thinkingRow(level: level, isSelected: currentLevel == level)
+        VStack(spacing: 0) {
+            header
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 12) {
+                    thinkingCard
+                    if let usage = contextUsage {
+                        contextCard(usage)
                     }
+                    thinkingToggle
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 22)
+            }
+        }
+        .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image("ThinkingIcon")
+                .resizable()
+                .frame(width: 20, height: 20)
+                .foregroundStyle(Color.accentColor)
+            Text(AppLocalized("Thinking Intensity"))
+                .font(.system(size: 17, weight: .semibold))
+            Spacer(minLength: 8)
+            Text(thinkingEnabled ? selectedLevel.displayName : ThinkingLevel.off.displayName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            Button(AppLocalized("Done")) {
+                commit()
+            }
+            .font(.system(size: 15, weight: .semibold))
+            .padding(.leading, 6)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+    }
+
+    private var thinkingCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ThinkingSlider(levels: levels, selected: selectedBinding)
+                .opacity(thinkingEnabled ? 1 : 0.45)
+            HStack(spacing: 0) {
+                ForEach(levels, id: \.self) { level in
+                    Text(level.displayName)
+                        .font(.system(size: levels.count > 5 ? 10 : 10.5,
+                                      weight: level == selectedLevel ? .semibold : .regular))
+                        .foregroundStyle(level == selectedLevel && thinkingEnabled
+                                         ? Color.accentColor
+                                         : Color.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+                        .frame(maxWidth: .infinity)
                 }
             }
-            .navigationTitle(AppLocalized("Thinking Intensity"))
-            .navigationBarTitleDisplayMode(.inline)
+            Text(AppLocalized("Drag the slider or tap a dot. Levels follow the current model."))
+                .font(.system(size: 11))
+                .foregroundStyle(Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(UIColor.secondarySystemGroupedBackground))
+        )
+    }
+
+    private var thinkingToggle: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(AppLocalized("Thinking Process"))
+                    .font(.system(size: 15))
+                Text(AppLocalized("Hide thinking process when off"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondary)
+            }
+            Spacer()
+            Toggle("", isOn: $thinkingEnabled)
+                .labelsHidden()
+                .tint(.green)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(UIColor.secondarySystemGroupedBackground))
+        )
+    }
+
+    private func contextCard(_ usage: ContextUsage) -> some View {
+        let window = max(1, usage.windowTokens)
+        let used = max(0, usage.usedTokens)
+        let fixed = max(0, min(contextFixedTokens, used))
+        let messages = max(0, used - fixed)
+        let remaining = max(0, window - used)
+        let percent = min(100, max(0, Double(used) / Double(window) * 100))
+
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text(AppLocalized("Context Usage"))
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Text(String(format: "%.1f%%", percent))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(TokenCountFormatter.short(used))
+                    .font(.system(size: 19, weight: .semibold))
+                    .monospacedDigit()
+                Text("/ \(TokenCountFormatter.short(window))")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondary)
+                    .monospacedDigit()
+            }
+            ThinkingContextBar(system: fixed, messages: messages, window: window)
+            contextLine(color: .blue,
+                        title: AppLocalized("System & Settings"),
+                        value: fixed,
+                        muted: false)
+            contextLine(color: .green,
+                        title: AppLocalized("Message Content"),
+                        value: messages,
+                        muted: false)
+            contextLine(color: Color(UIColor.tertiaryLabel),
+                        title: AppLocalized("Remaining Space"),
+                        value: remaining,
+                        muted: true)
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(UIColor.secondarySystemGroupedBackground))
+        )
+    }
+
+    private func contextLine(color: Color,
+                             title: String,
+                             value: Int,
+                             muted: Bool) -> some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundStyle(Color.primary)
+            Spacer()
+            Text(TokenCountFormatter.short(value))
+                .font(.system(size: 12))
+                .monospacedDigit()
+                .foregroundStyle(muted ? Color.secondary : Color.primary)
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func commit() {
+        let result: ThinkingLevel = thinkingEnabled ? selectedLevel : .off
+        onSelect(result)
+        dismiss()
+    }
+}
+
+private struct ThinkingSlider: View {
+    let levels: [ThinkingLevel]
+    @Binding var selected: ThinkingLevel
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = max(geo.size.width, 1)
+            let thumb: CGFloat = 30
+            let inset = thumb / 2
+            let usable = max(1, width - thumb)
+            let index = levels.firstIndex(of: selected) ?? 0
+            let ratio = levels.count > 1
+                ? CGFloat(index) / CGFloat(levels.count - 1)
+                : 0
+            let thumbX = inset + usable * ratio
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color(UIColor.tertiarySystemFill))
+                    .frame(height: 36)
+                Capsule()
+                    .fill(LinearGradient(colors: [Color.accentColor.opacity(0.92), Color.accentColor],
+                                         startPoint: .leading,
+                                         endPoint: .trailing))
+                    .frame(width: min(width, thumbX + thumb / 2), height: 36)
+                ForEach(levels.indices, id: \.self) { i in
+                    Circle()
+                        .fill(Color.white.opacity(0.92))
+                        .frame(width: 5, height: 5)
+                        .position(x: dotX(index: i, inset: inset, usable: usable, count: levels.count),
+                                  y: 18)
+                }
+                Circle()
+                    .fill(Color(UIColor.systemBackground))
+                    .frame(width: thumb, height: thumb)
+                    .overlay(Circle().stroke(Color.accentColor, lineWidth: 2))
+                    .shadow(color: Color.black.opacity(0.12), radius: 3, x: 0, y: 1)
+                    .position(x: thumbX, y: 18)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let clamped = min(max(value.location.x, inset), width - inset)
+                        let fraction = (clamped - inset) / usable
+                        let raw = Int((fraction * CGFloat(max(1, levels.count - 1))).rounded())
+                        let index = min(max(raw, 0), levels.count - 1)
+                        if levels.indices.contains(index) {
+                            selected = levels[index]
+                        }
+                    }
+            )
+        }
+        .frame(height: 36)
+    }
+
+    private func dotX(index: Int, inset: CGFloat, usable: CGFloat, count: Int) -> CGFloat {
+        guard count > 1 else { return inset + usable / 2 }
+        return inset + usable * CGFloat(index) / CGFloat(count - 1)
+    }
+}
+
+private struct ThinkingContextBar: View {
+    let system: Int
+    let messages: Int
+    let window: Int
+
+    var body: some View {
+        GeometryReader { geo in
+            let total = max(1, window)
+            let width = geo.size.width
+            let systemWidth = width * CGFloat(system) / CGFloat(total)
+            let messagesWidth = width * CGFloat(messages) / CGFloat(total)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color(UIColor.tertiarySystemFill))
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(width: systemWidth)
+                    Rectangle()
+                        .fill(Color.green)
+                        .frame(width: messagesWidth)
+                }
+            }
+            .clipShape(Capsule())
+        }
+        .frame(height: 7)
+    }
+}
+
+private struct ThinkingSheetDetentsConfigurator: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> UIViewController {
+        let controller = UIViewController()
+        controller.view.backgroundColor = .clear
+        DispatchQueue.main.async {
+            configure(controller)
+        }
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        DispatchQueue.main.async {
+            configure(uiViewController)
         }
     }
 
-    private func thinkingRow(level: ThinkingLevel, isSelected: Bool) -> some View {
-        Button {
-            onSelect(level)
-        } label: {
-            HStack {
-                Image("ThinkingIcon")
-                    .resizable()
-                    .frame(width: 16, height: 16)
-                    .opacity(level == .off ? 0.4 : 1.0)
-                Text(level.displayName)
-                    .foregroundStyle(.primary)
-                Spacer()
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(.blue)
-                }
-            }
+    private func configure(_ controller: UIViewController) {
+        var root: UIViewController? = controller
+        while let parent = root?.parent {
+            root = parent
+        }
+        guard let sheet = root?.presentationController as? UISheetPresentationController else { return }
+        sheet.detents = [.medium(), .large()]
+        sheet.prefersGrabberVisible = true
+        sheet.prefersScrollingExpandsWhenScrolledToEdge = false
+        sheet.preferredCornerRadius = 20
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func thinkingLevelSheetPresentation() -> some View {
+        if #available(iOS 16.0, *) {
+            self
+                .presentationDetents([.fraction(0.6), .large])
+                .presentationDragIndicator(.visible)
+        } else {
+            self.background(ThinkingSheetDetentsConfigurator())
         }
     }
 }

@@ -9821,6 +9821,23 @@
         }
       }
     },
+    "Drag the slider or tap a dot. Levels follow the current model." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drag the slider or tap a dot. Levels follow the current model."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拖动滑轨或点击档位；可选档位随当前模型变化。"
+          }
+        }
+      }
+    },
     "During a Minis task, the agent calls these models for sub-tasks such as generating an image or summarizing text — work its own model can't do. Also callable from the terminal via minis-model-use. Only these are visible to the agent." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -11725,6 +11742,23 @@
         }
       }
     },
+    "Hide thinking process when off" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hide thinking process when off"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭后隐藏思考过程"
+          }
+        }
+      }
+    },
     "I have read and accept these terms" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -13026,6 +13060,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "記憶已開啟"
+          }
+        }
+      }
+    },
+    "Message Content" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message Content"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "消息内容"
           }
         }
       }
@@ -16984,6 +17035,23 @@
         }
       }
     },
+    "Remaining Space" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remaining Space"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余空间"
+          }
+        }
+      }
+    },
     "Remove from group" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -20194,6 +20262,23 @@
         }
       }
     },
+    "System & Settings" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "System & Settings"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统与设定"
+          }
+        }
+      }
+    },
     "Tap a destination to browse its folders and pick a backup." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -21456,6 +21541,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "這段指令用於所有未指定子代理任務的委派。自訂的子代理任務使用它們各自的指令。"
+          }
+        }
+      }
+    },
+    "Thinking Process" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Thinking Process"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "思考过程"
           }
         }
       }

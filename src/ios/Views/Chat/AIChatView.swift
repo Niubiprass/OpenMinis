@@ -2660,11 +2660,14 @@ _ios15Seg7
             ThinkingLevelSheetView(
                 currentLevel: level,
                 availableLevels: vm.availableThinkingLevels,
+                contextUsage: vm.contextUsage,
+                contextFixedTokens: vm.contextFixedTokens,
                 onSelect: { newLevel in
                     vm.setThinkingLevel(newLevel)
                     showThinkingLevelSheet = false
                 }
             )
+            .thinkingLevelSheetPresentation()
         }
     }
 
