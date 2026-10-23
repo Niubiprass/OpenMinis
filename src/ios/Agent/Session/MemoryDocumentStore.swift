@@ -11,6 +11,10 @@ struct MemoryLibraryRoot: Identifiable {
     /// Section header shown by the memory library. Defaults to `title`; several
     /// roots can share one section (e.g. all persona files under 「人格记忆」).
     let sectionTitle: String
+    /// Optional outer collapsible drawer. Defaults to `sectionTitle`; daily
+    /// roots share 「日记忆」 as the drawer while keeping 今天/本月/更早 as
+    /// subheaders.
+    let drawerTitle: String
     /// Row label when the file name is not what the user recognizes. Persona
     /// memory files are named by UUID, so the row shows the persona name.
     let itemTitle: String?
@@ -23,6 +27,7 @@ struct MemoryLibraryRoot: Identifiable {
     init(id: String, title: String, directory: URL, isReadOnly: Bool, isGlobal: Bool,
          nameFilter: ((String) -> Bool)? = nil,
          sectionTitle: String? = nil,
+         drawerTitle: String? = nil,
          itemTitle: String? = nil,
          itemSubtitle: String? = nil,
          alwaysShow: Bool = false) {
@@ -33,6 +38,7 @@ struct MemoryLibraryRoot: Identifiable {
         self.isGlobal = isGlobal
         self.nameFilter = nameFilter
         self.sectionTitle = sectionTitle ?? title
+        self.drawerTitle = drawerTitle ?? sectionTitle ?? title
         self.itemTitle = itemTitle
         self.itemSubtitle = itemSubtitle
         self.alwaysShow = alwaysShow

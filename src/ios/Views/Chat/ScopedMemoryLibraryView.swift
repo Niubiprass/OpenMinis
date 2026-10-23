@@ -30,6 +30,7 @@ struct ScopedMemoryLibraryView<Header: View>: View {
     @State private var selected: Set<String> = []
     @State private var error: String?
     @State private var share: MemoryShareItem?
+    @AppStorage("memory.collapsedDrawers") private var collapsedDrawersRaw = ""
 
     init(title: String, roots: [MemoryLibraryRoot], onSaveDirty: MemorySaveDirty? = nil,
          onShare: ((URL) -> Void)? = nil,
@@ -60,34 +61,61 @@ struct ScopedMemoryLibraryView<Header: View>: View {
             } else {
                 ForEach(sections) { section in
                     Section {
-                        ForEach(section.roots) { root in
-                            if root.title != section.title {
-                                Text(root.title)
-                                    .font(.caption.weight(.semibold))
+                        Button {
+                            toggleDrawer(section.title)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: collapsedDrawers.contains(section.title)
+                                      ? "chevron.right" : "chevron.down")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 12)
+                                Text(section.title)
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                Text(String(format: AppLocalized("%lld 个"),
+                                            Int64(section.roots.flatMap(filtered).count)))
+                                    .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
-                            if root.isReadOnly {
-                                Label("Read-only", systemImage: "lock")
-                            }
-                            ForEach(filtered(root)) { document in
-                                if selecting {
-                                    Button {
-                                        if !selected.insert(document.id).inserted { selected.remove(document.id) }
-                                    } label: {
-                                        HStack {
-                                            Image(systemName: selected.contains(document.id) ? "checkmark.circle.fill" : "circle")
-                                            row(document, root: root)
+                        }
+                        .buttonStyle(.plain)
+
+                        if !collapsedDrawers.contains(section.title) {
+                            ForEach(section.roots) { root in
+                                if root.sectionTitle != section.title {
+                                    Text(root.sectionTitle)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                } else if root.title != section.title {
+                                    Text(root.title)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                                if root.isReadOnly {
+                                    Label("Read-only", systemImage: "lock")
+                                }
+                                ForEach(filtered(root)) { document in
+                                    if selecting {
+                                        Button {
+                                            if !selected.insert(document.id).inserted { selected.remove(document.id) }
+                                        } label: {
+                                            HStack {
+                                                Image(systemName: selected.contains(document.id) ? "checkmark.circle.fill" : "circle")
+                                                row(document, root: root)
+                                            }
                                         }
+                                        .disabled(!document.exists)
+                                    } else {
+                                        NavigationLink {
+                                            MemoryContentView(root: root, fileName: document.fileName, onSaveDirty: onSaveDirty)
+                                        } label: { row(document, root: root) }
                                     }
-                                    .disabled(!document.exists)
-                                } else {
-                                    NavigationLink {
-                                        MemoryContentView(root: root, fileName: document.fileName, onSaveDirty: onSaveDirty)
-                                    } label: { row(document, root: root) }
                                 }
                             }
                         }
-                    } header: { Text(section.title) }
+                    } header: { EmptyView() }
                 }
                 Section {
                 } footer: {
@@ -156,10 +184,20 @@ struct ScopedMemoryLibraryView<Header: View>: View {
         for root in roots {
             let hasRows = !filtered(root).isEmpty
             guard root.alwaysShow || hasRows else { continue }
-            if buckets[root.sectionTitle] == nil { order.append(root.sectionTitle) }
-            buckets[root.sectionTitle, default: []].append(root)
+            if buckets[root.drawerTitle] == nil { order.append(root.drawerTitle) }
+            buckets[root.drawerTitle, default: []].append(root)
         }
         return order.map { MemoryRootSection(title: $0, roots: buckets[$0] ?? []) }
+    }
+
+    private var collapsedDrawers: Set<String> {
+        Set(collapsedDrawersRaw.split(separator: ",").map(String.init))
+    }
+
+    private func toggleDrawer(_ title: String) {
+        var set = collapsedDrawers
+        if set.contains(title) { set.remove(title) } else { set.insert(title) }
+        collapsedDrawersRaw = set.sorted().joined(separator: ",")
     }
 
     private func row(_ document: MemoryDocumentStore.Snapshot, root: MemoryLibraryRoot) -> some View {

@@ -9,22 +9,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 
-private enum MemoryTab: String, CaseIterable, Identifiable {
-    case daily
-    case global
-    case persona
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .daily: return AppLocalized("日记忆")
-        case .global: return AppLocalized("全局")
-        case .persona: return AppLocalized("人格")
-        }
-    }
-}
-
 struct MemoryManagementView: View {
     @State private var forceSyncToast: String?
     /// [T-memory-global-toggle-settings-ui-ios] Global default for whether
@@ -41,7 +25,6 @@ struct MemoryManagementView: View {
     @State private var folderMemoryRoots: [MemoryLibraryRoot] = []
     @State private var personaEntryCounts: [String: Int] = [:]
     @State private var memoryWarning: String?
-    @State private var tab: MemoryTab = .daily
     @State private var exportShare: MemoryShareItem?
     @State private var showAISummaryConfirm = false
     @State private var aiSummaryRunning = false
@@ -65,23 +48,16 @@ struct MemoryManagementView: View {
         return formatter.string(from: date)
     }
 
-    /// The page is split into three tabs. Keeping the roots tab-specific is
-    /// what stops one long list of daily + global + every persona + every
-    /// group from being shown at once.
+    /// One page, three drawers. Global memory is a single header row and is
+    /// deliberately not part of the drawer roots.
     private var memoryRoots: [MemoryLibraryRoot] {
-        switch tab {
-        case .daily:
-            return dailyRoots + folderMemoryRoots
-        case .global:
-            return [globalRoot]
-        case .persona:
-            return personaRoots
-        }
+        dailyRoots + personaRoots + folderMemoryRoots
     }
 
     private var dailyRoots: [MemoryLibraryRoot] {
         let dir = memoryDirectory
         let today = dayStamp()
+        let yesterday = dayStamp(Date().addingTimeInterval(-86400))
         let month = monthStamp()
         let dayPattern = #"^\d{4}-\d{2}-\d{2}\.md$"#
         let monthPattern = #"^\d{4}-\d{2}\.md$"#
@@ -92,7 +68,17 @@ struct MemoryManagementView: View {
             isReadOnly: false,
             isGlobal: false,
             nameFilter: { $0 == "\(today).md" },
-            sectionTitle: AppLocalized("今天"))
+            sectionTitle: AppLocalized("今天"),
+            drawerTitle: AppLocalized("日记忆"))
+        let yesterdayRoot = MemoryLibraryRoot(
+            id: "daily-yesterday",
+            title: AppLocalized("昨天"),
+            directory: dir,
+            isReadOnly: false,
+            isGlobal: false,
+            nameFilter: { $0 == "\(yesterday).md" },
+            sectionTitle: AppLocalized("昨天"),
+            drawerTitle: AppLocalized("日记忆"))
         let monthRoot = MemoryLibraryRoot(
             id: "daily-month",
             title: AppLocalized("本月"),
@@ -101,10 +87,12 @@ struct MemoryManagementView: View {
             isGlobal: false,
             nameFilter: { name in
                 name != "\(today).md"
+                    && name != "\(yesterday).md"
                     && name.hasPrefix("\(month)-")
                     && name.hasSuffix(".md")
             },
-            sectionTitle: AppLocalized("本月"))
+            sectionTitle: AppLocalized("本月"),
+            drawerTitle: AppLocalized("日记忆"))
         let olderDailyRoot = MemoryLibraryRoot(
             id: "daily-older",
             title: AppLocalized("更早（月记忆）"),
@@ -115,7 +103,8 @@ struct MemoryManagementView: View {
                 name.range(of: dayPattern, options: .regularExpression) != nil
                     && !name.hasPrefix("\(month)-")
             },
-            sectionTitle: AppLocalized("更早（月记忆）"))
+            sectionTitle: AppLocalized("更早（月记忆）"),
+            drawerTitle: AppLocalized("日记忆"))
         let monthlyRoot = MemoryLibraryRoot(
             id: "daily-monthly",
             title: AppLocalized("更早（月记忆）"),
@@ -123,7 +112,8 @@ struct MemoryManagementView: View {
             isReadOnly: false,
             isGlobal: false,
             nameFilter: { $0.range(of: monthPattern, options: .regularExpression) != nil },
-            sectionTitle: AppLocalized("更早（月记忆）"))
+            sectionTitle: AppLocalized("更早（月记忆）"),
+            drawerTitle: AppLocalized("日记忆"))
         let aiSummaryRoot = MemoryLibraryRoot(
             id: "monthly-ai-summary",
             title: AppLocalized("AI 月摘要"),
@@ -131,8 +121,9 @@ struct MemoryManagementView: View {
             isReadOnly: false,
             isGlobal: false,
             nameFilter: { $0.range(of: #"^\d{4}-\d{2}-AI\.md$"#, options: .regularExpression) != nil },
-            sectionTitle: AppLocalized("AI 月摘要"))
-        return [todayRoot, monthRoot, aiSummaryRoot, monthlyRoot, olderDailyRoot]
+            sectionTitle: AppLocalized("AI 月摘要"),
+            drawerTitle: AppLocalized("日记忆"))
+        return [todayRoot, yesterdayRoot, monthRoot, aiSummaryRoot, monthlyRoot, olderDailyRoot]
     }
 
     private var globalRoot: MemoryLibraryRoot {
@@ -165,6 +156,7 @@ struct MemoryManagementView: View {
                 isGlobal: false,
                 nameFilter: { $0 == "\(persona.id).md" },
                 sectionTitle: AppLocalized("人格记忆"),
+                drawerTitle: AppLocalized("人格记忆"),
                 itemTitle: persona.name,
                 itemSubtitle: subtitle)
         }
@@ -175,27 +167,18 @@ struct MemoryManagementView: View {
             isReadOnly: false,
             isGlobal: false,
             nameFilter: { !knownFiles.contains($0) },
-            sectionTitle: AppLocalized("未归属")))
+            sectionTitle: AppLocalized("未归属"),
+            drawerTitle: AppLocalized("人格记忆")))
         return roots
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker(AppLocalized("记忆分类"), selection: $tab) {
-                ForEach(MemoryTab.allCases) { item in
-                    Text(item.title).tag(item)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-
-            // One real shared directory, not a per-model/group facade. The library
-            // reuses MemoryContentView -> MemoryFileEditView for document actions.
-            ScopedMemoryLibraryView(title: AppLocalized("Memory"), roots: memoryRoots,
-                                    onShare: { url in
-                                        exportShare = MemoryShareItem(url: url)
-                                    }) {
+        // One real shared directory, not a per-model/group facade. The library
+        // reuses MemoryContentView -> MemoryFileEditView for document actions.
+        ScopedMemoryLibraryView(title: AppLocalized("Memory"), roots: memoryRoots,
+                                onShare: { url in
+                                    exportShare = MemoryShareItem(url: url)
+                                }) {
             Section {
                 Toggle(AppLocalized("settings_memory_global_enabled"), isOn: $memoryGlobalEnabled)
                 if let memoryWarning {
@@ -203,6 +186,21 @@ struct MemoryManagementView: View {
                 }
             } footer: {
                 Text(AppLocalized("settings_memory_global_enabled_footer"))
+            }
+            Section {
+                NavigationLink {
+                    MemoryContentView(root: .sharedMemory, fileName: "GLOBAL.md")
+                } label: {
+                    HStack {
+                        Label(AppLocalized("全局记忆"), systemImage: "globe")
+                        Spacer()
+                        Text("GLOBAL.md")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } footer: {
+                Text(AppLocalized("全局只有这一份，直接放在这里，不再单独占一页。"))
             }
             Section {
                 NavigationLink {
@@ -218,8 +216,6 @@ struct MemoryManagementView: View {
             } footer: {
                 Text(AppLocalized("共享记忆是只读快照；点“复制到我的记忆”后才进入你自己的人格记忆。"))
             }
-            }
-            .id(tab)
         }
         .onAppear {
             try? FileManager.default.createDirectory(
@@ -446,7 +442,8 @@ struct MemoryManagementView: View {
                 directory: dir,
                 isReadOnly: false,
                 isGlobal: false,
-                sectionTitle: AppLocalized("分组记忆")))
+                sectionTitle: AppLocalized("分组记忆"),
+                drawerTitle: AppLocalized("分组记忆")))
         }
         await MainActor.run { folderMemoryRoots = roots }
     }

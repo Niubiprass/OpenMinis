@@ -54,8 +54,11 @@ class SourceContracts(unittest.TestCase):
         for token in ("AIChatViewModel", "activeSession", "minisMemoryPersistentDir", "UserDefaults",
                       "AppStorage", "ChatStore", "UIKit", "SoulStore", "NotificationCenter"):
             self.assertNotIn(token, STORE)
-        for token in ("activeSession", "minisMemoryPersistentDir", "AppStorage", "memory.global.enabled"):
+        for token in ("activeSession", "minisMemoryPersistentDir", "memory.global.enabled"):
             self.assertNotIn(token, VIEW)
+        # Drawer collapse is view-local persistence, not a memory-visibility
+        # setting; the library may remember which drawers are closed.
+        self.assertIn('@AppStorage("memory.collapsedDrawers")', VIEW)
 
     def test_lock_cas_and_exact_bytes(self):
         save = between(STORE, "func save(", "func export(")

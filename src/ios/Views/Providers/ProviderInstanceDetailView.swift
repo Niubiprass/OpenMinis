@@ -2348,6 +2348,8 @@ private struct RateOverrideSheet: View {
     @State private var customCode = ""
     @State private var customRateText = ""
     @State private var customError: String?
+    @State private var rateSource = "auto"
+    @State private var rateError: String?
 
     private var entries: [ModelEntry] {
         store.entries(for: instanceId).filter { !$0.isHidden }
@@ -2384,17 +2386,32 @@ private struct RateOverrideSheet: View {
                         Text(siteRate.map { String(format: "%.2f", $0) } ?? "未提供")
                             .foregroundStyle(.secondary)
                     }
-                    HStack(spacing: 6) {
-                        Text("自定义汇率")
+                    HStack(spacing: 8) {
+                        Text("汇率来源")
                         Spacer()
-                        Text("1 美元 =")
-                            .foregroundStyle(.secondary)
-                        TextField("7.30", text: $text)
-                            .keyboardType(.decimalPad)
-                            .multilineTextAlignment(.trailing)
-                            .frame(maxWidth: 92)
-                        Text("人民币")
-                            .foregroundStyle(.secondary)
+                        Picker("汇率来源", selection: $rateSource) {
+                            Text("站点/默认").tag("auto")
+                            Text("手动").tag("manual")
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 190)
+                    }
+                    if rateSource == "manual" {
+                        HStack(spacing: 6) {
+                            Text("自定义汇率")
+                            Spacer()
+                            Text("1 美元 =")
+                                .foregroundStyle(.secondary)
+                            TextField("7.30", text: $text)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 92)
+                            Text("人民币")
+                                .foregroundStyle(.secondary)
+                        }
+                        if let rateError {
+                            Text(rateError).font(.caption).foregroundStyle(.red)
+                        }
                     }
                     // Three inline choices; no second page. CUSTOM exposes a
                     // code + units-per-USD field so EUR/JPY/... work without
@@ -2429,10 +2446,21 @@ private struct RateOverrideSheet: View {
                             Text(customError).font(.caption).foregroundStyle(.red)
                         }
                     }
+
+                    HStack(spacing: 8) {
+                        Text("默认汇率")
+                        Text("全局")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        TextField("6.67", value: $globalRate, format: .number)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.decimalPad)
+                    }
                 } header: {
                     Text("汇率")
                 } footer: {
-                    Text("只影响这个供应商。自定义币种按「1 美元 = 你填的数字」换算；只改变金额显示，不改变实际计费。")
+                    Text("只影响这个供应商的显示；汇率来源选「站点/默认」时，优先站点汇率，再退回上面的全局默认。")
                 }
 
                 Section {
@@ -2514,28 +2542,6 @@ private struct RateOverrideSheet: View {
                     Text("自动读取站点的 /api/pricing；读不到时使用官方目录价估算。")
                 }
 
-                Section {
-                    HStack {
-                        Text("默认汇率")
-                        Spacer()
-                        TextField("7.30", value: $globalRate, format: .number)
-                            .multilineTextAlignment(.trailing)
-                            .keyboardType(.decimalPad)
-                    }
-                } header: {
-                    Text("全局默认")
-                } footer: {
-                    Text("所有供应商在没有站点汇率、也没有单独设置时使用这个值。修改后立即生效。")
-                }
-
-                Section {
-                    Button {
-                        pricing.setRateOverride(instanceId: instanceId, rate: nil)
-                        dismiss()
-                    } label: {
-                        Text("使用站点汇率 / 默认 \(String(format: "%.2f", globalRate))")
-                    }
-                }
             }
             .navigationTitle(Text("供应商汇率"))
             .navigationBarTitleDisplayMode(.inline)
@@ -2571,8 +2577,15 @@ private struct RateOverrideSheet: View {
                         } else {
                             pricing.setCustomCurrency(instanceId: instanceId, code: nil, rate: nil)
                         }
-                        if let rate = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), rate > 0 {
+                        if rateSource == "manual" {
+                            let rate = Double(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                            guard let rate, rate > 0 else {
+                                rateError = "请填写大于 0 的汇率，例如 7.30。"
+                                return
+                            }
                             pricing.setRateOverride(instanceId: instanceId, rate: rate)
+                        } else {
+                            pricing.setRateOverride(instanceId: instanceId, rate: nil)
                         }
                         dismiss()
                     }
@@ -2581,10 +2594,12 @@ private struct RateOverrideSheet: View {
             .onAppear {
                 if let override = pricing.rateOverride(instanceId: instanceId) {
                     text = String(format: "%.2f", override)
+                    rateSource = "manual"
                 } else if let siteRate {
                     text = String(format: "%.2f", siteRate)
                 } else {
                     text = String(format: "%.2f", TurnCost.usdToCny)
+                    rateSource = "auto"
                 }
                 if let custom = pricing.customCurrency(instanceId: instanceId) {
                     currencyChoice = "CUSTOM"
