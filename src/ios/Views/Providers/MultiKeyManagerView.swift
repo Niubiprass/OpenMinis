@@ -166,27 +166,6 @@ struct MultiKeyManagerView: View {
                     in: Capsule()
                 )
 
-            Button {
-                editingKey = k
-            } label: {
-                Image(systemName: "pencil")
-                    .font(.system(size: 14, weight: .medium))
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.blue)
-            .accessibilityLabel(Text("编辑 Key"))
-
-            Button {
-                deletingKey = k
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 14, weight: .medium))
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.red)
-            .accessibilityLabel(Text("删除 Key"))
         }
         .contentShape(Rectangle())
         .onTapGesture { editingKey = k }

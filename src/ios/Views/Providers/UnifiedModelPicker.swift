@@ -541,8 +541,19 @@ struct UnifiedModelPicker: View {
         case .all:
             let groups = store.modelGroups
             let query = debouncedSearch.lowercased()
-            guard !query.isEmpty else { return groups }
-            return groups.filter { matchScore($0.name, query: query) > 0 }
+            let matching = query.isEmpty
+                ? groups
+                : groups.filter { matchScore($0.name, query: query) > 0 }
+            // Keep the group containing the currently selected model at the top.
+            // This is derived from the live session binding, never persisted as a
+            // user-defined group order or pinned preference.
+            guard let selectedGroupId = config.currentGroupId?(),
+                  let selectedIndex = matching.firstIndex(where: { $0.id == selectedGroupId })
+            else { return matching }
+            var ordered = matching
+            let selected = ordered.remove(at: selectedIndex)
+            ordered.insert(selected, at: 0)
+            return ordered
         case .single(let groupId):
             guard let gid = groupId, let g = store.group(for: gid) else { return [] }
             let query = debouncedSearch.lowercased()
@@ -1384,6 +1395,18 @@ struct UnifiedModelPicker: View {
                         .clipShape(Capsule())
                         .textCase(nil)
                 }
+                if isMulti {
+                    Button {
+                        toggleAllEntries(in: item.entries)
+                    } label: {
+                        Text(allEntriesSelected(in: item.entries) ? "取消全选" : "全选")
+                            .font(.caption)
+                            .foregroundStyle(.tint)
+                            .textCase(nil)
+                    }
+                    .buttonStyle(.plain)
+                    .textCase(nil)
+                }
                 if searchText.isEmpty && item.entries.count > 1 {
                     let collapsed = collapsedInstanceIds.contains(item.instance.id)
                     Button {
@@ -1600,6 +1623,32 @@ struct UnifiedModelPicker: View {
         if m.contains(.audioOutput) { badges.append("audio-out") }
         if m.contains(.videoOutput) { badges.append("video-out") }
         return badges
+    }
+
+    private func selectableEntryIds(in entries: [ModelEntry]) -> Set<String> {
+        let existing = config.existingIds?() ?? []
+        return Set(entries.filter {
+            !existing.contains($0.id)
+                && !(config.isDisabled?($0) ?? false)
+                && !$0.isUnavailableFromProvider
+        }.map(\.id))
+    }
+
+    private func allEntriesSelected(in entries: [ModelEntry]) -> Bool {
+        let ids = selectableEntryIds(in: entries)
+        return !ids.isEmpty && ids.isSubset(of: selectedEntryIds)
+    }
+
+    private func toggleAllEntries(in entries: [ModelEntry]) {
+        let ids = selectableEntryIds(in: entries)
+        guard !ids.isEmpty else { return }
+        // Exactly one state update for the entire section, keyed by entry ID.
+        // Same display names across providers remain independent entries.
+        if ids.isSubset(of: selectedEntryIds) {
+            selectedEntryIds.subtract(ids)
+        } else {
+            selectedEntryIds.formUnion(ids)
+        }
     }
 
     private func toggleSelection(_ entryId: String) {

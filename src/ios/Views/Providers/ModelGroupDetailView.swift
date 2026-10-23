@@ -8,7 +8,12 @@ struct ModelGroupDetailView: View {
 
     @State private var editingName = ""
     @State private var showAddModels = false
+    @State private var showImportGroup = false
     @State private var showDeleteConfirm = false
+
+    private var importableGroups: [ModelGroup] {
+        store.modelGroups.filter { $0.id != groupId }
+    }
     /// Holding `EditMode` directly (rather than a `Bool` + a derived
     /// `editMode` binding) lets SwiftUI own the same value the
     /// ForEach internals read from the environment. The earlier
@@ -217,8 +222,17 @@ struct ModelGroupDetailView: View {
                     }
                 }
 
-                Button {
-                    showAddModels = true
+                Menu {
+                    Button {
+                        showAddModels = true
+                    } label: {
+                        Label("Add Models", systemImage: "plus.circle")
+                    }
+                    Button {
+                        showImportGroup = true
+                    } label: {
+                        Label("Add Entire Group", systemImage: "square.stack.3d.up")
+                    }
                 } label: {
                     Label("Add Models", systemImage: "plus.circle")
                         .font(.subheadline)
@@ -355,6 +369,60 @@ struct ModelGroupDetailView: View {
                 UnifiedModelPicker(config: addModelsConfig())
             }
         }
+        .sheet(isPresented: $showImportGroup) {
+            NavigationStack {
+                List {
+                    if importableGroups.isEmpty {
+                        Text(AppLocalized("没有其他模型分组"))
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(importableGroups) { source in
+                        Button {
+                            importMembers(from: source.id)
+                            showImportGroup = false
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "square.stack.3d.up.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.blue)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(source.name)
+                                        .font(.body.weight(.medium))
+                                    Text(AppLocalized("\(source.memberEntryIds.count) models"))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .navigationTitle(AppLocalized("添加整个分组"))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showImportGroup = false }
+                    }
+                }
+            }
+        }
+    }
+
+    private func importMembers(from sourceId: String) {
+        guard sourceId != groupId,
+              let source = store.group(for: sourceId),
+              var destination = store.group(for: groupId) else { return }
+        var existing = Set(destination.memberEntryIds)
+        let additions = source.memberEntryIds.filter { existing.insert($0).inserted }
+        guard !additions.isEmpty else { return }
+        destination.memberEntryIds.append(contentsOf: additions)
+        store.updateGroup(destination)
     }
 
     /// Multi-select picker for adding members to this group. `groupScope:

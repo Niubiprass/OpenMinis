@@ -1195,7 +1195,7 @@ struct ThinkingLevelSheetView: View {
                 .padding(.bottom, 22)
             }
         }
-        .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
+        .background(Color(UIColor.systemGroupedBackground))
     }
 
     private var header: some View {
@@ -1224,6 +1224,7 @@ struct ThinkingLevelSheetView: View {
     private var thinkingCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             ThinkingSlider(levels: levels, selected: selectedBinding)
+                .padding(.horizontal, 8)
                 .opacity(thinkingEnabled ? 1 : 0.45)
             HStack(spacing: 0) {
                 ForEach(levels, id: \.self) { level in
@@ -1349,57 +1350,69 @@ struct ThinkingLevelSheetView: View {
 private struct ThinkingSlider: View {
     let levels: [ThinkingLevel]
     @Binding var selected: ThinkingLevel
+    @State private var dragRatio: CGFloat?
+
+    private var effectiveRatio: CGFloat {
+        if let dragRatio { return dragRatio }
+        let index = levels.firstIndex(of: selected) ?? 0
+        return levels.count > 1 ? CGFloat(index) / CGFloat(levels.count - 1) : 0
+    }
 
     var body: some View {
         GeometryReader { geo in
             let width = max(geo.size.width, 1)
-            let thumb: CGFloat = 30
+            let thumb: CGFloat = 34
             let inset = thumb / 2
             let usable = max(1, width - thumb)
-            let index = levels.firstIndex(of: selected) ?? 0
-            let ratio = levels.count > 1
-                ? CGFloat(index) / CGFloat(levels.count - 1)
-                : 0
-            let thumbX = inset + usable * ratio
+            let thumbX = inset + usable * effectiveRatio
 
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color(UIColor.tertiarySystemFill))
-                    .frame(height: 36)
+                    .frame(height: 40)
                 Capsule()
                     .fill(LinearGradient(colors: [Color.accentColor.opacity(0.92), Color.accentColor],
                                          startPoint: .leading,
                                          endPoint: .trailing))
-                    .frame(width: min(width, thumbX + thumb / 2), height: 36)
+                    .frame(width: min(width, thumbX + thumb / 2), height: 40)
                 ForEach(levels.indices, id: \.self) { i in
                     Circle()
                         .fill(Color.white.opacity(0.92))
                         .frame(width: 5, height: 5)
                         .position(x: dotX(index: i, inset: inset, usable: usable, count: levels.count),
-                                  y: 18)
+                                  y: 20)
                 }
                 Circle()
                     .fill(Color(UIColor.systemBackground))
                     .frame(width: thumb, height: thumb)
                     .overlay(Circle().stroke(Color.accentColor, lineWidth: 2))
                     .shadow(color: Color.black.opacity(0.12), radius: 3, x: 0, y: 1)
-                    .position(x: thumbX, y: 18)
+                    .position(x: thumbX, y: 20)
+                    .animation(nil, value: effectiveRatio)
             }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         let clamped = min(max(value.location.x, inset), width - inset)
-                        let fraction = (clamped - inset) / usable
+                        let fraction = min(max((clamped - inset) / usable, 0), 1)
+                        dragRatio = fraction
                         let raw = Int((fraction * CGFloat(max(1, levels.count - 1))).rounded())
                         let index = min(max(raw, 0), levels.count - 1)
-                        if levels.indices.contains(index) {
-                            selected = levels[index]
+                        if levels.indices.contains(index), selected != levels[index] {
+                            var transaction = Transaction()
+                            transaction.animation = nil
+                            withTransaction(transaction) {
+                                selected = levels[index]
+                            }
                         }
+                    }
+                    .onEnded { _ in
+                        dragRatio = nil
                     }
             )
         }
-        .frame(height: 36)
+        .frame(height: 40)
     }
 
     private func dotX(index: Int, inset: CGFloat, usable: CGFloat, count: Int) -> CGFloat {
@@ -1438,27 +1451,35 @@ private struct ThinkingContextBar: View {
 }
 
 private struct ThinkingSheetDetentsConfigurator: UIViewControllerRepresentable {
+    final class Coordinator {
+        weak var configuredSheet: UISheetPresentationController?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeUIViewController(context: Context) -> UIViewController {
         let controller = UIViewController()
         controller.view.backgroundColor = .clear
         DispatchQueue.main.async {
-            configure(controller)
+            configure(controller, coordinator: context.coordinator)
         }
         return controller
     }
 
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
         DispatchQueue.main.async {
-            configure(uiViewController)
+            configure(uiViewController, coordinator: context.coordinator)
         }
     }
 
-    private func configure(_ controller: UIViewController) {
+    private func configure(_ controller: UIViewController, coordinator: Coordinator) {
         var root: UIViewController? = controller
         while let parent = root?.parent {
             root = parent
         }
         guard let sheet = root?.presentationController as? UISheetPresentationController else { return }
+        guard coordinator.configuredSheet !== sheet else { return }
+        coordinator.configuredSheet = sheet
         sheet.detents = [.medium(), .large()]
         sheet.prefersGrabberVisible = true
         sheet.prefersScrollingExpandsWhenScrolledToEdge = false

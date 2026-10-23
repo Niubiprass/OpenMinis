@@ -150,8 +150,8 @@ class ManagementUi(unittest.TestCase):
         self.assertIn('.onTapGesture { editingKey = k }', VIEW)
         self.assertIn('.swipeActions(edge: .trailing', VIEW)
         self.assertIn('Label("删除", systemImage: "trash")', VIEW)
-        self.assertIn('Image(systemName: "pencil")', VIEW)
-        self.assertIn('Image(systemName: "trash")', VIEW)
+        self.assertNotIn('Image(systemName: "pencil")', VIEW)
+        self.assertNotIn('Image(systemName: "trash")', VIEW)
         # A leading-only swipeActions implementation was the reason the row
         # looked untouchable on device; the trailing action is the regression
         # guard.

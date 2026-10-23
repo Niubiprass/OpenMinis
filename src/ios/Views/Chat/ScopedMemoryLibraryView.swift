@@ -79,6 +79,8 @@ struct ScopedMemoryLibraryView<Header: View>: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                            .frame(maxWidth: .infinity)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
 
