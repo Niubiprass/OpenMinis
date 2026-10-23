@@ -876,8 +876,23 @@ final class SessionIconStore: ObservableObject {
         (UserDefaults.standard.dictionary(forKey: SessionIconStore.defaultsKey) as? [String: String]) ?? [:]
     private var revisions: [String: UInt64] = [:]
     private let imageCache = NSCache<NSString, UIImage>()
+    /// [T-icon-save-offmain] UserDefaults writes go over XPC to cfprefsd and
+    /// block the caller. Writing the whole icon dictionary synchronously from
+    /// `setIcon` ran on the main thread at the exact moment the app came back
+    /// from PHPickerViewController — a background-to-foreground transition.
+    /// iOS gives that transition 10 s (scene-update watchdog); with a few
+    /// dozen icons the cfprefsd round-trip plus the sidebar re-render blew it
+    /// and the app was SIGKILLed with 0x8badf00d at 02:27 and 02:38.
+    /// Persist a snapshot on a utility queue instead; the in-memory state and
+    /// revision counter still update synchronously so the UI reacts at once.
+    private let persistQueue = DispatchQueue(label: "com.minis.sessionIcons.persist", qos: .utility)
 
     private init() { imageCache.countLimit = 64 }
+
+    private func schedulePersist() {
+        let snapshot = icons
+        persistQueue.async { UserDefaults.standard.set(snapshot, forKey: Self.defaultsKey) }
+    }
 
     func icon(for sessionId: String) -> String? {
         icons[sessionId]
@@ -903,7 +918,7 @@ final class SessionIconStore: ObservableObject {
         } else {
             icons.removeValue(forKey: sessionId)
         }
-        UserDefaults.standard.set(icons, forKey: Self.defaultsKey)
+        schedulePersist()
     }
 
     /// Call only with a complete set of live IDs, never visible/search results.
@@ -915,7 +930,7 @@ final class SessionIconStore: ObservableObject {
             revisions[id] = (revisions[id] ?? 0) &+ 1
         }
         icons = kept
-        UserDefaults.standard.set(icons, forKey: Self.defaultsKey)
+        schedulePersist()
     }
 }
 
@@ -931,11 +946,21 @@ final class FolderIconStore: ObservableObject {
     private let defaults: UserDefaults
     @Published private(set) var icons: [String: String]
     private let imageCache = NSCache<NSString, UIImage>()
+    /// [T-icon-save-offmain] Same reason as SessionIconStore: never write the
+    /// whole dictionary to UserDefaults on the main thread during the
+    /// background→foreground return from the photo picker.
+    private let persistQueue = DispatchQueue(label: "com.minis.folderIcons.persist", qos: .utility)
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         icons = (defaults.dictionary(forKey: Self.defaultsKey) as? [String: String]) ?? [:]
         imageCache.countLimit = 64
+    }
+
+    private func schedulePersist() {
+        let snapshot = icons
+        let store = defaults
+        persistQueue.async { store.set(snapshot, forKey: Self.defaultsKey) }
     }
 
     func icon(for folderId: String) -> String? { icons[folderId] }
@@ -956,7 +981,7 @@ final class FolderIconStore: ObservableObject {
         } else {
             icons.removeValue(forKey: folderId)
         }
-        defaults.set(icons, forKey: Self.defaultsKey)
+        schedulePersist()
     }
 }
 

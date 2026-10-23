@@ -8264,7 +8264,14 @@ struct SessionEditSheet: View {
         let request = target.beginRequest()
         photoPicker.setCompletion({ image in
             guard case .success(let uri) = SidebarIconImage.encode(image) else { return }
-            Task { @MainActor in await target.save(uri, request: request) }
+            // [T-icon-save-offmain] One runloop hop before saving. The completion
+            // fires while UIKit is still dismissing the out-of-process picker and
+            // iOS is timing the background→foreground scene update; doing the
+            // store write in the same turn put it inside that 10 s budget.
+            Task { @MainActor in
+                await Task.yield()
+                await target.save(uri, request: request)
+            }
         }, for: picker)
         picker.delegate = photoPicker
         UIKitPickerPresenter.present(picker)
