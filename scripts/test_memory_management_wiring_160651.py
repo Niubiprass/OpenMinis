@@ -102,6 +102,17 @@ class MemoryManagementWiring(unittest.TestCase):
         self.assertEqual((ROOT / relative).read_bytes(), upstream)
 
 
+class SessionMemoryOffMain(unittest.TestCase):
+    def test_auto_injected_files_are_loaded_off_main(self):
+        # Opening the memory sheet used to read SOUL/GLOBAL/last 30 daily files
+        # in a computed property during body evaluation.
+        self.assertNotIn("private var autoInjected: [AutoItem]", SESSION)
+        self.assertIn("private static func makeAutoInjected()", SESSION)
+        self.assertIn("await loadAutoInjected()", SESSION)
+        self.assertIn("Task.detached", SESSION)
+        self.assertIn("Task.detached(priority: .userInitiated)", MANAGEMENT)
+
+
 if __name__ == '__main__':
     print('SOURCE/BUILD WIRING ONLY: real integrated memory pages; no Swift or device verdict.', flush=True)
     unittest.main(verbosity=2)

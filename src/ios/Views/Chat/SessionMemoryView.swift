@@ -15,6 +15,8 @@ struct SessionMemoryView: View {
     @State private var runtimeRoots: [MemoryLibraryRoot]?
     @State private var runtimeReady = false
     @State private var runtimeError: String?
+    @State private var autoInjectedItems: [AutoItem] = []
+    @State private var autoInjectedLoaded = false
 
     /// The runtime owner supplies its actual authorized directories. Passing
     /// roots never falls back to a global scan or the legacy log-entry writer.
@@ -64,16 +66,20 @@ struct SessionMemoryView: View {
             List {
                 // Section 1: Auto-injected memories
                 Section {
-                    ForEach(autoInjected, id: \.name) { item in
-                        NavigationLink {
-                            if let fileURL = item.fileURL {
-                                MemoryContentView(root: .sharedMemory, fileName: fileURL.lastPathComponent,
-                                                  title: item.name)
-                            } else {
-                                Text(item.content).textSelection(.enabled)
+                    if !autoInjectedLoaded {
+                        HStack { Spacer(); ProgressView(); Spacer() }
+                    } else {
+                        ForEach(autoInjectedItems, id: \.name) { item in
+                            NavigationLink {
+                                if let fileURL = item.fileURL {
+                                    MemoryContentView(root: .sharedMemory, fileName: fileURL.lastPathComponent,
+                                                      title: item.name)
+                                } else {
+                                    Text(item.content).textSelection(.enabled)
+                                }
+                            } label: {
+                                row(name: item.name, detail: item.detail, icon: item.icon)
                             }
-                        } label: {
-                            row(name: item.name, detail: item.detail, icon: item.icon)
                         }
                     }
                 } header: {
@@ -105,6 +111,7 @@ struct SessionMemoryView: View {
             }
             .navigationTitle("Memories in Session")
             .navigationBarTitleDisplayMode(.inline)
+            .task { await loadAutoInjected() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
@@ -142,7 +149,7 @@ struct SessionMemoryView: View {
         let fileURL: URL?
     }
 
-    private var autoInjected: [AutoItem] {
+    private static func makeAutoInjected() -> [AutoItem] {
         var items: [AutoItem] = []
         let fm = FileManager.default
         let memDir = AIChatViewModel.minisMemoryPersistentDir
@@ -225,6 +232,17 @@ struct SessionMemoryView: View {
         }
 
         return items
+    }
+
+    private func loadAutoInjected() async {
+        guard !autoInjectedLoaded else { return }
+        let items = await Task.detached(priority: .userInitiated) {
+            Self.makeAutoInjected()
+        }.value
+        await MainActor.run {
+            autoInjectedItems = items
+            autoInjectedLoaded = true
+        }
     }
 
     // MARK: - Tool memories
@@ -443,13 +461,23 @@ struct MemoryContentView: View {
 
     private func reload() {
         guard editingSnapshot == nil else { return }
-        do {
-            snapshot = try store.readSnapshot(rootID: root.id, fileName: fileName)
-            error = nil
-        } catch {
-            snapshot = nil
-            saved = false
-            self.error = error.localizedDescription
+        let store = self.store
+        let rootID = root.id
+        let name = fileName
+        Task.detached(priority: .userInitiated) {
+            let result = Result { try store.readSnapshot(rootID: rootID, fileName: name) }
+            await MainActor.run {
+                guard editingSnapshot == nil else { return }
+                switch result {
+                case .success(let value):
+                    snapshot = value
+                    error = nil
+                case .failure(let failure):
+                    snapshot = nil
+                    saved = false
+                    error = failure.localizedDescription
+                }
+            }
         }
     }
 

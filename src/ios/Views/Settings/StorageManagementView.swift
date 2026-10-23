@@ -6,6 +6,8 @@ class StorageManagementViewModel: ObservableObject {
     struct SessionStorage: Identifiable {
         let id: String
         let title: String?
+        let folderId: String?
+        let folderName: String?
         var minisSize: Int64 = 0
         /// [T-child-delete-storage] Hidden agent child sessions folded into
         /// this row (their ids, for cascading "clear files").
@@ -234,12 +236,16 @@ class StorageManagementViewModel: ObservableObject {
             let rolledUp = SessionTree.aggregateOntoRoots(minisSizes, parentOf: parentOf)
             var childrenOf: [String: [String]] = [:]
             for (c, p) in parentOf { childrenOf[p, default: []].append(c) }
+            let folders = await ChatStore.shared.listFolders()
+            let folderNames = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0.name) })
             let sorted: [SessionStorage] = chatSessions
                 .filter { !$0.isChild }
                 .map { session in
                     SessionStorage(
                         id: session.id,
                         title: session.title,
+                        folderId: session.folderId,
+                        folderName: session.folderId.flatMap { folderNames[$0] },
                         minisSize: rolledUp[session.id] ?? 0,
                         descendantIds: Array(SessionTree.withDescendants([session.id]) { childrenOf[$0] ?? [] }.dropFirst())
                     )
@@ -330,6 +336,13 @@ enum OverviewBucket: String, Identifiable {
 
 // MARK: - Storage Management View
 
+private struct StorageSessionGroup: Identifiable {
+    let id: String
+    let title: String
+    let sessions: [StorageManagementViewModel.SessionStorage]
+    var totalSize: Int64 { sessions.reduce(0) { $0 + $1.totalSize } }
+}
+
 struct StorageManagementView: View {
     @StateObject private var vm = StorageManagementViewModel()
     /// [T-storage-swipe-delete-20261019] Session row queued for the
@@ -341,6 +354,44 @@ struct StorageManagementView: View {
     /// cleanup are swipeable (see `OverviewBucket`); the shell rootfs, the chat
     /// database and the residual "Other" row deliberately are not.
     @State private var pendingOverviewBucket: OverviewBucket?
+    /// Folder drawer state, persisted locally. Empty = all groups expanded.
+    @AppStorage("storage.collapsedGroups") private var collapsedGroupsRaw = ""
+
+    private var collapsedGroups: Set<String> {
+        Set(collapsedGroupsRaw.split(separator: ",").map(String.init))
+    }
+
+    private var sessionGroups: [StorageSessionGroup] {
+        var buckets: [String: [StorageManagementViewModel.SessionStorage]] = [:]
+        for session in vm.sessions {
+            let key = session.folderId ?? "__ungrouped__"
+            buckets[key, default: []].append(session)
+        }
+        var groups: [StorageSessionGroup] = buckets.map { key, sessions in
+            let title: String
+            if key == "__ungrouped__" {
+                title = AppLocalized("未分组")
+            } else if let name = sessions.first?.folderName, !name.isEmpty {
+                title = name
+            } else {
+                title = AppLocalized("分组已删除")
+            }
+            return StorageSessionGroup(id: key, title: title, sessions: sessions)
+        }
+        groups.sort { lhs, rhs in
+            if lhs.id == "__ungrouped__" { return false }
+            if rhs.id == "__ungrouped__" { return true }
+            if lhs.totalSize == rhs.totalSize { return lhs.title < rhs.title }
+            return lhs.totalSize > rhs.totalSize
+        }
+        return groups
+    }
+
+    private func toggleGroup(_ id: String) {
+        var set = collapsedGroups
+        if set.contains(id) { set.remove(id) } else { set.insert(id) }
+        collapsedGroupsRaw = set.sorted().joined(separator: ",")
+    }
 
     var body: some View {
         List {
@@ -387,27 +438,32 @@ struct StorageManagementView: View {
                     Text("No sessions")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(vm.sessions) { session in
-                        NavigationLink {
-                            SessionStorageDetailView(session: session, onFilesCleared: { vm.load() })
+                    ForEach(sessionGroups) { group in
+                        Button {
+                            toggleGroup(group.id)
                         } label: {
-                            HStack {
-                                Text(session.title ?? "Untitled")
-                                    .lineLimit(1)
+                            HStack(spacing: 8) {
+                                Image(systemName: collapsedGroups.contains(group.id)
+                                      ? "chevron.right" : "chevron.down")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 12)
+                                Text(group.title)
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.primary)
                                 Spacer()
-                                Text(vm.format(session.totalSize))
+                                Text(String(format: AppLocalized("%lld 个 · %@"),
+                                            Int64(group.sessions.count),
+                                            vm.format(group.totalSize)))
+                                    .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        // [T-storage-swipe-delete-20261019] Swipe to reveal
-                        // Delete, same gesture as the provider list. Deletes
-                        // only the session's files (conversation preserved),
-                        // identical to "Clear Session Files" in the detail view.
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                pendingClearSession = session
-                            } label: {
-                                Label("Delete", systemImage: "trash")
+                        .buttonStyle(.plain)
+
+                        if !collapsedGroups.contains(group.id) {
+                            ForEach(group.sessions) { session in
+                                sessionRow(session)
                             }
                         }
                     }
@@ -447,6 +503,31 @@ struct StorageManagementView: View {
         } message: {
             if let bucket = pendingOverviewBucket {
                 Text(AppLocalized(bucket.detailKey))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sessionRow(_ session: StorageManagementViewModel.SessionStorage) -> some View {
+        NavigationLink {
+            SessionStorageDetailView(session: session, onFilesCleared: { vm.load() })
+        } label: {
+            HStack {
+                Text(session.title ?? "Untitled")
+                    .lineLimit(1)
+                Spacer()
+                Text(vm.format(session.totalSize))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        // [T-storage-swipe-delete-20261019] Swipe to reveal Delete, same
+        // gesture as the provider list. Deletes only the session's files
+        // (conversation preserved), identical to the detail view.
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                pendingClearSession = session
+            } label: {
+                Label("Delete", systemImage: "trash")
             }
         }
     }

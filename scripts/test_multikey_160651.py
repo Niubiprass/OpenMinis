@@ -119,7 +119,7 @@ class Wiring(unittest.TestCase):
 
 class Ui(unittest.TestCase):
     def test_stats_and_strategy_present(self):
-        for s in ['总数', '正常', '错误', '负载均衡策略']:
+        for s in ['个 Key', '正常', '错误', '负载均衡策略']:
             self.assertIn(s, VIEW)
 
     def test_keys_are_masked_never_raw(self):
@@ -217,7 +217,8 @@ class FailoverWiring(unittest.TestCase):
 
     def test_failover_is_request_scoped_and_bounded(self):
         WRAP = (ROOT / 'src/ios/Providers/AgentProvider.swift').read_text()
-        self.assertIn('manager.keys(for: instanceId).count + 1', WRAP)
+        self.assertIn('let keyCount = active ? manager.keys(for: instanceId).count : 0', WRAP)
+        self.assertIn('keyCount * priorityRetries', WRAP)
         self.assertIn('manager.lease(for: instanceId, excluding: attempted)', WRAP)
         self.assertIn('attemptedSecrets.insert(lease.key).inserted', WRAP)
 

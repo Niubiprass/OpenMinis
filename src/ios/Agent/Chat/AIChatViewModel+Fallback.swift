@@ -88,8 +88,9 @@ extension AIChatViewModel {
                 if let entry = resolveCurrentEntry() {
                     thinkLvl = min(thinkLvl, entry.effectiveMaxThinkingLevel)
                 }
+                let requestMessages = Self.limitedMessages(messages, entryId: resolveCurrentEntry()?.id)
                 let stream = try await currentProvider.streamAgentMessage(
-                    messages: messages,
+                    messages: requestMessages,
                     systemPrompt: systemPrompt,
                     tools: tools,
                     maxTokens: maxTokens,
@@ -186,8 +187,9 @@ extension AIChatViewModel {
                 if let eid = currentEntryId, let entry = ProviderConfigStore.shared.entry(for: eid) {
                     thinkLvl = min(thinkLvl, entry.effectiveMaxThinkingLevel)
                 }
+                let requestMessages = Self.limitedMessages(messages, entryId: currentEntryId)
                 let stream = try await currentProvider.streamAgentMessage(
-                    messages: messages,
+                    messages: requestMessages,
                     systemPrompt: currentSystemPrompt,
                     tools: tools,
                     maxTokens: maxTok,

@@ -1140,9 +1140,13 @@ struct SharedMemoryDetailView: View {
                 Button {
                     // PDF, not Markdown: a shared snapshot should not look
                     // like an editable memory file. The recipient can still
-                    // copy text into their own memory explicitly.
-                    if let url = SharedMemoryPDFExporter.export(record) {
-                        share = MemoryShareItem(url: url)
+                    // copy text into their own memory explicitly. Rendering
+                    // is off-main because a long snapshot can span pages.
+                    Task.detached(priority: .userInitiated) {
+                        let url = SharedMemoryPDFExporter.export(record)
+                        await MainActor.run {
+                            if let url { share = MemoryShareItem(url: url) }
+                        }
                     }
                 } label: {
                     Image(systemName: "square.and.arrow.up")

@@ -367,20 +367,44 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                                    thinkingLevel: ThinkingLevel) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
         try Task.checkCancellation()
         let manager = ProviderMultiKeyManager.shared
-        // Snapshot a finite budget. Adding keys during a request cannot grow it forever.
-        let budget = manager.isActive(for: instanceId) ? manager.keys(for: instanceId).count + 1 : 1
+        let active = manager.isActive(for: instanceId)
+        let keyCount = active ? manager.keys(for: instanceId).count : 0
+        // Priority mode gets two same-key retries before failover. The budget
+        // includes those retry slots so a three-key ring cannot exhaust the
+        // loop before the later keys are reached.
+        let priorityRetries = manager.strategy(for: instanceId) == .priority ? 2 : 0
+        let budget = active
+            ? (keyCount + 1) + keyCount * priorityRetries
+            : 1
         let initialExclusions = takeResumeExclusions()
         return AsyncThrowingStream { continuation in
             let worker = Task {
                 var attempted = initialExclusions
                 var attemptedSecrets = Set<String>()
                 var lastError: Error?
+                var retryLease: ProviderKeyLease?
+                var sameKeyRetries = 0
                 for _ in 0..<budget {
                     do { try Task.checkCancellation() }
                     catch { continuation.finish(throwing: error); return }
-                    guard let lease = manager.lease(for: instanceId, excluding: attempted) else { break }
-                    attempted.insert(lease.id)
-                    guard attemptedSecrets.insert(lease.key).inserted else { continue }
+                    let lease: ProviderKeyLease
+                    let isSameKeyRetry: Bool
+                    if let pending = retryLease {
+                        lease = pending
+                        retryLease = nil
+                        isSameKeyRetry = true
+                    } else {
+                        guard let next = manager.lease(for: instanceId, excluding: attempted) else { break }
+                        lease = next
+                        attempted.insert(lease.id)
+                        sameKeyRetries = 0
+                        isSameKeyRetry = false
+                    }
+                    if !isSameKeyRetry {
+                        // A retry deliberately reuses a secret already seen in
+                        // this request; only a newly leased key is deduped.
+                        guard attemptedSecrets.insert(lease.key).inserted else { continue }
+                    }
                     var exposed = false
                     var pending: [AgentStreamEvent] = []
                     do {
@@ -439,8 +463,21 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                             excludeOnResume(lease.id)
                             continuation.finish(throwing: error); return
                         }
+                        // Priority: keep the same key for a bounded number of
+                        // retries before treating it as broken. Other strategies
+                        // keep their existing one-failure-per-key behavior.
+                        if priorityRetries > 0, sameKeyRetries < priorityRetries {
+                            sameKeyRetries += 1
+                            // New startedAt so a success after a failed retry
+                            // clears the parked/error state instead of being
+                            // ignored as older than the failure.
+                            retryLease = ProviderKeyLease(id: lease.id, key: lease.key,
+                                                          startedAt: Date())
+                            await Task.yield()
+                            continue
+                        }
+                        sameKeyRetries = 0
                         // No content or tool escaped: another key may safely serve this request.
-                        // Yield cooperatively, with no same-key retry or infinite loop.
                         await Task.yield()
                     }
                 }

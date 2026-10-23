@@ -407,20 +407,27 @@ struct MemoryManagementView: View {
     /// dependency and no full backup pipeline.
     private func exportAllMemory() {
         let roots = dailyRoots + [globalRoot] + personaRoots + folderMemoryRoots
-        let store = MemoryDocumentStore(roots: roots)
-        var extras: [(relativePath: String, data: Data)] = []
-        if let data = try? JSONEncoder().encode(personaStore.personas) {
-            extras.append(("personas.json", data))
-        }
-        let soul = memoryDirectory.appendingPathComponent("SOUL.md")
-        if let data = try? Data(contentsOf: soul) {
-            extras.append(("soul/SOUL.md", data))
-        }
-        do {
-            exportShare = MemoryShareItem(url: try store.exportArchive(extraFiles: extras))
-        } catch {
-            forceSyncToast = AppLocalized("没有可导出的记忆")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { forceSyncToast = nil }
+        let personas = personaStore.personas
+        let dir = memoryDirectory
+        Task.detached(priority: .userInitiated) {
+            let store = MemoryDocumentStore(roots: roots)
+            var extras: [(relativePath: String, data: Data)] = []
+            if let data = try? JSONEncoder().encode(personas) {
+                extras.append(("personas.json", data))
+            }
+            let soul = dir.appendingPathComponent("SOUL.md")
+            if let data = try? Data(contentsOf: soul) {
+                extras.append(("soul/SOUL.md", data))
+            }
+            let url = try? store.exportArchive(extraFiles: extras)
+            await MainActor.run {
+                if let url {
+                    exportShare = MemoryShareItem(url: url)
+                } else {
+                    forceSyncToast = AppLocalized("没有可导出的记忆")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { forceSyncToast = nil }
+                }
+            }
         }
     }
 

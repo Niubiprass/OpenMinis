@@ -7096,6 +7096,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 // back immediately. The inner catch below already uses this
                 // wider condition; this aligns the outer one with it.
                 logger.error("🔁STREAM mid-stream error (retryable=\(streamError.isRetryable) fallbackable=\(streamError.isFallbackable)): \(streamError.localizedDescription)")
+                Self.noteImageLimitError(streamError, entryId: activeEntryId)
                 // Resync msgIdx by stable id before touching messages — the
                 // array may have been shrunk by a concurrent path (user
                 // delete, reloadMessagesFromDB, compactBefore) during the

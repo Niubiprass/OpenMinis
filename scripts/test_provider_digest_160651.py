@@ -29,11 +29,14 @@ class Digest(unittest.TestCase):
                        'rate limit', 'content filter', 'overloaded', 'timeout'):
             self.assertIn(needle, body.lower())
 
-    def test_unknown_text_returns_nil(self):
-        i = LOC.index('static func summary(for raw: String) -> String?')
-        body = LOC[i:i + 300]
-        self.assertIn('-> String?', body)
-        self.assertIn('return nil', LOC[LOC.index('enum ProviderErrorDigest'):])
+    def test_unknown_text_gets_a_chinese_fallback(self):
+        i = LOC.index('enum ProviderErrorDigest')
+        body = LOC[i:]
+        self.assertIn('上游返回了一个无法识别的错误', body)
+        self.assertIn('供应商返回错误', body)
+        # The digest always returns a Display now; summary stays optional for
+        # source compatibility but calls the same mapping.
+        self.assertIn('static func summary(for raw: String) -> String?', body)
 
     def test_banner_and_bubble_show_chinese_only(self):
         # [T-provider-error-digest] The banner keeps its original two-line

@@ -135,7 +135,7 @@ class SourceContracts(unittest.TestCase):
         callback = between(CONTENT, "MemoryFileEditView(root:", ".navigationViewStyle(")
         for token in ("snapshot: base", "onSaveDirty: onSaveDirty", "snapshot = result", "saved = true"):
             self.assertIn(token, callback)
-        self.assertEqual(CONTENT.count("guard editingSnapshot == nil else { return }"), 2)
+        self.assertEqual(CONTENT.count("guard editingSnapshot == nil else { return }"), 3)
         self.assertIn(".disabled(editingSnapshot != nil || snapshot?.exists != true)", CONTENT)
         self.assertIn("guard editingSnapshot == nil, let snapshot = snapshot else { return }", CONTENT)
         self.assertIn("try store.export([snapshot])", CONTENT)

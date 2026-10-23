@@ -11,6 +11,7 @@ struct MultiKeyManagerView: View {
 
     @State private var keys: [ProviderAPIKey] = []
     @State private var strategy: MultiKeyStrategy = .roundRobin
+    @State private var showStrategyPicker = false
     @State private var showAdd = false
     @State private var newKeyText = ""
     @State private var newKeyName = ""
@@ -23,30 +24,38 @@ struct MultiKeyManagerView: View {
     var body: some View {
         List {
             Section {
-                statRow("总数", "\(keys.count)", color: .primary)
-                statRow("正常", "\(okCount)", color: .green)
-                statRow("错误", "\(badCount)", color: badCount > 0 ? .red : .secondary)
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(badCount > 0 ? Color.orange : Color.green)
+                        .frame(width: 8, height: 8)
+                    Text("\(keys.count) 个 Key")
+                    Text("·").foregroundStyle(.tertiary)
+                    Text("\(okCount) 正常")
+                        .foregroundStyle(okCount > 0 ? Color.green : Color.secondary)
+                    if badCount > 0 {
+                        Text("·").foregroundStyle(.tertiary)
+                        Text("\(badCount) 错误").foregroundStyle(.red)
+                    }
+                    Spacer()
+                }
+                .font(.system(size: 14, weight: .medium))
             }
 
             Section {
-                NavigationLink(destination: MultiKeyStrategyView(selection: Binding(
-                    get: { strategy },
-                    set: { newValue in
-                        strategy = newValue
-                        // Write on selection, not onDisappear: iOS 15's
-                        // NavigationLink does not guarantee the callback when
-                        // the user swipes back, which made 顺序优先 look like
-                        // it reverted to 轮询 on the next visit.
-                        manager.setStrategy(newValue, for: instance.id)
-                    }
-                ))) {
+                Button {
+                    showStrategyPicker = true
+                } label: {
                     HStack {
                         Text("负载均衡策略")
                         Spacer()
                         Text(strategy.displayName)
                             .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
                     }
                 }
+                .buttonStyle(.plain)
             }
 
             Section {
@@ -80,6 +89,17 @@ struct MultiKeyManagerView: View {
         .onAppear {
             strategy = manager.strategy(for: instance.id)
             reload()
+        }
+        .confirmationDialog("负载均衡策略", isPresented: $showStrategyPicker, titleVisibility: .visible) {
+            ForEach(MultiKeyStrategy.allCases, id: \.rawValue) { item in
+                Button(item == strategy ? "\(item.displayName) ✓" : item.displayName) {
+                    strategy = item
+                    manager.setStrategy(item, for: instance.id)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(strategy.explanation)
         }
         .sheet(isPresented: $showAdd) {
             addSheet
@@ -116,16 +136,6 @@ struct MultiKeyManagerView: View {
     }
 
     private var badCount: Int { keys.count - okCount }
-
-    private func statRow(_ title: String, _ value: String, color: Color) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(value)
-                .foregroundStyle(color)
-                .font(.system(size: 19, weight: .regular))
-        }
-    }
 
     @ViewBuilder
     private func keyRow(_ k: ProviderAPIKey) -> some View {

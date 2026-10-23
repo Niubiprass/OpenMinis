@@ -252,6 +252,69 @@ extension AIChatViewModel {
         return raw
     }
 
+    private static let imageLimitPrefix = "provider.imageLimit."
+
+    /// Per-site image limit learned from a real provider error. A provider that
+    /// has never returned the 4-image 400 keeps its existing allowance, even if
+    /// its API shape is OpenAI-compatible; only the instance that actually
+    /// rejected the request gets the 4-image cap.
+    static func requestImageLimit(for entryId: String?) -> Int? {
+        guard let entryId else { return nil }
+        let value = UserDefaults.standard.integer(forKey: imageLimitPrefix + entryId)
+        return value > 0 ? value : nil
+    }
+
+    /// Remember a provider's explicit image-count rejection. Only the exact
+    /// "at most N image(s)" family is recorded; other 400s are unrelated.
+    static func noteImageLimitError(_ error: Error, entryId: String?) {
+        guard let entryId else { return }
+        let text = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        guard let limit = ProviderErrorDigest.imageLimit(in: text) else { return }
+        UserDefaults.standard.set(limit, forKey: imageLimitPrefix + entryId)
+    }
+
+    /// A request-only copy with the oldest images over `keep` replaced by text.
+    /// History is untouched, so the chat still shows every attachment.
+    static func limitedMessages(_ messages: [AgentMessage], entryId: String?) -> [AgentMessage] {
+        guard let keep = requestImageLimit(for: entryId), keep > 0 else { return messages }
+        var refs: [(message: Int, part: Int)] = []
+        for (messageIndex, message) in messages.enumerated() {
+            for (partIndex, part) in message.parts.enumerated() {
+                switch part {
+                case .imageData:
+                    refs.append((messageIndex, partIndex))
+                case .toolResult(_, _, _, _, let data, _, _, _, _):
+                    if data != nil { refs.append((messageIndex, partIndex)) }
+                default:
+                    break
+                }
+            }
+        }
+        let dropCount = max(0, refs.count - keep)
+        guard dropCount > 0 else { return messages }
+        var result = messages
+        for ref in refs.prefix(dropCount) {
+            var message = result[ref.message]
+            let part = message.parts[ref.part]
+            switch part {
+            case .imageData:
+                message.parts[ref.part] = .text("[图片已从请求上下文省略；聊天记录仍保留]")
+            case .toolResult(let id, let name, let content, let isError,
+                             _, let mime, let pageURL, let linuxPath, let isOffloadReadback):
+                message.parts[ref.part] = .toolResult(
+                    id: id, name: name,
+                    content: content + "\n[图片已从请求上下文省略；聊天记录仍保留]",
+                    isError: isError, imageData: nil, imageMimeType: mime,
+                    pageURL: pageURL, imageLinuxPath: linuxPath,
+                    isOffloadReadback: isOffloadReadback)
+            default:
+                break
+            }
+            result[ref.message] = message
+        }
+        return result
+    }
+
     /// Persistent storage directory for a specific session's workspace.
     nonisolated static func minisWorkspacePersistentDir(for sid: String) -> URL {
         minisPersistentBase.appendingPathComponent(sid, isDirectory: true)

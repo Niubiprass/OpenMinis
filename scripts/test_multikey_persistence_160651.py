@@ -17,7 +17,9 @@ class Persistence(unittest.TestCase):
             self.assertIn("synchronize()", body, name)
 
     def test_strategy_saves_on_selection_not_on_disappear(self):
-        self.assertIn("manager.setStrategy(newValue, for: instance.id)", VIEW)
+        self.assertIn("showStrategyPicker = true", VIEW)
+        self.assertIn("manager.setStrategy(item, for: instance.id)", VIEW)
+        self.assertIn(".confirmationDialog(\"负载均衡策略\"", VIEW)
         self.assertNotIn(".onDisappear {\n                            manager.setStrategy", VIEW)
 
 

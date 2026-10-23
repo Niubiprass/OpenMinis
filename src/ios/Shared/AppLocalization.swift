@@ -361,14 +361,59 @@ enum ProviderErrorDigest {
             return Display(title: AppLocalized("请求超时或网络连接失败"),
                            detail: AppLocalized("检查网络后重试。"), code: code)
         }
+        if let limit = imageLimit(in: lower) {
+            return Display(title: String(format: AppLocalized("这条会话里的图片超过 %lld 张"), Int64(limit)),
+                           detail: String(format: AppLocalized("不是 Key 失效；这个站点一次只接收 %lld 张图片。旧图会自动裁掉，或新建会话再试。"), Int64(limit)),
+                           code: code)
+        }
         if status == 400 {
             return Display(title: AppLocalized("供应商拒绝了请求（HTTP 400）"),
                            detail: AppLocalized("请求格式或参数不对。"), code: code)
         }
-        if let code {
-            return Display(title: AppLocalized("供应商返回错误"),
-                           detail: AppLocalized("供应商没有提供可翻译的说明，请把下面的代码发给供应商。"),
-                           code: code)
+        // Last resort: never hand the raw upstream English/JSON to the user.
+        // Keep the useful category, but always give one short Chinese sentence
+        // and a next step. The raw text is still available by long-press copy
+        // because the bubble's context menu stores `message.error` unchanged.
+        let detail: String
+        if lower.contains("image") {
+            detail = AppLocalized("图片数量或格式不被接受；先删到 4 张以内，或换一张图再试。")
+        } else if lower.contains("tool") || lower.contains("function call") {
+            detail = AppLocalized("工具调用参数不被接受；重试一次，还不行就换个模型。")
+        } else if lower.contains("parameter") || lower.contains("invalid request") {
+            detail = AppLocalized("请求参数不被接受；检查模型名、思考开关和附件后重试。")
+        } else if let status {
+            detail = String(format: AppLocalized("供应商拒绝了这次请求（HTTP %lld）；稍后重试。"), Int64(status))
+        } else {
+            detail = AppLocalized("上游返回了一个无法识别的错误；重试一次，反复出现再联系供应商。")
+        }
+        return Display(title: AppLocalized("供应商返回错误"),
+                       detail: detail,
+                       code: code)
+    }
+
+    /// Pull a per-request image cap out of any common provider phrasing.
+    /// Used by both the Chinese display and the per-site learned limit.
+    static func imageLimit(in text: String) -> Int? {
+        let lower = text.lowercased()
+        guard lower.contains("image") else { return nil }
+        let patterns = [
+            #"at most\s+(\d{1,2})\s+images?"#,
+            #"max(?:imum)?(?:\s+of)?\s+(\d{1,2})\s+images?"#,
+            #"up to\s+(\d{1,2})\s+images?"#,
+            #"only\s+(\d{1,2})\s+images?"#
+        ]
+        for pattern in patterns {
+            if let re = try? NSRegularExpression(pattern: pattern),
+               let match = re.firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)),
+               let range = Range(match.range(at: 1), in: lower),
+               let value = Int(lower[range]), value > 0 {
+                return value
+            }
+        }
+        // The site stated an image-count limit but not a parseable number:
+        // four is the common OpenAI-relay cap and is always safe to try.
+        if lower.contains("at most") || lower.contains("maximum") || lower.contains("limit") {
+            return 4
         }
         return nil
     }
