@@ -42,29 +42,29 @@ enum ModelGroupRouter {
         currentEntryId: String,
         store: ProviderConfigStore
     ) -> String? {
-        let available = availableEntryIds(group: group, store: store)
-        logger.info("🔀ROUTE nextFallback current=\(currentEntryId) available=\(available)")
+        nextFallback(
+            currentEntryId: currentEntryId,
+            available: availableEntryIds(group: group, store: store)
+        )
+    }
+
+    /// [T-perf-router-ring-once] Ring walk against an ALREADY computed available
+    /// list. Callers that loop over the ring (compaction fallback candidates)
+    /// used to call the overload above once per step, which re-filtered every
+    /// group member — and each filter calls `store.entry(for:)` — so the walk
+    /// was O(members²) lookups on the main actor. Compute `availableEntryIds`
+    /// once, then walk this.
+    static func nextFallback(
+        currentEntryId: String,
+        available: [String]
+    ) -> String? {
         guard let currentIdx = available.firstIndex(of: currentEntryId) else {
-            // Current entry not found in available list — try first available
-            logger.warning("🔀ROUTE nextFallback: current entry not in available list, falling back to first=\(available.first ?? "nil")")
             return available.first
         }
-
-        // Try remaining entries after current, then wrap around to entries before current.
-        // This ensures each reasoning turn can cycle through all providers exactly once.
         let remaining = available[(currentIdx + 1)...]
-        if let next = remaining.first {
-            logger.info("🔀ROUTE nextFallback: currentIdx=\(currentIdx) → next=\(next)")
-            return next
-        }
-
+        if let next = remaining.first { return next }
         let before = available[..<currentIdx]
-        if let wrapped = before.first {
-            logger.info("🔀ROUTE nextFallback: wrap-around → \(wrapped)")
-            return wrapped
-        }
-
-        logger.info("🔀ROUTE nextFallback: no more entries (single entry group)")
+        if let wrapped = before.first { return wrapped }
         return nil
     }
 
@@ -98,26 +98,32 @@ enum ModelGroupRouter {
     /// a 403 `OAuth authentication is currently not allowed for this
     /// organization`. The factory would still build a provider for it, but
     /// the request would fail immediately and waste a fallback slot.
-    private static func availableEntryIds(group: ModelGroup, store: ProviderConfigStore) -> [String] {
+    ///
+    /// [T-perf-router-ring-once] Internal (not private) so ring-walking callers
+    /// can pay for this filter once instead of once per step; see
+    /// `nextFallback(currentEntryId:available:)`. Per-entry logs are debug: with
+    /// a large group this ran hundreds of times per turn and the info-level
+    /// spam alone filled the on-disk log.
+    static func availableEntryIds(group: ModelGroup, store: ProviderConfigStore) -> [String] {
         group.memberEntryIds.filter { entryId in
             guard let entry = store.entry(for: entryId) else {
-                logger.warning("🔀ROUTE filter: entry \(entryId) not found in store")
+                logger.debug("🔀ROUTE filter: entry \(entryId) not found in store")
                 return false
             }
             guard !entry.isHidden else {
-                logger.info("🔀ROUTE filter: entry \(entryId) is hidden")
+                logger.debug("🔀ROUTE filter: entry \(entryId) is hidden")
                 return false
             }
             guard let instance = store.instance(for: entry.providerInstanceId) else {
-                logger.warning("🔀ROUTE filter: instance \(entry.providerInstanceId) not found for entry \(entryId)")
+                logger.debug("🔀ROUTE filter: instance \(entry.providerInstanceId) not found for entry \(entryId)")
                 return false
             }
             guard instance.isEnabled else {
-                logger.info("🔀ROUTE filter: instance \(instance.label) (\(instance.id)) disabled for entry \(entryId)")
+                logger.debug("🔀ROUTE filter: instance \(instance.label) (\(instance.id)) disabled for entry \(entryId)")
                 return false
             }
             guard instance.hasAnyCredential else {
-                logger.info("🔀ROUTE filter: instance \(instance.label) (\(instance.id)) has no credential for entry \(entryId)")
+                logger.debug("🔀ROUTE filter: instance \(instance.label) (\(instance.id)) has no credential for entry \(entryId)")
                 return false
             }
             return true

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 private let logger = AppLogger(category: "AIChatVM")
 
@@ -601,6 +604,16 @@ extension AIChatViewModel {
     func autoCompactOnEntryIfNeeded() {
         // Only the session whose chat UI is frontmost.
         guard let sessionId, AIChatViewModel.activeSessionId == sessionId else { return }
+        // [T-compact-foreground-only] Never START a summarization from a
+        // background-resumed load. `activeSessionId` survives backgrounding (the
+        // view stays mounted), so without this check the app could kick off a
+        // multi-hundred-message summarization while iOS already considers it
+        // backgrounded — and the scene-update watchdog (10 s, 0x8badf00d) kills
+        // the process mid-flight, which is exactly the 2026-10-23 23:22 kill.
+        // Foreground-only costs nothing: the next visit re-evaluates.
+        #if canImport(UIKit)
+        guard UIApplication.shared.applicationState == .active else { return }
+        #endif
         // The opt-in switch — a global live read of the same key the pre-send
         // branch uses. OFF must leave today's behavior exactly as it was.
         guard autoCompactEnabled else { return }
@@ -1561,12 +1574,21 @@ extension AIChatViewModel {
 
         func appendGroupMembers(_ groupId: String?) {
             guard let groupId, let group = store.group(for: groupId) else { return }
+            // [T-perf-router-ring-once] Compute the routable ring ONCE, then walk
+            // it. The old body called `nextFallback(group:currentEntryId:store:)`
+            // inside the loop; that overload re-filters every group member and
+            // each filter entry does a `store.entry(for:)` lookup, so a
+            // 40-member group cost 40 × 40 lookups — on the main actor, in the
+            // compaction path, right where the 2026-10-23 watchdog kills
+            // (0x8badf00d, scene-update, 10 s) landed.
+            let available = ModelGroupRouter.availableEntryIds(group: group, store: store)
+            guard !available.isEmpty else { return }
             var cursor = first.id
             // Walk the ring once; `nextFallback` wraps, so bound the walk by
             // the member count instead of trusting it to terminate.
-            for _ in 0..<max(1, group.memberEntryIds.count) {
+            for _ in 0..<available.count {
                 guard let nextId = ModelGroupRouter.nextFallback(
-                    group: group, currentEntryId: cursor, store: store) else { break }
+                    currentEntryId: cursor, available: available) else { break }
                 cursor = nextId
                 if seen.contains(nextId) { continue }
                 guard let e = store.entry(for: nextId) else { continue }

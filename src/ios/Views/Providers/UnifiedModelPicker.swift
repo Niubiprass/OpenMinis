@@ -544,7 +544,8 @@ struct UnifiedModelPicker: View {
             let matching = query.isEmpty
                 ? groups
                 : groups.filter { matchScore($0.name, query: query) > 0 }
-            // Keep the group containing the currently selected model at the top.
+            // [T-picker-pin-selected] Keep the group containing the currently
+            // selected model at the top.
             // This is derived from the live session binding, never persisted as a
             // user-defined group order or pinned preference.
             guard let selectedGroupId = config.currentGroupId?(),
@@ -1642,7 +1643,8 @@ struct UnifiedModelPicker: View {
     private func toggleAllEntries(in entries: [ModelEntry]) {
         let ids = selectableEntryIds(in: entries)
         guard !ids.isEmpty else { return }
-        // Exactly one state update for the entire section, keyed by entry ID.
+        // [T-picker-select-section] Exactly one state update for the entire
+        // section, keyed by entry ID.
         // Same display names across providers remain independent entries.
         if ids.isSubset(of: selectedEntryIds) {
             selectedEntryIds.subtract(ids)

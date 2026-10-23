@@ -1575,6 +1575,53 @@ final class ProviderConfigStore: ObservableObject {
         }
     }
 
+    /// [T-perf-entry-lookup-index] `entry(for:)` used to run up to four
+    /// `first(where:)` linear scans over EVERY model entry on every call. It is
+    /// not a rare lookup: `ModelGroupRouter.availableEntryIds` calls it once per
+    /// group member, `compactFallbackCandidates` walks the ring and calls it
+    /// again per step, quota rows and provider detail resolve every row through
+    /// it. With a few hundred entries and a 500-message session, compaction on
+    /// the main actor spent tens of seconds here and iOS killed the app with a
+    /// scene-update watchdog (0x8badf00d).
+    ///
+    /// Build one dictionary per key FORM, refreshed only when `configRevision`
+    /// moves (any `save()`), so repeated lookups are O(1). Per-form dictionaries
+    /// — instead of one merged map — preserve the original lookup PRIORITY (id,
+    /// then uuid, then legacy-map, then ":" key) and the original "first match
+    /// wins" tie-break for duplicate keys.
+    private struct EntryLookupIndex {
+        let byId: [String: ModelEntry]
+        let byUuid: [String: ModelEntry]
+        let byLegacyColonKey: [String: ModelEntry]
+    }
+
+    private var entryLookupIndexCache: EntryLookupIndex?
+    private var entryLookupIndexRevision: UInt = .max
+
+    private func entryLookupIndex() -> EntryLookupIndex {
+        if let cached = entryLookupIndexCache, entryLookupIndexRevision == configRevision {
+            return cached
+        }
+        let entries = config.modelEntries
+        var byId: [String: ModelEntry] = [:]
+        var byUuid: [String: ModelEntry] = [:]
+        var byLegacyColonKey: [String: ModelEntry] = [:]
+        byId.reserveCapacity(entries.count)
+        byUuid.reserveCapacity(entries.count)
+        byLegacyColonKey.reserveCapacity(entries.count)
+        for entry in entries {
+            // `if nil` keeps the first occurrence, matching `first(where:)`.
+            if byId[entry.id] == nil { byId[entry.id] = entry }
+            if byUuid[entry.uuid] == nil { byUuid[entry.uuid] = entry }
+            let colonKey = entry.legacyColonCompositeKey
+            if byLegacyColonKey[colonKey] == nil { byLegacyColonKey[colonKey] = entry }
+        }
+        let index = EntryLookupIndex(byId: byId, byUuid: byUuid, byLegacyColonKey: byLegacyColonKey)
+        entryLookupIndexCache = index
+        entryLookupIndexRevision = configRevision
+        return index
+    }
+
     func entry(for entryId: String) -> ModelEntry? {
         // Built-in System engine members are virtual (synthetic, never stored). They
         // must resolve here so a group with System members (e.g. a [Doubao, System]
@@ -1592,11 +1639,15 @@ final class ProviderConfigStore: ObservableObject {
         // to composite keys over time, but this lookup keeps them working in the
         // meantime — never returns nil just because a reference is still in an
         // old form.
-        if let hit = config.modelEntries.first(where: { $0.id == entryId }) { return hit }
-        if let hit = config.modelEntries.first(where: { $0.uuid == entryId }) { return hit }
+        //
+        // [T-perf-entry-lookup-index] Same priority order as before, served from
+        // the cached index instead of four linear scans.
+        let index = entryLookupIndex()
+        if let hit = index.byId[entryId] { return hit }
+        if let hit = index.byUuid[entryId] { return hit }
         if let mapped = legacyUuidToCompositeKey[entryId],
-           let hit = config.modelEntries.first(where: { $0.id == mapped }) { return hit }
-        if let hit = config.modelEntries.first(where: { $0.legacyColonCompositeKey == entryId }) { return hit }
+           let hit = index.byId[mapped] { return hit }
+        if let hit = index.byLegacyColonKey[entryId] { return hit }
         return nil
     }
 
