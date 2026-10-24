@@ -2218,6 +2218,12 @@ extension CollectionViewMessageListV3 {
                 .sink { [weak self] hold in
                     guard let self else { return }
                     self.insetHold = hold
+                    // [T-sheet-close-no-jump] 面板关闭时要把底部内边距还回去，
+                    // UIKit 会顺带调一次 contentOffset —— 看起来是"关掉后闪跳一下"。
+                    // 记下位置，还完内边距再按回去。
+                    if !hold {
+                        self.restoreOffsetAfterInsetRelease()
+                    }
                     // [T-sheet-inset-hold-offset] 冻结内边距挡不住 UIKit 自己
                     // 因面板出现而改的 contentOffset（实测被推 ~20pt 再弹回，
                     // 150ms 内，看起来就是"点灯泡后面抖一下"）。这里在弹出前
@@ -6383,6 +6389,20 @@ extension CollectionViewMessageListV3 {
         /// [T-scroll-resume-no-touch] 松手/惯性结束后，用一个短定时器把这次欠下的
         /// 重排补掉。原来这笔账只在"下一次开始滑动"时才还，用户不碰屏幕就一直
         /// 欠着：内容不再更新，收起的思考卡也停在展开高度（那一块空白）。
+        /// [T-sheet-close-no-jump] 内边距释放后一次性把位置按回，抵消 UIKit 的调整。
+        private func restoreOffsetAfterInsetRelease() {
+            guard let cv = viewController?.collectionView else { return }
+            let target = cv.contentOffset.y
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                guard let self, let cv = self.viewController?.collectionView,
+                      !cv.isTracking, !cv.isDragging, !cv.isDecelerating else { return }
+                let dy = cv.contentOffset.y - target
+                guard abs(dy) > 0.5, abs(dy) < 160 else { return }
+                cv.setContentOffset(CGPoint(x: cv.contentOffset.x, y: target), animated: false)
+                AppLogger(category: "ScrollDiag").info("[ScrollDiag][sheetCloseRestore] Δ=\(String(format: "%.1f", dy))")
+            }
+        }
+
         private func scheduleSettleFallback() {
             settleFallbackWork?.cancel()
             let work = DispatchWorkItem { [weak self] in

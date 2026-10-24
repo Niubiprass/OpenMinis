@@ -1165,6 +1165,9 @@ struct ThinkingLevelSheetView: View {
     let contextUsage: ContextUsage?
     let contextFixedTokens: Int
     let onSelect: (ThinkingLevel) -> Void
+    /// [T-thinking-sheet-no-scale] 自绘面板下，SwiftUI 的 dismiss 关不掉宿主容器，
+    /// 需要外部给一个真正的关闭动作。
+    var onDone: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedLevel: ThinkingLevel
@@ -1174,7 +1177,9 @@ struct ThinkingLevelSheetView: View {
          availableLevels: [ThinkingLevel],
          contextUsage: ContextUsage? = nil,
          contextFixedTokens: Int = 0,
-         onSelect: @escaping (ThinkingLevel) -> Void) {
+         onSelect: @escaping (ThinkingLevel) -> Void,
+         onDone: (() -> Void)? = nil) {
+        self.onDone = onDone
         let levels = availableLevels.isEmpty ? [ThinkingLevel.medium] : availableLevels
         let initial: ThinkingLevel
         if currentLevel.isEnabled {
@@ -1399,7 +1404,11 @@ struct ThinkingLevelSheetView: View {
     private func commit() {
         let result: ThinkingLevel = thinkingEnabled ? selectedLevel : .off
         onSelect(result)
-        dismiss()
+        if let onDone {
+            onDone()
+        } else {
+            dismiss()
+        }
     }
 }
 

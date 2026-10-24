@@ -7808,8 +7808,8 @@ private struct ThinkingLevelBadgeView: View {
             contextFixedTokens: vm.contextFixedTokens,
             onSelect: { newLevel in
                 vm.setThinkingLevel(newLevel)
-                ThinkingSheetController.dismissTop()
-            }
+            },
+            onDone: { ThinkingSheetController.dismissTop() }
         )
         let host = UIHostingController(rootView: root)
         host.view.backgroundColor = .clear
@@ -7830,6 +7830,10 @@ final class ThinkingSheetController: UIViewController, UIGestureRecognizerDelega
     private let onClose: () -> Void
     private let dim = UIView()
     private let panel = UIView()
+    /// [T-thinking-sheet-drag-area] 只有这条把手能拖动面板；整块面板都能拖会和
+    /// 里面的滑块抢手势（滑档位时面板跟着走）。
+    private let grabber = UIView()
+    private static let grabberHeight: CGFloat = 28
     private var collapsedHeight: CGFloat = 0
     private var currentHeight: CGFloat = 0
 
@@ -7863,27 +7867,42 @@ final class ThinkingSheetController: UIViewController, UIGestureRecognizerDelega
         panel.clipsToBounds = true
         view.addSubview(panel)
 
+        grabber.backgroundColor = .clear
+        panel.addSubview(grabber)
+        let bar = UIView()
+        bar.backgroundColor = UIColor.tertiaryLabel.withAlphaComponent(0.5)
+        bar.layer.cornerRadius = 2.5
+        bar.tag = 991
+        grabber.addSubview(bar)
+
         addChild(content)
-        content.view.frame = panel.bounds
+        content.view.frame = panel.bounds.insetBy(dx: 0, dy: 0)
         content.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        panel.addSubview(content.view)
+        panel.insertSubview(content.view, belowSubview: grabber)
         content.didMove(toParent: self)
 
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
         pan.delegate = self
-        panel.addGestureRecognizer(pan)
+        pan.cancelsTouchesInView = false
+        grabber.addGestureRecognizer(pan)
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        if collapsedHeight == 0 { collapsedHeight = max(320, view.bounds.height * 0.52) }
+        if collapsedHeight == 0 {
+            // 按内容真实高度决定半高状态，避免把底部「思考过程」开关裁掉。
+            let measured = measuredContentHeight(width: view.bounds.width)
+            let upper = view.bounds.height * 0.94
+            collapsedHeight = min(max(measured, 320), upper)
+        }
         if currentHeight == 0 { currentHeight = collapsedHeight }
         applyPanelFrame()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        collapsedHeight = max(320, view.bounds.height * 0.52)
+        let measured = measuredContentHeight(width: view.bounds.width)
+        collapsedHeight = min(max(measured, 320), view.bounds.height * 0.94)
         currentHeight = collapsedHeight
         applyPanelFrame()
         panel.transform = CGAffineTransform(translationX: 0, y: collapsedHeight)
@@ -7893,9 +7912,23 @@ final class ThinkingSheetController: UIViewController, UIGestureRecognizerDelega
         }
     }
 
+    private func measuredContentHeight(width: CGFloat) -> CGFloat {
+        guard width > 0 else { return 420 }
+        content.view.frame = CGRect(x: 0, y: 0, width: width, height: 120)
+        let size = content.view.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel)
+        return (size.height > 1 ? size.height : 420) + Self.grabberHeight
+    }
+
     private func applyPanelFrame() {
         let h = currentHeight
         panel.frame = CGRect(x: 0, y: view.bounds.height - h, width: view.bounds.width, height: h)
+        let gh = Self.grabberHeight
+        grabber.frame = CGRect(x: 0, y: 0, width: panel.bounds.width, height: gh)
+        grabber.viewWithTag(991)?.frame = CGRect(x: (panel.bounds.width - 36) / 2, y: 6, width: 36, height: 5)
+        content.view.frame = CGRect(x: 0, y: gh, width: panel.bounds.width, height: max(0, h - gh))
     }
 
     @objc private func handleDimTap() { close() }
