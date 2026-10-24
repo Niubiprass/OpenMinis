@@ -1133,14 +1133,35 @@ public struct MinisShareLinkButton: View {
 /// iOS 15 photo + document pickers (UIKit-based; bypasses SwiftUI's broken
 /// multi-sheet chain on iOS 15 which silently drops presentations).
 enum UIKitPickerPresenter {
-    static func present(_ vc: UIViewController) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+    /// [T-picker-present-race] 原来的做法是"固定等 0.45 秒再弹"。如果那时上一个
+    /// 弹窗（相册/文件选择前面的那个操作菜单）还没完全消失、或转场还没结束，
+    /// 选择器会被硬塞进去：先闪一下内容，随后整片空白，得退出来再点一次才好。
+    /// 现在改成等"上一个弹窗真的走完"再弹，并且最多重试 ~2 秒。
+    static func present(_ vc: UIViewController, attempt: Int = 0) {
+        DispatchQueue.main.async {
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             guard var top = scenes.flatMap({ $0.windows }).first(where: { $0.isKeyWindow })?.rootViewController else {
                 return
             }
             while let presented = top.presentedViewController, !presented.isBeingDismissed {
                 top = presented
+            }
+            let settling = top.isBeingDismissed
+                || (top.transitionCoordinator?.isRunning ?? false)
+                || top is UIAlertController          // 操作菜单还在：等它消失
+            if settling, attempt < 16 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                    present(vc, attempt: attempt + 1)
+                }
+                return
+            }
+            guard top.presentedViewController == nil, vc.presentingViewController == nil else {
+                if attempt < 16 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                        present(vc, attempt: attempt + 1)
+                    }
+                }
+                return
             }
             top.present(vc, animated: true)
         }

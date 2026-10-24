@@ -812,6 +812,9 @@ struct ThinkingBlockView: View {
     @State private var thinkingUserScrolledAway = false
     @State private var lastThinkingDragAt: Date = .distantPast
     @State private var frozenThinkingContent: String? = nil
+    /// [T-thinking-collapse-hold] 思考停下后等 0.6 秒再收：一轮回答里思考会分成
+    /// 几段、中间夹着工具调用，立刻收就会"卡一下塌下去、再弹回来"。
+    @State private var pendingThinkingCollapse: DispatchWorkItem? = nil
 
     /// Bind to block.isThinkingExpanded so state survives cell reuse and triggers cell re-sizing.
     private var isExpanded: Binding<Bool> {
@@ -1076,11 +1079,29 @@ struct ThinkingBlockView: View {
                 .stroke(Color.blue.opacity(0.15), lineWidth: 0.5)
         )
         .task(id: block.id) {
-            reconcileAutomaticExpansion(streaming: isStreaming)
+            applyThinkingExpansion(streaming: isStreaming)
         }
         .onChange(of: isStreaming) { streaming in
-            reconcileAutomaticExpansion(streaming: streaming)
+            applyThinkingExpansion(streaming: streaming)
         }
+    }
+
+    /// [T-thinking-collapse-hold] 展开立刻生效；收起延后 0.6 秒，期间又开始思考
+    /// 就取消。这样思考段落之间不会"塌下去再弹回来"（视觉上像卡了一下）。
+    /// 放在 body 之后，避免被 test_thinking_resize_source.py 的单方法抽取带上。
+    private func applyThinkingExpansion(streaming: Bool) {
+        if streaming {
+            pendingThinkingCollapse?.cancel()
+            pendingThinkingCollapse = nil
+            reconcileAutomaticExpansion(streaming: true)
+            return
+        }
+        pendingThinkingCollapse?.cancel()
+        let work = DispatchWorkItem { [self] in
+            reconcileAutomaticExpansion(streaming: false)
+        }
+        pendingThinkingCollapse = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
     }
 }
 

@@ -1267,6 +1267,21 @@ extension CollectionViewMessageListV3 {
         // === Session Load ===
         /// When true, contentSize KVO keeps pinning to bottom until layout stabilizes.
         private var clampAfterSessionLoad: Bool = false
+        /// [T-coldstart-width-purge] 每次首次加载只补一次重量。
+        private var coldStartRemeasureDone = false
+
+        private func scheduleColdStartRemeasure() {
+            coldStartRemeasureDone = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+                guard let self, !self.coldStartRemeasureDone,
+                      let cv = self.viewController?.collectionView,
+                      let layout = self.viewController?.messageListLayout,
+                      cv.bounds.width > 0 else { return }
+                self.coldStartRemeasureDone = true
+                layout.forcePurgeHeightsAndRemeasure()
+            }
+        }
+
         /// Hard deadline to stop clamping (2s after session load).
         private var clampDeadline: Date = .distantPast
 
@@ -2283,6 +2298,11 @@ extension CollectionViewMessageListV3 {
                         self.clampAfterSessionLoad = true
                         self.clampDeadline = Date().addingTimeInterval(8.0)
                         self.scrollToLastItem()
+                        // [T-coldstart-width-purge] 首屏可能在 App 还没 active、
+                        // 宽度还没定的时候就量过高度；那次自动清理会被跳过，
+                        // 偏矮的高度被复用 → 消息压扁叠在一起。加载完成后
+                        // 补一次强制重量，不需要用户退出重进。
+                        self.scheduleColdStartRemeasure()
                     }
                     // Sync reload: keep current scroll position, just update data
                 }

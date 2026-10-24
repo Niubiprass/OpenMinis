@@ -775,7 +775,15 @@ final class MessageListLayout: UICollectionViewLayout {
         // Skip layout invalidation when the app is backgrounded — UIKit may report
         // transient zero/different bounds during background transitions, which would
         // clear the height cache and cause a brief layout scramble on foreground return.
-        if UIApplication.shared.applicationState != .active { return false }
+        //
+        // [T-coldstart-width-purge] …but NOT before a valid width has ever been
+        // settled. On a cold start the app is still `.inactive` while the list is
+        // first laid out, and that first pass runs at width 0: every precalc/
+        // estimated height comes out far too short. Skipping the purge here froze
+        // those heights into the cache, so messages rendered squashed/overlapping
+        // until the session was reopened (by then the app was active). Only skip
+        // once a real width has been measured.
+        if UIApplication.shared.applicationState != .active && lastSettledWidth > 0 { return false }
 
         if newBounds.width != cv.bounds.width && newBounds.width > 0 {
             // [T-ios-ipad-rotate-sidebar-scroll-jank] (issue #31) DO NOT clear
@@ -834,6 +842,20 @@ final class MessageListLayout: UICollectionViewLayout {
             self.lastSettledWidth = cv.bounds.width
             self.invalidateLayout()
         }
+    }
+
+    /// [T-coldstart-width-purge] 强制清空所有高度缓存并按当前宽度重量一次。
+    /// 冷启动首屏可能在拿到真实宽度之前就量过高度（App 此时还不是 active，
+    /// 宽度变化的自动清理会被跳过），那些偏矮的高度会被当成正确值复用，
+    /// 表现为消息压扁/叠在一起，只有退出重进才恢复。
+    func forcePurgeHeightsAndRemeasure() {
+        guard let cv = collectionView, cv.bounds.width > 0 else { return }
+        heightCache.removeAll()
+        precalcHeights.removeAll()
+        estimatedHeights.removeAll()
+        geometryReaderConfirmed.removeAll()
+        lastSettledWidth = cv.bounds.width
+        invalidateLayout()
     }
 
     // MARK: - Height Cache Management
