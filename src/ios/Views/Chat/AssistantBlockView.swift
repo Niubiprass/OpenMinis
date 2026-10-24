@@ -255,13 +255,19 @@ struct ToolCapsuleView: View {
     @State private var showRevokeMemoryAlert = false
     @State private var revokeMemoryResult: String?
     @State private var showRevokeMemoryResultAlert = false
-    @ObservedObject private var keepAlive = BackgroundKeepAliveManager.shared
 
     /// Show the yellow ⓘ hint only when this tool was flagged as background-
     /// suspended AND enhanced background isn't already effective (nothing to
     /// suggest if it's on). Mirrors the BackgroundInterruptionTracker gate.
     private var showBgSuspendedHint: Bool {
-        block.wasBackgroundSuspended && !keepAlive.enhancedBackgroundEffective
+        // [T-capsule-no-keepalive-subscription] 这里原来用 @ObservedObject 订阅
+        // BackgroundKeepAliveManager —— 那是个高频发布的对象（前台心跳、Live
+        // Activity 每秒都会改）。结果是：列表里**每一个**工具胶囊都订阅了它，
+        // 每秒一起重算 body；长会话里几十上百个胶囊同时重算，卡死快照里正是
+        // ToolCapsuleView.body 占了 2 秒。这里改成直接读单例（不订阅）：
+        // 提示文案最多晚一次自然刷新才更新，代价可以忽略。
+        block.wasBackgroundSuspended
+            && !BackgroundKeepAliveManager.shared.enhancedBackgroundEffective
     }
     /// [T-ios-retry-hide-when-processing] Used to suppress the "Re-run From
     /// Here" long-press menu item while the agent loop is busy — tapping it

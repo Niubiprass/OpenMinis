@@ -1146,8 +1146,10 @@ enum UIKitPickerPresenter {
             while let presented = top.presentedViewController, !presented.isBeingDismissed {
                 top = presented
             }
+            // 注意：不要在 iOS 15 上用 transitionCoordinator.isRunning —— 该属性
+            // 不存在（CI 编译直接报 "has no member 'isRunning'"）。这里只依据
+            // 「是否还在关闭中 / 是否还是操作菜单 / 是否还有被呈现的控制器」判断。
             let settling = top.isBeingDismissed
-                || (top.transitionCoordinator?.isRunning ?? false)
                 || top is UIAlertController          // 操作菜单还在：等它消失
             if settling, attempt < 16 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {

@@ -100,6 +100,9 @@ struct ModelPickerConfig {
     var createGroupDirection: VoiceDirection?
     var dismissOnSelect: Bool = true
 
+    /// [T-picker-provider-recency] 这个选择器属于哪个会话。用来按会话记住
+    /// "上次用的是哪个供应商"，把那一整段排到最前；不同会话互不影响。
+    var sessionId: String?
     var currentEntryId: (@MainActor () -> String?)?
     var currentGroupId: (@MainActor () -> String?)?
 
@@ -515,8 +518,41 @@ struct UnifiedModelPicker: View {
     /// and because entries inside each one are already relevance-sorted, what
     /// survives truncation is the most relevant part rather than an arbitrary
     /// slice.
+    // MARK: - Provider recency (per session)
+
+    /// [T-picker-provider-recency] 每个会话各记一条"上次用的供应商"。
+    /// 点过某个供应商下的模型后，这个会话里它的整段排到最前；换别的会话
+    /// 打开仍是它自己的顺序，互不影响。搜索时不重排（结果按相关度排）。
+    private static let lastProviderKey = "picker.lastProviderBySession"
+
+    private var rememberedProviderId: String? {
+        guard let sid = config.sessionId, !sid.isEmpty,
+              let map = UserDefaults.standard.dictionary(forKey: Self.lastProviderKey) as? [String: String]
+        else { return nil }
+        return map[sid]
+    }
+
+    private func rememberProvider(_ instanceId: String) {
+        guard let sid = config.sessionId, !sid.isEmpty, !instanceId.isEmpty else { return }
+        var map = (UserDefaults.standard.dictionary(forKey: Self.lastProviderKey) as? [String: String]) ?? [:]
+        guard map[sid] != instanceId else { return }
+        map[sid] = instanceId
+        UserDefaults.standard.set(map, forKey: Self.lastProviderKey)
+    }
+
+    /// 非搜索状态下，把本会话上次用的供应商整段提到最前。
+    private func orderedByLastUsedProvider(_ sections: [InstanceSection]) -> [InstanceSection] {
+        guard debouncedSearch.isEmpty, let wanted = rememberedProviderId,
+              let idx = sections.firstIndex(where: { $0.instance.id == wanted }), idx > 0
+        else { return sections }
+        var out = sections
+        let picked = out.remove(at: idx)
+        out.insert(picked, at: 0)
+        return out
+    }
+
     private var cappedEntriesByInstance: [InstanceSection] {
-        let all = filteredEntriesByInstance
+        let all = orderedByLastUsedProvider(filteredEntriesByInstance)
         guard !debouncedSearch.isEmpty else { return all }
         var remaining = Self.maxSearchResults
         var out: [InstanceSection] = []
@@ -1259,6 +1295,8 @@ struct UnifiedModelPicker: View {
         .contentShape(Rectangle())
         .onTapGesture {
             guard !disabled else { return }
+            // [T-picker-provider-recency] 记住"这个会话上次用的供应商"。
+            rememberProvider(entry.providerInstanceId)
             if let inGroup = config.onSelectInGroup {
                 inGroup(entry, parentGroup)
             } else {
@@ -1595,6 +1633,8 @@ struct UnifiedModelPicker: View {
         .contentShape(Rectangle())
         .onTapGesture {
             guard !disabled, !unlisted else { return }
+            // [T-picker-provider-recency] 同上：点这个供应商下的模型即记住它。
+            if !isMulti { rememberProvider(entry.providerInstanceId) }
             if isMulti {
                 toggleSelection(entry.id)
             } else {

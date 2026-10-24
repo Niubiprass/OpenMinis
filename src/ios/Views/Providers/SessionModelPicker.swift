@@ -50,6 +50,7 @@ struct SessionModelPicker: View {
             mode: .single,
             groupScope: .all,
             dismissOnSelect: false,
+            sessionId: sessionId,
             currentEntryId: { [self] in currentEntryId },
             currentGroupId: { [self] in currentGroupId },
             onSelect: { entry in handleEntryTap(entry) },

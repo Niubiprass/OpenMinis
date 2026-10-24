@@ -28,7 +28,12 @@ for token in required:
 assert "contextUsage: vm.contextUsage" in chat
 assert "contextFixedTokens: vm.contextFixedTokens" in chat
 assert ".thinkingLevelSheetPresentation()" in chat
-assert "showThinkingLevelSheet = false" in chat
+# [T-thinking-badge-isolated] 面板状态已搬进独立子视图 ThinkingLevelBadgeView
+# （点灯泡不再重算整个聊天页面），因此断言改为：子视图存在、选中后关闭面板、
+# 并且仍由导航栏徽标承载它。
+assert "private struct ThinkingLevelBadgeView: View" in chat
+assert "showSheet = false" in chat
+assert "ThinkingLevelBadgeView(vm: vm)" in chat
 
 keys = [
     "Thinking Intensity", "Done", "Drag the slider or tap a dot. Levels follow the current model.",
@@ -41,5 +46,5 @@ for key in keys:
     assert "en" in loc and "zh-Hans" in loc, f"missing locales for {key}"
 
 # The old menu remains a separate surface; the new sheet is opened by its existing call site.
-assert "Menu" in chat and "showThinkingLevelSheet" in chat
+assert "Menu" in chat and "showSheet = true" in chat
 print("Thinking context bottom-sheet source contracts PASS")

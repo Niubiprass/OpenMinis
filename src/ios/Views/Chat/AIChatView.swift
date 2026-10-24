@@ -568,7 +568,6 @@ struct AIChatView: View {
     @State private var exportKind: ChatExportKind? = nil
     /// [T-115-chat-search] Jump picked in the sheet, applied on dismiss.
     @State private var pendingSearchJump: MessageSearchJump? = nil
-    @State private var showThinkingLevelSheet = false
     @State private var showSessionSkills = false
     @State private var showSessionPersona = false
     @State private var showSessionMCPs = false
@@ -2635,55 +2634,12 @@ _ios15Seg7
         .animation(.easeInOut(duration: 0.15), value: titleIsVisuallyLocked)
     }
 
-    @ViewBuilder
     private var thinkingLevelBadge: some View {
-        let level = vm.currentThinkingLevel
-        // Sits on nav-bar row 2 (the 9pt "provider · model" line). Kept a
-        // touch smaller than that text (8pt / 6px icon) so it stays the most
-        // compact label in the title and never larger than the "is thinking…"
-        // intensity pill in the message list.
-        //
-        // Also rendered when the level is Off (reasoning-capable model with
-        // thinking disabled): the pill then reads icon + "Off" as a tap target
-        // for enabling deep thinking. Dim the icon in that state — matches the
-        // 0.4 Off-row convention in ThinkingLevelSheetView.
-        HStack(spacing: 2) {
-            Image("ThinkingIcon")
-                .resizable()
-                .frame(width: 6, height: 6)
-                .opacity(level.isEnabled ? 1.0 : 0.4)
-            Text(level.displayName)
-                .font(.system(size: 8, weight: .medium))
-        }
-        .foregroundStyle(ChatColors.secondaryText)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 1)
-        .background(Capsule().fill(Color.secondary.opacity(0.10)))
-        .onTapGesture {
-            // [T-sheet-inset-hold-before-present] 先冻结再弹。
-            // 原来只在 sheet 的 onAppear 里冻结：面板一出现，系统先改底部安全区，
-            // 列表先被顶上去一下，随后才收到冻结、又落回原位 —— 表现为点灯泡时
-            // 后面整块内容抖一下（<0.25s 的往返，不留下永久位移）。
-            vm.insetHoldSignal.send(true)
-            showThinkingLevelSheet = true
-        }
-        .sheet(isPresented: $showThinkingLevelSheet) {
-            ThinkingLevelSheetView(
-                currentLevel: level,
-                availableLevels: vm.availableThinkingLevels,
-                contextUsage: vm.contextUsage,
-                contextFixedTokens: vm.contextFixedTokens,
-                onSelect: { newLevel in
-                    vm.setThinkingLevel(newLevel)
-                    showThinkingLevelSheet = false
-                }
-            )
-            .thinkingLevelSheetPresentation()
-            // [T-sheet-inset-hold] 面板打开/关闭时冻结再恢复底部内边距。
-            .onAppear { vm.insetHoldSignal.send(true) }
-            .onDisappear { vm.insetHoldSignal.send(false) }
-
-        }
+        // [T-thinking-badge-isolated] 灯泡和它的面板拆成独立小视图。
+        // 之前开关状态挂在 AIChatView 上：点一下要让整个聊天页面重算（几百个
+        // 组件 + 整个消息列表），刚好卡住一帧，看起来就是"点一下抖一下"。
+        // 现在状态留在子视图里，点它只重算那一小条。
+        ThinkingLevelBadgeView(vm: vm)
     }
 
     /// True when the current session's navbar title must render blurred —
@@ -7808,5 +7764,54 @@ private struct SessionMonitorPill: View {
             object: nil,
             userInfo: ["sessionId": id]
         )
+    }
+}
+
+// MARK: - Thinking Level Badge (isolated)
+
+/// [T-thinking-badge-isolated] 导航栏上的「思考强度」小灯泡 + 它的底部面板。
+///
+/// 状态（面板开关）必须留在这个小视图里：挂在 AIChatView 上的话，点一下会让
+/// 整个聊天页面重新求值（体量很大），刚好跨过一帧，视觉上就是"后面抖一下"。
+private struct ThinkingLevelBadgeView: View {
+    @ObservedObject var vm: AIChatViewModel
+    @State private var showSheet = false
+
+    private var level: ThinkingLevel { vm.currentThinkingLevel }
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image("ThinkingIcon")
+                .resizable()
+                .frame(width: 6, height: 6)
+                .opacity(level.isEnabled ? 1.0 : 0.4)
+            Text(level.displayName)
+                .font(.system(size: 8, weight: .medium))
+        }
+        .foregroundStyle(ChatColors.secondaryText)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 1)
+        .background(Capsule().fill(Color.secondary.opacity(0.10)))
+        .onTapGesture {
+            // [T-sheet-inset-hold-before-present] 先冻结再弹：否则系统先改底部
+            // 安全区，列表被顶起又落回，看起来就是抖一下。
+            vm.insetHoldSignal.send(true)
+            showSheet = true
+        }
+        .sheet(isPresented: $showSheet) {
+            ThinkingLevelSheetView(
+                currentLevel: level,
+                availableLevels: vm.availableThinkingLevels,
+                contextUsage: vm.contextUsage,
+                contextFixedTokens: vm.contextFixedTokens,
+                onSelect: { newLevel in
+                    vm.setThinkingLevel(newLevel)
+                    showSheet = false
+                }
+            )
+            .thinkingLevelSheetPresentation()
+            .onAppear { vm.insetHoldSignal.send(true) }
+            .onDisappear { vm.insetHoldSignal.send(false) }
+        }
     }
 }

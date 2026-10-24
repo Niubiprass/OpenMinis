@@ -1496,6 +1496,10 @@ extension CollectionViewMessageListV3 {
         }
 
         private static let cellLogger = AppLogger(category: "CellPerf")
+        /// [T-entry-precalc-window] 进入会话时只对尾部这么多条做精确预计算，
+        /// 其余粗估。300+ 条全部精算会卡住首帧（黑屏）；进入时总滚到底部，
+        /// 尾部才是可见区。
+        private static let entryPrecalcTailWindow = 60
         private let screenshotLogger = AppLogger(category: "TurnScreenshot")
         /// [T-ios-copy-screenshot-diag-logs] Verbose stage-by-stage trace of
         /// captureScrollingTurnScreenshot used to chase the "top blank when
@@ -3606,6 +3610,17 @@ extension CollectionViewMessageListV3 {
                     }
 
                     guard layout.cachedHeight(at: i) == nil else { continue }
+
+                    // [T-entry-precalc-window] 进入会话时，原来会对**每一条**做
+                    // 昂贵的文本预计算（日志里一次 319 条），长会话首帧要卡好几秒，
+                    // 期间界面全黑。这里只精算"尾部一段"（进入会话总是滚到底部），
+                    // 其余用粗估；滚上去时再逐条实测，视觉上只在首次滚动时补一次。
+                    if i < max(0, newItems.count - Self.entryPrecalcTailWindow) {
+                        layout.setEstimatedHeight(
+                            Self.estimateItemHeight(item, messages: messages, width: cvWidth),
+                            at: i)
+                        continue
+                    }
 
                     // Re-entry seed: if we have a real measured height for this
                     // exact content key at this width, use it as precalc — the
