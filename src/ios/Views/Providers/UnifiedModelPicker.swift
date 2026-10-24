@@ -984,6 +984,7 @@ struct UnifiedModelPicker: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
+            ModelGroupStore.shared.pinGroup(group.id)
             config.onSelectGroup?(group)
             dismissIfNeeded()
         }
