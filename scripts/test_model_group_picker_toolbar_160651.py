@@ -115,7 +115,7 @@ class SourceContracts(unittest.TestCase):
         # whitelisted by content; anything ELSE still fails the guard.
         stripped = SOURCE.replace(toolbar(SOURCE), '<TOOLBAR>')
         orig_stripped = original.replace(toolbar(original), '<TOOLBAR>')
-        accepted = ('unlisted', 'Not listed by provider', 'no longer lists', 'T-115-quota', 'T-picker-refresh-all', 'isRefreshingAll', 'refreshNote', 'refreshAllModels', 'T-quota-header-balance', 'T-quota-threshold', 'quotaTint', 'quotaBackground', 'cachedQuota', 'HStack(spacing: 8)', 'T-quota-header-balance', 'T-picker-pin-selected', 'T-picker-select-section', 'pinGroup')
+        accepted = ('unlisted', 'Not listed by provider', 'no longer lists', 'T-115-quota', 'T-picker-refresh-all', 'isRefreshingAll', 'refreshNote', 'refreshAllModels', 'T-quota-header-balance', 'T-quota-threshold', 'quotaTint', 'quotaBackground', 'cachedQuota', 'HStack(spacing: 8)', 'T-quota-header-balance', 'T-picker-pin-selected', 'T-picker-select-section', 'T-picker-pin-scroll', 'groupListRefreshTrigger', 'scrollProxy', 'ScrollViewProxy', 'scrollTo', 'ScrollViewReader')
         # [T-115-picker-unlisted] Accept diff BLOCKS whose added lines carry an
         # accepted marker (the entryRow unlisted fix); the block's removed
         # lines are the pre-fix counterparts of those same edits and go with
@@ -134,7 +134,7 @@ class SourceContracts(unittest.TestCase):
                                   cwd=ROOT, text=True, capture_output=True, check=True).stdout
         stripped = SOURCE.replace(toolbar(SOURCE), '<TOOLBAR>')
         orig_stripped = original.replace(toolbar(original), '<TOOLBAR>')
-        accepted = ('unlisted', 'Not listed by provider', 'no longer lists', 'T-115-quota', 'T-picker-refresh-all', 'isRefreshingAll', 'refreshNote', 'refreshAllModels', 'T-quota-header-balance', 'T-quota-threshold', 'quotaTint', 'quotaBackground', 'cachedQuota', 'HStack(spacing: 8)', 'T-quota-header-balance', 'T-picker-pin-selected', 'T-picker-select-section', 'pinGroup')
+        accepted = ('unlisted', 'Not listed by provider', 'no longer lists', 'T-115-quota', 'T-picker-refresh-all', 'isRefreshingAll', 'refreshNote', 'refreshAllModels', 'T-quota-header-balance', 'T-quota-threshold', 'quotaTint', 'quotaBackground', 'cachedQuota', 'HStack(spacing: 8)', 'T-quota-header-balance', 'T-picker-pin-selected', 'T-picker-select-section', 'T-picker-pin-scroll', 'groupListRefreshTrigger', 'scrollProxy', 'ScrollViewProxy', 'scrollTo', 'ScrollViewReader')
 
         # 1) Bare comment inserted into the baseline: must FAIL.
         lines = orig_stripped.splitlines()

@@ -276,6 +276,9 @@ struct UnifiedModelPicker: View {
     /// so users can reconfigure groups without dismissing the picker and digging
     /// through Settings.
     @State private var showGroupsManager = false
+    /// [T-picker-pin-scroll] Trigger to force re-evaluation of visibleGroups after
+    /// selecting a group, so the selected group moves to position 0 before scrolling.
+    @State private var groupListRefreshTrigger = 0
     /// The model row whose Quick Test sheet is open (nil = none). Set by the
     /// per-row bolt button so any model — cloud, group member, or System voice —
     /// can be smoke-tested (speak / text output) without leaving the picker.
@@ -588,7 +591,8 @@ struct UnifiedModelPicker: View {
     // MARK: - Body
 
     var body: some View {
-        List {
+        ScrollViewReader { proxy in
+            List {
             if let note = config.headerNote {
                 Section {
                     HStack(alignment: .top, spacing: 8) {
@@ -608,11 +612,13 @@ struct UnifiedModelPicker: View {
             if config.showGroups && !visibleGroups.isEmpty {
                 Section {
                     ForEach(visibleGroups) { group in
-                        groupRow(group)
+                        groupRow(group, scrollProxy: proxy)
+                            .id(group.id)
                         if expandedGroupIds.contains(group.id) {
                             groupMemberRows(group)
                         }
                     }
+                    .id(groupListRefreshTrigger)
                 } header: {
                     HStack {
                         Text("Model Groups")
@@ -743,6 +749,7 @@ struct UnifiedModelPicker: View {
                     .padding(.top, 6)
                     .transition(.opacity)
             }
+        }
         }
         .sheet(isPresented: $showCreateGroupSheet) {
             NavigationView {
@@ -931,7 +938,7 @@ struct UnifiedModelPicker: View {
     // MARK: - Group Row
 
     @ViewBuilder
-    private func groupRow(_ group: ModelGroup) -> some View {
+    private func groupRow(_ group: ModelGroup, scrollProxy: ScrollViewProxy) -> some View {
         let isSelected = isGroupSelected(group)
 
         HStack(spacing: 10) {
@@ -984,8 +991,17 @@ struct UnifiedModelPicker: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            ModelGroupStore.shared.pinGroup(group.id)
             config.onSelectGroup?(group)
+            // [T-picker-pin-scroll] Force visibleGroups to re-evaluate so the
+            // selected group moves to position 0, then scroll to it.
+            groupListRefreshTrigger += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    if let firstGroup = visibleGroups.first {
+                        scrollProxy.scrollTo(firstGroup.id, anchor: .top)
+                    }
+                }
+            }
             dismissIfNeeded()
         }
         .contextMenu (menuItems: {
