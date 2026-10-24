@@ -218,7 +218,12 @@ class HostShrinkRelease(unittest.TestCase):
         settle = extract(V3, 'private func settleAfterInteraction(')
         self.assertLess(settle.index('isFlushing = true'), settle.index('flushThinkingShapeChanges()'))
         self.assertLess(settle.index('flushThinkingShapeChanges()'), settle.index('for cell in cv.visibleCells { consumeHostShrink'))
-        self.assertIn('(!vm.streamingUIUpdatesSuspended || isFlushing)', V3)
+        # [T-thinking-collapse-blank] Shape flushes must NOT be gated on
+        # `streamingUIUpdatesSuspended`: that flag is only cleared by the NEXT
+        # gesture, so gating left a collapsed thinking block at its expanded
+        # height (blank slab) until some later update forced a relayout.
+        self.assertNotIn('(!vm.streamingUIUpdatesSuspended || isFlushing)', V3)
+        self.assertIn('guard vm?.isLoadingSession == false,', V3)
         self.assertIn('thinkingHeightState.reset()', V3)
 
     def test_geometry_dedup_model_without_swift(self):
