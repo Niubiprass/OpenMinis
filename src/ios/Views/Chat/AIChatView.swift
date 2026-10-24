@@ -2660,6 +2660,11 @@ _ios15Seg7
         .padding(.vertical, 1)
         .background(Capsule().fill(Color.secondary.opacity(0.10)))
         .onTapGesture {
+            // [T-sheet-inset-hold-before-present] 先冻结再弹。
+            // 原来只在 sheet 的 onAppear 里冻结：面板一出现，系统先改底部安全区，
+            // 列表先被顶上去一下，随后才收到冻结、又落回原位 —— 表现为点灯泡时
+            // 后面整块内容抖一下（<0.25s 的往返，不留下永久位移）。
+            vm.insetHoldSignal.send(true)
             showThinkingLevelSheet = true
         }
         .sheet(isPresented: $showThinkingLevelSheet) {

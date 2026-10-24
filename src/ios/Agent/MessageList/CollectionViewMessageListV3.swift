@@ -2832,6 +2832,45 @@ extension CollectionViewMessageListV3 {
         private var thinkingHeightState = ThinkingHeightReleaseState<MessageListItem>()
         private var thinkingShapeFlushScheduled = false
 
+        /// [T-ask-card-answer-height] 问答卡答完之后内容会缩成一小块，但列表里那一行
+        /// 的高度是"答题前"量出来的大值，没人通知它重算 —— 卡片周围就留出上下空白，
+        /// 而且没有下文时一直留着。这里在卡片内容（含 status/answers）变化时，直接把
+        /// 那一行的高度作废重量，并且不走流式文本的节流/挂起路径。
+        private var questionCardLayoutSubs: [MessageListItem: AnyCancellable] = [:]
+
+        private func syncQuestionCardLayoutSubscriptions(_ messages: [ChatMessage]) {
+            let blocks = messages.flatMap { message in
+                message.blocks.filter { $0.kind == .questionCard }.map { (message.id, $0) }
+            }
+            let items = Set(blocks.map { MessageListItem.assistantBlock($0.0, $0.1.id) })
+            questionCardLayoutSubs = questionCardLayoutSubs.filter { items.contains($0.key) }
+            for (mid, block) in blocks {
+                let item = MessageListItem.assistantBlock(mid, block.id)
+                guard questionCardLayoutSubs[item] == nil else { continue }
+                questionCardLayoutSubs[item] = block.$content
+                    .removeDuplicates()
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] _ in
+                        self?.invalidateQuestionCardRow(item)
+                    }
+            }
+        }
+
+        private func invalidateQuestionCardRow(_ item: MessageListItem) {
+            guard let cv = viewController?.collectionView,
+                  let layout = viewController?.messageListLayout,
+                  let ds = dataSource,
+                  let ip = ds.indexPath(for: item) else { return }
+            performHostingHeightChange {
+                (cv.cellForItem(at: ip) as? SelfSizingCell)?.clearCachedHeight()
+                layout.invalidateHeight(at: ip.item, discardPrecalc: true)
+                if case .assistantBlock(let mid, let bid) = item {
+                    layout.invalidateBlockMemos(messageId: mid, blockId: bid)
+                }
+                layout.invalidateLayout()
+            }
+        }
+
         private func syncThinkingLayoutSubscriptions(_ messages: [ChatMessage]) {
             let blocks = messages.flatMap { message in
                 message.blocks.filter { $0.kind == .thinking }.map { (message.id, $0) }
@@ -3350,6 +3389,7 @@ extension CollectionViewMessageListV3 {
             }
 
             syncThinkingLayoutSubscriptions(messages)
+            syncQuestionCardLayoutSubscriptions(messages)
 
             // Remap height cache + set accurate estimates for ALL item types
             if let layout = viewController?.messageListLayout {
