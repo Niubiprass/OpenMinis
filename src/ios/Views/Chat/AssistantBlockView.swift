@@ -812,6 +812,10 @@ struct ThinkingBlockView: View {
     @State private var thinkingUserScrolledAway = false
     @State private var lastThinkingDragAt: Date = .distantPast
     @State private var frozenThinkingContent: String? = nil
+    /// [T-thinking-collapse-delay] 思考停下后延迟收起：一轮回答里思考会分成几段，
+    /// 中间夹着工具调用。立刻收的话每夹一次就"收起→再展开"抖一下。等 0.5 秒，
+    /// 这期间又开始思考就取消，真正结束才收。
+    @State private var pendingCollapseWork: DispatchWorkItem? = nil
 
     /// Bind to block.isThinkingExpanded so state survives cell reuse and triggers cell re-sizing.
     private var isExpanded: Binding<Bool> {
@@ -839,8 +843,29 @@ struct ThinkingBlockView: View {
         guard !block.thinkingUserToggled else { return }
         let autoExpand = (UserDefaults.standard.object(forKey: "chat.autoExpandThinking") as? Bool) ?? true
         guard !streaming || autoExpand else { return }
-        let expanded = streaming
+        // [T-thinking-collapse-delay] 开始思考：立刻展开，并取消还没到点的收起。
+        if streaming {
+            pendingCollapseWork?.cancel()
+            pendingCollapseWork = nil
+            setExpanded(true)
+            return
+        }
+        // 思考停下：等 0.5 秒再收。这 0.5 秒里如果又开始思考（下一段），上面会
+        // 取消这次收起，卡片就不会一收一开地抖。
+        if block.isThinkingExpanded, pendingCollapseWork == nil {
+            let work = DispatchWorkItem { [self] in
+                self.setExpanded(false)
+            }
+            pendingCollapseWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        }
+    }
+
+    /// 统一走这里改展开状态：iOS 15 上禁用动画，避免与行高变化抢帧。
+    private func setExpanded(_ expanded: Bool) {
         guard block.isThinkingExpanded != expanded else { return }
+        pendingCollapseWork?.cancel()
+        pendingCollapseWork = nil
         var transaction = Transaction(animation: nil)
         if #available(iOS 16.0, *) {
             transaction = Transaction()

@@ -991,6 +991,10 @@ extension CollectionViewMessageListV3 {
         var insetHold = false
         /// [T-settle-no-jump] 松手后待校正的高度，等下次交互再处理。
         var pendingSettleFlush = false
+        /// [T-scroll-resume-no-touch] 兜底：没人再碰屏幕时，兜底定时器自己把这次
+        /// 欠下的重排补掉，避免"滚动一次之后永远欠着"（表现为内容不更新、
+        /// 收起的思考卡留一块空白）。
+        private var settleFallbackWork: DispatchWorkItem?
 
         var scrollMode: ScrollMode = .autoScrolling {
             didSet {
@@ -2905,8 +2909,15 @@ extension CollectionViewMessageListV3 {
         }
 
         private func flushThinkingShapeChanges() {
-            guard let vm, !vm.isLoadingSession,
-                  (!vm.streamingUIUpdatesSuspended || isFlushing),
+            // [T-thinking-collapse-blank] A thinking block's expand/collapse is a
+            // DISCRETE shape change, not a streaming text update: it happens once
+            // per turn, so it must not wait on `streamingUIUpdatesSuspended`
+            // (that flag pauses continuous re-layout while the user scrolls, and
+            // it is only cleared by the NEXT gesture). Gate on it and the row
+            // keeps its expanded height after the text is hidden — the reported
+            // "collapsed card leaves a blank block until the next message lands".
+            // Gesture/layout guards below still apply, so no mid-drag relayout.
+            guard vm?.isLoadingSession == false,
                   let cv = viewController?.collectionView, !cv.isTracking,
                   !cv.isDragging, !cv.isDecelerating,
                   let layout = viewController?.messageListLayout, !layout.deferSelfSizing,
@@ -5917,6 +5928,10 @@ extension CollectionViewMessageListV3 {
         // MARK: - UIScrollViewDelegate
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            // [T-scroll-resume-no-touch] A real gesture takes over: drop the
+            // fallback so it can't fire mid-drag.
+            settleFallbackWork?.cancel()
+            settleFallbackWork = nil
             // [T-settle-no-jump] 手指已经在动，先补上次欠下的高度校正。
             if pendingSettleFlush {
                 pendingSettleFlush = false
@@ -5955,6 +5970,13 @@ extension CollectionViewMessageListV3 {
         }
 
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            // [T-scroll-resume-no-touch] Resume streaming UI updates the moment
+            // the finger lifts. They used to be resumed only inside
+            // `settleAfterInteraction`, which itself waited for the NEXT drag —
+            // so after a single scroll the list froze: thinking text stopped
+            // growing, and a collapsed thinking block kept its expanded height
+            // (leaving a blank slab) until some later update forced a relayout.
+            vm?.setStreamingUIUpdatesSuspended(false)
             if !decelerate {
                 // [T-settle-no-jump] 松手不立刻重排：此时换高度会让整段内容
                 // 位移一次（"抖一下停在不认识的位置"）。留到下次开始滑动时做。
@@ -5962,6 +5984,7 @@ extension CollectionViewMessageListV3 {
                     scrollMode = .autoScrolling
                 }
                 pendingSettleFlush = true
+                scheduleSettleFallback()
             }
         }
 
@@ -6006,6 +6029,10 @@ extension CollectionViewMessageListV3 {
                     self.scrollMode = .autoScrolling
                 }
                 self.pendingSettleFlush = true
+                // [T-scroll-resume-no-touch] 惯性停下 = 交互结束，立刻恢复刷新，
+                // 并把这次欠下的重排用兜底定时器补掉（不再等下一次手势）。
+                self.vm?.setStreamingUIUpdatesSuspended(false)
+                self.scheduleSettleFallback()
             }
         }
 
@@ -6262,6 +6289,26 @@ extension CollectionViewMessageListV3 {
                                                     _ body: (SelectableMarkdownTextView) -> Void) {
             if let tv = view as? SelectableMarkdownTextView { body(tv) }
             for sub in view.subviews { forEachMarkdownTextView(in: sub, body) }
+        }
+
+        /// [T-scroll-resume-no-touch] 松手/惯性结束后，用一个短定时器把这次欠下的
+        /// 重排补掉。原来这笔账只在"下一次开始滑动"时才还，用户不碰屏幕就一直
+        /// 欠着：内容不再更新，收起的思考卡也停在展开高度（那一块空白）。
+        private func scheduleSettleFallback() {
+            settleFallbackWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, let cv = self.viewController?.collectionView,
+                      !cv.isTracking, !cv.isDragging, !cv.isDecelerating else { return }
+                // 收起的思考卡欠着的那次"变矮"先还掉，再补重排。
+                if !self.thinkingHeightState.pendingItems.isEmpty {
+                    self.flushThinkingShapeChanges()
+                }
+                guard self.pendingSettleFlush else { return }
+                self.pendingSettleFlush = false
+                self.settleAfterInteraction(cv)
+            }
+            settleFallbackWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
         }
 
         private func settleAfterInteraction(_ scrollView: UIScrollView) {
