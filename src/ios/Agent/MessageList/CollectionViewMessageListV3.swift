@@ -1499,7 +1499,10 @@ extension CollectionViewMessageListV3 {
         /// [T-entry-precalc-window] 进入会话时只对尾部这么多条做精确预计算，
         /// 其余粗估。300+ 条全部精算会卡住首帧（黑屏）；进入时总滚到底部，
         /// 尾部才是可见区。
-        private static let entryPrecalcTailWindow = 60
+        /// 进入会话只精算尾部这么多条。挂载只要 3.6ms，真正耗时是逐条文本
+        /// 排版，60 条就一两秒（也就是黑屏）。收到 12：首屏仍精确，往上翻时
+        /// 由逐条实测兜底，最多看到一次轻微高度校正。
+        private static let entryPrecalcTailWindow = 12
         private let screenshotLogger = AppLogger(category: "TurnScreenshot")
         /// [T-ios-copy-screenshot-diag-logs] Verbose stage-by-stage trace of
         /// captureScrollingTurnScreenshot used to chase the "top blank when

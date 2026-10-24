@@ -7775,7 +7775,7 @@ private struct SessionMonitorPill: View {
 /// 整个聊天页面重新求值（体量很大），刚好跨过一帧，视觉上就是"后面抖一下"。
 private struct ThinkingLevelBadgeView: View {
     @ObservedObject var vm: AIChatViewModel
-    @State private var showSheet = false
+    @State private var presented = false
 
     private var level: ThinkingLevel { vm.currentThinkingLevel }
 
@@ -7792,26 +7792,169 @@ private struct ThinkingLevelBadgeView: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 1)
         .background(Capsule().fill(Color.secondary.opacity(0.10)))
-        .onTapGesture {
-            // [T-sheet-inset-hold-before-present] 先冻结再弹：否则系统先改底部
-            // 安全区，列表被顶起又落回，看起来就是抖一下。
-            vm.insetHoldSignal.send(true)
-            showSheet = true
+        .onTapGesture { presentSheet() }
+    }
+
+    /// [T-thinking-sheet-no-scale] 用自绘面板，替代系统 .sheet —— 系统会在呈现时
+    /// 把整页缩小（"屏幕沉一下"），官方版没有这个动作。
+    private func presentSheet() {
+        guard !presented else { return }
+        presented = true
+        vm.insetHoldSignal.send(true)
+        let root = ThinkingLevelSheetView(
+            currentLevel: vm.currentThinkingLevel,
+            availableLevels: vm.availableThinkingLevels,
+            contextUsage: vm.contextUsage,
+            contextFixedTokens: vm.contextFixedTokens,
+            onSelect: { newLevel in
+                vm.setThinkingLevel(newLevel)
+                ThinkingSheetController.dismissTop()
+            }
+        )
+        let host = UIHostingController(rootView: root)
+        host.view.backgroundColor = .clear
+        ThinkingSheetPresenter.present(content: host) { [weak vm] in
+            vm?.insetHoldSignal.send(false)
+            presented = false
         }
-        .sheet(isPresented: $showSheet) {
-            ThinkingLevelSheetView(
-                currentLevel: level,
-                availableLevels: vm.availableThinkingLevels,
-                contextUsage: vm.contextUsage,
-                contextFixedTokens: vm.contextFixedTokens,
-                onSelect: { newLevel in
-                    vm.setThinkingLevel(newLevel)
-                    showSheet = false
-                }
-            )
-            .thinkingLevelSheetPresentation()
-            .onAppear { vm.insetHoldSignal.send(true) }
-            .onDisappear { vm.insetHoldSignal.send(false) }
+    }
+}
+
+// MARK: - Thinking Level Panel (custom bottom sheet)
+
+/// [T-thinking-sheet-no-scale] 自绘底部面板：系统 `.sheet` 在 iOS 15 呈现时会把
+/// 后面整页缩小（"点开面板屏幕沉一下"），官方版没有这个动作。这里用
+/// `.overFullScreen` + 自绘遮罩/滑入：半高打开、可上拉、背景只变暗不缩放。
+final class ThinkingSheetController: UIViewController, UIGestureRecognizerDelegate {
+    private let content: UIViewController
+    private let onClose: () -> Void
+    private let dim = UIView()
+    private let panel = UIView()
+    private var collapsedHeight: CGFloat = 0
+    private var currentHeight: CGFloat = 0
+
+    init(content: UIViewController, onClose: @escaping () -> Void) {
+        self.content = content
+        self.onClose = onClose
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .overFullScreen
+        modalTransitionStyle = .crossDissolve
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private var expandedHeight: CGFloat { view.bounds.height * 0.94 }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+
+        dim.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        dim.alpha = 0
+        dim.frame = view.bounds
+        dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        dim.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleDimTap)))
+        view.addSubview(dim)
+
+        panel.backgroundColor = .clear
+        panel.layer.cornerRadius = 26
+        panel.layer.cornerCurve = .continuous
+        panel.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        panel.clipsToBounds = true
+        view.addSubview(panel)
+
+        addChild(content)
+        content.view.frame = panel.bounds
+        content.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        panel.addSubview(content.view)
+        content.didMove(toParent: self)
+
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.delegate = self
+        panel.addGestureRecognizer(pan)
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if collapsedHeight == 0 { collapsedHeight = max(320, view.bounds.height * 0.52) }
+        if currentHeight == 0 { currentHeight = collapsedHeight }
+        applyPanelFrame()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        collapsedHeight = max(320, view.bounds.height * 0.52)
+        currentHeight = collapsedHeight
+        applyPanelFrame()
+        panel.transform = CGAffineTransform(translationX: 0, y: collapsedHeight)
+        UIView.animate(withDuration: 0.28, delay: 0, options: [.curveEaseOut]) {
+            self.dim.alpha = 1
+            self.panel.transform = .identity
         }
+    }
+
+    private func applyPanelFrame() {
+        let h = currentHeight
+        panel.frame = CGRect(x: 0, y: view.bounds.height - h, width: view.bounds.width, height: h)
+    }
+
+    @objc private func handleDimTap() { close() }
+
+    /// 面板内部（例如选中某个档位）请求关闭。
+    static func dismissTop() {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        var top = scenes.flatMap({ $0.windows }).first(where: { $0.isKeyWindow })?.rootViewController
+        while let p = top?.presentedViewController { top = p }
+        (top as? ThinkingSheetController)?.close()
+    }
+
+    func close() {
+        UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseIn], animations: {
+            self.panel.transform = CGAffineTransform(translationX: 0, y: self.currentHeight)
+            self.dim.alpha = 0
+        }, completion: { _ in
+            self.dismiss(animated: false) { self.onClose() }
+        })
+    }
+
+    @objc private func handlePan(_ g: UIPanGestureRecognizer) {
+        let ty = g.translation(in: view).y
+        switch g.state {
+        case .changed:
+            currentHeight = min(max(240, collapsedHeight - ty), expandedHeight)
+            applyPanelFrame()
+        case .ended, .cancelled:
+            let v = g.velocity(in: view).y
+            if currentHeight < collapsedHeight * 0.78 || v > 900 {
+                close()
+                return
+            }
+            let snapExpanded = currentHeight > (collapsedHeight + expandedHeight) / 2
+            currentHeight = snapExpanded ? expandedHeight : collapsedHeight
+            UIView.animate(withDuration: 0.24, delay: 0, options: [.curveEaseOut]) {
+                self.applyPanelFrame()
+            }
+        default:
+            break
+        }
+    }
+
+    func gestureRecognizer(_ g: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
+    }
+}
+
+enum ThinkingSheetPresenter {
+    @MainActor
+    static func present(content: UIViewController, onClose: @escaping () -> Void) {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        guard var top = scenes.flatMap({ $0.windows }).first(where: { $0.isKeyWindow })?.rootViewController else {
+            return
+        }
+        while let presented = top.presentedViewController, !presented.isBeingDismissed {
+            top = presented
+        }
+        top.present(ThinkingSheetController(content: content, onClose: onClose), animated: false)
     }
 }
