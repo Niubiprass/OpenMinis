@@ -286,9 +286,11 @@ final class LoggingManager: ObservableObject {
             _ = safeWrite(data)
         }
 
-        // Periodically check file size (~every 4 MB of writes)
+        // 尺寸检查。原来每 1000 次写入才查一次，实测跑出过 266MB 的日志
+        // （上限 100MB 等于没生效）。offsetInFile 是一次系统调用，很便宜，
+        // 这里改成每 100 次就查，确保上限真的兜得住。
         writeCount += 1
-        if writeCount % 1000 == 0 {
+        if writeCount % 100 == 0 {
             truncateIfNeeded()
         }
     }
@@ -338,9 +340,13 @@ final class LoggingManager: ObservableObject {
         return ok
     }
 
-    /// Maximum size per log file (100 MB). Once exceeded the file is truncated
+    /// Maximum size per log file (20 MB). Once exceeded the file is truncated
     /// to its last `maxLogFileSize/2` bytes to avoid unbounded disk growth.
-    private let maxLogFileSize: UInt64 = 100 * 1024 * 1024
+    ///
+    /// 原来是 100MB，但实测一天能写到 266MB —— 说明之前的上限形同虚设，而且
+    /// 这么大一个文件在进会话、发消息时一直追加写，会拖慢主线程。收紧到 20MB，
+    /// 下一次写入就会把现存超大文件截到 10MB。
+    private let maxLogFileSize: UInt64 = 20 * 1024 * 1024
 
     private func rotateLogFileIfNeeded() {
         let today = fileDateFormatter.string(from: Date())

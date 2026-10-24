@@ -991,21 +991,6 @@ extension CollectionViewMessageListV3 {
         var insetHold = false
         /// [T-settle-no-jump] 松手后待校正的高度，等下次交互再处理。
         var pendingSettleFlush = false
-        /// [T-sheet-inset-hold-offset] 面板打开前的内容偏移；按住期间只恢复一次。
-        private var holdAnchorOffset: CGFloat?
-
-        private func scheduleHoldOffsetRestore() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                guard let self, let target = self.holdAnchorOffset,
-                      let cv = self.viewController?.collectionView,
-                      !cv.isTracking, !cv.isDragging, !cv.isDecelerating else { return }
-                let dy = cv.contentOffset.y - target
-                guard abs(dy) > 0.5, abs(dy) < 120 else { return }
-                cv.setContentOffset(CGPoint(x: cv.contentOffset.x, y: target), animated: false)
-                AppLogger(category: "ScrollDiag").info("[ScrollDiag][holdOffsetRestore] Δ=\(String(format: "%.1f", dy)) → back to \(String(format: "%.0f", target))")
-            }
-        }
-
         /// [T-scroll-resume-no-touch] 兜底：没人再碰屏幕时，兜底定时器自己把这次
         /// 欠下的重排补掉，避免"滚动一次之后永远欠着"（表现为内容不更新、
         /// 收起的思考卡留一块空白）。
@@ -2234,12 +2219,6 @@ extension CollectionViewMessageListV3 {
                     // 因面板出现而改的 contentOffset（实测被推 ~20pt 再弹回，
                     // 150ms 内，看起来就是"点灯泡后面抖一下"）。这里在弹出前
                     // 记住位置，弹出后不久的某一刻把它按回去，只做一次。
-                    if hold {
-                        self.holdAnchorOffset = self.viewController?.collectionView?.contentOffset.y
-                        self.scheduleHoldOffsetRestore()
-                    } else {
-                        self.holdAnchorOffset = nil
-                    }
                     // 解除冻结后不在这里重算：下一次 updateUIViewController
                     // （面板关闭触发的重绘）会用真实高度自然补上。
                     if !hold {
@@ -2262,6 +2241,13 @@ extension CollectionViewMessageListV3 {
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] in
                     guard let self else { return }
+                    // [T-sheet-inset-hold-offset] 面板打开期间不要执行"滚到底"。
+                    // 实测点灯泡时这条指令又跑了一次：列表本来贴着底部，这一滚
+                    // 就产生约 20pt 位移，看起来就是卡片后面抖一下。
+                    if self.insetHold {
+                        AppLogger(category: "ScrollDiag").info("[ScrollDiag][forceScrollToBottom] skipped — sheet hold active")
+                        return
+                    }
                     let cv = self.viewController?.collectionView
                     let layout = self.viewController?.messageListLayout
                     let cachedCount = layout?.debugCachedHeightCount ?? 0
