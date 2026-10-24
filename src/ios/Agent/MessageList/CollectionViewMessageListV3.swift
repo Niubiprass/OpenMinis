@@ -2192,11 +2192,10 @@ extension CollectionViewMessageListV3 {
                 .sink { [weak self] hold in
                     guard let self else { return }
                     self.insetHold = hold
-                    if !hold, let vc = self.viewController, let cv = vc.collectionView {
-                        let pad = self.inputBarHeight + self.floatingBarHeight + 8
-                        if abs(cv.contentInset.bottom - pad) > 0.5 {
-                            cv.contentInset.bottom = pad
-                        }
+                    // 解除冻结后不在这里重算：下一次 updateUIViewController
+                    // （面板关闭触发的重绘）会用真实高度自然补上。
+                    if !hold {
+                        self.viewController?.collectionView?.setNeedsLayout()
                     }
                 }
                 .store(in: &subscriptions)
@@ -5923,8 +5922,6 @@ extension CollectionViewMessageListV3 {
                 pendingSettleFlush = false
                 settleAfterInteraction(scrollView)
             }
-            // [T-settle-no-jump] 手指已经在动，此时校正高度最不容易被看出。
-            performPendingSettleFlush()
             AppLogger(category: "ScrollDiag").info("[ScrollDiag][willBeginDragging] offset=\(String(format: "%.0f", scrollView.contentOffset.y)) contentSize=\(String(format: "%.0f", scrollView.contentSize.height)) visibleCells=\(viewController?.collectionView?.visibleCells.count ?? -1)")
             #if DEBUG
             // [DecelDisplayLink] Safety: if the user grabs again mid-decel, stop
