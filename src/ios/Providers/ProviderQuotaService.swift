@@ -347,6 +347,15 @@ final class ProviderQuotaService: ObservableObject {
         row.info = entry?.info
         row.queriedAt = entry?.fetchedAt
         row.failureNote = failureNotes[failureKey(instanceId, row.id)]
+        // [T-quota-single-key-row] 单 Key 模式下点「测试并刷新余额」走的是
+        // refreshQuota（写站点缓存），不会写 keyCache —— 于是站点余额已经显示、
+        // Key 行却一直写「未查询」。这里给主 Key 行回退到站点缓存。
+        if row.info == nil, row.isMain,
+           !ProviderMultiKeyManager.shared.isEnabled(for: instanceId),
+           let site = cache[instanceId] {
+            row.info = site.info
+            row.queriedAt = site.fetchedAt
+        }
         lock.unlock()
     }
 

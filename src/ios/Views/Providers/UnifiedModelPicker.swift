@@ -532,6 +532,12 @@ struct UnifiedModelPicker: View {
         return map[sid]
     }
 
+    /// [T-picker-provider-recency] 本次打开时锁定的顺序。选中当下不重排：
+    /// 同一批更新里既改勾选又挪整段，SwiftUI 的 List 会抛
+    /// NSInternalInconsistencyException（"invalid number of rows"）直接闪退。
+    /// 记住的值照常写盘，下次打开才生效。
+    @State private var pinnedProviderForPresentation: String?
+
     private func rememberProvider(_ instanceId: String) {
         guard let sid = config.sessionId, !sid.isEmpty, !instanceId.isEmpty else { return }
         var map = (UserDefaults.standard.dictionary(forKey: Self.lastProviderKey) as? [String: String]) ?? [:]
@@ -542,7 +548,7 @@ struct UnifiedModelPicker: View {
 
     /// 非搜索状态下，把本会话上次用的供应商整段提到最前。
     private func orderedByLastUsedProvider(_ sections: [InstanceSection]) -> [InstanceSection] {
-        guard debouncedSearch.isEmpty, let wanted = rememberedProviderId,
+        guard debouncedSearch.isEmpty, let wanted = pinnedProviderForPresentation,
               let idx = sections.firstIndex(where: { $0.instance.id == wanted }), idx > 0
         else { return sections }
         var out = sections
@@ -787,6 +793,11 @@ struct UnifiedModelPicker: View {
                     .padding(.top, 6)
                     .transition(.opacity)
             }
+        }
+        .onAppear {
+            // [T-picker-provider-recency] 打开时把"上次用的供应商"锁定成本次
+            // 呈现的顺序；选中过程中不再重排，避免 List 批量更新闪退。
+            pinnedProviderForPresentation = rememberedProviderId
         }
         .onChange(of: visibleGroups.first?.id) { firstId in
             // The order actually changed; only now is scrolling meaningful.
