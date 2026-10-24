@@ -6398,7 +6398,7 @@ extension CollectionViewMessageListV3 {
         private func pinContentOffset(_ target: CGFloat) {
             var attempt = 0
             func pin() {
-                guard let self, let cv = self.viewController?.collectionView else { return }
+                guard let cv = self.viewController?.collectionView else { return }
                 attempt += 1
                 if !cv.isTracking, !cv.isDragging, !cv.isDecelerating {
                     let dy = cv.contentOffset.y - target
