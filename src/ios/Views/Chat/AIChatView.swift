@@ -7950,22 +7950,56 @@ final class ThinkingSheetController: UIViewController, UIGestureRecognizerDelega
         })
     }
 
+    // MARK: 阻尼 / 吸附
+
+    /// 橡皮筋阻尼：越界部分按比例衰减，越拉越沉。
+    private func rubberBand(_ excess: CGFloat, limit: CGFloat) -> CGFloat {
+        guard excess > 0, limit > 0 else { return 0 }
+        let c: CGFloat = 0.55
+        return (1 - (1 / (excess * c / limit + 1))) * limit
+    }
+
+    /// 松手后按速度推算落点（UIScrollView 同款：v × 0.25s 的减速距离）。
+    private func projectedHeight(velocityY: CGFloat) -> CGFloat {
+        currentHeight - velocityY * 0.25
+    }
+
     @objc private func handlePan(_ g: UIPanGestureRecognizer) {
         let ty = g.translation(in: view).y
+        let minVisible: CGFloat = 180
         switch g.state {
         case .changed:
-            currentHeight = min(max(240, collapsedHeight - ty), expandedHeight)
+            let raw = collapsedHeight - ty
+            if raw > expandedHeight {
+                // 往上越界：阻尼，最多再拉 120pt
+                currentHeight = expandedHeight + rubberBand(raw - expandedHeight, limit: 120)
+            } else if raw < minVisible {
+                // 往下越界：阻尼，面板跟着手指沉下去，遮罩同步变淡
+                currentHeight = minVisible - rubberBand(minVisible - raw, limit: 120)
+            } else {
+                currentHeight = raw
+            }
             applyPanelFrame()
+            let progress = min(max((currentHeight - minVisible) / max(1, collapsedHeight - minVisible), 0), 1)
+            dim.alpha = 0.45 * (0.35 + 0.65 * progress)
         case .ended, .cancelled:
-            let v = g.velocity(in: view).y
-            if currentHeight < collapsedHeight * 0.78 || v > 900 {
+            let v = g.velocity(in: view).y          // 向下为正
+            let projected = projectedHeight(velocityY: v)
+            let dismissLine = collapsedHeight * 0.55
+            if projected < dismissLine || v > 1200 {
                 close()
                 return
             }
-            let snapExpanded = currentHeight > (collapsedHeight + expandedHeight) / 2
-            currentHeight = snapExpanded ? expandedHeight : collapsedHeight
-            UIView.animate(withDuration: 0.24, delay: 0, options: [.curveEaseOut]) {
+            // 两个锚点里选离"推算落点"更近的那个
+            let anchors: [CGFloat] = [collapsedHeight, expandedHeight]
+            let target = anchors.min(by: { abs($0 - projected) < abs($1 - projected) }) ?? collapsedHeight
+            currentHeight = target
+            UIView.animate(withDuration: 0.34, delay: 0,
+                           usingSpringWithDamping: 0.86,
+                           initialSpringVelocity: min(3, abs(v) / 900),
+                           options: [.allowUserInteraction, .beginFromCurrentState]) {
                 self.applyPanelFrame()
+                self.dim.alpha = 0.45
             }
         default:
             break
