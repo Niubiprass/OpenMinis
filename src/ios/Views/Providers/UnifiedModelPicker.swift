@@ -797,7 +797,18 @@ struct UnifiedModelPicker: View {
         .onAppear {
             // [T-picker-provider-recency] 打开时把"上次用的供应商"锁定成本次
             // 呈现的顺序；选中过程中不再重排，避免 List 批量更新闪退。
-            pinnedProviderForPresentation = rememberedProviderId
+            //
+            // [T-picker-provider-fallback] 没有记录时（老会话、或绑定不是从
+            // 这个选择器点的），退一步按"当前绑定的模型属于哪个供应商"来排，
+            // 否则那些会话永远排在默认位置。
+            if let remembered = rememberedProviderId {
+                pinnedProviderForPresentation = remembered
+            } else if let eid = config.currentEntryId?(),
+                      let inst = store.entry(for: eid)?.providerInstanceId {
+                pinnedProviderForPresentation = inst
+            } else {
+                pinnedProviderForPresentation = nil
+            }
         }
         .onChange(of: visibleGroups.first?.id) { firstId in
             // The order actually changed; only now is scrolling meaningful.

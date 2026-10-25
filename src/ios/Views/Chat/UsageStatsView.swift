@@ -131,6 +131,8 @@ class UsageStatsViewModel: ObservableObject {
     @Published var summaryDaysInRange = 1
     @Published var summaryByProvider: [GroupSlice] = []
     @Published var summaryByModel: [GroupSlice] = []
+    /// [T-usage-today-hourly] 「今天」按小时聚合（24 个桶）。
+    @Published var summaryHourly: [Int] = []
 
     private var rawRecords: [ChatStore.UsageRecord] = []
     private var groupForModelId: [String: String] = [:]
@@ -328,6 +330,20 @@ class UsageStatsViewModel: ObservableObject {
             }
         }
 
+        // [T-usage-today-hourly] 今天单独按小时聚合，供柱状图使用。
+        if range == .today {
+            var hours = [Int](repeating: 0, count: 24)
+            for r in rawRecords where r.date >= startOfToday {
+                let h = cal.component(.hour, from: r.date)
+                guard h >= 0, h < 24 else { continue }
+                hours[h] += r.usage.inputTokens + r.usage.outputTokens
+                    + r.usage.cacheReadTokens + r.usage.cacheCreationTokens
+            }
+            summaryHourly = hours
+        } else {
+            summaryHourly = []
+        }
+
         summaryByProvider = byProvider
             .map { GroupSlice(id: $0.key, name: $0.key, total: $0.value) }
             .sorted { $0.total > $1.total }
@@ -513,34 +529,126 @@ struct UsageStatsView: View {
 
     // MARK: 柱状图
 
+    private struct ChartPoint {
+        let label: String
+        let value: Int
+        let showLabel: Bool
+    }
+
+    /// [T-usage-chart-axis] 统一取"能被 4 等分的整齐上限"：刻度只会是
+    /// 1 / 2 / 2.5 / 5 这类数字，不会冒出 67M、33M 这种怪值。
+    private func niceMax(_ v: Int) -> Int {
+        guard v > 0 else { return 4 }
+        let raw = Double(v) / 4.0
+        let exp = pow(10, floor(log10(raw)))
+        for m in [1.0, 2.0, 2.5, 5.0, 10.0] where raw <= exp * m {
+            return Int(exp * m * 4)
+        }
+        return Int(exp * 40)
+    }
+
+    private func shortNumber(_ v: Int) -> String {
+        if v >= 1_000_000_000 { return String(format: "%.0fB", Double(v) / 1_000_000_000) }
+        if v >= 1_000_000 { return String(format: "%.0fM", Double(v) / 1_000_000) }
+        if v >= 1000 { return String(format: "%.0fk", Double(v) / 1000) }
+        return "\(v)"
+    }
+
     private var chartCard: some View {
-        let points = vm.summaryDaily
-        let maxValue = max(1, points.map(\.total).max() ?? 1)
-        return VStack(alignment: .leading, spacing: 0) {
-            GeometryReader { geo in
-                let h = geo.size.height
-                HStack(alignment: .bottom, spacing: 0) {
-                    ForEach(points) { p in
-                        VStack(spacing: 6) {
-                            Spacer(minLength: 0)
-                            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                .fill(Color(red: 0.29, green: 0.43, blue: 0.67))
-                                .frame(width: 18, height: max(p.total == 0 ? 1 : 3, h * 0.78 * CGFloat(p.total) / CGFloat(maxValue)))
-                        }
-                        .frame(maxWidth: .infinity)
+        let hourly = (vm.range == .today)
+        let rawPoints: [(String, Int)] = hourly
+            ? vm.summaryHourly.enumerated().map { ("\($0.offset)", $0.element) }
+            : vm.summaryDaily.map { (shortDay($0.day), $0.total) }
+
+        let count = max(1, rawPoints.count)
+        let stride: Int = {
+            if hourly { return 6 }
+            if count <= 7 { return 1 }
+            return max(1, Int(ceil(Double(count) / 6.0)))
+        }()
+        let points: [ChartPoint] = rawPoints.enumerated().map { idx, item in
+            ChartPoint(label: item.0, value: item.1,
+                       showLabel: idx % stride == 0 || idx == count - 1)
+        }
+
+        let maxValue = niceMax(points.map(\.value).max() ?? 0)
+        let peak = points.map(\.value).max() ?? 0
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(hourly ? "今天" : "每日用量")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 8)
+                Text((hourly ? "按小时 · " : "") + "峰值 \(shortNumber(peak))")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+
+            HStack(alignment: .top, spacing: 8) {
+                // Y 轴：5 个刻度，右对齐
+                VStack(alignment: .trailing, spacing: 0) {
+                    ForEach(Array((0...4).reversed()), id: \.self) { i in
+                        Text(shortNumber(maxValue * i / 4))
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                            .frame(height: 16, alignment: .top)
+                        if i > 0 { Spacer(minLength: 0) }
                     }
                 }
-            }
-            .frame(height: 132)
+                .frame(width: 34, height: 132, alignment: .topTrailing)
 
-            HStack(spacing: 0) {
-                ForEach(Array(points.enumerated()), id: \.offset) { idx, p in
-                    Text(idx % 2 == 0 ? shortDay(p.day) : " ")
-                        .font(.system(size: 9)).foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity)
+                VStack(spacing: 6) {
+                    GeometryReader { geo in
+                        let w = geo.size.width
+                        let h = geo.size.height
+                        let slot = w / CGFloat(count)
+                        ZStack(alignment: .bottom) {
+                            // 网格线
+                            VStack(spacing: 0) {
+                                ForEach(0..<5, id: \.self) { i in
+                                    Rectangle()
+                                        .fill(Color(UIColor.quaternaryLabel).opacity(0.35))
+                                        .frame(height: 0.5)
+                                    if i < 4 { Spacer(minLength: 0) }
+                                }
+                            }
+                            // 柱体
+                            HStack(alignment: .bottom, spacing: 0) {
+                                ForEach(Array(points.enumerated()), id: \.offset) { _, p in
+                                    let barW = min(hourly ? 9 : 16, max(6, slot * 0.55))
+                                    Group {
+                                        if p.value <= 0 {
+                                            RoundedRectangle(cornerRadius: 1)
+                                                .fill(Color(UIColor.tertiaryLabel).opacity(0.45))
+                                                .frame(width: barW, height: 2)
+                                        } else {
+                                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                                .fill(Color(red: 0.29, green: 0.43, blue: 0.67))
+                                                .frame(width: barW,
+                                                       height: max(3, h * 0.94 * CGFloat(p.value) / CGFloat(maxValue)))
+                                        }
+                                    }
+                                    .frame(width: slot)
+                                    .frame(maxHeight: .infinity, alignment: .bottom)
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 132)
+
+                    // X 轴标签
+                    HStack(spacing: 0) {
+                        ForEach(Array(points.enumerated()), id: \.offset) { _, p in
+                            Text(p.showLabel ? p.label : " ")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .frame(height: 12)
                 }
             }
-            .padding(.top, 6)
         }
         .padding(16)
         .background(Color(UIColor.secondarySystemGroupedBackground),
