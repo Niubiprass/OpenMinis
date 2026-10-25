@@ -215,6 +215,9 @@ struct MinisApp: App {
         WindowGroup {
             ZStack {
                 ContentView()
+                    // [T-glass-buttons] 全局玻璃按钮：没有单独指定样式的按钮
+                    // 统一变成半透明模糊 + 描边 + 投影的玻璃样式。
+                    .buttonStyle(GlassButtonStyle())
                     .overlay(alignment: .top) {
                         BackgroundInterruptionBanner()
                     }
@@ -1283,5 +1286,54 @@ struct MinisApp: App {
         } catch {
             lifecycleLog.error("[WebApp] deeplink resolve failed scope=\(shortcut.pathScope.rawValue) htmlPath=\(shortcut.htmlPath) error=\(error)")
         }
+    }
+}
+
+// MARK: - [T-glass-buttons] 玻璃按钮样式（iOS 15 手写，非 iOS 26 Liquid Glass）
+//
+// 真模糊（UIVisualEffectView 深色超薄材质）+ 淡描边 + 柔和投影，静态渲染一次。
+// 通过环境 ButtonStyle 生效：没单独指定样式的按钮自动变玻璃；列表行里显式
+// `.buttonStyle(.plain)` 的地方保持原样。
+
+struct GlassBackdrop: UIViewRepresentable {
+    var style: UIBlurEffect.Style = .systemUltraThinMaterialDark
+
+    func makeUIView(context: Context) -> UIVisualEffectView {
+        let view = UIVisualEffectView(effect: UIBlurEffect(style: style))
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIViewController(_ uiView: UIVisualEffectView, context: Context) {}
+}
+
+struct GlassButtonStyle: ButtonStyle {
+    enum Kind { case capsule, circle }
+    var kind: Kind = .capsule
+    var horizontalPadding: CGFloat = 14
+    var verticalPadding: CGFloat = 7
+
+    func makeBody(configuration: Configuration) -> some View {
+        Group {
+            switch kind {
+            case .circle:
+                configuration.label
+                    .frame(width: 42, height: 42)
+                    .background(GlassBackdrop())
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(Color.white.opacity(0.16), lineWidth: 0.8))
+            case .capsule:
+                configuration.label
+                    .padding(.horizontal, horizontalPadding)
+                    .padding(.vertical, verticalPadding)
+                    .background(GlassBackdrop())
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 0.8))
+            }
+        }
+        .shadow(color: Color.black.opacity(0.45), radius: 9, x: 0, y: 6)
+        .opacity(configuration.isPressed ? 0.7 : 1)
+        .scaleEffect(configuration.isPressed ? 0.96 : 1)
+        .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
