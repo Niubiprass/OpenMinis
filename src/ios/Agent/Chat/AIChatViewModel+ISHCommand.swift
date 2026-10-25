@@ -393,7 +393,7 @@ final class MCPApprovalDialog: UIViewController {
     @MainActor
     static func present(usage: MCPCommandUsage, command: String) async -> Bool {
         installForegroundCleanup()
-        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             guard var top = scenes.flatMap({ $0.windows }).first(where: { $0.isKeyWindow })?.rootViewController else {
                 cont.resume(returning: false)
