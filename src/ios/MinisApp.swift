@@ -111,8 +111,6 @@ struct MinisApp: App {
     @State private var backgroundEntryDate: Date?
 
     init() {
-        // [T-mcp-approval-safety] 启动即安装「回前台清理残留遮罩」的监听。
-        MCPApprovalDialog.installForegroundCleanup()
         // [T-ios-mac-uncaught-nsexception] FIRST statement in the process's own
         // code — before any subsystem gets a chance to throw.
         //

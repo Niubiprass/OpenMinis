@@ -534,6 +534,54 @@ struct PastedTextChipRow: View {
 
 // MARK: - Attachment Preview (QuickLook)
 
+/// [T-file-group-preview] 一组文件共用一个 QuickLook：左右滑即可切换下一个，
+/// 顶部显示文件名，右上角「完成」关闭。
+struct MultiFilePreview: UIViewControllerRepresentable {
+    let urls: [URL]
+    let initialIndex: Int
+
+    func makeUIViewController(context: Context) -> UINavigationController {
+        let ql = QLPreviewController()
+        ql.dataSource = context.coordinator
+        ql.currentPreviewItemIndex = min(max(0, initialIndex), max(0, urls.count - 1))
+        let nav = UINavigationController(rootViewController: ql)
+        nav.navigationBar.prefersLargeTitles = false
+        ql.navigationItem.title = urls.indices.contains(initialIndex) ? urls[initialIndex].lastPathComponent : ""
+        ql.navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: AppLocalized("Done"), style: .done,
+            target: context.coordinator, action: #selector(Coordinator.done))
+        return nav
+    }
+
+    func updateUIViewController(_ controller: UINavigationController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(urls: urls) }
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        let urls: [URL]
+        init(urls: [URL]) { self.urls = urls }
+
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { urls.count }
+
+        func previewController(_ controller: QLPreviewController,
+                               previewItemAt index: Int) -> QLPreviewItem {
+            urls[index] as NSURL
+        }
+
+        @objc func done() {
+            (UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .flatMap { $0.windows }.first(where: { $0.isKeyWindow })?
+                .rootViewController)?.topMostPresented.dismiss(animated: true)
+        }
+    }
+}
+
+private extension UIViewController {
+    var topMostPresented: UIViewController {
+        presentedViewController?.topMostPresented ?? self
+    }
+}
+
 private struct AttachmentPreviewView: UIViewControllerRepresentable {
     let url: URL
 
@@ -668,6 +716,10 @@ struct UserAttachmentList: View {
     let attachments: [AttachmentMeta]
     @Environment(\.openURL) private var openURL
     @Environment(\.openImageGallery) private var openImageGallery
+    /// [T-file-group-preview] 一次发出去的文件放进同一个 QuickLook，左右滑连着看。
+    @State private var previewFiles: [URL] = []
+    @State private var previewStartIndex = 0
+    @State private var showFilePreview = false
 
     private let tileSize: CGFloat = UserAttachmentTileMetrics.tile
 
@@ -678,6 +730,13 @@ struct UserAttachmentList: View {
     }
 
     var body: some View {
+        content
+            .sheet(isPresented: $showFilePreview) {
+                MultiFilePreview(urls: previewFiles, initialIndex: previewStartIndex)
+            }
+    }
+
+    private var content: some View {
         FlowLayout(hSpacing: UserAttachmentTileMetrics.gap, vSpacing: UserAttachmentTileMetrics.gap, alignment: .trailing) {
             ForEach(attachments) { meta in
                 if meta.isImage {
@@ -768,7 +827,16 @@ struct UserAttachmentList: View {
 
     private func fileTile(_ meta: AttachmentMeta) -> some View {
         Button {
-            if let url = URL(string: meta.minisURL) { openURL(url) }
+            // [T-file-group-preview] 收集这条消息里的所有文件附件，从当前这个开始。
+            let files = attachments.filter { !$0.isImage && !$0.isVideo && $0.pastedId == nil }
+            let urls = files.compactMap { URL(string: $0.minisURL) }
+            guard !urls.isEmpty else {
+                if let url = URL(string: meta.minisURL) { openURL(url) }
+                return
+            }
+            previewStartIndex = files.firstIndex(where: { $0.id == meta.id }) ?? 0
+            previewFiles = urls
+            showFilePreview = true
         } label: {
             VStack(spacing: 2) {
                 Image(systemName: fileIconName(for: meta.fileName))

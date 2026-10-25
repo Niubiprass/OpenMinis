@@ -2094,9 +2094,10 @@ _ios15Seg7
             onExportImage: { exportKind = .longImage },
             onExportPDF: { exportKind = .pdf }
         )
-        .padding(6)
+        .frame(width: 34, height: 34)
         .background(Circle().fill(.ultraThinMaterial))
-        .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
+        // [T-frosted-circle] 投影要压得住工具栏底色才看得出"浮"。
+        .shadow(color: .black.opacity(0.35), radius: 8, x: 0, y: 3)
     }
 
     // MARK: - New Chat (menu entry)

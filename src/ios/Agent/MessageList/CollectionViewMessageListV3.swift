@@ -2909,6 +2909,9 @@ extension CollectionViewMessageListV3 {
                   let layout = viewController?.messageListLayout,
                   let ds = dataSource,
                   let ip = ds.indexPath(for: item) else { return }
+            // [T-ask-card-answer-height] 只"通知高度作废"不够：cell 自己缓存了
+            // 上一版高度，UIKit 会继续按它排版，于是答完的卡片上下留着空白，
+            // 只有退出会话（整表重新测量）才恢复。这里直接让该行失效并重建。
             performHostingHeightChange {
                 (cv.cellForItem(at: ip) as? SelfSizingCell)?.clearCachedHeight()
                 layout.invalidateHeight(at: ip.item, discardPrecalc: true)
@@ -2916,6 +2919,10 @@ extension CollectionViewMessageListV3 {
                     layout.invalidateBlockMemos(messageId: mid, blockId: bid)
                 }
                 layout.invalidateLayout()
+                UIView.performWithoutAnimation {
+                    cv.reloadItems(at: [ip])
+                    cv.layoutIfNeeded()
+                }
             }
         }
 

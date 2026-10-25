@@ -24,26 +24,9 @@ struct MCPIntegrationsView: View {
     @State private var toolsServer: MCPServerConfig?
     /// One-shot consumption of initialEditServerId.
     @State private var consumedInitialEdit = false
-    /// [T-mcp-approval-gate] 每次调用越狱 MCP 前是否强制弹窗确认。
-    /// 默认开；关掉后恢复普通调用方式（仍需在聊天里征得同意）。
-    @AppStorage("permissions.mcpApprovalGate") private var approvalGate: Bool = false
 
     var body: some View {
         List {
-            // [T-mcp-approval-gate] 安全开关放在最上面，一眼能看到。
-            Section {
-                Toggle(isOn: $approvalGate) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("调用前强制确认")
-                        Text("打开后每次调用越狱 MCP 工具都会弹窗，需你点「允许」才执行。默认关闭。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } header: {
-                Text("安全")
-            }
-
             if store.servers.isEmpty {
                 emptyState
             } else {

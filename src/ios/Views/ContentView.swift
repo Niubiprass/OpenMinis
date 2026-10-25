@@ -9213,7 +9213,6 @@ private struct SettingsSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
-                        .frostedCapsule(horizontal: 14, vertical: 5)
                 }
             }
             .navigationDestination(for: SettingsDestination.self) { dest in
