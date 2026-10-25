@@ -2030,7 +2030,7 @@ _ios15Seg7
             enhancedCacheEnabled: cached.vm.enhancedCacheEnabled,
             showFastModeToggle: activeModelSupportsFastMode,
             fastModeEnabled: codexFastModeEnabled,
-            onSearch: { onSearch() },
+            onSearch: { showChatSearch = true },
             onNewChat: { requestNewChatFromMenu() },
             // [T-chat-menu-compact-entry] Same effect as the /compact slash
             // command (AIChatViewModel+SlashCommands case "compact").
@@ -5076,13 +5076,12 @@ struct FloatingCircleButtonSurface: ViewModifier {
                 .glassEffect(.regular.interactive(), in: .circle)
                 .contentShape(Circle())
         } else {
+            // [T-frosted-circle] 与主界面一致：系统材质实时模糊，不描边，只留
+            // 一层很淡的投影营造悬浮（滚动时能看到下面的内容被虚化）。
             content
-                .background {
-                    Color(.systemBackground)
-                        .opacity(colorScheme == .dark ? 0.8 : legacyLightOpacity)
-                        .clipShape(Circle())
-                }
-                .overlay(Circle().stroke(Color.gray.opacity(legacyStrokeOpacity), lineWidth: 0.5))
+                .background { Circle().fill(.ultraThinMaterial) }
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.45 : 0.18),
+                        radius: 6, x: 0, y: 2)
                 .shadow(color: .black.opacity(legacyShadowOpacity), radius: legacyShadowRadius, y: 2)
         }
     }

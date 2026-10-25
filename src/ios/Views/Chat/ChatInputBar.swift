@@ -257,18 +257,19 @@ private struct AttachmentChip: View {
             Button {
                 onRetry?()
             } label: {
-                VStack(spacing: 4) {
+                // [T-frosted-circle] 与主界面一致：毛玻璃圆 + 淡投影，
+                // 不再用带描边的圆角方块。
+                VStack(spacing: 3) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 18))
+                        .font(.system(size: 17))
                         .foregroundStyle(.orange)
                     Text("重试")
-                        .font(.caption2)
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(ChatColors.secondaryText)
                 }
-                .frame(width: 64, height: 64)
-                .background(ChatColors.secondaryBg)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.5), lineWidth: 0.5))
+                .frame(width: 60, height: 60)
+                .background(Circle().fill(.ultraThinMaterial))
+                .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
             }
             .buttonStyle(.plain)
 

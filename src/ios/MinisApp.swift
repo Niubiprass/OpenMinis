@@ -1309,3 +1309,22 @@ extension View {
         modifier(FrostedCircleBackground(size: size, shadowOpacity: shadowOpacity))
     }
 }
+
+/// [T-frosted-circle] 文字按钮用的胶囊版：同样是材质 + 淡投影，不描边。
+struct FrostedCapsuleBackground: ViewModifier {
+    var horizontal: CGFloat = 12
+    var vertical: CGFloat = 6
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, horizontal)
+            .padding(.vertical, vertical)
+            .background(Capsule().fill(.ultraThinMaterial))
+            .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
+    }
+}
+
+extension View {
+    func frostedCapsule(horizontal: CGFloat = 12, vertical: CGFloat = 6) -> some View {
+        modifier(FrostedCapsuleBackground(horizontal: horizontal, vertical: vertical))
+    }
+}
