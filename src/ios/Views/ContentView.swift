@@ -5586,17 +5586,12 @@ struct ContentView: View {
                 // declares the two shapes separately for the same reason.
                 .contentShape(Circle())
         } else {
-            // [T-glass-buttons] iOS 15 没有官方玻璃 API，这里用手写材质：
-            // 真模糊底 + 淡描边 + 柔和投影，做出"浮在页面上"的玻璃圆钮。
-            ZStack {
-                GlassBackdrop()
-                icon()
-            }
-            .frame(width: 56, height: 56)
-            .clipShape(Circle())
-            .overlay(Circle().stroke(Color.white.opacity(0.16), lineWidth: 0.8))
-            .shadow(color: .black.opacity(0.45), radius: 9, x: 0, y: 6)
-            .contentShape(Circle())
+            // [T-glass-buttons] 只要一个圆圈：系统材质做实时模糊（滑动时能看到
+            // 下面的内容被虚化），不描边、不投影、不加外框。
+            Circle()
+                .fill(.ultraThinMaterial)
+                .overlay { icon() }
+                .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
         }
     }
 

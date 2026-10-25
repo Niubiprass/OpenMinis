@@ -2018,6 +2018,7 @@ _ios15Seg7
         // verified to stop the refresh on 2026-07-17. sizeThatFits reports
         // the intrinsic icon size so the system wraps it in the same round
         // glass as a plain toolbar icon (fixes the earlier capsule).
+        // [T-frosted-circle] 「…」也套同款毛玻璃圆底（尺寸随图标自适应）。
         ChatTrailingMenuButton(
             messagesEmpty: vm.messages.isEmpty,
             hasSession: vm.sessionId != nil,
@@ -2029,6 +2030,7 @@ _ios15Seg7
             enhancedCacheEnabled: cached.vm.enhancedCacheEnabled,
             showFastModeToggle: activeModelSupportsFastMode,
             fastModeEnabled: codexFastModeEnabled,
+            onSearch: { onSearch() },
             onNewChat: { requestNewChatFromMenu() },
             // [T-chat-menu-compact-entry] Same effect as the /compact slash
             // command (AIChatViewModel+SlashCommands case "compact").
@@ -2092,6 +2094,9 @@ _ios15Seg7
             onExportImage: { exportKind = .longImage },
             onExportPDF: { exportKind = .pdf }
         )
+        .padding(6)
+        .background(Circle().fill(.ultraThinMaterial))
+        .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
     }
 
     // MARK: - New Chat (menu entry)
@@ -5632,12 +5637,7 @@ private struct ChatToolbarHost<Title: View, Trailing: View>: View, Equatable {
                 // [T-115-chat-search] Magnifier opens the in-chat search
                 // sheet. Kept a plain Button (no menu) so toolbar re-pushes
                 // during streaming cannot refresh anything user-visible.
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { onSearch() } label: {
-                        Image(systemName: "magnifyingglass")
-                    }
-                    .accessibilityLabel(AppLocalized("Search Messages"))
-                }
+                // [T-chat-search-menu] 搜索已移到「…」菜单里。
                 ToolbarItem(placement: .topBarTrailing) { trailing() }
             }
     }
@@ -5873,6 +5873,8 @@ private struct ChatTrailingMenuButton: UIViewRepresentable {
     let showFastModeToggle: Bool
     let fastModeEnabled: Bool
 
+    /// [T-chat-search-menu] 搜索从工具栏移进「…」菜单。
+    let onSearch: () -> Void
     let onNewChat: () -> Void
     let onCompact: () -> Void
     let onClearChat: () -> Void
@@ -6010,6 +6012,8 @@ private struct ChatTrailingMenuButton: UIViewRepresentable {
         var groups: [UIMenuElement] = []
 
         groups.append(UIMenu(options: .displayInline, children: [
+            UIAction(title: AppLocalized("搜索消息"),
+                     image: UIImage(systemName: "magnifyingglass")) { _ in coordinator.parent.onSearch() },
             UIAction(title: AppLocalized("New Chat"),
                      image: UIImage(systemName: "square.and.pencil")) { _ in coordinator.parent.onNewChat() },
         ]))

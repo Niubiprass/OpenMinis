@@ -799,9 +799,8 @@ struct MinisImageFilePreviewView: View {
                     Image(systemName: "xmark")
                         .font(.body.weight(.semibold))
                         .foregroundStyle(ChatColors.primaryText)
-                        .frame(width: 44, height: 44)
+                        .frostedCircle(44)
                         .contentShape(Circle())
-                        .background(Color(UIColor.tertiarySystemFill), in: Circle())
                 }
                 .padding(.horizontal)
                 .padding(.top, 2)

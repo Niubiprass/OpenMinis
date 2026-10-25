@@ -26,7 +26,7 @@ struct MCPIntegrationsView: View {
     @State private var consumedInitialEdit = false
     /// [T-mcp-approval-gate] 每次调用越狱 MCP 前是否强制弹窗确认。
     /// 默认开；关掉后恢复普通调用方式（仍需在聊天里征得同意）。
-    @AppStorage("permissions.mcpApprovalGate") private var approvalGate: Bool = true
+    @AppStorage("permissions.mcpApprovalGate") private var approvalGate: Bool = false
 
     var body: some View {
         List {
@@ -35,7 +35,7 @@ struct MCPIntegrationsView: View {
                 Toggle(isOn: $approvalGate) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("调用前强制确认")
-                        Text("每次调用越狱 MCP 工具都会弹窗，需你点「允许」才执行。关闭后不再弹窗，但仍需在聊天里征得同意。")
+                        Text("打开后每次调用越狱 MCP 工具都会弹窗，需你点「允许」才执行。默认关闭。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

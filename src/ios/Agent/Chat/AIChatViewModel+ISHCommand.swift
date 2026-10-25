@@ -340,7 +340,9 @@ extension AIChatViewModel {
     /// 命令执行前的闸门。返回 false = 用户拒绝，调用方必须中止。
     func mcpApprovalGateAllows(_ command: String) async -> Bool {
         guard Self.isMCPCommand(command) else { return true }
-        let enabled = (UserDefaults.standard.object(forKey: "permissions.mcpApprovalGate") as? Bool) ?? true
+        // [T-mcp-approval-safety] 默认关闭：这个弹窗曾多次把整屏挡住点不动，
+        // 先默认不弹；要用的人自己去设置里打开。
+        let enabled = (UserDefaults.standard.object(forKey: "permissions.mcpApprovalGate") as? Bool) ?? false
         guard enabled else { return true }
         let usage = Self.describeMCPCommand(command)
         return await MCPApprovalDialog.present(usage: usage, command: command)

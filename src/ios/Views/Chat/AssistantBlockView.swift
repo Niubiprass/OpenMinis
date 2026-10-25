@@ -1447,13 +1447,22 @@ private struct ThinkingSlider: View {
                         .position(x: dotX(index: i, inset: inset, usable: usable, count: levels.count),
                                   y: 20)
                 }
-                Circle()
-                    .fill(Color(UIColor.systemBackground))
-                    .frame(width: thumb, height: thumb)
-                    .overlay(Circle().stroke(Color.accentColor, lineWidth: 2))
-                    .shadow(color: Color.black.opacity(0.12), radius: 3, x: 0, y: 1)
-                    .position(x: thumbX, y: 20)
-                    .animation(nil, value: effectiveRatio)
+                // [T-thinking-thumb-glass] 滑块改成半透明玻璃小球：
+                // 材质打底 + 白色细描边 + 顶部高光弧 + 柔和投影，不再是一块
+                // 黑底蓝圈（那个在深色面板上又重又丑）。
+                ZStack {
+                    Circle().fill(.ultraThinMaterial)
+                    Circle().fill(Color.white.opacity(0.10))
+                    Circle().stroke(Color.white.opacity(0.55), lineWidth: 1)
+                    // 顶部高光
+                    Circle()
+                        .trim(from: 0.56, to: 0.94)
+                        .stroke(Color.white.opacity(0.85), lineWidth: 1.2)
+                        .padding(1.5)
+                }
+                .frame(width: thumb, height: thumb)
+                .position(x: thumbX, y: 20)
+                .animation(nil, value: effectiveRatio)
             }
             .contentShape(Rectangle())
             .gesture(
