@@ -27,14 +27,13 @@ for token in required:
     assert token in sheet, f"missing sheet contract: {token}"
 assert "contextUsage: vm.contextUsage" in chat
 assert "contextFixedTokens: vm.contextFixedTokens" in chat
-# [T-thinking-sheet-no-scale] 思考面板改为自绘（系统 .sheet 会把整页缩小）。
-assert "ThinkingSheetPresenter.present" in chat
-assert "final class ThinkingSheetController" in chat
+# 思考面板已改回系统 .sheet（自绘版本 bug 较多，用户要求回退）。
+assert ".thinkingLevelSheetPresentation()" in chat
 # [T-thinking-badge-isolated] 面板状态已搬进独立子视图 ThinkingLevelBadgeView
 # （点灯泡不再重算整个聊天页面），因此断言改为：子视图存在、选中后关闭面板、
 # 并且仍由导航栏徽标承载它。
 assert "private struct ThinkingLevelBadgeView: View" in chat
-assert "presented = false" in chat
+assert "showSheet = false" in chat
 assert "ThinkingLevelBadgeView(vm: vm)" in chat
 
 keys = [
@@ -48,5 +47,5 @@ for key in keys:
     assert "en" in loc and "zh-Hans" in loc, f"missing locales for {key}"
 
 # The old menu remains a separate surface; the new sheet is opened by its existing call site.
-assert "Menu" in chat and "presentSheet()" in chat
+assert "Menu" in chat and "showSheet = true" in chat
 print("Thinking context bottom-sheet source contracts PASS")

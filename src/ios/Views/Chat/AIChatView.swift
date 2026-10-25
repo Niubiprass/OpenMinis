@@ -7775,7 +7775,7 @@ private struct SessionMonitorPill: View {
 /// 整个聊天页面重新求值（体量很大），刚好跨过一帧，视觉上就是"后面抖一下"。
 private struct ThinkingLevelBadgeView: View {
     @ObservedObject var vm: AIChatViewModel
-    @State private var presented = false
+    @State private var showSheet = false
 
     private var level: ThinkingLevel { vm.currentThinkingLevel }
 
@@ -7792,236 +7792,25 @@ private struct ThinkingLevelBadgeView: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 1)
         .background(Capsule().fill(Color.secondary.opacity(0.10)))
-        .onTapGesture { presentSheet() }
-    }
-
-    /// [T-thinking-sheet-no-scale] 用自绘面板，替代系统 .sheet —— 系统会在呈现时
-    /// 把整页缩小（"屏幕沉一下"），官方版没有这个动作。
-    private func presentSheet() {
-        guard !presented else { return }
-        presented = true
-        vm.insetHoldSignal.send(true)
-        let root = ThinkingLevelSheetView(
-            currentLevel: vm.currentThinkingLevel,
-            availableLevels: vm.availableThinkingLevels,
-            contextUsage: vm.contextUsage,
-            contextFixedTokens: vm.contextFixedTokens,
-            onSelect: { newLevel in
-                vm.setThinkingLevel(newLevel)
-            },
-            onDone: { ThinkingSheetController.dismissTop() }
-        )
-        let host = UIHostingController(rootView: root)
-        host.view.backgroundColor = .clear
-        ThinkingSheetPresenter.present(content: host) { [weak vm] in
-            vm?.insetHoldSignal.send(false)
-            presented = false
+        .onTapGesture {
+            // [T-sheet-inset-hold-before-present] 先冻结再弹，减少列表被内边距顶动。
+            vm.insetHoldSignal.send(true)
+            showSheet = true
         }
-    }
-}
-
-// MARK: - Thinking Level Panel (custom bottom sheet)
-
-/// [T-thinking-sheet-no-scale] 自绘底部面板：系统 `.sheet` 在 iOS 15 呈现时会把
-/// 后面整页缩小（"点开面板屏幕沉一下"），官方版没有这个动作。这里用
-/// `.overFullScreen` + 自绘遮罩/滑入：半高打开、可上拉、背景只变暗不缩放。
-final class ThinkingSheetController: UIViewController, UIGestureRecognizerDelegate {
-    private let content: UIViewController
-    private let onClose: () -> Void
-    private let dim = UIView()
-    private let panel = UIView()
-    /// [T-thinking-sheet-drag-area] 只有这条把手能拖动面板；整块面板都能拖会和
-    /// 里面的滑块抢手势（滑档位时面板跟着走）。
-    private let grabber = UIView()
-    private static let grabberHeight: CGFloat = 28
-    private var collapsedHeight: CGFloat = 0
-    private var currentHeight: CGFloat = 0
-
-    init(content: UIViewController, onClose: @escaping () -> Void) {
-        self.content = content
-        self.onClose = onClose
-        super.init(nibName: nil, bundle: nil)
-        modalPresentationStyle = .overFullScreen
-        modalTransitionStyle = .crossDissolve
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    private var expandedHeight: CGFloat { view.bounds.height * 0.94 }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .clear
-
-        dim.backgroundColor = UIColor.black.withAlphaComponent(0.45)
-        dim.alpha = 0
-        dim.frame = view.bounds
-        dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        dim.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleDimTap)))
-        view.addSubview(dim)
-
-        panel.backgroundColor = .clear
-        panel.layer.cornerRadius = 26
-        panel.layer.cornerCurve = .continuous
-        panel.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
-        panel.clipsToBounds = true
-        view.addSubview(panel)
-
-        grabber.backgroundColor = .clear
-        panel.addSubview(grabber)
-        let bar = UIView()
-        bar.backgroundColor = UIColor.tertiaryLabel.withAlphaComponent(0.5)
-        bar.layer.cornerRadius = 2.5
-        bar.tag = 991
-        grabber.addSubview(bar)
-
-        addChild(content)
-        content.view.frame = panel.bounds.insetBy(dx: 0, dy: 0)
-        content.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        panel.insertSubview(content.view, belowSubview: grabber)
-        content.didMove(toParent: self)
-
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        pan.delegate = self
-        pan.cancelsTouchesInView = false
-        grabber.addGestureRecognizer(pan)
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        if collapsedHeight == 0 {
-            // 按内容真实高度决定半高状态，避免把底部「思考过程」开关裁掉。
-            let measured = measuredContentHeight(width: view.bounds.width)
-            let upper = view.bounds.height * 0.94
-            collapsedHeight = min(max(measured, 320), upper)
+        .sheet(isPresented: $showSheet) {
+            ThinkingLevelSheetView(
+                currentLevel: level,
+                availableLevels: vm.availableThinkingLevels,
+                contextUsage: vm.contextUsage,
+                contextFixedTokens: vm.contextFixedTokens,
+                onSelect: { newLevel in
+                    vm.setThinkingLevel(newLevel)
+                    showSheet = false
+                }
+            )
+            .thinkingLevelSheetPresentation()
+            .onAppear { vm.insetHoldSignal.send(true) }
+            .onDisappear { vm.insetHoldSignal.send(false) }
         }
-        if currentHeight == 0 { currentHeight = collapsedHeight }
-        applyPanelFrame()
-    }
-
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        let measured = measuredContentHeight(width: view.bounds.width)
-        collapsedHeight = min(max(measured, 320), view.bounds.height * 0.94)
-        currentHeight = collapsedHeight
-        applyPanelFrame()
-        panel.transform = CGAffineTransform(translationX: 0, y: collapsedHeight)
-        UIView.animate(withDuration: 0.28, delay: 0, options: [.curveEaseOut]) {
-            self.dim.alpha = 1
-            self.panel.transform = .identity
-        }
-    }
-
-    private func measuredContentHeight(width: CGFloat) -> CGFloat {
-        guard width > 0 else { return 420 }
-        content.view.frame = CGRect(x: 0, y: 0, width: width, height: 120)
-        let size = content.view.systemLayoutSizeFitting(
-            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
-            withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel)
-        return (size.height > 1 ? size.height : 420) + Self.grabberHeight
-    }
-
-    private func applyPanelFrame() {
-        let h = currentHeight
-        panel.frame = CGRect(x: 0, y: view.bounds.height - h, width: view.bounds.width, height: h)
-        let gh = Self.grabberHeight
-        grabber.frame = CGRect(x: 0, y: 0, width: panel.bounds.width, height: gh)
-        grabber.viewWithTag(991)?.frame = CGRect(x: (panel.bounds.width - 36) / 2, y: 6, width: 36, height: 5)
-        content.view.frame = CGRect(x: 0, y: gh, width: panel.bounds.width, height: max(0, h - gh))
-    }
-
-    @objc private func handleDimTap() { close() }
-
-    /// 面板内部（例如选中某个档位）请求关闭。
-    static func dismissTop() {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        var top = scenes.flatMap({ $0.windows }).first(where: { $0.isKeyWindow })?.rootViewController
-        while let p = top?.presentedViewController { top = p }
-        (top as? ThinkingSheetController)?.close()
-    }
-
-    func close() {
-        UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseIn], animations: {
-            self.panel.transform = CGAffineTransform(translationX: 0, y: self.currentHeight)
-            self.dim.alpha = 0
-        }, completion: { _ in
-            self.dismiss(animated: false) { self.onClose() }
-        })
-    }
-
-    // MARK: 阻尼 / 吸附
-
-    /// 橡皮筋阻尼：越界部分按比例衰减，越拉越沉。
-    private func rubberBand(_ excess: CGFloat, limit: CGFloat) -> CGFloat {
-        guard excess > 0, limit > 0 else { return 0 }
-        let c: CGFloat = 0.55
-        return (1 - (1 / (excess * c / limit + 1))) * limit
-    }
-
-    /// 松手后按速度推算落点（UIScrollView 同款：v × 0.25s 的减速距离）。
-    private func projectedHeight(velocityY: CGFloat) -> CGFloat {
-        currentHeight - velocityY * 0.25
-    }
-
-    @objc private func handlePan(_ g: UIPanGestureRecognizer) {
-        let ty = g.translation(in: view).y
-        let minVisible: CGFloat = 180
-        switch g.state {
-        case .changed:
-            let raw = collapsedHeight - ty
-            if raw > expandedHeight {
-                // 往上越界：阻尼，最多再拉 120pt
-                currentHeight = expandedHeight + rubberBand(raw - expandedHeight, limit: 120)
-            } else if raw < minVisible {
-                // 往下越界：阻尼，面板跟着手指沉下去，遮罩同步变淡
-                currentHeight = minVisible - rubberBand(minVisible - raw, limit: 120)
-            } else {
-                currentHeight = raw
-            }
-            applyPanelFrame()
-            let progress = min(max((currentHeight - minVisible) / max(1, collapsedHeight - minVisible), 0), 1)
-            dim.alpha = 0.45 * (0.35 + 0.65 * progress)
-        case .ended, .cancelled:
-            let v = g.velocity(in: view).y          // 向下为正
-            let projected = projectedHeight(velocityY: v)
-            let dismissLine = collapsedHeight * 0.55
-            if projected < dismissLine || v > 1200 {
-                close()
-                return
-            }
-            // 两个锚点里选离"推算落点"更近的那个
-            let anchors: [CGFloat] = [collapsedHeight, expandedHeight]
-            let target = anchors.min(by: { abs($0 - projected) < abs($1 - projected) }) ?? collapsedHeight
-            currentHeight = target
-            UIView.animate(withDuration: 0.34, delay: 0,
-                           usingSpringWithDamping: 0.86,
-                           initialSpringVelocity: min(3, abs(v) / 900),
-                           options: [.allowUserInteraction, .beginFromCurrentState]) {
-                self.applyPanelFrame()
-                self.dim.alpha = 0.45
-            }
-        default:
-            break
-        }
-    }
-
-    func gestureRecognizer(_ g: UIGestureRecognizer,
-                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        true
-    }
-}
-
-enum ThinkingSheetPresenter {
-    @MainActor
-    static func present(content: UIViewController, onClose: @escaping () -> Void) {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        guard var top = scenes.flatMap({ $0.windows }).first(where: { $0.isKeyWindow })?.rootViewController else {
-            return
-        }
-        while let presented = top.presentedViewController, !presented.isBeingDismissed {
-            top = presented
-        }
-        top.present(ThinkingSheetController(content: content, onClose: onClose), animated: false)
     }
 }
