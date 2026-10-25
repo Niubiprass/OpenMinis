@@ -1298,13 +1298,16 @@ struct MinisApp: App {
 struct GlassBackdrop: UIViewRepresentable {
     var style: UIBlurEffect.Style = .systemUltraThinMaterialDark
 
-    func makeUIView(context: Context) -> UIVisualEffectView {
+    // 显式写全 UIViewRepresentableContext<GlassBackdrop>：本文件里 `Context`
+    // 可能被别的类型占用，简写会让签名对不上协议（CI 报 does not conform）。
+    func makeUIView(context: UIViewRepresentableContext<GlassBackdrop>) -> UIVisualEffectView {
         let view = UIVisualEffectView(effect: UIBlurEffect(style: style))
         view.isUserInteractionEnabled = false
         return view
     }
 
-    func updateUIViewController(_ uiView: UIVisualEffectView, context: Context) {}
+    func updateUIViewController(_ uiView: UIVisualEffectView,
+                                context: UIViewRepresentableContext<GlassBackdrop>) {}
 }
 
 struct GlassButtonStyle: ButtonStyle {

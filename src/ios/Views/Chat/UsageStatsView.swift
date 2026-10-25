@@ -358,6 +358,8 @@ class UsageStatsViewModel: ObservableObject {
 struct UsageStatsView: View {
     @StateObject private var vm = UsageStatsViewModel()
     @State private var groupMode: GroupMode = .provider
+    /// [T-usage-chart-tap] 点中的柱子（nil = 未选）。
+    @State private var selectedBar: Int?
 
     private enum GroupMode { case provider, model }
 
@@ -533,6 +535,8 @@ struct UsageStatsView: View {
         let label: String
         let value: Int
         let showLabel: Bool
+        /// 点中柱子时显示在标题行的说明（日期或日期区间）。
+        let detail: String
     }
 
     /// [T-usage-chart-axis] 统一取"能被 4 等分的整齐上限"：刻度只会是
@@ -556,36 +560,73 @@ struct UsageStatsView: View {
 
     private var chartCard: some View {
         let hourly = (vm.range == .today)
-        let rawPoints: [(String, Int)] = hourly
-            ? vm.summaryHourly.enumerated().map { ("\($0.offset)", $0.element) }
-            : vm.summaryDaily.map { (shortDay($0.day), $0.total) }
+        let weekly = (vm.range == .month)
 
-        let count = max(1, rawPoints.count)
+        // 数据点
+        var points: [ChartPoint] = []
+        if weekly {
+            // [T-usage-chart-weekly] 30 天按 6 天一段 → 5 根柱子，每根都能标清日期。
+            var i = 0
+            while i < vm.summaryDaily.count {
+                let slice = vm.summaryDaily[i..<min(i + 6, vm.summaryDaily.count)]
+                let total = slice.reduce(0) { $0 + $1.total }
+                let start = shortDay(slice.first!.day)
+                let end = shortDay(slice.last!.day)
+                points.append(ChartPoint(label: start, value: total, showLabel: true,
+                                         detail: "\(start)–\(end)"))
+                i += 6
+            }
+        } else if hourly {
+            points = vm.summaryHourly.enumerated().map {
+                ChartPoint(label: "\($0.offset)", value: $0.element, showLabel: false,
+                           detail: String(format: "%02d:00", $0.offset))
+            }
+        } else {
+            points = vm.summaryDaily.map {
+                ChartPoint(label: shortDay($0.day), value: $0.total, showLabel: true,
+                           detail: shortDay($0.day))
+            }
+        }
+
+        let count = max(1, points.count)
         let stride: Int = {
             if hourly { return 6 }
-            if count <= 7 { return 1 }
-            return max(1, Int(ceil(Double(count) / 6.0)))
+            if weekly || count <= 7 { return 1 }
+            let plotWidth = UIScreen.main.bounds.width - 32 - 32 - 34 - 8
+            let maxLabels = max(2, Int(plotWidth / 34))
+            return max(1, Int(ceil(Double(count) / Double(maxLabels))))
         }()
-        let points: [ChartPoint] = rawPoints.enumerated().map { idx, item in
-            ChartPoint(label: item.0, value: item.1,
-                       showLabel: idx % stride == 0 || idx == count - 1)
+        points = points.enumerated().map { idx, p in
+            let lastGapOK = (count - 1) % stride >= max(1, stride / 2)
+            let show = idx % stride == 0 || (idx == count - 1 && lastGapOK)
+            return ChartPoint(label: p.label, value: p.value,
+                              showLabel: show || weekly, detail: p.detail)
         }
 
         let maxValue = niceMax(points.map(\.value).max() ?? 0)
         let peak = points.map(\.value).max() ?? 0
+        let selected = selectedBar.flatMap { $0 < points.count ? points[$0] : nil }
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Text(hourly ? "今天" : "每日用量")
+                Text(hourly ? "今天" : (weekly ? "最近 30 天（按周）" : "每日用量"))
                     .font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 8)
-                Text((hourly ? "按小时 · " : "") + "峰值 \(shortNumber(peak))")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                if let sel = selected {
+                    Text("\(sel.detail) · \(formatBig(sel.value))")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Text((hourly ? "按小时 · " : "") + "峰值 \(shortNumber(peak))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
             }
+            .contentShape(Rectangle())
+            .onTapGesture { selectedBar = nil }
 
             HStack(alignment: .top, spacing: 8) {
-                // Y 轴：5 个刻度，右对齐
+                // Y 轴
                 VStack(alignment: .trailing, spacing: 0) {
                     ForEach(Array((0...4).reversed()), id: \.self) { i in
                         Text(shortNumber(maxValue * i / 4))
@@ -603,7 +644,6 @@ struct UsageStatsView: View {
                         let h = geo.size.height
                         let slot = w / CGFloat(count)
                         ZStack(alignment: .bottom) {
-                            // 网格线
                             VStack(spacing: 0) {
                                 ForEach(0..<5, id: \.self) { i in
                                     Rectangle()
@@ -612,10 +652,10 @@ struct UsageStatsView: View {
                                     if i < 4 { Spacer(minLength: 0) }
                                 }
                             }
-                            // 柱体
                             HStack(alignment: .bottom, spacing: 0) {
-                                ForEach(Array(points.enumerated()), id: \.offset) { _, p in
-                                    let barW = min(hourly ? 9 : 16, max(6, slot * 0.55))
+                                ForEach(Array(points.enumerated()), id: \.offset) { idx, p in
+                                    let barW = min(hourly ? 9 : (weekly ? 22 : 16),
+                                                   max(6, slot * (weekly ? 0.5 : 0.55)))
                                     Group {
                                         if p.value <= 0 {
                                             RoundedRectangle(cornerRadius: 1)
@@ -623,26 +663,32 @@ struct UsageStatsView: View {
                                                 .frame(width: barW, height: 2)
                                         } else {
                                             RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                                .fill(Color(red: 0.29, green: 0.43, blue: 0.67))
+                                                .fill(selectedBar == idx
+                                                      ? Color.accentColor
+                                                      : Color(red: 0.29, green: 0.43, blue: 0.67))
                                                 .frame(width: barW,
                                                        height: max(3, h * 0.94 * CGFloat(p.value) / CGFloat(maxValue)))
                                         }
                                     }
                                     .frame(width: slot)
                                     .frame(maxHeight: .infinity, alignment: .bottom)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        selectedBar = (selectedBar == idx) ? nil : idx
+                                    }
                                 }
                             }
                         }
                     }
                     .frame(height: 132)
 
-                    // X 轴标签
                     HStack(spacing: 0) {
                         ForEach(Array(points.enumerated()), id: \.offset) { _, p in
                             Text(p.showLabel ? p.label : " ")
                                 .font(.system(size: 9))
                                 .foregroundStyle(.tertiary)
                                 .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                                 .frame(maxWidth: .infinity)
                         }
                     }
