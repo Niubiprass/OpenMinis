@@ -86,6 +86,61 @@ class UsageStatsViewModel: ObservableObject {
     @Published var isLoaded = false
     /// [T-p2-helper-usage] delegate_task counts + helper token cost.
     @Published var helperStats: ChatStore.HelperUsageStats?
+    /// [T-usage-redesign] 顶部时间范围与按范围的汇总。
+    enum UsageRange: String, CaseIterable, Identifiable {
+        case today, week, month, all
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .today: return AppLocalized("今天")
+            case .week:  return AppLocalized("7 天")
+            case .month: return AppLocalized("30 天")
+            case .all:   return AppLocalized("全部")
+            }
+        }
+        /// 固定窗口天数；nil = 全部（用实际跨度）。
+        var days: Int? {
+            switch self {
+            case .today: return 1
+            case .week:  return 7
+            case .month: return 30
+            case .all:   return nil
+            }
+        }
+    }
+
+    struct DailyPoint: Identifiable {
+        let id = UUID()
+        let day: Date
+        let total: Int
+    }
+
+    struct GroupSlice: Identifiable {
+        let id: String
+        let name: String
+        let total: Int
+    }
+
+    @Published var range: UsageRange = .week
+    @Published var summaryInput = 0
+    @Published var summaryOutput = 0
+    @Published var summaryCacheRead = 0
+    @Published var summaryCacheCreate = 0
+    @Published var summaryDaily: [DailyPoint] = []
+    @Published var summaryActiveDays = 0
+    @Published var summaryDaysInRange = 1
+    @Published var summaryByProvider: [GroupSlice] = []
+    @Published var summaryByModel: [GroupSlice] = []
+
+    private var rawRecords: [ChatStore.UsageRecord] = []
+    private var groupForModelId: [String: String] = [:]
+    private var displayForModelId: [String: String] = [:]
+
+    func setRange(_ r: UsageRange) {
+        guard r != range else { return }
+        range = r
+        rebuildSummary()
+    }
 
     private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -207,7 +262,78 @@ class UsageStatsViewModel: ObservableObject {
         grandTotalCacheCreation = statsByModel.values.reduce(0) { $0 + $1.cacheCreationTokens }
         grandTotalCacheRead = statsByModel.values.reduce(0) { $0 + $1.cacheReadTokens }
         providers = groups
+
+        // [T-usage-redesign] 保存原始记录供范围切换使用，并算一份当前范围汇总。
+        rawRecords = records
+        for r in records where groupForModelId[r.modelId] == nil {
+            groupForModelId[r.modelId] = providerGroup(for: r.modelId)
+        }
+        for r in records {
+            if let dn = r.modelDisplayName, !dn.isEmpty, displayForModelId[r.modelId] == nil {
+                displayForModelId[r.modelId] = dn
+            }
+        }
+        rebuildSummary()
+
         isLoaded = true
+    }
+
+    /// [T-usage-redesign] 按当前时间范围重算顶部汇总、每日序列与分组占比。
+    private func rebuildSummary() {
+        let cal = Calendar.current
+        let startOfToday = cal.startOfDay(for: Date())
+        let cutoff: Date? = range.days.flatMap {
+            cal.date(byAdding: .day, value: -($0 - 1), to: startOfToday)
+        }
+        var inp = 0, out = 0, cacheRead = 0, cacheCreate = 0
+        var byDay: [Date: Int] = [:]
+        var byProvider: [String: Int] = [:]
+        var byModel: [String: Int] = [:]
+
+        for r in rawRecords {
+            if let c = cutoff, r.date < c { continue }
+            inp += r.usage.inputTokens
+            out += r.usage.outputTokens
+            cacheRead += r.usage.cacheReadTokens
+            cacheCreate += r.usage.cacheCreationTokens
+            let total = r.usage.inputTokens + r.usage.outputTokens
+                + r.usage.cacheReadTokens + r.usage.cacheCreationTokens
+            byDay[cal.startOfDay(for: r.date), default: 0] += total
+            byProvider[groupForModelId[r.modelId] ?? "Other", default: 0] += total
+            byModel[r.modelId, default: 0] += total
+        }
+
+        summaryInput = inp
+        summaryOutput = out
+        summaryCacheRead = cacheRead
+        summaryCacheCreate = cacheCreate
+        summaryActiveDays = byDay.count
+
+        if let d = range.days {
+            summaryDaysInRange = d
+            var pts: [DailyPoint] = []
+            for i in 0..<d {
+                if let day = cal.date(byAdding: .day, value: -(d - 1 - i), to: startOfToday) {
+                    pts.append(DailyPoint(day: day, total: byDay[day] ?? 0))
+                }
+            }
+            summaryDaily = pts
+        } else {
+            let days = byDay.keys.sorted()
+            summaryDaily = days.suffix(14).map { DailyPoint(day: $0, total: byDay[$0] ?? 0) }
+            if let first = days.first {
+                summaryDaysInRange = max(1, (cal.dateComponents([.day], from: first, to: startOfToday).day ?? 0) + 1)
+            } else {
+                summaryDaysInRange = 1
+            }
+        }
+
+        summaryByProvider = byProvider
+            .map { GroupSlice(id: $0.key, name: $0.key, total: $0.value) }
+            .sorted { $0.total > $1.total }
+        summaryByModel = byModel
+            .map { GroupSlice(id: $0.key, name: displayForModelId[$0.key] ?? $0.key, total: $0.value) }
+            .sorted { $0.total > $1.total }
     }
 }
 
@@ -215,110 +341,307 @@ class UsageStatsViewModel: ObservableObject {
 
 struct UsageStatsView: View {
     @StateObject private var vm = UsageStatsViewModel()
+    @State private var groupMode: GroupMode = .provider
+
+    private enum GroupMode { case provider, model }
+
+    private var totalAll: Int {
+        vm.summaryInput + vm.summaryOutput + vm.summaryCacheRead + vm.summaryCacheCreate
+    }
+    private var totalInputInclCache: Int {
+        vm.summaryInput + vm.summaryCacheRead + vm.summaryCacheCreate
+    }
+    private var hitRate: Double {
+        totalInputInclCache > 0 ? Double(vm.summaryCacheRead) / Double(totalInputInclCache) * 100 : 0
+    }
+    private var dailyAvg: Int {
+        vm.summaryDaysInRange > 0 ? totalAll / vm.summaryDaysInRange : 0
+    }
 
     var body: some View {
-        List {
-            if vm.isLoaded && vm.providers.isEmpty {
-                Section {
+        ScrollView {
+            VStack(spacing: 14) {
+                rangePicker
+
+                if !vm.isLoaded {
+                    ProgressView().padding(.top, 40)
+                } else if totalAll == 0 {
                     Text("No usage data yet. Start a conversation to see token statistics here.")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
-                }
-            } else if vm.isLoaded {
-                // Grand totals
-                Section("Total Usage") {
-                    let grandTotalAllInput = vm.grandTotalInput + vm.grandTotalCacheRead + vm.grandTotalCacheCreation
-                    LabeledContent("Total Input (incl. Cache)", value: formatCount(grandTotalAllInput))
-                    LabeledContent("Output Tokens", value: formatCount(vm.grandTotalOutput))
-                    if vm.grandTotalCacheRead > 0 {
-                        LabeledContent("Cache Read", value: formatCount(vm.grandTotalCacheRead))
-                    }
-                    if vm.grandTotalCacheCreation > 0 {
-                        LabeledContent("Cache Creation", value: formatCount(vm.grandTotalCacheCreation))
-                    }
-                    if grandTotalAllInput > 0 && vm.grandTotalCacheRead > 0 {
-                        let grandHitRate = Double(vm.grandTotalCacheRead) / Double(grandTotalAllInput) * 100
-                        LabeledContent("Cache Hit Rate", value: String(format: "%.1f%%", grandHitRate))
-                    }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 20)
+                } else {
+                    summaryCard
+                    chartCard
+                    groupPicker
+                    groupList
                 }
 
-                // [T-p2-helper-usage] Helpers — only once there is something to show.
                 if let h = vm.helperStats, h.delegateCalls > 0 || h.childSessions > 0 {
-                    Section(AppLocalized("Agents")) {
-                        LabeledContent(AppLocalized("Delegations"), value: "\(h.delegateCalls)")
-                        LabeledContent(AppLocalized("Primary / Sub tier"), value: "\(h.primaryRuns) / \(h.subRuns)")
-                        if h.escalations > 0 {
-                            LabeledContent(AppLocalized("Escalation requests"), value: "\(h.escalations)")
-                        }
-                        if h.cancelledOrFailed > 0 {
-                            LabeledContent(AppLocalized("Stopped or failed"), value: "\(h.cancelledOrFailed)")
-                        }
-                        LabeledContent(AppLocalized("Agent input tokens"), value: formatCount(h.helperInputTokens))
-                        LabeledContent(AppLocalized("Agent output tokens"), value: formatCount(h.helperOutputTokens))
-                    }
-                }
-
-                // Per-provider sections
-                ForEach(vm.providers) { provider in
-                    Section(provider.id) {
-                        // [T-token-attribution-snapshot] Keyed by id + state:
-                        // the same model can appear once as measured and once
-                        // as estimated, and a duplicate ForEach id would drop
-                        // one of them silently.
-                        ForEach(provider.models, id: \.rowKey) { model in
-                            DisclosureGroup {
-                                modelDetailRows(model)
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(model.displayName)
-                                        // Say why whenever the number is not a
-                                        // straight measurement. Silence is what
-                                        // let re-attributed totals pass as fact.
-                                        if let caveat = model.attributionCaveat {
-                                            Text(caveat)
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                    Spacer()
-                                    let totalInputLabel = model.inputTokens + model.cacheReadTokens + model.cacheCreationTokens
-                                    Text("\(formatCount(totalInputLabel)) / \(formatCount(model.outputTokens))")
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
+                    helperCard(h)
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 28)
         }
+        .background(Color(UIColor.systemGroupedBackground))
         .navigationTitle("Usage")
-        .task {
-            await vm.load()
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await vm.load() }
+    }
+
+    // MARK: 时间范围
+
+    private var rangePicker: some View {
+        HStack(spacing: 0) {
+            ForEach(UsageStatsViewModel.UsageRange.allCases) { r in
+                let selected = vm.range == r
+                Button {
+                    vm.setRange(r)
+                } label: {
+                    Text(r.title)
+                        .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 26)
+                        .background(
+                            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                .fill(selected ? Color(UIColor.tertiarySystemFill) : .clear)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
         }
+        .padding(3)
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    // MARK: 总 Token 卡片
+
+    private var summaryCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("总 Token").font(.system(size: 13)).foregroundStyle(.secondary)
+                .padding(.bottom, 6)
+            Text(formatBig(totalAll)).font(.system(size: 34, weight: .bold))
+                .padding(.bottom, 6)
+            Text("不含缓存读取 \(formatCount(totalAll - vm.summaryCacheRead))")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+                .padding(.bottom, 6)
+
+            HStack(spacing: 0) {
+                Text("日均 \(formatCount(dailyAvg))")
+                Spacer()
+                Text("活跃天数 \(vm.summaryActiveDays)/\(vm.summaryDaysInRange)")
+            }
+            .font(.system(size: 12)).foregroundStyle(.tertiary)
+            .padding(.bottom, 14)
+
+            // 构成条
+            GeometryReader { geo in
+                let w = geo.size.width
+                HStack(spacing: 0) {
+                    segment(frac: ratio(vm.summaryInput), color: .blue, total: w)
+                    segment(frac: ratio(vm.summaryCacheRead), color: Color(red: 0.38, green: 0.65, blue: 0.86), total: w)
+                    segment(frac: ratio(vm.summaryCacheCreate), color: .orange, total: w)
+                    segment(frac: ratio(vm.summaryOutput), color: .green, total: w)
+                }
+                .frame(height: 6)
+                .clipShape(Capsule())
+            }
+            .frame(height: 6)
+            .padding(.bottom, 12)
+
+            // 图例：两列，值右对齐
+            let cols = legendItems
+            HStack(alignment: .top, spacing: 0) {
+                legendColumn(Array(cols.prefix(2)))
+                legendColumn(Array(cols.suffix(from: 2)))
+            }
+
+            Divider().padding(.vertical, 12)
+
+            HStack {
+                Text("缓存命中率").font(.system(size: 13)).foregroundStyle(.secondary)
+                Spacer()
+                Text(String(format: "%.1f%%", hitRate)).font(.system(size: 13, weight: .semibold))
+            }
+        }
+        .padding(16)
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private struct LegendItem { let name: String; let value: String; let color: Color }
+
+    private var legendItems: [LegendItem] {
+        [LegendItem(name: "输入", value: formatCount(vm.summaryInput), color: .blue),
+         LegendItem(name: "缓存写入", value: formatCount(vm.summaryCacheCreate), color: .orange),
+         LegendItem(name: "缓存读取", value: formatCount(vm.summaryCacheRead),
+                    color: Color(red: 0.38, green: 0.65, blue: 0.86)),
+         LegendItem(name: "输出", value: formatCount(vm.summaryOutput), color: .green)]
     }
 
     @ViewBuilder
-    private func modelDetailRows(_ model: UsageStatsViewModel.ModelStats) -> some View {
-        Group {
-            LabeledContent("Input", value: formatCount(model.inputTokens))
-            LabeledContent("Output", value: formatCount(model.outputTokens))
-            if model.cacheReadTokens > 0 {
-                LabeledContent("Cache Read", value: formatCount(model.cacheReadTokens))
+    private func legendColumn(_ items: [LegendItem]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(spacing: 6) {
+                    Circle().fill(item.color).frame(width: 6, height: 6)
+                    Text(item.name).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                    Text(item.value).font(.system(size: 11, weight: .semibold))
+                }
             }
-            if model.cacheCreationTokens > 0 {
-                LabeledContent("Cache Creation", value: formatCount(model.cacheCreationTokens))
-            }
-            let totalInputForRate = model.inputTokens + model.cacheReadTokens + model.cacheCreationTokens
-            if totalInputForRate > 0 && model.cacheReadTokens > 0 {
-                let hitRate = Double(model.cacheReadTokens) / Double(totalInputForRate) * 100
-                LabeledContent("Cache Hit Rate", value: String(format: "%.1f%%", hitRate))
-            }
-            LabeledContent("Daily Avg", value: formatCount(model.dailyAvgTokens))
-            LabeledContent("Per-Session Avg", value: formatCount(model.sessionAvgTokens))
-            LabeledContent("Sessions", value: "\(model.distinctSessions.count)")
-            LabeledContent("Active Days", value: "\(model.distinctDays.count)")
         }
-        .font(.subheadline)
+        .frame(maxWidth: .infinity)
+        .padding(.trailing, 8)
+    }
+
+    private func ratio(_ v: Int) -> Double {
+        totalAll > 0 ? Double(v) / Double(totalAll) : 0
+    }
+
+    @ViewBuilder
+    private func segment(frac: Double, color: Color, total: CGFloat) -> some View {
+        if frac > 0 {
+            Rectangle().fill(color).frame(width: max(2, total * frac))
+        }
+    }
+
+    // MARK: 柱状图
+
+    private var chartCard: some View {
+        let points = vm.summaryDaily
+        let maxValue = max(1, points.map(\.total).max() ?? 1)
+        return VStack(alignment: .leading, spacing: 0) {
+            GeometryReader { geo in
+                let h = geo.size.height
+                HStack(alignment: .bottom, spacing: 0) {
+                    ForEach(points) { p in
+                        VStack(spacing: 6) {
+                            Spacer(minLength: 0)
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(Color(red: 0.29, green: 0.43, blue: 0.67))
+                                .frame(width: 18, height: max(p.total == 0 ? 1 : 3, h * 0.78 * CGFloat(p.total) / CGFloat(maxValue)))
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+            .frame(height: 132)
+
+            HStack(spacing: 0) {
+                ForEach(Array(points.enumerated()), id: \.offset) { idx, p in
+                    Text(idx % 2 == 0 ? shortDay(p.day) : " ")
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .padding(.top, 6)
+        }
+        .padding(16)
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func shortDay(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "M/d"
+        return f.string(from: d)
+    }
+
+    // MARK: 分组
+
+    private var groupPicker: some View {
+        HStack(spacing: 0) {
+            ForEach([GroupMode.provider, GroupMode.model], id: \.self) { mode in
+                let selected = groupMode == mode
+                Button {
+                    groupMode = mode
+                } label: {
+                    Text(mode == .provider ? "按服务商" : "按模型")
+                        .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 24)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(selected ? Color(UIColor.tertiarySystemFill) : .clear)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+    }
+
+    private var groupList: some View {
+        let slices = groupMode == .provider ? vm.summaryByProvider : vm.summaryByModel
+        return VStack(spacing: 0) {
+            ForEach(Array(slices.enumerated()), id: \.element.id) { idx, s in
+                if idx > 0 { Divider().padding(.leading, 16) }
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(s.name).font(.system(size: 14, weight: .medium)).lineLimit(1)
+                        Text(formatCount(s.total)).font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Text(percentText(s.total)).font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 16)
+                .frame(height: 56)
+            }
+        }
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func percentText(_ v: Int) -> String {
+        guard totalAll > 0 else { return "0%" }
+        let p = Double(v) / Double(totalAll) * 100
+        return p >= 99.95 ? "100%" : String(format: "%.1f%%", p)
+    }
+
+    // MARK: 代理任务
+
+    private func helperCard(_ h: ChatStore.HelperUsageStats) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("代理任务").font(.system(size: 13)).foregroundStyle(.secondary)
+            helperRow("委派次数", "\(h.delegateCalls)")
+            helperRow("Primary / Sub 档", "\(h.primaryRuns) / \(h.subRuns)")
+            helperRow("代理任务输入 Token", formatCount(h.helperInputTokens))
+            helperRow("代理任务输出 Token", formatCount(h.helperOutputTokens))
+        }
+        .padding(16)
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func helperRow(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title).font(.system(size: 13)).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.system(size: 13, weight: .medium))
+        }
+    }
+
+    private func formatBig(_ count: Int) -> String {
+        if count >= 1_000_000_000 {
+            return String(format: "%.1fB", Double(count) / 1_000_000_000)
+        }
+        if count >= 1_000_000 {
+            return String(format: "%.1fM", Double(count) / 1_000_000)
+        }
+        return formatCount(count)
     }
 
     private func formatCount(_ count: Int) -> String {
