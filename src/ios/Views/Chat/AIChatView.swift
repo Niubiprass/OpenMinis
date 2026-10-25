@@ -2095,9 +2095,32 @@ _ios15Seg7
             onExportPDF: { exportKind = .pdf }
         )
         .frame(width: 34, height: 34)
-        .background(Circle().fill(.ultraThinMaterial))
-        // [T-frosted-circle] 投影要压得住工具栏底色才看得出"浮"。
-        .shadow(color: .black.opacity(0.35), radius: 8, x: 0, y: 3)
+        .background {
+            Circle()
+                .fill(.ultraThinMaterial)
+                // [T-frosted-circle-2] 0.5 点描边收口：纯材质在浅色导航栏上
+                // 边缘会糊进底色，圆看着"贴"着而不是浮着。
+                .overlay {
+                    Circle().strokeBorder(
+                        Color(UIColor { $0.userInterfaceStyle == .dark
+                            ? UIColor(white: 1, alpha: 0.10)
+                            : UIColor(white: 0, alpha: 0.06) }),
+                        lineWidth: 0.5)
+                }
+        }
+        // [T-frosted-circle-2] 阴影要画在 44 的容器里。之前把两层影都塞进 34 的
+        // 框，导航栏一裁只剩边缘一圈脏灰，白底发灰、黑底看不见——用户 02:51
+        // 的原话就是"这三个点感觉没有浮起来"。44 = HIG 最小触控，正好给阴影
+        // 留出画布，圆本身仍是 34。
+        .frame(width: 44, height: 44)
+        .shadow(color: Color(UIColor { $0.userInterfaceStyle == .dark
+            ? UIColor(white: 0, alpha: 0.40)
+            : UIColor(white: 0, alpha: 0.08) }),
+                radius: 2, x: 0, y: 1)
+        .shadow(color: Color(UIColor { $0.userInterfaceStyle == .dark
+            ? UIColor(white: 0, alpha: 0.45)
+            : UIColor(white: 0, alpha: 0.14) }),
+                radius: 12, x: 0, y: 4)
     }
 
     // MARK: - New Chat (menu entry)

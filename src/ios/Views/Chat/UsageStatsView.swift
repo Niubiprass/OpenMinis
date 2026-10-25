@@ -589,19 +589,33 @@ struct UsageStatsView: View {
         }
 
         let count = max(1, points.count)
+        // [T-usage-axis-daily] 半个月以内每天都标。之前 11 天也只隔一天标一个，
+        // 用户看到的横轴是 10/16、10/18、10/20……最右那天还容易被挤掉。
+        // 390 宽的机器上每格约 25 点、字号 9 正好放得下 "10/26"，不用再省。
+        let labelSlot: CGFloat = count <= 15 ? 26 : 34
         let stride: Int = {
             if hourly { return 6 }
-            if weekly || count <= 7 { return 1 }
+            if weekly || count <= 15 { return 1 }
             let plotWidth = UIScreen.main.bounds.width - 32 - 32 - 34 - 8
-            let maxLabels = max(2, Int(plotWidth / 34))
+            let maxLabels = max(2, Int(plotWidth / labelSlot))
             return max(1, Int(ceil(Double(count) / Double(maxLabels))))
         }()
-        points = points.enumerated().map { idx, p in
-            let lastGapOK = (count - 1) % stride >= max(1, stride / 2)
-            let show = idx % stride == 0 || (idx == count - 1 && lastGapOK)
-            return ChartPoint(label: p.label, value: p.value,
-                              showLabel: show || weekly, detail: p.detail)
+        // 最后一天永远要标；如果它和前一个标签挨得太近，就让前一个消失，
+        // 免得两个日期叠在一起。
+        var labelVisible = (0..<count).map { idx in idx % stride == 0 }
+        labelVisible[count - 1] = true
+        if stride > 1 && count > 1 {
+            let last = count - 1
+            let prev = (last / stride) * stride
+            if prev != last && last - prev < max(1, stride / 2) { labelVisible[prev] = false }
         }
+        // 小时图完全靠点柱子看时间，横轴不标（保留原样）。
+        if hourly { labelVisible = Array(repeating: false, count: count) }
+        points = points.enumerated().map { idx, p in
+            ChartPoint(label: p.label, value: p.value,
+                       showLabel: labelVisible[idx] || weekly, detail: p.detail)
+        }
+        let axisFontSize: CGFloat = count <= 15 ? 9 : 8
 
         let maxValue = niceMax(points.map(\.value).max() ?? 0)
         let peak = points.map(\.value).max() ?? 0
@@ -685,10 +699,12 @@ struct UsageStatsView: View {
                     HStack(spacing: 0) {
                         ForEach(Array(points.enumerated()), id: \.offset) { _, p in
                             Text(p.showLabel ? p.label : " ")
-                                .font(.system(size: 9))
+                                .font(.system(size: axisFontSize))
                                 .foregroundStyle(.tertiary)
                                 .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
+                                // [T-usage-axis-daily] 用缩放代替溢出：日期多的时候
+                                // 宁可字小一点，也不要压到卡片外或截成 "10/…"。
+                                .minimumScaleFactor(0.8)
                                 .frame(maxWidth: .infinity)
                         }
                     }
