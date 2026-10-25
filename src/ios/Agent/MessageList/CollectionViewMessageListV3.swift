@@ -2919,10 +2919,6 @@ extension CollectionViewMessageListV3 {
                     layout.invalidateBlockMemos(messageId: mid, blockId: bid)
                 }
                 layout.invalidateLayout()
-                UIView.performWithoutAnimation {
-                    cv.reloadItems(at: [ip])
-                    cv.layoutIfNeeded()
-                }
             }
         }
 

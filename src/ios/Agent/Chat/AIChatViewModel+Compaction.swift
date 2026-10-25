@@ -511,6 +511,14 @@ extension AIChatViewModel {
     /// Falls back to `nil` only when no qualifying raw message predates the
     /// marker (rare: session wiped down to messages newer than the marker, or
     /// every predating raw has lost its dbMessageId binding in agentHistory).
+    /// [T-compact-anchor-heal-history] 锚点是否真的出现在 agentHistory 里。
+    /// 只判"id 在不在库里"不够：id 还在、但被过滤出 agentHistory 时，发送阶段
+    /// 解析不到锚点，就会退化成全量历史（实测 2000+ 条、30 万 token，卡死主线程）。
+    static func anchorIsInAgentHistory(_ id: String?, history: [AgentMessage]) -> Bool {
+        guard let id else { return false }
+        return history.contains { $0.dbMessageId == id }
+    }
+
     static func anchorByCreatedAt(in rawMessages: [RawMessage], markerCreatedAt: Date, historyDbIds: Set<String>) -> RawMessage? {
         rawMessages.last { raw in
             guard raw.createdAt < markerCreatedAt else { return false }

@@ -575,7 +575,7 @@ extension AIChatViewModel {
                     insertIdx = lcmUIIdx + 1
                     boundaryResolutionPath = "v2(lcmId)"
                     logger.info("[Compact] Phase2.5 v2 OK: divider after UIIdx=\(lcmUIIdx) (lcmId=\(lcmId.prefix(8)) raw.sortOrder=\(lcmRaw.sortOrder), UI range=[\(loadedUIMessages[lcmUIIdx].sourceSortOrder ?? -1)…\(loadedUIMessages[lcmUIIdx].lastSourceSortOrder ?? -1)]) → insertIdx=\(insertIdx)/uiCount=\(loadedUIMessages.count)")
-                } else if lcmRaw == nil {
+                } else if lcmRaw == nil || !Self.anchorIsInAgentHistory(marker.lastCompactedMessageId, history: loadedHistory) {
                     // lcmId genuinely orphaned (id not in rawMessages at all).
                     // Heal by createdAt. We deliberately do NOT heal when
                     // lcmRaw is present but UI failed to map it — that's a
@@ -2084,6 +2084,21 @@ extension AIChatViewModel {
                 // standalone summary message (creates the empty-context loop
                 // when paired with hot tools). Fall back to full history;
                 // the user can `revertCompact` if the marker is corrupt.
+                // [T-compact-anchor-bounded-fallback] 以前这里直接返回全部历史。
+                // 实测锚点经常会丢（anchorId 不在 agentHistory 里），于是一次请求
+                // 要拼 2000+ 条、30 多万 token —— 每次发送都把主线程卡死。
+                // 现在只保留最近一段，并且从 user 消息切起，避免把 tool_use 和
+                // 它的 tool_result 拆散。
+                let cap = 200
+                if agentHistory.count > cap {
+                    var start = agentHistory.count - cap
+                    while start < agentHistory.count, agentHistory[start].role != .user {
+                        start += 1
+                    }
+                    let kept = agentHistory.count - start
+                    logger.warning("[Compact] effectiveAgentHistory v2: anchorId=\(marker.lastCompactedMessageId?.prefix(8) ?? "nil") not in agentHistory(count=\(self.agentHistory.count)) — degrading to last \(kept) messages (cap \(cap))")
+                    if kept > 0 { return Array(agentHistory[start...]) }
+                }
                 logger.warning("[Compact] effectiveAgentHistory v2: anchorId=\(marker.lastCompactedMessageId?.prefix(8) ?? "nil") not in agentHistory(count=\(self.agentHistory.count)) — degrading to full history (no summary)")
                 return agentHistory
             }
