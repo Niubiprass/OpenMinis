@@ -262,6 +262,44 @@ static void runLoopObserverCallback(CFRunLoopObserverRef observer,
 
 #pragma mark - Monitor thread
 
+/// [T-hangdetector-kernel-block] Classify a stalled main thread by its leaf
+/// frame.
+///
+/// Returns NULL when the leaf is not a kernel wait at all — an app or
+/// framework frame, i.e. unambiguously busy — "mach_msg" for the RunLoop's
+/// own event wait (the one state that is legitimately idle), and
+/// "kernel-wait" for every other kernel wait: a mutex, a semaphore, a read,
+/// an fsync. Those are wedges, and before this classifier existed they were
+/// discarded as idleness, which is how a 20 s freeze could happen with no
+/// watchdog line in the log.
+static const char *hangWaitClassification(uintptr_t *frames, int count) {
+    if (frames == NULL || count <= 0) return NULL;
+
+    Dl_info leaf;
+    if (dladdr((const void *)frames[0], &leaf) == 0 || leaf.dli_fname == NULL) return NULL;
+    const char *base = strrchr(leaf.dli_fname, '/');
+    base = base ? base + 1 : leaf.dli_fname;
+    if (strstr(base, "libsystem_kernel") == NULL) return NULL;
+
+    // Exported kernel entry points usually keep their name in the shared
+    // cache; trust it when present.
+    if (leaf.dli_sname != NULL && strstr(leaf.dli_sname, "mach_msg") != NULL) return "mach_msg";
+
+    // Names are frequently stripped on iOS 15. Fall back to the caller: the
+    // runloop waits for events inside CoreFoundation (CFRunLoopServiceMachPort),
+    // so a CoreFoundation caller means idle; anything else sitting directly on
+    // a kernel wait is a stall.
+    if (count > 1) {
+        Dl_info caller;
+        if (dladdr((const void *)frames[1], &caller) != 0 &&
+            caller.dli_fname != NULL &&
+            strstr(caller.dli_fname, "CoreFoundation") != NULL) {
+            return "mach_msg";
+        }
+    }
+    return "kernel-wait";
+}
+
 static void *monitorThreadMain(void *arg) {
     pthread_setname_np("com.minis.hangdetector.monitor");
 
@@ -346,18 +384,18 @@ static void *monitorThreadMain(void *arg) {
         if (lastBeat == 0) continue; // observer hasn't fired yet
         uint32_t activity = (uint32_t)atomic_load_explicit(&g_lastActivity, memory_order_relaxed);
 
-        // BeforeWaiting = main thread idle, waiting for next event. Not a hang.
-        if (activity == kCFRunLoopBeforeWaiting) {
-            // TEMP(2026-05-14) — runloop fully drained → main thread is
-            // healthy. Reset stack-hash de-dup state so the next hang
-            // run starts fresh (different stack OR same stack treated as
-            // a new event, with its own ALL-THREADS dump opportunity).
-            if (g_lastStackRepeats > 0) {
-                g_lastStackHash = 0;
-                g_lastStackRepeats = 0;
-                g_allThreadsDumpedHash = 0;
-            }
-            continue;
+        // [T-hangdetector-kernel-block] BeforeWaiting used to short-circuit the
+        // whole check here. For this watchdog it is a STALE signal, not a
+        // verdict: the observer records it when the runloop goes to sleep, and
+        // a stall that starts inside a synchronous call made from a runloop
+        // callback (or from a dispatch block right after waking) leaves the
+        // last recorded value at BeforeWaiting while the thread is in fact
+        // wedged. Idleness is therefore decided by PC after sampling, below;
+        // the state is only used to reset de-dup bookkeeping.
+        if (activity == kCFRunLoopBeforeWaiting && g_lastStackRepeats > 0) {
+            g_lastStackHash = 0;
+            g_lastStackRepeats = 0;
+            g_allThreadsDumpedHash = 0;
         }
 
         uint64_t now = mach_continuous_time();
@@ -405,16 +443,22 @@ static void *monitorThreadMain(void *arg) {
         // We do this with dladdr on at most the first two frames so the
         // common "idle" case bails out before we allocate the full
         // resolved array.
-        Dl_info leafInfo;
-        if (dladdr((const void *)frames[0], &leafInfo) != 0 && leafInfo.dli_fname) {
-            const char *base = strrchr(leafInfo.dli_fname, '/');
-            base = base ? base + 1 : leafInfo.dli_fname;
-            if (strstr(base, "libsystem_kernel") != NULL) {
-                // Almost certainly RunLoop idle. Refresh the heartbeat so
-                // we don't fire again next loop on the same wait.
-                atomic_store_explicit(&g_lastBeat, mach_continuous_time(), memory_order_relaxed);
-                continue;
-            }
+        //
+        // [T-hangdetector-kernel-block] The old test — "leaf lives in
+        // libsystem_kernel" — was too coarse: it also matched a thread
+        // blocked on a mutex, a semaphore, a read or an fsync, which is
+        // exactly the wedge worth recording, and silently discarded it as
+        // "RunLoop idle". The 20 s transgression on 2026-10-26 06:15 (app
+        // CPU 0.055 s over the whole window → blocked, not busy) produced
+        // no [HangDetector] line for this reason. Only the runloop's own
+        // mach_msg port wait counts as idle now; every other kernel wait is
+        // reported, tagged with the leaf syscall name.
+        const char *waitKind = hangWaitClassification(frames, frameCount);
+        if (waitKind != NULL && strcmp(waitKind, "mach_msg") == 0) {
+            // Genuinely idle (waiting for the next event). Refresh the
+            // heartbeat so we don't re-sample the same wait every tick.
+            atomic_store_explicit(&g_lastBeat, mach_continuous_time(), memory_order_relaxed);
+            continue;
         }
 
         // Compute a fast 64-bit hash of the PC frames so we can de-dup
@@ -516,8 +560,8 @@ static void *monitorThreadMain(void *arg) {
         // Surface the most-likely-relevant frames in the daily log so the
         // event is grep-able even without the structured dump RPC.
         NSMutableString *summary = [NSMutableString stringWithFormat:
-            @"[HangDetector] ⚠️ MAIN HANG %.0fms (activity=0x%x) buffered=%lu",
-            busyMs, activity, (unsigned long)total];
+            @"[HangDetector] ⚠️ MAIN HANG %.0fms (activity=0x%x wait=%s) buffered=%lu",
+            busyMs, activity, waitKind ?: "app", (unsigned long)total];
         NSUInteger logFrames = MIN(resolved.count, (NSUInteger)8);
         for (NSUInteger i = 0; i < logFrames; i++) {
             HangFrame *frame = resolved[i];
