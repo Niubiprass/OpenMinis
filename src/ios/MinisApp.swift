@@ -111,6 +111,8 @@ struct MinisApp: App {
     @State private var backgroundEntryDate: Date?
 
     init() {
+        // [T-mcp-approval-safety] 启动即安装「回前台清理残留遮罩」的监听。
+        MCPApprovalDialog.installForegroundCleanup()
         // [T-ios-mac-uncaught-nsexception] FIRST statement in the process's own
         // code — before any subsystem gets a chance to throw.
         //
@@ -1295,19 +1297,18 @@ struct MinisApp: App {
 // 通过环境 ButtonStyle 生效：没单独指定样式的按钮自动变玻璃；列表行里显式
 // `.buttonStyle(.plain)` 的地方保持原样。
 
-struct GlassBackdrop: UIViewRepresentable {
-    var style: UIBlurEffect.Style = .systemUltraThinMaterialDark
+struct GlassBackdrop: View {
+    /// [T-glass-buttons] 用 SwiftUI 自带材质（iOS 15 起可用）：真模糊、由系统
+    /// 统一合成，比自己包 UIVisualEffectView 更稳（后者在本工程里协议推断失败）。
+    /// 再叠一层 35% 黑，得到"深色玻璃"而不是亮白的。
+    var dim: Double = 0.35
 
-    // 显式写全 UIViewRepresentableContext<GlassBackdrop>：本文件里 `Context`
-    // 可能被别的类型占用，简写会让签名对不上协议（CI 报 does not conform）。
-    func makeUIView(context: UIViewRepresentableContext<GlassBackdrop>) -> UIVisualEffectView {
-        let view = UIVisualEffectView(effect: UIBlurEffect(style: style))
-        view.isUserInteractionEnabled = false
-        return view
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial)
+            Rectangle().fill(Color.black.opacity(dim))
+        }
     }
-
-    func updateUIViewController(_ uiView: UIVisualEffectView,
-                                context: UIViewRepresentableContext<GlassBackdrop>) {}
 }
 
 struct GlassButtonStyle: ButtonStyle {

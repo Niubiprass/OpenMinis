@@ -352,6 +352,12 @@ extension AIChatViewModel {
 /// [T-mcp-approval-gate] 自绘确认弹窗：标题居中，正文与命令块左边缘对齐，
 /// 只有「拒绝 / 允许」，不记忆任何选择。
 final class MCPApprovalDialog: UIViewController {
+    /// [T-mcp-approval-safety] 同一时间只允许一个审批弹窗，避免多个叠在一起
+    /// 关不干净、留下挡住整屏的暗色遮罩。
+    private static weak var current: MCPApprovalDialog?
+    /// 超时兜底：没人点就按拒绝处理，绝不把界面锁死。
+    private var timeoutWork: DispatchWorkItem?
+
     private let usage: MCPCommandUsage
     private let commandText: String
     private var finish: ((Bool) -> Void)?
@@ -366,8 +372,27 @@ final class MCPApprovalDialog: UIViewController {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// [T-mcp-approval-safety] 回到前台时清掉"没人等的"遮罩：如果弹窗还在但
+    /// 已经没有任何调用在等它（那一轮早结束了），它挡住整屏就是纯 bug。
+    private static var cleanupInstalled = false
+    static func installForegroundCleanup() {
+        guard !cleanupInstalled else { return }
+        cleanupInstalled = true
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
+                                               object: nil, queue: .main) { _ in
+            DispatchQueue.main.async {
+                guard let dlg = MCPApprovalDialog.current else { return }
+                if dlg.finish == nil {
+                    dlg.dismiss(animated: false)
+                    MCPApprovalDialog.current = nil
+                }
+            }
+        }
+    }
+
     @MainActor
     static func present(usage: MCPCommandUsage, command: String) async -> Bool {
+        installForegroundCleanup()
         await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             guard var top = scenes.flatMap({ $0.windows }).first(where: { $0.isKeyWindow })?.rootViewController else {
@@ -377,14 +402,38 @@ final class MCPApprovalDialog: UIViewController {
             while let presented = top.presentedViewController, !presented.isBeingDismissed {
                 top = presented
             }
+            // 已有弹窗在等 → 直接拒绝这一次，免得两个遮罩叠着关不掉。
+            if MCPApprovalDialog.current != nil {
+                cont.resume(returning: false)
+                return
+            }
             let dialog = MCPApprovalDialog(usage: usage, command: command)
-            dialog.finish = { ok in cont.resume(returning: ok) }
+            MCPApprovalDialog.current = dialog
+            dialog.finish = { ok in
+                MCPApprovalDialog.current = nil
+                cont.resume(returning: ok)
+            }
             top.present(dialog, animated: false)
+            // 60 秒没人理 → 自动拒绝并关闭，防止界面被遮罩锁死。
+            let work = DispatchWorkItem { [weak dialog] in dialog?.close(false) }
+            dialog.timeoutWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: work)
         }
     }
 
     private let dim = UIView()
     private let card = UIView()
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // 被系统强制移除（例如父控制器消失）时，也要把等待方放行，避免挂死。
+        if let done = finish {
+            finish = nil
+            timeoutWork?.cancel()
+            MCPApprovalDialog.current = nil
+            done(false)
+        }
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -392,6 +441,8 @@ final class MCPApprovalDialog: UIViewController {
         dim.backgroundColor = UIColor.black.withAlphaComponent(0.45)
         dim.frame = view.bounds
         dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        // 点遮罩 = 拒绝（而不是什么都不做）：万一有异常，也不会把界面锁死。
+        dim.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(dimTapped)))
         view.addSubview(dim)
 
         card.backgroundColor = UIColor(white: 0.17, alpha: 1)
@@ -537,9 +588,14 @@ final class MCPApprovalDialog: UIViewController {
         return one.count > 90 ? String(one.prefix(90)) + "…" : one
     }
 
+    @objc private func dimTapped() { close(false) }
+
     private func close(_ allowed: Bool) {
-        let done = finish
+        guard let done = finish else { return }   // 幂等：重复调用不重复 resume
         finish = nil
-        dismiss(animated: false) { done?(allowed) }
+        timeoutWork?.cancel()
+        timeoutWork = nil
+        MCPApprovalDialog.current = nil
+        dismiss(animated: false) { done(allowed) }
     }
 }
