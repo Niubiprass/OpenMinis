@@ -1260,26 +1260,51 @@ import UIKit
 // 返回键，都要和聊天页「…」按钮长得一样——不是一个画上去的圆圈，而是白底、
 // 极细描边、带柔和投影，看着浮在导航栏上。
 //
-// 尺寸沿用「…」按钮：34pt 的圆，外面留到 44pt 给投影和触控（HIG 最小 44）。
-// 投影必须挂在**不透明的圆**上（见 AIChatView T-frosted-circle-3）：材质本身
-// 没有形状透明度，直接给它加 shadow 会投出一个方形的暗角。
+// [T-frosted-circle-3] 数值必须和「…」按钮完全一致（用户 2026-10-26 反馈
+// 返回键看着"没有朦胧感、磨砂感"）：之前这里用 systemBackground（深色下是纯黑）、
+// 材质只给 0.55、投影也偏弱，结果在深色界面上是一块死板的深灰圆盘；「…」用的是
+// 0.24 的灰底 + 0.85 的材质 + 更强的投影，才有磨砂玻璃的通透。
+//
+// 两个要点：
+// ① 投影必须由「不透明的圆」投出来——ultraThinMaterial 没有形状级的透明度，
+//    SwiftUI 按矩形给它算阴影，圆钮底下会出现一圈圆角方影。
+// ② 尺寸 34pt，外面留到 44pt 给投影和触控（HIG 最小 44）。
 struct FloatingCircleChrome: ViewModifier {
     var diameter: CGFloat
 
-    func body(content: Content) -> some View {
+    var body: some View {
         content
             .frame(width: diameter, height: diameter)
             .background {
                 ZStack {
+                    // 纯色圆：投影的剪影，负责"浮起来"。
                     Circle()
-                        .fill(Color(UIColor.systemBackground))
-                        .shadow(color: .black.opacity(0.12), radius: 2, x: 0, y: 1)
-                        .shadow(color: .black.opacity(0.16), radius: 5, x: 0, y: 2)
+                        .fill(Color(UIColor { traits in
+                            traits.userInterfaceStyle == .dark
+                                ? UIColor(white: 0.24, alpha: 1)
+                                : UIColor.white
+                        }))
+                        .shadow(color: Color(UIColor { traits in
+                            traits.userInterfaceStyle == .dark
+                                ? UIColor(white: 0, alpha: 0.45)
+                                : UIColor(white: 0, alpha: 0.10)
+                        }), radius: 2, x: 0, y: 1)
+                        .shadow(color: Color(UIColor { traits in
+                            traits.userInterfaceStyle == .dark
+                                ? UIColor(white: 0, alpha: 0.50)
+                                : UIColor(white: 0, alpha: 0.16)
+                        }), radius: 5, x: 0, y: 2)
+                    // 系统材质：实时模糊才是"磨砂"的来源。
                     Circle()
                         .fill(.ultraThinMaterial)
-                        .opacity(0.55)
+                        .opacity(0.85)
+                    // 0.5 点描边收口，否则材质边缘会糊进导航栏底色。
                     Circle()
-                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+                        .strokeBorder(Color(UIColor { traits in
+                            traits.userInterfaceStyle == .dark
+                                ? UIColor(white: 1, alpha: 0.10)
+                                : UIColor(white: 0, alpha: 0.06)
+                        }), lineWidth: 0.5)
                 }
             }
             .frame(width: 44, height: 44)
