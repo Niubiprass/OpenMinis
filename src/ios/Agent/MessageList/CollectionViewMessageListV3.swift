@@ -3644,7 +3644,8 @@ extension CollectionViewMessageListV3 {
                     // 其余用粗估；滚上去时再逐条实测，视觉上只在首次滚动时补一次。
                     if i < max(0, newItems.count - Self.entryPrecalcTailWindow) {
                         layout.setEstimatedHeight(
-                            Self.estimateItemHeight(item, messages: messages, width: cvWidth),
+                            Self.estimateItemHeight(item, messages: messages, width: cvWidth,
+                                     messageIndex: messageIndex, cache: &userBubbleHeightCache),
                             at: i)
                         continue
                     }
@@ -3805,7 +3806,8 @@ extension CollectionViewMessageListV3 {
                                 // The +4 padding compensation now lives inside
                                 // estimateTextBlockHeight, so all estimate paths
                                 // agree — no per-call-site fudge here.
-                                let est = Self.estimateItemHeight(item, messages: messages, width: cvWidth)
+                                let est = Self.estimateItemHeight(item, messages: messages, width: cvWidth,
+                                     messageIndex: messageIndex, cache: &userBubbleHeightCache)
                                 layout.setEstimatedHeight(est, at: i)
                             }
                         case .thinking:
@@ -3813,7 +3815,8 @@ extension CollectionViewMessageListV3 {
                             // or header + capped content height when expanded. Hard-coded 88
                             // caused a -48pt correction per cell on first render, producing a
                             // contentSize-shrink jitter chain when scrolling through history.
-                            let est = Self.estimateItemHeight(item, messages: messages, width: cvWidth)
+                            let est = Self.estimateItemHeight(item, messages: messages, width: cvWidth,
+                                     messageIndex: messageIndex, cache: &userBubbleHeightCache)
                             layout.setEstimatedHeight(est, at: i)
                         case .readImageTool:
                             // In V3 block cells, readImageTool renders as a
@@ -3827,7 +3830,8 @@ extension CollectionViewMessageListV3 {
                             // / options / status — the estimate switch below
                             // mirrors QuestionCardView's layout closely enough;
                             // the real measured height corrects it on layout.
-                            layout.setEstimatedHeight(Self.estimateItemHeight(item, messages: messages, width: cvWidth), at: i)
+                            layout.setEstimatedHeight(Self.estimateItemHeight(item, messages: messages, width: cvWidth,
+                                     messageIndex: messageIndex, cache: &userBubbleHeightCache), at: i)
                         default:
                             // Tool capsules (execute, browser, etc.) are 36pt
                             layout.setEstimatedHeight(36, at: i)
@@ -3878,11 +3882,13 @@ extension CollectionViewMessageListV3 {
                             } else {
                                 // empty text (attachment-only) — coarse estimate
                                 layout.setEstimatedHeight(
-                                    Self.estimateItemHeight(item, messages: messages, width: cvWidth), at: i)
+                                    Self.estimateItemHeight(item, messages: messages, width: cvWidth,
+                                     messageIndex: messageIndex, cache: &userBubbleHeightCache), at: i)
                             }
                         } else {
                             // compactDivider / systemInfo — coarse estimate is fine
-                            let est = Self.estimateItemHeight(item, messages: messages, width: cvWidth)
+                            let est = Self.estimateItemHeight(item, messages: messages, width: cvWidth,
+                                     messageIndex: messageIndex, cache: &userBubbleHeightCache)
                             layout.setEstimatedHeight(est, at: i)
                         }
                     }
@@ -3968,7 +3974,13 @@ extension CollectionViewMessageListV3 {
                 // `isCompactLoading`, so a finished/failed/cancelled status row
                 // settles back to the cheap path immediately.
                 for msg in messages where msg.role == .systemInfo && msg.isCompactLoading {
-                    if let idx = newItems.firstIndex(of: .wholeMessage(msg.id)) {
+                    // [T-hang-snapshot-key-cost] Dictionary lookup, not
+                    // `firstIndex(of:)`. The linear scan compared
+                    // MessageListItem values (derived enum equality) once per
+                    // element — the device hang samples showed
+                    // `firstIndex(of:)` → `__derived_enum_equals` 8 times in a
+                    // single 4 s hang. `itemToIndex` is already built above.
+                    if let idx = itemToIndex[.wholeMessage(msg.id)] {
                         ranges.append(idx..<(idx + 1))
                     }
                 }
@@ -4167,8 +4179,13 @@ extension CollectionViewMessageListV3 {
                 // This causes the new cell to inherit the old cell's height (e.g. a 28pt
                 // footer height applied to a new text block), leading to overlap.
                 if !inserted.isEmpty, let layout = snapshotLayout {
+                    // [T-hang-snapshot-key-cost] Same O(n²) removal as above:
+                    // `inserted` is the whole transcript when a session is
+                    // opened, so a scan per element was quadratic exactly where
+                    // it hurt most. `itemToIndex` is the map built a few dozen
+                    // lines up.
                     for item in inserted {
-                        if let idx = newItems.firstIndex(of: item) {
+                        if let idx = itemToIndex[item] {
                             layout.invalidateHeight(at: idx)
                         }
                     }
@@ -4615,7 +4632,22 @@ extension CollectionViewMessageListV3 {
             }
             switch item {
             case .wholeMessage(let id):
-                let n = msg(id)?.content.count ?? 0
+                // [T-hang-snapshot-key-cost] utf8.count, not count.
+                //
+                // `String.count` is grapheme-cluster counting: it walks the
+                // whole string and, for CJK text, runs the grapheme breaking
+                // algorithm over every scalar. This key is recomputed for EVERY
+                // item on EVERY snapshot pass, so on a 120k-token session the
+                // main thread re-counted a few hundred KB of Chinese text
+                // several times a second. The device hang samples
+                // (2026-10-26 07:56) pinned the main thread inside
+                // `contentKey` → `_CFStringCheckAndGetCharacterAtIndex` and then
+                // the scene-update watchdog killed the app at 20 s.
+                //
+                // utf8.count is O(1) for native Swift strings and still changes
+                // whenever the text does — which is all this key needs (it is a
+                // length fingerprint, never the text itself).
+                let n = msg(id)?.content.utf8.count ?? 0
                 let a = msg(id)?.attachments.count ?? 0
                 return "w:\(id.uuidString):\(n):\(a)"
             case .assistantHeader(let id):
@@ -4624,7 +4656,7 @@ extension CollectionViewMessageListV3 {
                 return "f:\(id.uuidString)"
             case .assistantBlock(let mid, let bid):
                 let block = msg(mid)?.blocks.first(where: { $0.id == bid })
-                let n = block?.content.count ?? 0
+                let n = block?.content.utf8.count ?? 0
                 return "b:\(mid.uuidString):\(bid.uuidString):\(n)"
             case .toolCallGroup(let mid, let fid):
                 guard let m = msg(mid) else { return "g:\(mid.uuidString):\(fid.uuidString)" }
@@ -4634,7 +4666,38 @@ extension CollectionViewMessageListV3 {
             }
         }
 
+        /// Legacy 3-arg form for call sites outside the snapshot pass, where no
+        /// index or shared cache is at hand.
         static func estimateItemHeight(_ item: MessageListItem, messages: [ChatMessage], width: CGFloat) -> CGFloat {
+            var cache: [String: CGFloat] = [:]
+            return estimateItemHeight(item, messages: messages, width: width,
+                                      messageIndex: nil, cache: &cache)
+        }
+
+        /// [T-hang-snapshot-key-cost] Full form used by the snapshot pass.
+        ///
+        /// Two costs removed here, both visible in the 2026-10-26 07:56 hang
+        /// samples:
+        ///
+        /// 1. `messages.first(where:)` per item made the estimate pass O(items ×
+        ///    messages); `messageIndex` is already built by applySnapshot, so the
+        ///    lookup is O(1) now.
+        /// 2. The `.user` branch really measures text with a UILabel — and the
+        ///    old code handed it a fresh `throwaway` dictionary on every call, so
+        ///    every user bubble in the transcript was re-measured on EVERY pass.
+        ///    Entering a long session therefore paid for hundreds of text
+        ///    measurements before the first frame. It now shares the caller's
+        ///    persistent `userBubbleHeightCache`, which is cleared when the
+        ///    session changes.
+        static func estimateItemHeight(_ item: MessageListItem, messages: [ChatMessage], width: CGFloat,
+                                       messageIndex: [UUID: Int]?,
+                                       cache: inout [String: CGFloat]) -> CGFloat {
+            func lookup(_ id: UUID) -> ChatMessage? {
+                if let messageIndex, let i = messageIndex[id], i < messages.count {
+                    return messages[i]
+                }
+                return messages.first(where: { $0.id == id })
+            }
             let scale = FontSettings.shared.scaledMessage(16)
             let lineHeight = scale * 1.4
             // [T-ios-user-attach-estimate-mismatch] The former `hPad` local died
@@ -4644,7 +4707,7 @@ extension CollectionViewMessageListV3 {
 
             switch item {
             case .wholeMessage(let msgId):
-                guard let msg = messages.first(where: { $0.id == msgId }) else { return 44 }
+                guard let msg = lookup(msgId) else { return 44 }
                 switch msg.role {
                 case .compactDivider: return 44
                 case .systemInfo: return 36
@@ -4662,8 +4725,7 @@ extension CollectionViewMessageListV3 {
                     // the whole page. Routing the estimate through the accurate
                     // measurement makes the offscreen height already 3 lines, so the
                     // Text never truncates and there is nothing to expand.
-                    var throwaway: [String: CGFloat] = [:]
-                    if let h = Self.measureUserBubbleHeight(for: msg, cvWidth: width, cache: &throwaway) {
+                    if let h = Self.measureUserBubbleHeight(for: msg, cvWidth: width, cache: &cache) {
                         return h
                     }
                     // Fallback (empty/attachment-only): coarse heuristic.
@@ -4689,7 +4751,7 @@ extension CollectionViewMessageListV3 {
             case .assistantHeader:
                 return 28
             case .assistantBlock(let msgId, let blockId):
-                guard let msg = messages.first(where: { $0.id == msgId }),
+                guard let msg = lookup(msgId),
                       let block = msg.blocks.first(where: { $0.id == blockId }) else { return 44 }
                 switch block.kind {
                 case .text:
