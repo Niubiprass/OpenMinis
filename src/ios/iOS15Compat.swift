@@ -1382,6 +1382,8 @@ enum NavPopBridge {
     }
 }
 
+private let navGlassLogger = AppLogger(category: "NavGlass")
+
 // [T-navbar-glass] 导航栏底下那块毛玻璃。
 //
 // 用户 2026-10-26 给的参照：会话页标题/返回/「…」下面那块板，是「比页面亮一档的
@@ -1543,7 +1545,7 @@ final class NavBarGlassProbe: UIViewController {
               let bIndex = nav.view.subviews.firstIndex(of: bar) else { return }
         if bIndex != cIndex + 1 {
             nav.view.insertSubview(container, belowSubview: bar)
-            minisLogger.info("[NavGlass] reordered container under navigation bar")
+            navGlassLogger.info("[NavGlass] reordered container under navigation bar")
         }
     }
 
@@ -1591,7 +1593,6 @@ final class NavBarGlassProbe: UIViewController {
     private func attachScrollObserver(in nav: UINavigationController) {
         let found = Self.firstScrollView(in: nav.topViewController?.view ?? nav.view)
             ?? Self.firstScrollView(in: nav.view)
-            ?? Self.firstScrollView(in: view.window)
         guard let scroll = found else {
             // 列表可能还没挂上来：0.1s 一次、最多 5 秒，找到就停。
             if retries < 50 {
@@ -1600,13 +1601,14 @@ final class NavBarGlassProbe: UIViewController {
                     self?.install()
                 }
             } else {
-                minisLogger.warning("[NavGlass] scroll view not found, glass stays hidden")
+                navGlassLogger.warning("[NavGlass] scroll view not found, glass stays hidden")
             }
             return
         }
         observedScroll = scroll
-        offsetObservation = scroll.observe(\.contentOffset, options: [.initial, .new]) { [weak self] sv, _ in
-            self?.updateAlpha(for: sv)
+        offsetObservation = scroll.observe(\UIScrollView.contentOffset,
+                                           options: [.initial, .new]) { [weak self] scrollView, _ in
+            self?.updateAlpha(for: scrollView)
         }
     }
 
@@ -1623,7 +1625,7 @@ final class NavBarGlassProbe: UIViewController {
         let delta = scroll.contentOffset.y + scroll.adjustedContentInset.top
         let alpha = max(0, min(1, delta / fadeDistance))
         if abs((containerView?.alpha ?? -1) - alpha) > 0.05 {
-            minisLogger.info("[NavGlass] offset=\(Int(scroll.contentOffset.y)) inset=\(Int(scroll.adjustedContentInset.top)) alpha=\(String(format: "%.2f", alpha))")
+            navGlassLogger.info("[NavGlass] offset=\(Int(scroll.contentOffset.y)) inset=\(Int(scroll.adjustedContentInset.top)) alpha=\(String(format: "%.2f", alpha))")
         }
         containerView?.alpha = alpha
     }
