@@ -1503,9 +1503,10 @@ final class NavBarGlassProbe: UIViewController {
         blurView?.effect = Self.blurEffect(for: traitCollection)
         // 把整块抬到「比页面亮一档」。数值先给深色 10% 白、浅色 35% 白，
         // 真机看效果再调（参照图栏内 #292929、页面 #0a0a0a）。
+        // 深色一档先给 6%：真机上 10% 把栏抬得比参照图（#292929）还亮。
         tintView?.backgroundColor = dark
-            ? UIColor(white: 1, alpha: 0.10)
-            : UIColor(white: 1, alpha: 0.35)
+            ? UIColor(white: 1, alpha: 0.06)
+            : UIColor(white: 1, alpha: 0.30)
         hairline?.backgroundColor = dark
             ? UIColor(white: 1, alpha: 0.10)
             : UIColor(white: 0, alpha: 0.08)
@@ -1515,6 +1516,7 @@ final class NavBarGlassProbe: UIViewController {
         guard let container = containerView,
               let nav = navigationController else { return }
         releaseBarBackgroundIfNeeded(nav.navigationBar)
+        ensureOrdering(in: nav)
         let width = nav.view.bounds.width
         // 导航栏在 nav.view 里的真实位置（iOS 15 上它位于状态栏下面，
         // 直接用 navigationBar.frame 会少掉状态栏那一段）。
@@ -1531,6 +1533,19 @@ final class NavBarGlassProbe: UIViewController {
     }
 
     // MARK: - 跟随滚动淡入淡出
+
+    /// 玻璃必须紧贴在导航栏下面一层；SwiftUI 重排子视图时可能把内容视图
+    /// 又插到我们上面（那层是整页不透明底色，会直接吃掉落玻璃），这里校正。
+    private func ensureOrdering(in nav: UINavigationController) {
+        guard let container = containerView else { return }
+        let bar = nav.navigationBar
+        guard let cIndex = nav.view.subviews.firstIndex(of: container),
+              let bIndex = nav.view.subviews.firstIndex(of: bar) else { return }
+        if bIndex != cIndex + 1 {
+            nav.view.insertSubview(container, belowSubview: bar)
+            minisLogger.info("[NavGlass] reordered container under navigation bar")
+        }
+    }
 
     /// 系统导航栏那层近不透明的材质会把我们的玻璃挡住，清掉它。
     /// 只在被系统改回去时重设（用对象身份判断，滚动时几乎零成本）。
@@ -1574,13 +1589,18 @@ final class NavBarGlassProbe: UIViewController {
     }
 
     private func attachScrollObserver(in nav: UINavigationController) {
-        guard let scroll = Self.firstScrollView(in: nav.topViewController?.view ?? nav.view) else {
-            // 列表可能还没挂上来，重试几次（最多 ~0.5s）。
-            if retries < 10 {
+        let found = Self.firstScrollView(in: nav.topViewController?.view ?? nav.view)
+            ?? Self.firstScrollView(in: nav.view)
+            ?? Self.firstScrollView(in: view.window)
+        guard let scroll = found else {
+            // 列表可能还没挂上来：0.1s 一次、最多 5 秒，找到就停。
+            if retries < 50 {
                 retries += 1
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                     self?.install()
                 }
+            } else {
+                minisLogger.warning("[NavGlass] scroll view not found, glass stays hidden")
             }
             return
         }
@@ -1602,6 +1622,9 @@ final class NavBarGlassProbe: UIViewController {
         layoutGlass()
         let delta = scroll.contentOffset.y + scroll.adjustedContentInset.top
         let alpha = max(0, min(1, delta / fadeDistance))
+        if abs((containerView?.alpha ?? -1) - alpha) > 0.05 {
+            minisLogger.info("[NavGlass] offset=\(Int(scroll.contentOffset.y)) inset=\(Int(scroll.adjustedContentInset.top)) alpha=\(String(format: "%.2f", alpha))")
+        }
         containerView?.alpha = alpha
     }
 

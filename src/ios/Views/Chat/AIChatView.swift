@@ -2919,6 +2919,13 @@ _ios15Seg7
                 inputBarHeight: inputBarHeight,
                 searchJump: chatSearchJump
             )
+            // [T-navbar-glass] 让消息列表伸到导航栏底下（和 iOS 26 分支同一个做法）：
+            // 不伸上去，导航栏下面就是一片空白，玻璃后面没东西可糊，只能是一块死灰板——
+            // 用户 2026-10-26 反馈「根本没有模糊效果」就是这个原因。
+            // 列表自己的 safeAreaInsets.top 会变成「状态栏 + 导航栏」的高度，
+            // contentInsetAdjustmentBehavior = .automatic 会把它补进 adjustedContentInset，
+            // 所以第一条消息的位置不变，只有滚动时内容才会从玻璃底下穿过。
+            .ignoresSafeArea(.container, edges: .top)
             // Empty/loading overlay for tap-to-dismiss-keyboard.
             // Placed BEFORE the directory timeline in the ZStack so the
             // timeline can sit on top and receive its own taps (folder-card

@@ -107,7 +107,9 @@ class StabilityTests(unittest.TestCase):
                       'if finalizedCommitted, liveStorage.length <= 8000,',
                       'let inset = uiView.textContainerInset.top + uiView.textContainerInset.bottom',
                       'Self.prefixesEqualIgnoringFontSubstitution(newPrefix, _oldPrefix)',
-                      'if #available(iOS 16.0, *),'):
+                      # [T-stream-fade-ios15] 淡入不再按系统版本分叉：iOS 15
+                      # 也要逐字淡入，这里守住「排动画」这一步本身。
+                      'if let revealRange = fadeRevealRange,'):
             self.assertIn(route, self.source)
         infrastructure = (ROOT / 'src/ios/Agent/MessageList/MessageListInfrastructure.swift').read_text()
         self.assertIn('height: UIView.layoutFittingCompressedSize.height', infrastructure)

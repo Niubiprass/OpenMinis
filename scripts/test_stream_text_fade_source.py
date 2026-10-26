@@ -48,24 +48,20 @@ class StreamFadeSourceTests(unittest.TestCase):
         cls.make = block(VIEW, "func makeUIView(")
         cls.coordinator = VIEW[VIEW.index("final class Coordinator:"):]
 
-    def test_ios15_finishes_existing_fades_before_early_returns(self):
-        # New systems must not cancel every update (that would disable ripple).
-        modern = block(self.update, "if #available(iOS 16.0, *) {")
-        self.assertEqual(modern.strip(), "")
-        gate = self.update.index("if #available(iOS 16.0, *) {")
-        remainder = self.update[gate:]
-        legacy = block(remainder, "else {")
-        self.assertEqual(legacy.strip(),
-                         "context.coordinator.fadeAnimator.cancelAll()")
+    def test_update_never_cancels_fades_on_every_update(self):
+        # 2026-10-26 [T-stream-fade-ios15]: iOS 15 也要逐字淡入。这里原来对
+        # iOS 15 无条件 cancelAll，等于把 15.5 上的淡入彻底关掉，整段文字
+        # 一次性贴上去（用户报「一大段内容直接一片出来」）。现在 updateUIView
+        # 不再按系统版本分叉，也不在每次更新时取消动画。
+        self.assertNotIn("iOS 16.0", self.update)
         cancel = self.update.index("fadeAnimator.cancelAll()")
         for early in ("guard markdown !=", "if shouldDefer {",
                       "if contentHash =="):
             self.assertLess(cancel, self.update.index(early))
 
-    def test_only_reveal_schedule_is_guarded_by_ios16(self):
+    def test_only_reveal_schedule_runs_on_every_system(self):
         self.assertEqual(VIEW.count(".scheduleAnimation(for:"), 1)
-        marker = ("if #available(iOS 16.0, *),\n"
-                  "           let revealRange = fadeRevealRange,")
+        marker = "if let revealRange = fadeRevealRange,"
         reveal = block(self.update, marker)
         self.assertIn("let liveStorage = textView.textStorage as? NSTextStorage",
                       self.update[self.update.index(marker):])
@@ -160,7 +156,14 @@ class StreamFadeSourceTests(unittest.TestCase):
 
     def test_ios16_animator_timing_and_alpha_mechanics_are_retained(self):
         self.assertIn("wordFadeDuration: CFTimeInterval = 0.45", FADE)
-        self.assertIn("staggerWindow: CFTimeInterval = 0.10", FADE)
+        self.assertIn("staggerWindow: CFTimeInterval = 0.28", FADE)
+        # 摊开时长随批次放大（上限 0.9s），大批次才不会整段同时冒出来。
+        self.assertIn("min(0.9, max(staggerWindow", FADE)
+        self.assertIn("maxAnimatedWords = 400", FADE)
+        # 超大批次只淡入尾部，不再整批跳过。
+        schedule_block = block(FADE, "func scheduleAnimation(for")
+        self.assertIn("wordRanges.suffix(Self.maxAnimatedWords)", schedule_block)
+        self.assertNotIn("wordRanges.count <= Self.maxAnimatedWords", schedule_block)
         schedule = block(FADE, "func scheduleAnimation(for")
         self.assertIn("value: original.withAlphaComponent(0)", schedule)
         self.assertIn("startDisplayLinkIfNeeded()", schedule)

@@ -10267,12 +10267,11 @@ struct SelectableMarkdownView: UIViewRepresentable {
 
     func updateUIView(_ textView: SelectableMarkdownTextView, context: Context) {
         let updateStart = CFAbsoluteTimeGetCurrent()
-        // iOS 15: never leave alpha-mutating work alive, even on dedup/defer returns.
-        if #available(iOS 16.0, *) {
-            // Keep the existing streamed word reveal on newer systems.
-        } else {
-            context.coordinator.fadeAnimator.cancelAll()
-        }
+        // [T-stream-fade-ios15] iOS 15 也走逐字淡入。之前这里对 iOS 15 直接把
+        // 动画取消掉，导致 15.5 上整段文字一次性贴上去（用户 2026-10-26 报「一大段
+        // 内容直接一片出来」）。淡入只改 foregroundColor 的 alpha，不触发布局，
+        // iOS 15 的 TextKit 1 同样适用；真正需要收尾的地方（整块重排、宽度变化）
+        // 下面各自有 cancelAll。
         context.coordinator.openURL = openURL
         textView.onTapBlank = onTapBlank
         textView.onCopyScreenshot = onCopyScreenshot
@@ -10730,11 +10729,10 @@ struct SelectableMarkdownView: UIViewRepresentable {
             textView.attributedText = attributed
         }
 
-        // [WordFade] Keep the existing reveal on iOS 16+, via either assign path.
-        // iOS 15 displays renderer colors immediately, with no alpha-0 seeding.
+        // [WordFade] 两条赋值路径都要排动画（iOS 15 起同样启用，见文件顶部
+        // [T-stream-fade-ios15]）。
         // Schedule only AFTER the old generation has been cancelled and assigned.
-        if #available(iOS 16.0, *),
-           let revealRange = fadeRevealRange,
+        if let revealRange = fadeRevealRange,
            let liveStorage = textView.textStorage as? NSTextStorage {
             context.coordinator.fadeTextView = textView
             context.coordinator.fadeAnimator.scheduleAnimation(for: revealRange, in: liveStorage)

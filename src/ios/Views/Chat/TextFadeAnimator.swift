@@ -35,14 +35,21 @@ final class TextFadeAnimator {
     /// responsive on a phone without losing the smooth settle.
     private static let wordFadeDuration: CFTimeInterval = 0.45
 
-    /// Hard cap on how many reveal units (words + inter-word gaps) a single
-    /// schedule call will animate. A large paste (or a big non-streaming
-    /// append) would otherwise schedule hundreds of fades on one frame; above
-    /// this we skip the animation entirely and let the text appear instantly.
-    /// Streaming appends are only a handful of units per call, so this never
-    /// trips during normal output. Raised from 80 since each word now also
-    /// contributes its trailing-gap unit (~2× the count for the same text).
-    private static let maxAnimatedWords = 160
+    /// 单批淡入的最大单位数（词 + 词间空隙）。
+    ///
+    /// 之前是 160，且「超过就整批不动画」——中文场景下单位数≈字数，一段
+    /// 300 字的输出整批跳过，于是一整段字在同一帧里蹦出来（用户 2026-10-26
+    /// 报「一大段内容直接一片出来」）。现在：
+    ///   · 上限抬到 400，一段正常段落能整批淡入；
+    ///   · 仍然超限时不再整批放弃，改成只淡入**尾部** 400 个单位，
+    ///     前面的立即显示（比整块硬贴自然得多）；
+    ///   · 每帧写 attribute 的量是 O(在飞单位数)，400 个也是一帧几百次
+    ///     属性写入，和重绘一次文本相比可忽略。
+    private static let maxAnimatedWords = 400
+
+    /// 一次最多切分多少个单位。超过这个量的大粘贴（几万字）没必要逐字淡入，
+    /// 直接显示，避免一次性切出上万个区间。
+    private static let maxAnimationUnits = 4000
 
     /// Total stagger window for ONE batch, divided across its words — the key
     /// to a steady reveal regardless of bursty token arrival (this is exactly
@@ -51,11 +58,27 @@ final class TextFadeAnimator {
     /// batch finishes in ~`window + duration` (~0.55s) no matter its size. The
     /// per-batch baseStart is simply `now`, so consecutive batches overlap
     /// naturally rather than queueing into an ever-growing tail.
-    private static let staggerWindow: CFTimeInterval = 0.10
+    private static let staggerWindow: CFTimeInterval = 0.28
 
-    private static func stagger(forWordCount count: Int) -> CFTimeInterval {
+    /// - Parameters:
+    ///   - count: 这一批要淡入的单位数。
+    ///   - backlog: 调用时还挂在队列里的旧单位数（上一批没淡完的量）。
+    ///
+    /// 批次越大摊得越久：固定 0.1 秒的窗口会让大批次在几十毫秒内整体冒出来
+    /// （用户看到的就是「一大段直接一片出来」）。一批 300 字大约摊 0.9 秒，
+    /// 和下一批（通常 0.5–1 秒后到）正好接上，观感是连续的流。
+    ///
+    /// 但如果上一批还没走完，说明数据来得比揭示快，这时改用 0.30 秒的短窗口
+    /// 追赶，避免越积越落后（否则输出结束时屏幕上还在慢慢补字）。
+    private static func stagger(forWordCount count: Int, backlog: Int) -> CFTimeInterval {
         guard count > 0 else { return 0 }
-        return staggerWindow / CFTimeInterval(count)
+        let window: CFTimeInterval
+        if backlog > 0 {
+            window = 0.30
+        } else {
+            window = min(0.9, max(staggerWindow, CFTimeInterval(count) * 0.006))
+        }
+        return window / CFTimeInterval(count)
     }
 
     // MARK: - State
@@ -121,14 +144,16 @@ final class TextFadeAnimator {
         // SwiftStreamingMarkdown's `splitIntoWords`. We collect ranges first
         // (cheap, read-only) so we can bail before mutating on a huge paste.
         let nsString = targetStorage.string as NSString
-        let wordRanges = Self.revealUnits(in: nsString, within: safeRange, cap: Self.maxAnimatedWords)
+        let wordRanges = Self.revealUnits(in: nsString, within: safeRange, cap: Self.maxAnimationUnits)
 
-        // Word count over the cap → skip the animation for this batch. The
-        // text is already in the storage at full opacity, so it just appears.
-        guard !wordRanges.isEmpty, wordRanges.count <= Self.maxAnimatedWords else { return }
+        // 超大批次不再整批放弃：只淡入尾部，前面的字立即显示。
+        guard !wordRanges.isEmpty else { return }
+        let units = wordRanges.count > Self.maxAnimatedWords
+            ? Array(wordRanges.suffix(Self.maxAnimatedWords))
+            : wordRanges
 
         let now = CACurrentMediaTime()
-        let step = Self.stagger(forWordCount: wordRanges.count)
+        let step = Self.stagger(forWordCount: units.count, backlog: words.count)
         // Each batch starts its ripple at `now` and overlaps any still-fading
         // earlier batch — this is what makes the reveal read as a steady,
         // natural flow rather than a queue that grows a longer and longer tail
@@ -139,7 +164,7 @@ final class TextFadeAnimator {
         // Batch all alpha-0 writes inside one begin/endEditing so TextKit only
         // posts a single processEditing pass for the whole appended tail.
         targetStorage.beginEditing()
-        for (i, wr) in wordRanges.enumerated() {
+        for (i, wr) in units.enumerated() {
             let original = currentForegroundColor(at: wr.location, in: targetStorage)
             let start = baseStart + CFTimeInterval(i) * step
             words.append(FadeWord(
