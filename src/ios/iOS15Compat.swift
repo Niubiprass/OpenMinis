@@ -1349,11 +1349,35 @@ final class SwipeBackProbe: UIViewController {
         DispatchQueue.main.async { [weak self] in
             guard let nav = self?.navigationController,
                   let gesture = nav.interactivePopGestureRecognizer else { return }
+            // [T-floating-circle-back-pop] 记住这条导航栈，返回键直接 pop 它。
+            NavPopBridge.navigationController = nav
             // 只接管一次；反复设 nil 会让正在进行的侧滑被中途取消。
             if gesture.delegate !== nav || gesture.isEnabled == false {
                 gesture.delegate = nil
             }
             gesture.isEnabled = nav.viewControllers.count > 1
         }
+    }
+}
+
+// [T-floating-circle-back-pop] 返回键不靠 SwiftUI 的 dismiss。
+//
+// 用户 2026-10-26 反馈「会话页返回键有时候不生效」。这个 App 在 iOS 15 上用的是
+// 自己写的 NavigationStack 兜底（隐藏 NavigationLink + isActive 绑定），
+// dismiss 能不能落地取决于那条绑定的当前状态——栈被「resync」替换过之后，
+// SwiftUI 认为已经没东西可 pop 了，按钮就变成点了没反应。
+// 直接拿真实的 UINavigationController 弹栈是确定性的：栈里还有上一页就弹，
+// 弹完 SwiftUI 那条 isActive 绑定会被系统同步回 false，路径跟着清空。
+enum NavPopBridge {
+    static weak var navigationController: UINavigationController?
+
+    /// 返回是否真的弹了栈。false 表示没有可弹的导航栈，调用方再退回 dismiss。
+    @discardableResult
+    static func popTop() -> Bool {
+        guard let nav = navigationController, nav.viewControllers.count > 1 else {
+            return false
+        }
+        nav.popViewController(animated: true)
+        return true
     }
 }

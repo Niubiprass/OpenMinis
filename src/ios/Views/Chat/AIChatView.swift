@@ -2017,7 +2017,13 @@ _ios15Seg7
     private var chatBackButton: some View {
         if hSizeClass == .compact {
             Button {
-                dismiss()
+                // [T-floating-circle-back-pop] 先走真实导航栈（确定性），
+                // 栈不可用时再退回 SwiftUI 的 dismiss。
+                let popped = NavPopBridge.popTop()
+                if !popped {
+                    minisLogger.info("[NavBack] popTop unavailable → dismiss()")
+                    dismiss()
+                }
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 15, weight: .semibold))
