@@ -936,6 +936,9 @@ struct AIChatView: View {
         // 侧滑返回由 SwipeBackEnabler 负责恢复（隐藏返回键会连带关掉侧滑）。
         .navigationBarBackButtonHidden(hSizeClass == .compact)
         .background(SwipeBackEnabler().frame(width: 0, height: 0))
+        // [T-navbar-glass] 导航栏底下的毛玻璃板：内容滚上来时渐显，
+        // 会话在顶部时完全透明（保持原来的样子）。
+        .background(NavBarGlassBackground().frame(width: 0, height: 0))
         // [T-ios-navbar-toolbar-host] The ENTIRE toolbar now lives inside an
         // equatable-gated host child. Root cause of the mid-streaming "..."
         // menu refresh (4th attempt, this one from instrumentation): with

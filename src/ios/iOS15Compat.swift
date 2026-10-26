@@ -1381,3 +1381,238 @@ enum NavPopBridge {
         return true
     }
 }
+
+// [T-navbar-glass] 导航栏底下那块毛玻璃。
+//
+// 用户 2026-10-26 给的参照：会话页标题/返回/「…」下面那块板，是「比页面亮一档的
+// 深色玻璃」——底色 #292929 左右，页面才 #0a0a0a；底下内容糊成大块光斑、认不出字；
+// 只有背景被糊，按钮和标题始终清晰；板底是一条硬边，不是渐变消失。
+//
+// 做法（不是截图 PS）：
+// ① UIVisualEffectView + UIBlurEffect(systemUltraThinMaterial*)，实时采样，GPU 合成；
+// ② 上面叠一层很淡的白（深色 10%，浅色 35%）把整块抬亮一档；
+// ③ 底部 1 像素发丝线做硬边；
+// ④ 跟着列表滚动淡入淡出：会话在顶部时 alpha 0（跟原来一模一样），
+//    内容往上滚 20pt 内渐显到 1；
+// ⑤ 整块不接收触摸，按钮照常点。
+//
+// 位置：插在导航栏正下方（nav.view 里 navigationBar 的下一个兄弟位），
+// 上面是系统导航栏（按钮层），下面是页面内容——不会盖住返回键。
+struct NavBarGlassBackground: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> UIViewController {
+        NavBarGlassProbe()
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+}
+
+final class NavBarGlassProbe: UIViewController {
+    private weak var containerView: UIView?
+    private weak var blurView: UIVisualEffectView?
+    private weak var tintView: UIView?
+    private weak var hairline: UIView?
+    private weak var observedScroll: UIScrollView?
+    private var offsetObservation: NSKeyValueObservation?
+    private var retries = 0
+
+    /// 我们要把系统导航栏自己的底色清掉，否则它会盖住这块玻璃——
+    /// 现在用户看到的「半行字被硬切」，就是系统那层近乎不透明的材质。
+    private var clearAppearance: UINavigationBarAppearance?
+    private weak var patchedBar: UINavigationBar?
+    private var savedStandard: UINavigationBarAppearance?
+    private var savedScrollEdge: UINavigationBarAppearance?
+    private var savedCompact: UINavigationBarAppearance?
+    private var savedTranslucent = true
+
+    /// 滚动多少点才算「完全显形」。
+    private let fadeDistance: CGFloat = 20
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        install()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        teardown()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        layoutGlass()
+    }
+
+    override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+        super.traitCollectionDidChange(previous)
+        guard previous?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        applyColors()
+    }
+
+    // MARK: - 安装
+
+    private func install() {
+        DispatchQueue.main.async { [weak self] in
+            guard let this = self, let nav = this.navigationController else { return }
+            if this.containerView == nil { this.build(in: nav) }
+            this.layoutGlass()
+            if this.observedScroll == nil { this.attachScrollObserver(in: nav) }
+        }
+    }
+
+    private func build(in nav: UINavigationController) {
+        let container = UIView()
+        container.isUserInteractionEnabled = false
+        container.backgroundColor = .clear
+
+        let blur = UIVisualEffectView(effect: Self.blurEffect(for: traitCollection))
+        blur.isUserInteractionEnabled = false
+        container.addSubview(blur)
+
+        let tint = UIView()
+        tint.isUserInteractionEnabled = false
+        container.addSubview(tint)
+
+        let line = UIView()
+        line.isUserInteractionEnabled = false
+        container.addSubview(line)
+
+        // 先隐藏，等第一次滚动回调把 alpha 算出来再显示，避免进页面时闪一下灰条。
+        container.alpha = 0
+        // 插在导航栏正下方：上面是按钮层，下面才是页面内容。
+        if nav.navigationBar.superview === nav.view {
+            nav.view.insertSubview(container, belowSubview: nav.navigationBar)
+        } else {
+            nav.view.addSubview(container)
+        }
+
+        containerView = container
+        blurView = blur
+        tintView = tint
+        hairline = line
+        applyColors()
+    }
+
+    private static func blurEffect(for traits: UITraitCollection) -> UIBlurEffect {
+        traits.userInterfaceStyle == .dark
+            ? UIBlurEffect(style: .systemUltraThinMaterialDark)
+            : UIBlurEffect(style: .systemUltraThinMaterialLight)
+    }
+
+    private func applyColors() {
+        let dark = traitCollection.userInterfaceStyle == .dark
+        blurView?.effect = Self.blurEffect(for: traitCollection)
+        // 把整块抬到「比页面亮一档」。数值先给深色 10% 白、浅色 35% 白，
+        // 真机看效果再调（参照图栏内 #292929、页面 #0a0a0a）。
+        tintView?.backgroundColor = dark
+            ? UIColor(white: 1, alpha: 0.10)
+            : UIColor(white: 1, alpha: 0.35)
+        hairline?.backgroundColor = dark
+            ? UIColor(white: 1, alpha: 0.10)
+            : UIColor(white: 0, alpha: 0.08)
+    }
+
+    private func layoutGlass() {
+        guard let container = containerView,
+              let nav = navigationController else { return }
+        releaseBarBackgroundIfNeeded(nav.navigationBar)
+        let width = nav.view.bounds.width
+        // 导航栏在 nav.view 里的真实位置（iOS 15 上它位于状态栏下面，
+        // 直接用 navigationBar.frame 会少掉状态栏那一段）。
+        let barRect = nav.navigationBar.convert(nav.navigationBar.bounds, to: nav.view)
+        // 从屏幕最顶端一直铺到导航栏底边（连状态栏一起糊）。
+        let height = max(barRect.maxY, nav.view.safeAreaInsets.top)
+        let target = CGRect(x: 0, y: 0, width: width, height: height)
+        if container.frame != target {
+            container.frame = target
+            blurView?.frame = container.bounds
+            tintView?.frame = container.bounds
+            hairline?.frame = CGRect(x: 0, y: height - 1, width: width, height: 1)
+        }
+    }
+
+    // MARK: - 跟随滚动淡入淡出
+
+    /// 系统导航栏那层近不透明的材质会把我们的玻璃挡住，清掉它。
+    /// 只在被系统改回去时重设（用对象身份判断，滚动时几乎零成本）。
+    private func releaseBarBackgroundIfNeeded(_ bar: UINavigationBar) {
+        if clearAppearance == nil {
+            let appearance = UINavigationBarAppearance()
+            appearance.configureWithTransparentBackground()
+            appearance.backgroundEffect = nil
+            appearance.backgroundColor = .clear
+            appearance.shadowColor = .clear
+            appearance.titleTextAttributes = bar.standardAppearance.titleTextAttributes
+            appearance.largeTitleTextAttributes = bar.standardAppearance.largeTitleTextAttributes
+            clearAppearance = appearance
+        }
+        guard let appearance = clearAppearance,
+              bar.standardAppearance !== appearance else { return }
+        if patchedBar !== bar {
+            savedStandard = bar.standardAppearance
+            savedScrollEdge = bar.scrollEdgeAppearance
+            savedCompact = bar.compactAppearance
+            savedTranslucent = bar.isTranslucent
+            patchedBar = bar
+        }
+        bar.isTranslucent = true
+        bar.standardAppearance = appearance
+        bar.scrollEdgeAppearance = appearance
+        bar.compactAppearance = appearance
+    }
+
+    /// 离开这一页时把系统导航栏还原，列表页那边保持原样。
+    private func restoreBarBackground() {
+        guard let bar = patchedBar else { return }
+        if let savedStandard { bar.standardAppearance = savedStandard }
+        if let savedScrollEdge { bar.scrollEdgeAppearance = savedScrollEdge }
+        if let savedCompact { bar.compactAppearance = savedCompact }
+        bar.isTranslucent = savedTranslucent
+        patchedBar = nil
+        savedStandard = nil
+        savedScrollEdge = nil
+        savedCompact = nil
+    }
+
+    private func attachScrollObserver(in nav: UINavigationController) {
+        guard let scroll = Self.firstScrollView(in: nav.topViewController?.view ?? nav.view) else {
+            // 列表可能还没挂上来，重试几次（最多 ~0.5s）。
+            if retries < 10 {
+                retries += 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                    self?.install()
+                }
+            }
+            return
+        }
+        observedScroll = scroll
+        offsetObservation = scroll.observe(\.contentOffset, options: [.initial, .new]) { [weak self] sv, _ in
+            self?.updateAlpha(for: sv)
+        }
+    }
+
+    private static func firstScrollView(in view: UIView) -> UIScrollView? {
+        if let scroll = view as? UIScrollView { return scroll }
+        for sub in view.subviews {
+            if let found = firstScrollView(in: sub) { return found }
+        }
+        return nil
+    }
+
+    private func updateAlpha(for scroll: UIScrollView) {
+        layoutGlass()
+        let delta = scroll.contentOffset.y + scroll.adjustedContentInset.top
+        let alpha = max(0, min(1, delta / fadeDistance))
+        containerView?.alpha = alpha
+    }
+
+    // MARK: - 拆
+
+    private func teardown() {
+        restoreBarBackground()
+        offsetObservation?.invalidate()
+        offsetObservation = nil
+        observedScroll = nil
+        containerView?.removeFromSuperview()
+        containerView = nil
+    }
+}
