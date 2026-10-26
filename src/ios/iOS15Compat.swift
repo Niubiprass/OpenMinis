@@ -9,6 +9,7 @@
 //
 
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 // MARK: - AnyShape (iOS 16)
@@ -1248,5 +1249,86 @@ extension View {
             .onPreferenceChange(IOS15GeometryValueKey<T>.self) { value in
                 if let value = value { action(value) }
             }
+    }
+}
+import SwiftUI
+import UIKit
+
+// [T-floating-circle-toolbar] 全 App 统一的「浮起来的圆钮」。
+//
+// 用户 2026-10-26 的要求：列表页右上那颗终端、左上那颗设置，以及会话页的
+// 返回键，都要和聊天页「…」按钮长得一样——不是一个画上去的圆圈，而是白底、
+// 极细描边、带柔和投影，看着浮在导航栏上。
+//
+// 尺寸沿用「…」按钮：34pt 的圆，外面留到 44pt 给投影和触控（HIG 最小 44）。
+// 投影必须挂在**不透明的圆**上（见 AIChatView T-frosted-circle-3）：材质本身
+// 没有形状透明度，直接给它加 shadow 会投出一个方形的暗角。
+struct FloatingCircleChrome: ViewModifier {
+    var diameter: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: diameter, height: diameter)
+            .background {
+                ZStack {
+                    Circle()
+                        .fill(Color(UIColor.systemBackground))
+                        .shadow(color: .black.opacity(0.12), radius: 2, x: 0, y: 1)
+                        .shadow(color: .black.opacity(0.16), radius: 5, x: 0, y: 2)
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                        .opacity(0.55)
+                    Circle()
+                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+                }
+            }
+            .frame(width: 44, height: 44)
+    }
+}
+
+extension View {
+    /// 包成 34pt 白底圆钮（外框 44pt）。
+    func floatingCircleChrome(diameter: CGFloat = 34) -> some View {
+        modifier(FloatingCircleChrome(diameter: diameter))
+    }
+}
+
+// [T-floating-circle-back] 自绘返回键的配套：把侧滑返回救回来。
+//
+// 隐藏系统返回键（.navigationBarBackButtonHidden）后，UINavigationController
+// 会把 interactivePopGestureRecognizer 的 delegate 设回自己，并在返回按钮为
+// nil 时把侧滑手势关掉。这里把 delegate 摘掉、在手势确实能 pop（栈深 > 1）
+// 时重新启用，等于恢复系统的侧滑行为。
+struct SwipeBackEnabler: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> UIViewController {
+        SwipeBackProbe()
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        (uiViewController as? SwipeBackProbe)?.apply()
+    }
+}
+
+final class SwipeBackProbe: UIViewController {
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        apply()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        apply()
+    }
+
+    func apply() {
+        DispatchQueue.main.async { [weak self] in
+            guard let nav = self?.navigationController,
+                  let gesture = nav.interactivePopGestureRecognizer else { return }
+            // 只接管一次；反复设 nil 会让正在进行的侧滑被中途取消。
+            if gesture.delegate !== nav || gesture.isEnabled == false {
+                gesture.delegate = nil
+            }
+            gesture.isEnabled = nav.viewControllers.count > 1
+        }
     }
 }

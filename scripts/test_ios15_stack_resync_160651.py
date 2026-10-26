@@ -46,13 +46,17 @@ class SelfHealingTap(unittest.TestCase):
 
     def test_open_session_replaces_a_dead_path(self):
         i = CONTENT.index('private func openSession(_ id: String) {')
-        body = CONTENT[i:i + 2200]
+        # [T-stack-probe] 窗口从 2200 放宽到 4000：openSession 里加了点击探针
+        # 日志（T-stack-probe），append 被推到 2200 字符之外，行为本身没变。
+        body = CONTENT[i:i + 4000]
         self.assertIn('if !navigationPath.isEmpty, mountedStackChatId == nil {', body)
         self.assertIn('switchToSession(id)', body)
 
     def test_heal_happens_before_the_append(self):
         i = CONTENT.index('private func openSession(_ id: String) {')
-        body = CONTENT[i:i + 2200]
+        # [T-stack-probe] 窗口从 2200 放宽到 4000：openSession 里加了点击探针
+        # 日志（T-stack-probe），append 被推到 2200 字符之外，行为本身没变。
+        body = CONTENT[i:i + 4000]
         self.assertLess(body.index('mountedStackChatId == nil'),
                         body.index('next.append(id)'))
 
@@ -62,7 +66,9 @@ class SelfHealingTap(unittest.TestCase):
     def test_normal_append_still_used_when_a_chat_is_mounted(self):
         # Regression guard: the fix must not turn every tap into a replace.
         i = CONTENT.index('private func openSession(_ id: String) {')
-        body = CONTENT[i:i + 2200]
+        # [T-stack-probe] 窗口从 2200 放宽到 4000：openSession 里加了点击探针
+        # 日志（T-stack-probe），append 被推到 2200 字符之外，行为本身没变。
+        body = CONTENT[i:i + 4000]
         self.assertIn('next.append(id)', body)
         self.assertIn('commitNavigationPath(next)', body)
 

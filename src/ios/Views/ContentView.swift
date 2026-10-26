@@ -4217,26 +4217,11 @@ struct ContentView: View {
         return "\(n / 1000)k"
     }
 
-    /// The toolbar's terminal icon, pre-scaled to 24pt.
-    ///
-    /// The asset is a 200x200 bitmap; handing `Image("TerminalCircle")` straight
-    /// to the toolbar makes UIKit build the bar button at its 200pt intrinsic
-    /// size (see the note at the label). Rendering it to a 24pt UIImage with
-    /// UIGraphicsImageRenderer makes the intrinsic size correct at the source,
-    /// so it is the same whether it goes through SwiftUI layout or the
-    /// UIBarButtonItem bridge. `alwaysTemplate` preserves the asset's template
-    /// rendering intent so it still follows the toolbar tint.
-    private static let terminalCircleIcon: UIImage = {
-        let side: CGFloat = 24
-        guard let source = UIImage(named: "TerminalCircle") else {
-            return UIImage()
-        }
-        let size = CGSize(width: side, height: side)
-        let scaled = UIGraphicsImageRenderer(size: size).image { _ in
-            source.draw(in: CGRect(origin: .zero, size: size))
-        }
-        return scaled.withRenderingMode(.alwaysTemplate)
-    }()
+    // [T-floating-circle-toolbar] 位图 TerminalCircle 已停用：导航栏右侧改成
+    // 系统符号 + 白底圆钮（见 ToolbarItem 里的注释）。资源文件留在 bundle 里，
+    // 不影响体积和渲染；这里原先的 24pt 预缩放 UIImage 一并删除，避免留下
+    // 没人引用的私有属性。
+
 
     @ToolbarContentBuilder
     private var sidebarToolbarContent: some ToolbarContent {
@@ -4355,8 +4340,14 @@ struct ContentView: View {
                 Button {
                     activeToolSheet = .settings
                 } label: {
+                    // [T-floating-circle-toolbar] 和右侧终端、聊天页「…」同一颗
+                    // 白底圆钮；图形用主文字色，不再是默认的蓝色 tint。
                     Image(systemName: "gear")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .floatingCircleChrome()
                 }
+                .buttonStyle(.plain)
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -4414,21 +4405,17 @@ struct ContentView: View {
                     }
                     #endif
                 } label: {
-                    // [T-ios-mac-toolbar-image-intrinsic] TerminalCircle is a
-                    // 200x200 bitmap. SwiftUI's `.frame` only constrains the
-                    // SwiftUI view; when this label is bridged to a
-                    // UIBarButtonItem (Mac / iPad navigation bar) UIKit builds
-                    // the button from the IMAGE's intrinsic size, so it came out
-                    // 200pt wide and squeezed the `.principal` title down to
-                    // 60pt (measured on a 416pt sidebar navbar: gear 44 + this
-                    // item 212 + sidebar toggle 44, leaving 60 for the title,
-                    // which truncated the SOUL name to "Minif..."). Every other
-                    // toolbar item uses an SF Symbol, whose intrinsic size is
-                    // already correct — which is why only this one broke.
-                    // A pre-scaled UIImage makes the intrinsic size 24pt at the
-                    // source, independent of SwiftUI layout.
-                    Image(uiImage: Self.terminalCircleIcon)
+                    // [T-toolbar-terminal-sf] 原来是位图 TerminalCircle：比左边
+                    // 的齿轮粗一倍，图里还自带一圈黑环，并排放着一个轻一个重
+                    // （用户 2026-10-26 反馈「设置图标和笑脸图标不搭」）。
+                    // 换成系统符号后，线宽/光学尺寸由导航栏统一处理。
+                    // [T-floating-circle-toolbar] 再包成和设置键一样的白底圆钮。
+                    Image(systemName: "terminal")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .floatingCircleChrome()
                 }
+                .buttonStyle(.plain)
             }
         }
     }

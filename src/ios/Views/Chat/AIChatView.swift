@@ -932,6 +932,10 @@ struct AIChatView: View {
         .environment(\.chatSessionId, vm.sessionId)
         .modifier(NavBarStyleModifier(topSafeAreaInset: $topSafeAreaInset))
         .navigationBarTitleDisplayMode(.inline)
+        // [T-floating-circle-back] 系统返回键藏掉，改用与「…」同一套的白底圆钮；
+        // 侧滑返回由 SwipeBackEnabler 负责恢复（隐藏返回键会连带关掉侧滑）。
+        .navigationBarBackButtonHidden(hSizeClass == .compact)
+        .background(SwipeBackEnabler().frame(width: 0, height: 0))
         // [T-ios-navbar-toolbar-host] The ENTIRE toolbar now lives inside an
         // equatable-gated host child. Root cause of the mid-streaming "..."
         // menu refresh (4th attempt, this one from instrumentation): with
@@ -952,7 +956,9 @@ struct AIChatView: View {
         // .background position — the gate silently never engaged. EquatableView
         // wrapping is the only guaranteed path to ==.
         .background(
-            ChatToolbarHost(key: chatToolbarKey, title: {
+            ChatToolbarHost(key: chatToolbarKey, leading: {
+                chatBackButton
+            }, title: {
                 chatNavPrincipalContent
             }, trailing: {
                 trailingMenu
@@ -2003,6 +2009,25 @@ _ios15Seg7
     }
 
     // MARK: - Toolbar Trailing Menu
+
+    /// [T-floating-circle-back] 会话页左侧返回键：和「…」同一颗白底圆钮。
+    /// 只在紧凑宽度（iPhone 压栈布局）出现；分栏布局本来就没有返回键，
+    /// 那种情况下不能凭空塞一个。
+    @ViewBuilder
+    private var chatBackButton: some View {
+        if hSizeClass == .compact {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .floatingCircleChrome()
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("Back", comment: "Back to the session list"))
+        }
+    }
 
     @ViewBuilder
     private var trailingMenu: some View {
@@ -5610,8 +5635,10 @@ private struct ChatToolbarKey: Equatable {
 /// recreated by every parent pass (excluded from ==, same pattern as
 /// EquatableByValue/ChatTrailingMenu) so a key change always renders through
 /// the freshest parent state.
-private struct ChatToolbarHost<Title: View, Trailing: View>: View, Equatable {
+private struct ChatToolbarHost<Leading: View, Title: View, Trailing: View>: View, Equatable {
     let key: ChatToolbarKey
+    /// [T-floating-circle-back] 自绘返回圆钮（隐藏系统返回键后由这里提供）。
+    @ViewBuilder let leading: () -> Leading
     @ViewBuilder let title: () -> Title
     @ViewBuilder let trailing: () -> Trailing
     /// [T-115-chat-search] Opens the in-chat search sheet from the magnifier.
@@ -5667,6 +5694,7 @@ private struct ChatToolbarHost<Title: View, Trailing: View>: View, Equatable {
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) { leading() }
                 ToolbarItem(placement: .principal) { title() }
                 // [T-115-chat-search] Magnifier opens the in-chat search
                 // sheet. Kept a plain Button (no menu) so toolbar re-pushes
