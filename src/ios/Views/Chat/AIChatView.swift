@@ -2096,31 +2096,42 @@ _ios15Seg7
         )
         .frame(width: 34, height: 34)
         .background {
-            Circle()
-                .fill(.ultraThinMaterial)
+            // [T-frosted-circle-3] 阴影必须由「不透明的圆」投出来。
+            //
+            // 之前是整个容器 .shadow：ultraThinMaterial 没有形状级的透明度，
+            // SwiftUI 给它算阴影时按矩形算，于是圆钮底下是一圈圆角方形的暗角
+            // —— 用户说的"阴影有方块感"。描边和材质越淡，这层方影越显眼。
+            //
+            // 现在的顺序：先画一个纯色圆（它才是投影的剪影，投影挂在它身上），
+            // 材质和描边再叠在上面，只负责质感、不参与投影。
+            // 影半径压在 5pt 内，44 的画布刚好装得下，不会被导航栏裁掉。
+            ZStack {
+                Circle()
+                    .fill(Color(UIColor { $0.userInterfaceStyle == .dark
+                        ? UIColor(white: 0.24, alpha: 1)
+                        : UIColor.white }))
+                    .shadow(color: Color(UIColor { $0.userInterfaceStyle == .dark
+                        ? UIColor(white: 0, alpha: 0.45)
+                        : UIColor(white: 0, alpha: 0.10) }),
+                            radius: 2, x: 0, y: 1)
+                    .shadow(color: Color(UIColor { $0.userInterfaceStyle == .dark
+                        ? UIColor(white: 0, alpha: 0.50)
+                        : UIColor(white: 0, alpha: 0.16) }),
+                            radius: 5, x: 0, y: 2)
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .opacity(0.85)
                 // [T-frosted-circle-2] 0.5 点描边收口：纯材质在浅色导航栏上
                 // 边缘会糊进底色，圆看着"贴"着而不是浮着。
-                .overlay {
-                    Circle().strokeBorder(
-                        Color(UIColor { $0.userInterfaceStyle == .dark
-                            ? UIColor(white: 1, alpha: 0.10)
-                            : UIColor(white: 0, alpha: 0.06) }),
-                        lineWidth: 0.5)
-                }
+                Circle().strokeBorder(
+                    Color(UIColor { $0.userInterfaceStyle == .dark
+                        ? UIColor(white: 1, alpha: 0.10)
+                        : UIColor(white: 0, alpha: 0.06) }),
+                    lineWidth: 0.5)
+            }
         }
-        // [T-frosted-circle-2] 阴影要画在 44 的容器里。之前把两层影都塞进 34 的
-        // 框，导航栏一裁只剩边缘一圈脏灰，白底发灰、黑底看不见——用户 02:51
-        // 的原话就是"这三个点感觉没有浮起来"。44 = HIG 最小触控，正好给阴影
-        // 留出画布，圆本身仍是 34。
+        // 44 = HIG 最小触控，给投影留出画布，圆本身仍是 34。
         .frame(width: 44, height: 44)
-        .shadow(color: Color(UIColor { $0.userInterfaceStyle == .dark
-            ? UIColor(white: 0, alpha: 0.40)
-            : UIColor(white: 0, alpha: 0.08) }),
-                radius: 2, x: 0, y: 1)
-        .shadow(color: Color(UIColor { $0.userInterfaceStyle == .dark
-            ? UIColor(white: 0, alpha: 0.45)
-            : UIColor(white: 0, alpha: 0.14) }),
-                radius: 12, x: 0, y: 4)
     }
 
     // MARK: - New Chat (menu entry)

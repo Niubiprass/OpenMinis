@@ -4,6 +4,12 @@ import UIKit
 
 private let shareLog = AppLogger(category: "Share")
 private let draftLog = AppLogger(category: "DraftSession")
+// [T-stack-probe] 会话导航探针。用户报「列表里点会话没反应，但设置/返回/新建都能点」，
+// 五六次都只能重启 App 才好。根因尚未证实，先埋点取证：每次点击、每次前后台切换
+// 都记录 路径深度 / 已挂载的会话 / 当前目标，一旦「点了但 1.2 秒还没挂上」或者
+// 「前台回来自检发现路径非空却什么都没挂」，就在日志里留一条 [StackProbe] 证据。
+// 看日志：scripts 或技能 openminis-stack-probe。
+private let stackLog = AppLogger(category: "StackProbe")
 
 // MARK: - Session context-menu action channel
 
@@ -2747,6 +2753,8 @@ struct ContentView: View {
                     // runloop turn with a full frame budget, never inside the
                     // foreground-transition tick.
                     flushPendingBackgroundNavigation()
+                    // [T-stack-probe] 前台自检：路径非空但什么都没挂 = 死栈，自动重置。
+                    stackProbeCheckAfterForeground()
                     fetchAlarmsIfNeeded()
                     if #available(iOS 17.0, *) {
                         SyncCore.shared.isAppInBackground = false
@@ -4691,6 +4699,45 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - [T-stack-probe] 会话导航探针
+
+    /// 点击会话后 1.2 秒回查：目标会话到底挂上了没有。
+    ///
+    /// 用户报的故障是「列表点会话没反应，别的按钮都正常」，理论上只有两种可能：
+    /// ① 点击根本没进到 `openSession`（被某个透明层吃了）；② 进来了，但导航栈
+    /// 已经是死的，往一个"说是打开了会话、实际什么都没挂"的路径上再 push 一次
+    /// 也没用。这条日志能直接把两者分开：有 `tap` 但紧接着 `STALL` 就是 ②，
+    /// 连 `tap` 都没有就是 ①。
+    private func scheduleStackProbeMountCheck(_ id: String) {
+        guard !isWideLayout else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
+            let mounted = mountedStackChatId
+            guard mounted != id else { return }
+            stackLog.info("[StackProbe] STALL id=\(id.prefix(8)) path=\(navigationPath.count) mounted=\(mounted?.prefix(8) ?? "nil") current=\(currentStackSessionId?.prefix(8) ?? "nil") selecting=\(isSelecting) scene=\(scenePhase == .active ? "active" : "other")")
+        }
+    }
+
+    /// 前台回来时自检一次栈是否还活着。
+    ///
+    /// 临床见过的形态：挂起/恢复后 SwiftUI 把已 push 的聊天页丢了，`navigationPath`
+    /// 却还留着，"路径说开着会话、屏幕上什么都没有"。这时候再点任何会话都只是往
+    /// 死路径上追加，表现就是"点不进去"。这里发现就重置到根，让下一次点击重新走。
+    private func stackProbeCheckAfterForeground() {
+        guard !isWideLayout else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
+            let count = navigationPath.count
+            let mounted = mountedStackChatId
+            stackLog.info("[StackProbe] active path=\(count) mounted=\(mounted?.prefix(8) ?? "nil") current=\(currentStackSessionId?.prefix(8) ?? "nil")")
+            guard count > 0, mounted == nil else { return }
+            stackLog.info("[StackProbe] DEAD-STACK path=\(count) → reset to root")
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) { navigationPath = NavigationPath() }
+            currentStackSessionId = nil
+            previousStackSessionId = nil
+        }
+    }
+
     private func switchToSession(_ id: String) {
         if isWideLayout {
             openSession(id)
@@ -4704,6 +4751,11 @@ struct ContentView: View {
     /// Opens a session in the appropriate layout mode.
     private func openSession(_ id: String) {
         draftLog.info("🔑DRAFT openSession id=\(id) isWide=\(isWideLayout) prevSel=\(selectedSessionId ?? "nil") prevReal=\(newSessionRealId ?? "nil") prevDraft=\(activeDraftId ?? "nil")")
+        // [T-stack-probe] 记录这次点击的现场，并在 1.2 秒后回查有没有真的挂上。
+        // 如果没挂上，日志里会出现 [StackProbe] STALL —— 这就是"点不进去会话"
+        // 的直接证据，不用再靠回忆。
+        stackLog.info("[StackProbe] tap id=\(id.prefix(8)) path=\(navigationPath.count) mounted=\(mountedStackChatId?.prefix(8) ?? "nil") current=\(currentStackSessionId?.prefix(8) ?? "nil") selecting=\(isSelecting) wide=\(isWideLayout)")
+        scheduleStackProbeMountCheck(id)
         // Dismiss keyboard when navigating to a session
         searchFocused = false
         if isWideLayout {
