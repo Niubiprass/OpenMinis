@@ -1429,7 +1429,17 @@ private struct ThinkingSlider: View {
             let thumb: CGFloat = 34
             let inset = thumb / 2
             let usable = max(1, width - thumb)
-            let thumbX = inset + usable * effectiveRatio
+            // [T-thinking-thumb-round] 圆钮必须永远是一个完整的圆。
+            //
+            // 原来它是一颗几乎全透明的玻璃球：只有压住蓝色填充的那半边能看见，
+            // 另一半落在浅色轨道/白色卡片上就跟背景同色，"看起来被直线切掉了"。
+            // 拉到「最大」时正好一半悬在填充之外，于是用户看到的是个 D 形。
+            //
+            // 两个改动：位置夹紧到轨道内（比例再怪也不会把球顶出边界），
+            // 球本身换成不透明白底 + 极淡材质 + 描边 + 投影 —— 深浅背景上都
+            // 是一颗清晰的圆。
+            let clampedRatio = min(max(effectiveRatio, 0), 1)
+            let thumbX = min(max(inset + usable * clampedRatio, inset), width - inset)
 
             ZStack(alignment: .leading) {
                 Capsule()
@@ -1447,13 +1457,14 @@ private struct ThinkingSlider: View {
                         .position(x: dotX(index: i, inset: inset, usable: usable, count: levels.count),
                                   y: 20)
                 }
-                // [T-thinking-thumb-glass] 滑块改成半透明玻璃小球：
-                // 材质打底 + 白色细描边 + 顶部高光弧 + 柔和投影，不再是一块
-                // 黑底蓝圈（那个在深色面板上又重又丑）。
+                // [T-thinking-thumb-glass] 滑块是半透明玻璃小球：
+                // 白色的不透明底（保证浅色背景上也看得见轮廓）+ 材质 + 细描边
+                // + 顶部高光弧 + 柔和投影。之前只有材质和描边，落到白色卡片上
+                // 就整块消失，用户看到的是"被裁掉一半的圆"。
                 ZStack {
-                    Circle().fill(.ultraThinMaterial)
-                    Circle().fill(Color.white.opacity(0.10))
-                    Circle().stroke(Color.white.opacity(0.55), lineWidth: 1)
+                    Circle().fill(Color.white.opacity(0.94))
+                    Circle().fill(.ultraThinMaterial).opacity(0.55)
+                    Circle().stroke(Color.black.opacity(0.07), lineWidth: 0.5)
                     // 顶部高光
                     Circle()
                         .trim(from: 0.56, to: 0.94)
@@ -1461,6 +1472,7 @@ private struct ThinkingSlider: View {
                         .padding(1.5)
                 }
                 .frame(width: thumb, height: thumb)
+                .shadow(color: Color.black.opacity(0.18), radius: 2, x: 0, y: 1)
                 .position(x: thumbX, y: 20)
                 .animation(nil, value: effectiveRatio)
             }
