@@ -374,6 +374,17 @@ struct PersonaPickerSheet: View {
                         .foregroundStyle(.tint)
                 }
             }
+            // [T-persona-row-hitarea] 整行可点。
+            //
+            // `.buttonStyle(.plain)` 的行内按钮只把"内容"算进点击区域 —— 中间的
+            // 空白（Spacer）和右侧没有勾选图标的空地都不响应，于是「无（空白）」
+            // 这一行（没有勾，右边一整片是空的）点上去像坏了，只有正好戳在文字
+            // 上才生效；「跟随分组」带着勾，看着反而"好用"。用户看到的就是
+            // "只有第一行能点"。
+            //
+            // contentShape + 撑满宽度，把整行矩形都变成命中区域。
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
