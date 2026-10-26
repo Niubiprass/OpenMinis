@@ -1272,7 +1272,7 @@ import UIKit
 struct FloatingCircleChrome: ViewModifier {
     var diameter: CGFloat
 
-    var body: some View {
+    func body(content: Content) -> some View {
         content
             .frame(width: diameter, height: diameter)
             .background {
