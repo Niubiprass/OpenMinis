@@ -11,7 +11,8 @@ permissions:
 
 concurrency:
   group: ios15-v64-repair-${{ github.ref }}
-  cancel-in-progress: false
+  # 新推送直接取消还在跑的那一轮：以前是 false，推两次就要白等一整轮。
+  cancel-in-progress: true
 
 env:
   # Re-run 2026-10-17 after repo made public to restore macOS runner eligibility.
