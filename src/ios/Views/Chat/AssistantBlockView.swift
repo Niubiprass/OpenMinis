@@ -23,49 +23,62 @@ struct AssistantBlockView: View {
 
     // MARK: - [T-stream-typewriter-reveal] 内容层打字机
 
-    /// 已经"放出来"的字数；nil 表示不截断（历史消息 / 流式结束）。
-    ///
-    /// 之前的"逐字淡入"是在**已经排版好的文字**上改 alpha：字是慢慢显形了，
-    /// 可列表高度和滚动位置在收到那一批的瞬间就已经跳完了。于是用户看到的是
-    /// 一片字突然出现、页面猛地上移，真正在流动的只有透明度。
-    ///
-    /// 这里改成把"显示进度"做成内容前缀：字没到点就不进排版，高度是跟着
-    /// 一个字一个字长出来的，滚动才有可能跟着平滑走。
-    /// 每 1/15 秒推进一次（一次 4~28 个字），避免每秒几十次重排 markdown。
-    @State private var revealedChars: Int? = nil
-    private let revealClock = Timer.publish(every: 1.0 / 15.0, on: .main, in: .common).autoconnect()
+    /// 每 1/20 秒推进一次。进度存在 registry 里（按 block.id 索引），不放 @State：
+    /// cell 复用 / 视图重建会把 @State 清掉，一清掉就等于"整段立刻显示"——
+    /// 真机录屏里后半段就是那样突然砸出来的。
+    @State private var revealTick = 0
+    private let revealClock = Timer.publish(every: 1.0 / 20.0, on: .main, in: .common).autoconnect()
 
     private var isStreamingBlock: Bool {
         isActiveMessage && message.blocks.last?.id == block.id
     }
 
+    /// 当前应该显示到第几个字；nil = 不截断（历史消息）。
+    private var revealCount: Int? {
+        _ = revealTick          // 让 registry 的变化能触发重算
+        guard let n = StreamRevealRegistry.shared.count(for: block.id) else { return nil }
+        return n < block.content.count ? n : nil
+    }
+
     private var revealedContent: String {
-        guard let n = revealedChars, n < block.content.count else { return block.content }
+        guard let n = revealCount else { return block.content }
         return String(block.content.prefix(n))
     }
 
-    private func advanceReveal(force: Bool = false) {
-        guard isStreamingBlock else {
-            if revealedChars != nil { revealedChars = nil }
-            return
-        }
+    private func advanceReveal() {
         let total = block.content.count
-        // 首次：从这个块当前已有的内容起步，别把已显示的字再倒带一遍。
-        var r = revealedChars ?? total
-        guard r < total else {
-            if revealedChars != r { revealedChars = r }
+        let registry = StreamRevealRegistry.shared
+        var r = registry.count(for: block.id)
+
+        if r == nil {
+            // 第一次见到这个块：历史消息直接全显；正在流的从当前位置往前挪一点点
+            // 起步，避免"刚挂载就整段出现"。
+            if !isStreamingBlock { return }
+            registry.set(max(0, total - 24), for: block.id)
+            revealTick &+= 1
             return
         }
-        let backlog = total - r
+
+        guard r! < total else {
+            // 追平了：流式还在继续就留着（下一批继续从 total 起算），
+            // 已经结束就把条目清掉，恢复成"不截断"。
+            if !isStreamingBlock { registry.clear(block.id); revealTick &+= 1 }
+            return
+        }
+
+        let backlog = total - r!
         let cps: Int
         switch backlog {
         case ..<60:   cps = 55
-        case ..<150:  cps = 110
-        case ..<400:  cps = 200
-        default:      cps = 420
+        case ..<150:  cps = 105
+        case ..<400:  cps = 190
+        default:      cps = 300
         }
-        r = min(total, r + max(1, cps / 15))
-        revealedChars = r
+        // 流已经结束但还有尾巴没放完：加速收尾，但仍然是"放"而不是"砸"。
+        let effective = isStreamingBlock ? cps : max(cps, 260)
+        r = min(total, r! + max(1, effective / 20))
+        registry.set(r!, for: block.id)
+        revealTick &+= 1
     }
 
     var body: some View {
@@ -195,8 +208,8 @@ struct AssistantBlockView: View {
             markdown: revealedContent,
             // 截断显示期间必须绕开缓存：缓存里存的是**整段**的排版结果，
             // 直接命中就等于把没到点的字也一起画出来了。
-            cachedContent: revealedChars == nil ? block.cachedMarkdown : nil,
-            cachedAttributedString: revealedChars == nil ? block.cachedAttributedString : nil,
+            cachedContent: revealCount == nil ? block.cachedMarkdown : nil,
+            cachedAttributedString: revealCount == nil ? block.cachedAttributedString : nil,
             messageId: message.id,
             blockId: block.id,
             onTapBlank: onTapBlank,
@@ -207,9 +220,25 @@ struct AssistantBlockView: View {
         .fixedSize(horizontal: false, vertical: true)
         .modifier(MinisOpenURLHandler())
         .onReceive(revealClock) { _ in advanceReveal() }
-        .onAppear { advanceReveal(force: true) }
-        .onChange(of: isStreamingBlock) { _ in advanceReveal(force: true) }
+        .onAppear { advanceReveal() }
+        .onChange(of: isStreamingBlock) { _ in advanceReveal() }
     }
+}
+
+// MARK: - Stream Reveal Registry
+
+/// [T-stream-typewriter-reveal] 流式揭示进度，按 block.id 存放。
+///
+/// 为什么不能放 @State：AssistantBlockView 活在 cell 里，列表刷新 / 复用会重建
+/// 视图，@State 一重置就回到 nil = 整段显示 —— 真机录屏里"后半段突然跳出来"
+/// 两次都出在这里（一次是重建，一次是流结束时把尾巴一次性放完）。
+final class StreamRevealRegistry {
+    static let shared = StreamRevealRegistry()
+    private var counts: [UUID: Int] = [:]
+
+    func count(for id: UUID) -> Int? { counts[id] }
+    func set(_ value: Int, for id: UUID) { counts[id] = value }
+    func clear(_ id: UUID) { counts.removeValue(forKey: id) }
 }
 
 // MARK: - Shimmer Overlay (continuous diagonal shine via offset animation)

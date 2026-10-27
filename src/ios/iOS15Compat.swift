@@ -1134,11 +1134,21 @@ public struct MinisShareLinkButton: View {
 /// iOS 15 photo + document pickers (UIKit-based; bypasses SwiftUI's broken
 /// multi-sheet chain on iOS 15 which silently drops presentations).
 enum UIKitPickerPresenter {
-    /// [T-picker-present-race] 原来的做法是"固定等 0.45 秒再弹"。如果那时上一个
-    /// 弹窗（相册/文件选择前面的那个操作菜单）还没完全消失、或转场还没结束，
-    /// 选择器会被硬塞进去：先闪一下内容，随后整片空白，得退出来再点一次才好。
-    /// 现在改成等"上一个弹窗真的走完"再弹，并且最多重试 ~2 秒。
-    static func present(_ vc: UIViewController, attempt: Int = 0) {
+    /// [T-picker-present-race] 相册/文件选择器的呈现时序。
+    ///
+    /// 症状（真机录屏 2026-10-27 16:25）：选择器弹出来，缩略图闪一下，随后
+    /// **整片空白**、什么都点不出来，退出重开才正常。
+    ///
+    /// 那是"上一个弹窗还没收完就往上塞新弹窗"的典型表现：UIKit 把新 VC 装在
+    /// 一个正在拆除的 container 里，动画结束后 container 被回收，选择器的
+    /// 内容视图（远端的照片网格）就跟着一起没了 —— 只剩一层皮（取消/添加）。
+    ///
+    /// 旧实现只检查 `presentedViewController == nil`：这个属性在关闭动画**开始**
+    /// 时就已经清空了，检查通过 ≠ 动画结束。这里的改法：
+    /// ① 先等到"没人被 present / 没人正在关闭"；
+    /// ② 再等 0.28 秒，让上一段转场的 CATransaction 真正跑完；
+    /// ③ 弹完 0.45 秒后验一次 view.window，没挂上就关掉重来（最多 3 次）。
+    static func present(_ vc: UIViewController, attempt: Int = 0, retries: Int = 0) {
         DispatchQueue.main.async {
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             guard var top = scenes.flatMap({ $0.windows }).first(where: { $0.isKeyWindow })?.rootViewController else {
@@ -1147,26 +1157,45 @@ enum UIKitPickerPresenter {
             while let presented = top.presentedViewController, !presented.isBeingDismissed {
                 top = presented
             }
-            // 注意：不要在 iOS 15 上用 transitionCoordinator.isRunning —— 该属性
-            // 不存在（CI 编译直接报 "has no member 'isRunning'"）。这里只依据
-            // 「是否还在关闭中 / 是否还是操作菜单 / 是否还有被呈现的控制器」判断。
-            let settling = top.isBeingDismissed
-                || top is UIAlertController          // 操作菜单还在：等它消失
-            if settling, attempt < 16 {
+            let busy = top.isBeingDismissed
+                || top is UIAlertController
+                || top.transitionCoordinator?.isAnimated == true
+            if busy, attempt < 20 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                    present(vc, attempt: attempt + 1)
+                    present(vc, attempt: attempt + 1, retries: retries)
                 }
                 return
             }
             guard top.presentedViewController == nil, vc.presentingViewController == nil else {
-                if attempt < 16 {
+                if attempt < 20 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                        present(vc, attempt: attempt + 1)
+                        present(vc, attempt: attempt + 1, retries: retries)
                     }
                 }
                 return
             }
-            top.present(vc, animated: true)
+            // ② 静置一帧再弹：转场收尾的 CATransaction 通常还差最后几十毫秒。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+                guard vc.presentingViewController == nil, top.presentedViewController == nil else {
+                    if attempt < 20 {
+                        present(vc, attempt: attempt + 1, retries: retries)
+                    }
+                    return
+                }
+                vc.modalPresentationStyle = .pageSheet
+                vc.modalTransitionStyle = .coverVertical
+                top.present(vc, animated: true)
+                // ③ 验挂载：没挂上说明 container 又被拆了，关掉重来。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                    guard vc.presentingViewController != nil else { return }
+                    if vc.view.window == nil, retries < 3 {
+                        vc.dismiss(animated: false)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            present(vc, attempt: 0, retries: retries + 1)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1421,6 +1450,10 @@ final class NavBarGlassProbe: UIViewController {
     private weak var blurView: UIVisualEffectView?
     private weak var tintView: UIView?
     private weak var hairline: UIView?
+    private weak var fadeView: GradientView?
+
+    /// 顶部渐隐高度（pt）。30 差不多是"两行字慢慢化掉"的距离。
+    private static let topFadeHeight: CGFloat = 30
     private weak var observedScroll: UIScrollView?
     private var offsetObservation: NSKeyValueObservation?
     private var retries = 0
@@ -1481,6 +1514,10 @@ final class NavBarGlassProbe: UIViewController {
         let tint = UIView()
         tint.isUserInteractionEnabled = false
         container.addSubview(tint)
+
+        let line = UIView()
+        line.isUserInteractionEnabled = false
+        container.addSubview(line)
 
         // [T-navbar-top-fade] 顶部渐隐：正文滚到导航栏下面时，用一段
         // 页面底色→透明的渐变把它吃进去，避免半截字被栏的下沿硬切。
