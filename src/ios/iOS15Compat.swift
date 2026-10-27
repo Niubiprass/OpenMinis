@@ -1452,8 +1452,8 @@ final class NavBarGlassProbe: UIViewController {
     private weak var hairline: UIView?
     private weak var fadeView: GradientView?
 
-    /// 顶部渐隐高度（pt）。30 差不多是"两行字慢慢化掉"的距离。
-    private static let topFadeHeight: CGFloat = 30
+    /// 顶部渐隐高度（pt）。24 ≈ 一行半字慢慢化掉。
+    private static let topFadeHeight: CGFloat = 24
     private weak var observedScroll: UIScrollView?
     private var offsetObservation: NSKeyValueObservation?
     private var retries = 0
@@ -1524,10 +1524,16 @@ final class NavBarGlassProbe: UIViewController {
         // 颜色是动态的（浅色白、深色黑），跟着外观切换。
         let fade = GradientView()
         fade.isUserInteractionEnabled = false
-        fade.gradient.colors = [
-            UIColor.systemBackground.cgColor,
-            UIColor.systemBackground.withAlphaComponent(0).cgColor,
-        ]
+        // [T-navbar-fade-inside-bar] 渐变必须整段放在导航栏**内部**，底端正好压在
+        // 栏的下沿：这一条像素的颜色必须等于页面底色，才会和下面的内容无缝接上。
+        // 之前是从"栏下沿"往下铺 30pt，于是下沿那条线上下颜色突变 —— 真机上就是
+        // 用户说的"一根线把内容分割了，线下面像蒙了一层"。
+        // 方向也反过来：上透明、下不透明（越往上越化掉）。
+        // 三段：0 → 栏下沿-24pt 是**不透明的页面底色**（标题下面干干净净，
+        // 不会有一行正文从标题中间穿过去）；最后 24pt 渐到全透明，和内容
+        // 无缝接上。用户看到的"一根线"，本质是"渐变从栏下沿才开始"造成的突变。
+        let c = UIColor.systemBackground
+        fade.gradient.colors = [c.cgColor, c.cgColor, c.withAlphaComponent(0).cgColor]
         fade.gradient.startPoint = CGPoint(x: 0.5, y: 0)
         fade.gradient.endPoint = CGPoint(x: 0.5, y: 1)
         container.addSubview(fade)
@@ -1563,6 +1569,15 @@ final class NavBarGlassProbe: UIViewController {
             : UIBlurEffect(style: .systemUltraThinMaterialLight)
     }
 
+    /// 渐变三段的位置：前两段都是不透明，最后 fadeH 点渐到透明。
+    private func updateFadeLocations() {
+        guard let fade = fadeView else { return }
+        let h = max(1, fade.bounds.height)
+        let fadeH = min(Self.topFadeHeight, h * 0.6)
+        let cut = max(0, 1 - fadeH / h)
+        fade.gradient.locations = [0, NSNumber(value: Double(cut)), 1]
+    }
+
     private func applyColors() {
         let dark = traitCollection.userInterfaceStyle == .dark
         blurView?.effect = Self.blurEffect(for: traitCollection)
@@ -1582,10 +1597,9 @@ final class NavBarGlassProbe: UIViewController {
         hairline?.backgroundColor = dark
             ? UIColor(white: 1, alpha: 0.06)
             : UIColor(white: 0, alpha: 0.04)
-        fadeView?.gradient.colors = [
-            UIColor.systemBackground.cgColor,
-            UIColor.systemBackground.withAlphaComponent(0).cgColor,
-        ]
+        let page = UIColor.systemBackground
+        fadeView?.gradient.colors = [page.cgColor, page.cgColor, page.withAlphaComponent(0).cgColor]
+        updateFadeLocations()
     }
 
     private func layoutGlass() {
@@ -1607,14 +1621,15 @@ final class NavBarGlassProbe: UIViewController {
         let barRect = nav.navigationBar.convert(nav.navigationBar.bounds, to: nav.view)
         // 从屏幕最顶端一直铺到导航栏底边（连状态栏一起糊）。
         let barBottom = max(barRect.maxY, nav.view.safeAreaInsets.top)
-        let fadeH = Self.topFadeHeight
-        let target = CGRect(x: 0, y: 0, width: width, height: barBottom + fadeH)
+        let fadeH = min(Self.topFadeHeight, barBottom)
+        let target = CGRect(x: 0, y: 0, width: width, height: barBottom)
         if container.frame != target {
             container.frame = target
             blurView?.frame = CGRect(x: 0, y: 0, width: width, height: barBottom)
             tintView?.frame = CGRect(x: 0, y: 0, width: width, height: barBottom)
             hairline?.frame = CGRect(x: 0, y: barBottom - 1, width: width, height: 1)
-            fadeView?.frame = CGRect(x: 0, y: barBottom, width: width, height: fadeH)
+            fadeView?.frame = CGRect(x: 0, y: 0, width: width, height: barBottom)
+            updateFadeLocations()
         }
     }
 

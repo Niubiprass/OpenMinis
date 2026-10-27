@@ -27,7 +27,7 @@ struct AssistantBlockView: View {
     /// cell 复用 / 视图重建会把 @State 清掉，一清掉就等于"整段立刻显示"——
     /// 真机录屏里后半段就是那样突然砸出来的。
     @State private var revealTick = 0
-    private let revealClock = Timer.publish(every: 1.0 / 20.0, on: .main, in: .common).autoconnect()
+    private let revealClock = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
 
     private var isStreamingBlock: Bool {
         isActiveMessage && message.blocks.last?.id == block.id
@@ -36,8 +36,10 @@ struct AssistantBlockView: View {
     /// 当前应该显示到第几个字；nil = 不截断（历史消息）。
     private var revealCount: Int? {
         _ = revealTick          // 让 registry 的变化能触发重算
-        guard let n = StreamRevealRegistry.shared.count(for: block.id) else { return nil }
-        return n < block.content.count ? n : nil
+        guard let e = StreamRevealRegistry.shared.entry(for: block.id) else { return nil }
+        // 离开太久且已经不在流式 → 当作历史消息，整段显示。
+        if e.age > 1.0 && !isStreamingBlock { return nil }
+        return e.count < block.content.count ? e.count : nil
     }
 
     private var revealedContent: String {
@@ -48,35 +50,53 @@ struct AssistantBlockView: View {
     private func advanceReveal() {
         let total = block.content.count
         let registry = StreamRevealRegistry.shared
-        var r = registry.count(for: block.id)
+
+        let existing = registry.entry(for: block.id)
+        var r = existing?.count
+
+        if let e = existing, e.age > 1.0 {
+            // 视图离开过（切后台 / 滚出屏幕）：
+            // 已结束 → 直接全显；还在流式 → 跳到接近最新，只留 80 字的尾巴，
+            // 绝不从旧位置重播（用户报的"再发一条，上一条又显示一遍"）。
+            if isStreamingBlock {
+                registry.set(max(e.count, total - 80), for: block.id)
+                revealTick &+= 1
+            } else {
+                registry.clear(block.id)
+                revealTick &+= 1
+            }
+            return
+        }
 
         if r == nil {
-            // 第一次见到这个块：历史消息直接全显；正在流的从当前位置往前挪一点点
-            // 起步，避免"刚挂载就整段出现"。
-            if !isStreamingBlock { return }
-            registry.set(max(0, total - 24), for: block.id)
+            // 第一次见到这个块。历史消息不管；正在写的从 0 开始——
+            // 之前从 total-24 起步，等于"已经把收到的都画出来了"，新回答
+            // 一次就蹦出一大片，用户录屏里两次闪跳都是它。
+            guard isStreamingBlock else { return }
+            registry.set(0, for: block.id)
             revealTick &+= 1
             return
         }
 
         guard r! < total else {
-            // 追平了：流式还在继续就留着（下一批继续从 total 起算），
-            // 已经结束就把条目清掉，恢复成"不截断"。
             if !isStreamingBlock { registry.clear(block.id); revealTick &+= 1 }
             return
         }
 
+        // [T-reveal-pacing] 方案 3：始终逐字，只在积压时提速。
+        // 30Hz 下 —— 2 字/帧 = 60 字/秒；4 字 = 120；8 字 = 240。
         let backlog = total - r!
-        let cps: Int
-        switch backlog {
-        case ..<60:   cps = 55
-        case ..<150:  cps = 105
-        case ..<400:  cps = 190
-        default:      cps = 300
+        let step: Int
+        if !isStreamingBlock {
+            step = 10                    // 收尾（模型已说完）：仍是"放"，不砸
+        } else if backlog > 600 {
+            step = 8
+        } else if backlog > 150 {
+            step = 4
+        } else {
+            step = 2
         }
-        // 流已经结束但还有尾巴没放完：加速收尾，但仍然是"放"而不是"砸"。
-        let effective = isStreamingBlock ? cps : max(cps, 260)
-        r = min(total, r! + max(1, effective / 20))
+        r = min(total, r! + step)
         registry.set(r!, for: block.id)
         revealTick &+= 1
     }
@@ -221,6 +241,11 @@ struct AssistantBlockView: View {
         .modifier(MinisOpenURLHandler())
         .onReceive(revealClock) { _ in advanceReveal() }
         .onAppear { advanceReveal() }
+        // 离开屏幕时，如果这条已经不在流式了，就把进度删掉：
+        // 否则下次进来会从旧位置继续放 = "上一条回复又显示一遍"。
+        .onDisappear {
+            if !isStreamingBlock { StreamRevealRegistry.shared.clear(block.id) }
+        }
         .onChange(of: isStreamingBlock) { _ in advanceReveal() }
     }
 }
@@ -234,11 +259,37 @@ struct AssistantBlockView: View {
 /// 两次都出在这里（一次是重建，一次是流结束时把尾巴一次性放完）。
 final class StreamRevealRegistry {
     static let shared = StreamRevealRegistry()
-    private var counts: [UUID: Int] = [:]
 
-    func count(for id: UUID) -> Int? { counts[id] }
-    func set(_ value: Int, for id: UUID) { counts[id] = value }
-    func clear(_ id: UUID) { counts.removeValue(forKey: id) }
+    private struct Entry {
+        var count: Int
+        var updated: Date
+    }
+
+    /// 进度只有"这一秒内还在推进"才算有效。
+    /// 少了这条时效判断，一个没放完就被滚出屏幕的块会带着旧进度留在表里，
+    /// 下次再出现就**从那个旧位置重播一遍** —— 用户看到的"我发消息以后，
+    /// 上一条回复又出现了一遍"就是这个。
+    private static let staleAfter: TimeInterval = 1.0
+    private var entries: [UUID: Entry] = [:]
+
+    /// 取条目（带"多久没推进"的年龄），由调用方决定怎么用：
+    /// 刚走开 <1s 就接着打，离开久了就跳过去，不重播。
+    func entry(for id: UUID) -> (count: Int, age: TimeInterval)? {
+        guard let e = entries[id] else { return nil }
+        return (e.count, Date().timeIntervalSince(e.updated))
+    }
+
+    func count(for id: UUID) -> Int? {
+        guard let e = entry(for: id) else { return nil }
+        if e.age > Self.staleAfter { return nil }
+        return e.count
+    }
+
+    func set(_ value: Int, for id: UUID) {
+        entries[id] = Entry(count: value, updated: Date())
+    }
+
+    func clear(_ id: UUID) { entries.removeValue(forKey: id) }
 }
 
 // MARK: - Shimmer Overlay (continuous diagonal shine via offset animation)
