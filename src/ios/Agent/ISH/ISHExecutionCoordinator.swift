@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SQLite3
 import os.log
 
@@ -130,6 +131,15 @@ actor ISHExecutionCoordinator {
             throw ISHCoordinatorError.kernelNotBooted
         }
 
+        // [T-mcp-cpu-guard] MCP 命令单独限流：同一时刻最多 2 路。
+        // `minis-mcp-cli` 每次调用都要起一个 Python 解释器并连一个 MCP server，
+        // 并发打起来时（模型连续发工具调用）进程数会瞬间堆到十几个，
+        // 6 核设备直接被吃满（2026-10-27 实测 Minis 353% CPU、负载 18.8，
+        // 前台 App 被 FrontBoard 以 0x8BADF00D 杀掉）。
+        let isMCPCall = sessionId != Self.guardSessionId && Self.isMCPInvocation(command)
+        if isMCPCall { await acquireMCPSlot() }
+        defer { if isMCPCall { releaseMCPSlot() } }
+
         // Register ourselves in the in-flight table purely for
         // stop/preempt visibility — we do NOT wait for prior entries.
         let myId = UUID()
@@ -148,8 +158,10 @@ actor ISHExecutionCoordinator {
         try Task.checkCancellation()
 
         let folder: (folderId: String?, configuration: ChatFolderConfiguration)
-        if sessionId == "mcp-settings" {
+        if sessionId == "mcp-settings" || sessionId == Self.guardSessionId {
             // Explicit non-chat settings probe: no persisted chat/folder exists.
+            // [T-mcp-cpu-guard] The resource guard runs under its own pseudo
+            // session id — it must never resolve (or create) a chat folder.
             folder = (nil, .default)
         } else {
             folder = try await ChatStore.shared.resolveFolderRuntimeContext(for: sessionId)
@@ -1151,5 +1163,147 @@ actor ISHExecutionCoordinator {
 
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
         logger.info("MOUNT batchEnsureFakefsMetadata: \(entries.count) checked, \(inserted) inserted")
+    }
+
+    // MARK: - [T-mcp-cpu-guard] MCP 限流 / 残留进程收割 / CPU 看门狗
+
+    /// 资源守护自己跑命令用的伪会话 id：不落任何聊天目录，也不参与 MCP 限流。
+    static let guardSessionId = "__resource-guard__"
+
+    private var mcpInFlight = 0
+    private var mcpSlotWaiters: [CheckedContinuation<Void, Never>] = []
+    /// 同时在跑的 MCP 调用上限。2 足够让「查工具 + 调工具」这类正常节奏通过，
+    /// 又能挡住模型一轮里连发七八个调用把设备打满。
+    private let mcpMaxConcurrent = 2
+
+    /// 命令行里是否是一次 `minis-mcp-cli` 调用。
+    static func isMCPInvocation(_ command: String) -> Bool {
+        let t = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.contains("minis-mcp-cli") else { return false }
+        // 我们自己收割残留的命令不能算进去（否则满载时会把收割任务排队到死）。
+        return !t.contains("reaped:")
+    }
+
+    private func acquireMCPSlot() async {
+        if mcpInFlight < mcpMaxConcurrent {
+            mcpInFlight += 1
+            return
+        }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            mcpSlotWaiters.append(cont)
+        }
+        // 唤醒即代表名额已经转交，计数不变。
+    }
+
+    private func releaseMCPSlot() {
+        if !mcpSlotWaiters.isEmpty {
+            let next = mcpSlotWaiters.removeFirst()
+            next.resume()
+        } else {
+            mcpInFlight = max(0, mcpInFlight - 1)
+        }
+    }
+
+    private var guardTask: Task<Void, Never>?
+    private var lastCPUUsedNs: UInt64 = 0
+    private var lastCPUSampledAt: CFAbsoluteTime = 0
+    private var highCPUSamples = 0
+
+    /// 启动常驻资源守护：30 秒采一次自身 CPU，2 分钟收一次残留进程。
+    /// 幂等，重复调用无副作用。
+    func startResourceGuards() {
+        guard guardTask == nil else { return }
+        guardTask = Task { [weak self] in
+            var tick = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                tick += 1
+                await self?.resourceGuardTick(tick: tick)
+            }
+        }
+    }
+
+    private func resourceGuardTick(tick: Int) async {
+        let cpu = Self.processCPUPercent(
+            lastUsedNs: &lastCPUUsedNs, lastSampledAt: &lastCPUSampledAt)
+        if cpu > 1.5 { highCPUSamples += 1 } else { highCPUSamples = 0 }
+        // 红线：超过 150% 持续 90 秒（3 个采样），或单次飙到 400% 以上——
+        // 后一种是「已经卡死」的形态，不必再等。
+        if highCPUSamples >= 3 || cpu >= 4.0 {
+            let reaped = await sweepStuckMCPProcesses()
+            AppLogger(category: "ResourceGuard").warning(
+                "[Guard] cpu=\(Int(cpu * 100))% streak=\(highCPUSamples) reaped=\(reaped)")
+            highCPUSamples = 0
+            return
+        }
+        if tick % 4 == 0 {
+            let reaped = await sweepStuckMCPProcesses()
+            if reaped > 0 {
+                AppLogger(category: "ResourceGuard").info("[Guard] idle sweep reaped=\(reaped)")
+            }
+        }
+    }
+
+    /// 收割卡死的 `minis-mcp-cli` 残留（孤儿或超过 3 分钟仍不退出）。
+    /// 返回被清掉的进程数。
+    @discardableResult
+    func sweepStuckMCPProcesses() async -> Int {
+        guard ISHKernel.shared.isBooted else { return 0 }
+        let script = Self.reaperScript
+        let result = try? await execute(
+            sessionId: Self.guardSessionId,
+            command: script,
+            timeout: 20,
+            lineCallback: { _ in },
+            pidCallback: { _ in }
+        )
+        guard let out = result?.output else { return 0 }
+        return out.components(separatedBy: "reaped:").count - 1
+    }
+
+    private static let reaperScript = """
+    now=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null)
+    [ -n "$now" ] || now=0
+    for p in /proc/[0-9]*; do
+      [ -d "$p" ] || continue
+      pid=${p#/proc/}
+      cmd=$(tr '\\0' ' ' < "$p/cmdline" 2>/dev/null)
+      case "$cmd" in *minis-mcp-cli*) ;; *) continue ;; esac
+      case "$cmd" in *"/bin/sh"*) continue ;; esac
+      st=$(awk '{print $22}' "$p/stat" 2>/dev/null)
+      pp=$(awk '{print $4}' "$p/stat" 2>/dev/null)
+      [ -n "$st" ] || continue
+      age=$(( now - st / 100 ))
+      if [ "$pp" = "1" ] || [ "$age" -gt 180 ]; then
+        kill -9 -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null
+        echo "reaped:$pid:$age"
+      fi
+    done
+    """
+
+    /// 本进程当前 CPU 占用（1.0 = 一个核）。用两次采样的 CPU 时间差除以墙钟时间，
+    /// 比瞬时快照稳，也能反映多核叠加（>100% 说明有线程在满跑）。
+    private static func processCPUPercent(lastUsedNs: inout UInt64,
+                                          lastSampledAt: inout CFAbsoluteTime) -> Double {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return 0 }
+        let used = UInt64(info.user_time.seconds + info.system_time.seconds) * 1_000_000_000
+            + UInt64(info.user_time.microseconds + info.system_time.microseconds) &* 1000
+        let now = CFAbsoluteTimeGetCurrent()
+        defer {
+            lastUsedNs = used
+            lastSampledAt = now
+        }
+        guard lastSampledAt > 0 else { return 0 }
+        let dt = now - lastSampledAt
+        guard dt > 1 else { return 0 }
+        let delta = used &- min(used, lastUsedNs)
+        return Double(delta) / 1e9 / dt
     }
 }

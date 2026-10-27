@@ -1455,39 +1455,6 @@ final class MessageListViewController: UIViewController {
         view.addSubview(collectionView)
     }
 
-    /// [T-navbar-glass] 让消息列表真正伸到导航栏底下。
-    ///
-    /// SwiftUI 在 iOS 15 上按安全区摆放这一页，给 CollectionViewMessageListV3 加的
-    /// `.ignoresSafeArea(.container, edges: .top)` 并不会把它的 frame 顶上去。
-    /// 实测（minis-2026-10-27 11:52 日志）：玻璃装配成功、alpha=1.00、
-    /// adjustedContentInset.top=99，但列表顶上那 99pt 仍是空白的页面底色——
-    /// 玻璃后面没东西可糊，只能显示成一块死灰板（用户报「还是没有模糊透明」）。
-    ///
-    /// 改在 UIKit 侧确定性地做：每次布局后把 collectionView 的 frame 向上扩到屏幕顶，
-    /// 高度补回同样大小。frame 真的压在导航栏上之后，它自己的 safeAreaInsets.top 会
-    /// 变成「状态栏 + 导航栏」，`.automatic` 自动把这段补进 adjustedContentInset，
-    /// 第一条消息位置不变，只有滚动时内容会从玻璃底下穿过。
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        extendUnderNavigationBarIfNeeded()
-    }
-
-    private func extendUnderNavigationBarIfNeeded() {
-        guard let cv = collectionView else { return }
-        // iOS 26 的页面本来整页忽略安全区，这里不重复处理。
-        if #available(iOS 26.0, *) { return }
-        let topInWindow = view.convert(CGPoint.zero, to: nil).y
-        guard topInWindow > 1, view.bounds.height > 1 else { return }
-        let targetY = -topInWindow
-        let targetH = view.bounds.height + topInWindow
-        var f = cv.frame
-        guard abs(f.origin.y - targetY) > 0.5 || abs(f.size.height - targetH) > 0.5 else { return }
-        f.origin.y = targetY
-        f.size.height = targetH
-        cv.frame = f
-        AppLogger(category: "NavGlass").info("[NavGlass] list extended under bar by \(Int(topInWindow))pt h=\(Int(targetH))")
-    }
-
     /// [RotationFix] Rotation handler — without this, on rotation the
     /// collection view resizes to the new width but its dequeued cells stay
     /// at the previous-orientation width. Off-screen cells (including any

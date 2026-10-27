@@ -398,6 +398,10 @@ struct MinisApp: App {
                     // itself is cheap (100ms poll on a background thread,
                     // observer write on each runloop hop).
                     StreamingHangLogger.shared.acquire(reason: "app-launch always-on")
+                    // [T-mcp-cpu-guard] 常驻资源守护：MCP 调用限流已在执行器里，
+                    // 这里启动周期性的残留进程收割 + CPU 看门狗，防止卡死的
+                    // minis-mcp-cli 把整机拖垮（前台 App 被 watchdog 杀）。
+                    Task { await ISHExecutionCoordinator.shared.startResourceGuards() }
                     // [T-ios-backup-shared-leak] One-shot migration: an earlier
                     // build delivered backup packages into shared/Backups/,
                     // which is bind-mounted into the guest at /var/minis/shared

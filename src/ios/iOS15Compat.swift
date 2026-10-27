@@ -1478,8 +1478,14 @@ final class NavBarGlassProbe: UIViewController {
         line.isUserInteractionEnabled = false
         container.addSubview(line)
 
-        // 先隐藏，等第一次滚动回调把 alpha 算出来再显示，避免进页面时闪一下灰条。
-        container.alpha = 0
+        // [T-navbar-glass-always] 常态显示，不再跟着滚动淡入淡出。
+        //
+        // 两个原因：
+        // ① UIVisualEffectView 的祖先只要 alpha < 1，磨砂层就会被压成一块
+        //    平的色块（UIKit 的既定行为），而这段玻璃正是靠容器 alpha 做淡入的。
+        //    实测：日志 alpha=1.00 时仍然是死灰板，用户连试三版都"没有模糊感"。
+        // ② 系统导航栏本来就是常驻的，不必等滚动。
+        container.alpha = 1
         // 插在导航栏正下方：上面是按钮层，下面才是页面内容。
         if nav.navigationBar.superview === nav.view {
             nav.view.insertSubview(container, belowSubview: nav.navigationBar)
@@ -1506,9 +1512,11 @@ final class NavBarGlassProbe: UIViewController {
         // 把整块抬到「比页面亮一档」。数值先给深色 10% 白、浅色 35% 白，
         // 真机看效果再调（参照图栏内 #292929、页面 #0a0a0a）。
         // 深色一档先给 6%：真机上 10% 把栏抬得比参照图（#292929）还亮。
+        // 浅色档从 30% 白降到 12%：30% 叠在白色页面上几乎把内容糊死，
+        // 看上去就是一块灰白板，完全没有"透"的感觉。
         tintView?.backgroundColor = dark
             ? UIColor(white: 1, alpha: 0.06)
-            : UIColor(white: 1, alpha: 0.30)
+            : UIColor(white: 1, alpha: 0.12)
         hairline?.backgroundColor = dark
             ? UIColor(white: 1, alpha: 0.10)
             : UIColor(white: 0, alpha: 0.08)
@@ -1622,12 +1630,10 @@ final class NavBarGlassProbe: UIViewController {
 
     private func updateAlpha(for scroll: UIScrollView) {
         layoutGlass()
-        let delta = scroll.contentOffset.y + scroll.adjustedContentInset.top
-        let alpha = max(0, min(1, delta / fadeDistance))
-        if abs((containerView?.alpha ?? -1) - alpha) > 0.05 {
-            navGlassLogger.info("[NavGlass] offset=\(Int(scroll.contentOffset.y)) inset=\(Int(scroll.adjustedContentInset.top)) alpha=\(String(format: "%.2f", alpha))")
-        }
-        containerView?.alpha = alpha
+        // [T-navbar-glass-always] 不再按滚动位置改 alpha（见 build 里的说明）：
+        // 祖先 alpha < 1 会把磨砂压平，这正是"玻璃永远不糊"的直接原因。
+        if let c = containerView, c.alpha != 1 { c.alpha = 1 }
+        _ = scroll
     }
 
     // MARK: - 拆
