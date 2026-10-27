@@ -1284,16 +1284,18 @@ struct FloatingCircleChrome: ViewModifier {
                                 ? UIColor(white: 0.24, alpha: 1)
                                 : UIColor.white
                         }))
+                        // [T-navbar-top-fade] 栏底变纯白以后，白圆钮落在白底上
+                        // 会"糊掉"。浅色模式把投影加深一档，靠影子托起来。
                         .shadow(color: Color(UIColor { traits in
                             traits.userInterfaceStyle == .dark
                                 ? UIColor(white: 0, alpha: 0.45)
-                                : UIColor(white: 0, alpha: 0.10)
-                        }), radius: 2, x: 0, y: 1)
+                                : UIColor(white: 0, alpha: 0.16)
+                        }), radius: 2.5, x: 0, y: 1)
                         .shadow(color: Color(UIColor { traits in
                             traits.userInterfaceStyle == .dark
                                 ? UIColor(white: 0, alpha: 0.50)
-                                : UIColor(white: 0, alpha: 0.16)
-                        }), radius: 5, x: 0, y: 2)
+                                : UIColor(white: 0, alpha: 0.26)
+                        }), radius: 6, x: 0, y: 2.5)
                     // 系统材质：实时模糊才是"磨砂"的来源。
                     Circle()
                         .fill(.ultraThinMaterial)
@@ -1303,7 +1305,7 @@ struct FloatingCircleChrome: ViewModifier {
                         .strokeBorder(Color(UIColor { traits in
                             traits.userInterfaceStyle == .dark
                                 ? UIColor(white: 1, alpha: 0.10)
-                                : UIColor(white: 0, alpha: 0.06)
+                                : UIColor(white: 0, alpha: 0.09)
                         }), lineWidth: 0.5)
                 }
             }
@@ -1408,6 +1410,12 @@ struct NavBarGlassBackground: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
 }
 
+/// [T-navbar-top-fade] 纯渐变层视图：layerClass 直接换成 CAGradientLayer。
+final class GradientView: UIView {
+    override class var layerClass: AnyClass { CAGradientLayer.self }
+    var gradient: CAGradientLayer { layer as! CAGradientLayer }
+}
+
 final class NavBarGlassProbe: UIViewController {
     private weak var containerView: UIView?
     private weak var blurView: UIVisualEffectView?
@@ -1474,9 +1482,18 @@ final class NavBarGlassProbe: UIViewController {
         tint.isUserInteractionEnabled = false
         container.addSubview(tint)
 
-        let line = UIView()
-        line.isUserInteractionEnabled = false
-        container.addSubview(line)
+        // [T-navbar-top-fade] 顶部渐隐：正文滚到导航栏下面时，用一段
+        // 页面底色→透明的渐变把它吃进去，避免半截字被栏的下沿硬切。
+        // 颜色是动态的（浅色白、深色黑），跟着外观切换。
+        let fade = GradientView()
+        fade.isUserInteractionEnabled = false
+        fade.gradient.colors = [
+            UIColor.systemBackground.cgColor,
+            UIColor.systemBackground.withAlphaComponent(0).cgColor,
+        ]
+        fade.gradient.startPoint = CGPoint(x: 0.5, y: 0)
+        fade.gradient.endPoint = CGPoint(x: 0.5, y: 1)
+        container.addSubview(fade)
 
         // [T-navbar-glass-always] 常态显示，不再跟着滚动淡入淡出。
         //
@@ -1497,6 +1514,7 @@ final class NavBarGlassProbe: UIViewController {
         blurView = blur
         tintView = tint
         hairline = line
+        fadeView = fade
         applyColors()
         // 进页面默认是"静止"：不画磨砂、不画线，只有滚动后才起雾。
         applyChrome(scrolled: false, animated: false)
@@ -1527,6 +1545,10 @@ final class NavBarGlassProbe: UIViewController {
         hairline?.backgroundColor = dark
             ? UIColor(white: 1, alpha: 0.06)
             : UIColor(white: 0, alpha: 0.04)
+        fadeView?.gradient.colors = [
+            UIColor.systemBackground.cgColor,
+            UIColor.systemBackground.withAlphaComponent(0).cgColor,
+        ]
     }
 
     private func layoutGlass() {
@@ -1547,13 +1569,15 @@ final class NavBarGlassProbe: UIViewController {
         // 直接用 navigationBar.frame 会少掉状态栏那一段）。
         let barRect = nav.navigationBar.convert(nav.navigationBar.bounds, to: nav.view)
         // 从屏幕最顶端一直铺到导航栏底边（连状态栏一起糊）。
-        let height = max(barRect.maxY, nav.view.safeAreaInsets.top)
-        let target = CGRect(x: 0, y: 0, width: width, height: height)
+        let barBottom = max(barRect.maxY, nav.view.safeAreaInsets.top)
+        let fadeH = Self.topFadeHeight
+        let target = CGRect(x: 0, y: 0, width: width, height: barBottom + fadeH)
         if container.frame != target {
             container.frame = target
-            blurView?.frame = container.bounds
-            tintView?.frame = container.bounds
-            hairline?.frame = CGRect(x: 0, y: height - 1, width: width, height: 1)
+            blurView?.frame = CGRect(x: 0, y: 0, width: width, height: barBottom)
+            tintView?.frame = CGRect(x: 0, y: 0, width: width, height: barBottom)
+            hairline?.frame = CGRect(x: 0, y: barBottom - 1, width: width, height: 1)
+            fadeView?.frame = CGRect(x: 0, y: barBottom, width: width, height: fadeH)
         }
     }
 
@@ -1575,6 +1599,17 @@ final class NavBarGlassProbe: UIViewController {
     /// 藏掉 UINavigationBar 自己的背景层（`_UIBarBackground` 及其磨砂子视图）。
     /// 每次布局都检查一次：SwiftUI 会重建层级，藏一次不算数。
     private func hideSystemBarBackground(_ bar: UINavigationBar) {
+        // 1) 老办法三件套：空背景图 + 空阴影图 + 半透明。
+        //    appearance 归 SwiftUI 管，它每次布局可以再装回去；backgroundImage
+        //    这条路 SwiftUI 不管，稳得多。
+        if bar.isTranslucent == false { bar.isTranslucent = true }
+        if bar.backgroundImage(for: .default) == nil {
+            bar.setBackgroundImage(UIImage(), for: .default)
+        }
+        if bar.shadowImage == nil {
+            bar.shadowImage = UIImage()
+        }
+        // 2) 再把 `_UIBarBackground` 这层视图藏掉（双保险）。
         for sub in bar.subviews {
             let name = NSStringFromClass(type(of: sub))
             guard name.contains("Background") || name.contains("BarBackground") else { continue }
@@ -1672,13 +1707,22 @@ final class NavBarGlassProbe: UIViewController {
     /// 一旦内容滚到栏下面，再把磨砂装回来、蒙层和发丝线 0.16s 渐入，
     /// 保证标题不会和正文叠在一起发花。
     private func applyChrome(scrolled: Bool, animated: Bool) {
-        let wanted = scrolled ? Self.blurEffect(for: traitCollection) : nil
+        // [T-navbar-glass-never] 磨砂**永久关闭**。
+        //
+        // 「静止透明、滚动才起雾」在真机上等于「永远起雾」：长会话里你几乎
+        // 从来不在最顶端（contentOffset 一直在几百上千），判定永远是 scrolled，
+        // 于是栏一直是那块灰板 —— 用户连续三版都在说"一点都不透"，就是这个原因。
+        // 现在改成：磨砂永不安装，只保留滚动时的一条发丝线做边界提示。
+        let wanted: UIVisualEffect? = nil
+        _ = scrolled
         if blurView?.effect == nil, wanted != nil {
             blurView?.effect = wanted
         } else if blurView?.effect != nil, wanted == nil {
             blurView?.effect = nil
         }
-        let target: CGFloat = scrolled ? 1 : 0
+        // 全部关掉：蒙层、发丝线都不画。栏里只留标题和两个圆钮。
+        // （hairline 保留视图是为了随时能开回来，这里 alpha 恒 0。）
+        let target: CGFloat = 0
         let apply = {
             self.tintView?.alpha = target
             self.hairline?.alpha = target
