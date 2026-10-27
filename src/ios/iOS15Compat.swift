@@ -1440,6 +1440,55 @@ func releaseNavBarClipping(_ view: UIView, depth: Int) {
     for sub in view.subviews { releaseNavBarClipping(sub, depth: depth - 1) }
 }
 
+/// [T-navbar-clip-watch] 页面出现后的 1.5 秒内盯着导航栏：
+/// UIKit 在 push/pop 转场里会把裁剪重新上锁一次，只放开一次会被抢回去，
+/// 表现就是"切口一会儿有一会儿没有"。这里在转场期间每 0.1 秒补放一次，
+/// 过后自动停，不长期占资源。
+final class NavBarClipWatch {
+    private var timer: Timer?
+    private var until: Date = .distantPast
+
+    func start(for duration: TimeInterval = 1.5) {
+        stop()
+        until = Date().addingTimeInterval(duration)
+        let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] timer in
+            guard let self = self else { timer.invalidate(); return }
+            if Date() >= self.until { self.stop(); return }
+            NavBarClipWatch.releaseNow()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    /// 当前最前面那个导航控制器的栏。
+    static func releaseNow() {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first,
+              let nav = findNavController(in: window.rootViewController) else { return }
+        releaseNavBarClipping(nav.navigationBar, depth: 6)
+    }
+
+    private static func findNavController(in vc: UIViewController?) -> UINavigationController? {
+        guard let vc = vc else { return nil }
+        if let nav = vc as? UINavigationController {
+            if let visible = nav.visibleViewController,
+               let nested = findNavController(in: visible) { return nested }
+            return nav
+        }
+        if let presented = vc.presentedViewController,
+           let nav = findNavController(in: presented) { return nav }
+        for child in vc.children {
+            if let nav = findNavController(in: child) { return nav }
+        }
+        return nil
+    }
+}
+
 /// 只做"放开导航栏裁剪"这一件事的挂件，给没有装玻璃探针的页面用（主列表）。
 struct NavBarNoClipBackground: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> NavBarNoClipProbe { NavBarNoClipProbe() }
@@ -1447,9 +1496,16 @@ struct NavBarNoClipBackground: UIViewControllerRepresentable {
 }
 
 final class NavBarNoClipProbe: UIViewController {
+    private let clipWatch = NavBarClipWatch()
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        clipWatch.start()
+    }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         apply()
+        clipWatch.start()
     }
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
@@ -1482,8 +1538,10 @@ final class NavBarGlassProbe: UIViewController {
     private weak var hairline: UIView?
     private weak var fadeView: GradientView?
 
-    /// 顶部渐隐高度（pt）。24 ≈ 一行半字慢慢化掉。
-    private static let topFadeHeight: CGFloat = 24
+    /// 顶部渐隐高度（pt）。0 = 整块遮罩撤掉：导航栏区域不再铺任何底色，
+    /// 文字一直滚到屏幕最顶上才被切掉。
+    /// （原来是 24：文字离栏底还剩 24pt 就化没了，深色下整块纯黑，很难看。）
+    private static let topFadeHeight: CGFloat = 0
     private weak var observedScroll: UIScrollView?
     private var offsetObservation: NSKeyValueObservation?
     private var retries = 0
@@ -1500,13 +1558,22 @@ final class NavBarGlassProbe: UIViewController {
     /// 滚动多少点才算「完全显形」。
     private let fadeDistance: CGFloat = 20
 
+    private let clipWatch = NavBarClipWatch()
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        clipWatch.start()
+    }
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         install()
+        clipWatch.start()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        clipWatch.stop()
         teardown()
     }
 
@@ -1602,6 +1669,12 @@ final class NavBarGlassProbe: UIViewController {
     /// 渐变三段的位置：前两段都是不透明，最后 fadeH 点渐到透明。
     private func updateFadeLocations() {
         guard let fade = fadeView else { return }
+        // 0 = 不要遮罩，直接把这层藏掉（否则三段渐变会退化成"整块不透明"）。
+        if Self.topFadeHeight <= 0 {
+            fade.alpha = 0
+            return
+        }
+        fade.alpha = 1
         let h = max(1, fade.bounds.height)
         let fadeH = min(Self.topFadeHeight, h * 0.6)
         let cut = max(0, 1 - fadeH / h)

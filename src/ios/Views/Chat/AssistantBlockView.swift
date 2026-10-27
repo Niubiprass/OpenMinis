@@ -21,13 +21,12 @@ struct AssistantBlockView: View {
     @Binding var detailBlock: AssistantBlock?
     private var isHighlighted: Bool { highlightedBlockId == block.id }
 
-    // MARK: - 内容层打字机（最简版）
+    // MARK: - 内容层打字机
     //
-    // 只做一件事：模型说完了之前，一次只放几个字。
-    // · 进度存在本视图的 @State 里，不跨视图共享（之前那张全局表就是"回退/重播"的来源）；
-    // · 第一次出现时内容已经很多（说明不是刚开始，或视图重建）→ 直接全显，绝不重打；
-    // · 一离开"正在写"的状态（模型说完）→ 立刻整条显示，不再补尾巴。
-    @State private var shownChars: Int = -1          // -1 = 全显
+    // 只做一件事：文本别一口气砸出来，慢慢往上流。
+    // 进度存在一张很短的记忆表里（按 block.id），**字还在增加时才记**，
+    // 1 秒没新字就丢掉：写完的那条永远整条显示，不会重放；视图重建也能接着流。
+    @State private var revealTick = 0
     private let revealClock = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
 
     private var isStreamingBlock: Bool {
@@ -35,20 +34,28 @@ struct AssistantBlockView: View {
     }
 
     private var revealedContent: String {
-        guard isStreamingBlock, shownChars >= 0, shownChars < block.content.count else {
+        _ = revealTick
+        guard let e = RevealProgress.shared.entry(block.id), e.count < block.content.count else {
             return block.content
         }
-        return String(block.content.prefix(shownChars))
+        return String(block.content.prefix(e.count))
     }
 
     /// 当前是不是整段都显示出来了（用于决定能不能用排版缓存）。
     private var isShowingFullContent: Bool {
-        !isStreamingBlock || shownChars < 0 || shownChars >= block.content.count
+        _ = revealTick
+        guard let e = RevealProgress.shared.entry(block.id) else { return true }
+        return e.count >= block.content.count
     }
 
-    private func primeReveal() {
-        guard isStreamingBlock, shownChars < 0 else { return }
-        shownChars = block.content.count <= 40 ? 0 : block.content.count
+    private func advanceReveal() {
+        let store = RevealProgress.shared
+        store.prune()
+        guard let e = store.entry(block.id) else { return }
+        let total = block.content.count
+        guard e.count < total else { return }
+        store.advance(block.id, to: min(total, e.count + 3))
+        revealTick &+= 1
     }
 
     var body: some View {
@@ -189,28 +196,57 @@ struct AssistantBlockView: View {
         )
         .fixedSize(horizontal: false, vertical: true)
         .modifier(MinisOpenURLHandler())
-        .onReceive(revealClock) { _ in
-                guard isStreamingBlock else { return }
-                if shownChars < 0 { shownChars = 0 }
-                if shownChars < block.content.count {
-                    shownChars = min(block.content.count, shownChars + 3)
-                }
-            }
-            .onAppear { primeReveal() }
-            .onChange(of: isStreamingBlock) { streaming in
-                // 模型说完 → 立刻全显（不补尾巴，发下一条时不会回退）。
-                if streaming { primeReveal() } else { shownChars = -1 }
-            }
+        .onReceive(revealClock) { _ in advanceReveal() }
+        .onChange(of: block.content.count) { _ in
+            // 有新字 → 登记（回答刚开头时就是这里从 0 开始），并续命 1 秒。
+            RevealProgress.shared.noteGrowth(block.id)
+        }
     }
 }
 
-// MARK: - Stream Reveal Registry
+// MARK: - RevealProgress
 
-/// [T-stream-typewriter-reveal] 流式揭示进度，按 block.id 存放。
+/// [T-stream-typewriter-reveal] 逐字显示进度，按 block.id 存放。
 ///
-/// 为什么不能放 @State：AssistantBlockView 活在 cell 里，列表刷新 / 复用会重建
-/// 视图，@State 一重置就回到 nil = 整段显示 —— 真机录屏里"后半段突然跳出来"
-/// 两次都出在这里（一次是重建，一次是流结束时把尾巴一次性放完）。
+/// 寿命只有 1 秒：字还在增加时不断续命；一旦 1 秒没有新字，就当这条已经写完，
+/// 丢掉进度 → 之后永远整条显示（不会重放）。视图重建时如果 1 秒内还有新字，
+/// 就能从原进度接着流，不会从头打，也不会整段砸出来。
+final class RevealProgress {
+    static let shared = RevealProgress()
+
+    struct Entry {
+        var count: Int
+        var lastGrowth: Date
+    }
+
+    private var store: [UUID: Entry] = [:]
+
+    func entry(_ id: UUID) -> Entry? { store[id] }
+
+    /// 有新字：没有进度就从 0 开始（回答的第一批就算给了 500 字也一样从 0 流），
+    /// 已有进度就只续命，不回退。
+    func noteGrowth(_ id: UUID, now: Date = Date()) {
+        prune(now)
+        if var e = store[id] {
+            e.lastGrowth = now
+            store[id] = e
+        } else {
+            store[id] = Entry(count: 0, lastGrowth: now)
+        }
+    }
+
+    func advance(_ id: UUID, to count: Int) {
+        guard var e = store[id] else { return }
+        e.count = max(e.count, count)
+        store[id] = e
+    }
+
+    /// 丢掉 1 秒没有新字的条目（= 这条写完了）。
+    func prune(_ now: Date = Date()) {
+        guard !store.isEmpty else { return }
+        store = store.filter { now.timeIntervalSince($0.value.lastGrowth) < 1.0 }
+    }
+}
 
 // MARK: - Shimmer Overlay (continuous diagonal shine via offset animation)
 
