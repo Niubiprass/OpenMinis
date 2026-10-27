@@ -41,6 +41,11 @@ struct AssistantBlockView: View {
         return String(block.content.prefix(shownChars))
     }
 
+    /// 当前是不是整段都显示出来了（用于决定能不能用排版缓存）。
+    private var isShowingFullContent: Bool {
+        !isStreamingBlock || shownChars < 0 || shownChars >= block.content.count
+    }
+
     private func primeReveal() {
         guard isStreamingBlock, shownChars < 0 else { return }
         shownChars = block.content.count <= 40 ? 0 : block.content.count
@@ -173,8 +178,8 @@ struct AssistantBlockView: View {
             markdown: revealedContent,
             // 截断显示期间必须绕开缓存：缓存里存的是**整段**的排版结果，
             // 直接命中就等于把没到点的字也一起画出来了。
-            cachedContent: revealCount == nil ? block.cachedMarkdown : nil,
-            cachedAttributedString: revealCount == nil ? block.cachedAttributedString : nil,
+            cachedContent: isShowingFullContent ? block.cachedMarkdown : nil,
+            cachedAttributedString: isShowingFullContent ? block.cachedAttributedString : nil,
             messageId: message.id,
             blockId: block.id,
             onTapBlank: onTapBlank,
