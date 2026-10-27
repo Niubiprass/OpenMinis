@@ -76,6 +76,20 @@ private struct ThinkingHeightReleaseState<Item: Hashable> {
 /// - **3-tier height resolution**: measured cache → precalc (NSAttributedString) → estimate
 /// - **2-state scroll model**: autoScrolling / userBrowsing (replaces V2's 6+ mechanisms)
 /// - **O(1) message lookup**: UUID index rebuilt on each snapshot
+/// [T-navbar-glass] 列表的最大滚动偏移（含上下内边距）。
+///
+/// 之前各处都写成 `contentSize - bounds + adjustedContentInset.bottom`，漏掉了
+/// `.top`。在没有伸进导航栏时，`.top` 只有 8pt 的呼吸位，少算也看不出来；
+/// 但列表现在会向上伸到屏幕顶端（MessageListViewController.extendUnderNavigationBarIfNeeded），
+/// 此时 `.top` 里包含了「状态栏 + 导航栏」那一段（99pt）。继续漏算会让
+/// maxOffset 少掉整整一条栏的高度：置底时最后一条消息停在可视区下方，
+/// 「是否贴底」的判定也会跟着错。
+@inline(__always)
+func mlMaxScrollOffset(_ cv: UIScrollView) -> CGFloat {
+    cv.contentSize.height - cv.bounds.height
+        + cv.adjustedContentInset.top + cv.adjustedContentInset.bottom
+}
+
 struct CollectionViewMessageListV3: UIViewControllerRepresentable {
     @ObservedObject var vm: AIChatViewModel
     var inputFocused: Bool
@@ -2989,7 +3003,7 @@ extension CollectionViewMessageListV3 {
                 let postIP = anchorItem.flatMap { dataSource?.indexPath(for: $0) }
                 let afterY = postIP.flatMap { cv.layoutAttributesForItem(at: $0)?.frame.minY }
                 let maxY = max(-cv.adjustedContentInset.top,
-                    cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom)
+                    mlMaxScrollOffset(cv))
                 let target: CGFloat
                 if scrollMode == .autoScrolling { target = maxY }
                 else { target = savedOffset + ((afterY ?? beforeY ?? 0) - (beforeY ?? 0)) }
@@ -4231,7 +4245,7 @@ extension CollectionViewMessageListV3 {
                 cv.layoutIfNeeded()
                 snapshotLayout?.suppressContentOffsetAdjustment = false
                 isFlushing = false
-                let rawMaxOff = cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom
+                let rawMaxOff = mlMaxScrollOffset(cv)
                 let maxOff = max(0, rawMaxOff)
                 if newItems.count < oldCount && cv.contentOffset.y > maxOff {
                     cv.setContentOffset(CGPoint(x: 0, y: maxOff), animated: false)
@@ -5083,7 +5097,7 @@ extension CollectionViewMessageListV3 {
         func isWithinBottom(_ threshold: CGFloat) -> Bool {
             guard let cv = viewController?.collectionView else { return true }
             // Use adjustedContentInset to account for input bar + tool bar overlay insets.
-            let maxOffset = cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom
+            let maxOffset = mlMaxScrollOffset(cv)
             return maxOffset - cv.contentOffset.y < threshold
         }
 
@@ -5274,7 +5288,7 @@ extension CollectionViewMessageListV3 {
         /// Compact dump of the isWithinBottom inputs for ScrollDiag logs.
         static func nbDump(_ cv: UICollectionView?) -> String {
             guard let cv else { return "cv=nil→isWithinBottom RETURNS TRUE" }
-            let maxOff = cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom
+            let maxOff = mlMaxScrollOffset(cv)
             let diff = maxOff - cv.contentOffset.y
             return "off=\(String(format: "%.0f", cv.contentOffset.y)) cs=\(String(format: "%.0f", cv.contentSize.height)) bh=\(String(format: "%.0f", cv.bounds.height)) adjBot=\(String(format: "%.0f", cv.adjustedContentInset.bottom)) maxOff=\(String(format: "%.0f", maxOff)) diff=\(String(format: "%.0f", diff))"
         }
@@ -5407,7 +5421,7 @@ extension CollectionViewMessageListV3 {
                 // Clamp: don't let target go below -adjustedTop (would scroll
                 // past the top edge), and don't exceed the inflated-inset
                 // maxOff (would over-scroll past content end).
-                let inflatedMaxOff = cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom
+                let inflatedMaxOff = mlMaxScrollOffset(cv)
                 let topLimit = -cv.adjustedContentInset.top
                 let target = min(max(rawTarget, topLimit), inflatedMaxOff)
                 if target > topLimit - 0.5 && abs(cv.contentOffset.y - target) > 0.5 {
@@ -5424,7 +5438,7 @@ extension CollectionViewMessageListV3 {
                 syncScrollFlags()
                 return
             }
-            let maxOff = cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom
+            let maxOff = mlMaxScrollOffset(cv)
             guard maxOff > 0 else { return }
             let target = CGPoint(x: 0, y: maxOff)
             if animated {
@@ -5732,7 +5746,7 @@ extension CollectionViewMessageListV3 {
             // clamp-after-session-load timer, an in-flight animated
             // scroll, an active gesture, deceleration, or some other
             // observer is rejecting the offset write.
-            let maxOff = max(0, cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom)
+            let maxOff = max(0, mlMaxScrollOffset(cv))
             let nearBottom = (maxOff - cv.contentOffset.y) < 60
             chatScreenshotLogger.info("[Stage3-ReAnchor] \(ms()) PIN-STATE scrollMode=\(self.scrollMode == .autoScrolling ? "auto" : "browse") clampAfterSessionLoad=\(self.clampAfterSessionLoad) isAnimatingScrollToBottom=\(self.isAnimatingScrollToBottom) maxOff=\(String(format: "%.1f", maxOff)) currentOffset.y=\(String(format: "%.1f", cv.contentOffset.y)) nearBottom=\(nearBottom) tracking=\(cv.isTracking) decel=\(cv.isDecelerating) dragging=\(cv.isDragging) GRs=\((cv.gestureRecognizers ?? []).map { "\(type(of: $0)):\($0.state.rawValue)" }.joined(separator: ","))")
             // [T-ios-copy-screenshot-top-blank] Probe each scroll write
@@ -6433,7 +6447,7 @@ extension CollectionViewMessageListV3 {
             // Final clamp: ensure offset doesn't exceed actual content bounds
             // after the animation completes (contentSize may have changed mid-flight).
             guard let cv = viewController?.collectionView else { return }
-            let maxOff = max(0, cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom)
+            let maxOff = max(0, mlMaxScrollOffset(cv))
             if cv.contentOffset.y > maxOff {
                 cv.contentOffset.y = maxOff
             }
@@ -6577,7 +6591,7 @@ extension CollectionViewMessageListV3 {
                 let postY = currentIP.flatMap { layout.layoutAttributesForItem(at: $0)?.frame.minY }
                 let desired = savedOffset + ((postY ?? anchorPreY ?? 0) - (anchorPreY ?? postY ?? 0))
                 let minOffset = -cv.adjustedContentInset.top
-                let maxOffset = max(minOffset, cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom)
+                let maxOffset = max(minOffset, mlMaxScrollOffset(cv))
                 cv.contentOffset.y = min(max(desired, minOffset), maxOffset)
             }
 

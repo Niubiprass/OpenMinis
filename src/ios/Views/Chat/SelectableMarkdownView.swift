@@ -10686,12 +10686,24 @@ struct SelectableMarkdownView: UIViewRepresentable {
         if let oldStorage = textView.textStorage as? NSTextStorage,
            oldStorage.length > 0,
            attributed.length > oldStorage.length {
-            let oldLen = oldStorage.length
             let oldStr = oldStorage.string as NSString
             let newStr = attributed.string as NSString
-            if newStr.length >= oldLen,
-               newStr.substring(to: oldLen) == (oldStr as String) {
-                fadeRevealRange = NSRange(location: oldLen, length: attributed.length - oldLen)
+            // [T-stream-fade-lcp] 用最长公共前缀，而不是要求「旧串是新串的严格前缀」。
+            //
+            // 流式渲染时，Markdown 每补全一层结构（换行收尾、加粗/编号/引用标记
+            // 被解析掉、行尾空格被裁掉），渲染出来的字符串都会在中间改几个字，
+            // 严格前缀比较立刻失败 → fadeRevealRange 为 nil → 这一批不淡入。
+            // 中文回答里这种现象极频繁，结果就是用户看到的「一大段字一下子全部
+            // 出现」（2026-10-27 反馈）。改按公共前缀切：只把真正新增的那一段
+            // 拿去淡入，中间改动一两个字也不影响。
+            let common = Self.commonPrefixLength(oldStr, newStr)
+            if newStr.length > common {
+                // 只在「新增区域」里淡入；万一整篇被重排，最多重塑尾部 1200 字，
+                // 不把一整篇长文重新淡一遍。
+                let maxReveal = 1200
+                var start = common
+                if newStr.length - start > maxReveal { start = newStr.length - maxReveal }
+                fadeRevealRange = NSRange(location: start, length: newStr.length - start)
             }
         }
 
@@ -10908,6 +10920,21 @@ struct SelectableMarkdownView: UIViewRepresentable {
     /// either the raw `NSFont`s are equal, or the new side's `NSFont` equals the
     /// old side's `NSOriginalFont` (i.e. old is just `new` after fallback).
     /// A genuine font/size change still breaks the match. [T-ios-word-fade-animation]
+    /// 两个 NSString 的公共前缀长度（UTF-16 单位，二分查找，O(log n) 次子串比较）。
+    static func commonPrefixLength(_ a: NSString, _ b: NSString) -> Int {
+        var lo = 0
+        var hi = min(a.length, b.length)
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if a.substring(to: mid) == b.substring(to: mid) {
+                lo = mid
+            } else {
+                hi = mid - 1
+            }
+        }
+        return lo
+    }
+
     private static func prefixesEqualIgnoringFontSubstitution(
         _ newPrefix: NSAttributedString,
         _ oldPrefix: NSAttributedString

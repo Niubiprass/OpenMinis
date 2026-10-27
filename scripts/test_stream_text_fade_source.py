@@ -98,8 +98,10 @@ class StreamFadeSourceTests(unittest.TestCase):
                            self.update.index("var fastPathTaken = false")]
         self.assertIn("oldStorage.string as NSString", diff)
         self.assertIn("attributed.string as NSString", diff)
-        self.assertIn("newStr.substring(to: oldLen) == (oldStr as String)", diff)
-        self.assertIn("NSRange(location: oldLen, length: attributed.length - oldLen)", diff)
+        # [T-stream-fade-lcp] 2026-10-27：严格前缀比较会被 Markdown 补全结构时的
+        # 中间改动打穿（→ 整批不淡入 → 一大段字整块出现），改为最长公共前缀。
+        self.assertIn("Self.commonPrefixLength(oldStr, newStr)", diff)
+        self.assertIn("NSRange(location: start, length: newStr.length - start)", diff)
         self.assertNotIn(".count", diff)
 
     def test_prefix_comparison_still_preserves_real_color_and_style_changes(self):
@@ -159,7 +161,7 @@ class StreamFadeSourceTests(unittest.TestCase):
         self.assertIn("staggerWindow: CFTimeInterval = 0.28", FADE)
         # 摊开时长随批次放大（上限 0.9s），大批次才不会整段同时冒出来。
         self.assertIn("min(0.9, max(staggerWindow", FADE)
-        self.assertIn("maxAnimatedWords = 400", FADE)
+        self.assertIn("maxAnimatedWords = 700", FADE)
         # 超大批次只淡入尾部，不再整批跳过。
         schedule_block = block(FADE, "func scheduleAnimation(for")
         self.assertIn("wordRanges.suffix(Self.maxAnimatedWords)", schedule_block)
