@@ -3829,6 +3829,9 @@ struct ContentView: View {
         .ignoresSafeArea(.keyboard, edges: showSearchBar ? [] : .bottom)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { sidebarToolbarContent }
+        // [T-navbar-no-clip] 放开导航栏裁剪，否则设置键/终端键的投影会被
+        // 栏的下边界切掉，断面看起来就是一条很直的横线。
+        .background(NavBarNoClipBackground().frame(width: 0, height: 0))
         )
     }
 

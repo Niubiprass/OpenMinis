@@ -1431,6 +1431,36 @@ private let navGlassLogger = AppLogger(category: "NavGlass")
 //
 // 位置：插在导航栏正下方（nav.view 里 navigationBar 的下一个兄弟位），
 // 上面是系统导航栏（按钮层），下面是页面内容——不会盖住返回键。
+/// 递归放开裁剪（限定深度，避免无谓遍历）。
+/// 圆钮的投影画在导航栏里，到栏的下边界会被裁掉，断面是一条直线；放开后就顺下去了。
+func releaseNavBarClipping(_ view: UIView, depth: Int) {
+    if view.clipsToBounds { view.clipsToBounds = false }
+    if view.layer.masksToBounds { view.layer.masksToBounds = false }
+    guard depth > 0 else { return }
+    for sub in view.subviews { releaseNavBarClipping(sub, depth: depth - 1) }
+}
+
+/// 只做"放开导航栏裁剪"这一件事的挂件，给没有装玻璃探针的页面用（主列表）。
+struct NavBarNoClipBackground: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> NavBarNoClipProbe { NavBarNoClipProbe() }
+    func updateUIViewController(_ vc: NavBarNoClipProbe, context: Context) {}
+}
+
+final class NavBarNoClipProbe: UIViewController {
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        apply()
+    }
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        apply()
+    }
+    private func apply() {
+        guard let bar = navigationController?.navigationBar else { return }
+        releaseNavBarClipping(bar, depth: 6)
+    }
+}
+
 struct NavBarGlassBackground: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
         NavBarGlassProbe()
@@ -1661,7 +1691,11 @@ final class NavBarGlassProbe: UIViewController {
         if bar.shadowImage == nil {
             bar.shadowImage = UIImage()
         }
-        // 2) 再把 `_UIBarBackground` 这层视图藏掉（双保险）。
+        // 2) [T-navbar-no-clip] 放开裁剪。
+        //    圆钮的投影画在栏里，到栏的下边界会被裁掉，断面就是一条很直的线。
+        //    把栏和它内部的容器都放开裁剪，影子就能顺下去淡出，断口消失。
+        Self.releaseClipping(bar, depth: 6)
+        // 3) 再把 `_UIBarBackground` 这层视图藏掉（双保险）。
         for sub in bar.subviews {
             let name = NSStringFromClass(type(of: sub))
             guard name.contains("Background") || name.contains("BarBackground") else { continue }
@@ -1670,6 +1704,10 @@ final class NavBarGlassProbe: UIViewController {
                 inner.isHidden = true
             }
         }
+    }
+
+    private static func releaseClipping(_ view: UIView, depth: Int) {
+        releaseNavBarClipping(view, depth: depth)
     }
 
     /// 系统导航栏那层近不透明的材质会把我们的玻璃挡住，清掉它。
