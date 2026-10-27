@@ -54,7 +54,11 @@ struct AssistantBlockView: View {
         guard let e = store.entry(block.id) else { return }
         let total = block.content.count
         guard e.count < total else { return }
-        store.advance(block.id, to: min(total, e.count + 3))
+        // 还在吐字：每帧 3 字（≈90/秒）；已经 1 秒没新字：每帧 20 字把余下的快速流完。
+        // 两种都是"流"，不会整段弹。
+        let idle = Date().timeIntervalSince(e.lastGrowth)
+        let step = idle > 1.0 ? 20 : 3
+        store.advance(block.id, to: min(total, e.count + step))
         revealTick &+= 1
     }
 
@@ -199,7 +203,7 @@ struct AssistantBlockView: View {
         .onReceive(revealClock) { _ in advanceReveal() }
         .onChange(of: block.content.count) { _ in
             // 有新字 → 登记（回答刚开头时就是这里从 0 开始），并续命 1 秒。
-            RevealProgress.shared.noteGrowth(block.id)
+            RevealProgress.shared.noteGrowth(block.id, total: block.content.count)
         }
     }
 }
@@ -208,30 +212,44 @@ struct AssistantBlockView: View {
 
 /// [T-stream-typewriter-reveal] 逐字显示进度，按 block.id 存放。
 ///
-/// 寿命只有 1 秒：字还在增加时不断续命；一旦 1 秒没有新字，就当这条已经写完，
-/// 丢掉进度 → 之后永远整条显示（不会重放）。视图重建时如果 1 秒内还有新字，
-/// 就能从原进度接着流，不会从头打，也不会整段砸出来。
+/// 三条规则，只为两件事：**不砸**、**不重放**。
+/// 1. 有条目就接着流（视图重建也一样），每帧 3 字；
+/// 2. 1 秒没新字（模型停顿或已说完）→ 提速到每帧 20 字（≈每秒 600）把余下的流完，
+///    **仍然是一段一段出来，不整段弹**；
+/// 3. 追上后 2 秒内没有新字 → 丢弃条目（这条写完了）；之后再有新字，从"上次看到的位置"
+///    接着流，绝不从 0 重打。
 final class RevealProgress {
     static let shared = RevealProgress()
 
     struct Entry {
         var count: Int
         var lastGrowth: Date
+        var total: Int
     }
 
     private var store: [UUID: Entry] = [:]
+    /// 刚丢弃的条目：(最后的总字数, 丢弃时刻)。30 秒内同一 block 又来新字时，
+    /// 用这个位置接着流，避免从 0 重打（重放）。
+    private var recent: [UUID: (total: Int, at: Date)] = [:]
 
     func entry(_ id: UUID) -> Entry? { store[id] }
 
-    /// 有新字：没有进度就从 0 开始（回答的第一批就算给了 500 字也一样从 0 流），
-    /// 已有进度就只续命，不回退。
-    func noteGrowth(_ id: UUID, now: Date = Date()) {
+    /// 有新字。第一次见到这个块 → 从 0 开始（首批给再多也一样，不会砸）；
+    /// 之前丢弃过 → 从丢弃时的位置接着来（不重放）。
+    func noteGrowth(_ id: UUID, total: Int, now: Date = Date()) {
         prune(now)
         if var e = store[id] {
             e.lastGrowth = now
+            e.total = total
             store[id] = e
         } else {
-            store[id] = Entry(count: 0, lastGrowth: now)
+            let start: Int
+            if let r = recent[id], now.timeIntervalSince(r.at) < 30 {
+                start = min(r.total, max(0, total - 1))
+            } else {
+                start = 0
+            }
+            store[id] = Entry(count: start, lastGrowth: now, total: total)
         }
     }
 
@@ -241,10 +259,16 @@ final class RevealProgress {
         store[id] = e
     }
 
-    /// 丢掉 1 秒没有新字的条目（= 这条写完了）。
+    /// 丢掉 2 秒没有新字的条目（= 这条写完了），并记住位置。
     func prune(_ now: Date = Date()) {
         guard !store.isEmpty else { return }
-        store = store.filter { now.timeIntervalSince($0.value.lastGrowth) < 1.0 }
+        for (id, e) in store where now.timeIntervalSince(e.lastGrowth) >= 2.0 {
+            recent[id] = (e.total, now)
+            store.removeValue(forKey: id)
+        }
+        if !recent.isEmpty {
+            recent = recent.filter { now.timeIntervalSince($0.value.at) < 30 }
+        }
     }
 }
 
