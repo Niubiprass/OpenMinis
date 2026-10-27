@@ -1498,6 +1498,8 @@ final class NavBarGlassProbe: UIViewController {
         tintView = tint
         hairline = line
         applyColors()
+        // 进页面默认是"静止"：不画磨砂、不画线，只有滚动后才起雾。
+        applyChrome(scrolled: false, animated: false)
     }
 
     private static func blurEffect(for traits: UITraitCollection) -> UIBlurEffect {
@@ -1512,20 +1514,33 @@ final class NavBarGlassProbe: UIViewController {
         // 把整块抬到「比页面亮一档」。数值先给深色 10% 白、浅色 35% 白，
         // 真机看效果再调（参照图栏内 #292929、页面 #0a0a0a）。
         // 深色一档先给 6%：真机上 10% 把栏抬得比参照图（#292929）还亮。
-        // 浅色档从 30% 白降到 12%：30% 叠在白色页面上几乎把内容糊死，
-        // 看上去就是一块灰白板，完全没有"透"的感觉。
+        // [T-navbar-glass-thinner] 再压一档：浅色 12% → 4%，深色 6% → 3%。
+        // 蒙层只负责把栏抬亮一点点，真正的"通透感"必须来自磨砂本身；
+        // 之前 30% 那版等于糊了一层白，怎么调参数都是灰板。
         tintView?.backgroundColor = dark
-            ? UIColor(white: 1, alpha: 0.06)
-            : UIColor(white: 1, alpha: 0.12)
+            ? UIColor(white: 1, alpha: 0.03)
+            : UIColor(white: 1, alpha: 0.04)
+        // [T-navbar-glass-thinner] 那根分隔线取消。
+        // 用户三家反馈里都提到"总是那根线，看起来好厚"：一条 1px 的实线贴着
+        // 磨砂底边，在浅色下把整块衬托成一块有边界的面板，视觉厚度比实际大
+        // 一倍。改成只在内容确实滚到栏下面时才显一点点，静止时完全没有。
         hairline?.backgroundColor = dark
-            ? UIColor(white: 1, alpha: 0.10)
-            : UIColor(white: 0, alpha: 0.08)
+            ? UIColor(white: 1, alpha: 0.06)
+            : UIColor(white: 0, alpha: 0.04)
     }
 
     private func layoutGlass() {
         guard let container = containerView,
               let nav = navigationController else { return }
         releaseBarBackgroundIfNeeded(nav.navigationBar)
+        // [T-navbar-hide-system-bg] 直接把系统导航栏自己的背景层藏掉。
+        //
+        // 实测（2026-10-27 14:01 真机截图取色）：栏内底色 #EBEBEB，页面是 #FFFFFF，
+        // 边界一条硬切——那块"厚板子"根本不是我们的玻璃，而是 UINavigationBar
+        // 自带的 _UIBarBackground；我们的玻璃一直画在它下面，从来看不见。
+        // 只清 appearance 不管用：SwiftUI 会在每次布局后把自己的外观装回去，
+        // 所以三版调参都只是在这块板的夹缝里打转。这里改成藏视图本身。
+        hideSystemBarBackground(nav.navigationBar)
         ensureOrdering(in: nav)
         let width = nav.view.bounds.width
         // 导航栏在 nav.view 里的真实位置（iOS 15 上它位于状态栏下面，
@@ -1554,6 +1569,19 @@ final class NavBarGlassProbe: UIViewController {
         if bIndex != cIndex + 1 {
             nav.view.insertSubview(container, belowSubview: bar)
             navGlassLogger.info("[NavGlass] reordered container under navigation bar")
+        }
+    }
+
+    /// 藏掉 UINavigationBar 自己的背景层（`_UIBarBackground` 及其磨砂子视图）。
+    /// 每次布局都检查一次：SwiftUI 会重建层级，藏一次不算数。
+    private func hideSystemBarBackground(_ bar: UINavigationBar) {
+        for sub in bar.subviews {
+            let name = NSStringFromClass(type(of: sub))
+            guard name.contains("Background") || name.contains("BarBackground") else { continue }
+            if !sub.isHidden { sub.isHidden = true }
+            for inner in sub.subviews where !inner.isHidden {
+                inner.isHidden = true
+            }
         }
     }
 
@@ -1630,10 +1658,36 @@ final class NavBarGlassProbe: UIViewController {
 
     private func updateAlpha(for scroll: UIScrollView) {
         layoutGlass()
-        // [T-navbar-glass-always] 不再按滚动位置改 alpha（见 build 里的说明）：
-        // 祖先 alpha < 1 会把磨砂压平，这正是"玻璃永远不糊"的直接原因。
+        // 容器永远 alpha=1：磨砂的祖先只要 alpha<1 就会被压成平色块。
         if let c = containerView, c.alpha != 1 { c.alpha = 1 }
-        _ = scroll
+        let scrolled = scroll.contentOffset.y + scroll.adjustedContentInset.top > 0.5
+        applyChrome(scrolled: scrolled, animated: true)
+    }
+
+    /// [T-navbar-glass-fade] 静止 = 全透明，滚动 = 起雾。
+    ///
+    /// 静止时把 `UIVisualEffectView.effect` 直接置 nil（不是调 alpha —— 那是
+    /// 上一版"永远不糊"的元凶），栏里只剩标题和按钮，导航栏和页面连成一整块，
+    /// 不会再有"一块厚板子"的边界感，也没有那根发丝线。
+    /// 一旦内容滚到栏下面，再把磨砂装回来、蒙层和发丝线 0.16s 渐入，
+    /// 保证标题不会和正文叠在一起发花。
+    private func applyChrome(scrolled: Bool, animated: Bool) {
+        let wanted = scrolled ? Self.blurEffect(for: traitCollection) : nil
+        if blurView?.effect == nil, wanted != nil {
+            blurView?.effect = wanted
+        } else if blurView?.effect != nil, wanted == nil {
+            blurView?.effect = nil
+        }
+        let target: CGFloat = scrolled ? 1 : 0
+        let apply = {
+            self.tintView?.alpha = target
+            self.hairline?.alpha = target
+        }
+        if animated {
+            UIView.animate(withDuration: 0.16, animations: apply)
+        } else {
+            apply()
+        }
     }
 
     // MARK: - 拆

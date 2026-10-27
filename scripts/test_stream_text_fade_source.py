@@ -156,19 +156,15 @@ class StreamFadeSourceTests(unittest.TestCase):
         self.assertNotIn("withAlphaComponent", cancel)
         self.assertIn("displayLink?.invalidate()", block(FADE, "private func stopDisplayLink()"))
 
-    def test_ios16_animator_timing_and_alpha_mechanics_are_retained(self):
-        self.assertIn("wordFadeDuration: CFTimeInterval = 0.45", FADE)
-        self.assertIn("staggerWindow: CFTimeInterval = 0.28", FADE)
-        # 摊开时长随批次放大（上限 0.9s），大批次才不会整段同时冒出来。
-        self.assertIn("min(0.9, max(staggerWindow", FADE)
-        self.assertIn("maxAnimatedWords = 700", FADE)
-        # 超大批次只淡入尾部，不再整批跳过。
+    def test_fade_is_disabled_in_favour_of_content_level_typewriter(self):
+        # [T-stream-typewriter-reveal] 揭示改到内容层（前缀截断）以后，animator
+        # 的逐字 alpha 淡入整体停用；保留代码是为了随时能切回去。
+        self.assertIn("static let disabled = true", FADE)
         schedule_block = block(FADE, "func scheduleAnimation(for")
+        self.assertIn("if Self.disabled { return }", schedule_block)
+        # 兜底路径（万一重新打开）仍然保留：只淡入尾部、不整批跳过。
         self.assertIn("wordRanges.suffix(Self.maxAnimatedWords)", schedule_block)
-        self.assertNotIn("wordRanges.count <= Self.maxAnimatedWords", schedule_block)
-        schedule = block(FADE, "func scheduleAnimation(for")
-        self.assertIn("value: original.withAlphaComponent(0)", schedule)
-        self.assertIn("startDisplayLinkIfNeeded()", schedule)
+        self.assertIn("value: original.withAlphaComponent(0)", schedule_block)
         tick = block(FADE, "@objc private func tick()")
         self.assertIn("Self.easeOutCubic(t)", tick)
         self.assertIn("value: w.originalColor, range: w.range", tick)

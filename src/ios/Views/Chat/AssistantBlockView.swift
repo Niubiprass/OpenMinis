@@ -21,6 +21,53 @@ struct AssistantBlockView: View {
     @Binding var detailBlock: AssistantBlock?
     private var isHighlighted: Bool { highlightedBlockId == block.id }
 
+    // MARK: - [T-stream-typewriter-reveal] 内容层打字机
+
+    /// 已经"放出来"的字数；nil 表示不截断（历史消息 / 流式结束）。
+    ///
+    /// 之前的"逐字淡入"是在**已经排版好的文字**上改 alpha：字是慢慢显形了，
+    /// 可列表高度和滚动位置在收到那一批的瞬间就已经跳完了。于是用户看到的是
+    /// 一片字突然出现、页面猛地上移，真正在流动的只有透明度。
+    ///
+    /// 这里改成把"显示进度"做成内容前缀：字没到点就不进排版，高度是跟着
+    /// 一个字一个字长出来的，滚动才有可能跟着平滑走。
+    /// 每 1/15 秒推进一次（一次 4~28 个字），避免每秒几十次重排 markdown。
+    @State private var revealedChars: Int? = nil
+    private let revealClock = Timer.publish(every: 1.0 / 15.0, on: .main, in: .common).autoconnect()
+
+    private var isStreamingBlock: Bool {
+        isActiveMessage && message.blocks.last?.id == block.id
+    }
+
+    private var revealedContent: String {
+        guard let n = revealedChars, n < block.content.count else { return block.content }
+        return String(block.content.prefix(n))
+    }
+
+    private func advanceReveal(force: Bool = false) {
+        guard isStreamingBlock else {
+            if revealedChars != nil { revealedChars = nil }
+            return
+        }
+        let total = block.content.count
+        // 首次：从这个块当前已有的内容起步，别把已显示的字再倒带一遍。
+        var r = revealedChars ?? total
+        guard r < total else {
+            if revealedChars != r { revealedChars = r }
+            return
+        }
+        let backlog = total - r
+        let cps: Int
+        switch backlog {
+        case ..<60:   cps = 55
+        case ..<150:  cps = 110
+        case ..<400:  cps = 200
+        default:      cps = 420
+        }
+        r = min(total, r + max(1, cps / 15))
+        revealedChars = r
+    }
+
     var body: some View {
         switch block.kind {
         case .text:
@@ -145,9 +192,11 @@ struct AssistantBlockView: View {
     @ViewBuilder
     private var textBlockView: some View {
         SelectableMarkdownView(
-            markdown: block.content,
-            cachedContent: block.cachedMarkdown,
-            cachedAttributedString: block.cachedAttributedString,
+            markdown: revealedContent,
+            // 截断显示期间必须绕开缓存：缓存里存的是**整段**的排版结果，
+            // 直接命中就等于把没到点的字也一起画出来了。
+            cachedContent: revealedChars == nil ? block.cachedMarkdown : nil,
+            cachedAttributedString: revealedChars == nil ? block.cachedAttributedString : nil,
             messageId: message.id,
             blockId: block.id,
             onTapBlank: onTapBlank,
@@ -157,6 +206,9 @@ struct AssistantBlockView: View {
         )
         .fixedSize(horizontal: false, vertical: true)
         .modifier(MinisOpenURLHandler())
+        .onReceive(revealClock) { _ in advanceReveal() }
+        .onAppear { advanceReveal(force: true) }
+        .onChange(of: isStreamingBlock) { _ in advanceReveal(force: true) }
     }
 }
 

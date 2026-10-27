@@ -2924,11 +2924,40 @@ extension CollectionViewMessageListV3 {
             }
         }
 
+        /// 作废某条消息的全部行（表头 / 每个块 / 表尾），用于"某一块内容收缩后
+        /// 兄弟行高度也跟着失真"的场景。
+        private func invalidateAllRows(ofMessage mid: UUID, excluding skip: IndexPath) {
+            guard let cv = viewController?.collectionView,
+                  let layout = viewController?.messageListLayout,
+                  let ds = dataSource else { return }
+            let total = cv.numberOfItems(inSection: 0)
+            guard total > 0 else { return }
+            for i in 0..<total {
+                let ip = IndexPath(item: i, section: 0)
+                if ip == skip { continue }
+                guard let item = ds.itemIdentifier(for: ip),
+                      Self.messageId(of: item) == mid else { continue }
+                (cv.cellForItem(at: ip) as? SelfSizingCell)?.clearCachedHeight()
+                layout.invalidateHeight(at: i, discardPrecalc: true)
+                if case .assistantBlock(let m, let b) = item {
+                    layout.invalidateBlockMemos(messageId: m, blockId: b)
+                }
+            }
+        }
+
         private func invalidateQuestionCardRowNow(_ item: MessageListItem) {
             guard let cv = viewController?.collectionView,
                   let layout = viewController?.messageListLayout,
                   let ds = dataSource,
                   let ip = ds.indexPath(for: item) else { return }
+            // [T-ask-card-blank-neighbour] 真机日志（2026-10-27 14:17）显示：
+            // 卡片自己那一行在答题后是 84pt（正确），可卡片上下仍然各空一大块。
+            // 说明留白不在卡片这一行，而在**同一条助手消息里的兄弟行**——思考块
+            // 或空文本块在被卡片“接管”后缩了，但没人告诉它们重量。所以答题后
+            // 把整条消息的所有行一起作废重算，而不是只作废卡片那一行。
+            if let mid = Self.messageId(of: item) {
+                invalidateAllRows(ofMessage: mid, excluding: ip)
+            }
             // [T-ask-card-answer-height] 只"通知高度作废"不够：cell 自己缓存了
             // 上一版高度，UIKit 会继续按它排版，于是答完的卡片上下留着空白，
             // 只有退出会话（整表重新测量）才恢复。这里直接让该行失效并重建。

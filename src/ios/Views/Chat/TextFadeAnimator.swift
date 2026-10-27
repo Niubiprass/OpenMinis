@@ -33,7 +33,13 @@ final class TextFadeAnimator {
     /// How long a single word takes to fade from alpha 0 → 1. Matches
     /// Microsoft SwiftStreamingMarkdown's 0.5s; slightly shorter reads as more
     /// responsive on a phone without losing the smooth settle.
-    private static let wordFadeDuration: CFTimeInterval = 0.45
+    /// [T-stream-typewriter] 0.02 秒 ≈ 一帧：字是"立刻出现"，不再淡入。
+    /// 用户 2026-10-27 明确要 ChatGPT / 微信那种观感：字一个个冒出来，
+    /// 不要透明度过渡（那会被看成"一块一块糊上去"）。
+    /// 内容层打字机上线后，alpha 淡入整体关闭（见 scheduleAnimation 首行）。
+    static let disabled = true
+
+    private static let wordFadeDuration: CFTimeInterval = 0.02
 
     /// 单批淡入的最大单位数（词 + 词间空隙）。
     ///
@@ -41,11 +47,11 @@ final class TextFadeAnimator {
     /// 300 字的输出整批跳过，于是一整段字在同一帧里蹦出来（用户 2026-10-26
     /// 报「一大段内容直接一片出来」）。现在：
     ///   · 上限抬到 700，一段正常段落能整批淡入；
-    ///   · 仍然超限时不再整批放弃，改成只淡入**尾部** 700 个单位，
+    ///   · 仍然超限时不再整批放弃，改成只淡入**尾部** 2000 个单位，
     ///     前面的立即显示（比整块硬贴自然得多）；
     ///   · 每帧写 attribute 的量是 O(在飞单位数)，400 个也是一帧几百次
     ///     属性写入，和重绘一次文本相比可忽略。
-    private static let maxAnimatedWords = 700
+    private static let maxAnimatedWords = 2000
 
     /// 一次最多切分多少个单位。超过这个量的大粘贴（几万字）没必要逐字淡入，
     /// 直接显示，避免一次性切出上万个区间。
@@ -72,13 +78,21 @@ final class TextFadeAnimator {
     /// 追赶，避免越积越落后（否则输出结束时屏幕上还在慢慢补字）。
     private static func stagger(forWordCount count: Int, backlog: Int) -> CFTimeInterval {
         guard count > 0 else { return 0 }
-        let window: CFTimeInterval
-        if backlog > 0 {
-            window = 0.30
-        } else {
-            window = min(0.9, max(staggerWindow, CFTimeInterval(count) * 0.006))
+        // [T-stream-typewriter] 打字机节拍：每个字固定间隔出现，积压越多越快。
+        //
+        // 之前的实现是「一批字共用 0.3~0.9 秒的窗口」，于是批越大每个字的间隔
+        // 越短 —— 大段落等于整块瞬移上来，小批次才是慢慢出。用户要的是反过来：
+        // **每个字的间隔恒定**，批大就按同样的节奏多走一会儿。
+        let cps: Double
+        switch backlog {
+        case ..<20:  cps = 70      // 平时：每秒 70 字，像人打字
+        case ..<60:  cps = 110
+        case ..<150: cps = 200
+        default:     cps = 420     // 严重积压才加速追赶
         }
-        return window / CFTimeInterval(count)
+        let step = 1.0 / cps
+        // 一批实在太大时整批最多摊 2 秒，避免输出结束还在后面慢慢补字。
+        return min(step, 2.0 / Double(count))
     }
 
     // MARK: - State
@@ -123,6 +137,10 @@ final class TextFadeAnimator {
     /// the NSRange of the freshly-appended tail. Safe to call repeatedly while
     /// streaming — each call adds its words to the shared in-flight set.
     func scheduleAnimation(for range: NSRange, in targetStorage: NSTextStorage) {
+        // [T-stream-typewriter-reveal] 揭示改到内容层（前缀截断）以后，这里
+        // 再做逐字 alpha 淡入就是多余的一层：它不改高度、只改透明度，反而
+        // 会让新到的一批字先"闪"一下再定住。直接不排动画。
+        if Self.disabled { return }
         guard range.length > 0 else { return }
         let storageLen = targetStorage.length
         // Defensive clamp: the caller computed `range` from the same storage,
