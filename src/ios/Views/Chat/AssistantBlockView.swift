@@ -51,41 +51,36 @@ struct AssistantBlockView: View {
         let total = block.content.count
         let registry = StreamRevealRegistry.shared
 
-        let existing = registry.entry(for: block.id)
-        var r = existing?.count
-
-        if let e = existing, e.age > 1.0 {
-            // 视图离开过（切后台 / 滚出屏幕）：
-            // 已结束 → 直接全显；还在流式 → 跳到接近最新，只留 80 字的尾巴，
-            // 绝不从旧位置重播（用户报的"再发一条，上一条又显示一遍"）。
-            if isStreamingBlock {
-                registry.set(max(e.count, total - 80), for: block.id)
-                revealTick &+= 1
-            } else {
-                registry.clear(block.id)
-                revealTick &+= 1
-            }
-            return
-        }
-
-        if r == nil {
-            // 第一次见到这个块。历史消息不管；正在写的从 0 开始——
-            // 之前从 total-24 起步，等于"已经把收到的都画出来了"，新回答
-            // 一次就蹦出一大片，用户录屏里两次闪跳都是它。
+        guard let e = registry.entry(for: block.id) else {
+            // 第一次见到这个块。
+            // · 新开的回答（内容还很少）→ 从 0 开始，逐字打；
+            // · 已经写了一大段才被看到的（视图晚出现、或滚回来）→ 直接接到
+            //   尾部附近，**绝不从 0 重打**。上一版无条件从 0 开始，结果整条
+            //   消息高度先塌下去再长回来，列表跟着剧烈跳动（用户说的"更严重"）。
             guard isStreamingBlock else { return }
+            // 正在写的块：一律从 0 开始逐字。
+            // 这不会造成"重播"——因为只要条目还在（1 秒内有推进），就永远不会
+            // 再走到这条分支；视图重建会从原进度接着打。
             registry.set(0, for: block.id)
             revealTick &+= 1
             return
         }
 
-        guard r! < total else {
-            if !isStreamingBlock { registry.clear(block.id); revealTick &+= 1 }
+        if e.age > 1.0 {
+            // 离开过屏幕超过 1 秒 = 那段时间没人看：直接补齐到最新，不补播。
+            // （留尾巴会造成"文字先变短再长回来"，反而更跳。）
+            if e.count != total {
+                registry.set(total, for: block.id)
+                revealTick &+= 1
+            }
             return
         }
 
+        guard e.count < total else { return }   // 追平了
+
         // [T-reveal-pacing] 方案 3：始终逐字，只在积压时提速。
         // 30Hz 下 —— 2 字/帧 = 60 字/秒；4 字 = 120；8 字 = 240。
-        let backlog = total - r!
+        let backlog = total - e.count
         let step: Int
         if !isStreamingBlock {
             step = 10                    // 收尾（模型已说完）：仍是"放"，不砸
@@ -96,8 +91,7 @@ struct AssistantBlockView: View {
         } else {
             step = 2
         }
-        r = min(total, r! + step)
-        registry.set(r!, for: block.id)
+        registry.set(min(total, e.count + step), for: block.id)
         revealTick &+= 1
     }
 
@@ -241,11 +235,6 @@ struct AssistantBlockView: View {
         .modifier(MinisOpenURLHandler())
         .onReceive(revealClock) { _ in advanceReveal() }
         .onAppear { advanceReveal() }
-        // 离开屏幕时，如果这条已经不在流式了，就把进度删掉：
-        // 否则下次进来会从旧位置继续放 = "上一条回复又显示一遍"。
-        .onDisappear {
-            if !isStreamingBlock { StreamRevealRegistry.shared.clear(block.id) }
-        }
         .onChange(of: isStreamingBlock) { _ in advanceReveal() }
     }
 }
