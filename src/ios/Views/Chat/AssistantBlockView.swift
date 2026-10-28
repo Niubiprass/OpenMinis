@@ -21,33 +21,6 @@ struct AssistantBlockView: View {
     @Binding var detailBlock: AssistantBlock?
     private var isHighlighted: Bool { highlightedBlockId == block.id }
 
-    // MARK: - 内容层打字机
-    //
-    // 只做一件事：文本别一口气砸出来，慢慢往上流。
-    // 进度存在一张很短的记忆表里（按 block.id），**字还在增加时才记**，
-    // 1 秒没新字就丢掉：写完的那条永远整条显示，不会重放；视图重建也能接着流。
-    @State private var revealTick = 0
-
-    private var isStreamingBlock: Bool {
-        isActiveMessage && message.blocks.last?.id == block.id
-    }
-
-    private var revealedContent: String {
-        _ = revealTick
-        guard let e = RevealProgress.shared.entry(block.id), e.count < block.content.count else {
-            return block.content
-        }
-        return String(block.content.prefix(e.count))
-    }
-
-    /// 当前是不是整段都显示出来了（用于决定能不能用排版缓存）。
-    private var isShowingFullContent: Bool {
-        _ = revealTick
-        guard let e = RevealProgress.shared.entry(block.id) else { return true }
-        return e.count >= block.content.count
-    }
-
-
     var body: some View {
         switch block.kind {
         case .text:
@@ -172,11 +145,11 @@ struct AssistantBlockView: View {
     @ViewBuilder
     private var textBlockView: some View {
         SelectableMarkdownView(
-            markdown: revealedContent,
+            markdown: block.content,
             // 截断显示期间必须绕开缓存：缓存里存的是**整段**的排版结果，
             // 直接命中就等于把没到点的字也一起画出来了。
-            cachedContent: isShowingFullContent ? block.cachedMarkdown : nil,
-            cachedAttributedString: isShowingFullContent ? block.cachedAttributedString : nil,
+            cachedContent: block.cachedMarkdown,
+            cachedAttributedString: block.cachedAttributedString,
             messageId: message.id,
             blockId: block.id,
             onTapBlank: onTapBlank,
@@ -186,122 +159,6 @@ struct AssistantBlockView: View {
         )
         .fixedSize(horizontal: false, vertical: true)
         .modifier(MinisOpenURLHandler())
-        // [T-reveal-single-ticker] 全局只有一个 30Hz 计时器（在 RevealProgress 里），
-        // 而且只在真的在流字时才存在；每块不再各自跑一个。
-        .onReceive(NotificationCenter.default.publisher(for: .minisRevealTick)) { note in
-            if (note.userInfo?["id"] as? UUID) == block.id { revealTick &+= 1 }
-        }
-        .onChange(of: block.content.count) { _ in
-            // 有新字 → 登记（回答刚开头时就是这里从 0 开始），并续命 1 秒。
-            RevealProgress.shared.noteGrowth(block.id, total: block.content.count)
-        }
-    }
-}
-
-extension Notification.Name {
-    /// 逐字显示：全局计时器每帧发一次，带上 block.id；只有对应的块会刷新自己。
-    static let minisRevealTick = Notification.Name("MinisRevealTick")
-}
-
-// MARK: - RevealProgress
-
-/// [T-stream-typewriter-reveal] 逐字显示进度，按 block.id 存放。
-///
-/// 三条规则，只为两件事：**不砸**、**不重放**。
-/// 1. 有条目就接着流（视图重建也一样），每帧 3 字；
-/// 2. 1 秒没新字（模型停顿或已说完）→ 提速到每帧 20 字（≈每秒 600）把余下的流完，
-///    **仍然是一段一段出来，不整段弹**；
-/// 3. 追上后 2 秒内没有新字 → 丢弃条目（这条写完了）；之后再有新字，从"上次看到的位置"
-///    接着流，绝不从 0 重打。
-final class RevealProgress {
-    static let shared = RevealProgress()
-
-    struct Entry {
-        var count: Int
-        var lastGrowth: Date
-        var total: Int
-    }
-
-    private var store: [UUID: Entry] = [:]
-    /// 刚丢弃的条目：(最后的总字数, 丢弃时刻)。30 秒内同一 block 又来新字时，
-    /// 用这个位置接着流，避免从 0 重打（重放）。
-    private var recent: [UUID: (total: Int, at: Date)] = [:]
-    /// 全局唯一计时器：有要流的字才存在，流完立刻停。
-    private var ticker: Timer?
-
-    func entry(_ id: UUID) -> Entry? { store[id] }
-
-    /// 有新字。第一次见到这个块 → 从 0 开始（首批给再多也一样，不会砸）；
-    /// 之前丢弃过 → 从丢弃时的位置接着来（不重放）。
-    func noteGrowth(_ id: UUID, total: Int, now: Date = Date()) {
-        prune(now)
-        if var e = store[id] {
-            e.lastGrowth = now
-            e.total = total
-            store[id] = e
-        } else {
-            let start: Int
-            if let r = recent[id], now.timeIntervalSince(r.at) < 30 {
-                start = min(r.total, max(0, total - 1))
-            } else {
-                start = 0
-            }
-            store[id] = Entry(count: start, lastGrowth: now, total: total)
-        }
-        startTickerIfNeeded()
-    }
-
-    func advance(_ id: UUID, to count: Int) {
-        guard var e = store[id] else { return }
-        e.count = max(e.count, count)
-        store[id] = e
-    }
-
-    // MARK: - 计时器
-
-    private func startTickerIfNeeded() {
-        guard ticker == nil else { return }
-        let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            self?.tick()
-        }
-        RunLoop.main.add(t, forMode: .common)
-        ticker = t
-    }
-
-    private func stopTicker() {
-        ticker?.invalidate()
-        ticker = nil
-    }
-
-    private func tick() {
-        let now = Date()
-        prune(now)
-        guard !store.isEmpty else { stopTicker(); return }
-        var anyBehind = false
-        for (id, e) in store {
-            guard e.count < e.total else { continue }
-            anyBehind = true
-            // 还在吐字：每帧 3 字（≈90/秒）；1 秒没新字：每帧 20 字，快速流完但仍是"流"。
-            let step = now.timeIntervalSince(e.lastGrowth) > 1.0 ? 20 : 3
-            var next = e
-            next.count = min(next.total, next.count + step)
-            store[id] = next
-            NotificationCenter.default.post(name: .minisRevealTick, object: nil, userInfo: ["id": id])
-        }
-        // 全部追平 → 立刻停表，等下一次有字再开。静止时 App 里没有任何计时器在跑。
-        if !anyBehind { stopTicker() }
-    }
-
-    /// 丢掉 2 秒没有新字的条目（= 这条写完了），并记住位置。
-    func prune(_ now: Date = Date()) {
-        guard !store.isEmpty else { return }
-        for (id, e) in store where now.timeIntervalSince(e.lastGrowth) >= 2.0 {
-            recent[id] = (e.total, now)
-            store.removeValue(forKey: id)
-        }
-        if !recent.isEmpty {
-            recent = recent.filter { now.timeIntervalSince($0.value.at) < 30 }
-        }
     }
 }
 
