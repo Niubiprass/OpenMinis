@@ -115,22 +115,36 @@ fetch_ffmpeg_source() {
     local version="6.1.2"
     local tarball="ffmpeg-${version}.tar.xz"
     local url="https://ffmpeg.org/releases/${tarball}"
+    local mirror="https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${version}.tar.gz"
     local tmp
     tmp="$(mktemp -d)"
 
     log_info "FFmpeg source not present — downloading ${version}..."
-    if ! curl -fL# "$url" -o "$tmp/$tarball"; then
-        rm -rf "$tmp"
-        log_error "Failed to download $url — check your network, or place the source at $FFMPEG_DIR manually."
+    if curl -fL# --retry 3 --retry-delay 2 --retry-all-errors \
+        --connect-timeout 20 --max-time 600 "$url" -o "$tmp/$tarball"; then
+        log_info "Extracting release tarball..."
+        if ! tar -xf "$tmp/$tarball" -C "$tmp"; then
+            rm -rf "$tmp"
+            log_error "Failed to extract $tarball"
+        fi
+        mv "$tmp/ffmpeg-${version}" "$FFMPEG_DIR"
+    else
+        # ffmpeg.org intermittently refuses connections from GitHub runners;
+        # the tagged GitHub archive is the same source and stays reachable.
+        log_info "Official release host unavailable; falling back to GitHub tag n${version}..."
+        if ! curl -fL# --retry 3 --retry-delay 2 --retry-all-errors \
+            --connect-timeout 20 --max-time 600 "$mirror" -o "$tmp/ffmpeg-github.tar.gz"; then
+            rm -rf "$tmp"
+            log_error "Failed to download FFmpeg ${version} from ffmpeg.org and GitHub — check your network, or place the source at $FFMPEG_DIR manually."
+        fi
+        log_info "Extracting GitHub archive..."
+        if ! tar -xf "$tmp/ffmpeg-github.tar.gz" -C "$tmp"; then
+            rm -rf "$tmp"
+            log_error "Failed to extract the GitHub archive for FFmpeg ${version}"
+        fi
+        mv "$tmp/FFmpeg-n${version}" "$FFMPEG_DIR"
     fi
 
-    log_info "Extracting..."
-    if ! tar -xf "$tmp/$tarball" -C "$tmp"; then
-        rm -rf "$tmp"
-        log_error "Failed to extract $tarball"
-    fi
-
-    mv "$tmp/ffmpeg-${version}" "$FFMPEG_DIR"
     rm -rf "$tmp"
     log_success "FFmpeg ${version} source ready at $FFMPEG_DIR"
 }

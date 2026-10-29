@@ -63,8 +63,17 @@ class AttachmentPreviewRegression(unittest.TestCase):
     def test_selection_is_an_id_not_a_silent_first_page(self):
         self.assertIn('startingAt selectedID: UUID', PREVIEW)
         self.assertIn('items.contains(where: { $0.id == selectedID })', PREVIEW)
-        self.assertIn('resolved.first(where: { $0.id == selectedID })', PREVIEW)
+        self.assertIn('resolved.contains(where: { $0.id == selectedID })', PREVIEW)
         self.assertNotIn('?? 0\n            previewFiles', INPUTBAR)
+
+    def test_unsupported_files_still_swipe(self):
+        # A message with two .deb files must page between them; the old
+        # planner dropped every .share item and presented the share sheet
+        # for the tapped one, so the pager never appeared.
+        self.assertIn('Unsupported formats join the pager as a share-only page', PREVIEW)
+        self.assertIn('let items = resolved', PREVIEW)
+        self.assertIn('if items.count == 1, !canPreview(items[0])', PREVIEW)
+        self.assertNotIn('let items = resolved.filter { canPreview($0) }', PREVIEW)
 
     def test_each_format_keeps_its_reader(self):
         for ext in ('minisMarkdownExtensions', 'minisTextExtensions',

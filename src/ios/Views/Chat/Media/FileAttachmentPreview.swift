@@ -147,7 +147,7 @@ final class FileAttachmentPresenter: ObservableObject {
                 }
             }.value
             guard let self, self.requestToken == token, self.ownerSessionId == sessionId else { return }
-            guard let selected = resolved.first(where: { $0.id == selectedID }) else {
+            guard resolved.contains(where: { $0.id == selectedID }) else {
                 self.unavailableName = tappedName
                 return
             }
@@ -158,13 +158,15 @@ final class FileAttachmentPresenter: ObservableObject {
                 default: return true
                 }
             }
-            // Unknown formats retain the original share/export fallback, not
-            // an empty QuickLook page. They never auto-open while paging.
-            guard canPreview(selected) else {
-                self.sheet = .share(id: UUID(), url: selected.localURL)
+            // Unsupported formats join the pager as a share-only page, so a
+            // message with several .deb/.zip files still swipes left/right.
+            // A single non-previewable file keeps the original direct share
+            // sheet (no extra tap just to reach the same sheet).
+            let items = resolved
+            if items.count == 1, !canPreview(items[0]) {
+                self.sheet = .share(id: UUID(), url: items[0].localURL)
                 return
             }
-            let items = resolved.filter { canPreview($0) }
             guard let group = FileAttachmentPreviewGroup(
                 ownerSessionId: sessionId, items: items, selectedID: selectedID,
                 excludedCount: candidateCount - items.count
