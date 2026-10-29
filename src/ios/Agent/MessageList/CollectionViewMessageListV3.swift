@@ -6806,6 +6806,7 @@ private struct SheetOverlayView: View {
             } message: { name in
                 Text(String(format: AppLocalized("%@ is unavailable. It may have been deleted or not yet synced from iCloud."), name))
             }
+            .sheet(item: $toolPresenter.sheetData) { data in
                 // [T-agent-tool-sheet-unified] Every tool block — the agent
                 // block included — opens the same live sheet (this is the
                 // path a tap in the collection view actually takes), with

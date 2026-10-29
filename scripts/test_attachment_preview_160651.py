@@ -91,6 +91,12 @@ class AttachmentPreviewRegression(unittest.TestCase):
         self.assertIn('AppLocalized("File Not Found")', LIST)
         self.assertIn('Preview unavailable', PREVIEW)
 
+    def test_tool_sheet_wrapper_survives_the_file_sheet_insert(self):
+        # The 153fb09 run failed at `swiftc -parse` because the new file
+        # sheet replaced the opening line of the existing tool sheet.
+        self.assertIn('.sheet(item: $toolPresenter.sheetData) { data in', LIST)
+        self.assertIn('.sheet(item: $filePresenter.sheet) { sheet in', LIST)
+
     def test_new_source_is_registered_in_the_app_target(self):
         self.assertIn('FileAttachmentPreview.swift in Sources', PBX)
         self.assertIn('FileAttachmentPreview.swift */', PBX)
