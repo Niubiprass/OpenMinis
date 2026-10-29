@@ -36,6 +36,7 @@ jobs:
           git log -1 --format='%H %s'
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_feature_compile_160651.py
           python3 scripts/test_photo_picker_multi_select_160651.py
+          python3 scripts/test_attachment_preview_160651.py
           python3 scripts/test_ask_card_160651.py
           python3 scripts/test_export_160651.py
           python3 scripts/test_quota_160651.py

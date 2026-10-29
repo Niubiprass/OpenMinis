@@ -540,6 +540,7 @@
 		F1M00016 /* ImagePreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1M00015 /* ImagePreview.swift */; };
 		F1M00018 /* AudioPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1M00017 /* AudioPreview.swift */; };
 		F1M00020 /* MessageImageGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1M00019 /* MessageImageGallery.swift */; };
+		F1FAP001 /* FileAttachmentPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1FAP002 /* FileAttachmentPreview.swift */; };
 		F1MCPDCRB /* MCPOAuthDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1MCPDCR /* MCPOAuthDiscovery.swift */; };
 		F1MCPOAUTHB /* MCPOAuthController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1MCPOAUTH /* MCPOAuthController.swift */; };
 		F1MCPSTOREB /* MCPStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1MCPSTORE /* MCPStore.swift */; };
@@ -1272,6 +1273,7 @@
 		F1M00015 /* ImagePreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePreview.swift; sourceTree = "<group>"; };
 		F1M00017 /* AudioPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPreview.swift; sourceTree = "<group>"; };
 		F1M00019 /* MessageImageGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageImageGallery.swift; sourceTree = "<group>"; };
+		F1FAP002 /* FileAttachmentPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAttachmentPreview.swift; sourceTree = "<group>"; };
 		F1MCPDCR /* MCPOAuthDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPOAuthDiscovery.swift; sourceTree = "<group>"; };
 		F1MCPOAUTH /* MCPOAuthController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPOAuthController.swift; sourceTree = "<group>"; };
 		F1MCPSTORE /* MCPStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStore.swift; sourceTree = "<group>"; };
@@ -2305,6 +2307,7 @@
 				F1M00017 /* AudioPreview.swift */,
 				F1M00015 /* ImagePreview.swift */,
 				F1M00019 /* MessageImageGallery.swift */,
+				F1FAP002 /* FileAttachmentPreview.swift */,
 				F1M00013 /* VideoPlayer.swift */,
 			);
 			path = Media;
@@ -2959,6 +2962,7 @@
 				F1M00016 /* ImagePreview.swift in Sources */,
 				F1M00018 /* AudioPreview.swift in Sources */,
 				F1M00020 /* MessageImageGallery.swift in Sources */,
+				F1FAP001 /* FileAttachmentPreview.swift in Sources */,
 				F1W00011 /* MinisShareSheet.swift in Sources */,
 				F1W00901 /* LazyLongTextView.swift in Sources */,
 				F1W00101 /* PrintHelper.swift in Sources */,

@@ -866,6 +866,7 @@ private func filePreviewFingerprint(_ url: URL) -> String {
 
 struct MinisTextPreviewView: View {
     let fileURL: URL
+    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var text: String = ""
     @State private var isLoading = true
@@ -885,7 +886,7 @@ struct MinisTextPreviewView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button { dismiss() } label: {
+                    Button { if let onClose { onClose() } else { dismiss() } } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(ChatColors.secondaryText)
                     }
@@ -913,6 +914,7 @@ struct MinisTextPreviewView: View {
                 MinisShareSheet(url: fileURL)
             }
         }
+        .navigationViewStyle(.stack)
         // Re-read when the file's mtime/size changes, not just on first
         // appearance, so an in-place rewrite shows current bytes.
         // [T-ios-file-preview-stale-cache]
@@ -983,6 +985,7 @@ struct WideSheetSizingModifier: ViewModifier {
 
 struct MinisMarkdownPreviewView: View {
     let fileURL: URL
+    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var markdownContent: String = ""
     @State private var isLoading = true
@@ -1008,7 +1011,7 @@ struct MinisMarkdownPreviewView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button { dismiss() } label: {
+                    Button { if let onClose { onClose() } else { dismiss() } } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(ChatColors.secondaryText)
                     }
@@ -1043,6 +1046,7 @@ struct MinisMarkdownPreviewView: View {
                 MinisShareSheet(url: fileURL)
             }
         }
+        .navigationViewStyle(.stack)
         .modifier(WideSheetSizingModifier())
         // Re-read on in-place rewrite (mtime/size change), not just first
         // appearance. [T-ios-file-preview-stale-cache]
@@ -1068,6 +1072,8 @@ struct MinisMarkdownPreviewView: View {
 struct MinisHTMLPreviewView: View {
     let fileURL: URL
     var onExpand: ((WebViewHolder) -> Void)? = nil
+    var onClose: (() -> Void)? = nil
+    var sourceSessionId: String? = nil
     @Environment(\.dismiss) private var dismiss
     @AppStorage("appearanceMode") private var appearanceMode: Int = 0
     @StateObject private var holder: WebViewHolder
@@ -1077,9 +1083,12 @@ struct MinisHTMLPreviewView: View {
 
     @State private var showFullPath = false
 
-    init(fileURL: URL, onExpand: ((WebViewHolder) -> Void)? = nil) {
+    init(fileURL: URL, onExpand: ((WebViewHolder) -> Void)? = nil,
+         onClose: (() -> Void)? = nil, sourceSessionId: String? = nil) {
         self.fileURL = fileURL
         self.onExpand = onExpand
+        self.onClose = onClose
+        self.sourceSessionId = sourceSessionId
         _holder = StateObject(wrappedValue: WebViewHolder(url: fileURL, localFile: true))
     }
 
@@ -1091,7 +1100,7 @@ struct MinisHTMLPreviewView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button { dismiss() } label: {
+                        Button { if let onClose { onClose() } else { dismiss() } } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(ChatColors.secondaryText)
                         }
@@ -1127,9 +1136,10 @@ struct MinisHTMLPreviewView: View {
                 }
                 .sheet(isPresented: $showAddToHomeSheet) {
                     WebAppAddToHomeSheet(htmlURL: fileURL,
-                                      sourceSessionId: AIChatViewModel.activeSessionId)
+                                      sourceSessionId: sourceSessionId ?? AIChatViewModel.activeSessionId)
                 }
         }
+        .navigationViewStyle(.stack)
         // [T-ios-html-preview-wide-sheet] Widen to a page-style sheet on
         // iPad/Mac, matching MinisMarkdownPreviewView. iPhone unaffected.
         .modifier(WideSheetSizingModifier())

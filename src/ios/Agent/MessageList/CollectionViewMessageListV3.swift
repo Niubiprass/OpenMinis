@@ -107,6 +107,7 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> MessageListViewController {
         let vc = MessageListViewController()
         context.coordinator.attach(to: vc, vm: vm)
+        context.coordinator.bindFileAttachmentSession(vm.sessionId)
         // Drops are handled exclusively by the SwiftUI `.onDrop` on the chat
         // root view. Previously a UIDropInteraction here intercepted drops on
         // top of the collection view, which (a) suppressed SwiftUI's
@@ -129,6 +130,7 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
         // (device ring trace: coordinator vm read false at every sync while
         // the buttons stayed hidden at diff≈2700pt from the bottom).
         coord.rebindViewModelIfNeeded(vm)
+        coord.bindFileAttachmentSession(vm.sessionId)
         coord.onRetryMessage = onRetryMessage
         coord.onOpenSoulSettings = onOpenSoulSettings
         coord.onRetryLast = onRetryLast
@@ -1287,6 +1289,7 @@ extension CollectionViewMessageListV3 {
 
         // === Sheet Presenters ===
         fileprivate let sheetPresenter = ToolSheetPresenter()
+        fileprivate let fileAttachmentPresenter = FileAttachmentPresenter()
         private let compactSummaryPresenter = CompactSummaryPresenter()
         private var sheetOverlayHost: UIHostingController<SheetOverlayView>?
 
@@ -1362,7 +1365,9 @@ extension CollectionViewMessageListV3 {
 
             // Install sheet overlay (outside UIHostingConfiguration cell tree)
             if sheetOverlayHost == nil {
-                let overlay = SheetOverlayView(toolPresenter: sheetPresenter, compactPresenter: compactSummaryPresenter)
+                let overlay = SheetOverlayView(toolPresenter: sheetPresenter,
+                                               filePresenter: fileAttachmentPresenter,
+                                               compactPresenter: compactSummaryPresenter)
                 let host = UIHostingController(rootView: overlay)
                 host.view.backgroundColor = .clear
                 host.view.isUserInteractionEnabled = true
@@ -1578,6 +1583,17 @@ extension CollectionViewMessageListV3 {
                     // explicitly on every hosting config.
                     // [T-ios-tool-capsule-vm-envobject-crash]
                     .environmentObject(vm)
+                    // [T-file-group-preview-fix] UIHostingConfiguration also
+                    // does not inherit \.openMinisURL / \.openFileAttachments.
+                    // Inject both explicitly: the file action lets the stable
+                    // overlay present, while openMinisURL keeps pasted cards
+                    // and any dependent cell link working.
+                    .environment(\.openFileAttachments, OpenFileAttachmentsAction { [weak self] attachments, tappedId in
+                        self?.openFileAttachments(attachments, startingAt: tappedId) ?? false
+                    })
+                    .environment(\.openMinisURL, OpenMinisURLAction { url in
+                        self?.openMinisURLInOwningSession(url) ?? .systemAction
+                    })
                 }.minSize(width: 0, height: 0).margins(.all, 0)
                 cell.applyContentConfiguration(config.ios15ContentIdentity(item))
 
@@ -2062,6 +2078,44 @@ extension CollectionViewMessageListV3 {
         /// the current snapshot + scroll flags into the new VM so its
         /// isNearBottom/messages state reflects reality instead of the
         /// initial defaults nobody would otherwise ever update.
+        func bindFileAttachmentSession(_ sessionId: String?) {
+            fileAttachmentPresenter.bind(to: sessionId)
+        }
+
+        @discardableResult
+        func openFileAttachments(_ attachments: [AttachmentMeta], startingAt id: UUID) -> Bool {
+            guard let sessionId = vm?.sessionId else { return false }
+            fileAttachmentPresenter.open(attachments, startingAt: id, sessionId: sessionId)
+            return true
+        }
+
+        /// Used by fallback links inside the whole-message tree. Resolve against
+        /// THIS list's VM session, never a transient frontmost session.
+        func openMinisURLInOwningSession(_ url: URL) -> OpenURLAction.Result {
+            guard url.scheme?.lowercased() == "minis" else { return .systemAction }
+            guard let sessionId = vm?.sessionId,
+                  let file = resolveMinisFileURL(url: url, sessionId: sessionId) else {
+                return .handled
+            }
+            let ext = file.pathExtension.lowercased()
+            let item = FileAttachmentPreviewItem(id: UUID(), title: file.lastPathComponent, localURL: file, kind: {
+                if minisMarkdownExtensions.contains(ext) { return .markdown }
+                if minisTextExtensions.contains(ext) { return .text }
+                if minisHTMLExtensions.contains(ext) { return .html }
+                if minisAudioExtensions.contains(ext) { return .audio }
+                if minisDocumentExtensions.contains(ext) { return .document }
+                return .share
+            }())
+            if item.kind == .share {
+                fileAttachmentPresenter.sheet = .share(id: UUID(), url: file)
+            } else if let group = FileAttachmentPreviewGroup(ownerSessionId: sessionId,
+                                                              items: [item], selectedID: item.id,
+                                                              excludedCount: 0) {
+                fileAttachmentPresenter.sheet = .preview(group)
+            }
+            return .handled
+        }
+
         func rebindViewModelIfNeeded(_ newVM: AIChatViewModel) {
             if let current = vm, current === newVM { return }
             let hadOld = vm != nil
@@ -6710,7 +6764,12 @@ private final class CompactSummaryPresenter: ObservableObject {
 /// outside any UIHostingConfiguration cell tree.
 private struct SheetOverlayView: View {
     @ObservedObject var toolPresenter: ToolSheetPresenter
+    @ObservedObject var filePresenter: FileAttachmentPresenter
     @ObservedObject var compactPresenter: CompactSummaryPresenter
+
+    private func dismissFilePreview() {
+        filePresenter.sheet = nil
+    }
 
     var body: some View {
         Color.clear
@@ -6725,7 +6784,28 @@ private struct SheetOverlayView: View {
             // page) that hides the page's bar for good. Pin visible so the
             // bridged state can never be "hidden"; a no-op where the bar is
             // already shown.
-            .sheet(item: $toolPresenter.sheetData) { data in
+            .sheet(item: $filePresenter.sheet) { sheet in
+                switch sheet {
+                case .preview(let group):
+                    FileAttachmentGroupPreview(group: group, onClose: dismissFilePreview)
+                case .share(_, let url):
+                    MinisShareSheet(url: url)
+                }
+            }
+            .alert(
+                AppLocalized("File Not Found"),
+                isPresented: Binding(
+                    get: { filePresenter.unavailableName != nil },
+                    set: { if !$0 { filePresenter.unavailableName = nil } }
+                ),
+                presenting: filePresenter.unavailableName
+            ) { _ in
+                Button(AppLocalized("OK"), role: .cancel) {
+                    filePresenter.unavailableName = nil
+                }
+            } message: { name in
+                Text(String(format: AppLocalized("%@ is unavailable. It may have been deleted or not yet synced from iCloud."), name))
+            }
                 // [T-agent-tool-sheet-unified] Every tool block — the agent
                 // block included — opens the same live sheet (this is the
                 // path a tap in the collection view actually takes), with

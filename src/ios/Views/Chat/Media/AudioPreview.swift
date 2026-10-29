@@ -15,6 +15,7 @@ import UIKit
 
 struct MinisAudioPreviewView: View {
     let fileURL: URL
+    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var player = GlobalAudioPlayer.shared
     @State private var showShareSheet = false
@@ -90,7 +91,7 @@ struct MinisAudioPreviewView: View {
     private var topBar: some View {
         HStack {
             Button {
-                dismiss()
+                if let onClose { onClose() } else { dismiss() }
             } label: {
                 Image(systemName: "xmark")
                     .font(.body.weight(.semibold))

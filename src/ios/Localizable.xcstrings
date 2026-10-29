@@ -250432,6 +250432,30 @@
           }
         }
       }
+    },
+    "Preview unavailable" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Preview unavailable" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "无法预览" } }
+      }
+    },
+    "Previous File" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Previous File" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "上一个文件" } }
+      }
+    },
+    "Next File" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Next File" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下一个文件" } }
+      }
+    },
+    "Some attachments cannot be previewed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Some attachments cannot be previewed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "部分附件无法预览" } }
+      }
     }
   },
   "version" : "1.0"
