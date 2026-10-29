@@ -1,6 +1,7 @@
 import Foundation
 import QuickLook
 import SwiftUI
+import UIKit
 
 // [T-file-group-preview-fix] A cell emits intent only. The stable list overlay
 // owns presentation, and the owning VM supplies the session (never the global
