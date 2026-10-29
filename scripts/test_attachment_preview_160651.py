@@ -97,6 +97,11 @@ class AttachmentPreviewRegression(unittest.TestCase):
         self.assertIn('.sheet(item: $toolPresenter.sheetData) { data in', LIST)
         self.assertIn('.sheet(item: $filePresenter.sheet) { sheet in', LIST)
 
+    def test_open_minis_environment_uses_weak_self(self):
+        # The 5fc10db run failed because the second closure captured `self`
+        # strongly, making `self?` illegal on a non-optional Coordinator.
+        self.assertIn('.environment(\\.openMinisURL, OpenMinisURLAction { [weak self] url in', LIST)
+
     def test_new_source_is_registered_in_the_app_target(self):
         self.assertIn('FileAttachmentPreview.swift in Sources', PBX)
         self.assertIn('FileAttachmentPreview.swift */', PBX)

@@ -1591,7 +1591,7 @@ extension CollectionViewMessageListV3 {
                     .environment(\.openFileAttachments, OpenFileAttachmentsAction { [weak self] attachments, tappedId in
                         self?.openFileAttachments(attachments, startingAt: tappedId) ?? false
                     })
-                    .environment(\.openMinisURL, OpenMinisURLAction { url in
+                    .environment(\.openMinisURL, OpenMinisURLAction { [weak self] url in
                         self?.openMinisURLInOwningSession(url) ?? .systemAction
                     })
                 }.minSize(width: 0, height: 0).margins(.all, 0)
