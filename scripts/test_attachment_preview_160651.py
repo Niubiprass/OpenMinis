@@ -10,6 +10,8 @@ The failure this pins down had two independent causes:
 It also preserves the user's requested behaviour: one composed message's
 files share a pager, and text / markdown / HTML / audio keep their dedicated
 reader rather than being flattened into QuickLook.
+
+Wired into the iOS15 v64 Repair workflow so this path cannot regress unnoticed.
 """
 import unittest
 from pathlib import Path
