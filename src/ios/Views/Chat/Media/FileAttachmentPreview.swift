@@ -87,9 +87,17 @@ enum FileAttachmentSheet: Identifiable {
     }
 }
 
+/// Fullscreen video presentation requested by tapping a sent video tile.
+/// Videos never go through `.share`; they get a real player (2026-10-30).
+struct FileAttachmentVideoPresentation: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
 @MainActor
 final class FileAttachmentPresenter: ObservableObject {
     @Published var sheet: FileAttachmentSheet?
+    @Published var videoSheet: FileAttachmentVideoPresentation?
     @Published var unavailableName: String?
     private var ownerSessionId: String?
     private var requestToken = UUID()
@@ -103,7 +111,16 @@ final class FileAttachmentPresenter: ObservableObject {
     func reset() {
         requestToken = UUID()
         sheet = nil
+        videoSheet = nil
         unavailableName = nil
+    }
+
+    /// Tapping a sent video opens the player directly. Previously the URL
+    /// router had no video branch, classified `.mp4`/`.mov` as `.share`, and
+    /// iOS popped the share sheet instead of playing the file.
+    func openVideo(_ url: URL) {
+        reset()
+        videoSheet = FileAttachmentVideoPresentation(url: url)
     }
 
     func open(_ attachments: [AttachmentMeta], startingAt selectedID: UUID, sessionId: String?) {

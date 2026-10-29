@@ -100,6 +100,18 @@ class AttachmentPreviewRegression(unittest.TestCase):
         self.assertIn('AppLocalized("File Not Found")', LIST)
         self.assertIn('Preview unavailable', PREVIEW)
 
+    def test_sent_video_opens_the_player_not_the_share_sheet(self):
+        # 2026-10-30: tapping a sent .mp4/.mov produced the iOS share sheet.
+        # The URL router had no video branch, so mp4 fell through to `.share`.
+        self.assertIn('minisVideoExtensions.contains(ext)', LIST)
+        self.assertIn('fileAttachmentPresenter.openVideo(file)', LIST)
+        self.assertIn('@Published var videoSheet: FileAttachmentVideoPresentation?', PREVIEW)
+        self.assertIn('.fullScreenCover(item: $filePresenter.videoSheet) { video in', LIST)
+        self.assertIn('MinisVideoFullscreenPlayer(fileURL: video.url)', LIST)
+        # The tile must build its URL with the escaping encoder, not URL(string:).
+        self.assertIn('FileAttachmentResourceURL.make(path: meta.path) { openURL(url) }', MEDIA)
+        self.assertNotIn('URL(string: meta.minisURL) { openURL(url) }', MEDIA)
+
     def test_tool_sheet_wrapper_survives_the_file_sheet_insert(self):
         # The 153fb09 run failed at `swiftc -parse` because the new file
         # sheet replaced the opening line of the existing tool sheet.

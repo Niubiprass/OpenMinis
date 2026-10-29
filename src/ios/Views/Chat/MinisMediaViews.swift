@@ -462,7 +462,9 @@ struct AsyncVideoTile: View {
 
     var body: some View {
         Button {
-            if let url = URL(string: meta.minisURL) { openURL(url) }
+            // Build the minis:// URL with the same encoder as the file pager:
+            // URL(string:) rejects literal spaces and misreads # / %.
+            if let url = FileAttachmentResourceURL.make(path: meta.path) { openURL(url) }
         } label: {
             ZStack(alignment: .bottomLeading) {
                 if let img = thumbnail {

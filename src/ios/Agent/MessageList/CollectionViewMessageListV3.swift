@@ -2098,6 +2098,13 @@ extension CollectionViewMessageListV3 {
                 return .handled
             }
             let ext = file.pathExtension.lowercased()
+            // Video is media, not a document. Without this branch the kind
+            // below resolved to `.share` and iOS presented the share sheet
+            // for every sent .mp4/.mov (user report 2026-10-30).
+            if minisVideoExtensions.contains(ext) {
+                fileAttachmentPresenter.openVideo(file)
+                return .handled
+            }
             let item = FileAttachmentPreviewItem(id: UUID(), title: file.lastPathComponent, localURL: file, kind: {
                 if minisMarkdownExtensions.contains(ext) { return .markdown }
                 if minisTextExtensions.contains(ext) { return .text }
@@ -6791,6 +6798,12 @@ private struct SheetOverlayView: View {
                 case .share(_, let url):
                     MinisShareSheet(url: url)
                 }
+            }
+            // Videos get a real player, never the share sheet. Presented as a
+            // full-screen cover because MinisVideoFullscreenPlayer draws its
+            // own black chrome and hides the status bar.
+            .fullScreenCover(item: $filePresenter.videoSheet) { video in
+                MinisVideoFullscreenPlayer(fileURL: video.url)
             }
             .alert(
                 AppLocalized("File Not Found"),
