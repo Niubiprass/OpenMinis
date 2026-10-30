@@ -1515,6 +1515,18 @@ final class MiniSightSignal {
         if shouldPost { Self.post(Self.startedNotification) }
     }
 
+    /// Bring Minis back to the foreground after the burst, unless it is
+    /// already active. Runs outside the lock; a short delay lets the last
+    /// springboard animation settle.
+    private func returnHomeSoon() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard UIApplication.shared.applicationState != .active else { return }
+            if let url = URL(string: "minis://") {
+                UIApplication.shared.open(url)
+            }
+        }
+    }
+
     /// Watchdog: a burst that never closed is force-ended.
     private func forceHide() {
         lock.lock()
@@ -1538,6 +1550,9 @@ final class MiniSightSignal {
         if depth == 0, previousDepth > 0 {
             watchdog?.cancel()
             watchdog = nil
+            // 设备操作结束后把手机切回原来这个界面（Minis）。
+            // 若用户本来就在 Minis 前台，open 是空操作。
+            returnHomeSoon()
             let elapsed = shownAt.map { Date().timeIntervalSince($0) } ?? Self.minimumVisible
             delay = Self.minimumVisible - elapsed
             if delay <= 0 {
