@@ -1124,7 +1124,6 @@ struct AIChatView: View {
         } message: {
             Text(AppLocalized("Messages above this point will be compacted into a summary. This cannot be undone."))
         }
-        .offloadPermissionDialog()
         .environment(\.openMinisURL, OpenMinisURLAction { url in
             handleMinisURLTap(url)
         })

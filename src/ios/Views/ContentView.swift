@@ -8903,6 +8903,7 @@ private struct SettingsSheet: View {
     @AppStorage("appearanceMode") private var appearanceMode: Int = 0
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var deepLink = DeepLinkCoordinator.shared
+    @ObservedObject private var pluginProjects = PluginProjectStore.shared
     @State private var navPath = NavigationPath()
     @State private var showFeedbackDialog = false
 
@@ -9070,6 +9071,27 @@ private struct SettingsSheet: View {
                     }
                 }
 
+                Section("插件开发") {
+                    NavigationLink {
+                        PluginDevView()
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white)
+                                .frame(width: 21, height: 21)
+                                .background(.indigo, in: Circle())
+                            Text("插件开发")
+                            Spacer()
+                            if pluginProjects.activeCount > 0 {
+                                Text("\(pluginProjects.activeCount) 个项目")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
                 Section("Storage") {
                     NavigationLink {
                         StorageManagementView()
@@ -9176,6 +9198,22 @@ private struct SettingsSheet: View {
                                     .frame(width: 21, height: 21)
                                     .background(.teal, in: Circle())
                             }
+                        }
+                    }
+                }
+
+                Section("逆向工具") {
+                    NavigationLink {
+                        ReverseAnalysisView()
+                    } label: {
+                        Label {
+                            Text("逆向分析")
+                        } icon: {
+                            Image(systemName: "ant")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white)
+                                .frame(width: 21, height: 21)
+                                .background(.indigo, in: Circle())
                         }
                     }
                 }
@@ -9618,6 +9656,25 @@ private struct AutoContextCompactionSettingsView: View {
     @AppStorage(AutoCompactionPreferences.enabledKey) private var enabled = false
     @State private var budgetText = String(AutoCompactionPreferences().budgetTokens)
     @State private var saved = false
+    /// [T-context-window-in-compaction] The window cap lives beside the
+    /// compression budget it feeds: both describe how much history a request
+    /// may carry, so a separate settings row would have split one decision
+    /// across two screens. This binding edits the SAME budget as the text
+    /// field below — it is not a second, inert preference.
+    private var windowPresetBinding: Binding<Int> {
+        Binding(
+            get: {
+                let current = AutoCompactionPreferences().budgetTokens
+                return [32_768, 65_536, 131_072, 204_800].contains(current) ? current : 0
+            },
+            set: { value in
+                var preferences = AutoCompactionPreferences()
+                preferences.budgetTokens = value == 0 ? AutoCompactionBudget.defaultTokens : value
+                budgetText = String(preferences.budgetTokens)
+                saved = true
+            }
+        )
+    }
     private var parsedBudget: Int? {
         let text = budgetText.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return AutoCompactionBudget.defaultTokens }
@@ -9629,6 +9686,17 @@ private struct AutoContextCompactionSettingsView: View {
                 Toggle("Auto Context Compression", isOn: $enabled)
             } footer: {
                 Text("Automatically summarize older context at 85% of the effective budget. A lower model or model-group limit takes priority.")
+            }
+            Section {
+                Picker("上限", selection: windowPresetBinding) {
+                    Text("自动（按模型）").tag(0)
+                    Text("32K").tag(32_768)
+                    Text("64K").tag(65_536)
+                    Text("128K").tag(131_072)
+                    Text("200K").tag(204_800)
+                }
+            } header: { Text("上下文窗口") } footer: {
+                Text("选一个预设会直接写入下面的 Token Budget；压缩在该预算的 85% 触发。调小更省钱、更快，但聊久了更容易忘事。")
             }
             Section {
                 TextField("Token Budget", text: $budgetText)

@@ -440,6 +440,34 @@ extension AIChatViewModel {
                 break
             }
 
+            // [T-host-access-master-switch] Read-only MCP calls always work;
+            // Read-only and touch control always work; terminal/write/install/
+            // uninstall/system-setting changes need the master switch, then a
+            // per-command confirmation.
+            if HostAccessPermission.isDangerous(command) {
+                guard HostAccessPermission.isEnabled else {
+                    let msg = "Error: 这条会改设备（终端/写文件/装卸/改系统设置），主机权限未开启。只读和点击操作不受影响。要执行请到 设置 → 插件开发 → 安全 打开「允许 AI 操作手机」。"
+                    ctLogger.info("[HostAccess] blocked dangerous MCP command: master switch off")
+                    toolOutput = msg
+                    toolSuccess = false
+                    if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+                        messages[msgIdx].blocks[blockIdx].content = msg
+                    }
+                    break
+                }
+                let approved = await MCPApprovalDialog.confirm(command)
+                if !approved {
+                    let msg = "Error: 用户拒绝了这条主机命令，未执行。"
+                    ctLogger.info("[HostAccess] user denied dangerous MCP command")
+                    toolOutput = msg
+                    toolSuccess = false
+                    if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
+                        messages[msgIdx].blocks[blockIdx].content = msg
+                    }
+                    break
+                }
+            }
+
             // Offload permission check.
             ctLogger.info("[OffloadPerm] shell command: \(command)")
             if let offloadCmd = OffloadPermissionManager.extractOffloadCommand(from: command) {

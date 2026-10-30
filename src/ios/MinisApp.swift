@@ -267,6 +267,17 @@ struct MinisApp: App {
                 )) { _ in
                     ConfigConfirmSheet(gate: configConfirmGate)
                 }
+                // [T-offload-permission-root-host] The privacy-command
+                // permission sheet used to be mounted on every AIChatView.
+                // A request can fire while the chat is not frontmost (agent
+                // keeps working after the user navigates away) or while a
+                // second chat view is alive; the sheet then attaches to an
+                // off-screen presenter and iOS leaves an invisible modal
+                // layer that swallows every touch — the "弹窗不显示、屏幕按
+                // 不了" report. One root-hosted presenter, same as the
+                // minis-config gate above, keeps it visible and interactive
+                // no matter which screen is active.
+                .offloadPermissionDialog()
                 // [review S14] Restore flow for a `.minisbak` opened from
                 // Files / AirDrop / a share sheet. Mounted HERE rather than in
                 // BackupSettingsView, which was the only observer before: the

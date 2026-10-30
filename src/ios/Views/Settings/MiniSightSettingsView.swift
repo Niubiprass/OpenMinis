@@ -1,0 +1,244 @@
+//
+//  MiniSightSettingsView.swift
+//  Minis
+//
+//  [T-minisight-pet] Settings for the MiniSight operation indicator. The pet
+//  artwork is user-imported (Photos or Files, Petdex 9-row sheets); nothing is
+//  bundled, matching how SwipeDeck / Bottom-x do it. The imported sheet is
+//  downscaled to 768 px wide and written to the app's Documents so the
+//  SpringBoard tweak can read it without any sandbox escape.
+//
+
+import CoreFoundation
+import PhotosUI
+import SwiftUI
+import UniformTypeIdentifiers
+import UIKit
+
+private enum MiniSightPetFile {
+    static var directory: URL {
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = base.appendingPathComponent("MiniSight", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    static var url: URL { directory.appendingPathComponent("pet.png") }
+
+    static func load() -> UIImage? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return UIImage(data: data)
+    }
+
+    /// 9-row sheets are 1536 px wide on Petdex; 768 is plenty for a 96 pt pet.
+    static func save(_ image: UIImage) -> Bool {
+        let maxWidth: CGFloat = 768
+        let scale = min(1, maxWidth / max(image.size.width, 1))
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let scaled = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+        guard let data = scaled.pngData() else { return false }
+        do {
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    static func delete() {
+        try? FileManager.default.removeItem(at: url)
+    }
+}
+
+struct MiniSightSettingsView: View {
+    /// 0 = capsule, 1 = pet.
+    @AppStorage("minisight.style") private var style = 0
+    @AppStorage("minisight.record") private var record = false
+    @AppStorage("minisight.longPress") private var longPressToRecord = true
+
+    @State private var petImage: UIImage?
+    @State private var showPhotoPicker = false
+    @State private var showFilePicker = false
+    @State private var importError: String?
+
+    var body: some View {
+        List {
+            Section {
+                Picker("样式", selection: $style) {
+                    Text("胶囊").tag(0)
+                    Text("桌宠").tag(1)
+                }
+                .pickerStyle(.segmented)
+            } footer: {
+                Text("平时完全隐藏；AI 操作手机时才出现。切换样式后注销一次生效。桌宠只在导入后可用。")
+            }
+
+            Section {
+                HStack(spacing: 12) {
+                    if let petImage {
+                        Image(uiImage: petImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 56, height: 60)
+                            .background(Color.secondary.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    } else {
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.secondary.opacity(0.12))
+                            .frame(width: 56, height: 60)
+                            .overlay(Image(systemName: "pawprint").foregroundStyle(.secondary))
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(petImage == nil ? "还没有导入桌宠" : "已导入桌宠")
+                        if petImage != nil {
+                            Text("9 行 Petdex 精灵图").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Button { showPhotoPicker = true } label: {
+                    Label("从相册导入（768×936 PNG）", systemImage: "photo.on.rectangle")
+                }
+                Button { showFilePicker = true } label: {
+                    Label("从文件导入（Petdex webp）", systemImage: "folder")
+                }
+                if petImage != nil {
+                    Button(role: .destructive) {
+                        MiniSightPetFile.delete()
+                        petImage = nil
+                        style = 0
+                    } label: {
+                        Label("删除当前桌宠", systemImage: "trash")
+                    }
+                }
+            } header: {
+                Text("桌宠")
+            } footer: {
+                Text("素材从 petdex.dev 下载后导入；图集是 9 行动作（待机/走/跑/跳…），不是单张图。")
+            }
+
+            Section {
+                Button("测试显示 3 秒") {
+                    post("com.openminis.agent.started")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        post("com.openminis.agent.stopped")
+                    }
+                }
+            } footer: {
+                Text("用来确认指示器正常，不需要 AI 操作。")
+            }
+
+            Section {
+                Toggle("操作时录屏", isOn: $record)
+                Toggle("长按指示器切换录屏", isOn: $longPressToRecord)
+            } header: {
+                Text("录屏")
+            } footer: {
+                Text("录屏默认关闭。开启后，AI 开始操作就录，结束保存；长按可以随时手动开/关。")
+            }
+        }
+        .navigationTitle("操作指示器")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { petImage = MiniSightPetFile.load() }
+        .sheet(isPresented: $showPhotoPicker) {
+            MiniSightPhotoPicker { image in importImage(image) }
+        }
+        .sheet(isPresented: $showFilePicker) {
+            MiniSightDocumentPicker { url in importFile(url) }
+        }
+        .alert("导入失败", isPresented: Binding(
+            get: { importError != nil },
+            set: { if !$0 { importError = nil } }
+        )) {
+            Button("好") { importError = nil }
+        } message: {
+            Text(importError ?? "")
+        }
+    }
+
+    private func importImage(_ image: UIImage) {
+        if MiniSightPetFile.save(image) {
+            petImage = MiniSightPetFile.load()
+            style = 1
+        } else {
+            importError = "保存失败，存储空间可能不足。"
+        }
+    }
+
+    private func post(_ name: String) {
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(name as CFString), nil, nil, true)
+    }
+
+    private func importFile(_ url: URL) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url), let image = UIImage(data: data) else {
+            importError = "这个文件不是可识别的图片。"
+            return
+        }
+        importImage(image)
+    }
+}
+
+// MARK: - Pickers
+
+private struct MiniSightPhotoPicker: UIViewControllerRepresentable {
+    let onPick: (UIImage) -> Void
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter = .images
+        config.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: PHPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let onPick: (UIImage) -> Void
+        init(onPick: @escaping (UIImage) -> Void) { self.onPick = onPick }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            picker.dismiss(animated: true)
+            guard let provider = results.first?.itemProvider,
+                  provider.canLoadObject(ofClass: UIImage.self) else { return }
+            provider.loadObject(ofClass: UIImage.self) { object, _ in
+                guard let image = object as? UIImage else { return }
+                DispatchQueue.main.async { self.onPick(image) }
+            }
+        }
+    }
+}
+
+private struct MiniSightDocumentPicker: UIViewControllerRepresentable {
+    let onPick: (URL) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.image], asCopy: true)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            onPick(url)
+        }
+    }
+}
