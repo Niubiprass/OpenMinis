@@ -134,7 +134,7 @@ extension AIChatViewModel {
         // Only tools that actually touch the device should light the capsule:
         // a local file_read / title refresh is not "operating the phone".
         let sightSignals = MiniSightSignal.shouldSignal(tool: tu.name, args: tu.args)
-        if sightSignals { MiniSightSignal.shared.begin() }
+        if sightSignals { MiniSightSignal.shared.begin(tool: tu.name, args: tu.args) }
         defer { if sightSignals { MiniSightSignal.shared.end() } }
 
         let blockIdx = tu.blockIdx
@@ -1502,7 +1502,7 @@ final class MiniSightSignal {
 
     /// A tool is about to run. Always paired with `end()` — the executor uses
     /// `defer`, so a throw, a timeout or a user cancel still closes the burst.
-    func begin() {
+    func begin(tool: String, args: String) {
         var shouldPost = false
         lock.lock()
         depth += 1
@@ -1517,7 +1517,36 @@ final class MiniSightSignal {
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.maxVisible, execute: wd)
         }
         lock.unlock()
-        if shouldPost { Self.post(Self.startedNotification) }
+        if shouldPost {
+            Self.post(Self.startedNotification)
+            Self.writeStatus(Self.describe(tool: tool, args: args))
+        }
+    }
+
+    /// 把这次 MCP 调用翻译成一句人话，写到共享文件供插件显示说话气泡。
+    private static func describe(tool: String, args: String) -> String {
+        let map: [(String, String)] = [
+            ("tap_screen", "正在点屏幕"), ("tap_element", "正在点屏幕"),
+            ("swipe_screen", "正在滑动"), ("screenshot", "正在截图"),
+            ("run_command", "正在执行命令"), ("launch_app", "正在打开 App"),
+            ("install_app", "正在装 App"), ("uninstall_app", "正在卸载"),
+            ("read_file", "正在读文件"), ("write_file", "正在写文件"),
+            ("list_dir", "正在看目录"), ("get_syslog", "正在看日志"),
+            ("get_crash_logs", "正在看崩溃日志"), ("get_app_info", "正在看 App 信息"),
+            ("list_apps", "正在看 App 列表"), ("press_", "正在按按键"),
+            ("set_brightness", "正在调亮度"), ("set_volume", "正在调音量"),
+        ]
+        for (key, text) in map where args.contains(key) { return text }
+        return "正在操作手机"
+    }
+
+    private static func writeStatus(_ text: String) {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("MiniSight", isDirectory: true)
+        guard let dir else { return }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? Data(text.utf8).write(to: dir.appendingPathComponent("status.txt"), options: .atomic)
+        Self.post("com.openminis.minisight.status")
     }
 
     /// Bring Minis back to the foreground after the burst, unless it is

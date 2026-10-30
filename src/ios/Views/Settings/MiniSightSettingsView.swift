@@ -52,6 +52,31 @@ private enum MiniSightPetFile {
     static func delete() {
         try? FileManager.default.removeItem(at: url)
     }
+
+    static var aiConfigURL: URL { directory.appendingPathComponent("ai.json") }
+    static var shownURL: URL { directory.appendingPathComponent("shown") }
+
+    static func loadShown() -> Bool {
+        guard let data = try? Data(contentsOf: shownURL) else { return true }
+        return String(data: data, encoding: .utf8) != "0"
+    }
+
+    static func saveShown(_ on: Bool) {
+        try? Data((on ? "1" : "0").utf8).write(to: shownURL, options: .atomic)
+    }
+
+    static func loadAI() -> (String, String, String) {
+        guard let data = try? Data(contentsOf: aiConfigURL),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String]
+        else { return ("", "", "") }
+        return (obj["url"] ?? "", obj["key"] ?? "", obj["model"] ?? "")
+    }
+
+    static func saveAI(url: String, key: String, model: String) {
+        let obj = ["url": url, "key": key, "model": model]
+        guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
+        try? data.write(to: aiConfigURL, options: .atomic)
+    }
 }
 
 struct MiniSightSettingsView: View {
@@ -59,8 +84,14 @@ struct MiniSightSettingsView: View {
     @AppStorage("minisight.style") private var style = 0
     @AppStorage("minisight.record") private var record = false
     @AppStorage("minisight.longPress") private var longPressToRecord = true
-    @AppStorage("minisight.alwaysShow") private var alwaysShow = false
+    @AppStorage("minisight.mode") private var mode = 0   // 0 = 仅调用时，1 = 常驻
+    @State private var shown = true
+    @AppStorage("minisight.petSize") private var petSize = 96.0
 
+    @State private var aiURL = ""
+    @State private var aiKey = ""
+    @State private var aiModel = ""
+    @State private var aiStatus: String?
     @State private var petImage: UIImage?
     @State private var showPhotoPicker = false
     @State private var showFilePicker = false
@@ -79,9 +110,21 @@ struct MiniSightSettingsView: View {
             }
 
             Section {
-                Toggle("平时也显示在桌面", isOn: $alwaysShow)
+                Toggle("显示桌宠", isOn: $shown)
             } footer: {
-                Text("关闭时只在 AI 操作手机时出现；打开后桌宠/胶囊一直留在桌面，不随操作消失。立即生效。")
+                Text("双击桌宠也会关掉它；关掉后 MCP 调用也不再出现，要恢复就在这里打开。")
+            }
+
+            Section {
+                Picker("显示方式", selection: $mode) {
+                    Text("仅调用时").tag(0)
+                    Text("常驻").tag(1)
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("显示方式")
+            } footer: {
+                Text("仅调用时：只有 AI 调用越狱 MCP 才出现，结束收起。常驻：一直在桌面，MCP 调用时额外弹说话气泡。")
             }
 
             Section {
@@ -128,6 +171,46 @@ struct MiniSightSettingsView: View {
             }
 
             Section {
+                HStack(spacing: 12) {
+                    Text("大小")
+                    Slider(value: $petSize, in: 56...140, step: 4)
+                    Text("\(Int(petSize))")
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, alignment: .trailing)
+                }
+            } header: {
+                Text("桌宠大小")
+            } footer: {
+                Text("56–140，立即生效。")
+            }
+
+            Section {
+                TextField("接口地址，如 https://api.openai.com/v1", text: $aiURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.footnote, design: .monospaced))
+                SecureField("API Key", text: $aiKey)
+                    .font(.system(.footnote, design: .monospaced))
+                TextField("模型名", text: $aiModel)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("保存并测试") {
+                    MiniSightPetFile.saveAI(url: aiURL.trimmingCharacters(in: .whitespaces),
+                                            key: aiKey.trimmingCharacters(in: .whitespaces),
+                                            model: aiModel.trimmingCharacters(in: .whitespaces))
+                    Task { await testAI() }
+                }
+                if let aiStatus {
+                    Text(aiStatus).font(.footnote).foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("桌宠 AI")
+            } footer: {
+                Text("给桌宠点击说话用，OpenAI 兼容接口。不填或失败就用预置句子。Key 存在 App 容器的文件里，插件才能读到。")
+            }
+
+            Section {
                 Button("测试显示 3 秒") {
                     post("com.openminis.agent.started")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
@@ -149,9 +232,19 @@ struct MiniSightSettingsView: View {
         }
         .navigationTitle("操作指示器")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { petImage = MiniSightPetFile.load() }
+        .onAppear {
+            petImage = MiniSightPetFile.load()
+            shown = MiniSightPetFile.loadShown()
+            let ai = MiniSightPetFile.loadAI()
+            aiURL = ai.0; aiKey = ai.1; aiModel = ai.2
+        }
         .onChange(of: style) { _ in post("com.openminis.minisight.settings") }
-        .onChange(of: alwaysShow) { _ in post("com.openminis.minisight.settings") }
+        .onChange(of: mode) { _ in post("com.openminis.minisight.settings") }
+        .onChange(of: shown) { value in
+            MiniSightPetFile.saveShown(value)
+            post(value ? "com.openminis.minisight.show" : "com.openminis.minisight.settings")
+        }
+        .onChange(of: petSize) { _ in post("com.openminis.minisight.settings") }
         .sheet(isPresented: $showPhotoPicker) {
             MiniSightPhotoPicker { image in importImage(image) }
         }
@@ -174,6 +267,42 @@ struct MiniSightSettingsView: View {
             style = 1
         } else {
             importError = "保存失败，存储空间可能不足。"
+        }
+    }
+
+    private func testAI() async {
+        let base = aiURL.trimmingCharacters(in: .whitespaces)
+        let key = aiKey.trimmingCharacters(in: .whitespaces)
+        let model = aiModel.trimmingCharacters(in: .whitespaces)
+        guard !base.isEmpty, !key.isEmpty, !model.isEmpty,
+              let url = URL(string: base.hasSuffix("/chat/completions") ? base : base + "/chat/completions")
+        else { aiStatus = "地址 / Key / 模型不完整"; return }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 8
+        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "model": model,
+            "max_tokens": 40,
+            "messages": [
+                ["role": "system", "content": "你是可爱的桌宠，说一句不超过20字的中文撒娇话，不要引号。"],
+                ["role": "user", "content": "说一句"],
+            ],
+        ]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+                aiStatus = "失败：HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1)"; return
+            }
+            let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let choices = obj?["choices"] as? [[String: Any]]
+            let msg = choices?.first?["message"] as? [String: Any]
+            aiStatus = (msg?["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "返回里没有内容"
+        } catch {
+            aiStatus = "失败：\(error.localizedDescription)"
         }
     }
 
