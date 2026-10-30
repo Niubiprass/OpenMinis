@@ -168,12 +168,14 @@ struct PluginDevView: View {
                 Text("默认只放行只读操作（截图、列 App、读日志、读文件）。终端命令、写文件、装/卸 App、点击控制会被拦截；打开后这些才放行。")
             }
 
-            Section("指示器") {
+            Section {
                 NavigationLink {
                     MiniSightSettingsView()
                 } label: {
                     Label("操作指示器", systemImage: "pawprint.circle")
                 }
+            } header: {
+                Text("指示器")
             } footer: {
                 Text("AI 操作手机时顶部的提示：胶囊或会动的桌宠。桌宠素材自己导入。")
             }
