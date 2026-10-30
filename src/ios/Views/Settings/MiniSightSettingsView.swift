@@ -75,13 +75,13 @@ struct MiniSightSettingsView: View {
                 }
                 .pickerStyle(.segmented)
             } footer: {
-                Text("切换样式后注销一次生效。桌宠只在导入后可用。")
+                Text("切换后立即生效。桌宠只在导入后可用。")
             }
 
             Section {
                 Toggle("平时也显示在桌面", isOn: $alwaysShow)
             } footer: {
-                Text("关闭时只在 AI 操作手机时出现；打开后桌宠/胶囊一直留在桌面，不随操作消失。注销生效。")
+                Text("关闭时只在 AI 操作手机时出现；打开后桌宠/胶囊一直留在桌面，不随操作消失。立即生效。")
             }
 
             Section {
@@ -150,6 +150,8 @@ struct MiniSightSettingsView: View {
         .navigationTitle("操作指示器")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { petImage = MiniSightPetFile.load() }
+        .onChange(of: style) { _ in post("com.openminis.minisight.settings") }
+        .onChange(of: alwaysShow) { _ in post("com.openminis.minisight.settings") }
         .sheet(isPresented: $showPhotoPicker) {
             MiniSightPhotoPicker { image in importImage(image) }
         }
