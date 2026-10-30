@@ -67,13 +67,28 @@ class SignalContract(unittest.TestCase):
             self.assertNotIn(forbidden, body)
 
 
+class SignalScope(unittest.TestCase):
+
+    def test_only_device_tools_light_the_capsule(self):
+        body = signal_body()
+        self.assertIn('private static let signalledTools: Set<String> = ["shell_execute", "browser_use"]', body)
+        self.assertIn('guard signalled', body) if False else None
+        self.assertIn('static func shouldSignal(tool: String) -> Bool', body)
+
+    def test_watchdog_ceiling(self):
+        body = signal_body()
+        self.assertIn('private static let maxVisible: TimeInterval = 120', body)
+        self.assertIn('private func forceHide()', body)
+        self.assertIn('Self.maxVisible', body)
+
+
 class FunnelWiring(unittest.TestCase):
 
     def test_begin_and_defer_end_at_the_funnel(self):
         i = TOOLS.index('func executeSingleToolUse(')
         body = TOOLS[i:i + 6000]
         self.assertIn('MiniSightSignal.shared.begin()', body)
-        self.assertIn('defer { MiniSightSignal.shared.end() }', body)
+        self.assertIn('defer { if sightSignals { MiniSightSignal.shared.end() } }', body)
         # begin must precede the defer that closes it
         self.assertLess(body.index('begin()'), body.index('end()'))
 
