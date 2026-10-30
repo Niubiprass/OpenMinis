@@ -131,8 +131,11 @@ extension AIChatViewModel {
         //
         // Additive on purpose: no existing line is modified, and deleting these
         // two lines restores the previous behaviour exactly.
-        MiniSightSignal.shared.begin()
-        defer { MiniSightSignal.shared.end() }
+        // Only tools that actually touch the device should light the capsule:
+        // a local file_read / title refresh is not "operating the phone".
+        let sightSignals = MiniSightSignal.shouldSignal(tool: tu.name)
+        if sightSignals { MiniSightSignal.shared.begin() }
+        defer { if sightSignals { MiniSightSignal.shared.end() } }
 
         let blockIdx = tu.blockIdx
 
@@ -1478,6 +1481,18 @@ final class MiniSightSignal {
     /// another tool starts first.
     private var pendingHide: DispatchWorkItem?
 
+    /// Tools allowed to light the capsule. MCP calls go through shell_execute.
+    private static let signalledTools: Set<String> = ["shell_execute", "browser_use"]
+
+    static func shouldSignal(tool: String) -> Bool { signalledTools.contains(tool) }
+
+    /// Hard ceiling: a leaked begin() (a tool whose task is suspended forever)
+    /// must not leave the capsule on screen indefinitely.
+    private static let maxVisible: TimeInterval = 120
+
+    private var watchdog: DispatchWorkItem?
+
+
     private init() {}
 
     /// A tool is about to run. Always paired with `end()` — the executor uses
@@ -1491,9 +1506,25 @@ final class MiniSightSignal {
             pendingHide = nil
             shownAt = Date()
             shouldPost = true
+            let wd = DispatchWorkItem { [weak self] in self?.forceHide() }
+            watchdog?.cancel()
+            watchdog = wd
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.maxVisible, execute: wd)
         }
         lock.unlock()
         if shouldPost { Self.post(Self.startedNotification) }
+    }
+
+    /// Watchdog: a burst that never closed is force-ended.
+    private func forceHide() {
+        lock.lock()
+        guard depth > 0 else { lock.unlock(); return }
+        depth = 0
+        shownAt = nil
+        pendingHide?.cancel()
+        pendingHide = nil
+        lock.unlock()
+        Self.post(Self.stoppedNotification)
     }
 
     /// That tool finished (or failed, or was cancelled).
@@ -1505,6 +1536,8 @@ final class MiniSightSignal {
         let previousDepth = depth
         depth = max(0, depth - 1)
         if depth == 0, previousDepth > 0 {
+            watchdog?.cancel()
+            watchdog = nil
             let elapsed = shownAt.map { Date().timeIntervalSince($0) } ?? Self.minimumVisible
             delay = Self.minimumVisible - elapsed
             if delay <= 0 {
