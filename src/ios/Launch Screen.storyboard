@@ -35,11 +35,19 @@
                                 <color key="textColor" systemColor="labelColor"/>
                                 <nil key="highlightedColor"/>
                             </label>
-                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="LaunchIcon" translatesAutoresizingMaskIntoConstraints="NO" id="Lch-Ic-001" userLabel="LaunchIcon">
+                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="LaunchIconPlate" translatesAutoresizingMaskIntoConstraints="NO" id="Lch-Ic-plate" userLabel="LaunchIconPlate">
                                 <rect key="frame" x="148.5" y="273" width="96" height="96"/>
                                 <constraints>
                                     <constraint firstAttribute="width" constant="96" id="Lch-Ic-w96"/>
                                     <constraint firstAttribute="height" constant="96" id="Lch-Ic-h96"/>
+                                </constraints>
+                                <color key="tintColor" systemColor="secondarySystemBackgroundColor"/>
+                            </imageView>
+                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="LaunchIconMark" translatesAutoresizingMaskIntoConstraints="NO" id="Lch-Ic-mark" userLabel="LaunchIconMark">
+                                <rect key="frame" x="148.5" y="273" width="96" height="96"/>
+                                <constraints>
+                                    <constraint firstAttribute="width" constant="96" id="Lch-Ic-mw96"/>
+                                    <constraint firstAttribute="height" constant="96" id="Lch-Ic-mh96"/>
                                 </constraints>
                             </imageView>
                             <label opaque="NO" clipsSubviews="YES" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="Open Minis" textAlignment="center" lineBreakMode="middleTruncation" baselineAdjustment="alignBaselines" minimumFontSize="18" translatesAutoresizingMaskIntoConstraints="NO" id="GJd-Yh-RWb">
@@ -59,8 +67,10 @@
                         <constraints>
                             <constraint firstItem="GJd-Yh-RWb" firstAttribute="centerX" secondItem="Bcu-3y-fUS" secondAttribute="centerX" id="cX3-title-sa"/>
                             <!-- [T-launch-icon] 图标：居中，与标题间隔 32、与标题同轴 -->
-                            <constraint firstItem="Lch-Ic-001" firstAttribute="centerX" secondItem="Bcu-3y-fUS" secondAttribute="centerX" id="Lch-Ic-cx"/>
-                            <constraint firstItem="GJd-Yh-RWb" firstAttribute="top" secondItem="Lch-Ic-001" secondAttribute="bottom" constant="32" id="Lch-Ic-gap"/>
+                            <constraint firstItem="Lch-Ic-plate" firstAttribute="centerX" secondItem="Bcu-3y-fUS" secondAttribute="centerX" id="Lch-Ic-cx"/>
+                            <constraint firstItem="Lch-Ic-mark" firstAttribute="centerX" secondItem="Lch-Ic-plate" secondAttribute="centerX" id="Lch-Ic-mcx"/>
+                            <constraint firstItem="Lch-Ic-mark" firstAttribute="centerY" secondItem="Lch-Ic-plate" secondAttribute="centerY" id="Lch-Ic-mcy"/>
+                            <constraint firstItem="GJd-Yh-RWb" firstAttribute="top" secondItem="Lch-Ic-plate" secondAttribute="bottom" constant="32" id="Lch-Ic-gap"/>
                             <constraint firstItem="ioh-oc-Fxv" firstAttribute="centerX" secondItem="Bcu-3y-fUS" secondAttribute="centerX" id="0mo-ik-j59"/>
                             <constraint firstItem="ioh-oc-Fxv" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" id="LhO-Af-Md8"/>
                             <constraint firstItem="GJd-Yh-RWb" firstAttribute="bottom" secondItem="ioh-oc-Fxv" secondAttribute="top" constant="-12" id="cY1-title-slogan"/>
@@ -83,7 +93,8 @@
         </scene>
     </scenes>
     <resources>
-        <image name="LaunchIcon" width="96" height="96"/>
+        <image name="LaunchIconMark" width="96" height="96"/>
+        <image name="LaunchIconPlate" width="96" height="96"/>
         <systemColor name="labelColor">
             <color red="0.0" green="0.0" blue="0.0" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
         </systemColor>
@@ -92,6 +103,9 @@
         </systemColor>
         <systemColor name="systemBackgroundColor">
             <color white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+        </systemColor>
+        <systemColor name="secondarySystemBackgroundColor">
+            <color red="0.94901960784313721" green="0.94901960784313721" blue="0.96862745098039216" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
         </systemColor>
         <systemColor name="systemGray2Color">
             <color red="0.68235294117647061" green="0.68235294117647061" blue="0.69803921568627447" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
