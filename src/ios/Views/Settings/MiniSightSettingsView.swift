@@ -59,6 +59,7 @@ struct MiniSightSettingsView: View {
     @AppStorage("minisight.style") private var style = 0
     @AppStorage("minisight.record") private var record = false
     @AppStorage("minisight.longPress") private var longPressToRecord = true
+    @AppStorage("minisight.alwaysShow") private var alwaysShow = false
 
     @State private var petImage: UIImage?
     @State private var showPhotoPicker = false
@@ -74,7 +75,13 @@ struct MiniSightSettingsView: View {
                 }
                 .pickerStyle(.segmented)
             } footer: {
-                Text("平时完全隐藏；AI 操作手机时才出现。切换样式后注销一次生效。桌宠只在导入后可用。")
+                Text("切换样式后注销一次生效。桌宠只在导入后可用。")
+            }
+
+            Section {
+                Toggle("平时也显示在桌面", isOn: $alwaysShow)
+            } footer: {
+                Text("关闭时只在 AI 操作手机时出现；打开后桌宠/胶囊一直留在桌面，不随操作消失。注销生效。")
             }
 
             Section {
