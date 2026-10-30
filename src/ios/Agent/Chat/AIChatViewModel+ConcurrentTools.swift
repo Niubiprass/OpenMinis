@@ -133,7 +133,7 @@ extension AIChatViewModel {
         // two lines restores the previous behaviour exactly.
         // Only tools that actually touch the device should light the capsule:
         // a local file_read / title refresh is not "operating the phone".
-        let sightSignals = MiniSightSignal.shouldSignal(tool: tu.name)
+        let sightSignals = MiniSightSignal.shouldSignal(tool: tu.name, args: tu.args)
         if sightSignals { MiniSightSignal.shared.begin() }
         defer { if sightSignals { MiniSightSignal.shared.end() } }
 
@@ -1481,10 +1481,15 @@ final class MiniSightSignal {
     /// another tool starts first.
     private var pendingHide: DispatchWorkItem?
 
-    /// Tools allowed to light the capsule. MCP calls go through shell_execute.
-    private static let signalledTools: Set<String> = ["shell_execute", "browser_use"]
-
-    static func shouldSignal(tool: String) -> Bool { signalledTools.contains(tool) }
+    /// The capsule is for DEVICE operations only:
+    /// - browser_use (remote browsing)
+    /// - shell_execute, but only when the command actually calls the jailbreak
+    ///   MCP bridge. Local git/ffmpeg/etc. must not light it.
+    static func shouldSignal(tool: String, args: String) -> Bool {
+        if tool == "browser_use" { return true }
+        if tool == "shell_execute" { return args.contains("minis-mcp-cli") }
+        return false
+    }
 
     /// Hard ceiling: a leaked begin() (a tool whose task is suspended forever)
     /// must not leave the capsule on screen indefinitely.

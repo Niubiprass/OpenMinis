@@ -69,11 +69,12 @@ class SignalContract(unittest.TestCase):
 
 class SignalScope(unittest.TestCase):
 
-    def test_only_device_tools_light_the_capsule(self):
+    def test_only_real_mcp_calls_light_the_capsule(self):
         body = signal_body()
-        self.assertIn('private static let signalledTools: Set<String> = ["shell_execute", "browser_use"]', body)
-        self.assertIn('guard signalled', body) if False else None
-        self.assertIn('static func shouldSignal(tool: String) -> Bool', body)
+        # browser_use always; shell_execute only when it actually calls MCP.
+        self.assertIn('if tool == "browser_use" { return true }', body)
+        self.assertIn('if tool == "shell_execute" { return args.contains("minis-mcp-cli") }', body)
+        self.assertIn('static func shouldSignal(tool: String, args: String) -> Bool', body)
 
     def test_watchdog_ceiling(self):
         body = signal_body()
