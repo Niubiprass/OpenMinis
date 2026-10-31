@@ -361,7 +361,7 @@ struct PluginProjectDetailView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("逆向分析（项目内阶段）") {
+            Section {
                 Picker("资料类型", selection: Binding(
                     get: { project.analysisKind },
                     set: { project.analysisKind = $0; saveProject() }
@@ -398,6 +398,8 @@ struct PluginProjectDetailView: View {
                     Label("在当前对话开始 / 继续逆向分析",
                           systemImage: "magnifyingglass.circle.fill")
                 }
+            } header: {
+                Text("逆向分析（项目内阶段）")
             } footer: {
                 Text("逆向分析属于这个插件项目：分析 App、IPA、DEB 或 dylib 后，结论直接用于 Hook 点和源码，不再另开孤立的逆向工具页面。")
             }
@@ -496,7 +498,7 @@ private struct NewPluginProjectSheet: View {
                 } footer: {
                     Text("比如 SpringBoard、控制中心，或某个 App 的名称。")
                 }
-                Section("项目内逆向分析（可选）") {
+                Section {
                     Picker("资料类型", selection: $analysisKind) {
                         ForEach(PluginAnalysisKind.allCases, id: \.self) { kind in
                             Text(kind.label).tag(kind)
@@ -505,6 +507,8 @@ private struct NewPluginProjectSheet: View {
                     TextField("App 名、Bundle ID、IPA/DEB/dylib 路径或链接", text: $analysisMaterial)
                     TextEditor(text: $analysisQuestion)
                         .frame(minHeight: 72)
+                } header: {
+                    Text("项目内逆向分析（可选）")
                 } footer: {
                     Text("填了资料后，创建项目会把逆向分析作为第一阶段交给同一个插件项目，不再打开独立逆向页面。")
                 }
