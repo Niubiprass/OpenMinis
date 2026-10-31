@@ -196,7 +196,7 @@ struct MiniSightSettingsView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 Button("保存并测试") {
-                    MiniSightPetFile.saveAI(url: aiURL.trimmingCharacters(in: .whitespaces),
+                    MiniSightPetFile.saveAI(url: Self.endpoint(for: aiURL.trimmingCharacters(in: .whitespaces)),
                                             key: aiKey.trimmingCharacters(in: .whitespaces),
                                             model: aiModel.trimmingCharacters(in: .whitespaces))
                     Task { await testAI() }
@@ -270,12 +270,20 @@ struct MiniSightSettingsView: View {
         }
     }
 
+    /// 只填域名补 /v1，填到 /v1 补 /chat/completions，已经是完整端点就不动。
+    static func endpoint(for base: String) -> String {
+        if base.hasSuffix("/chat/completions") { return base }
+        let path = URL(string: base)?.path ?? ""
+        if path.isEmpty || path == "/" { return base + "/v1/chat/completions" }
+        return base + "/chat/completions"
+    }
+
     private func testAI() async {
         let base = aiURL.trimmingCharacters(in: .whitespaces)
         let key = aiKey.trimmingCharacters(in: .whitespaces)
         let model = aiModel.trimmingCharacters(in: .whitespaces)
         guard !base.isEmpty, !key.isEmpty, !model.isEmpty,
-              let url = URL(string: base.hasSuffix("/chat/completions") ? base : base + "/chat/completions")
+              let url = URL(string: Self.endpoint(for: base))
         else { aiStatus = "地址 / Key / 模型不完整"; return }
 
         var req = URLRequest(url: url)
