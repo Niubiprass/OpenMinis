@@ -133,8 +133,10 @@ extension AIChatViewModel {
         // two lines restores the previous behaviour exactly.
         // Only tools that actually touch the device should light the capsule:
         // a local file_read / title refresh is not "operating the phone".
-        let sightSignals = MiniSightSignal.shouldSignal(tool: tu.name, args: tu.args)
-        if sightSignals { MiniSightSignal.shared.begin(tool: tu.name, args: tu.args) }
+        let sightArgs = tu.args.isEmpty ? "" :
+            (String(data: (try? JSONSerialization.data(withJSONObject: tu.args)) ?? Data(), encoding: .utf8) ?? "")
+        let sightSignals = MiniSightSignal.shouldSignal(tool: tu.name, args: sightArgs)
+        if sightSignals { MiniSightSignal.shared.begin(tool: tu.name, args: sightArgs) }
         defer { if sightSignals { MiniSightSignal.shared.end() } }
 
         let blockIdx = tu.blockIdx

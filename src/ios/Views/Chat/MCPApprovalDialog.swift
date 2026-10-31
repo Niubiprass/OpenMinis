@@ -22,7 +22,8 @@ extension AIChatViewModel {
     }
 
     /// 把命令翻译成"它到底要干什么"。顺序敏感：先匹配更具体的工具名。
-    static func describeMCPCommand(_ command: String) -> MCPCommandUsage {
+    /// nonisolated：桌宠确认桥在非主线程上下文里也要能调用。
+    nonisolated static func describeMCPCommand(_ command: String) -> MCPCommandUsage {
         let lower = command.lowercased()
         func has(_ s: String) -> Bool { lower.contains(s) }
         let read = { (title: String, purpose: String) in
