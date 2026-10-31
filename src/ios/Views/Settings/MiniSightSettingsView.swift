@@ -173,7 +173,7 @@ struct MiniSightSettingsView: View {
             Section {
                 HStack(spacing: 12) {
                     Text("大小")
-                    Slider(value: $petSize, in: 56...140, step: 4)
+                    Slider(value: $petSize, in: 36...140, step: 2)
                     Text("\(Int(petSize))")
                         .font(.footnote.monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -182,7 +182,7 @@ struct MiniSightSettingsView: View {
             } header: {
                 Text("桌宠大小")
             } footer: {
-                Text("56–140，立即生效。")
+                Text("36–140，立即生效。")
             }
 
             Section {
