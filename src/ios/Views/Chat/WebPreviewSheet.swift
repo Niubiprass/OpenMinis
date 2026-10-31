@@ -46,7 +46,9 @@ final class WebViewHolder: NSObject, ObservableObject {
         config.processPool = BrowserUseManager.sharedProcessPool
         config.websiteDataStore = .default()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
-        config.preferences.isElementFullscreenEnabled = true
+        if #available(iOS 15.4, *) {
+            config.preferences.isElementFullscreenEnabled = true
+        }
         config.setURLSchemeHandler(BrowserUseManager.sharedMinisSchemeHandler, forURLScheme: "minis")
 
         // Bridge JS window.print() to the native print dialog, matching
