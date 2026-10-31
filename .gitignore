@@ -152,3 +152,7 @@ src/android/app/libs/rclone.aar
 __pycache__/
 *.pyc
 .upstream-ios/
+
+# device captures / local working records (152MB log exceeds GitHub file limit)
+/workspace/
+/evidence/

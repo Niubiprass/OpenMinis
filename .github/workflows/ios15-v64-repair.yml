@@ -65,6 +65,8 @@ jobs:
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_memory_documents_160651.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_memory_swiftui_160651.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_model_group_picker_toolbar_160651.py
+          python3 scripts/test_minisight_signal_160651.py
+          python3 scripts/test_plugin_workbench_160651.py
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
       - uses: actions/setup-go@v5

@@ -61,3 +61,14 @@ CI 已加入上述测试的 `V64R_REQUIRE_SWIFT=1` 强制门槛和完整 App 编
 - 稳定远端 `ios15-v64-repair` 仍在旧基线 `b113f88f0d6035e15e16533af825fe250052d578`；未安装、重启或替换手机160650。公开仓库的源码、提交历史及 Actions 日志现在对所有人可见。
 
 **构建成功不等于运行成功或 1.15 功能全量复现。** 本候选尚未真机验收；其他 1.15 未完成项仍是原同版目标，本分支只是开发候选，不能冒充正式发布。
+
+## 2026-10-31 出包流程收敛（只保留 iOS15 v64 Repair）
+
+- 删除 9 月停更的 `.github/workflows/ios15-build.yml`，避免再次误触发到降级脚本那一套；`ios15-v64-repair.yml` 是唯一 IPA 出包流程，且对 `ios15-160651-features-wip` 的 `src/ios/**` 推送自动触发，不需要网页点重跑。
+- `scripts/test_minisight_signal_160651.py` 与新增 `scripts/test_plugin_workbench_160651.py` 已接入 `Verify fixed source` 守卫；后者锁住 iOS 15 `Section` 写法、分析命令必须真实、项目→对话交接必须走路由一次性消费、旧流程不得回魂。
+
+## 2026-10-31 插件工作台的交接与分析落地
+
+- 交接不再只靠剪贴板：`QuickActionRouter.stageProjectHandoff(prompt:projectID:)` 暂存，新草稿 `AIChatView.onAppear` 里 `takePendingHandoff()` 一次性消费并填进输入框（仍保留复制作为兜底）。
+- 逆向阶段会按分析对象生成真实命令（`/opt/twork-analyzer/0.9.1-rz-ghidra-0.9.0` 的 `rz-bin -I/-zz`、`rizin -c 'aaa; afl'`、`pdg`），写进 `analysisCommands` 并随提示词交接，界面可生成/刷新/复制。
+- 仍是源码级验证：未装真机，分析命令是否在手机 shell 里逐条跑通未验收。

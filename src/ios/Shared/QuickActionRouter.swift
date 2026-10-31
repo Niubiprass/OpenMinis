@@ -49,6 +49,22 @@ final class QuickActionRouter: ObservableObject {
     @Published private(set) var pendingPrompt: String?
     @Published private(set) var pendingProjectID: UUID?
 
+    /// Stage a plugin-project handoff for the NEXT draft chat. The composer of
+    /// that draft consumes it once (`takePendingHandoff`); no pasteboard.
+    func stageProjectHandoff(prompt: String, projectID: UUID?) {
+        pendingPrompt = prompt
+        pendingProjectID = projectID
+    }
+
+    /// One-shot consume. Returns nil when nothing is staged.
+    func takePendingHandoff() -> (prompt: String, projectID: UUID?)? {
+        guard let prompt = pendingPrompt, !prompt.isEmpty else { return nil }
+        let id = pendingProjectID
+        pendingPrompt = nil
+        pendingProjectID = nil
+        return (prompt, id)
+    }
+
     private init() {}
 
     // MARK: - Shortcut item types (also referenced from AppDelegate)

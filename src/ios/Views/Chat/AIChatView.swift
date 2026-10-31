@@ -1515,6 +1515,14 @@ struct AIChatView: View {
         let _ios15Seg7 = _ios15Seg6
         .onAppear {
             wireComposerActions()
+            // [Plugin-workbench] One-shot handoff from a plugin project: fill
+            // the composer of a NEW draft only, so the user can still edit
+            // before sending. Consumed (cleared) here, never via pasteboard.
+            if cached.isNew, vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let handoff = QuickActionRouter.shared.takePendingHandoff() {
+                vm.inputText = handoff.prompt
+                minisLogger.info("[PluginWorkbench] handoff consumed chars=\(handoff.prompt.count) project=\(handoff.projectID?.uuidString ?? "-")")
+            }
             // [T-ios-entry-black-gap] Claim the loading state on the FIRST
             // frame. Waiting for loadSession() to flip it left a black
             // message area before the three dots appeared, especially for a

@@ -94,6 +94,10 @@ struct PluginProject: Codable, Identifiable, Equatable {
     // in the conversation/MCP workflow, while the project keeps the handoff.
     var analysisKind: PluginAnalysisKind = .app
     var analysisMaterial: String = ""
+    /// [Plugin-workbench] Ready-to-paste analyzer commands derived from the
+    /// material above. Stored so the handoff prompt carries real commands
+    /// instead of "请分析" prose.
+    var analysisCommands: String = ""
     var analysisQuestion: String = ""
     var analysisResult: String = ""
     var artifact: String = ""
@@ -101,14 +105,14 @@ struct PluginProject: Codable, Identifiable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id, name, effect, target, status, createdAt, updatedAt
-        case analysisKind, analysisMaterial, analysisQuestion, analysisResult
+        case analysisKind, analysisMaterial, analysisCommands, analysisQuestion, analysisResult
         case artifact, lastError
     }
 
     init(id: UUID = UUID(), name: String, effect: String, target: String,
          status: PluginProjectStatus, createdAt: Date = Date(), updatedAt: Date = Date(),
          analysisKind: PluginAnalysisKind = .app, analysisMaterial: String = "",
-         analysisQuestion: String = "", analysisResult: String = "",
+         analysisCommands: String = "", analysisQuestion: String = "", analysisResult: String = "",
          artifact: String = "", lastError: String = "") {
         self.id = id
         self.name = name
@@ -119,6 +123,7 @@ struct PluginProject: Codable, Identifiable, Equatable {
         self.updatedAt = updatedAt
         self.analysisKind = analysisKind
         self.analysisMaterial = analysisMaterial
+        self.analysisCommands = analysisCommands
         self.analysisQuestion = analysisQuestion
         self.analysisResult = analysisResult
         self.artifact = artifact
@@ -137,6 +142,7 @@ struct PluginProject: Codable, Identifiable, Equatable {
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
         analysisKind = try c.decodeIfPresent(PluginAnalysisKind.self, forKey: .analysisKind) ?? .app
         analysisMaterial = try c.decodeIfPresent(String.self, forKey: .analysisMaterial) ?? ""
+        analysisCommands = try c.decodeIfPresent(String.self, forKey: .analysisCommands) ?? ""
         analysisQuestion = try c.decodeIfPresent(String.self, forKey: .analysisQuestion) ?? ""
         analysisResult = try c.decodeIfPresent(String.self, forKey: .analysisResult) ?? ""
         artifact = try c.decodeIfPresent(String.self, forKey: .artifact) ?? ""
@@ -145,6 +151,22 @@ struct PluginProject: Codable, Identifiable, Equatable {
 }
 
 extension PluginProject {
+    /// Analyzer commands for the handoff prompt. Paths are shell-quoted so a
+    /// name with spaces survives; the tool root is the one installed on device.
+    static func analyzerCommands(for material: String) -> String {
+        let root = "/opt/twork-analyzer/0.9.1-rz-ghidra-0.9.0"
+        let quoted = "\"" + material.replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        return [
+            "A=\(root)",
+            "export LD_LIBRARY_PATH=\"$A/lib:$A/lib/rizin/plugins\"",
+            "file \(quoted)",
+            "\"$A/bin/rz-bin\" -I \(quoted)",
+            "\"$A/bin/rz-bin\" -zz \(quoted) | head -80",
+            "\"$A/bin/rizin\" -q -c 'aaa; afl' \(quoted) | head -120",
+            "\"$A/bin/rizin\" -q -c 'aaa; s <函数地址>; pdg' \(quoted)"
+        ].joined(separator: "\n") + "\n# DEB 先解包：dpkg-deb -x <deb> /tmp/x，再对 /tmp/x/**/Foo.dylib 跑上面的命令"
+    }
+
     /// The single handoff used by chat, MCP and the future background runner.
     /// Keeping it on the project prevents the old standalone reverse-analysis
     /// prompt from drifting away from the plugin-development workflow.
@@ -162,6 +184,10 @@ extension PluginProject {
                 "分析类型：\(analysisKind.label)。",
                 "分析对象/资料：\(analysisMaterial)。"
             ]
+            let cmds = analysisCommands.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? PluginProject.analyzerCommands(for: analysisMaterial)
+                : analysisCommands
+            lines.append("先用本机分析器取证，命令可直接跑（装好即用）：\n\(cmds)")
         }
         if !analysisQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             lines.append("逆向问题：\(analysisQuestion)。")
@@ -321,6 +347,7 @@ struct PluginDevView: View {
                                        analysisMaterial: material,
                                        analysisQuestion: question)
                 UIPasteboard.general.string = project.workflowPrompt
+                QuickActionRouter.shared.stageProjectHandoff(prompt: project.workflowPrompt, projectID: project.id)
                 QuickActionRouter.shared.postNewChat()
             }
         }
@@ -374,6 +401,32 @@ struct PluginProjectDetailView: View {
                     get: { project.analysisMaterial },
                     set: { project.analysisMaterial = $0; saved = false }
                 ))
+                if !project.analysisMaterial.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("分析命令（本机分析器已安装，可直接跑）")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(project.analysisCommands.isEmpty
+                             ? PluginProject.analyzerCommands(for: project.analysisMaterial)
+                             : project.analysisCommands)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                        HStack(spacing: 14) {
+                            Button("生成 / 刷新命令") {
+                                project.analysisCommands = PluginProject.analyzerCommands(for: project.analysisMaterial)
+                                saveProject()
+                            }
+                            Button("复制命令") {
+                                UIPasteboard.general.string = project.analysisCommands.isEmpty
+                                    ? PluginProject.analyzerCommands(for: project.analysisMaterial)
+                                    : project.analysisCommands
+                                copied = true
+                            }
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                    }
+                }
                 TextEditor(text: Binding(
                     get: { project.analysisQuestion },
                     set: { project.analysisQuestion = $0; saved = false }
@@ -391,7 +444,10 @@ struct PluginProjectDetailView: View {
                 Button {
                     project.status = .analysis
                     saveProject()
+                    // Stage for the next draft's composer (one-shot); the
+                    // pasteboard copy stays as a fallback only.
                     UIPasteboard.general.string = project.workflowPrompt
+                    QuickActionRouter.shared.stageProjectHandoff(prompt: project.workflowPrompt, projectID: project.id)
                     copied = true
                     QuickActionRouter.shared.postNewChat()
                 } label: {
@@ -467,6 +523,12 @@ struct PluginProjectDetailView: View {
     }
 
     private func saveProject() {
+        let material = project.analysisMaterial.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !material.isEmpty {
+            project.analysisCommands = PluginProject.analyzerCommands(for: material)
+        } else {
+            project.analysisCommands = ""
+        }
         store.update(project)
         saved = true
     }
