@@ -545,6 +545,7 @@
 		F1DEV001 /* DeveloperSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1DEV002 /* DeveloperSettings.swift */; };
 		F1PLG001 /* PluginDevView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1PLG002 /* PluginDevView.swift */; };
 		F1MSS001 /* MiniSightSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1MSS002 /* MiniSightSettingsView.swift */; };
+		F1MCF001 /* MiniSightConfirm.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1MCF002 /* MiniSightConfirm.swift */; };
 		F1MCPDCRB /* MCPOAuthDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1MCPDCR /* MCPOAuthDiscovery.swift */; };
 		F1MCPOAUTHB /* MCPOAuthController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1MCPOAUTH /* MCPOAuthController.swift */; };
 		F1MCPSTOREB /* MCPStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1MCPSTORE /* MCPStore.swift */; };
@@ -1282,6 +1283,7 @@
 		F1DEV002 /* DeveloperSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperSettings.swift; sourceTree = "<group>"; };
 		F1PLG002 /* PluginDevView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginDevView.swift; sourceTree = "<group>"; };
 		F1MSS002 /* MiniSightSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightSettingsView.swift; sourceTree = "<group>"; };
+		F1MCF002 /* MiniSightConfirm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightConfirm.swift; sourceTree = "<group>"; };
 		F1MCPDCR /* MCPOAuthDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPOAuthDiscovery.swift; sourceTree = "<group>"; };
 		F1MCPOAUTH /* MCPOAuthController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPOAuthController.swift; sourceTree = "<group>"; };
 		F1MCPSTORE /* MCPStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStore.swift; sourceTree = "<group>"; };
@@ -2375,6 +2377,7 @@
 				F1DEV002 /* DeveloperSettings.swift */,
 				F1PLG002 /* PluginDevView.swift */,
 				F1MSS002 /* MiniSightSettingsView.swift */,
+				F1MCF002 /* MiniSightConfirm.swift */,
 				E5S000014 /* CloudSyncSettingsView.swift */,
 				E5G000013 /* EnhancedBackgroundSettingsView.swift */,
 				E5P000012 /* EnvironmentVariablesView.swift */,
@@ -2978,6 +2981,7 @@
 				F1DEV001 /* DeveloperSettings.swift in Sources */,
 				F1PLG001 /* PluginDevView.swift in Sources */,
 				F1MSS001 /* MiniSightSettingsView.swift in Sources */,
+				F1MCF001 /* MiniSightConfirm.swift in Sources */,
 				F1W00011 /* MinisShareSheet.swift in Sources */,
 				F1W00901 /* LazyLongTextView.swift in Sources */,
 				F1W00101 /* PrintHelper.swift in Sources */,

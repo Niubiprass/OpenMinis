@@ -458,7 +458,7 @@ extension AIChatViewModel {
                     }
                     break
                 }
-                let approved = await MCPApprovalDialog.confirm(command)
+                let approved = await MiniSightConfirmBridge.confirm(command: command)
                 if !approved {
                     let msg = "Error: 用户拒绝了这条主机命令，未执行。"
                     ctLogger.info("[HostAccess] user denied dangerous MCP command")
@@ -1487,7 +1487,10 @@ final class MiniSightSignal {
     ///   MCP bridge. Local git/ffmpeg/etc. must not light it.
     static func shouldSignal(tool: String, args: String) -> Bool {
         if tool == "browser_use" { return true }
-        if tool == "shell_execute" { return args.contains("minis-mcp-cli") }
+        if tool == "shell_execute" {
+            // 直连 CLI，或走本机低开销包装 /var/minis/workspace/bin/mcp
+            return args.contains("minis-mcp-cli") || args.contains("bin/mcp call")
+        }
         return false
     }
 
@@ -1540,7 +1543,21 @@ final class MiniSightSignal {
         return "正在操作手机"
     }
 
+    /// 同一句话只显示一次，且最快 1 秒更新一次——连点十次不再闪十下。
+    private static let statusLock = NSLock()
+    private static var lastStatus = ""
+    private static var lastStatusAt = Date.distantPast
+
     private static func writeStatus(_ text: String) {
+        statusLock.lock()
+        let now = Date()
+        if text == lastStatus || now.timeIntervalSince(lastStatusAt) < 1.0 {
+            statusLock.unlock()
+            return
+        }
+        lastStatus = text
+        lastStatusAt = now
+        statusLock.unlock()
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
             .appendingPathComponent("MiniSight", isDirectory: true)
         guard let dir else { return }

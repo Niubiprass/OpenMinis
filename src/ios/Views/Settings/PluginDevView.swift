@@ -29,15 +29,9 @@ enum HostAccessPermission {
         UserDefaults.standard.set(on, forKey: key)
     }
 
-    /// MCP tools that can modify the device or run arbitrary commands.
-    /// Touch control (tap/swipe/press) is deliberately NOT here: the agent
-    /// must be able to operate the phone to test a tweak. Only terminal
-    /// commands, file writes, app install/uninstall and system-setting
-    /// changes need the master switch + per-call approval.
-    static let dangerousTools = [
-        "run_command", "write_file", "uninstall_app", "install_app",
-        "set_brightness", "set_volume",
-    ]
+    /// 每次都要点头的三件：跑命令、写文件、卸 App。
+    /// 点击/滑动/按键/截图/安装/调亮度都不再问，免得测试时一直挡路。
+    static let dangerousTools = ["run_command", "write_file", "uninstall_app"]
 
     static func isDangerous(_ command: String) -> Bool {
         guard command.contains("minis-mcp-cli") else { return false }
@@ -94,9 +88,10 @@ final class PluginProjectStore: ObservableObject {
 
     var activeCount: Int { projects.filter { $0.status != .done }.count }
 
-    func add(effect: String, target: String) {
+    @discardableResult
+    func add(effect: String, target: String) -> PluginProject {
         let trimmed = effect.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return PluginProject(name: "未命名", effect: "", target: "", status: .planning) }
         let firstLine = trimmed.split(separator: "\n").first.map(String.init) ?? trimmed
         let name = firstLine.count > 14 ? String(firstLine.prefix(14)) + "…" : firstLine
         let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -105,6 +100,7 @@ final class PluginProjectStore: ObservableObject {
                                     status: .planning)
         projects.insert(project, at: 0)
         save()
+        return project
     }
 
     func update(_ project: PluginProject) {
@@ -208,7 +204,13 @@ struct PluginDevView: View {
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showNew) {
             NewPluginProjectSheet { effect, target in
-                store.add(effect: effect, target: target)
+                let project = store.add(effect: effect, target: target)
+                let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
+                var brief = "做个插件：\(effect)"
+                if !t.isEmpty { brief += "\n目标：\(t)" }
+                brief += "\n\n按 tweak-workflow 做（项目名用「\(project.name)」），先本地写源码，推送前问我一次。"
+                UIPasteboard.general.string = brief
+                QuickActionRouter.shared.postNewChat()
             }
         }
     }
@@ -312,7 +314,7 @@ private struct NewPluginProjectSheet: View {
                 } header: {
                     Text("指定目标（可选）")
                 } footer: {
-                    Text("比如 SpringBoard、控制中心，或某个 App 的名称。")
+                    Text("比如 SpringBoard、控制中心，或某个 App 的名称。创建后会复制一段开场白并开一个新对话，粘上去就能开工。")
                 }
             }
             .navigationTitle("新建插件项目")
@@ -322,7 +324,7 @@ private struct NewPluginProjectSheet: View {
                     Button("取消") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("创建") {
+                    Button("创建并开始") {
                         onCreate(effect, target)
                         dismiss()
                     }

@@ -111,7 +111,8 @@ final class QuickActionRouter: ObservableObject {
         }
     }
 
-    private func postNewChat() {
+    /// 供别处（插件开发页等）主动开一个新对话。
+    func postNewChat() {
         // Bump the @Published counter — ContentView's `.onChange(of:
         // newChatTrigger)` + `.onAppear` belt-and-braces drives the
         // session creation. Do NOT also post `.newChatRequested`: that
