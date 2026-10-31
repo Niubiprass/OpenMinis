@@ -11,7 +11,7 @@ need a device.
 import unittest
 from pathlib import Path
 
-ROOT = Path('/var/minis/shared/OpenMinis-160649')
+ROOT = Path(__file__).resolve().parents[1]
 MODEL = (ROOT / 'src/ios/Providers/ProviderMultiKeys.swift').read_text()
 VIEW = (ROOT / 'src/ios/Views/Providers/MultiKeyManagerView.swift').read_text()
 DETAIL = (ROOT / 'src/ios/Views/Providers/ProviderInstanceDetailView.swift').read_text()

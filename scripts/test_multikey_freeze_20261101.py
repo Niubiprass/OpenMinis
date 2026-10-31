@@ -6,7 +6,7 @@ CRUD/outcomes/cursor reservations. Uses synthetic identifiers, never secrets.
 """
 import threading, concurrent.futures, time, random, unittest
 from pathlib import Path
-ROOT=Path('/var/minis/shared/OpenMinis-160649')
+ROOT=Path(__file__).resolve().parents[1]
 MODEL=(ROOT/'src/ios/Providers/ProviderMultiKeys.swift').read_text()
 FACTORY=(ROOT/'src/ios/Agent/Chat/AIChatViewModel+ProviderFactory.swift').read_text()
 WRAP=(ROOT/'src/ios/Providers/AgentProvider.swift').read_text()
