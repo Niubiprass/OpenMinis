@@ -108,8 +108,13 @@ jobs:
         run: |
           TARGET='${{ inputs.deployment_target }}'
           PBX=src/ios/Minis.xcodeproj/project.pbxproj
-          sed -i '' -E "s/IPHONEOS_DEPLOYMENT_TARGET = (16|16\.2|26\.2);/IPHONEOS_DEPLOYMENT_TARGET = ${TARGET};/g" "$PBX"
-          grep -c "IPHONEOS_DEPLOYMENT_TARGET = ${TARGET};" "$PBX"
+          # The project carries a mix of 15.5/16.0/17.0 (app, share extension,
+          # tests), so rewrite whatever is there instead of a fixed list. A
+          # grep with no match still exits 1 under `bash -e`; report the count.
+          sed -i '' -E "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9]+(\.[0-9]+)?;/IPHONEOS_DEPLOYMENT_TARGET = ${TARGET};/g" "$PBX"
+          count=$(grep -c "IPHONEOS_DEPLOYMENT_TARGET = ${TARGET};" "$PBX" || true)
+          echo "deployment target rewritten in $count settings"
+          test "$count" -gt 0
 
       - name: Build Minis.app
         run: |
