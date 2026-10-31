@@ -342,6 +342,7 @@ final class ProviderQuotaService: ObservableObject {
     }
 
     private func attach(_ row: inout KeyQuota, instanceId: String) {
+        let multiKeyOn = ProviderMultiKeyManager.shared.isEnabled(for: instanceId)
         lock.lock()
         let entry = keyCache[instanceId]?[row.id]
         row.info = entry?.info
@@ -351,7 +352,7 @@ final class ProviderQuotaService: ObservableObject {
         // refreshQuota（写站点缓存），不会写 keyCache —— 于是站点余额已经显示、
         // Key 行却一直写「未查询」。这里给主 Key 行回退到站点缓存。
         if row.info == nil, row.isMain,
-           !ProviderMultiKeyManager.shared.isEnabled(for: instanceId),
+           !multiKeyOn,
            let site = cache[instanceId] {
             row.info = site.info
             row.queriedAt = site.fetchedAt

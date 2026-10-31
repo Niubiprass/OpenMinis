@@ -9,12 +9,20 @@ VIEW = (ROOT / "src/ios/Views/Providers/MultiKeyManagerView.swift").read_text(en
 
 
 class Persistence(unittest.TestCase):
-    def test_switch_and_strategy_force_a_write(self):
-        for name in ("func setEnabled(", "func setStrategy("):
+    def test_switch_and_strategy_enqueue_versioned_background_writes(self):
+        for name, domain in (("func setEnabled(", ".enabled"),
+                             ("func setStrategy(", ".strategy")):
             i = MODEL.index(name)
             j = MODEL.index("    }", i)
             body = MODEL[i:j]
-            self.assertIn("synchronize()", body, name)
+            self.assertIn(f"bump(instanceId, {domain})", body, name)
+            self.assertIn("schedulePersistence(for: instanceId)", body, name)
+            self.assertNotIn("synchronize()", body, name)
+
+    def test_every_dirty_domain_bumps_its_version(self):
+        for domain in ("ring", "enabled", "strategy", "cursor", "main"):
+            self.assertIn(f"bump(instanceId, .{domain})", MODEL)
+        self.assertIn("dirtyVersions[instanceId]?[domain] == versions[domain]", MODEL)
 
     def test_strategy_saves_on_selection_not_on_disappear(self):
         self.assertIn("showStrategyPicker = true", VIEW)

@@ -100,13 +100,24 @@ extension AIChatViewModel {
             supportsKeyPool = instance.credentialType == .apiKey
         default: supportsKeyPool = false
         }
-        if allowsMultiKey, supportsKeyPool, ProviderMultiKeyManager.shared.isActive(for: instance.id) {
+        var usesMultiKey = false
+        if allowsMultiKey, supportsKeyPool {
+            usesMultiKey = await ProviderMultiKeyManager.shared.isActiveAsync(for: instance.id)
+        }
+        if usesMultiKey {
             let baseline = await makeAgentProvider(for: entry, resolveSessionId: resolveSessionId,
                                                    allowsMultiKey: false)
             return MultiKeyAgentProvider(instanceId: instance.id, baseline: baseline) { key in
                 await makeAgentProvider(for: entry, resolveSessionId: resolveSessionId,
                                         apiKeyOverride: key, allowsMultiKey: false)
             }
+        }
+        // Baseline/API-key factories must not fall back to a synchronous
+        // Keychain lookup on MainActor. OAuth-only providers retain their own
+        // credential flow; a missing API key is an explicit empty override.
+        var resolvedAPIKey = apiKeyOverride
+        if supportsKeyPool, resolvedAPIKey == nil {
+            resolvedAPIKey = await ProviderMultiKeyManager.shared.primaryKeyAsync(for: instance.id) ?? ""
         }
         // [T-model-custom-params] / [T-opencode-dedicated-channel] One seam for
         // every OpenAI-family branch below: the dedicated OpenCode channel,
@@ -124,21 +135,21 @@ extension AIChatViewModel {
         }
         switch instance.providerType {
         case .anthropic:
-            return AnthropicAgentProvider(provider: LLMProviderFactory.makeAnthropicProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride))
+            return AnthropicAgentProvider(provider: LLMProviderFactory.makeAnthropicProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey))
         case .gemini:
-            return GeminiAgentProvider(provider: await LLMProviderFactory.makeGeminiProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride))
+            return GeminiAgentProvider(provider: await LLMProviderFactory.makeGeminiProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey))
         case .openAI:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride)))
+            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
         case .antigravity:
             return AntigravityAgentProvider(provider: await LLMProviderFactory.makeAntigravityProvider(instance: instance, model: entry.model))
         case .openRouter:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenRouterProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride)))
+            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenRouterProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
         case .openAIResponses:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIResponsesProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride)))
+            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIResponsesProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
         case .xAI:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeXAIProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride)))
+            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeXAIProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
         case .kimiCode:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeKimiProvider(instance: instance, model: entry.model, apiKeyOverride: apiKeyOverride)))
+            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeKimiProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
         case .githubCopilot:
             // [T-copilot-no-chat-warning] No warning in the chat.
             //
@@ -184,7 +195,7 @@ extension AIChatViewModel {
         case .anthropic:
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
+                guard let key = await ProviderMultiKeyManager.shared.effectiveKeyAsync(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 return AnthropicProvider(apiKey: key, model: entry.model, basePath: customBase, appendV1Suffix: appendV1, customUserAgent: ua)
@@ -203,7 +214,7 @@ extension AIChatViewModel {
         case .gemini:
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
+                guard let key = await ProviderMultiKeyManager.shared.effectiveKeyAsync(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 return GeminiProvider(apiKey: key, model: entry.model, customBasePath: customBase)
@@ -226,7 +237,7 @@ extension AIChatViewModel {
             let isMistral = (customBase ?? "").lowercased().contains("mistral.ai")
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
+                guard let key = await ProviderMultiKeyManager.shared.effectiveKeyAsync(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 let provider = OpenAIProvider(apiKey: key, model: entry.model, customBaseURL: customBase, appendV1Suffix: appendV1)
@@ -263,7 +274,7 @@ extension AIChatViewModel {
                let manualToken = ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") {
                 key = manualToken
             } else {
-                guard let storedKey = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
+                guard let storedKey = await ProviderMultiKeyManager.shared.effectiveKeyAsync(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 key = storedKey
@@ -284,7 +295,7 @@ extension AIChatViewModel {
             // (T-model-use-codex-responses-api-34889).
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
+                guard let key = await ProviderMultiKeyManager.shared.effectiveKeyAsync(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 let respProvider = OpenAIProvider(apiKey: key, model: entry.model, customBaseURL: customBase, appendV1Suffix: appendV1)
@@ -312,7 +323,7 @@ extension AIChatViewModel {
             let xaiAppendV1 = customBase == nil ? false : appendV1
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
+                guard let key = await ProviderMultiKeyManager.shared.effectiveKeyAsync(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 return LLMProviderFactory.applyCustomUserAgent(OpenAIProvider(apiKey: key, model: entry.model, customBaseURL: xaiBase, appendV1Suffix: xaiAppendV1), instance: instance)
@@ -337,7 +348,7 @@ extension AIChatViewModel {
             let kimiAppendV1 = customBase == nil ? true : appendV1  // default base …/coding needs /v1 appended
             switch instance.credentialType {
             case .apiKey:
-                guard let key = ProviderMultiKeyManager.shared.effectiveKey(for: instance.id) else {
+                guard let key = await ProviderMultiKeyManager.shared.effectiveKeyAsync(for: instance.id) else {
                     throw LLMProviderError.noCredentials
                 }
                 return LLMProviderFactory.applyCustomUserAgent(OpenAIProvider(apiKey: key, model: entry.model, customBaseURL: kimiBase, appendV1Suffix: kimiAppendV1), instance: instance)

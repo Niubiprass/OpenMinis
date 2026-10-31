@@ -87,6 +87,11 @@ struct ProviderInstanceDetailView: View {
                         multiKeyEnabled = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
                         reloadQuotaRows(instance)
                     }
+                    .onReceive(NotificationCenter.default.publisher(for: ProviderMultiKeyManager.didChange)) { note in
+                        guard note.object as? String == instance.id else { return }
+                        multiKeyEnabled = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
+                        if ProviderMultiKeyManager.shared.keysReady(for: instance.id) { reloadQuotaRows(instance) }
+                    }
                     // [T-turn-cost-site-pricing] One background read per
                     // provider, only when this page is opened. It never runs
                     // in the chat path, so a slow/unreachable site cannot
@@ -171,13 +176,15 @@ struct ProviderInstanceDetailView: View {
                         // Same rule as the button: a provider in 多 Key 模式 has
                         // rows of its own, so the sign-in refresh covers them
                         // all rather than only the credential key.
-                        if ProviderMultiKeyManager.shared.isActive(for: instance.id) {
+                        if await ProviderMultiKeyManager.shared.isActiveAsync(for: instance.id) {
                             await ProviderQuotaService.shared.refreshAllKeys(for: instance)
                         } else {
                             await ProviderQuotaService.shared.refreshQuota(for: instance)
                         }
-                        let multi = ProviderMultiKeyManager.shared.isActive(for: instance.id)
-                        let refreshed = ProviderQuotaService.shared.quotaRows(for: instance)
+                        let multi = await ProviderMultiKeyManager.shared.isActiveAsync(for: instance.id)
+                        let refreshed = await Task.detached(priority: .userInitiated) {
+                            ProviderQuotaService.shared.quotaRows(for: instance)
+                        }.value
                         let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
                         let reason = ProviderQuotaService.shared.failureNote(instanceId: instance.id)
                         await MainActor.run {
@@ -746,6 +753,7 @@ struct ProviderInstanceDetailView: View {
         let wanted = instance.id
         Task.detached(priority: .userInitiated) {
             let rows = ProviderQuotaService.shared.quotaRows(for: instance)
+            let enabled = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
             // [T-quota-row-usage] 使用摘要也在后台算：keys(for:) 会拿
             // ProviderMultiKeyManager 的锁，绝不能在 body 里调用。
             let ringKeys = ProviderMultiKeyManager.shared.keys(for: instance.id)
@@ -760,6 +768,7 @@ struct ProviderInstanceDetailView: View {
             await MainActor.run {
                 guard instanceId == wanted else { return }
                 quotaRowsSnapshot = rows
+                multiKeyEnabled = enabled
                 multiKeyCount = rows.filter { !$0.isMain }.count
                 keyUsageById = usage
             }

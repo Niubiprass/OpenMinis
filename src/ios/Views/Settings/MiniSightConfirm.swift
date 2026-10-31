@@ -30,16 +30,19 @@ enum MiniSightPetAvailability {
     }
 }
 
+@MainActor
 final class MiniSightConfirmBridge {
     static let shared = MiniSightConfirmBridge()
 
     private static let confirmName = "com.openminis.minisight.confirm"
     private static let resultName = "com.openminis.minisight.confirm.result"
+    private static let cancelName = "com.openminis.minisight.confirm.cancel"
 
     private var continuation: CheckedContinuation<Bool, Never>?
     private var requestId: String?
     private var timeoutWork: DispatchWorkItem?
     private var observing = false
+    private var requestInFlight = false
 
     private var dir: URL? {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
@@ -47,33 +50,54 @@ final class MiniSightConfirmBridge {
     }
 
     static func confirm(command: String) async -> Bool {
-        guard MiniSightPetAvailability.isOnScreen else {
+        let petAvailable = await Task.detached(priority: .utility) {
+            MiniSightPetAvailability.isOnScreen
+        }.value
+        guard petAvailable else {
             return await MCPApprovalDialog.confirm(command)
         }
         return await shared.request(command: command)
     }
 
     private func request(command: String) async -> Bool {
+        guard !requestInFlight else { return false }
+        guard command.lengthOfBytes(using: .utf8) <= 8192 else { return false }
+        guard let dir else { return await MCPApprovalDialog.confirm(command) }
+        requestInFlight = true
         installObserverIfNeeded()
         let id = UUID().uuidString
         requestId = id
-        guard let dir else { return await MCPApprovalDialog.confirm(command) }
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let payload: [String: String] = [
-            "id": id,
-            "command": command,
-            "action": AIChatViewModel.describeMCPCommand(command).title,
-        ]
-        if let data = try? JSONSerialization.data(withJSONObject: payload) {
-            try? data.write(to: dir.appendingPathComponent("confirm.json"), options: .atomic)
+        let action = AIChatViewModel.describeMCPCommand(command).title
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let resultURL = dir.appendingPathComponent("confirm-result.txt")
+                try? FileManager.default.removeItem(at: resultURL)
+                let payload: [String: String] = ["id": id, "command": command, "action": action]
+                let data = try JSONSerialization.data(withJSONObject: payload)
+                try data.write(to: dir.appendingPathComponent("confirm.json"), options: .atomic)
+            }.value
+        } catch {
+            requestInFlight = false
+            requestId = nil
+            return await MCPApprovalDialog.confirm(command)
         }
-        post(Self.confirmName)
+        guard !Task.isCancelled else {
+            requestInFlight = false
+            requestId = nil
+            return false
+        }
 
-        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-            continuation = cont
-            let work = DispatchWorkItem { [weak self] in self?.finish(false) }
-            timeoutWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: work)
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                continuation = cont
+                let work = DispatchWorkItem { [weak self] in self?.finish(false, cancelPet: true) }
+                timeoutWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: work)
+                post(Self.confirmName)
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor in self?.finish(false, cancelPet: true) }
         }
     }
 
@@ -97,10 +121,22 @@ final class MiniSightConfirmBridge {
         finish(parts[1] == "1")
     }
 
-    private func finish(_ allowed: Bool) {
+    private func finish(_ allowed: Bool, cancelPet: Bool = false) {
         guard let cont = continuation else { return }
+        let id = requestId
+        if cancelPet, let id, let dir {
+            let url = dir.appendingPathComponent("confirm-cancel.txt")
+            let cancelName = Self.cancelName
+            Task.detached(priority: .utility) {
+                try? Data(id.utf8).write(to: url, options: .atomic)
+                CFNotificationCenterPostNotification(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    CFNotificationName(cancelName as CFString), nil, nil, true)
+            }
+        }
         continuation = nil
         requestId = nil
+        requestInFlight = false
         timeoutWork?.cancel()
         timeoutWork = nil
         cont.resume(returning: allowed)

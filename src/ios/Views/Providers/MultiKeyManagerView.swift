@@ -18,6 +18,8 @@ struct MultiKeyManagerView: View {
     @State private var editingKey: ProviderAPIKey?
     @State private var deletingKey: ProviderAPIKey?
     @State private var addDuplicate = false
+    @State private var ringReady = false
+    @State private var ringLoading = false
 
     private var manager: ProviderMultiKeyManager { .shared }
 
@@ -63,7 +65,10 @@ struct MultiKeyManagerView: View {
             }
 
             Section {
-                if keys.isEmpty {
+                if !ringReady {
+                    Text(ringLoading ? "正在读取 Key…" : "Key 暂时无法读取，请返回后重试")
+                        .foregroundStyle(.secondary)
+                } else if keys.isEmpty {
                     Text("还没有添加 Key")
                         .foregroundStyle(.secondary)
                 } else {
@@ -83,6 +88,7 @@ struct MultiKeyManagerView: View {
                 } label: {
                     Label("添加 Key", systemImage: "plus.circle.fill")
                 }
+                .disabled(!ringReady)
             } header: {
                 Text("Key 列表")
             } footer: {
@@ -91,9 +97,14 @@ struct MultiKeyManagerView: View {
         }
         .navigationTitle(Text("多 Key 管理"))
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
+        .onAppear { reload() }
+        .onReceive(NotificationCenter.default.publisher(for: ProviderMultiKeyManager.didChange)) { note in
+            guard note.object as? String == instance.id else { return }
+            // Notification is posted after unlock. Draw current in-memory data;
+            // never launch a second disk read from a SwiftUI redraw.
+            ringReady = manager.keysReady(for: instance.id)
+            if ringReady { keys = manager.keys(for: instance.id) }
             strategy = manager.strategy(for: instance.id)
-            reload()
         }
         .confirmationDialog("负载均衡策略", isPresented: $showStrategyPicker, titleVisibility: .visible) {
             ForEach(MultiKeyStrategy.allCases, id: \.rawValue) { item in
@@ -322,7 +333,18 @@ struct MultiKeyManagerView: View {
     }
 
     private func reload() {
-        keys = manager.keys(for: instance.id)
+        guard !ringLoading else { return }
+        ringLoading = true
+        Task {
+            _ = await manager.keysAsync(for: instance.id)
+            guard !Task.isCancelled else { ringLoading = false; return }
+            // A mutation may have arrived while loading; use the latest memory
+            // snapshot rather than assigning an older returned array.
+            ringReady = manager.keysReady(for: instance.id)
+            if ringReady { keys = manager.keys(for: instance.id) }
+            strategy = manager.strategy(for: instance.id)
+            ringLoading = false
+        }
     }
 }
 

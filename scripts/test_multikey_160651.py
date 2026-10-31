@@ -83,7 +83,8 @@ class Selection(unittest.TestCase):
 
     def test_round_robin_advances_a_cursor(self):
         self.assertIn('cursorPrefix', MODEL)
-        self.assertIn('(idx + 1) % usable.count', MODEL)
+        self.assertIn('reserveCursor(for: instanceId, count: usable.count)', MODEL)
+        self.assertIn('private func reserveCursor(', MODEL)
 
     def test_selection_never_mutates_counters(self):
         # Counters move only in recordSuccess / recordFailure.
@@ -96,7 +97,9 @@ class Selection(unittest.TestCase):
 
 class Wiring(unittest.TestCase):
     def test_provider_factory_uses_the_ring(self):
-        self.assertEqual(FACTORY.count('ProviderMultiKeyManager.shared.effectiveKey(for: instance.id)'), 7)
+        self.assertEqual(FACTORY.count('effectiveKeyAsync(for: instance.id)'), 7)
+        self.assertNotIn('ProviderMultiKeyManager.shared.effectiveKey(for: instance.id)', FACTORY)
+        self.assertIn('primaryKeyAsync(for: instance.id)', FACTORY)
         self.assertNotIn('ProviderKeychainHelper.loadAPIKey(instanceId: instance.id)', FACTORY)
 
     def test_sync_and_backup_keep_the_primary_key(self):
@@ -177,8 +180,9 @@ class EmptyRingAndLockIO(unittest.TestCase):
         self.assertIn('let ring = unlockedKeys(instanceId)', body)
         self.assertIn('guard storedEnabled(for: instanceId), !ring.isEmpty else {', body)
         self.assertIn('func isActive(for instanceId: String) -> Bool', MODEL)
-        self.assertIn('!keys(for: instanceId).isEmpty', MODEL)
-        self.assertIn('isActive(for: instance.id)', FACTORY)
+        self.assertIn('return !keys(for: instanceId).isEmpty', MODEL)
+        self.assertIn('func isActiveAsync(for instanceId: String) async -> Bool', MODEL)
+        self.assertIn('isActiveAsync(for: instance.id)', FACTORY)
 
     def test_record_persists_outside_the_ring_lock(self):
         # [T-multikey-lock-io] 05:52 device stackshot: main thread in
@@ -188,11 +192,12 @@ class EmptyRingAndLockIO(unittest.TestCase):
             i = MODEL.index(name)
             j = MODEL.index('// MARK: - Selection', i)
             body = MODEL[i:j]
-            unlock = body.index('lock.unlock()')
-            for persist in ['saveMainState(', 'unlockedSave(']:
-                k = body.index(persist)
-                self.assertGreater(k, unlock, f'{persist} still runs while holding lock')
-            self.assertIn('recordLock.lock()', body)
+            self.assertNotIn('recordLock.lock()', body)
+            self.assertIn('schedulePersistence(for: instanceId)', body)
+            self.assertIn('mainSnapshots[instanceId] = state', body) if 'func recordSuccess(lease:' in name and 'lease.id == "main"' in body else None
+            self.assertNotIn('writeBlob(', body)
+            self.assertNotIn('saveMainState(', body)
+            self.assertNotIn('UserDefaults.standard.set', body)
 
     def test_detail_body_uses_cached_rows_not_keychain(self):
         # The freeze path: quotaRows -> keys(for:) read from SwiftUI body.
@@ -209,7 +214,7 @@ class EmptyRingAndLockIO(unittest.TestCase):
 class FailoverWiring(unittest.TestCase):
     def test_chat_provider_is_wrapped_when_multi_key_is_on(self):
         self.assertIn('MultiKeyAgentProvider(instanceId: instance.id', FACTORY)
-        self.assertIn('ProviderMultiKeyManager.shared.isActive(for: instance.id)', FACTORY)
+        self.assertIn('isActiveAsync(for: instance.id)', FACTORY)
 
     def test_builder_receives_the_lease_key(self):
         self.assertIn('apiKeyOverride: key', FACTORY)
@@ -217,9 +222,10 @@ class FailoverWiring(unittest.TestCase):
 
     def test_failover_is_request_scoped_and_bounded(self):
         WRAP = (ROOT / 'src/ios/Providers/AgentProvider.swift').read_text()
-        self.assertIn('let keyCount = active ? manager.keys(for: instanceId).count : 0', WRAP)
+        self.assertIn('let keyCount = active ? ring.count : 0', WRAP)
         self.assertIn('keyCount * priorityRetries', WRAP)
-        self.assertIn('manager.lease(for: instanceId, excluding: attempted)', WRAP)
+        self.assertIn('await manager.leaseAsync(for: instanceId, excluding: attempted)', WRAP)
+        self.assertIn('await manager.isActiveAsync(for: instanceId)', WRAP)
         self.assertIn('attemptedSecrets.insert(lease.key).inserted', WRAP)
 
     def test_partial_response_is_not_replayed_on_another_key(self):

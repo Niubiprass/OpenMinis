@@ -29,7 +29,7 @@ TOOLS = (ROOT / 'src/ios/Agent/Chat/AIChatViewModel+ConcurrentTools.swift').read
 
 
 def signal_body():
-    i = TOOLS.index('final class MiniSightSignal {')
+    i = TOOLS.index('final class MiniSightSignal: @unchecked Sendable {')
     return TOOLS[i:]
 
 
@@ -47,10 +47,9 @@ class SignalContract(unittest.TestCase):
 
     def test_one_pair_per_burst_not_per_tool(self):
         body = signal_body()
-        # Show only on 0→1 …
-        self.assertIn('if depth == 1 {', body)
-        # … hide only on 1→0.
-        self.assertIn('if depth == 0, previousDepth > 0 {', body)
+        self.assertIn('if show {', body)
+        self.assertIn('publishLocked(edge: show ? Self.startedNotification : nil)', body)
+        self.assertIn('guard activities.isEmpty else { publishLocked(); return }', body)
 
     def test_minimum_visible_floor(self):
         self.assertIn('private static let minimumVisible: TimeInterval = 0.6', TOOLS)
@@ -59,7 +58,7 @@ class SignalContract(unittest.TestCase):
     def test_delayed_hide_is_cancellable(self):
         body = signal_body()
         self.assertIn('pendingHide?.cancel()', body)
-        self.assertIn('DispatchWorkItem { [weak self] in self?.hideIfIdle() }', body)
+        self.assertIn('hideIfIdle(generation: generation)', body)
 
     def test_no_preference_or_timer_state(self):
         # The signal intentionally writes one short status.txt line so the
@@ -75,35 +74,53 @@ class SignalScope(unittest.TestCase):
 
     def test_only_real_mcp_calls_light_the_capsule(self):
         body = signal_body()
-        # browser_use always; shell_execute only when it actually calls MCP.
-        self.assertIn('if tool == "browser_use" { return true }', body)
-        self.assertIn('return args.contains("minis-mcp-cli") || args.contains("bin/mcp call")', body)
-        self.assertIn('static func shouldSignal(tool: String, args: String) -> Bool', body)
+        self.assertNotIn('if tool == "browser_use" { return true }', body)
+        self.assertIn('guard tool == "shell_execute"', body)
+        self.assertIn('return !deviceInvocations(command, includeNative: false).isEmpty', body)
+        self.assertIn('words[1] == "call"', body)
+        self.assertIn('name == "minis-mcp-cli"', body)
+        self.assertIn('name == "mcp"', body)
+        self.assertIn('words.count >= 4', body)
+        self.assertIn('words.count >= 3', body)
+        # Neither real local tools nor the browser branch owns a sight token.
+        funnel = TOOLS[TOOLS.index('func executeSingleToolUse('):]
+        browser = funnel[funnel.index('case "browser_use":'):funnel.index('case "read_image":')]
+        self.assertNotIn('MiniSightSignal', browser)
 
-    def test_watchdog_ceiling(self):
+    def test_signal_ends_only_after_owned_scopes_finish(self):
         body = signal_body()
-        self.assertIn('private static let maxVisible: TimeInterval = 120', body)
-        self.assertIn('private func forceHide()', body)
-        self.assertIn('Self.maxVisible', body)
+        self.assertIn('guard activities.removeValue(forKey: token) != nil else { return }', body)
+        self.assertIn('guard activities.isEmpty else { publishLocked(); return }', body)
+        self.assertIn('activities.isEmpty, stateGeneration == generation, shownAt != nil', body)
+
+
+class ApprovalBridgeContracts(unittest.TestCase):
+    def test_single_request_and_cancel_are_fail_closed(self):
+        bridge = (ROOT / 'src/ios/Views/Settings/MiniSightConfirm.swift').read_text()
+        self.assertIn('guard !requestInFlight else { return false }', bridge)
+        self.assertIn('withTaskCancellationHandler', bridge)
+        self.assertIn('finish(false, cancelPet: true)', bridge)
+        self.assertIn('confirm-cancel.txt', bridge)
+        self.assertIn('Self.cancelName', bridge)
+        self.assertIn('try? FileManager.default.removeItem(at: resultURL)', bridge)
 
 
 class FunnelWiring(unittest.TestCase):
 
-    def test_begin_and_defer_end_at_the_funnel(self):
-        i = TOOLS.index('func executeSingleToolUse(')
-        body = TOOLS[i:i + 6000]
-        self.assertIn('MiniSightSignal.shared.begin(tool: tu.name, args: sightArgs)', body)
-        self.assertIn('defer { if sightSignals { MiniSightSignal.shared.end() } }', body)
-        # begin must precede the defer that closes it
-        self.assertLess(body.index('begin(tool: tu.name'), body.index('MiniSightSignal.shared.end()'))
+    def test_begin_and_defer_end_at_mcp_execution_scope(self):
+        i = TOOLS.index('case "shell_execute":')
+        end = TOOLS.index('case "file_read":', i)
+        body = TOOLS[i:end]
+        self.assertIn('MiniSightSignal.shouldSignal(tool: tu.name, args: argsJson)', body)
+        self.assertIn('MiniSightSignal.shared.begin(phase: .waiting', body)
+        self.assertIn('defer { if let sightToken { MiniSightSignal.shared.end(sightToken) } }', body)
+        self.assertLess(body.index('begin(phase: .waiting'), body.index('end(sightToken)'))
 
-    def test_wiring_is_additive(self):
-        # The two lines must sit at the top of the function, before the CPU
-        # probe — an addition, not a rewrite of the executor.
+    def test_no_generic_funnel_wakeup(self):
         i = TOOLS.index('func executeSingleToolUse(')
-        head = TOOLS[i:i + 6000]
-        self.assertLess(head.index('MiniSightSignal.shared.begin(tool: tu.name'),
-                        head.index('PerfProbe.toolBefore'))
+        head = TOOLS[i:TOOLS.index('switch tu.name', i)]
+        self.assertNotIn('MiniSightSignal.shared.begin', head)
+        self.assertNotIn('MiniSightSignal.shared.end', head)
 
 
 if __name__ == '__main__':

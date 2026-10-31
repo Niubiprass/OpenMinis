@@ -367,8 +367,9 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                                    thinkingLevel: ThinkingLevel) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
         try Task.checkCancellation()
         let manager = ProviderMultiKeyManager.shared
-        let active = manager.isActive(for: instanceId)
-        let keyCount = active ? manager.keys(for: instanceId).count : 0
+        let active = await manager.isActiveAsync(for: instanceId)
+        let ring = await manager.keysAsync(for: instanceId)
+        let keyCount = active ? ring.count : 0
         // Priority mode gets two same-key retries before failover. The budget
         // includes those retry slots so a three-key ring cannot exhaust the
         // loop before the later keys are reached.
@@ -394,7 +395,7 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                         retryLease = nil
                         isSameKeyRetry = true
                     } else {
-                        guard let next = manager.lease(for: instanceId, excluding: attempted) else { break }
+                        guard let next = await manager.leaseAsync(for: instanceId, excluding: attempted) else { break }
                         lease = next
                         attempted.insert(lease.id)
                         sameKeyRetries = 0
@@ -449,12 +450,12 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                         }
                         try Task.checkCancellation()
                         for item in pending { continuation.yield(item) }
-                        if manager.isActive(for: instanceId) { manager.recordSuccess(lease: lease, for: instanceId) }
+                        if await manager.isActiveAsync(for: instanceId) { manager.recordSuccess(lease: lease, for: instanceId) }
                         continuation.finish(); return
                     } catch {
                         if Task.isCancelled { continuation.finish(throwing: CancellationError()); return }
                         let kind = MultiKeyFailureKind.classify(error)
-                        if manager.isActive(for: instanceId) { manager.recordFailure(lease: lease, kind: kind, for: instanceId) }
+                        if await manager.isActiveAsync(for: instanceId) { manager.recordFailure(lease: lease, kind: kind, for: instanceId) }
                         guard kind.mayTryAnotherKey else { continuation.finish(throwing: error); return }
                         lastError = error
                         if exposed {
