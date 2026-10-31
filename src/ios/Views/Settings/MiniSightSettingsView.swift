@@ -238,13 +238,13 @@ struct MiniSightSettingsView: View {
             let ai = MiniSightPetFile.loadAI()
             aiURL = ai.0; aiKey = ai.1; aiModel = ai.2
         }
-        .onChange(of: style) { _ in post("com.openminis.minisight.settings") }
-        .onChange(of: mode) { _ in post("com.openminis.minisight.settings") }
+        .onChange(of: style) { _ in flushAndPost("com.openminis.minisight.settings") }
+        .onChange(of: mode) { _ in flushAndPost("com.openminis.minisight.settings") }
         .onChange(of: shown) { value in
             MiniSightPetFile.saveShown(value)
-            post(value ? "com.openminis.minisight.show" : "com.openminis.minisight.settings")
+            flushAndPost(value ? "com.openminis.minisight.show" : "com.openminis.minisight.settings")
         }
-        .onChange(of: petSize) { _ in post("com.openminis.minisight.settings") }
+        .onChange(of: petSize) { _ in flushAndPost("com.openminis.minisight.settings") }
         .sheet(isPresented: $showPhotoPicker) {
             MiniSightPhotoPicker { image in importImage(image) }
         }
@@ -304,6 +304,13 @@ struct MiniSightSettingsView: View {
         } catch {
             aiStatus = "失败：\(error.localizedDescription)"
         }
+    }
+
+    /// AppStorage 写的是内存里的 defaults，异步落盘；插件收到通知会立刻读
+    /// plist，没落盘就读到旧值（表现为要拨两次才生效）。先强写盘再发。
+    private func flushAndPost(_ name: String) {
+        UserDefaults.standard.synchronize()
+        post(name)
     }
 
     private func post(_ name: String) {
