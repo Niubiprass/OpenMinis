@@ -9202,22 +9202,6 @@ private struct SettingsSheet: View {
                     }
                 }
 
-                Section("逆向工具") {
-                    NavigationLink {
-                        ReverseAnalysisView()
-                    } label: {
-                        Label {
-                            Text("逆向分析")
-                        } icon: {
-                            Image(systemName: "ant")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.white)
-                                .frame(width: 21, height: 21)
-                                .background(.indigo, in: Circle())
-                        }
-                    }
-                }
-
                 Section("Logs") {
                     NavigationLink {
                         LogManagementView()

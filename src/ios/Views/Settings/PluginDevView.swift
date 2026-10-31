@@ -39,12 +39,15 @@ enum HostAccessPermission {
     }
 }
 
-enum PluginProjectStatus: String, Codable, CaseIterable {    case planning, building, testing, done
+enum PluginProjectStatus: String, Codable, CaseIterable, Hashable {
+    case planning, analysis, coding, building, testing, done
 
     var label: String {
         switch self {
         case .planning: return "待开始"
-        case .building: return "开发中"
+        case .analysis: return "逆向分析"
+        case .coding:   return "写源码"
+        case .building: return "编译中"
         case .testing:  return "测试中"
         case .done:     return "已完成"
         }
@@ -53,9 +56,27 @@ enum PluginProjectStatus: String, Codable, CaseIterable {    case planning, buil
     var color: Color {
         switch self {
         case .planning: return .gray
-        case .building: return .blue
+        case .analysis: return .purple
+        case .coding:   return .blue
+        case .building: return .indigo
         case .testing:  return .orange
         case .done:     return .green
+        }
+    }
+}
+
+/// 逆向分析是插件项目中的一个阶段，不再单独占设置入口。
+enum PluginAnalysisKind: String, Codable, CaseIterable, Hashable {
+    case app, ipa, deb, dylib, macho, system
+
+    var label: String {
+        switch self {
+        case .app:   return "已安装 App"
+        case .ipa:   return "IPA"
+        case .deb:   return "DEB 插件包"
+        case .dylib: return "dylib / Mach-O"
+        case .macho: return "裸 Mach-O"
+        case .system:return "系统组件"
         }
     }
 }
@@ -68,6 +89,89 @@ struct PluginProject: Codable, Identifiable, Equatable {
     var status: PluginProjectStatus
     var createdAt = Date()
     var updatedAt = Date()
+
+    // These fields are deliberately plain text: the actual analysis happens
+    // in the conversation/MCP workflow, while the project keeps the handoff.
+    var analysisKind: PluginAnalysisKind = .app
+    var analysisMaterial: String = ""
+    var analysisQuestion: String = ""
+    var analysisResult: String = ""
+    var artifact: String = ""
+    var lastError: String = ""
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, effect, target, status, createdAt, updatedAt
+        case analysisKind, analysisMaterial, analysisQuestion, analysisResult
+        case artifact, lastError
+    }
+
+    init(id: UUID = UUID(), name: String, effect: String, target: String,
+         status: PluginProjectStatus, createdAt: Date = Date(), updatedAt: Date = Date(),
+         analysisKind: PluginAnalysisKind = .app, analysisMaterial: String = "",
+         analysisQuestion: String = "", analysisResult: String = "",
+         artifact: String = "", lastError: String = "") {
+        self.id = id
+        self.name = name
+        self.effect = effect
+        self.target = target
+        self.status = status
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.analysisKind = analysisKind
+        self.analysisMaterial = analysisMaterial
+        self.analysisQuestion = analysisQuestion
+        self.analysisResult = analysisResult
+        self.artifact = artifact
+        self.lastError = lastError
+    }
+
+    // Existing plugin-projects.json files predate the analysis fields.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "未命名"
+        effect = try c.decodeIfPresent(String.self, forKey: .effect) ?? ""
+        target = try c.decodeIfPresent(String.self, forKey: .target) ?? "自动判断"
+        status = try c.decodeIfPresent(PluginProjectStatus.self, forKey: .status) ?? .planning
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+        analysisKind = try c.decodeIfPresent(PluginAnalysisKind.self, forKey: .analysisKind) ?? .app
+        analysisMaterial = try c.decodeIfPresent(String.self, forKey: .analysisMaterial) ?? ""
+        analysisQuestion = try c.decodeIfPresent(String.self, forKey: .analysisQuestion) ?? ""
+        analysisResult = try c.decodeIfPresent(String.self, forKey: .analysisResult) ?? ""
+        artifact = try c.decodeIfPresent(String.self, forKey: .artifact) ?? ""
+        lastError = try c.decodeIfPresent(String.self, forKey: .lastError) ?? ""
+    }
+}
+
+extension PluginProject {
+    /// The single handoff used by chat, MCP and the future background runner.
+    /// Keeping it on the project prevents the old standalone reverse-analysis
+    /// prompt from drifting away from the plugin-development workflow.
+    var workflowPrompt: String {
+        var lines = [
+            "继续做插件项目「\(name)」。",
+            "目标：\(target)。",
+            "效果：\(effect)。",
+            "当前阶段：\(status.label)。",
+            "请遵循 tweak-workflow：先本地分析和写源码，推送或安装前分别征得同意。"
+        ]
+        if !analysisMaterial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines += [
+                "这是项目内的逆向分析阶段，不要把它当成独立工具：",
+                "分析类型：\(analysisKind.label)。",
+                "分析对象/资料：\(analysisMaterial)。"
+            ]
+        }
+        if !analysisQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("逆向问题：\(analysisQuestion)。")
+        }
+        if !analysisResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("已有分析结果（请在此基础上继续核对，不要丢失）：\n\(analysisResult)")
+        }
+        lines.append("请把分析结论直接用于 Hook 点、源码、静态检查和后续取证；不要另开一个孤立的逆向项目。")
+        return lines.joined(separator: "\n")
+    }
 }
 
 @MainActor
@@ -89,15 +193,23 @@ final class PluginProjectStore: ObservableObject {
     var activeCount: Int { projects.filter { $0.status != .done }.count }
 
     @discardableResult
-    func add(effect: String, target: String) -> PluginProject {
+    func add(effect: String, target: String, analysisKind: PluginAnalysisKind,
+             analysisMaterial: String, analysisQuestion: String) -> PluginProject {
         let trimmed = effect.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return PluginProject(name: "未命名", effect: "", target: "", status: .planning) }
+        guard !trimmed.isEmpty else {
+            return PluginProject(name: "未命名", effect: "", target: "", status: .planning)
+        }
         let firstLine = trimmed.split(separator: "\n").first.map(String.init) ?? trimmed
         let name = firstLine.count > 14 ? String(firstLine.prefix(14)) + "…" : firstLine
         let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        let material = analysisMaterial.trimmingCharacters(in: .whitespacesAndNewlines)
+        let question = analysisQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
         let project = PluginProject(name: name, effect: trimmed,
                                     target: t.isEmpty ? "自动判断" : t,
-                                    status: .planning)
+                                    status: .planning,
+                                    analysisKind: analysisKind,
+                                    analysisMaterial: material,
+                                    analysisQuestion: question)
         projects.insert(project, at: 0)
         save()
         return project
@@ -203,13 +315,12 @@ struct PluginDevView: View {
         .navigationTitle("插件开发")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showNew) {
-            NewPluginProjectSheet { effect, target in
-                let project = store.add(effect: effect, target: target)
-                let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
-                var brief = "做个插件：\(effect)"
-                if !t.isEmpty { brief += "\n目标：\(t)" }
-                brief += "\n\n按 tweak-workflow 做（项目名用「\(project.name)」），先本地写源码，推送前问我一次。"
-                UIPasteboard.general.string = brief
+            NewPluginProjectSheet { effect, target, analysisKind, material, question in
+                let project = store.add(effect: effect, target: target,
+                                       analysisKind: analysisKind,
+                                       analysisMaterial: material,
+                                       analysisQuestion: question)
+                UIPasteboard.general.string = project.workflowPrompt
                 QuickActionRouter.shared.postNewChat()
             }
         }
@@ -237,6 +348,7 @@ struct PluginProjectDetailView: View {
     @ObservedObject private var store = PluginProjectStore.shared
     @Environment(\.dismiss) private var dismiss
     @State private var copied = false
+    @State private var saved = false
 
     var body: some View {
         List {
@@ -248,26 +360,87 @@ struct PluginProjectDetailView: View {
                 Text(project.target)
                     .foregroundStyle(.secondary)
             }
-            Section("状态") {
-                Picker("状态", selection: Binding(
-                    get: { project.status },
-                    set: { project.status = $0; store.update(project) }
+
+            Section("逆向分析（项目内阶段）") {
+                Picker("资料类型", selection: Binding(
+                    get: { project.analysisKind },
+                    set: { project.analysisKind = $0; saveProject() }
                 )) {
-                    ForEach(PluginProjectStatus.allCases, id: \.self) { s in
-                        Text(s.label).tag(s)
+                    ForEach(PluginAnalysisKind.allCases, id: \.self) { kind in
+                        Text(kind.label).tag(kind)
                     }
                 }
+                TextField("分析对象 / 文件路径 / Bundle ID", text: Binding(
+                    get: { project.analysisMaterial },
+                    set: { project.analysisMaterial = $0; saved = false }
+                ))
+                TextEditor(text: Binding(
+                    get: { project.analysisQuestion },
+                    set: { project.analysisQuestion = $0; saved = false }
+                ))
+                .frame(minHeight: 72)
+                if !project.analysisResult.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("已有分析结果")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(project.analysisResult)
+                            .font(.footnote)
+                    }
+                }
+                Button {
+                    project.status = .analysis
+                    saveProject()
+                    UIPasteboard.general.string = project.workflowPrompt
+                    copied = true
+                    QuickActionRouter.shared.postNewChat()
+                } label: {
+                    Label("在当前对话开始 / 继续逆向分析",
+                          systemImage: "magnifyingglass.circle.fill")
+                }
+            } footer: {
+                Text("逆向分析属于这个插件项目：分析 App、IPA、DEB 或 dylib 后，结论直接用于 Hook 点和源码，不再另开孤立的逆向工具页面。")
             }
+
+            Section("流水线状态") {
+                Picker("当前阶段", selection: Binding(
+                    get: { project.status },
+                    set: { project.status = $0; saveProject() }
+                )) {
+                    ForEach(PluginProjectStatus.allCases, id: \.self) { status in
+                        Text(status.label).tag(status)
+                    }
+                }
+                if !project.artifact.isEmpty {
+                    TextField("产物", text: Binding(
+                        get: { project.artifact },
+                        set: { project.artifact = $0; saved = false }
+                    ))
+                }
+                if !project.lastError.isEmpty {
+                    Text(project.lastError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+                Button {
+                    saveProject()
+                } label: {
+                    Label(saved ? "项目资料已保存" : "保存项目资料",
+                          systemImage: saved ? "checkmark.circle.fill" : "externaldrive")
+                }
+            }
+
             Section {
                 Button {
-                    UIPasteboard.general.string = prompt
+                    saveProject()
+                    UIPasteboard.general.string = project.workflowPrompt
                     copied = true
                 } label: {
-                    Label(copied ? "已复制，去对话里粘贴" : "复制给 AI 的指令",
+                    Label(copied ? "已复制，去对话里粘贴" : "复制完整工作流指令",
                           systemImage: copied ? "checkmark.circle.fill" : "doc.on.doc")
                 }
             } footer: {
-                Text("粘到对话里，AI 就从「判断目标、找 Hook 点」开始，接着编译、安装、取证。")
+                Text("对话负责实际分析、写源码和取证；这里保存项目阶段、分析对象和结果交接，避免换会话后丢失。")
             }
         }
         .navigationTitle(project.name)
@@ -286,21 +459,28 @@ struct PluginProjectDetailView: View {
                 }
             }
         }
+        .onDisappear {
+            store.update(project)
+        }
     }
 
-    private var prompt: String {
-        "继续做插件项目「\(project.name)」。目标：\(project.target)。效果：\(project.effect)。请先判断目标进程/类，找 Hook 点，然后写代码、编译、安装并取证。"
+    private func saveProject() {
+        store.update(project)
+        saved = true
     }
 }
 
 // MARK: - New project
 
 private struct NewPluginProjectSheet: View {
-    let onCreate: (String, String) -> Void
+    let onCreate: (String, String, PluginAnalysisKind, String, String) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var effect = ""
     @State private var target = ""
+    @State private var analysisKind: PluginAnalysisKind = .app
+    @State private var analysisMaterial = ""
+    @State private var analysisQuestion = ""
 
     var body: some View {
         NavigationView {
@@ -314,7 +494,19 @@ private struct NewPluginProjectSheet: View {
                 } header: {
                     Text("指定目标（可选）")
                 } footer: {
-                    Text("比如 SpringBoard、控制中心，或某个 App 的名称。创建后会复制一段开场白并开一个新对话，粘上去就能开工。")
+                    Text("比如 SpringBoard、控制中心，或某个 App 的名称。")
+                }
+                Section("项目内逆向分析（可选）") {
+                    Picker("资料类型", selection: $analysisKind) {
+                        ForEach(PluginAnalysisKind.allCases, id: \.self) { kind in
+                            Text(kind.label).tag(kind)
+                        }
+                    }
+                    TextField("App 名、Bundle ID、IPA/DEB/dylib 路径或链接", text: $analysisMaterial)
+                    TextEditor(text: $analysisQuestion)
+                        .frame(minHeight: 72)
+                } footer: {
+                    Text("填了资料后，创建项目会把逆向分析作为第一阶段交给同一个插件项目，不再打开独立逆向页面。")
                 }
             }
             .navigationTitle("新建插件项目")
@@ -325,7 +517,7 @@ private struct NewPluginProjectSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("创建并开始") {
-                        onCreate(effect, target)
+                        onCreate(effect, target, analysisKind, analysisMaterial, analysisQuestion)
                         dismiss()
                     }
                     .disabled(effect.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

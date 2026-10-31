@@ -43,6 +43,12 @@ final class QuickActionRouter: ObservableObject {
     /// counter form a belt-and-braces wakeup path.
     @Published private(set) var newChatTrigger: Int = 0
 
+    /// A plugin-project handoff is carried into the next draft chat instead of
+    /// being copied through the system pasteboard. The project id lets the
+    /// host bind the newly-created draft back to the project record.
+    @Published private(set) var pendingPrompt: String?
+    @Published private(set) var pendingProjectID: UUID?
+
     private init() {}
 
     // MARK: - Shortcut item types (also referenced from AppDelegate)

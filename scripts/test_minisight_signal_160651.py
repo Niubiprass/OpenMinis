@@ -61,10 +61,14 @@ class SignalContract(unittest.TestCase):
         self.assertIn('pendingHide?.cancel()', body)
         self.assertIn('DispatchWorkItem { [weak self] in self?.hideIfIdle() }', body)
 
-    def test_no_io_no_persistence_no_toggle(self):
+    def test_no_preference_or_timer_state(self):
+        # The signal intentionally writes one short status.txt line so the
+        # SpringBoard pet can show the current device action. What it must not
+        # do is persist preferences, create URL sessions, or own a timer loop.
         body = signal_body()
-        for forbidden in ('UserDefaults', 'FileManager', 'URLSession', 'Timer.scheduledTimer'):
+        for forbidden in ('UserDefaults', 'URLSession', 'Timer.scheduledTimer'):
             self.assertNotIn(forbidden, body)
+        self.assertIn('FileManager.default', body)
 
 
 class SignalScope(unittest.TestCase):
@@ -73,7 +77,7 @@ class SignalScope(unittest.TestCase):
         body = signal_body()
         # browser_use always; shell_execute only when it actually calls MCP.
         self.assertIn('if tool == "browser_use" { return true }', body)
-        self.assertIn('if tool == "shell_execute" { return args.contains("minis-mcp-cli") }', body)
+        self.assertIn('return args.contains("minis-mcp-cli") || args.contains("bin/mcp call")', body)
         self.assertIn('static func shouldSignal(tool: String, args: String) -> Bool', body)
 
     def test_watchdog_ceiling(self):
@@ -88,17 +92,17 @@ class FunnelWiring(unittest.TestCase):
     def test_begin_and_defer_end_at_the_funnel(self):
         i = TOOLS.index('func executeSingleToolUse(')
         body = TOOLS[i:i + 6000]
-        self.assertIn('MiniSightSignal.shared.begin()', body)
+        self.assertIn('MiniSightSignal.shared.begin(tool: tu.name, args: sightArgs)', body)
         self.assertIn('defer { if sightSignals { MiniSightSignal.shared.end() } }', body)
         # begin must precede the defer that closes it
-        self.assertLess(body.index('begin()'), body.index('end()'))
+        self.assertLess(body.index('begin(tool: tu.name'), body.index('MiniSightSignal.shared.end()'))
 
     def test_wiring_is_additive(self):
         # The two lines must sit at the top of the function, before the CPU
         # probe — an addition, not a rewrite of the executor.
         i = TOOLS.index('func executeSingleToolUse(')
         head = TOOLS[i:i + 6000]
-        self.assertLess(head.index('MiniSightSignal.shared.begin()'),
+        self.assertLess(head.index('MiniSightSignal.shared.begin(tool: tu.name'),
                         head.index('PerfProbe.toolBefore'))
 
 
