@@ -24,7 +24,7 @@ import unittest
 
 from pathlib import Path
 
-ROOT = Path('/var/minis/shared/OpenMinis-160649')
+ROOT = Path(__file__).resolve().parent.parent
 TOOLS = (ROOT / 'src/ios/Agent/Chat/AIChatViewModel+ConcurrentTools.swift').read_text()
 
 
