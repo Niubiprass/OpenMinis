@@ -1315,6 +1315,17 @@ actor ChatStore {
         // changed.
         let globalMemoryEnabled = (UserDefaults.standard.object(forKey: "memory.global.enabled") as? Bool) ?? true
 
+        // [T-persona-blank-at-creation] Blank is a property of the NEW session,
+        // not of every session. Write the explicit "blank" marker (empty id)
+        // when the user keeps the "new session starts blank" default, so the
+        // untagged sessions that already exist keep following the global
+        // SOUL.md body instead of being blanked by a global switch.
+        if PersonaStore.shared.blankByDefault {
+            UserDefaults.standard.set("", forKey: "session.persona.id.\(session.id)")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "session.persona.id.\(session.id)")
+        }
+
         // [T-memory-enabled-new-session-bug DIAG] Trace what we read from
         // UserDefaults and what we bind, so a live repro shows whether the
         // global default is reaching createSession.

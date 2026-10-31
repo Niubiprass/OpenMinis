@@ -66,7 +66,7 @@ struct SoulSettingsView: View {
             } header: {
                 Text(AppLocalized("人格"))
             } footer: {
-                Text(AppLocalized("默认空白：新会话不注入人格；想用哪个人格，再在会话里选。关掉则继续用全局 SOUL.md。"))
+                Text(AppLocalized("只影响新建会话：开着时新会话从空白开始，需要时在会话里选人格；老会话不受影响，继续用全局灵魂。"))
             }
 
             Section {

@@ -41,7 +41,6 @@
                                     <constraint firstAttribute="width" constant="96" id="Lch-Ic-w96"/>
                                     <constraint firstAttribute="height" constant="96" id="Lch-Ic-h96"/>
                                 </constraints>
-                                <color key="tintColor" systemColor="secondarySystemBackgroundColor"/>
                             </imageView>
                             <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="LaunchIconMark" translatesAutoresizingMaskIntoConstraints="NO" id="Lch-Ic-mark" userLabel="LaunchIconMark">
                                 <rect key="frame" x="148.5" y="273" width="96" height="96"/>

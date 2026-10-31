@@ -67,6 +67,17 @@ final class SessionForkManager {
         let dupTitle = (session.title ?? "Untitled") + " (Copy)"
         let newSession = await store.createSession(modelId: session.modelId, title: dupTitle)
 
+        // [T-persona-blank-at-creation] createSession stamps new sessions
+        // blank; a duplicate must keep the source's persona / soul override
+        // instead of silently losing it.
+        for prefix in ["session.persona.id.", "session.soul.body."] {
+            if let value = UserDefaults.standard.string(forKey: prefix + sessionId) {
+                UserDefaults.standard.set(value, forKey: prefix + newSession.id)
+            } else {
+                UserDefaults.standard.removeObject(forKey: prefix + newSession.id)
+            }
+        }
+
         if let category = session.category {
             await store.updateSessionTitle(newSession.id, title: dupTitle, category: category)
         }

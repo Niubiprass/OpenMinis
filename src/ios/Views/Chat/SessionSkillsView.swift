@@ -325,16 +325,19 @@ struct PersonaPickerSheet: View {
         NavigationView {
             List {
                 Section {
-                    option("跟随分组", "用分组或全局的默认人格", selected: current == nil) {
+                    // [T-persona-blank-at-creation] nil = inherit (folder
+                    // persona, else the global SOUL.md body). Only "" is an
+                    // explicit blank.
+                    option("用全局灵魂", "跟随分组；没有分组设置时用全局 SOUL.md 正文", selected: current == nil) {
                         apply(nil)
                     }
-                    option("无（空白）", "不注入任何人格提示词", selected: current == "") {
+                    option("无（空白）", "本会话不注入任何人格正文", selected: current == "") {
                         apply("")
                     }
                 }
                 Section("人格") {
                     if store.personas.isEmpty {
-                        Text("还没有人格；先到设置 → 灵魂里新建。")
+                        Text("还没有人格。本会话可先用上面的「用全局灵魂」；要独立人格再到 设置 → 灵魂 新建。")
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(store.personas) { persona in

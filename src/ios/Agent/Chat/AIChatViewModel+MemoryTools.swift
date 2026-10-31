@@ -66,7 +66,7 @@ extension AIChatViewModel {
             }
         }
         guard let configuration = folderRuntimeContext?.configuration else {
-            return PersonaStore.shared.blankByDefault ? "" : nil
+            return nil // follow the global SOUL.md body
         }
         if let pid = configuration.personaId {
             if pid.isEmpty { return "" }
@@ -76,7 +76,7 @@ extension AIChatViewModel {
         }
         switch configuration.soulMode {
         case "inherit":
-            return PersonaStore.shared.blankByDefault ? "" : nil
+            return nil // follow the global SOUL.md body
         case "clear":
             return ""
         case "append":
@@ -84,7 +84,7 @@ extension AIChatViewModel {
                 .filter { !$0.isEmpty }.joined(separator: "\n\n")
         default:
             if let prompt = configuration.soulPrompt, !prompt.isEmpty { return prompt }
-            return PersonaStore.shared.blankByDefault ? "" : nil
+            return nil // follow the global SOUL.md body
         }
     }
 

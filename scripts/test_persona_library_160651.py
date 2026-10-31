@@ -95,7 +95,16 @@ class MemoryLayers(unittest.TestCase):
         vm = (ROOT / 'src/ios/Agent/Chat/AIChatViewModel+MemoryTools.swift').read_text()
         self.assertIn('loadPersonaMemoryFragment', vm)
         self.assertIn('personaMemoryURL', vm)
-        self.assertIn('PersonaStore.shared.blankByDefault', vm)
+        # [T-persona-blank-at-creation] Blank is decided once, at creation;
+        # inheritance is no longer gated by the global switch.
+        chat_store = (ROOT / 'src/ios/Agent/Chat/ChatStore.swift').read_text()
+        self.assertIn('PersonaStore.shared.blankByDefault', chat_store)
+        self.assertIn('session.persona.id.', chat_store)
+        self.assertNotIn('blankByDefault ? "" : nil', vm)
+        self.assertEqual(vm.count('follow the global SOUL.md body'), 3)
+        picker = (ROOT / 'src/ios/Views/Chat/SessionSkillsView.swift').read_text()
+        self.assertIn('用全局灵魂', picker)
+        self.assertIn('本会话不注入任何人格正文', picker)
 
     def test_memory_page_has_three_sections(self):
         view = (ROOT / 'src/ios/Views/Settings/MemoryManagementView.swift').read_text()
