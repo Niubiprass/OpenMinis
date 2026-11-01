@@ -168,19 +168,20 @@ struct MultiKeyManagerView: View {
             // 固定列宽：每行的 Key 名字长度不同，徽标如果紧贴名字就会
             // 一行一个位置。给名字一个固定宽度，徽标就垂直对齐在同一条线上；
             // 名字与徽标之间留 12pt，不再贴在一起。
-            Text(displayName(k))
-                .font(.system(size: 14, weight: .medium))
-                .lineLimit(1)
-                .frame(minWidth: 118, maxWidth: 145, alignment: .leading)
-
-            if displayNote(k) != nil {
-                Text(k.masked)
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(displayName(k))
+                    .font(.system(size: 14, weight: .medium))
                     .lineLimit(1)
-                    .frame(minWidth: 118, maxWidth: 145, alignment: .leading)
-                    .accessibilityLabel("Key \(k.masked)")
+                if displayNote(k) != nil {
+                    Text(k.masked)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .accessibilityLabel("Key \(k.masked)")
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
 
             Text(selectable ? "正常" : badgeText(k))
                 .font(.system(size: 10.5, weight: .medium))
@@ -378,7 +379,7 @@ struct MultiKeyEditSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
-    @State private var replacement: String = ""
+    @State private var replacement: String
     @State private var enabled: Bool
     @State private var duplicateKey = false
 
@@ -389,6 +390,7 @@ struct MultiKeyEditSheet: View {
         self.existingKeys = existingKeys
         self.onSave = onSave
         _name = State(initialValue: key.name ?? "")
+        _replacement = State(initialValue: key.masked)
         _enabled = State(initialValue: key.isEnabled)
     }
 
@@ -404,7 +406,7 @@ struct MultiKeyEditSheet: View {
                 }
 
                 Section {
-                    SecureField("", text: $replacement, prompt: Text(key.masked))
+                    TextField("", text: $replacement)
                         .textContentType(.password)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
@@ -412,7 +414,7 @@ struct MultiKeyEditSheet: View {
                 } header: {
                     Text("API Key")
                 } footer: {
-                    Text("输入框里显示的是当前 Key。留空则保持不变；只有填写新 Key 才会替换，保存后不会显示完整内容。")
+                    Text("输入框里显示的是当前 Key。不修改则保持原 Key；换成新 Key 直接覆盖这段遮罩文本，保存后不会显示完整内容。")
                 }
 
                 Section {
@@ -439,7 +441,7 @@ struct MultiKeyEditSheet: View {
                             return
                         }
                         onSave(trimmedName.isEmpty ? nil : trimmedName,
-                               trimmedKey.isEmpty ? nil : trimmedKey,
+                               (trimmedKey.isEmpty || trimmedKey == key.masked) ? nil : trimmedKey,
                                enabled)
                         dismiss()
                     }
@@ -453,6 +455,7 @@ struct MultiKeyEditSheet: View {
             .onAppear {
                 // SwiftUI may reuse sheet state when another key is opened.
                 name = key.name ?? ""
+                replacement = key.masked
                 enabled = key.isEnabled
             }
         }

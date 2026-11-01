@@ -134,10 +134,16 @@ class Ui(unittest.TestCase):
         self.assertIn('displayNote(k) ?? k.masked', VIEW)
         self.assertIn('Text(k.masked)', VIEW)
 
-    def test_edit_field_shows_current_masked_key_when_empty(self):
-        self.assertIn('prompt: Text(key.masked)', VIEW)
-        self.assertIn('留空则保持不变', VIEW)
-        self.assertIn('name = key.name ?? ""', VIEW)
+    def test_name_and_mask_share_one_column(self):
+        row = VIEW.split('private func keyRow', 1)[1].split('private func displayNote', 1)[0]
+        self.assertIn('VStack(alignment: .leading', row)
+        self.assertIn('.frame(maxWidth: .infinity, alignment: .leading)', row)
+        self.assertEqual(row.count('.frame(minWidth: 118, maxWidth: 145'), 0)
+
+    def test_edit_field_shows_current_masked_key_as_normal_text(self):
+        self.assertIn('TextField("", text: $replacement)', VIEW)
+        self.assertIn('_replacement = State(initialValue: key.masked)', VIEW)
+        self.assertIn('trimmedKey == key.masked', VIEW)
 
     def test_error_keys_can_be_reactivated(self):
         self.assertIn('reactivate(keyId:', VIEW)
@@ -151,8 +157,8 @@ class ManagementUi(unittest.TestCase):
     def test_existing_key_can_be_edited(self):
         self.assertIn('MultiKeyEditSheet', VIEW)
         self.assertIn('manager.update(keyId: key.id', VIEW)
-        self.assertIn('SecureField("", text: $replacement, prompt: Text(key.masked))', VIEW)
-        self.assertIn('只有填写新 Key 才会替换', VIEW)
+        self.assertIn('TextField("", text: $replacement)', VIEW)
+        self.assertIn('换成新 Key 直接覆盖', VIEW)
 
     def test_existing_key_can_be_deleted(self):
         self.assertIn('manager.remove(keyId:', VIEW)
