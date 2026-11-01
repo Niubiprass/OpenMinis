@@ -71,6 +71,10 @@ jobs:
           python3 scripts/test_multikey_freeze_20261101.py
           python3 scripts/test_plugin_workbench_160651.py
           python3 scripts/test_mcp_builtin_and_workflow.py
+          python3 scripts/test_minis_snapshot_offmain.py
+          python3 scripts/test_minis_native_return.py
+          python3 scripts/test_ish_residual_reaper.py
+          python3 scripts/test_residual_sweep_schedule.py
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
       - uses: actions/setup-go@v5

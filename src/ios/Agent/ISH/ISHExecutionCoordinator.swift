@@ -1225,14 +1225,18 @@ actor ISHExecutionCoordinator {
         residualSweepSerial = serial
         residualSweepTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 800_000_000)
-            guard !Task.isCancelled, let self, self.mcpInFlight == 0,
-                  self.mcpSlotWaiters.isEmpty else { return }
-            let reaped = await self.sweepStuckMCPProcesses()
-            if reaped > 0 {
-                AppLogger(category: "ResourceGuard").info("[Guard] post-MCP sweep reaped=\(reaped)")
-            }
-            if self.residualSweepSerial == serial { self.residualSweepTask = nil }
+            guard let self else { return }
+            await self.runResidualSweep(serial: serial)
         }
+    }
+
+    private func runResidualSweep(serial: UInt64) async {
+        guard !Task.isCancelled, mcpInFlight == 0, mcpSlotWaiters.isEmpty else { return }
+        let reaped = await sweepStuckMCPProcesses()
+        if reaped > 0 {
+            AppLogger(category: "ResourceGuard").info("[Guard] post-MCP sweep reaped=\(reaped)")
+        }
+        if residualSweepSerial == serial { residualSweepTask = nil }
     }
 
     private var guardTask: Task<Void, Never>?
@@ -1346,6 +1350,7 @@ actor ISHExecutionCoordinator {
         guard kr == KERN_SUCCESS else { return 0 }
         let used = UInt64(info.user_time.seconds + info.system_time.seconds) * 1_000_000_000
             + UInt64(info.user_time.microseconds + info.system_time.microseconds) &* 1000
+        let previous = lastUsedNs
         let now = CFAbsoluteTimeGetCurrent()
         defer {
             lastUsedNs = used
@@ -1354,7 +1359,7 @@ actor ISHExecutionCoordinator {
         guard lastSampledAt > 0 else { return 0 }
         let dt = now - lastSampledAt
         guard dt > 1 else { return 0 }
-        let delta = used &- min(used, lastLatest)
+        let delta = used &- min(used, previous)
         return Double(delta) / 1e9 / dt
     }
 }
