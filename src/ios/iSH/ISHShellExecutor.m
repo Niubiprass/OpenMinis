@@ -65,6 +65,10 @@ static const NSTimeInterval ISHShellExecutorStaleContextAge = 7200.0; // 2h
     int32_t _liveReaders;
 }
 @property (nonatomic) int guestPid;
+/// Guest process-group id captured while the root task is alive. Needed after
+/// a NORMAL exit: by then pid_get_task(root) is gone, so killProcessGroup can
+/// no longer discover the group from the root pid.
+@property (nonatomic) pid_t_ guestGroup;
 @property (nonatomic) NSDate *startTime;
 @property (nonatomic, copy) ISHShellLineCallback lineCallback;
 @property (nonatomic, copy) ISHShellCompletionCallback completion;
@@ -268,6 +272,7 @@ static int32_t _sweptContexts = 0;
               ctx.guestPid, -[ctx.startTime timeIntervalSinceNow],
               ctx.isCompleted, ctx.liveReaders);
         OSAtomicIncrement32(&_sweptContexts);
+        [self killRemainingInGroup:ctx.guestGroup excluding:ctx.guestPid];
         [self finalizeContext:ctx exitCode:-1 error:ISHShellExecutorErrorTimeout];
     }
 }
@@ -377,6 +382,10 @@ static int32_t _sweptContexts = 0;
     }
 
     struct task *task = current;
+
+    // Capture the group before task_start/exit. A normal shell exit destroys
+    // the root task, and a later lookup by root pid would have nothing to read.
+    if (task->group != NULL) ctx.guestGroup = task->group->pgid;
 
     // Stamp the new task group with the caller-provided fs_context so the
     // fakefs path-translate hook can route this task's file operations
@@ -779,6 +788,43 @@ static BOOL ISHTaskIsDescendantOf(struct task *t, pid_t_ rootPid) {
     return NO;
 }
 
+/// Reap children that outlived a normally-exited shell. The root is already
+/// gone, so match the captured process group only (no ancestry walk rooted at
+/// a recycled pid). A daemon that called setsid() has its own group and
+/// survives. SIGTERM first, then SIGKILL only the same group after 200 ms.
++ (void)killRemainingInGroup:(pid_t_)pgid excluding:(int)rootPid {
+    if (pgid <= 1) return;
+    // Never scan under pids_lock from the main queue: stopCurrentCommand's
+    // existing watchdog fix exists for the same reason.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        struct siginfo_ info = SIGINFO_NIL;
+        int found = 0;
+        lock(&pids_lock);
+        for (int i = 2; i < MAX_PID; i++) {
+            struct task *t = pid_get_task(i);
+            if (!t || t->pid == rootPid || t->group == NULL || t->group->pgid != pgid) continue;
+            send_signal(t, SIGTERM_, info);
+            found++;
+        }
+        unlock(&pids_lock);
+        if (found == 0) return;
+        NSLog(@"ISHShellExecutor[exit-reap]: pgid=%d remaining=%d — SIGTERM sent", pgid, found);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(200 * NSEC_PER_MSEC)),
+                       dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            int killed = 0;
+            lock(&pids_lock);
+            for (int i = 2; i < MAX_PID; i++) {
+                struct task *t = pid_get_task(i);
+                if (!t || t->pid == rootPid || t->group == NULL || t->group->pgid != pgid) continue;
+                send_signal(t, SIGKILL_, info);
+                killed++;
+            }
+            unlock(&pids_lock);
+            if (killed > 0) NSLog(@"ISHShellExecutor[exit-reap]: pgid=%d escalated to SIGKILL for %d", pgid, killed);
+        });
+    });
+}
+
 + (void)killProcessGroup:(int)pid {
     // Signal every task belonging to this shell_execute command — matched
     // either by pgid OR by being a descendant of the root pid. The ancestry
@@ -973,6 +1019,9 @@ static BOOL ISHTaskIsDescendantOf(struct task *t, pid_t_ rootPid) {
     // Give readers 200ms to flush, then finalize.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC),
                    dispatch_get_main_queue(), ^{
+        // Let the readers drain, then remove children the shell left behind.
+        // Root has already exited; finalize only tears down our side.
+        [self killRemainingInGroup:ctx.guestGroup excluding:pid];
         [self finalizeContext:ctx
                      exitCode:exitCode
                         error:ISHShellExecutorErrorNone];

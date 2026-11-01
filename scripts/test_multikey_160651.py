@@ -129,6 +129,16 @@ class Ui(unittest.TestCase):
         self.assertIn('k.masked', VIEW)
         self.assertNotIn('Text(k.key)', VIEW)
 
+    def test_saved_note_is_the_visible_row_title(self):
+        self.assertIn('Text(displayName(k))', VIEW)
+        self.assertIn('displayNote(k) ?? k.masked', VIEW)
+        self.assertIn('Text(k.masked)', VIEW)
+
+    def test_edit_field_shows_current_masked_key_when_empty(self):
+        self.assertIn('prompt: Text(key.masked)', VIEW)
+        self.assertIn('留空则保持不变', VIEW)
+        self.assertIn('name = key.name ?? ""', VIEW)
+
     def test_error_keys_can_be_reactivated(self):
         self.assertIn('reactivate(keyId:', VIEW)
         self.assertIn('恢复使用', VIEW)
@@ -141,7 +151,7 @@ class ManagementUi(unittest.TestCase):
     def test_existing_key_can_be_edited(self):
         self.assertIn('MultiKeyEditSheet', VIEW)
         self.assertIn('manager.update(keyId: key.id', VIEW)
-        self.assertIn('SecureField("留空则保持当前 Key"', VIEW)
+        self.assertIn('SecureField("", text: $replacement, prompt: Text(key.masked))', VIEW)
         self.assertIn('只有填写新 Key 才会替换', VIEW)
 
     def test_existing_key_can_be_deleted(self):

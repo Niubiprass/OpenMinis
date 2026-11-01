@@ -874,6 +874,15 @@ actor ISHExecutionCoordinator {
         return mountedSidStorage
     }
 
+    /// Pids of every command still running. The reaper skips their whole
+    /// descendant chain, so a new MCP call racing a sweep is never killed.
+    nonisolated static func activePidSnapshot() -> [Int32] {
+        inflightPidLock.lock()
+        let snapshot = inflightPidStorage
+        inflightPidLock.unlock()
+        return snapshot.values.flatMap { $0 }.filter { $0 > 1 }.sorted()
+    }
+
     static func setExternalMountSnapshot(_ snapshot: [ExternalMountSpec]) {
         externalMountLock.lock()
         externalMountSnapshotStorage = snapshot
@@ -1172,6 +1181,8 @@ actor ISHExecutionCoordinator {
 
     private var mcpInFlight = 0
     private var mcpSlotWaiters: [CheckedContinuation<Void, Never>] = []
+    private var residualSweepTask: Task<Void, Never>?
+    private var residualSweepSerial: UInt64 = 0
     /// 同时在跑的 MCP 调用上限。2 足够让「查工具 + 调工具」这类正常节奏通过，
     /// 又能挡住模型一轮里连发七八个调用把设备打满。
     private let mcpMaxConcurrent = 2
@@ -1201,6 +1212,26 @@ actor ISHExecutionCoordinator {
             next.resume()
         } else {
             mcpInFlight = max(0, mcpInFlight - 1)
+            if mcpInFlight == 0 { scheduleResidualSweep() }
+        }
+    }
+
+    /// Give the last MCP call a short drain window, then reap only its orphaned
+    /// helpers. A newer call cancels this task; read-only/in-flight helpers
+    /// survive because the script requires ppid 1 (or age > 3 min).
+    private func scheduleResidualSweep() {
+        residualSweepTask?.cancel()
+        let serial = residualSweepSerial &+ 1
+        residualSweepSerial = serial
+        residualSweepTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled, let self, self.mcpInFlight == 0,
+                  self.mcpSlotWaiters.isEmpty else { return }
+            let reaped = await self.sweepStuckMCPProcesses()
+            if reaped > 0 {
+                AppLogger(category: "ResourceGuard").info("[Guard] post-MCP sweep reaped=\(reaped)")
+            }
+            if self.residualSweepSerial == serial { self.residualSweepTask = nil }
         }
     }
 
@@ -1230,7 +1261,7 @@ actor ISHExecutionCoordinator {
         // 红线：超过 150% 持续 90 秒（3 个采样），或单次飙到 400% 以上——
         // 后一种是「已经卡死」的形态，不必再等。
         if highCPUSamples >= 3 || cpu >= 4.0 {
-            let reaped = await sweepStuckMCPProcesses()
+            let reaped = await self.sweepStuckMCPProcesses()
             AppLogger(category: "ResourceGuard").warning(
                 "[Guard] cpu=\(Int(cpu * 100))% streak=\(highCPUSamples) reaped=\(reaped)")
             highCPUSamples = 0
@@ -1244,12 +1275,13 @@ actor ISHExecutionCoordinator {
         }
     }
 
-    /// 收割卡死的 `minis-mcp-cli` 残留（孤儿或超过 3 分钟仍不退出）。
-    /// 返回被清掉的进程数。
+    /// 收割孤儿 MCP 残留（`minis-mcp-cli` / `mcp-root` 等）以及超过 3 分钟仍不退出者。
+    /// 只在真正 MCP 调用空闲后或常驻资源守护里跑，返回被清掉的进程数。
+    /// 可复用 daemon 的 pid 由 `/tmp/minis-mcp-daemon*.pid` 排除。
     @discardableResult
     func sweepStuckMCPProcesses() async -> Int {
         guard ISHKernel.shared.isBooted else { return 0 }
-        let script = Self.reaperScript
+        let script = Self.reaperScript(active: Self.activePidSnapshot())
         let result = try? await execute(
             sessionId: Self.guardSessionId,
             command: script,
@@ -1261,18 +1293,36 @@ actor ISHExecutionCoordinator {
         return out.components(separatedBy: "reaped:").count - 1
     }
 
-    private static let reaperScript = """
+    private static func reaperScript(active: [Int32]) -> String {
+        let activeText = active.map(String.init).joined(separator: " ")
+        return """
     now=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null)
     [ -n "$now" ] || now=0
+    daemons=" $(cat /tmp/minis-mcp-daemon*.pid 2>/dev/null | tr '\\n' ' ') "
+    active=" \(activeText) "
     for p in /proc/[0-9]*; do
       [ -d "$p" ] || continue
       pid=${p#/proc/}
+      [ "$pid" = "$$" ] && continue
+      case "$daemons" in *" $pid "*) continue ;; esac
       cmd=$(tr '\\0' ' ' < "$p/cmdline" 2>/dev/null)
-      case "$cmd" in *minis-mcp-cli*) ;; *) continue ;; esac
+      case "$cmd" in
+        *minis-mcp-cli*|*mcp-root*|*mcp-appinst*|*mcp-ldid*|*mcp-logreader*) ;;
+        *) continue ;;
+      esac
       case "$cmd" in *"/bin/sh"*) continue ;; esac
       st=$(awk '{print $22}' "$p/stat" 2>/dev/null)
       pp=$(awk '{print $4}' "$p/stat" 2>/dev/null)
       [ -n "$st" ] || continue
+      [ -n "$pp" ] || continue
+      # Never touch a helper that descends from a command still running now.
+      anc=$pp hops=0 hit=0
+      while [ -n "$anc" ] && [ "$anc" != "0" ] && [ "$anc" != "1" ] && [ "$hops" -lt 8 ]; do
+        case "$active" in *" $anc "*) hit=1; break ;; esac
+        anc=$(awk '{print $4}' "/proc/$anc/stat" 2>/dev/null)
+        hops=$((hops + 1))
+      done
+      [ "$hit" = "1" ] && continue
       age=$(( now - st / 100 ))
       if [ "$pp" = "1" ] || [ "$age" -gt 180 ]; then
         kill -9 -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null
@@ -1280,6 +1330,7 @@ actor ISHExecutionCoordinator {
       fi
     done
     """
+    }
 
     /// 本进程当前 CPU 占用（1.0 = 一个核）。用两次采样的 CPU 时间差除以墙钟时间，
     /// 比瞬时快照稳，也能反映多核叠加（>100% 说明有线程在满跑）。
@@ -1303,7 +1354,7 @@ actor ISHExecutionCoordinator {
         guard lastSampledAt > 0 else { return 0 }
         let dt = now - lastSampledAt
         guard dt > 1 else { return 0 }
-        let delta = used &- min(used, lastUsedNs)
+        let delta = used &- min(used, lastLatest)
         return Double(delta) / 1e9 / dt
     }
 }

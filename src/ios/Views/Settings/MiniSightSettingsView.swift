@@ -219,6 +219,7 @@ struct MiniSightSettingsView: View {
     @State private var shown = true
     @AppStorage("minisight.petSize") private var petSize = 96.0
     @AppStorage("minisight.gravity") private var gravity = false
+    @AppStorage("minisight.diagnostics") private var diagnostics = false
 
     @State private var aiURL = ""
     @State private var aiKey = ""
@@ -400,6 +401,14 @@ struct MiniSightSettingsView: View {
             } footer: {
                 Text("录屏默认关闭。开启后，AI 开始操作就录，结束保存；长按可以随时手动开/关。")
             }
+
+            Section {
+                Toggle("记录诊断日志", isOn: $diagnostics)
+            } header: {
+                Text("诊断")
+            } footer: {
+                Text("默认关闭。开启后只在本机 Documents/MiniSight/diagnostic.log 记录状态、错误码和计数，超过 200KB 轮转一份；不记 Key、提示词、命令正文或响应正文，不自动上传。")
+            }
         }
         .navigationTitle("操作指示器")
         .navigationBarTitleDisplayMode(.inline)
@@ -420,6 +429,7 @@ struct MiniSightSettingsView: View {
         }
         .onChange(of: petSize) { _ in flushAndPost("com.openminis.minisight.settings") }
         .onChange(of: gravity) { _ in flushAndPost("com.openminis.minisight.settings") }
+        .onChange(of: diagnostics) { _ in flushAndPost("com.openminis.minisight.settings") }
         .sheet(isPresented: $showPhotoPicker) {
             MiniSightPhotoPicker { image in importImage(image) }
         }

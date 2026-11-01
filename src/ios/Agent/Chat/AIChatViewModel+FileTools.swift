@@ -4,6 +4,11 @@ import UIKit
 
 private let logger = AppLogger(category: "AIChatVM")
 
+/// One snapshot at a time. Concurrent shell tools must not each launch their own
+/// full /var/minis walk and turn one stall into several competing I/O bursts.
+private let minisSnapshotQueue = DispatchQueue(
+    label: "com.openminis.minis-snapshot", qos: .utility)
+
 // MARK: - File Tool Execution
 
 extension AIChatViewModel {
@@ -59,21 +64,34 @@ extension AIChatViewModel {
     }
 
     /// Snapshot all files under /var/minis/ with their modification dates.
-    func snapshotMinisFiles() -> [String: Date] {
-        let fm = FileManager.default
-        guard let hostBase = resolveHostPath(Self.minisLinuxBaseDir) else { return [:] }
-        guard fm.fileExists(atPath: hostBase.path) else { return [:] }
-        // Resolve symlinks (e.g. /var → /private/var) so path prefix stripping works reliably.
-        let resolvedBase = hostBase.resolvingSymlinksInPath().path
+    /// The caller resolves `hostBase` on the main actor (cheap), then awaits this
+    /// off-main walk. Keeping the original MainActor-isolated overload here would
+    /// silently keep every call on the UI thread.
+    nonisolated static func snapshotMinisFilesAsync(at hostBase: URL?) async -> [String: Date] {
+        guard let hostBase else { return [:] }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<[String: Date], Never>) in
+            minisSnapshotQueue.async {
+                continuation.resume(returning: snapshotMinisFiles(at: hostBase))
+            }
+        }
+    }
 
-        // Collect file URLs first in an autoreleasepool, then process.
-        // FileManager.enumerator can encounter stale entries when iSH modifies
-        // the filesystem concurrently — guard against nil / invalid URLs.
+    /// Pure filesystem walk. Never touches `self` or any main-actor state.
+    nonisolated static func snapshotMinisFiles(at hostBase: URL) -> [String: Date] {
+        let fm = FileManager.default
+        // Enumerate the already-resolved base so normal entries share the same
+        // prefix and skip another symlink walk.
+        let resolvedBaseURL = hostBase.resolvingSymlinksInPath()
+        guard fm.fileExists(atPath: resolvedBaseURL.path) else { return [:] }
+        let resolvedBase = resolvedBaseURL.path
+        let resolvedPrefix = resolvedBase.hasSuffix("/") ? resolvedBase : resolvedBase + "/"
+
         var fileURLs: [URL] = []
         autoreleasepool {
-            guard let enumerator = fm.enumerator(at: hostBase,
-                                                 includingPropertiesForKeys: [.contentModificationDateKey],
-                                                 options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return }
+            guard let enumerator = fm.enumerator(
+                at: resolvedBaseURL,
+                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return }
             while let obj = enumerator.nextObject() {
                 guard let fileURL = obj as? URL else { continue }
                 fileURLs.append(fileURL)
@@ -84,15 +102,17 @@ extension AIChatViewModel {
         result.reserveCapacity(fileURLs.count)
         for fileURL in fileURLs {
             autoreleasepool {
-                var isDir: ObjCBool = false
-                guard fm.fileExists(atPath: fileURL.path, isDirectory: &isDir) else { return }
-                if isDir.boolValue { return }
-
-                let resolvedFile = fileURL.resolvingSymlinksInPath().path
-                let relativePath = resolvedFile.replacingOccurrences(of: resolvedBase, with: "")
-                let linuxPath = Self.minisLinuxBaseDir + relativePath
-                let modDate = (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
-                result[linuxPath] = modDate
+                guard let values = try? fileURL.resourceValues(
+                    forKeys: [.isDirectoryKey, .contentModificationDateKey]),
+                    values.isDirectory != true else { return }
+                let rawPath = fileURL.path
+                let resolvedFile = rawPath.hasPrefix(resolvedPrefix)
+                    ? rawPath : fileURL.resolvingSymlinksInPath().path
+                guard resolvedFile.hasPrefix(resolvedPrefix) || resolvedFile == resolvedBase else { return }
+                let relativePath = resolvedFile == resolvedBase
+                    ? "" : String(resolvedFile.dropFirst(resolvedPrefix.count))
+                let modDate = values.contentModificationDate ?? Date.distantPast
+                result[Self.minisLinuxBaseDir + "/" + relativePath] = modDate
             }
         }
         return result

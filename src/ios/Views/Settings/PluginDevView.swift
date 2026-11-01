@@ -274,46 +274,12 @@ final class PluginProjectStore: ObservableObject {
 
 struct PluginDevView: View {
     @ObservedObject private var store = PluginProjectStore.shared
-    @State private var showNew = false
 
     private var active: [PluginProject] { store.projects.filter { $0.status != .done } }
     private var finished: [PluginProject] { store.projects.filter { $0.status == .done } }
 
     var body: some View {
         List {
-            Section {
-                Button {
-                    showNew = true
-                } label: {
-                    Label("新建插件项目", systemImage: "plus.circle.fill")
-                }
-            } footer: {
-                Text("直接说你想要的效果，目标交给 AI 判断；也可以附参考视频或别人的 DEB。项目建好后在对话里继续。")
-            }
-
-            Section {
-                Toggle("允许 AI 操作手机（主机命令）", isOn: Binding(
-                    get: { HostAccessPermission.isEnabled },
-                    set: { HostAccessPermission.setEnabled($0) }
-                ))
-            } header: {
-                Text("安全")
-            } footer: {
-                Text("默认只放行只读操作（截图、列 App、读日志、读文件）。终端命令、写文件、装/卸 App、点击控制会被拦截；打开后这些才放行。")
-            }
-
-            Section {
-                NavigationLink {
-                    MiniSightSettingsView()
-                } label: {
-                    Label("操作指示器", systemImage: "pawprint.circle")
-                }
-            } header: {
-                Text("指示器")
-            } footer: {
-                Text("AI 操作手机时顶部的提示：胶囊或会动的桌宠。桌宠素材自己导入。")
-            }
-
             if !active.isEmpty {
                 Section("进行中") {
                     ForEach(active) { project in
@@ -340,17 +306,6 @@ struct PluginDevView: View {
         }
         .navigationTitle("插件开发")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showNew) {
-            NewPluginProjectSheet { effect, target, analysisKind, material, question in
-                let project = store.add(effect: effect, target: target,
-                                       analysisKind: analysisKind,
-                                       analysisMaterial: material,
-                                       analysisQuestion: question)
-                UIPasteboard.general.string = project.workflowPrompt
-                QuickActionRouter.shared.stageProjectHandoff(prompt: project.workflowPrompt, projectID: project.id)
-                QuickActionRouter.shared.postNewChat()
-            }
-        }
     }
 
     private func row(_ project: PluginProject) -> some View {

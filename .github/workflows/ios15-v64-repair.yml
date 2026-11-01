@@ -70,6 +70,7 @@ jobs:
           python3 scripts/test_multikey_persistence_160651.py
           python3 scripts/test_multikey_freeze_20261101.py
           python3 scripts/test_plugin_workbench_160651.py
+          python3 scripts/test_mcp_builtin_and_workflow.py
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
       - uses: actions/setup-go@v5

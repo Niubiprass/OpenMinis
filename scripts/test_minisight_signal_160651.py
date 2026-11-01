@@ -60,6 +60,16 @@ class SignalContract(unittest.TestCase):
         self.assertIn('pendingHide?.cancel()', body)
         self.assertIn('hideIfIdle(generation: generation)', body)
 
+    def test_status_text_is_written_before_activity_notification(self):
+        body = signal_body()
+        status = body.index('statusWritten = (try? Data(text.utf8)')
+        snapshot = body.index('let dataWritten: Bool')
+        notify = body.index('Self.post(Self.activityNotification)')
+        statusNotify = body.index('Self.post("com.openminis.minisight.status")')
+        self.assertLess(status, snapshot)
+        self.assertLess(snapshot, notify)
+        self.assertLess(notify, statusNotify)
+
     def test_no_preference_or_timer_state(self):
         # The signal intentionally writes one short status.txt line so the
         # SpringBoard pet can show the current device action. What it must not

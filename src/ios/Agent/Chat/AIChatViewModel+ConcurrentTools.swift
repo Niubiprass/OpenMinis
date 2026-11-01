@@ -434,7 +434,7 @@ extension AIChatViewModel {
             let needsHostApproval = HostAccessPermission.isDangerous(command)
                 || MiniSightSignal.requiresHostApproval(command)
             if needsHostApproval && !HostAccessPermission.isEnabled {
-                let msg = "Error: 这条会改设备（终端/写文件/装卸/改系统设置），主机权限未开启。只读和点击操作不受影响。要执行请到 设置 → 插件开发 → 安全 打开「允许 AI 操作手机」。"
+                let msg = "Error: 这条会改设备（终端/写文件/装卸/改系统设置），主机权限未开启。只读和点击操作不受影响。要执行请到 设置 → MCP 集成 → Minis 内置工具 打开「允许 AI 操作手机」。"
                 ctLogger.info("[HostAccess] blocked dangerous MCP command: master switch off")
                 toolOutput = msg
                 toolSuccess = false
@@ -533,7 +533,12 @@ extension AIChatViewModel {
                 }
             }
 
-            let preSnapshot = snapshotMinisFiles()
+            // The full /var/minis walk runs on a utility queue. Only resolving
+            // the mount base stays on the main actor.
+            let snapshotBase = resolveHostPath(Self.minisLinuxBaseDir)
+            let preStarted = Date()
+            let preSnapshot = await Self.snapshotMinisFilesAsync(at: snapshotBase)
+            ctLogger.info("[MinisSnapshot] pre files=\(preSnapshot.count) ms=\(Int(Date().timeIntervalSince(preStarted) * 1000))")
             let result: CommandResult
             do {
                 var lineBuffer: [String] = []
@@ -660,8 +665,10 @@ extension AIChatViewModel {
             }
             toolSuccess = result.exitCode == 0
 
-            // Scan for new/modified files under /var/minis/
-            let postSnapshot = snapshotMinisFiles()
+            // Scan for new/modified files under /var/minis/, again off-main.
+            let postStarted = Date()
+            let postSnapshot = await Self.snapshotMinisFilesAsync(at: snapshotBase)
+            ctLogger.info("[MinisSnapshot] post files=\(postSnapshot.count) ms=\(Int(Date().timeIntervalSince(postStarted) * 1000))")
             let newOrModified = postSnapshot.filter { key, date in
                 preSnapshot[key] == nil || preSnapshot[key]! < date
             }
@@ -1648,6 +1655,9 @@ final class MiniSightSignal: @unchecked Sendable {
         let pendingApproval: Bool
         let executing: Bool
         let visible: Bool
+        /// Current App already returns to Minis on its own after real execution.
+        /// The tweak reads this to avoid a second LaunchServices foreground call.
+        let nativeReturn: Bool
     }
 
     /// Called under lock, but it only snapshots memory and enqueues ordered I/O.
@@ -1662,7 +1672,7 @@ final class MiniSightSignal: @unchecked Sendable {
             processInstanceID: Self.processInstanceID, stateGeneration: stateGeneration,
             pendingApprovalCount: pending, waitingCount: waiting, executingCount: executing,
             activeCount: activities.count, pendingApproval: pending > 0,
-            executing: executing > 0, visible: shownAt != nil)
+            executing: executing > 0, visible: shownAt != nil, nativeReturn: true)
         let text = activities.values.first(where: { $0.phase == .executing })?.status
             ?? (pending > 0 ? "等待你确认" : waiting > 0 ? "等待设备操作" : "操作已结束")
         let statusChanged = text != lastStatus
@@ -1674,6 +1684,14 @@ final class MiniSightSignal: @unchecked Sendable {
                 return
             }
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            // Write the human text BEFORE activity.json/notification. The tweak
+            // reacts to the activity notification immediately; posting first let
+            // it pair the new snapshot with the previous status line.
+            var statusWritten = false
+            if statusChanged {
+                statusWritten = (try? Data(text.utf8).write(
+                    to: dir.appendingPathComponent("status.txt"), options: .atomic)) != nil
+            }
             let dataWritten: Bool
             if let data = try? JSONEncoder().encode(snapshot) {
                 dataWritten = (try? data.write(to: dir.appendingPathComponent("activity.json"), options: .atomic)) != nil
@@ -1681,8 +1699,7 @@ final class MiniSightSignal: @unchecked Sendable {
                 dataWritten = false
             }
             if dataWritten { Self.post(Self.activityNotification) }
-            if dataWritten, statusChanged,
-               (try? Data(text.utf8).write(to: dir.appendingPathComponent("status.txt"), options: .atomic)) != nil {
+            if dataWritten, statusChanged, statusWritten {
                 Self.post("com.openminis.minisight.status")
             }
             if dataWritten, let edge { Self.post(edge) }

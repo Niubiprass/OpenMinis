@@ -27,6 +27,22 @@ struct MCPIntegrationsView: View {
 
     var body: some View {
         List {
+            Section {
+                Toggle("允许 AI 操作手机（主机命令）", isOn: Binding(
+                    get: { HostAccessPermission.isEnabled },
+                    set: { HostAccessPermission.setEnabled($0) }
+                ))
+                NavigationLink {
+                    MiniSightSettingsView()
+                } label: {
+                    Label("操作指示器", systemImage: "pawprint.circle")
+                }
+            } header: {
+                Text("Minis 内置工具")
+            } footer: {
+                Text("默认只放行只读操作（截图、列 App、读日志、读文件）。终端命令、写文件、装/卸 App、点击控制要被拦截，需打开上面的总开关；每条危险命令仍会单独确认。操作指示器决定 AI 操作手机时显示胶囊还是会动的桌宠。")
+            }
+
             if store.servers.isEmpty {
                 emptyState
             } else {

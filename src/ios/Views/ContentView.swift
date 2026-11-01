@@ -8903,7 +8903,6 @@ private struct SettingsSheet: View {
     @AppStorage("appearanceMode") private var appearanceMode: Int = 0
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var deepLink = DeepLinkCoordinator.shared
-    @ObservedObject private var pluginProjects = PluginProjectStore.shared
     @State private var navPath = NavigationPath()
     @State private var showFeedbackDialog = false
 
@@ -9067,27 +9066,6 @@ private struct SettingsSheet: View {
                                 .foregroundStyle(.white)
                                 .frame(width: 21, height: 21)
                                 .background(.green, in: Circle())
-                        }
-                    }
-                }
-
-                Section("插件开发") {
-                    NavigationLink {
-                        PluginDevView()
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "chevron.left.forwardslash.chevron.right")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.white)
-                                .frame(width: 21, height: 21)
-                                .background(.indigo, in: Circle())
-                            Text("插件开发")
-                            Spacer()
-                            if pluginProjects.activeCount > 0 {
-                                Text("\(pluginProjects.activeCount) 个项目")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
                         }
                     }
                 }

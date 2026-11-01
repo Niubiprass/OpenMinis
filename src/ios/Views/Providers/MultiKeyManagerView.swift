@@ -127,6 +127,7 @@ struct MultiKeyManagerView: View {
         }
         .sheet(item: $editingKey) { key in
             editSheet(for: key)
+                .id(key.id)
         }
         .confirmationDialog(
             "删除这个 Key？",
@@ -141,7 +142,7 @@ struct MultiKeyManagerView: View {
             }
             Button("取消", role: .cancel) { deletingKey = nil }
         } message: { key in
-            Text("删除后不再使用 \(key.masked)。当前正在进行的回复不会中断。")
+            Text("删除后不再使用 \(displayName(key))。当前正在进行的回复不会中断。")
         }
     }
 
@@ -167,10 +168,19 @@ struct MultiKeyManagerView: View {
             // 固定列宽：每行的 Key 名字长度不同，徽标如果紧贴名字就会
             // 一行一个位置。给名字一个固定宽度，徽标就垂直对齐在同一条线上；
             // 名字与徽标之间留 12pt，不再贴在一起。
-            Text(k.masked)
-                .font(.system(size: 14, design: .monospaced))
+            Text(displayName(k))
+                .font(.system(size: 14, weight: .medium))
                 .lineLimit(1)
-                .frame(width: 118, alignment: .leading)
+                .frame(minWidth: 118, maxWidth: 145, alignment: .leading)
+
+            if displayNote(k) != nil {
+                Text(k.masked)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(minWidth: 118, maxWidth: 145, alignment: .leading)
+                    .accessibilityLabel("Key \(k.masked)")
+            }
 
             Text(selectable ? "正常" : badgeText(k))
                 .font(.system(size: 10.5, weight: .medium))
@@ -228,6 +238,16 @@ struct MultiKeyManagerView: View {
             }
             .tint(.blue)
         }
+    }
+
+    private func displayNote(_ k: ProviderAPIKey) -> String? {
+        guard let name = k.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty else { return nil }
+        return name
+    }
+
+    private func displayName(_ k: ProviderAPIKey) -> String {
+        displayNote(k) ?? k.masked
     }
 
     private func badgeText(_ k: ProviderAPIKey) -> String {
@@ -380,11 +400,11 @@ struct MultiKeyEditSheet: View {
                 } header: {
                     Text("备注")
                 } footer: {
-                    Text("比如「主号」「小号」，只用于区分，不影响请求。")
+                    Text("比如「主号」「小号」，只用于区分，不影响请求；保存后会显示在列表里。")
                 }
 
                 Section {
-                    SecureField("留空则保持当前 Key", text: $replacement)
+                    SecureField("", text: $replacement, prompt: Text(key.masked))
                         .textContentType(.password)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
@@ -392,7 +412,7 @@ struct MultiKeyEditSheet: View {
                 } header: {
                     Text("API Key")
                 } footer: {
-                    Text("当前：\(key.masked)\n只有填写新 Key 才会替换；保存后不会显示完整内容。")
+                    Text("输入框里显示的是当前 Key。留空则保持不变；只有填写新 Key 才会替换，保存后不会显示完整内容。")
                 }
 
                 Section {
@@ -429,6 +449,11 @@ struct MultiKeyEditSheet: View {
                 Button("知道了", role: .cancel) {}
             } message: {
                 Text("请换一把 Key，或保留当前 Key 不改。")
+            }
+            .onAppear {
+                // SwiftUI may reuse sheet state when another key is opened.
+                name = key.name ?? ""
+                enabled = key.isEnabled
             }
         }
     }

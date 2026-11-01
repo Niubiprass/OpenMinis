@@ -6145,6 +6145,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
            let skillFragment = SkillStore.shared.skillPromptFragment(for: sid) {
             userSystemPrompt += "\n\n" + skillFragment
         }
+        if let sid = helperConfig?.parentSessionId ?? sessionId,
+           let workflowFragment = SessionAgentWorkflow.promptFragment(for: sid) {
+            userSystemPrompt += "\n\n" + workflowFragment
+        }
 
         // [T-mcp-integration-ios] Inject Top-20 enabled MCP server metadata.
         if let sid = helperConfig?.parentSessionId ?? sessionId,
@@ -6910,6 +6914,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 if let sid = helperConfig?.parentSessionId ?? sessionId,
                    let skillFragment = SkillStore.shared.skillPromptFragment(for: sid) {
                     userSystemPrompt += "\n\n" + skillFragment
+                }
+                if let sid = helperConfig?.parentSessionId ?? sessionId,
+                   let workflowFragment = SessionAgentWorkflow.promptFragment(for: sid) {
+                    userSystemPrompt += "\n\n" + workflowFragment
                 }
                 // [T-mcp-integration-ios] Inject Top-20 enabled MCP metadata.
                 if let sid = helperConfig?.parentSessionId ?? sessionId,

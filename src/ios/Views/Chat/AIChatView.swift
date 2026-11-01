@@ -5832,7 +5832,7 @@ private struct ChatTrailingMenu: View, Equatable {
             }
 
             Button { onSkills() } label: {
-                Label(AppLocalized("Skills in Session"), systemImage: "puzzlepiece.extension")
+                Label(AppLocalized("会话能力"), systemImage: "puzzlepiece.extension")
             }
 
             Button { onMCPs() } label: {
@@ -6123,7 +6123,7 @@ private struct ChatTrailingMenuButton: UIViewRepresentable {
         var sessionGroup: [UIMenuElement] = [
             UIAction(title: AppLocalized("会话人格"),
                      image: UIImage(systemName: "person.crop.circle")) { _ in coordinator.parent.onPersona() },
-            UIAction(title: AppLocalized("Skills in Session"),
+            UIAction(title: AppLocalized("会话能力"),
                      image: UIImage(systemName: "puzzlepiece.extension")) { _ in coordinator.parent.onSkills() },
             UIAction(title: AppLocalized("MCPs in Session"),
                      image: UIImage(systemName: "wrench.and.screwdriver")) { _ in coordinator.parent.onMCPs() },
