@@ -1901,6 +1901,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// All answers are strings (free text or the chosen option).
     func submitQuestionAnswers(_ answers: [String: String]) {
         guard let card = activeQuestionCard else { return }
+        if let sid = sessionId, !answers.isEmpty {
+            SessionAgentWorkflow.noteUserMessage(answers.values.joined(separator: " "), sessionId: sid)
+        }
         activeQuestionCard = nil
         card.timeoutTask?.cancel()
         QuestionAlertCenter.shared.questionEnded(toolUseId: card.toolUseId)
@@ -3064,6 +3067,13 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         guard !text.isEmpty || !pendingAttachments.isEmpty, !isProcessing else {
             logger.warning("🔑DRAFT [vm=\(self.vmInstanceId)] send() GUARD FAILED — text.isEmpty=\(text.isEmpty) attachments.isEmpty=\(pendingAttachments.isEmpty) isProcessing=\(self.isProcessing)")
             return
+        }
+
+        // The workflow gate only advances on a real user message. A yes at a
+        // stopped gate becomes a one-command, ten-minute approval; anything
+        // else closes the wait so the next external call asks again.
+        if let sid = sessionId, !text.isEmpty {
+            SessionAgentWorkflow.noteUserMessage(text, sessionId: sid)
         }
 
         // [T-auto-compact-entry] A fresh user turn starts a new visit: re-arm
