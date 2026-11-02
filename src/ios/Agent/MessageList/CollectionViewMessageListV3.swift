@@ -687,8 +687,14 @@ private struct BridgedAssistantFooterV3: View {
             })
             Spacer()
             if bridge.autoRetryAttempt > 0 {
-                Text("Retry in \(bridge.autoRetryCountdown)s (\(bridge.autoRetryAttempt)/\(AIChatViewModel.retryDelays.count))")
+                Text(bridge.autoRetryIsNetwork && !bridge.autoRetryNetworkHint.isEmpty
+                     ? bridge.autoRetryNetworkHint
+                     : (bridge.autoRetryIsNetwork
+                        ? AppLocalizedFormat("Network line failed — retrying in %llds (%lld/%lld). Switch Wi‑Fi/4G if it keeps failing", bridge.autoRetryCountdown, bridge.autoRetryAttempt, AIChatViewModel.retryDelays.count)
+                        : AppLocalizedFormat("Retry in %llds (%lld/%lld)", bridge.autoRetryCountdown, bridge.autoRetryAttempt, AIChatViewModel.retryDelays.count)))
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.trailing)
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(Color.secondary.opacity(0.12)).clipShape(Capsule())
             } else if let onRetry = bridge.onRetry {
@@ -1884,6 +1890,8 @@ extension CollectionViewMessageListV3 {
             bridge.toolSnapshots = vm.toolSnapshots
             bridge.autoRetryAttempt = isLatestAssistant ? vm.autoRetryAttempt : 0
             bridge.autoRetryCountdown = isLatestAssistant ? vm.autoRetryCountdown : 0
+            bridge.autoRetryIsNetwork = isLatestAssistant && vm.autoRetryIsNetwork
+            bridge.autoRetryNetworkHint = isLatestAssistant ? vm.autoRetryNetworkHint : ""
             // [T-ios-session-status-mismatch] Defense-in-depth: even if vm.canResume
             // is somehow stale-true and vm.isProcessing hasn't flipped yet, do NOT
             // show the "Interrupted — tap Resume" banner while SessionActivityTracker

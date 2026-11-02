@@ -250456,6 +250456,138 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Some attachments cannot be previewed" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "部分附件无法预览" } }
       }
+    },
+    "Network line failed — retrying in %llds (%lld/%lld). Switch Wi‑Fi/4G if it keeps failing" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Network line failed — retrying in %llds (%lld/%lld). Switch Wi‑Fi/4G if it keeps failing" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网络线路失败，%lld 秒后重试（%lld/%lld）。可切换 Wi‑Fi/4G；换网会立即重试" } }
+      }
+    },
+    "unknown size" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "unknown size" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "大小未知" } }
+      }
+    },
+    "provider limit" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "provider limit" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "站点上限" } }
+      }
+    },
+    "Request too large" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Request too large" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求体太大" } }
+      }
+    },
+    "请求体超过这个站点的限制" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Request body exceeds this site's limit" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求体超过这个站点的限制" } }
+      }
+    },
+    "不是模型或 Key 坏了；旧工具输出会自动裁掉后重试。反复出现就新建会话。" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This is not a dead model or key. Old tool output is trimmed automatically and the request is retried. Start a new conversation if it keeps happening." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "不是模型或 Key 坏了；旧工具输出会自动裁掉后重试。反复出现就新建会话。" } }
+      }
+    },
+    "当前网络线路失败" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Current network line failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "当前网络线路失败" } }
+      }
+    },
+    "换到 Wi‑Fi 或 4G 后会自动重试；不是模型坏了。" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Switching to Wi‑Fi or cellular retries automatically. The model is not broken." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "换到 Wi‑Fi 或 4G 后会自动重试；不是模型坏了。" } }
+      }
+    },
+    "Older %lld image(s) elided from request to fit the request-size budget" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Older %lld image(s) elided to fit the request-size budget" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "为符合请求体预算，已从本次请求省略较早的 %lld 张图片" } }
+      }
+    },
+    "Network line failed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Network line failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网络线路失败" } }
+      }
+    },
+    "[413] Request body is too large (%@, site limit %@). Old tool output is trimmed and retried automatically; if it keeps happening, start a new conversation." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Request too large (%@, site limit %@). Old tool output is trimmed and retried automatically; if it keeps happening, start a new conversation." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求体太大（%@，站点上限 %@）。旧工具输出会自动裁掉并重试；反复出现就新建会话。" } }
+      }
+    },
+    "可能是 Key 没有权限，也可能是这条网络的出口 IP 被拦截；换网或换 Key 再试。" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The key may lack permission, or this network egress IP may be blocked. Switch network or key and retry." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可能是 Key 没有权限，也可能是这条网络的出口 IP 被拦截；换网或换 Key 再试。" } }
+      }
+    },
+    "Access denied" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Access denied" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "拒绝访问" } }
+      }
+    },
+    "这个分组暂时没有可用渠道" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No available channel for this group" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "这个分组暂时没有可用渠道" } }
+      }
+    },
+    "不是 Key 坏了；换一个模型，或让供应商补渠道。" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The key is not broken. Switch model or ask the provider to restore a channel." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "不是 Key 坏了；换一个模型，或让供应商补渠道。" } }
+      }
+    },
+    "图片超过这个站点的请求上限" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Image exceeds this site request limit" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "图片超过这个站点的请求上限" } }
+      }
+    },
+    "不是模型或 Key 坏了；旧图会自动省略，或先少发几张。" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This is not a dead model or key. Older images are elided automatically, or send fewer at once." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "不是模型或 Key 坏了；旧图会自动省略，或先少发几张。" } }
+      }
+    },
+    "Gateway timed out" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Gateway timed out" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网关超时" } }
+      }
+    },
+    "请求体超过站点限制" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Request body exceeds the site limit" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求体超过站点限制" } }
+      }
+    },
+    "request too large" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "request too large" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求体太大" } }
+      }
+    },
+    "当前 %@ 线路失败；%@ 最近可用。换网会立即重试" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Current %@ line failed; %@ worked recently. Switching network retries immediately." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "当前 %@ 线路失败；%@ 最近可用。换网会立即重试" } }
+      }
+    },
+    "当前 %@ 线路失败，可切换 Wi‑Fi/4G 后重试" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Current %@ line failed. Switch Wi‑Fi/cellular and retry." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "当前 %@ 线路失败，可切换 Wi‑Fi/4G 后重试" } }
+      }
     }
   },
   "version" : "1.0"

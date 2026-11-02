@@ -51,20 +51,45 @@ extension AIChatViewModel {
     ) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
         var lastError: Error?
         var currentProvider = initialProvider
+        var pathGenerationBeforeAttempt = NetworkMonitor.shared.pathSnapshot().generation
         let retryDelays = delays ?? Self.retryDelays
         for attempt in 0...retryDelays.count {
             if attempt > 0 {
                 let delay = retryDelays[attempt - 1]
                 self.autoRetryAttempt = attempt
+                self.autoRetryIsNetwork = (lastError as? LLMError)?.isNetworkError == true
+                if self.autoRetryIsNetwork {
+                    let current = NetworkMonitor.shared.currentPathKind()
+                    NetworkLineHealth.noteFailure(model: currentProvider.model.id, network: current)
+                    if let alternative = NetworkLineHealth.alternativeNetwork(
+                        for: currentProvider.model.id, current: current) {
+                        self.autoRetryNetworkHint = AppLocalizedFormat(
+                            "当前 %@ 线路失败；%@ 最近可用。换网会立即重试", current, alternative)
+                    } else {
+                        self.autoRetryNetworkHint = AppLocalizedFormat(
+                            "当前 %@ 线路失败，可切换 Wi‑Fi/4G 后重试", current)
+                    }
+                }
                 // Show the network error on the message during countdown
                 if let lastError {
                     let desc = (lastError as? LocalizedError)?.errorDescription ?? String(describing: lastError)
                     chatMessage?.error = desc
                 }
+                let isNetworkFailure = (lastError as? LLMError)?.isNetworkError == true
+                let pathAtFailure = pathGenerationBeforeAttempt
                 for remaining in stride(from: delay, through: 1, by: -1) {
                     self.autoRetryCountdown = remaining
                     try await Task.sleep(nanoseconds: 1_000_000_000)
                     try Task.checkCancellation()
+                    // The user changed network during the countdown. Waiting out
+                    // the remaining backoff only delays a retry that can now work.
+                    if isNetworkFailure {
+                        let path = NetworkMonitor.shared.pathSnapshot()
+                        if path.satisfied, path.generation != pathAtFailure {
+                            logger.info("🌐 network path changed during retry countdown — retrying now")
+                            break
+                        }
+                    }
                 }
                 self.autoRetryCountdown = 0
                 chatMessage?.error = nil
@@ -89,6 +114,7 @@ extension AIChatViewModel {
                     thinkLvl = min(thinkLvl, entry.effectiveMaxThinkingLevel)
                 }
                 let requestMessages = Self.limitedMessages(messages, entryId: resolveCurrentEntry()?.id)
+                pathGenerationBeforeAttempt = NetworkMonitor.shared.pathSnapshot().generation
                 let stream = try await currentProvider.streamAgentMessage(
                     messages: requestMessages,
                     systemPrompt: systemPrompt,
@@ -97,6 +123,11 @@ extension AIChatViewModel {
                     thinkingLevel: thinkLvl
                 )
                 self.autoRetryAttempt = 0
+                self.autoRetryIsNetwork = false
+                self.autoRetryNetworkHint = ""
+                NetworkLineHealth.noteSuccess(
+                    model: currentProvider.model.id,
+                    network: NetworkMonitor.shared.currentPathKind())
                 return stream
             } catch let error as LLMError where error.isRetryable {
                 lastError = error
@@ -107,6 +138,8 @@ extension AIChatViewModel {
             }
         }
         self.autoRetryAttempt = 0
+        self.autoRetryIsNetwork = false
+        self.autoRetryNetworkHint = ""
         throw lastError!
     }
 
@@ -162,6 +195,11 @@ extension AIChatViewModel {
         var currentEntryId = activeEntryId
         var triedEntries: Set<String> = []
         if let eid = currentEntryId { triedEntries.insert(eid) }
+        // A 413 is not a reason to change model: the same provider can accept
+        // the request once its now-lower host byte cap makes the guard trim the
+        // old payload. Two retries converge a lower gateway limit; if it still
+        // does not fit, fall back normally.
+        var bodyCapRetryRemaining = 2
 
         do {
             let _aeid = activeEntryId; let _agid = activeGroupId
@@ -236,6 +274,14 @@ extension AIChatViewModel {
                 // Provider-level error (rate limit, invalid key, provider rejection):
                 // immediately try next model in group without retry countdown.
                 logger.error("🔀ROUTE entry=\(currentEntryId ?? "nil") fallbackable error: \(error.localizedDescription)")
+                if error.isRequestTooLarge, bodyCapRetryRemaining > 0 {
+                    bodyCapRetryRemaining -= 1
+                    if error.requestTooLargeServerDetail == nil, bodyCapRetryRemaining > 1 {
+                        bodyCapRetryRemaining = 1   // one local re-trim; server 413 gets two
+                    }
+                    logger.info("🔀ROUTE request too large — retrying the SAME entry after a pre-send trim")
+                    continue
+                }
                 if let eid = currentEntryId, let entry = ProviderConfigStore.shared.entry(for: eid) {
                     let inst = ProviderConfigStore.shared.instance(for: entry.providerInstanceId)?.label ?? entry.model.provider
                     fallbackReasons.append((model: entry.model.displayName, instance: inst, reason: error.fallbackReason))

@@ -40,6 +40,11 @@ final class AnthropicProvider: LLMProvider {
     /// where signature-less thinking blocks are rejected.
     let isOfficialAnthropicEndpoint: Bool
 
+    /// Host key for the learned request-body ceiling and its size at dispatch.
+    let requestBodyBudgetKey: String
+    let requestBodyIsCustom: Bool
+    var requestBytesAtDispatch = 0
+
     /// Required system prompt prefix for Claude Code OAuth credentials.
     ///
     /// The value is not hardcoded here: at build time the "Generate Provider
@@ -184,6 +189,8 @@ final class AnthropicProvider: LLMProvider {
             ? stripV1Suffix(basePath ?? "https://api.anthropic.com")
             : (basePath ?? "https://api.anthropic.com")
         self.isOfficialAnthropicEndpoint = Self.isOfficialEndpoint(resolvedBase)
+        self.requestBodyBudgetKey = RequestBodyByteBudget.key(for: resolvedBase)
+        self.requestBodyIsCustom = !Self.isOfficialEndpoint(resolvedBase)
         self.service = AnthropicServiceFactory.service(
             apiKey: apiKey,
             basePath: resolvedBase,
@@ -202,6 +209,8 @@ final class AnthropicProvider: LLMProvider {
             ? stripV1Suffix(basePath ?? "https://api.anthropic.com")
             : (basePath ?? "https://api.anthropic.com")
         self.isOfficialAnthropicEndpoint = Self.isOfficialEndpoint(resolvedBase)
+        self.requestBodyBudgetKey = RequestBodyByteBudget.key(for: resolvedBase)
+        self.requestBodyIsCustom = !Self.isOfficialEndpoint(resolvedBase)
         self.service = AnthropicServiceFactory.service(
             apiKey: manualToken,
             basePath: resolvedBase,
@@ -224,6 +233,8 @@ final class AnthropicProvider: LLMProvider {
             ? stripV1Suffix(basePath ?? "https://api.anthropic.com")
             : (basePath ?? "https://api.anthropic.com")
         self.isOfficialAnthropicEndpoint = Self.isOfficialEndpoint(resolvedBase)
+        self.requestBodyBudgetKey = RequestBodyByteBudget.key(for: resolvedBase)
+        self.requestBodyIsCustom = !Self.isOfficialEndpoint(resolvedBase)
         self.service = AnthropicServiceFactory.service(
             apiKey: "oauth-placeholder",
             basePath: resolvedBase,
@@ -550,11 +561,19 @@ final class AnthropicProvider: LLMProvider {
         // Preferred path: a real status code. Classify purely from it.
         if let status = captured.statusCode {
             switch status {
-            case 401, 403:
+            case 401:
                 return .invalidAPIKey(detail: detail())
+            case 403:
+                return .providerError(message: "[403] access denied: \(detail().prefix(200))")
+            case 413:
+                let learned = RequestBodyByteBudget.noteRejected(
+                    key: requestBodyBudgetKey + "|chat",
+                    attemptedBytes: requestBytesAtDispatch > 0 ? requestBytesAtDispatch : nil)
+                return .requestTooLarge(estimatedBytes: requestBytesAtDispatch > 0 ? requestBytesAtDispatch : nil,
+                                        limitBytes: learned, detail: detail())
             case 429:
                 return .rateLimited
-            case 500, 502, 503, 504, 529:
+            case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529:
                 return .transientError(message: detail(), statusCode: status)
             default:
                 // Every other 4xx (400 included) is a request the provider
@@ -572,11 +591,19 @@ final class AnthropicProvider: LLMProvider {
         // mentioning `max_tokens: 8500` can no longer masquerade as a 5xx.
         if let status = Self.extractStatusCode(from: description) {
             switch status {
-            case 401, 403:
+            case 401:
                 return .invalidAPIKey(detail: detail())
+            case 403:
+                return .providerError(message: "[403] access denied: \(detail().prefix(200))")
+            case 413:
+                let learned = RequestBodyByteBudget.noteRejected(
+                    key: requestBodyBudgetKey + "|chat",
+                    attemptedBytes: requestBytesAtDispatch > 0 ? requestBytesAtDispatch : nil)
+                return .requestTooLarge(estimatedBytes: requestBytesAtDispatch > 0 ? requestBytesAtDispatch : nil,
+                                        limitBytes: learned, detail: detail())
             case 429:
                 return .rateLimited
-            case 500, 502, 503, 504, 529:
+            case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529:
                 return .transientError(message: detail(), statusCode: status)
             default:
                 return .providerError(message: detail())

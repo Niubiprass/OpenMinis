@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import os.log
 
 private let logger = AppLogger(category: "OpenAIProvider")
@@ -114,12 +115,46 @@ final class OpenAIProvider: LLMProvider {
     let authMode: AuthMode
     /// Codex account ID for OAuth mode (set by provider factory).
     var codexAccountId: String?
+    /// [T-responses-resource-identity] Opaque, non-secret fingerprint of the
+    /// account/project resource behind this credential. OpenAI scopes stored
+    /// Responses item ids to that resource; a multi-key ring that rotates per
+    /// request must not replay ids minted by another key. Hash the key so the
+    /// identifier is stable but never reveals the secret.
+    var credentialResourceIdentity: String {
+        switch authMode {
+        case .apiKey(let key):
+            let digest = SHA256.hash(data: Data(key.utf8))
+            return "key:" + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+        case .oauth:
+            return "oauth:" + (codexAccountId ?? "default")
+        }
+    }
     /// Optional custom API base URL for proxy services (e.g. "https://my-proxy.com").
     var customBaseURL: String?
     /// When false, customBaseURL is used verbatim without appending "/v1".
     var appendV1Suffix: Bool
     /// Extra HTTP headers to include in every request (e.g. OpenRouter attribution).
     var extraHeaders: [String: String] = [:]
+
+    /// Size of the body at the most recent guard. A real 413 has no useful
+    /// numeric metadata, so the mapping site reads this to learn a per-host cap.
+    private var lastRequestBytes = 0
+    private var lastRequestBudgetKey = ""
+
+    /// Host-scoped budget key (never includes a path or a credential).
+    private var requestBodyBudgetKey: String {
+        RequestBodyByteBudget.key(for: customBaseURL)
+    }
+
+    private func requestBodyCap(for key: String) -> Int {
+        RequestBodyByteBudget.cap(for: key, customBase: customBaseURL != nil)
+    }
+
+    private func budgetCategory(_ context: String) -> String {
+        if context == "generateImage" { return "|image" }
+        if context == "rawPassthrough" { return "|raw" }
+        return "|chat"
+    }
 
     /// [T-copilot-per-request-headers] Headers that depend on the REQUEST, not
     /// the provider — given the outgoing body so they can be derived from it.
@@ -770,13 +805,10 @@ final class OpenAIProvider: LLMProvider {
     /// conversation, iSH rootfs included) — and the crash happens precisely when
     /// a long conversation has already eaten most of it.
     ///
-    /// Note this is a backstop against process death, not a context-window
-    /// policy: the model will reject anything this large long before memory does.
-    /// No legitimate text request comes close (200k tokens of text is under 1MB);
-    /// reaching 32MB means something pathological is in the history, in practice
-    /// inlined base64 images, which the token estimator badly under-counts and
-    /// which are exactly what pushed the reported crash over the edge.
-    private static let maxRequestBodyBytes = 32 * 1024 * 1024
+    /// This is a memory backstop, not the provider's byte policy. The host cap
+    /// (`RequestBodyByteBudget`) is usually far lower — 768 KB for a relay
+    /// behind nginx — and is enforced by trimming the serialized shape first.
+    private static let maxRequestBodyBytes = 8 * 1024 * 1024
 
     /// Ceiling for the DEBUG-only on-wire body capture, which copies the whole
     /// serialized body into a String. Well below the request ceiling because this
@@ -849,11 +881,29 @@ final class OpenAIProvider: LLMProvider {
 
     /// Reject a body that would abort the process during serialization.
     ///
-    /// Throws a recoverable `LLMError.providerError` so the agent loop surfaces a
-    /// readable message (and can fall back / let the user compact) instead of the
-    /// app disappearing mid-stream.
-    private func guardRequestBodySize(_ body: [String: Any], context: String) throws {
-        let estimated = Self.estimateSerializedSize(body)
+    /// Throws a recoverable `LLMError.requestTooLarge` so the agent loop trims
+    /// and retries instead of the app aborting mid-serialization.
+    private func guardRequestBodySize(_ body: inout [String: Any], context: String) throws {
+        var estimated = Self.estimateSerializedSize(body)
+        let budgetKey = requestBodyBudgetKey + budgetCategory(context)
+        lastRequestBudgetKey = budgetKey
+        lastRequestBytes = estimated
+        let providerCap = requestBodyCap(for: budgetKey)
+
+        // A model's context window is not the front door's byte limit. Trim old
+        // payload BEFORE serialization, then let the request proceed. This is
+        // the only layer that can shrink both text and tool arguments without
+        // mutating the visible transcript.
+        if estimated > providerCap {
+            let before = estimated
+            trimRequestBody(&body, target: providerCap)
+            estimated = Self.estimateSerializedSize(body)
+            lastRequestBytes = estimated
+            logger.warning("[BodyBudget] \(context) key=\(budgetKey) trimmed \(before)→\(estimated) bytes, cap=\(providerCap)")
+        }
+
+        // Memory ceiling remains a hard stop: unlike a provider byte cap, an
+        // allocation failure aborts the process instead of throwing.
         if estimated >= Self.maxRequestBodyBytes {
             let estimatedMB = estimated / (1024 * 1024)
             let limitMB = Self.maxRequestBodyBytes / (1024 * 1024)
@@ -862,30 +912,20 @@ final class OpenAIProvider: LLMProvider {
                 + "refusing to serialize (would risk an out-of-memory abort). "
                 + "Conversation likely contains large inlined attachments."
             )
-            throw LLMError.providerError(
-                message: String(
-                    format: AppLocalized("Request too large (about %1$d MB, limit %2$d MB). Start a new conversation or remove large images/attachments, then try again."),
-                    estimatedMB, limitMB
-                )
-            )
+            throw LLMError.requestTooLarge(estimatedBytes: estimated, limitBytes: Self.maxRequestBodyBytes)
         }
 
-        // [T-ios-openai-body-oom] Second gate: dynamic headroom. The fixed
-        // ceiling above assumes the process still has ~100MB to spare, but the
-        // crash population is exactly the sessions that have already eaten most
-        // of the footprint budget — TestFlight BJhH4xxkZcrKGOmwgHZ3Ez (1.13(14))
-        // aborted in __CFReallocationFailed on a body well under the ceiling.
-        // Serializing costs ~3x the body at peak (source dict + old buffer +
-        // doubled new buffer), so require that much headroom from the kernel's
-        // own accounting before committing. The 4MB floor keeps ordinary text
-        // requests exempt: near-death transient dips must not fail a request
-        // that would have cost a few hundred KB to serialize anyway.
+        if estimated > providerCap {
+            logger.error("🛑 [\(context)] request body ~\(estimated) bytes still over host cap \(providerCap) after trimming")
+            throw LLMError.requestTooLarge(estimatedBytes: estimated, limitBytes: providerCap)
+        }
+
+        // [T-ios-openai-body-oom] Dynamic headroom, see the historical note:
+        // serialization costs ~3x the body at peak, so a near-death process
+        // must not attempt it just because the body is under the fixed ceiling.
         let headroomFloor = 4 * 1024 * 1024
         if estimated > headroomFloor {
             let available = Int(os_proc_available_memory())
-            // os_proc_available_memory() returns 0 when the limit is unknown
-            // (e.g. some extension/simulator contexts) — treat that as "no
-            // information", never as "no memory".
             if available > 0, estimated * 3 > available {
                 let estimatedMB = estimated / (1024 * 1024)
                 let availableMB = available / (1024 * 1024)
@@ -904,6 +944,114 @@ final class OpenAIProvider: LLMProvider {
         }
     }
 
+    /// Mutate a serialized-shape body until it fits `target`. Keeps the newest
+    /// turns intact and progressively shortens older text / tool arguments,
+    /// then drops old images. Structure and call IDs are preserved, so tool
+    /// pairing stays valid even when argument text becomes a placeholder.
+    private func trimRequestBody(_ body: inout [String: Any], target: Int) {
+        let levels: [(tail: Int, field: Int)] = [
+            (12, 4_000), (6, 1_500), (2, 600), (0, 300),
+        ]
+        for key in ["messages", "input"] {
+            guard var items = body[key] as? [[String: Any]] else { continue }
+            for level in levels {
+                let stop = max(0, items.count - level.tail)
+                for index in 0..<stop { trimBodyItem(&items[index], fieldLimit: level.field, textType: key == "input" ? "input_text" : "text") }
+                body[key] = items
+                if Self.estimateSerializedSize(body) < target { return }
+            }
+        }
+        if var tools = body["tools"] as? [[String: Any]] {
+            for index in tools.indices {
+                if var function = tools[index]["function"] as? [String: Any] {
+                    if let description = function["description"] as? String {
+                        function["description"] = Self.shortenForBodyBudget(description, limit: 600)
+                    }
+                    if var parameters = function["parameters"] as? [String: Any],
+                       var properties = parameters["properties"] as? [String: Any] {
+                        for name in Array(properties.keys) {
+                            guard var schema = properties[name] as? [String: Any] else { continue }
+                            if let description = schema["description"] as? String {
+                                schema["description"] = Self.shortenForBodyBudget(description, limit: 300)
+                            }
+                            properties[name] = schema
+                        }
+                        parameters["properties"] = properties
+                        function["parameters"] = parameters
+                    }
+                    tools[index]["function"] = function
+                }
+            }
+            body["tools"] = tools
+            if Self.estimateSerializedSize(body) < target { return }
+        }
+        for key in ["prompt", "instructions", "system"] {
+            if let value = body[key] as? String {
+                body[key] = Self.shortenForBodyBudget(value, limit: 8_000)
+            }
+        }
+    }
+
+    private func trimBodyItem(_ item: inout [String: Any], fieldLimit: Int, textType: String) {
+        let type = item["type"] as? String
+        if type == "input_image" {
+            item = ["type": textType, "text": "[older image omitted to fit the site request-size limit]"]
+            return
+        }
+        if let content = item["content"] as? String {
+            item["content"] = Self.shortenForBodyBudget(content, limit: fieldLimit)
+        } else if var parts = item["content"] as? [[String: Any]] {
+            let before = parts.count
+            parts.removeAll { ($0["type"] as? String) == "image_url" || ($0["type"] as? String) == "input_image" }
+            for index in parts.indices {
+                if let text = parts[index]["text"] as? String {
+                    parts[index]["text"] = Self.shortenForBodyBudget(text, limit: fieldLimit)
+                }
+            }
+            if parts.count != before {
+                parts.append(["type": textType, "text": "[older image omitted to fit the site request-size limit]"])
+            }
+            item["content"] = parts
+        }
+        if let args = item["arguments"] as? String, args.utf8.count > fieldLimit {
+            item["arguments"] = #"{"_omitted":"older tool arguments trimmed to fit the site request-size limit"}"#
+        }
+        if let output = item["output"] as? String {
+            item["output"] = Self.shortenForBodyBudget(output, limit: fieldLimit)
+        }
+        // Old reasoning ciphertext is large and optional to replay; the id stays.
+        if let encrypted = item["encrypted_content"] as? String, encrypted.utf8.count > fieldLimit {
+            item.removeValue(forKey: "encrypted_content")
+        }
+        if var summary = item["summary"] as? [[String: Any]] {
+            for index in summary.indices {
+                if let text = summary[index]["text"] as? String {
+                    summary[index]["text"] = Self.shortenForBodyBudget(text, limit: fieldLimit)
+                }
+            }
+            item["summary"] = summary
+        }
+        if var calls = item["tool_calls"] as? [[String: Any]] {
+            for index in calls.indices {
+                if var function = calls[index]["function"] as? [String: Any],
+                   let text = function["arguments"] as? String, text.utf8.count > fieldLimit {
+                    function["arguments"] = #"{"_omitted":"older tool arguments trimmed to fit the site request-size limit"}"#
+                    calls[index]["function"] = function
+                }
+            }
+            item["tool_calls"] = calls
+        }
+        if let text = item["text"] as? String {
+            item["text"] = Self.shortenForBodyBudget(text, limit: fieldLimit)
+        }
+    }
+
+    private static func shortenForBodyBudget(_ text: String, limit: Int) -> String {
+        guard text.utf8.count > limit else { return text }
+        let prefix = String(decoding: text.utf8.prefix(limit), as: UTF8.self)
+        return prefix + "\n…[trimmed to fit the site request-size limit]"
+    }
+
     // MARK: - Streaming for Agent (tool use)
 
     /// Build and execute a streaming request, returning raw SSE lines for the agent provider to parse.
@@ -911,6 +1059,7 @@ final class OpenAIProvider: LLMProvider {
         body: [String: Any],
         isResponsesAPI: Bool
     ) async throws -> (AsyncThrowingStream<String, Error>, Int) {
+        var body = body
         let url: URL
         var request: URLRequest
 
@@ -987,7 +1136,7 @@ final class OpenAIProvider: LLMProvider {
         // [T-ios-openai-body-oom] Must run BEFORE serializing: an out-of-memory
         // inside JSONSerialization aborts the process and cannot be caught. This
         // is the agent loop's request path, where the body grows with every turn.
-        try guardRequestBodySize(body, context: "streamRaw")
+        try guardRequestBodySize(&body, context: "streamRaw")
 
         // Use .sortedKeys so every request with the same body produces byte-identical
         // JSON, letting DeepSeek's prefix-based disk cache match from the 0th token.
@@ -1187,7 +1336,7 @@ final class OpenAIProvider: LLMProvider {
         }
 
         // [T-ios-openai-body-oom] See streamRaw — carries the conversation too.
-        try guardRequestBodySize(body, context: "chatCompletions")
+        try guardRequestBodySize(&body, context: "chatCompletions")
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
 
@@ -1320,7 +1469,7 @@ final class OpenAIProvider: LLMProvider {
         }
 
         // [T-ios-openai-body-oom] See streamRaw — carries the conversation too.
-        try guardRequestBodySize(body, context: "responsesAPI")
+        try guardRequestBodySize(&body, context: "responsesAPI")
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
 
@@ -1659,11 +1808,11 @@ final class OpenAIProvider: LLMProvider {
         // User headers LAST — replace semantics over all defaults.
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
 
-        if let bodyObject, method.uppercased() != "GET" {
+        if var bodyObject, method.uppercased() != "GET" {
             // [T-ios-openai-body-oom] Passthrough bodies are caller-supplied and
             // can carry conversation-scale payloads — same abort risk as the
             // three chat builders, same guard.
-            try guardRequestBodySize(bodyObject, context: "rawPassthrough")
+            try guardRequestBodySize(&bodyObject, context: "rawPassthrough")
             request.httpBody = try JSONSerialization.data(withJSONObject: bodyObject, options: [.sortedKeys])
         }
 
@@ -1762,7 +1911,7 @@ final class OpenAIProvider: LLMProvider {
         // [T-ios-openai-body-oom] Image edit/gen bodies can inline multi-MB
         // base64 source images via imageExtraBody. Guard once up front — the
         // loop below only toggles the tiny response_format key between rounds.
-        try guardRequestBodySize(body, context: "generateImage")
+        try guardRequestBodySize(&body, context: "generateImage")
 
         // Try b64_json first; if the provider rejects it, retry without response_format
         var triedWithoutFormat = userSetResponseFormat
@@ -2231,11 +2380,36 @@ final class OpenAIProvider: LLMProvider {
     }
 
     func mapHTTPError(statusCode: Int, body: String) -> LLMError {
-        if statusCode == 401 || statusCode == 403 { return .invalidAPIKey(detail: "HTTP \(statusCode): \(String(body.prefix(200)))") }
+        if statusCode == 401 { return .invalidAPIKey(detail: "HTTP 401: \(String(body.prefix(200)))") }
+        if statusCode == 403 {
+            // 403 is used both for key permissions and for a blocked egress IP.
+            // Keep the HTTP cause so MultiKey can try another key WITHOUT
+            // parking this one for five minutes.
+            return .providerError(message: "[403] access denied: \(body.prefix(200))")
+        }
         if statusCode == 429 { return .rateLimited }
+        if statusCode == 413 {
+            let key = lastRequestBudgetKey.isEmpty ? requestBodyBudgetKey + "|chat" : lastRequestBudgetKey
+            let learned = RequestBodyByteBudget.noteRejected(key: key, attemptedBytes: lastRequestBytes > 0 ? lastRequestBytes : nil)
+            logger.warning("[BodyBudget] HTTP 413 host=\(key) attempted=\(lastRequestBytes) → learned cap=\(learned)")
+            return .requestTooLarge(estimatedBytes: lastRequestBytes > 0 ? lastRequestBytes : nil,
+                                    limitBytes: learned,
+                                    detail: body.isEmpty ? "HTTP 413" : String(body.prefix(160)))
+        }
+
+        // A relay can answer 5xx when the MODEL has no channel in the account's
+        // group. Retrying the same deployment is pointless; let the group
+        // advance immediately instead of spending the 2/5 s capacity ladder.
+        let lowerBody = body.lowercased()
+        if [500, 502, 503].contains(statusCode),
+           lowerBody.contains("model_not_found") || lowerBody.contains("no available channel")
+            || lowerBody.contains("无可用渠道") {
+            return .providerError(message: "[\(statusCode)] model has no available channel: \(body.prefix(300))")
+        }
 
         // Transient server errors: retry same model, do not trigger group fallback.
-        let transientStatusCodes: Set<Int> = [500, 502, 503, 504, 529]
+        // 524 is Cloudflare's origin timeout (the model was still generating).
+        let transientStatusCodes: Set<Int> = [408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]
         if transientStatusCodes.contains(statusCode) {
             return .transientError(message: "HTTP \(statusCode): \(body.prefix(200))", statusCode: statusCode)
         }

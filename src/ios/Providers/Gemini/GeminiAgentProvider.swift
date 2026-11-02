@@ -23,7 +23,13 @@ final class GeminiAgentProvider: AgentProvider {
         maxTokens: Int,
         thinkingLevel: ThinkingLevel
     ) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
-        let geminiContents = convertMessages(messages)
+        let bodyCap = RequestBodyByteBudget.cap(for: provider.requestBodyBudgetKey + "|chat",
+                                                customBase: provider.requestBodyIsCustom)
+        let requestMessages = AIChatViewModel.byteBudgetedMessages(
+            messages, cap: bodyCap, systemPrompt: systemPrompt, tools: tools)
+        provider.requestBytesAtDispatch = AIChatViewModel.estimateRequestBytes(
+            requestMessages, systemPrompt: systemPrompt, tools: tools)
+        let geminiContents = convertMessages(requestMessages)
         let geminiTools = convertTools(tools)
 
         let stream: AsyncThrowingStream<GeminiStreamEvent, Error>

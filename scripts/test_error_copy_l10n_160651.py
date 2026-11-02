@@ -37,6 +37,9 @@ NEEDED = {
     "Request was cancelled": "请求已取消",
     "Unknown error: %@": "未知错误：%@",
     "no details": "无详细信息",
+    "Request too large": "请求体太大",
+    "[413] Request body is too large (%@, site limit %@). Old tool output is trimmed and retried automatically; if it keeps happening, start a new conversation.":
+        "请求体太大（%@，站点上限 %@）。旧工具输出会自动裁掉并重试；反复出现就新建会话。",
 }
 
 
@@ -66,7 +69,7 @@ class ErrorCopyLocalized(unittest.TestCase):
 
     def test_each_case_uses_app_localized(self):
         body = ERROR[ERROR.index('var errorDescription: String?'):ERROR.index('var isNetworkError')]
-        self.assertEqual(body.count('AppLocalized('), 10)
+        self.assertEqual(body.count('AppLocalized('), 13)
 
     def test_values_are_interpolated_not_dropped(self):
         # The provider's own text (ids, quota numbers, http codes) must survive.

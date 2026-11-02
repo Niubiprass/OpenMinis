@@ -29,37 +29,22 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     // the size the image actually occupies in the request body — not in raw
     // decoded bytes.
     //
-    // The original comment here reasoned that Anthropic's 30 MB limit applies
-    // to decoded image bytes, so budgeting in raw bytes was equivalent. That
-    // is true of Anthropic's own per-image content rule, but it is NOT the
-    // constraint that was actually breaking requests: gateways in front of
-    // several providers (OpenAI and Anthropic both observed) enforce a 32 MB
-    // limit on the HTTP REQUEST BODY, and images travel that body base64
-    // encoded, which inflates them by 4/3. A 25 MB raw budget therefore put
-    // ~33.3 MB on the wire before a single byte of text history or tool
-    // schema — over the cap on its own, which is exactly the
-    // "request too large (~32 MB, limit 32 MB)" failure users hit.
+    // Anthropic's own per-image rule counts decoded bytes, but that is not the
+    // constraint observed in the field: relays behind nginx reject the HTTP
+    // REQUEST BODY at ~1 MB (`client_max_body_size 1m`), long before any model
+    // context limit. Images travel base64-inlined, inflating raw bytes by 4/3.
     //
-    // Budgeting in base64 bytes makes the number mean what it says: the
-    // ceiling is what we are about to send. Raw-byte sizes are converted
-    // with `estimatedBase64Length` at every comparison instead of the
-    // constants being scaled down, so there is no rounding drift and the
-    // headroom below stays exact rather than approximate.
+    // The old 25/32 MB budgets were sized for a 32 MB gateway and never helped
+    // a 1 MB relay. Current values:
     //
-    // Other providers have similar but undocumented caps. We enforce a
-    // tighter, pre-encoding budget so the request never reaches the wire
-    // too big:
+    //   - Per image: 640 KB on the wire. The compressor ladder shrinks larger
+    //     photos until they fit.
+    //   - Per message: 768 KB cumulative across inlined images.
+    //   - Per request: 768 KB. Older images are elided to text placeholders.
     //
-    //   - Per image: 5 MB after JPEG re-encode. The Anthropic SDK's own
-    //     per-image soft hint; well under the 30 MB request cap and
-    //     ensures a single huge photo can't gobble the whole budget.
-    //     Anything bigger runs the compressor ladder (smaller max edge +
-    //     lower JPEG quality) until it fits or until we've shrunk it
-    //     past readability.
-    //   - Per message: 25 MB cumulative across all inlined images.
-    //     Leaves ~5 MB headroom under Anthropic's 30 MB request cap for
-    //     other parts of the payload (tool results, prior message
-    //     attachments echoed back, etc.).
+    // These are BASE64-byte budgets (`estimatedBase64Length`), the unit the
+    // request body actually occupies. The provider layer additionally trims
+    // old text/tool payload to a per-HOST cap learned from real 413s.
     //   - Above the message cap, additional images are dropped to a text
     //     placeholder (same fallback the count cap already uses).
 
@@ -78,7 +63,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// on every request-budget pass, for a number this returns exactly.
     ///
     /// Mirrors Android's `ImageBudget.estimatedBase64Length`.
-    static func estimatedBase64Length(_ rawBytes: Int) -> Int {
+    nonisolated static func estimatedBase64Length(_ rawBytes: Int) -> Int {
         guard rawBytes > 0 else { return 0 }
         return ((rawBytes + 2) / 3) * 4
     }
@@ -94,21 +79,19 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// boundary through here.
     ///
     /// Mirrors Android's `ImageBudget.rawBytesForBase64Budget`.
-    static func rawBytesForBase64Budget(_ base64Budget: Int) -> Int {
+    nonisolated static func rawBytesForBase64Budget(_ base64Budget: Int) -> Int {
         guard base64Budget > 0 else { return 0 }
         return (base64Budget / 4) * 3
     }
 
-    /// Hard ceiling per single image after compression, measured in BASE64
-    /// bytes (see `estimatedBase64Length`). 5 MB of wire payload is ~3.75 MB
-    /// of decoded image, still comfortably above what the compressor ladder
-    /// targets for a readable photo.
-    static let kPerImageMaxBytes = 5 * 1024 * 1024
+    /// Per-image wire budget. 640 KB leaves headroom under the 768 KB body
+    /// allowance most nginx relays actually enforce (`client_max_body_size 1m`),
+    /// while the compressor ladder still keeps screenshots readable.
+    static let kPerImageMaxBytes = 640 * 1024
 
     /// Hard ceiling across all inlined images in one user message.
-    /// 5 MB under Anthropic's 30 MB request cap, leaving headroom for
-    /// tool results and prior-turn attachments still in context.
-    static let kMessageImageMaxBytes = 25 * 1024 * 1024
+    /// Matches the request allowance so one send cannot spend it all on images.
+    static let kMessageImageMaxBytes = 768 * 1024
 
     /// Hard ceiling on cumulative inline-image bytes across the FULL
     /// request body (all messages, all tool results). When a long
@@ -117,7 +100,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// 200 + empty SSE + `finish_reason=stop` and the client treats the
     /// empty turn as completion (T-request-imgsize). Eldest images are
     /// elided to text placeholders here.
-    static let kRequestImageMaxBytes = 25 * 1024 * 1024
+    static let kRequestImageMaxBytes = 768 * 1024
 
     /// Hard ceiling on agent loop iterations within a single user turn.
     /// Backstop against runaway tool-call cycles that slip past
@@ -1148,13 +1131,17 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// Not @Published — read synchronously in the isProcessing handler.
     var turnWasSilentProgrammatic = false
     /// Transient banner / toast message for in-loop notices (e.g. "older
-    /// N image(s) elided from request to fit 25MB budget"). Set by the
+    /// N image(s) elided from request to fit the request-size budget"). Set by the
     /// request-level image budget pass when it had to drop history images;
     /// UI clears it after a short display window.
     @Published var transientNotice: String?
 
     @Published var autoRetryAttempt: Int = 0
     @Published var autoRetryCountdown: Int = 0
+    /// [T-network-line-copy] Drives the retry capsule's wording. A transport
+    /// failure should tell the user to change network, not imply the model died.
+    @Published var autoRetryIsNetwork = false
+    @Published var autoRetryNetworkHint = ""
     /// [T-ios-empty-after-toolresult-reminder] Guards the one-shot
     /// `<system-reminder>` retry when the server returns an empty response
     /// right after a tool result. Set the first time we inject the reminder in
@@ -2585,6 +2572,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             + "Heredocs (cat << EOF, python3 << 'EOF') work reliably, including when the command ends right at the terminator. "
             + "When you hit escaping or parsing errors with long inline content, write the content to a file first (file_write), then pass or execute the file (e.g. `python3 /tmp/script.py`).\n"
             + "- file_write and file_edit are atomic, preserve formatting, and make it easy to fix errors or update content later.\n"
+            + "- For a file larger than roughly 16KB, do NOT put the whole body in one tool argument: write the first chunk, append the rest in several calls, or write a small generator script. A giant argument is generated before the write starts and often dies at a proxy's 524 timeout.\n"
             + "- shell_execute is for RUNNING commands, not for writing files.\n"
             + "- shell_execute supports multi-line commands directly — quoting and special characters are handled automatically. "
             + "However, commands MUST NOT exceed 1000 characters. If longer, write a script file with file_write first, then run it.\n"
@@ -3171,6 +3159,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         }
         autoRetryAttempt = 0
         autoRetryCountdown = 0
+        autoRetryIsNetwork = false
+        autoRetryNetworkHint = ""
         canResume = false
         committedBlockCount = 0
         prevCommittedBlockCount = 0
@@ -3663,6 +3653,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
         autoRetryAttempt = 0
         autoRetryCountdown = 0
+        autoRetryIsNetwork = false
+        autoRetryNetworkHint = ""
         canResume = false
         userDidCancel = false
         delegationResultsMuted = false
@@ -4971,6 +4963,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // the new model is exactly the ghost the user reported seeing.
             autoRetryAttempt = 0
             autoRetryCountdown = 0
+            autoRetryIsNetwork = false
+            autoRetryNetworkHint = ""
             isProcessing = false
         }
 
@@ -5072,6 +5066,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         currentTask = nil
         autoRetryAttempt = 0
         autoRetryCountdown = 0
+        autoRetryIsNetwork = false
+        autoRetryNetworkHint = ""
         if let sid = sessionId {
             logger.info("🔥 cache keep-alive: cancelling on user cancel — session=\(sid.prefix(8))")
             CacheKeepAliveManager.shared.cancelKeepAlive(sessionId: sid)

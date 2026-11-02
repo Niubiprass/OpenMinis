@@ -43,6 +43,7 @@ enum SessionAgentWorkflow {
         UserDefaults.standard.bool(forKey: pluginEngineerKeyPrefix + sessionId)
     }
 
+    @MainActor
     static func setEnabled(_ enabled: Bool, sessionId: String) {
         UserDefaults.standard.set(enabled, forKey: pluginEngineerKeyPrefix + sessionId)
 
@@ -212,7 +213,7 @@ enum SessionAgentWorkflow {
     private static func classify(_ command: String) -> Gate? {
         var found: Gate?
         for statement in shellStatements(command) {
-            var words = statement
+            let words = statement
             var i = 0
             while i < words.count {
                 let name = (words[i] as NSString).lastPathComponent

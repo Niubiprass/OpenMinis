@@ -277,11 +277,11 @@ extension AIChatViewModel {
             Re-issue this write in smaller pieces: write the first part, then append the rest \
             with follow-up calls, rather than repeating the same oversized call.
             """
-            if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
-                messages[msgIdx].blocks[blockIdx].content = uiMessage
-                messages[msgIdx].blocks[blockIdx].toolStatus = .failed(message: uiMessage)
+            if msgIdx < self.messages.count, blockIdx < self.messages[msgIdx].blocks.count {
+                self.messages[msgIdx].blocks[blockIdx].content = uiMessage
+                self.messages[msgIdx].blocks[blockIdx].toolStatus = .failed(message: uiMessage)
             }
-            toolLoopDetector.record(
+            self.toolLoopDetector.record(
                 toolName: tu.name, params: tu.args,
                 result: nil, errorMessage: modelMessage, toolCallId: tu.id
             )
@@ -411,11 +411,11 @@ extension AIChatViewModel {
         let workflowBlockedOutcome: (String) async -> ToolExecOutcome = { message in
             ctLogger.info("[WorkflowGate] BLOCKED tool=\(tu.name) id=\(tu.id)")
             let uiMessage = "等待批准"
-            if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
-                messages[msgIdx].blocks[blockIdx].content = uiMessage
-                messages[msgIdx].blocks[blockIdx].toolStatus = .failed(message: uiMessage)
+            if msgIdx < self.messages.count, blockIdx < self.messages[msgIdx].blocks.count {
+                self.messages[msgIdx].blocks[blockIdx].content = uiMessage
+                self.messages[msgIdx].blocks[blockIdx].toolStatus = .failed(message: uiMessage)
             }
-            toolLoopDetector.record(
+            self.toolLoopDetector.record(
                 toolName: tu.name, params: tu.args,
                 result: nil, errorMessage: message, toolCallId: tu.id
             )

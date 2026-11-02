@@ -132,6 +132,13 @@ struct ReasoningEcho: @unchecked Sendable {
     /// keep compiling; an echo with no recorded upstream is replayed on the
     /// model-id match alone, i.e. the pre-#368 behaviour.
     var upstreamIdentity: String? = nil
+    /// [T-responses-resource-identity] The credential resource that minted the
+    /// item IDs (hashed API key, or OAuth account). OpenAI scopes stored item
+    /// ids to the account/project resource; rotating a multi-key ring across
+    /// turns otherwise returns 400 "item was created under a different
+    /// resource". nil on history written before this field — treated as unsafe
+    /// and replayed id-less.
+    var resourceIdentity: String? = nil
     /// Reasoning items captured in original emission order — must be
     /// re-inserted into the next request's input array in the same order
     /// (Responses API rejects out-of-order reasoning items).
@@ -163,6 +170,7 @@ extension ReasoningEcho {
         let providerKind: String
         let modelId: String
         let upstreamIdentity: String?
+        let resourceIdentity: String?
         let items: [Item]
     }
 
@@ -172,6 +180,7 @@ extension ReasoningEcho {
             providerKind: providerKind,
             modelId: modelId,
             upstreamIdentity: upstreamIdentity,
+            resourceIdentity: resourceIdentity,
             items: items.compactMap { item in
                 if case .openaiReasoning(let id, _, let summary) = item {
                     return Wire.Item(id: id, summary: summary)
@@ -194,6 +203,7 @@ extension ReasoningEcho {
             providerKind: wire.providerKind,
             modelId: wire.modelId,
             upstreamIdentity: wire.upstreamIdentity,
+            resourceIdentity: wire.resourceIdentity,
             items: wire.items.map { .openaiReasoning(id: $0.id, encryptedContent: nil, summary: $0.summary) }
         )
     }
@@ -374,8 +384,12 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
         // includes those retry slots so a three-key ring cannot exhaust the
         // loop before the later keys are reached.
         let priorityRetries = manager.strategy(for: instanceId) == .priority ? 2 : 0
+        // One extra slot for a 524 same-key retry. Gateway timeouts are usually
+        // the origin being slow, so rotating immediately only restarts the same
+        // long generation on another credential.
+        let gatewayRetrySlots = 1
         let budget = active
-            ? (keyCount + 1) + keyCount * priorityRetries
+            ? (keyCount + 1) + keyCount * (priorityRetries + gatewayRetrySlots)
             : 1
         let initialExclusions = takeResumeExclusions()
         return AsyncThrowingStream { continuation in
@@ -385,6 +399,7 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                 var lastError: Error?
                 var retryLease: ProviderKeyLease?
                 var sameKeyRetries = 0
+                var gatewayRetries = 0
                 for _ in 0..<budget {
                     do { try Task.checkCancellation() }
                     catch { continuation.finish(throwing: error); return }
@@ -399,6 +414,7 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                         lease = next
                         attempted.insert(lease.id)
                         sameKeyRetries = 0
+                        gatewayRetries = 0
                         isSameKeyRetry = false
                     }
                     if !isSameKeyRetry {
@@ -472,6 +488,13 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                             // New startedAt so a success after a failed retry
                             // clears the parked/error state instead of being
                             // ignored as older than the failure.
+                            retryLease = ProviderKeyLease(id: lease.id, key: lease.key,
+                                                          startedAt: Date())
+                            await Task.yield()
+                            continue
+                        }
+                        if kind == .gatewayTimeout, gatewayRetries < gatewayRetrySlots {
+                            gatewayRetries += 1
                             retryLease = ProviderKeyLease(id: lease.id, key: lease.key,
                                                           startedAt: Date())
                             await Task.yield()

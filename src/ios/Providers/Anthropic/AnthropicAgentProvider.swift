@@ -56,10 +56,19 @@ final class AnthropicAgentProvider: AgentProvider {
         thinkingLevel: ThinkingLevel
     ) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
         pendingToolResultImages.removeAll()
+        let bodyCap = RequestBodyByteBudget.cap(for: provider.requestBodyBudgetKey + "|chat",
+                                                customBase: provider.requestBodyIsCustom)
+        let requestMessages = AIChatViewModel.byteBudgetedMessages(
+            messages, cap: bodyCap, systemPrompt: systemPrompt, tools: tools)
+        provider.requestBytesAtDispatch = AIChatViewModel.estimateRequestBytes(
+            requestMessages, systemPrompt: systemPrompt, tools: tools)
+        if provider.requestBytesAtDispatch > bodyCap {
+            logger.warning("[BodyBudget] anthropic trimmed request to \(bodyCap) bytes")
+        }
         #if DEBUG
-        AgentRequestTrace.shared.step("anthropic.convertMessages", detail: "input messages=\(messages.count)")
+        AgentRequestTrace.shared.step("anthropic.convertMessages", detail: "input messages=\(requestMessages.count)")
         #endif
-        let anthropicMessages = convertMessages(messages)
+        let anthropicMessages = convertMessages(requestMessages)
         let anthropicTools = convertTools(tools)
         let cachedMessages = messagesWithCacheBreakpoints(anthropicMessages)
 
@@ -84,7 +93,7 @@ final class AnthropicAgentProvider: AgentProvider {
         // [T-agent-concurrency-probe] One line per outgoing Anthropic stream, so
         // the interleaving of concurrent sessions is visible in a device log
         // instead of being inferred from thread ids after a crash.
-        logger.info("[AgentConcurrency] stream START token=\(requestToken.prefix(8)) model=\(self.model.id) msgs=\(messages.count) images=\(self.pendingToolResultImages.count)")
+        logger.info("[AgentConcurrency] stream START token=\(requestToken.prefix(8)) model=\(self.model.id) msgs=\(requestMessages.count) images=\(self.pendingToolResultImages.count)")
 
         // Set thinking config for RequestBodyPatcher injection (SDK doesn't support thinking natively).
         //
@@ -169,7 +178,7 @@ final class AnthropicAgentProvider: AgentProvider {
         let injectPlaceholder       = echoReasoning
         if echoReasoning,
            !provider.isOfficialAnthropicEndpoint,
-           messages.contains(where: { $0.role == .assistant }) {
+           requestMessages.contains(where: { $0.role == .assistant }) {
             // Walk messages preserving role-run boundaries so the produced
             // history array aligns with `mergeConsecutiveSameRole` further
             // downstream — reasoning from N adjacent assistant messages is
@@ -178,7 +187,7 @@ final class AnthropicAgentProvider: AgentProvider {
             // walk past entries that no longer exist post-merge.
             var history: [String?] = []
             var lastRole: AgentMessage.Role?
-            for msg in messages {
+            for msg in requestMessages {
                 if msg.role == .assistant {
                     if lastRole == .assistant {
                         let prev = history.last ?? nil

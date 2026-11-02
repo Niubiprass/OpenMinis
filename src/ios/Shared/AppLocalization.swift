@@ -192,6 +192,7 @@ enum FriendlyErrorText {
         case 403: return AppLocalized("被拒绝访问")
         case 404: return AppLocalized("接口地址不存在")
         case 408: return AppLocalized("请求超时")
+        case 413: return AppLocalized("请求体超过站点限制")
         case 429: return AppLocalized("请求太频繁")
         case 500: return AppLocalized("对方服务器内部错误")
         case 502: return AppLocalized("网关错误")
@@ -338,7 +339,12 @@ enum ProviderErrorDigest {
         }
         if status == 403 || lower.contains("permission denied") || lower.contains("forbidden") {
             return Display(title: AppLocalized("供应商拒绝访问（HTTP 403）"),
-                           detail: AppLocalized("Key 没有这个模型或分组的权限。"), code: code)
+                           detail: AppLocalized("可能是 Key 没有权限，也可能是这条网络的出口 IP 被拦截；换网或换 Key 再试。"), code: code)
+        }
+        if lower.contains("no available channel") || lower.contains("无可用渠道")
+            || lower.contains("model_not_found") {
+            return Display(title: AppLocalized("这个分组暂时没有可用渠道"),
+                           detail: AppLocalized("不是 Key 坏了；换一个模型，或让供应商补渠道。"), code: code)
         }
         if status == 404 || (lower.contains("model") && (lower.contains("not found")
             || lower.contains("does not exist") || lower.contains("unknown model")
@@ -346,7 +352,16 @@ enum ProviderErrorDigest {
             return Display(title: AppLocalized("供应商没有这个模型"),
                            detail: AppLocalized("检查模型名或接口地址。"), code: code)
         }
+        if status == 413 && lower.contains("image") {
+            return Display(title: AppLocalized("图片超过这个站点的请求上限"),
+                           detail: AppLocalized("不是模型或 Key 坏了；旧图会自动省略，或先少发几张。"), code: code)
+        }
+        if status == 413 && (lower.contains("too large") || lower.contains("entity too large")) {
+            return Display(title: AppLocalized("请求体超过这个站点的限制"),
+                           detail: AppLocalized("不是模型或 Key 坏了；旧工具输出会自动裁掉后重试。反复出现就新建会话。"), code: code)
+        }
         if status == 429 || lower.contains("rate limit") || lower.contains("too many requests")
+            || lower.contains("concurrency limit") || lower.contains("requests-per-minute")
             || lower.contains("429") {
             return Display(title: AppLocalized("请求太频繁，被供应商限流"),
                            detail: AppLocalized("等几十秒再试。"), code: code)
@@ -357,9 +372,10 @@ enum ProviderErrorDigest {
             return Display(title: String(format: AppLocalized("供应商服务暂时不可用（HTTP %@）"), codeText),
                            detail: AppLocalized("稍后再试。"), code: code)
         }
-        if status == 408 || lower.contains("timeout") || lower.contains("timed out") {
-            return Display(title: AppLocalized("请求超时或网络连接失败"),
-                           detail: AppLocalized("检查网络后重试。"), code: code)
+        if status == 408 || lower.contains("timeout") || lower.contains("timed out")
+            || lower.contains("network error") || lower.contains("网络错误") {
+            return Display(title: AppLocalized("当前网络线路失败"),
+                           detail: AppLocalized("换到 Wi‑Fi 或 4G 后会自动重试；不是模型坏了。"), code: code)
         }
         if let limit = imageLimit(in: lower) {
             return Display(title: String(format: AppLocalized("这条会话里的图片超过 %lld 张"), Int64(limit)),

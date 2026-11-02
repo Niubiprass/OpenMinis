@@ -33,8 +33,9 @@ func rawBytesForBase64Budget(_ base64Budget: Int) -> Int {
     return (base64Budget / 4) * 3
 }
 
-let kPerImageMaxBytes = 5 * 1024 * 1024
-let kRequestImageMaxBytes = 25 * 1024 * 1024
+let kPerImageMaxBytes = 640 * 1024
+let kRequestImageMaxBytes = 768 * 1024
+let relayBodyCap = 768 * 1024
 
 // MARK: - [1] The estimate is EXACT, not approximate
 
@@ -54,8 +55,8 @@ check("25 MB raw exceeds a 32 MB body cap once encoded",
       oldBudgetOnWire > 32 * 1024 * 1024)
 checkEq("…by about a third", Int((Double(oldBudgetOnWire) / Double(25 * 1024 * 1024)) * 1000), 1333)
 // Whereas budgeting in base64 keeps the wire size at the stated ceiling.
-check("25 MB base64 budget stays under a 32 MB body cap",
-      kRequestImageMaxBytes <= 32 * 1024 * 1024)
+check("current image budget fits the common 768 KB relay cap",
+      kRequestImageMaxBytes <= relayBodyCap)
 
 print("\n[3] rawBytesForBase64Budget is a safe inverse (never over-shoots)")
 // The compressor works in raw bytes, so the value we hand it must encode to
@@ -66,8 +67,8 @@ for budget in [4, 8, 100, 1024, 4096, kPerImageMaxBytes, kRequestImageMaxBytes] 
     check("budget \(budget): raw \(raw) encodes to <= budget",
           estimatedBase64Length(raw) <= budget)
 }
-checkEq("5 MB base64 budget -> 3.75 MB raw target",
-        rawBytesForBase64Budget(kPerImageMaxBytes), 3 * 1024 * 1024 + 768 * 1024)
+checkEq("per-image base64 budget has a safe raw target",
+        rawBytesForBase64Budget(kPerImageMaxBytes), (kPerImageMaxBytes / 4) * 3)
 
 print("\n[4] Degenerate inputs don't produce garbage")
 checkEq("zero raw", estimatedBase64Length(0), 0)

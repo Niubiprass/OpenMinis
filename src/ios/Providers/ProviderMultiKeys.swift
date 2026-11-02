@@ -11,11 +11,13 @@ struct ProviderKeyLease: Sendable {
 }
 
 enum MultiKeyFailureKind: Sendable {
-    case credential, quota, rateLimit, transient, other
+    case credential, forbidden, quota, rateLimit, transient, gatewayTimeout, requestTooLarge, network, other
 
     var mayTryAnotherKey: Bool {
         switch self {
-        case .other: return false
+        // A transport failure says nothing about the credential. Retrying the
+        // same key after the path recovers avoids shuffling keys pointlessly.
+        case .network, .other, .requestTooLarge: return false
         default: return true
         }
     }
@@ -24,9 +26,13 @@ enum MultiKeyFailureKind: Sendable {
     fileprivate var summary: String {
         switch self {
         case .credential: return AppLocalized("Invalid API key")
+        case .forbidden: return AppLocalized("Access denied")
         case .quota: return AppLocalized("Insufficient balance or quota")
         case .rateLimit: return AppLocalized("Rate limited")
         case .transient: return AppLocalized("Service temporarily unavailable")
+        case .gatewayTimeout: return AppLocalized("Gateway timed out")
+        case .requestTooLarge: return AppLocalized("Request too large")
+        case .network: return AppLocalized("Network line failed")
         case .other: return AppLocalized("Request failed")
         }
     }
@@ -63,7 +69,16 @@ enum MultiKeyFailureKind: Sendable {
             switch llm {
             case .invalidAPIKey: return .credential
             case .rateLimited: return .rateLimit
-            case .networkError, .transientError: return .transient
+            case .networkError: return .network
+            case .requestTooLarge: return .requestTooLarge
+            case .transientError(_, let statusCode):
+                // Connection-level 408 is a line timeout; a 5xx came from the
+                // origin. Cloudflare 520–523 mean the origin is unreachable,
+                // so changing key does not help; 524 is a slow gateway.
+                if statusCode == 408 || statusCode == nil { return .network }
+                if let code = statusCode, (520...523).contains(code) { return .other }
+                if statusCode == 524 { return .gatewayTimeout }
+                return .transient
             case .providerError(let message): return classifyProviderMessage(message)
             case .unknown(let e):
                 if let e { return classifyUncancelled(e, depth: depth + 1) }
@@ -72,7 +87,7 @@ enum MultiKeyFailureKind: Sendable {
             }
         }
         let ns = error as NSError
-        if ns.domain == NSURLErrorDomain { return .transient }
+        if ns.domain == NSURLErrorDomain { return .network }
         if let e = ns.userInfo[NSUnderlyingErrorKey] as? Error {
             return classifyUncancelled(e, depth: depth + 1)
         }
@@ -81,6 +96,12 @@ enum MultiKeyFailureKind: Sendable {
 
     private static func classifyProviderMessage(_ text: String) -> MultiKeyFailureKind {
         let message = text.lowercased()
+        // A 5xx can still mean "this deployment has no channel". That is a
+        // routing/config fact, not capacity: retrying or changing key is useless.
+        if message.contains("model_not_found") || message.contains("no available channel")
+            || message.contains("无可用渠道") {
+            return .other
+        }
         // Only a leading HTTP status / [status] is evidence, not numbers in a body.
         let pattern = #"(?i)^\s*(?:HTTP\s*(?:\[\s*(\d{3})\s*\]|(\d{3}))|\[\s*(\d{3})\s*\])(?=$|[\s:;,\.\-])"#
         if let regex = try? NSRegularExpression(pattern: pattern),
@@ -90,17 +111,22 @@ enum MultiKeyFailureKind: Sendable {
                return Int(text[range])
            }).first {
             switch code {
-            case 401, 403: return .credential
+            case 401: return .credential
+            case 403: return .forbidden
             case 402: return .quota
             case 429: return .rateLimit
-            case 408, 500...599: return .transient
+            case 413: return .requestTooLarge
+            case 520...523: return .other
+            case 524: return .gatewayTimeout
+            case 408: return .network
+            case 500...599: return .transient
             case 400: break // Some relays report exhausted credit with HTTP 400; inspect its explicit reason.
             default: break
             }
         }
         if ["context length", "context_length", "maximum context", "invalid schema",
             "invalid_schema", "content policy", "content_policy", "content_filter",
-            "model not found", "model_not_found"].contains(where: { message.contains($0) }) { return .other }
+            "model not found", "model_not_found", "no available channel", "无可用渠道"].contains(where: { message.contains($0) }) { return .other }
         if ["insufficient balance", "insufficient_balance", "insufficient quota", "insufficient_quota",
             "quota exhausted", "quota_exhausted", "quota exceeded", "quota_exceeded",
             "balance exhausted", "insufficient credits", "credit balance too low", "credits exhausted",
@@ -108,7 +134,9 @@ enum MultiKeyFailureKind: Sendable {
         if ["invalid api key", "invalid_api_key", "incorrect api key", "authentication",
             "unauthorized", "permission denied", "permission_denied", "insufficient permissions",
             "does not have permission", "access denied"].contains(where: { message.contains($0) }) { return .credential }
-        if ["rate limit", "rate_limit", "too many requests", "限流", "请求过于频繁"]
+        if ["rate limit", "rate_limit", "too many requests", "concurrency limit",
+            "concurrent request", "requests-per-minute", "requests per minute",
+            "request per minute", "限流", "请求过于频繁", "并发超限"]
             .contains(where: { message.contains($0) }) { return .rateLimit }
         return .other
     }
@@ -758,7 +786,10 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
     }
 
     func recordFailure(lease: ProviderKeyLease, kind: MultiKeyFailureKind, for instanceId: String) {
-        guard kind.mayTryAnotherKey else { return }
+        // Network failures do not rotate/park, but still need lastError and
+        // counters in the Key UI. A 413 is about the request, not the key, and
+        // is deliberately not recorded.
+        guard kind.mayTryAnotherKey || kind == .network else { return }
         if Thread.isMainThread {
             DispatchQueue.global(qos: .utility).async { self.recordFailure(lease: lease, kind: kind, for: instanceId) }
             return
@@ -768,9 +799,11 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
         func cooldown(_ failures: Int) -> TimeInterval? {
             switch kind {
             case .credential, .quota: return Self.recoveryInterval
+            case .forbidden: return nil
             case .rateLimit: return 60
             case .transient: return failures >= Self.maxConsecutiveFailures ? 30 : nil
-            case .other: return nil
+            case .gatewayTimeout: return failures >= Self.maxConsecutiveFailures ? 30 : nil
+            case .network, .requestTooLarge, .other: return nil
             }
         }
         if lease.id == "main" {

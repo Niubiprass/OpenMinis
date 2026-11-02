@@ -53,7 +53,7 @@ extension AIChatViewModel {
             // WIRE: images are base64 inlined into the request body, so the
             // budget has to count encoded bytes or it under-counts every image
             // by a third — the gap that pushed real requests past a gateway's
-            // 32 MB body limit while this planner believed it was at 25 MB.
+            // larger body limit while this planner believed it was far below it.
             //
             // Cap-clamp to kPerImageMaxBytes (also base64 bytes) — matches
             // what compressedImageDataUnderBudget would produce, since its
@@ -74,9 +74,9 @@ extension AIChatViewModel {
     /// elided image. Same shape as Android's `ImageBudget.elidedImagePlaceholder`.
     static func elidedImagePlaceholder(linuxPath: String?) -> String {
         if let p = linuxPath {
-            return "[image elided to fit 25MB request budget. Original at \(p) — re-fetch with `read_image \(p)` if you need to see it.]"
+            return "[image elided to fit the site request-size budget. Original at \(p) — re-fetch with `read_image \(p)` if you need to see it.]"
         }
-        return "[image elided to fit 25MB request budget. Original bytes no longer addressable; ask the user to re-attach if needed.]"
+        return "[image elided to fit the site request-size budget. Original bytes no longer addressable; ask the user to re-attach if needed.]"
     }
 
     /// Lazily persist `data` under a session's `attachments/spillover/<sha1>.<ext>`
@@ -194,7 +194,7 @@ extension AIChatViewModel {
         // Surface to the user via Toast (already-existing infrastructure).
         let droppedCount = plan.droppedCount
         Task { @MainActor in
-            self.transientNotice = AppLocalizedFormat("Older %lld image(s) elided from request to fit 25MB budget", droppedCount)
+            self.transientNotice = AppLocalizedFormat("Older %lld image(s) elided from request to fit the request-size budget", droppedCount)
         }
 
         return mutated
@@ -224,6 +224,90 @@ extension AIChatViewModel {
         let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
         let resized = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: newSize)) }
         return resized.jpegData(compressionQuality: quality)
+    }
+
+    // MARK: - Provider-independent request byte budget
+
+    /// Estimate the JSON wire size of an agent request without serializing it.
+    /// Used by non-OpenAI providers, whose own body builders have no size guard.
+    nonisolated static func estimateRequestBytes(
+        _ messages: [AgentMessage], systemPrompt: String?, tools: [AgentToolDefinition]
+    ) -> Int {
+        var total = 64 + (systemPrompt?.utf8.count ?? 0) + tools.count * 1_200
+        for msg in messages {
+            total += 64
+            for part in msg.parts {
+                switch part {
+                case .text(let text):
+                    total += text.utf8.count + 24
+                case .toolUse(let id, let name, let input, _):
+                    let args = (try? JSONSerialization.data(withJSONObject: input))?.count ?? 64
+                    total += id.utf8.count + name.utf8.count + args + 48
+                case .toolResult(let id, let name, let content, _, let image, _, _, _, _):
+                    total += id.utf8.count + name.utf8.count + content.utf8.count + 64
+                    if let image { total += estimatedBase64Length(image.count) }
+                case .imageData(let data, _, _):
+                    total += estimatedBase64Length(data.count) + 24
+                }
+            }
+            total += (msg.reasoningEcho?.items.count ?? 0) * 80
+        }
+        return total
+    }
+
+    /// Return a request-only copy under `cap` bytes. Keeps the newest turns
+    /// intact, then progressively shortens old text/tool payload and drops old
+    /// images. Pairing ids and message order are preserved.
+    nonisolated static func byteBudgetedMessages(
+        _ messages: [AgentMessage], cap: Int, systemPrompt: String?, tools: [AgentToolDefinition]
+    ) -> [AgentMessage] {
+        let target = max(96 * 1024, cap * 3 / 4)
+        guard estimateRequestBytes(messages, systemPrompt: systemPrompt, tools: tools) > target else {
+            return messages
+        }
+        var result = messages
+        let levels: [(tail: Int, field: Int)] = [(12, 8_000), (6, 2_000), (2, 800), (0, 400)]
+        for level in levels {
+            let stop = max(0, result.count - level.tail)
+            for index in 0..<stop {
+                result[index].reasoningEcho = nil
+                result[index].parts = result[index].parts.map {
+                    trimmedPart($0, limit: level.field)
+                }
+            }
+            if estimateRequestBytes(result, systemPrompt: systemPrompt, tools: tools) <= target { return result }
+        }
+        return result
+    }
+
+    private nonisolated static func trimmedPart(_ part: AgentContentPart, limit: Int) -> AgentContentPart {
+        switch part {
+        case .text(let text):
+            return .text(shortened(text, limit: limit))
+        case .toolUse(let id, let name, let input, let offloaded):
+            var copy = input
+            for key in Array(copy.keys) {
+                guard let string = copy[key] as? String, string.utf8.count > limit else { continue }
+                copy[key] = shortened(string, limit: limit)
+            }
+            return .toolUse(id: id, name: name, input: copy, isOffloadedArgument: offloaded)
+        case .toolResult(let id, let name, let content, let isError, _, let mime,
+                         let pageURL, let linuxPath, let readback):
+            return .toolResult(
+                id: id, name: name, content: shortened(content, limit: limit),
+                isError: isError, imageData: nil, imageMimeType: mime,
+                pageURL: pageURL, imageLinuxPath: linuxPath, isOffloadReadback: readback
+            )
+        case .imageData(_, let mime, let linuxPath):
+            let path = linuxPath ?? "the attachment path"
+            return .text("[older image omitted to fit the request-size limit; re-read \(path) if needed (\(mime))]")
+        }
+    }
+
+    private nonisolated static func shortened(_ text: String, limit: Int) -> String {
+        guard text.utf8.count > limit else { return text }
+        return String(decoding: text.utf8.prefix(limit), as: UTF8.self)
+            + "\n…[trimmed to fit the request-size limit]"
     }
 
     /// Rewrite known provider error messages into friendlier guidance. The

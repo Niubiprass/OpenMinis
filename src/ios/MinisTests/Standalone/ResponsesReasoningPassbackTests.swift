@@ -50,6 +50,7 @@ struct ReasoningEcho {
     let providerKind: String
     let modelId: String
     var upstreamIdentity: String? = nil
+    var resourceIdentity: String? = nil
     let items: [Item]
     enum Item { case openaiReasoning(id: String, encryptedContent: String?, summary: [String]) }
 }
@@ -80,7 +81,8 @@ func capResponsesId(_ id: String) -> String { String(id.prefix(64)) }
 func buildResponsesInput(
     _ messages: [Msg],
     currentModelId: String,
-    currentUpstream: String
+    currentUpstream: String,
+    currentResource: String = "resource-a"
 ) -> [[String: Any]] {
     var result: [[String: Any]] = []
     for msg in messages {
@@ -93,18 +95,21 @@ func buildResponsesInput(
                 if let recorded = echo.upstreamIdentity { return recorded == currentUpstream }
                 return echo.modelId == currentModelId
             }()
-            for item in echo.items {
-                if case .openaiReasoning(let id, let encrypted, let summary) = item {
-                    var entry: [String: Any] = [
-                        "type": "reasoning",
-                        "id": id,
-                        "summary": summary.map { ["type": "summary_text", "text": $0] },
-                    ]
-                    if sameUpstream, let encrypted, !encrypted.isEmpty {
-                        entry["encrypted_content"] = encrypted
+            let sameResource = echo.resourceIdentity != nil && echo.resourceIdentity == currentResource
+            if sameResource, sameUpstream {
+                for item in echo.items {
+                    if case .openaiReasoning(let id, let encrypted, let summary) = item {
+                        var entry: [String: Any] = [
+                            "type": "reasoning",
+                            "id": id,
+                            "summary": summary.map { ["type": "summary_text", "text": $0] },
+                        ]
+                        if let encrypted, !encrypted.isEmpty {
+                            entry["encrypted_content"] = encrypted
+                        }
+                        result.append(entry)
+                        emittedReasoningForTurn = true
                     }
-                    result.append(entry)
-                    emittedReasoningForTurn = true
                 }
             }
         }
@@ -127,7 +132,7 @@ func buildResponsesInput(
             case .toolUse(let id, let name):
                 result.append([
                     "type": "function_call", "call_id": id, "name": name, "arguments": "{}",
-                    "id": id.hasPrefix("fc_") ? id : "fc_syn_\(id.suffix(24))",
+                    "id": "fc_syn_\(id.suffix(24))",
                 ])
             case .toolResult(let id, let content):
                 result.append(["type": "function_call_output", "call_id": id, "output": content])
@@ -210,6 +215,7 @@ func toolTurn(model: String, upstream: String?, withEcho: Bool = true) -> [Msg] 
             providerKind: responsesKind,
             modelId: model,
             upstreamIdentity: upstream,
+            resourceIdentity: "resource-a",
             items: [.openaiReasoning(id: "rs_691", encryptedContent: "gAAAAAB_opaque", summary: ["Listing files"])]
         )
     }
@@ -245,10 +251,29 @@ do {
     // is undecryptable and is what a strict endpoint rejects outright.
     let cross = buildResponsesInput(toolTurn(model: "gpt-5.3", upstream: relayA),
                                     currentModelId: "gpt-5.3", currentUpstream: relayB)
-    check("a cross-upstream hop still emits the item", itemTypes(cross).contains("reasoning"))
+    check("a cross-upstream hop still emits a reasoning placeholder", itemTypes(cross).contains("reasoning"))
     check("…but WITHOUT the foreign encrypted_content", cross[1]["encrypted_content"] == nil)
-    check("…and the summary survives, so the turn is not bare", (cross[1]["summary"] as? [Any])?.isEmpty == false)
+    check("…and WITHOUT the foreign item id", cross[1]["id"] == nil)
     check("upstream accepts", upstreamRejection(cross) == nil)
+}
+
+print("\n══ [2b] cross-key resource — the 400 in the wild ══")
+do {
+    // Same endpoint, same model, another API key/account. This is what a
+    // per-request multi-key ring does between turns. The old code replayed the
+    // foreign rs_/fc_ item ids and OpenAI answered:
+    //   400 item was created under a different resource.
+    var turn = toolTurn(model: "gpt-5.3", upstream: relayA)
+    turn[1].reasoningEcho?.resourceIdentity = "resource-b"
+    let input = buildResponsesInput(turn, currentModelId: "gpt-5.3",
+                                    currentUpstream: relayA, currentResource: "resource-a")
+    check("resource change drops the foreign reasoning id", input[1]["id"] == nil)
+    check("…and the foreign encrypted blob", input[1]["encrypted_content"] == nil)
+    check("…but keeps a valid id-less reasoning head",
+          input[1]["type"] as? String == "reasoning")
+    check("function_call uses a synthetic id, never the foreign fc_ id",
+          (input[2]["id"] as? String)?.hasPrefix("fc_syn_") == true)
+    check("upstream accepts", upstreamRejection(input) == nil)
 }
 
 print("\n══ [3] cold start / session reopen — the synthetic head ══")
@@ -303,30 +328,36 @@ do {
     check("…carrying no foreign blob", f[1]["encrypted_content"] == nil)
     check("upstream accepts", upstreamRejection(f) == nil)
 
-    // Legacy echo with no recorded upstream keeps the old model-id semantics.
+    // Legacy echo has no resourceIdentity. It must not risk a foreign id: an
+    // id-less placeholder is always accepted, a stale server id is a 400.
     let legacy = buildResponsesInput(toolTurn(model: "gpt-5.3", upstream: nil),
                                      currentModelId: "gpt-5.3", currentUpstream: relayA)
-    check("legacy echo (no upstream recorded) still replays on a model-id match",
-          legacy[1]["encrypted_content"] as? String == "gAAAAAB_opaque")
-    let legacyHop = buildResponsesInput(toolTurn(model: "gpt-5.3", upstream: nil),
-                                        currentModelId: "other-model", currentUpstream: relayA)
-    check("…and drops the blob on a model-id mismatch, as before",
-          legacyHop[1]["encrypted_content"] == nil)
-    check("…while still emitting the item so the turn is not bare",
-          itemTypes(legacyHop).contains("reasoning"))
+    check("legacy echo (no resource recorded) uses the id-less head", legacy[1]["id"] == nil)
+    check("…and no encrypted payload", legacy[1]["encrypted_content"] == nil)
+    check("upstream accepts", upstreamRejection(legacy) == nil)
 }
 
 print("\n══ [5] shipping sources still carry the fix ══")
 do {
     let agent = source("Providers/OpenAI/OpenAIAgentProvider.swift")
     let proto = source("Providers/AgentProvider.swift")
+    let provider = source("Providers/OpenAI/OpenAIProvider.swift")
     let row = source("Views/Chat/ChatMessageViews.swift")
     let banner = source("Views/Chat/AIChatView.swift")
-    if agent.isEmpty || proto.isEmpty || row.isEmpty || banner.isEmpty {
+    if agent.isEmpty || proto.isEmpty || provider.isEmpty || row.isEmpty || banner.isEmpty {
         print("  ⏭  sources not readable from \(#filePath)")
     } else {
         check("the echo records the minting upstream",
               proto.contains("var upstreamIdentity: String? = nil"))
+        check("the echo records the minting resource",
+              proto.contains("var resourceIdentity: String? = nil"))
+        check("the provider fingerprints the credential resource",
+              provider.contains("credentialResourceIdentity"))
+        check("…and stamps it on capture",
+              agent.contains("resourceIdentity: self.responsesResourceIdentity"))
+        check("a cross-resource replay requires a recorded resource",
+              agent.contains("echo.resourceIdentity != nil")
+              && agent.contains("echo.resourceIdentity == self.responsesResourceIdentity"))
         check("the provider exposes an upstream identity",
               agent.contains("var reasoningUpstreamIdentity: String {"))
         check("capture stamps it",
@@ -350,8 +381,8 @@ do {
               gateCondition.contains("echo.providerKind == Self.responsesAPIProviderKind"))
         check("…and decides the blob by upstream instead",
               agent.contains("return recorded == self.reasoningUpstreamIdentity"))
-        check("the blob is conditional, the item is not",
-              agent.contains("if sameUpstream, let encrypted, !encrypted.isEmpty {"))
+        check("the blob is conditional on the same resource/upstream",
+              agent.contains("if sameResource, sameUpstream {"))
         // [T-responses-no-synthetic-item-id] The load-bearing invariant of
         // this regression: the source must not fabricate a reasoning item id
         // ANYWHERE. `rs_` is a server-owned key, unlike `fc_` (a per-request
@@ -465,6 +496,7 @@ do {
     let captured = ReasoningEcho(
         providerKind: responsesKind, modelId: "gpt-5.6-sol",
         upstreamIdentity: "openai-official",
+        resourceIdentity: "resource-a",
         items: [.openaiReasoning(id: "rs_real_9", encryptedContent: "gAAAA_blob",
                                  summary: ["Checking the clock"])])
     mintedReasoningIds.insert("rs_real_9")
@@ -474,10 +506,11 @@ do {
     struct WireItem: Codable { let id: String; let summary: [String] }
     struct Wire: Codable {
         let providerKind: String; let modelId: String
-        let upstreamIdentity: String?; let items: [WireItem]
+        let upstreamIdentity: String?; let resourceIdentity: String?; let items: [WireItem]
     }
     let wire = Wire(providerKind: captured.providerKind, modelId: captured.modelId,
                     upstreamIdentity: captured.upstreamIdentity,
+                    resourceIdentity: captured.resourceIdentity,
                     items: captured.items.compactMap {
                         if case .openaiReasoning(let id, _, let sum) = $0 {
                             return WireItem(id: id, summary: sum)
@@ -489,11 +522,13 @@ do {
           !json.contains("gAAAA_blob"))
     check("the server-minted id IS persisted", json.contains("rs_real_9"))
     check("…as is the upstream that minted it", json.contains("openai-official"))
+    check("…and the credential resource", json.contains("resource-a"))
 
     let back = try! JSONDecoder().decode(Wire.self, from: json.data(using: .utf8)!)
     let restored = ReasoningEcho(
         providerKind: back.providerKind, modelId: back.modelId,
         upstreamIdentity: back.upstreamIdentity,
+        resourceIdentity: back.resourceIdentity,
         items: back.items.map { .openaiReasoning(id: $0.id, encryptedContent: nil, summary: $0.summary) })
 
     var reopened = toolTurn(model: "gpt-5.6-sol", upstream: "openai-official")
