@@ -117,7 +117,6 @@ enum SessionAgentWorkflow {
         if text == pending.answer.lowercased() { return true }
         let allowed: [String]
         switch pending.gate {
-        switch pending.gate {
         case .edit: allowed = ["批准本地修改", "确认本地修改"]
         case .push: allowed = ["批准推送", "确认推送"]
         case .ci: allowed = ["批准主动ci", "确认主动ci"]
