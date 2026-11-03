@@ -7,38 +7,8 @@
 
 import SwiftUI
 
-/// Per-session engineering workflow. Unlike a skill this is a fixed product
-/// mode: it carries the stage contract and the "new requests append, never
-/// overwrite" rule. Tools stay exactly the same; only execution discipline
-/// changes.
-enum SessionAgentWorkflow {
-    static let pluginEngineerKeyPrefix = "session.agent.pluginEngineer."
-
-    static func isEnabled(_ sessionId: String) -> Bool {
-        UserDefaults.standard.bool(forKey: pluginEngineerKeyPrefix + sessionId)
-    }
-
-    static func setEnabled(_ enabled: Bool, sessionId: String) {
-        UserDefaults.standard.set(enabled, forKey: pluginEngineerKeyPrefix + sessionId)
-    }
-
-    static func promptFragment(for sessionId: String) -> String? {
-        guard isEnabled(sessionId) else { return nil }
-        return """
-        <plugin-engineer>
-        当前会话启用了「插件工程师」。这不是人格，也不改变可用工具；按下面的工程流程推进。
-        规则：
-        1. 用户每提一个新问题或新功能，先追加到当前任务队列；不得覆盖、遗忘前面未完成项。当前只做一项，其余明确排队。
-        2. 状态只用：待处理 / 当前 / 阻断 / 待授权 / 完成。完成必须有证据（本地测试、diff、构建或真机结果）；静态检查不能写成真机通过。
-        3. 先取证再改：读真实包、源码、日志、截图和头文件；不要只凭文件名或旧结论猜 Hook/ABI。
-        4. 阶段固定：逆向分析 → 本地源码/二进制修改 → 静态检查和负例 → 征得同意后编译/推送 → 核验产物 → 单独征得同意后安装/注销/重启 → 真机取证。
-        5. 推送、CI、安装、卸载、注销、重启、改设备配置互相独立；旧授权不自动延续。
-        6. 需要位置时优先用真实文件路径和证据；会话中断前记录当前项、已完成证据、下一步和未授权动作。
-        7. 输出先给当前在做什么，再给结果；不要只贴一大段无关解释。
-        </plugin-engineer>
-        """
-    }
-}
+/// The engineering workflow state machine lives in
+/// `Agent/Chat/SessionWorkflowGate.swift`; this view only owns its toggle.
 
 struct SessionSkillsView: View {
     /// The real session id, or nil for a draft chat that hasn't sent its first
@@ -159,7 +129,7 @@ struct SessionSkillsView: View {
                             .foregroundStyle(.blue)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("插件工程师")
-                            Text("追加任务清单，按分析、修改、检查、编译、真机取证推进")
+                            Text("先商讨、给结果，确认后才改；推送和安装前硬停")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -173,7 +143,7 @@ struct SessionSkillsView: View {
                 } header: {
                     Text("工程 Agent")
                 } footer: {
-                    Text("只给当前会话增加工程流程，不关闭现有工具，也不绑定模型。推送、安装、注销、重启仍逐项确认。")
+                    Text("自动启用插件流程技能。先商讨，结论和结果分别确认；没批准时推送、安装、注销会被工具闸门拦下。")
                 }
 
                 Section {

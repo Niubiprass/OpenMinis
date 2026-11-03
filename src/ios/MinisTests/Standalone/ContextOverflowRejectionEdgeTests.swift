@@ -171,7 +171,6 @@ do {
     // It matches the generic "exceeds the maximum" marker; fixed by T-ctx-byte-413-not-overflow.
     check("Anthropic byte-size 413 is not a token overflow",
           !Port.isContextOverflow("[request_too_large] Request exceeds the maximum allowed number of bytes."))
-
     // Anthropic's input + max_tokens rejection names no marker in the list,
     // so the ratio was never raised for it (now in the list).
     check("Anthropic 'input length and max_tokens exceed context limit' is an overflow",

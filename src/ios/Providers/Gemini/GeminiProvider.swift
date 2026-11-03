@@ -674,13 +674,19 @@ final class GeminiProvider: LLMProvider {
         logger.error("Gemini streaming API error \(http.statusCode)")
         #endif
 
-        if http.statusCode == 401 || http.statusCode == 403 {
-            throw LLMError.invalidAPIKey(detail: "Gemini HTTP \(http.statusCode): \(String(body.prefix(200)))")
+        if http.statusCode == 401 {
+            throw LLMError.invalidAPIKey(detail: "Gemini HTTP 401: \(String(body.prefix(200)))")
+        }
+        if http.statusCode == 403 {
+            throw LLMError.providerError(message: "[403] access denied: \(body.prefix(200))")
+        }
+        if http.statusCode == 413 {
+            throw LLMError.providerError(message: "[413] request too large: \(body.prefix(160))")
         }
         if http.statusCode == 429 {
             throw LLMError.rateLimited
         }
-        let transientStatusCodes: Set<Int> = [500, 502, 503, 504, 529]
+        let transientStatusCodes: Set<Int> = [408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]
         if transientStatusCodes.contains(http.statusCode) {
             throw LLMError.transientError(message: "Gemini API error \(http.statusCode): \(body.prefix(200))", statusCode: http.statusCode)
         }
@@ -690,11 +696,17 @@ final class GeminiProvider: LLMProvider {
     private func checkHTTPResponse(_ response: URLResponse, data: Data?) throws {
         guard let http = response as? HTTPURLResponse else { return }
 
-        if http.statusCode == 401 || http.statusCode == 403 {
-            let bodyStr = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            throw LLMError.invalidAPIKey(detail: "Gemini HTTP \(http.statusCode): \(String(bodyStr.prefix(200)))")
+        let bodyStr = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        if http.statusCode == 401 {
+            throw LLMError.invalidAPIKey(detail: "Gemini HTTP 401: \(String(bodyStr.prefix(200)))")
+        }
+        if http.statusCode == 403 {
+            throw LLMError.providerError(message: "[403] access denied: \(bodyStr.prefix(200))")
         }
 
+        if http.statusCode == 413 {
+            throw LLMError.providerError(message: "[413] request too large: \(bodyStr.prefix(160))")
+        }
         if http.statusCode == 429 {
             throw LLMError.rateLimited
         }
@@ -711,7 +723,7 @@ final class GeminiProvider: LLMProvider {
             #else
             logger.error("Gemini API error \(http.statusCode)")
             #endif
-            let transientStatusCodes: Set<Int> = [500, 502, 503, 504, 529]
+            let transientStatusCodes: Set<Int> = [408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]
             if transientStatusCodes.contains(http.statusCode) {
                 throw LLMError.transientError(message: "Gemini API error \(http.statusCode): \(body.prefix(200))", statusCode: http.statusCode)
             }

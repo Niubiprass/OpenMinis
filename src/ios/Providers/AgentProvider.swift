@@ -132,6 +132,13 @@ struct ReasoningEcho: @unchecked Sendable {
     /// keep compiling; an echo with no recorded upstream is replayed on the
     /// model-id match alone, i.e. the pre-#368 behaviour.
     var upstreamIdentity: String? = nil
+    /// [T-responses-resource-identity] The credential resource that minted the
+    /// item IDs (hashed API key, or OAuth account). OpenAI scopes stored item
+    /// ids to the account/project resource; rotating a multi-key ring across
+    /// turns otherwise returns 400 "item was created under a different
+    /// resource". nil on history written before this field — treated as unsafe
+    /// and replayed id-less.
+    var resourceIdentity: String? = nil
     /// Reasoning items captured in original emission order — must be
     /// re-inserted into the next request's input array in the same order
     /// (Responses API rejects out-of-order reasoning items).
@@ -163,15 +170,16 @@ extension ReasoningEcho {
         let providerKind: String
         let modelId: String
         let upstreamIdentity: String?
+        let resourceIdentity: String?
         let items: [Item]
     }
-
     /// JSON for persistence, or nil when there is nothing worth storing.
     var persistableJSON: String? {
         let wire = Wire(
             providerKind: providerKind,
             modelId: modelId,
             upstreamIdentity: upstreamIdentity,
+            resourceIdentity: resourceIdentity,
             items: items.compactMap { item in
                 if case .openaiReasoning(let id, _, let summary) = item {
                     return Wire.Item(id: id, summary: summary)
@@ -194,6 +202,7 @@ extension ReasoningEcho {
             providerKind: wire.providerKind,
             modelId: wire.modelId,
             upstreamIdentity: wire.upstreamIdentity,
+            resourceIdentity: wire.resourceIdentity,
             items: wire.items.map { .openaiReasoning(id: $0.id, encryptedContent: nil, summary: $0.summary) }
         )
     }
@@ -338,6 +347,8 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
     private let lock = NSLock()
     private var metadata: [String: ToolCallMetadata] = [:]
     private var resumeExclusions: Set<String> = []
+    // Request-local only; never log/persist the retained credential.
+    private var networkRetryLease: (lease: ProviderKeyLease, failedAt: Date)?
     var name: String { baseline.name }
     var model: LLMModel { baseline.model }
     var defaultMaxTokens: Int { baseline.defaultMaxTokens }
@@ -351,6 +362,8 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         metadata.merge(values) { _, new in new }
     }
+
+
     private func metadataSnapshot() -> [String: ToolCallMetadata] {
         lock.lock(); defer { lock.unlock() }; return metadata
     }
@@ -360,6 +373,21 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
     }
     private func excludeOnResume(_ id: String) {
         lock.lock(); defer { lock.unlock() }; resumeExclusions.insert(id)
+    }
+
+    private func takeNetworkRetryLease() -> ProviderKeyLease? {
+        lock.lock(); defer { lock.unlock() }
+        let retained = networkRetryLease
+        networkRetryLease = nil
+        guard let retained, Date().timeIntervalSince(retained.failedAt) <= 10 * 60 else { return nil }
+        return retained.lease
+    }
+    private func retainNetworkRetryLease(_ lease: ProviderKeyLease) {
+        lock.lock(); defer { lock.unlock() }
+        networkRetryLease = (lease, Date())
+    }
+    private func clearNetworkRetryLease() {
+        lock.lock(); defer { lock.unlock() }; networkRetryLease = nil
     }
 
     func streamAgentMessageClamped(messages: [AgentMessage], systemPrompt: String?,
@@ -374,8 +402,12 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
         // includes those retry slots so a three-key ring cannot exhaust the
         // loop before the later keys are reached.
         let priorityRetries = manager.strategy(for: instanceId) == .priority ? 2 : 0
+        // One extra slot for a 524 same-key retry. Gateway timeouts are usually
+        // the origin being slow, so rotating immediately only restarts the same
+        // long generation on another credential.
+        let gatewayRetrySlots = 1
         let budget = active
-            ? (keyCount + 1) + keyCount * priorityRetries
+            ? (keyCount + 1) * (1 + priorityRetries + gatewayRetrySlots)
             : 1
         let initialExclusions = takeResumeExclusions()
         return AsyncThrowingStream { continuation in
@@ -384,7 +416,11 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                 var attemptedSecrets = Set<String>()
                 var lastError: Error?
                 var retryLease: ProviderKeyLease?
+                if let retained = takeNetworkRetryLease() {
+                    retryLease = await manager.validatedRetryLeaseAsync(retained, for: instanceId)
+                }
                 var sameKeyRetries = 0
+                var gatewayRetries = 0
                 for _ in 0..<budget {
                     do { try Task.checkCancellation() }
                     catch { continuation.finish(throwing: error); return }
@@ -393,12 +429,15 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                     if let pending = retryLease {
                         lease = pending
                         retryLease = nil
+                        attempted.insert(lease.id)
+                        attemptedSecrets.insert(lease.key)
                         isSameKeyRetry = true
                     } else {
                         guard let next = await manager.leaseAsync(for: instanceId, excluding: attempted) else { break }
                         lease = next
                         attempted.insert(lease.id)
                         sameKeyRetries = 0
+                        gatewayRetries = 0
                         isSameKeyRetry = false
                     }
                     if !isSameKeyRetry {
@@ -456,6 +495,12 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                         if Task.isCancelled { continuation.finish(throwing: CancellationError()); return }
                         let kind = MultiKeyFailureKind.classify(error)
                         if await manager.isActiveAsync(for: instanceId) { manager.recordFailure(lease: lease, kind: kind, for: instanceId) }
+                        if kind == .network {
+                            // The outer countdown retries this same wrapper;
+                            // a new lease there would wrongly rotate a good key.
+                            retainNetworkRetryLease(lease)
+                            continuation.finish(throwing: error); return
+                        }
                         guard kind.mayTryAnotherKey else { continuation.finish(throwing: error); return }
                         lastError = error
                         if exposed {
@@ -467,11 +512,18 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                         // Priority: keep the same key for a bounded number of
                         // retries before treating it as broken. Other strategies
                         // keep their existing one-failure-per-key behavior.
-                        if priorityRetries > 0, sameKeyRetries < priorityRetries {
+                        if kind != .gatewayTimeout, priorityRetries > 0, sameKeyRetries < priorityRetries {
                             sameKeyRetries += 1
                             // New startedAt so a success after a failed retry
                             // clears the parked/error state instead of being
                             // ignored as older than the failure.
+                            retryLease = ProviderKeyLease(id: lease.id, key: lease.key,
+                                                          startedAt: Date())
+                            await Task.yield()
+                            continue
+                        }
+                        if kind == .gatewayTimeout, gatewayRetries < gatewayRetrySlots {
+                            gatewayRetries += 1
                             retryLease = ProviderKeyLease(id: lease.id, key: lease.key,
                                                           startedAt: Date())
                             await Task.yield()
@@ -485,7 +537,10 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                 continuation.finish(throwing: lastError ?? LLMError.providerError(
                     message: "本供应商没有可用的 Key；所有 Key 已停用或暂时不可用，请检查余额、权限或稍后重试。"))
             }
-            continuation.onTermination = { _ in worker.cancel() }
+            continuation.onTermination = { [weak self] termination in
+                worker.cancel()
+                if case .cancelled = termination { self?.clearNetworkRetryLease() }
+            }
         }
     }
 }

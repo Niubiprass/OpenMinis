@@ -1155,6 +1155,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
     @Published var autoRetryAttempt: Int = 0
     @Published var autoRetryCountdown: Int = 0
+    /// [T-network-line-copy] Drives the retry capsule's wording. A transport
+    /// failure should tell the user to change network, not imply the model died.
+    @Published var autoRetryIsNetwork = false
+    @Published var autoRetryNetworkHint = ""
     /// [T-ios-empty-after-toolresult-reminder] Guards the one-shot
     /// `<system-reminder>` retry when the server returns an empty response
     /// right after a tool result. Set the first time we inject the reminder in
@@ -3066,6 +3070,18 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             return
         }
 
+        // Only an accepted composer send can answer a stopped workflow gate.
+        // CLI/job callbacks, scheduled prompts and synthetic sends never grant
+        // permission; they also revoke any unused permission from a prior turn.
+        if let sid = sessionId {
+            if usingComposer, !programmaticSilentTurn,
+               editingMessageIndex == nil, pendingAttachments.isEmpty, !text.isEmpty {
+                SessionAgentWorkflow.noteUserMessage(text, sessionId: sid)
+            } else {
+                SessionAgentWorkflow.invalidateAuthorization(sessionId: sid)
+            }
+        }
+
         // [T-auto-compact-entry] A fresh user turn starts a new visit: re-arm
         // the entry auto-compact check so the next load completion re-evaluates
         // the threshold (the pre-send check below keeps guarding this send).
@@ -3161,6 +3177,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         }
         autoRetryAttempt = 0
         autoRetryCountdown = 0
+        autoRetryIsNetwork = false
+        autoRetryNetworkHint = ""
         canResume = false
         committedBlockCount = 0
         prevCommittedBlockCount = 0
@@ -3639,6 +3657,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// Retry the next agent loop iteration (continue from where the error occurred,
     /// keeping all previously completed tool blocks and conversation history).
     func retry() {
+        invalidateWorkflowApproval()
         guard !isProcessing else { return }
         guard let lastMsg = messages.last, lastMsg.role == .assistant else { return }
 
@@ -3653,6 +3672,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
 
         autoRetryAttempt = 0
         autoRetryCountdown = 0
+        autoRetryIsNetwork = false
+        autoRetryNetworkHint = ""
         canResume = false
         userDidCancel = false
         delegationResultsMuted = false
@@ -3847,6 +3868,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// Resume an interrupted agent loop. Injects a "Continue" user message
     /// into agentHistory so the model knows to pick up where it left off.
     func resume() {
+        invalidateWorkflowApproval()
         guard !isProcessing, canResume else { return }
         // [T-auto-compact-entry] User-initiated recovery is a new turn: re-arm
         // the entry auto-compact check for the next session visit.
@@ -4151,6 +4173,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     }
 
     func retryFromMessage(_ messageId: UUID, replacementAttachments: [InputAttachment]? = nil) {
+        invalidateWorkflowApproval()
         guard !isProcessing else { return }
         // [T-ios-retry-keyboard] Re-running from an existing user message is a
         // retry, not a new send.
@@ -4961,9 +4984,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // the new model is exactly the ghost the user reported seeing.
             autoRetryAttempt = 0
             autoRetryCountdown = 0
+            autoRetryIsNetwork = false
+            autoRetryNetworkHint = ""
             isProcessing = false
         }
-
         if hadTitleGen {
             // The detached title Task re-checks this generation token before
             // each attempt and bails when it no longer matches, so the captured
@@ -4984,7 +5008,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         return s
     }
 
+    private func invalidateWorkflowApproval() {
+        if let sid = sessionId { SessionAgentWorkflow.invalidateAuthorization(sessionId: sid) }
+    }
+
     func cancel() {
+        invalidateWorkflowApproval()
         let lastBlocks = (messages.last?.role == .assistant) ? messages.last!.blocks.count : -1
         let lastRole = messages.last.map { $0.role == .assistant ? "assistant" : "user" } ?? "nil"
         logger.info("⏹️ cancel() START session=\(self.sessionId ?? "nil") isProcessing=\(self.isProcessing) lastRole=\(lastRole) lastBlocks=\(lastBlocks) currentTask=\(self.currentTask != nil)")
@@ -5062,6 +5091,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         currentTask = nil
         autoRetryAttempt = 0
         autoRetryCountdown = 0
+        autoRetryIsNetwork = false
+        autoRetryNetworkHint = ""
         if let sid = sessionId {
             logger.info("🔥 cache keep-alive: cancelling on user cancel — session=\(sid.prefix(8))")
             CacheKeepAliveManager.shared.cancelKeepAlive(sessionId: sid)

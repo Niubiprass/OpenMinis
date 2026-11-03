@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import os.log
 
 private let logger = AppLogger(category: "OpenAIProvider")
@@ -114,6 +115,37 @@ final class OpenAIProvider: LLMProvider {
     let authMode: AuthMode
     /// Codex account ID for OAuth mode (set by provider factory).
     var codexAccountId: String?
+
+    /// Responses item IDs belong to a credential/account/project resource.
+    /// Return nil when that resource is unknown: never treat unknown OAuth
+    /// accounts as one shared "default" account. Only the fingerprint persists.
+    var credentialResourceIdentity: String? {
+        guard perRequestHeaders == nil else { return nil }
+        let scopedNames: Set<String> = ["authorization", "api-key", "x-api-key",
+                                       "openai-project", "openai-organization", "chatgpt-account-id"]
+        var material: [String: String] = [:]
+        for (name, value) in extraHeaders {
+            let normalized = name.lowercased()
+            guard scopedNames.contains(normalized) else { continue }
+            if let old = material[normalized], old != value { return nil }
+            material[normalized] = value
+        }
+        switch authMode {
+        case .apiKey(let key):
+            guard !key.isEmpty else { return nil }
+            material["credential-kind"] = "api-key"
+            if let configuredKey = material["api-key"], configuredKey != key { return nil }
+            material["credential"] = key
+        case .oauth:
+            let account = codexAccountId ?? material["chatgpt-account-id"]
+            guard let account, !account.isEmpty else { return nil }
+            material["credential-kind"] = "oauth"
+            material["account"] = account
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: material, options: [.sortedKeys]) else { return nil }
+        return "resource:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Optional custom API base URL for proxy services (e.g. "https://my-proxy.com").
     var customBaseURL: String?
     /// When false, customBaseURL is used verbatim without appending "/v1".
@@ -2231,11 +2263,31 @@ final class OpenAIProvider: LLMProvider {
     }
 
     func mapHTTPError(statusCode: Int, body: String) -> LLMError {
-        if statusCode == 401 || statusCode == 403 { return .invalidAPIKey(detail: "HTTP \(statusCode): \(String(body.prefix(200)))") }
+        if statusCode == 401 { return .invalidAPIKey(detail: "HTTP 401: \(String(body.prefix(200)))") }
+        if statusCode == 403 {
+            // 403 is used both for key permissions and for a blocked egress IP.
+            // Keep the HTTP cause so MultiKey can try another key WITHOUT
+            // parking this one for five minutes.
+            return .providerError(message: "[403] access denied: \(body.prefix(200))")
+        }
         if statusCode == 429 { return .rateLimited }
+        if statusCode == 413 {
+            return .providerError(message: "[413] request too large: \(body.prefix(160))")
+        }
+
+        // A relay can answer 5xx when the MODEL has no channel in the account's
+        // group. Retrying the same deployment is pointless; let the group
+        // advance immediately instead of spending the 2/5 s capacity ladder.
+        let lowerBody = body.lowercased()
+        if [500, 502, 503].contains(statusCode),
+           lowerBody.contains("model_not_found") || lowerBody.contains("no available channel")
+            || lowerBody.contains("无可用渠道") {
+            return .providerError(message: "[\(statusCode)] model has no available channel: \(body.prefix(300))")
+        }
 
         // Transient server errors: retry same model, do not trigger group fallback.
-        let transientStatusCodes: Set<Int> = [500, 502, 503, 504, 529]
+        // 524 is Cloudflare's origin timeout (the model was still generating).
+        let transientStatusCodes: Set<Int> = [408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]
         if transientStatusCodes.contains(statusCode) {
             return .transientError(message: "HTTP \(statusCode): \(body.prefix(200))", statusCode: statusCode)
         }

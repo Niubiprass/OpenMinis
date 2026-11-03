@@ -209,6 +209,8 @@ struct ChatMessageRow: View {
     var onWithdraw: (() -> Void)?
     var autoRetryAttempt: Int = 0
     var autoRetryCountdown: Int = 0
+    var autoRetryIsNetwork: Bool = false
+    var autoRetryNetworkHint: String = ""
     var canResume: Bool = false
     var onResume: (() -> Void)?
     var onCompact: (() -> Void)?
@@ -805,9 +807,15 @@ struct ChatMessageRow: View {
             Spacer()
 
             if autoRetryAttempt > 0 {
-                Text("Retry in \(autoRetryCountdown)s (\(autoRetryAttempt)/\(AIChatViewModel.retryDelays.count))")
+                Text(autoRetryIsNetwork && !autoRetryNetworkHint.isEmpty
+                     ? autoRetryNetworkHint
+                     : (autoRetryIsNetwork
+                        ? AppLocalizedFormat("Network line failed — retrying in %llds (%lld/%lld). Switch Wi‑Fi/4G if it keeps failing", autoRetryCountdown, autoRetryAttempt, AIChatViewModel.retryDelays.count)
+                        : AppLocalizedFormat("Retry in %llds (%lld/%lld)", autoRetryCountdown, autoRetryAttempt, AIChatViewModel.retryDelays.count)))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.trailing)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(Color.secondary.opacity(0.12))

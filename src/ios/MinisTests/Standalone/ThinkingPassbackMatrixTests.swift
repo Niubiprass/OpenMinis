@@ -54,7 +54,11 @@ func json(_ obj: Any) -> String {
 enum Role { case user, assistant }
 enum Part { case text(String); case toolUse(id: String, name: String, input: [String: Any]); case toolResult(id: String, content: String) }
 enum EchoItem { case openaiReasoning(id: String, encrypted: String?, summary: [String]) }
-struct ReasoningEcho { let providerKind: String; let modelId: String; let items: [EchoItem] }
+struct ReasoningEcho {
+    let providerKind: String; let modelId: String
+    var upstreamIdentity: String? = nil; var resourceIdentity: String? = nil
+    let items: [EchoItem]
+}
 struct AgentMessage {
     var role: Role; var parts: [Part]
     var reasoningContent: String? = nil
@@ -104,9 +108,19 @@ func convertAssistantChat(_ msg: AgentMessage, includeReasoning: Bool, injectPla
 // MARK: - Row 2/4: Responses API
 
 let responsesAPIProviderKind = "openai-responses"
-func convertAssistantResponses(_ msg: AgentMessage, currentModel: String) -> [[String: Any]] {
+func convertAssistantResponses(_ msg: AgentMessage, currentModel: String,
+                              currentResource: String? = "resource-a") -> [[String: Any]] {
     var result: [[String: Any]] = []
-    if msg.role == .assistant, let echo = msg.reasoningEcho, echo.providerKind == responsesAPIProviderKind, echo.modelId == currentModel {
+    if msg.role == .assistant, let echo = msg.reasoningEcho,
+       echo.providerKind == responsesAPIProviderKind,
+       let resource = echo.resourceIdentity, resource == currentResource,
+       let upstream = echo.upstreamIdentity {
+        _ = upstream
+    }
+    if msg.role == .assistant, let echo = msg.reasoningEcho,
+       echo.providerKind == responsesAPIProviderKind,
+       let resource = echo.resourceIdentity, resource == currentResource,
+       (echo.upstreamIdentity != nil || echo.modelId == currentModel) {
         for item in echo.items {
             if case .openaiReasoning(let id, let encrypted, let summary) = item {
                 var entry: [String: Any] = ["type": "reasoning", "id": id, "summary": summary.map { ["type": "summary_text", "text": $0] }]
@@ -118,7 +132,7 @@ func convertAssistantResponses(_ msg: AgentMessage, currentModel: String) -> [[S
     for part in msg.parts {
         switch part {
         case .text(let t): result.append(["role": msg.role == .user ? "user" : "assistant", "content": t])
-        case .toolUse(let id, let name, let input): result.append(["type": "function_call", "call_id": id, "name": name, "arguments": json(input)])
+        case .toolUse(let id, let name, let input): result.append(["type": "function_call", "call_id": id, "name": name, "arguments": json(input), "id": "fc_syn_\(id.suffix(24))"])
         case .toolResult(let id, let content): result.append(["type": "function_call_output", "call_id": id, "output": content])
         }
     }
@@ -287,14 +301,14 @@ do {
 print("▶️  2. Responses API: reasoning item replayed before the function_call")
 do {
     var turn = toolTurn
-    turn.reasoningEcho = ReasoningEcho(providerKind: responsesAPIProviderKind, modelId: "gpt-5.5-codex", items: [.openaiReasoning(id: "rs_1", encrypted: "ENC", summary: ["List first"])])
+    turn.reasoningEcho = ReasoningEcho(providerKind: responsesAPIProviderKind, modelId: "gpt-5.5-codex", upstreamIdentity: "openai-official", resourceIdentity: "resource-a", items: [.openaiReasoning(id: "rs_1", encrypted: "ENC", summary: ["List first"])])
     let items = convertAssistantResponses(turn, currentModel: "gpt-5.5-codex")
     checkEq("two items", items.count, 2)
     checkEq("snapshot", items.map(json).joined(separator: "\n"),
             #"{"encrypted_content":"ENC","id":"rs_1","summary":[{"text":"List first","type":"summary_text"}],"type":"reasoning"}"# + "\n" +
-            #"{"arguments":"{\"command\":\"ls\"}","call_id":"call_1","name":"shell_execute","type":"function_call"}"#)
+            #"{"arguments":"{\"command\":\"ls\"}","call_id":"call_1","id":"fc_syn_call_1","name":"shell_execute","type":"function_call"}"#)
     checkEq("reasoning precedes the function_call", items[0]["type"] as? String, "reasoning")
-    turn.reasoningEcho = ReasoningEcho(providerKind: responsesAPIProviderKind, modelId: "gpt-5.5-codex", items: [.openaiReasoning(id: "rs_2", encrypted: nil, summary: [])])
+    turn.reasoningEcho = ReasoningEcho(providerKind: responsesAPIProviderKind, modelId: "gpt-5.5-codex", upstreamIdentity: "openai-official", resourceIdentity: "resource-a", items: [.openaiReasoning(id: "rs_2", encrypted: nil, summary: [])])
     let bare = convertAssistantResponses(turn, currentModel: "gpt-5.5-codex")[0]
     check("summary is always an array, even empty", (bare["summary"] as? [Any])?.isEmpty == true)
     check("no encrypted_content key when nothing was captured", bare["encrypted_content"] == nil)
@@ -333,9 +347,9 @@ do {
 print("▶️  4. reasoning from another model is not sent")
 do {
     var turn = toolTurn
-    turn.reasoningEcho = ReasoningEcho(providerKind: responsesAPIProviderKind, modelId: "gpt-5.5-codex", items: [.openaiReasoning(id: "rs_1", encrypted: "ENC", summary: [])])
+    turn.reasoningEcho = ReasoningEcho(providerKind: responsesAPIProviderKind, modelId: "gpt-5.5-codex", upstreamIdentity: "relay-a", resourceIdentity: "resource-a", items: [.openaiReasoning(id: "rs_1", encrypted: "ENC", summary: [])])
     let switched = convertAssistantResponses(turn, currentModel: "gpt-6-astra")
-    check("Responses: a different model's encrypted item is stripped", switched.allSatisfy { ($0["type"] as? String) != "reasoning" })
+    check("Responses: same resource keeps the item across a model change", switched.contains { ($0["type"] as? String) == "reasoning" })
     turn.reasoningEcho = ReasoningEcho(providerKind: "anthropic", modelId: "gpt-5.5-codex", items: [.openaiReasoning(id: "rs_1", encrypted: "ENC", summary: [])])
     check("Responses: a different provider family's item is stripped", convertAssistantResponses(turn, currentModel: "gpt-5.5-codex").allSatisfy { ($0["type"] as? String) != "reasoning" })
     // Mistral (issue #87): the field is categorically forbidden.

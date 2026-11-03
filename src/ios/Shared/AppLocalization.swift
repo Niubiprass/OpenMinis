@@ -338,7 +338,16 @@ enum ProviderErrorDigest {
         }
         if status == 403 || lower.contains("permission denied") || lower.contains("forbidden") {
             return Display(title: AppLocalized("供应商拒绝访问（HTTP 403）"),
-                           detail: AppLocalized("Key 没有这个模型或分组的权限。"), code: code)
+                           detail: AppLocalized("可能是 Key 没有权限，也可能是网络出口 IP 被拦截；换网或检查权限后再试。"), code: code)
+        }
+        if lower.contains("no available channel") || lower.contains("无可用渠道")
+            || lower.contains("model_not_found") {
+            return Display(title: AppLocalized("这个分组暂时没有可用渠道"),
+                           detail: AppLocalized("不是 Key 坏了；换一个模型，或让供应商补渠道。"), code: code)
+        }
+        if status == 413 {
+            return Display(title: AppLocalized("请求体超过站点限制"),
+                           detail: AppLocalized("不是 Key 坏了；减少附件或手动压缩上下文后重试。"), code: code)
         }
         if status == 404 || (lower.contains("model") && (lower.contains("not found")
             || lower.contains("does not exist") || lower.contains("unknown model")
@@ -357,9 +366,10 @@ enum ProviderErrorDigest {
             return Display(title: String(format: AppLocalized("供应商服务暂时不可用（HTTP %@）"), codeText),
                            detail: AppLocalized("稍后再试。"), code: code)
         }
-        if status == 408 || lower.contains("timeout") || lower.contains("timed out") {
-            return Display(title: AppLocalized("请求超时或网络连接失败"),
-                           detail: AppLocalized("检查网络后重试。"), code: code)
+        if status == 408 || lower.contains("timeout") || lower.contains("timed out")
+            || lower.contains("network error") || lower.contains("网络错误") {
+            return Display(title: AppLocalized("当前网络线路失败"),
+                           detail: AppLocalized("可切换 Wi-Fi 或 4G 重试；这不一定是 Key 或模型的问题。"), code: code)
         }
         if let limit = imageLimit(in: lower) {
             return Display(title: String(format: AppLocalized("这条会话里的图片超过 %lld 张"), Int64(limit)),

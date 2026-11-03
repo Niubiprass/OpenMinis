@@ -3,7 +3,7 @@ name: iOS15 v64 Repair
 on:
   workflow_dispatch:
   push:
-    branches: [ios15-v64-repair, ios15-160651-features-wip]
+    branches: [ios15-v64-repair, ios15-160651-features-wip, ios15-160652-four-features]
     paths: ['src/ios/**', 'scripts/test_*.py', 'scripts/run_ios15_geometry_probe.py', 'scripts/fixtures/**', 'scripts/v64r_package.py', 'deps/build_rclone_ios.sh', '.github/workflows/ios15-v64-repair.yml']
 
 permissions:
@@ -71,6 +71,7 @@ jobs:
           python3 scripts/test_multikey_freeze_20261101.py
           python3 scripts/test_plugin_workbench_160651.py
           python3 scripts/test_mcp_builtin_and_workflow.py
+          python3 scripts/test_four_features_160652.py
           python3 scripts/test_minis_snapshot_offmain.py
           python3 scripts/test_minis_native_return.py
           python3 scripts/test_ish_residual_reaper.py
@@ -121,7 +122,7 @@ jobs:
             -derivedDataPath DerivedData -clonedSourcePackagesDirPath SPMCache \
             -parallelizeTargets -jobs 4 CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
-            CURRENT_PROJECT_VERSION=160651 \
+            CURRENT_PROJECT_VERSION=160652 \
             SWIFT_OPTIMIZATION_LEVEL=-Osize build 2>&1 | tee build-v64r.log
       - name: Package without adding elevated entitlements
         run: |
@@ -135,15 +136,15 @@ jobs:
           python3 scripts/v64r_package.py Payload/Minis.app
           /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Payload/Minis.app/Info.plist
           xcrun vtool -show-build Payload/Minis.app/Minis | tee minos-v64r.txt
-          zip -qry Minis-160651-FeaturesWIP-iOS15.5.ipa Payload
-          unzip -tq Minis-160651-FeaturesWIP-iOS15.5.ipa
-          shasum -a 256 Minis-160651-FeaturesWIP-iOS15.5.ipa > SHA256SUMS
+          zip -qry Minis-160652-FourFeatures-iOS15.5.ipa Payload
+          unzip -tq Minis-160652-FourFeatures-iOS15.5.ipa
+          shasum -a 256 Minis-160652-FourFeatures-iOS15.5.ipa > SHA256SUMS
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Minis-160651-FeaturesWIP-iOS15.5
+          name: Minis-160652-FourFeatures-iOS15.5
           path: |
-            Minis-160651-FeaturesWIP-iOS15.5.ipa
+            Minis-160652-FourFeatures-iOS15.5.ipa
             SHA256SUMS
             minos-v64r.txt
           retention-days: 30

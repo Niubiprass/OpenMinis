@@ -1,9 +1,10 @@
+import Foundation
 import Network
 import CFNetwork
 
 /// Monitors network path changes and updates iSH's /etc/resolv.conf
 /// so DNS resolution stays current when switching between WiFi/cellular/etc.
-final class NetworkMonitor {
+final class NetworkMonitor: @unchecked Sendable {
     static let shared = NetworkMonitor()
 
     private let monitor = NWPathMonitor()
@@ -11,6 +12,15 @@ final class NetworkMonitor {
     private let logger = AppLogger(category: "Network")
     private var lastInterfaceTypes: Set<NWInterface.InterfaceType> = []
     private var isStarted = false
+
+    // [T-network-recovery-20261102] A request that failed on the transport
+    // layer must not burn another API key: the same credential is usually fine
+    // on the other network. Wait for a real path transition (WiFi <-> cellular,
+    // unsatisfied -> satisfied) and then retry the SAME request/key.
+    private let pathLock = NSLock()
+    private var pathGeneration: UInt64 = 0
+    private var pathSatisfied = false
+    private var pathExpensive = false
 
     private init() {}
 
@@ -23,7 +33,12 @@ final class NetworkMonitor {
         // populated before the first NWPathMonitor callback fires (which can be
         // delayed by several hundred milliseconds).
         let initialPath = monitor.currentPath
-        lastInterfaceTypes = activeInterfaceTypes(initialPath)
+        let initialTypes = activeInterfaceTypes(initialPath)
+        pathLock.lock()
+        lastInterfaceTypes = initialTypes
+        pathSatisfied = initialPath.status == .satisfied
+        pathExpensive = initialPath.isExpensive
+        pathLock.unlock()
         logger.info("[Network] Monitor started — writing initial DNS config")
         NSLog("NetworkMonitor: about to refreshDns + dump proxy")
         ISHKernel.shared.refreshDns()
@@ -48,8 +63,21 @@ final class NetworkMonitor {
 
         logger.info("[Network] Path update — status: \(String(describing: path.status)), interfaces: \(currentTypes.map { String(describing: $0) })")
 
+        pathLock.lock()
         let typesChanged = currentTypes != lastInterfaceTypes
         lastInterfaceTypes = currentTypes
+        let wasSatisfied = pathSatisfied
+        let wasExpensive = pathExpensive
+        pathSatisfied = satisfied
+        pathExpensive = path.isExpensive
+        // A pure signal-strength/route tick is not a new path. Only an
+        // interface-set change or a satisfaction transition can rescue a dead
+        // transport, so only those wake retrying requests.
+        let satisfactionChanged = wasSatisfied != satisfied
+        let expenseChanged = wasExpensive != path.isExpensive
+        let transitioned = typesChanged || satisfactionChanged || expenseChanged
+        if transitioned { pathGeneration &+= 1 }
+        pathLock.unlock()
 
         // Always refresh DNS on any path update — even when unsatisfied, refreshDns
         // will write the public-DNS fallback so resolv.conf is never left empty.
@@ -64,20 +92,17 @@ final class NetworkMonitor {
         ISHKernel.shared.refreshDns()
         dumpSystemProxySettings(reason: typesChanged ? "interface-change" : "path-update")
 
-        // Evict LLM provider connection pools ONLY when the active interface
-        // set actually changed (WiFi <-> cellular, gained/lost connectivity,
-        // airplane toggle). After such a transition the pooled HTTP/2
-        // connections backing our long-lived streaming sessions can be dead
-        // sockets; reusing one on a retry hangs until the 600s timeout. A
-        // plain path tick with the SAME interfaces (signal-strength wobble,
-        // route refresh) does NOT evict, so steady-state requests and
-        // in-flight streams are never disturbed. Mirrors Android #740.
-        if typesChanged {
+        // Evict pooled connections on a real interface change OR a
+        // satisfaction transition (lost/restored connectivity, airplane
+        // toggle). After such a transition the pooled HTTP/2 sockets can be
+        // dead; reusing one hangs until the 600s timeout. A plain tick with the
+        // same interface and same satisfaction (signal wobble, route refresh)
+        // does NOT evict, so steady state is undisturbed. Mirrors Android #740.
+        if typesChanged || satisfactionChanged || expenseChanged {
             LLMSessionRegistry.shared.evictAllConnections(
-                reason: satisfied ? "interface-change" : "connectivity-lost")
+                reason: satisfied ? "connectivity-restored" : "connectivity-lost")
         }
     }
-
     /// Diagnostic: dump CFNetwork's view of the system proxy settings.
     /// Used to verify what (if anything) we see on 5G + VPN scenarios before
     /// deciding whether/how to inject http_proxy into the iSH shell.
@@ -129,11 +154,90 @@ final class NetworkMonitor {
         }
     }
 
+    /// Human-readable active path; expensive Wi-Fi is not assumed cellular.
+    func currentPathKind() -> String { pathSnapshot().kind }
+
+    /// One atomic snapshot ties observations to the path at dispatch.
+    func pathSnapshot() -> (generation: UInt64, satisfied: Bool, kind: String) {
+        pathLock.lock(); defer { pathLock.unlock() }
+        let kind: String
+        if !pathSatisfied { kind = "离线" }
+        else if lastInterfaceTypes.contains(.wifi) { kind = "Wi-Fi" }
+        else if lastInterfaceTypes.contains(.cellular) { kind = "4G" }
+        else if lastInterfaceTypes.contains(.wiredEthernet) { kind = "有线网络" }
+        else { kind = "未知线路" }
+        return (pathGeneration, pathSatisfied, kind)
+    }
+
     private func activeInterfaceTypes(_ path: NWPath) -> Set<NWInterface.InterfaceType> {
-        var types = Set<NWInterface.InterfaceType>()
-        for iface in path.availableInterfaces {
-            types.insert(iface.type)
+        // `availableInterfaces` can list WiFi AND cellular at once even though
+        // only one carries the default route. `usesInterfaceType` describes the
+        // ACTIVE path, so a WiFi↔cellular switch is a real generation change
+        // and can wake a pending retry immediately.
+        let known: [NWInterface.InterfaceType] = [
+            .wifi, .cellular, .wiredEthernet, .loopback, .other,
+        ]
+        return Set(known.filter { path.usesInterfaceType($0) })
+    }
+}
+
+
+/// Small non-persistent observations, scoped by provider entry AND model.
+/// An opened stream alone is not a successful model response.
+enum NetworkLineHealth {
+    private struct Observation {
+        var lastSuccess: Date?
+        var lastFailure: Date?
+        var updatedAt: Date { max(lastSuccess ?? .distantPast, lastFailure ?? .distantPast) }
+    }
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var observations: [String: Observation] = [:]
+    private static let lifetime: TimeInterval = 10 * 60
+    private static let capacity = 64
+    private static func key(scope: String, network: String) -> String { scope + "|" + network }
+
+    // Called with lock held; pure in-memory bookkeeping, no storage/callbacks.
+    private static func prune(now: Date) {
+        observations = observations.filter {
+            let age = now.timeIntervalSince($0.value.updatedAt)
+            return age >= 0 && age <= lifetime
         }
-        return types
+        while observations.count > capacity {
+            guard let oldest = observations.min(by: { $0.value.updatedAt < $1.value.updatedAt }) else { break }
+            observations.removeValue(forKey: oldest.key)
+        }
+    }
+
+    static func noteSuccess(scope: String, network: String, at date: Date = Date()) {
+        lock.lock(); defer { lock.unlock() }
+        prune(now: date)
+        let id = key(scope: scope, network: network)
+        var item = observations[id] ?? Observation()
+        item.lastSuccess = date; observations[id] = item
+        prune(now: date)
+    }
+
+    static func noteFailure(scope: String, network: String, at date: Date = Date()) {
+        lock.lock(); defer { lock.unlock() }
+        prune(now: date)
+        let id = key(scope: scope, network: network)
+        var item = observations[id] ?? Observation()
+        item.lastFailure = date; observations[id] = item
+        prune(now: date)
+    }
+
+    static func alternativeNetwork(for scope: String, current: String, now: Date = Date()) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        prune(now: now)
+        var best: (String, Date)?
+        for candidate in ["Wi-Fi", "4G"] where candidate != current {
+            guard let item = observations[key(scope: scope, network: candidate)],
+                  let success = item.lastSuccess,
+                  now.timeIntervalSince(success) >= 0,
+                  now.timeIntervalSince(success) <= lifetime,
+                  item.lastFailure.map({ $0 < success }) ?? true else { continue }
+            if best == nil || success > best!.1 { best = (candidate, success) }
+        }
+        return best?.0
     }
 }

@@ -51,6 +51,9 @@ enum LLMError: LocalizedError {
 
     var isNetworkError: Bool {
         if case .networkError = self { return true }
+        if case .transientError(_, let code) = self, code == 408 { return true }
+        // Nil status also covers empty replies/other local conditions, so it
+        // is not enough evidence to accuse the network.
         return false
     }
 

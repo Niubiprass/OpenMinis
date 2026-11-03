@@ -239,7 +239,7 @@ class FailoverWiring(unittest.TestCase):
     def test_failover_is_request_scoped_and_bounded(self):
         WRAP = (ROOT / 'src/ios/Providers/AgentProvider.swift').read_text()
         self.assertIn('let keyCount = active ? ring.count : 0', WRAP)
-        self.assertIn('keyCount * priorityRetries', WRAP)
+        self.assertIn('(keyCount + 1) * (1 + priorityRetries + gatewayRetrySlots)', WRAP)
         self.assertIn('await manager.leaseAsync(for: instanceId, excluding: attempted)', WRAP)
         self.assertIn('await manager.isActiveAsync(for: instanceId)', WRAP)
         self.assertIn('attemptedSecrets.insert(lease.key).inserted', WRAP)

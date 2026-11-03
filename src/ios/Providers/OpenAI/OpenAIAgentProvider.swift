@@ -49,6 +49,13 @@ final class OpenAIAgentProvider: AgentProvider {
         provider.customBaseURL ?? "openai-official"
     }
 
+    /// Resource identity for Responses item IDs. The endpoint alone is not
+    /// enough: two keys on the same base still belong to different
+    /// accounts/projects, and item ids are not portable between them.
+    var responsesResourceIdentity: String? {
+        provider.credentialResourceIdentity
+    }
+
     let provider: OpenAIProvider
 
     var name: String { provider.name }
@@ -933,6 +940,7 @@ final class OpenAIAgentProvider: AgentProvider {
                                         // hop between two entries on the SAME relay
                                         // can still replay this.
                                         upstreamIdentity: self.reasoningUpstreamIdentity,
+                                        resourceIdentity: self.responsesResourceIdentity,
                                         items: captured
                                     )
                                     continuation.yield(.reasoningEcho(echo))
@@ -1900,24 +1908,33 @@ final class OpenAIAgentProvider: AgentProvider {
                     }
                     return echo.modelId == self.model.id
                 }()
-                for item in echo.items {
-                    if case .openaiReasoning(let id, let encrypted, let summary) = item {
-                        // `summary` is a required field on input reasoning items
-                        // even when empty (server returns
-                        //   400 Missing required parameter: 'input[N].summary'
-                        // otherwise). Always emit an array — populated when we
-                        // captured summary text, empty otherwise.
-                        var entry: [String: Any] = [
-                            "type": "reasoning",
-                            "id": id,
-                            "summary": summary.map { ["type": "summary_text", "text": $0] },
-                        ]
-                        if sameUpstream, let encrypted, !encrypted.isEmpty {
-                            entry["encrypted_content"] = encrypted
+                // A real `reasoning.id` is server-owned. It survives a switch
+                // only when BOTH the endpoint and the credential resource are
+                // unchanged. History from before resourceIdentity existed is
+                // treated as unsafe: an id-less placeholder is always accepted,
+                // a foreign id is a 400.
+                let sameResource = echo.resourceIdentity != nil
+                    && echo.resourceIdentity == self.responsesResourceIdentity
+                if sameResource, sameUpstream {
+                    for item in echo.items {
+                        if case .openaiReasoning(let id, let encrypted, let summary) = item {
+                            // `summary` is a required field on input reasoning items
+                            // even when empty (server returns
+                            //   400 Missing required parameter: 'input[N].summary'
+                            // otherwise). Always emit an array — populated when we
+                            // captured summary text, empty otherwise.
+                            var entry: [String: Any] = [
+                                "type": "reasoning",
+                                "id": id,
+                                "summary": summary.map { ["type": "summary_text", "text": $0] },
+                            ]
+                            if sameUpstream, let encrypted, !encrypted.isEmpty {
+                                entry["encrypted_content"] = encrypted
+                            }
+                            flushImageCarriers()
+                            result.append(entry)
+                            emittedReasoningForTurn = true
                         }
-                        flushImageCarriers()
-                        result.append(entry)
-                        emittedReasoningForTurn = true
                     }
                 }
             }
@@ -1986,28 +2003,18 @@ final class OpenAIAgentProvider: AgentProvider {
                         "arguments": argsStr,
                     ]
                     // Responses API requires `function_call.id` to begin with
-                    // `fc_`. gpt-5.5 enforces the prefix strictly and returns
-                    // 400 Invalid 'input[N].id': 'item_xxx'. Expected an ID
-                    // that begins with 'fc' when given anything else. History
-                    // may carry non-`fc_` item ids from model switches, proxy /
-                    // Responses-compatible forward layers, or earlier turns;
-                    // the `call_id` itself remains valid because it is how
-                    // `function_call_output` links back. Sanitize: reuse the
-                    // captured fcId only when it has the `fc_` prefix,
-                    // otherwise synthesize a deterministic `fc_syn_` id from
-                    // the call_id so the API accepts the replay.
+                    // `fc_`; gpt-5.5 rejects any other prefix. A captured `fc_…`
+                    // id is still server-owned and can belong to another
+                    // key/model resource, so always use a deterministic
+                    // synthetic id. `call_id` is the real pairing key, making the
+                    // label safe to regenerate on every replay.
                     let safeFcId = fcId.map { Self.capResponsesId($0) }
-                    if let safeFcId, safeFcId.hasPrefix("fc_") {
-                        entry["id"] = safeFcId
-                    } else {
-                        if let safeFcId {
-                            logger.info("sanitizing non-fc_ function_call id in replay: '\(safeFcId.prefix(40))' → fc_syn_…")
-                        }
-                        entry["id"] = "fc_syn_\(safeCallId.suffix(24))"
+                    if safeFcId != nil {
+                        logger.info("using synthetic function_call id on replay (source id was resource-scoped)")
                     }
+                    entry["id"] = "fc_syn_\(safeCallId.suffix(24))"
                     flushImageCarriers()
                     result.append(entry)
-
                 case .toolResult(let id, _, let content, _, let imageData, let imageMime, _, _, _):
                     let (callId, _) = Self.splitResponsesAPIIds(id)
                     result.append([

@@ -131,7 +131,7 @@ class SourceContracts(unittest.TestCase):
     def test_wrapper_uses_async_lease_and_preserves_failover(self):
         self.assertIn('await manager.leaseAsync(for: instanceId, excluding: attempted)',WRAP)
         self.assertIn('if exposed {',WRAP);self.assertIn('attemptedSecrets.insert(lease.key).inserted',WRAP)
-        self.assertIn('keyCount * priorityRetries',WRAP)
+        self.assertIn('(keyCount + 1) * (1 + priorityRetries + gatewayRetrySlots)',WRAP)
     def test_keychain_failure_is_not_cached_as_empty(self):
         self.assertIn('guard blob.readable else { return [] }',MODEL)
         self.assertIn('if status == errSecItemNotFound { return (nil, true) }',MODEL)

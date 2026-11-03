@@ -550,11 +550,15 @@ final class AnthropicProvider: LLMProvider {
         // Preferred path: a real status code. Classify purely from it.
         if let status = captured.statusCode {
             switch status {
-            case 401, 403:
+            case 401:
                 return .invalidAPIKey(detail: detail())
+            case 403:
+                return .providerError(message: "[403] access denied: \(detail().prefix(200))")
+            case 413:
+                return .providerError(message: "[413] request too large: \(detail().prefix(160))")
             case 429:
                 return .rateLimited
-            case 500, 502, 503, 504, 529:
+            case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529:
                 return .transientError(message: detail(), statusCode: status)
             default:
                 // Every other 4xx (400 included) is a request the provider
@@ -572,11 +576,15 @@ final class AnthropicProvider: LLMProvider {
         // mentioning `max_tokens: 8500` can no longer masquerade as a 5xx.
         if let status = Self.extractStatusCode(from: description) {
             switch status {
-            case 401, 403:
+            case 401:
                 return .invalidAPIKey(detail: detail())
+            case 403:
+                return .providerError(message: "[403] access denied: \(detail().prefix(200))")
+            case 413:
+                return .providerError(message: "[413] request too large: \(detail().prefix(160))")
             case 429:
                 return .rateLimited
-            case 500, 502, 503, 504, 529:
+            case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529:
                 return .transientError(message: detail(), statusCode: status)
             default:
                 return .providerError(message: detail())

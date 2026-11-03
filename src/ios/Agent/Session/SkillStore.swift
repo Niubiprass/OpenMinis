@@ -1194,6 +1194,14 @@ Do not create extraneous files: README.md, INSTALLATION_GUIDE.md, CHANGELOG.md, 
     }
 
     func isEnabledForSession(_ skillId: String, sessionId: String) -> Bool {
+        // The engineer mode temporarily requires its workflow skill without
+        // overwriting any explicit/folder/global selection in the database.
+        // Turning the mode off (including after relaunch) restores that exact
+        // selection simply by removing this runtime overlay.
+        if skillId == SessionAgentWorkflow.workflowSkillId,
+           SessionAgentWorkflow.isEnabled(sessionId) {
+            return true
+        }
         if let override = dbSessionOverride(sessionId: sessionId, skillId: skillId) {
             return override
         }
@@ -1205,6 +1213,12 @@ Do not create extraneous files: README.md, INSTALLATION_GUIDE.md, CHANGELOG.md, 
 
     /// A counter that increments on every session override change to trigger SwiftUI updates.
     @Published private(set) var sessionOverrideVersion: Int = 0
+
+    /// Invalidate effective skill selection when the engineer overlay changes.
+    /// No persisted skill override is written or deleted by this notification.
+    func refreshWorkflowSelection() {
+        sessionOverrideVersion += 1
+    }
 
     func setSessionOverride(skillId: String, sessionId: String, enabled: Bool) {
         // Explicit selection stays explicit even when equal to today's default:
