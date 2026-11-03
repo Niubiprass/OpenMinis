@@ -14,19 +14,41 @@
 //    com.openminis.minisight.confirm.result tweak -> app "answered"
 //
 
+import CoreFoundation
 import Foundation
 import UIKit
 
-enum MiniSightPetAvailability {
+private enum MiniSightPetAvailability {
+    static var appDirectory: URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("MiniSight", isDirectory: true)
+    }
+
     static var isOnScreen: Bool {
         let defaults = UserDefaults.standard
-        guard defaults.integer(forKey: "minisight.style") == 1 else { return false }
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("MiniSight", isDirectory: true)
-        guard let dir else { return false }
+        guard defaults.integer(forKey: "minisight.style") == 1,
+              let dir = appDirectory else { return false }
         let shown = (try? String(contentsOf: dir.appendingPathComponent("shown"), encoding: .utf8)) ?? "1"
-        guard shown != "0" else { return false }
-        return FileManager.default.fileExists(atPath: dir.appendingPathComponent("pet.png").path)
+        return shown != "0" && FileManager.default.fileExists(atPath: dir.appendingPathComponent("pet.png").path)
+    }
+
+    static func probeJailbreakPlugin() async -> Bool {
+        guard let dir = appDirectory else { return false }
+        let nonce = UUID().uuidString
+        let replyURL = dir.appendingPathComponent("plugin-probe-reply.txt")
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: replyURL)
+            try Data(nonce.utf8).write(to: dir.appendingPathComponent("plugin-probe.txt"), options: .atomic)
+            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                CFNotificationName("com.openminis.minisight.plugin-probe" as CFString), nil, nil, true)
+            for _ in 0..<5 {
+                try Task.checkCancellation()
+                try await Task.sleep(nanoseconds: 100_000_000)
+                if (try? String(contentsOf: replyURL, encoding: .utf8)) == nonce { return true }
+            }
+        } catch { return false }
+        return false
     }
 }
 
@@ -50,9 +72,14 @@ final class MiniSightConfirmBridge {
     }
 
     static func confirm(command: String) async -> Bool {
-        let petAvailable = await Task.detached(priority: .utility) {
-            MiniSightPetAvailability.isOnScreen
-        }.value
+        let appIsForeground = await MainActor.run {
+            UIApplication.shared.applicationState == .active
+        }
+        guard !appIsForeground else {
+            return await MCPApprovalDialog.confirm(command)
+        }
+        let pluginAvailable = await MiniSightPetAvailability.probeJailbreakPlugin()
+        let petAvailable = MiniSightPetAvailability.isOnScreen && pluginAvailable
         guard petAvailable else {
             return await MCPApprovalDialog.confirm(command)
         }

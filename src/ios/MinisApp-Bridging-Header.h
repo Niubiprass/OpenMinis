@@ -8,6 +8,11 @@
 #ifndef MinisApp_Bridging_Header_h
 #define MinisApp_Bridging_Header_h
 
+#import "MiniSightCore/MiniSightPet.h"
+#import "MiniSightCore/MiniSightAI.h"
+#import "MiniSightCore/MiniSightChatPanel.h"
+#import "MiniSightCore/MiniSightAppRecorder.h"
+
 // CommonCrypto: PBKDF2 for the backup passphrase KDF (BackupCrypto.swift).
 // CryptoKit has no PBKDF2 and the SDK ships no Argon2, so this is the
 // dependency-free path sanctioned by docs/backup-restore-design.md §5.2.

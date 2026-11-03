@@ -577,6 +577,20 @@
 		RCL000119 /* BackupHistoryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000219 /* BackupHistoryDetailView.swift */; };
 		RCL000120 /* BackupCategoryIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000220 /* BackupCategoryIcon.swift */; };
 		RCL000121 /* BackupHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000221 /* BackupHUD.swift */; };
+		C0FFEE000000000000000001 /* MiniSightPet.m in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE000000000000000002 /* MiniSightPet.m */; };
+		C0FFEE100000000000000001 /* MiniSightAI.m in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE100000000000000002 /* MiniSightAI.m */; };
+		C0FFEE200000000000000001 /* ChatCore.c in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE200000000000000002 /* ChatCore.c */; };
+		C0FFEE300000000000000001 /* MiniSightLog.m in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE300000000000000002 /* MiniSightLog.m */; };
+		C0FFEE400000000000000001 /* MiniSightChatPanel.m in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE400000000000000002 /* MiniSightChatPanel.m */; };
+		C0FFEE500000000000000001 /* CoreMotion.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C0FFEE500000000000000002 /* CoreMotion.framework */; };
+		C0FFEE600000000000000001 /* ReplayKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C0FFEE600000000000000002 /* ReplayKit.framework */; };
+		C0FFEE700000000000000001 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C0FFEE700000000000000002 /* AVFoundation.framework */; };
+		C0FFEE500000000000000004 /* CoreMedia.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C0FFEEA00000000000000003 /* CoreMedia.framework */; };
+		C0FFEE600000000000000004 /* CoreVideo.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C0FFEEA00000000000000004 /* CoreVideo.framework */; };
+		C0FFEEA00000000000000001 /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA26BD132F2E5FB800AECF2D /* QuartzCore.framework */; };
+		C0FFEE900000000000000004 /* MiniSightAppRecorder.m in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE900000000000000003 /* MiniSightAppRecorder.m */; };
+		C0FFEE900000000000000005 /* MiniSightInAppRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE900000000000000006 /* MiniSightInAppRuntime.swift */; };
+		C0FFEE900000000000000010 /* MiniSightRecorderModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE900000000000000011 /* MiniSightRecorderModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1316,6 +1330,28 @@
 		RCL000219 /* BackupHistoryDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupHistoryDetailView.swift; sourceTree = "<group>"; };
 		RCL000220 /* BackupCategoryIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupCategoryIcon.swift; sourceTree = "<group>"; };
 		RCL000221 /* BackupHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupHUD.swift; sourceTree = "<group>"; };
+		C0FFEE000000000000000002 /* MiniSightPet.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightPet.m; sourceTree = "<group>"; };
+		C0FFEE100000000000000002 /* MiniSightAI.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightAI.m; sourceTree = "<group>"; };
+		C0FFEE200000000000000002 /* ChatCore.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = tools/chat/ChatCore.c; sourceTree = "<group>"; };
+		C0FFEE200000000000000003 /* ChatCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = tools/chat/ChatCore.h; sourceTree = "<group>"; };
+		C0FFEE900000000000000002 /* MiniSightAppRecorder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightAppRecorder.h; sourceTree = "<group>"; };
+		C0FFEE900000000000000007 /* MiniSightAI.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightAI.h; sourceTree = "<group>"; };
+		C0FFEE900000000000000008 /* MiniSightPet.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightPet.h; sourceTree = "<group>"; };
+		C0FFEE900000000000000009 /* MiniSightChatPanel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightChatPanel.h; sourceTree = "<group>"; };
+		C0FFEE90000000000000000A /* MiniSightBridgeIO.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightBridgeIO.h; sourceTree = "<group>"; };
+		C0FFEE90000000000000000B /* MiniSightLog.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightLog.h; sourceTree = "<group>"; };
+		C0FFEE90000000000000000C /* MiniSightGeometry.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightGeometry.h; sourceTree = "<group>"; };
+		C0FFEE90000000000000000D /* MiniSightGravity.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightGravity.h; sourceTree = "<group>"; };
+		C0FFEEA00000000000000003 /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
+		C0FFEEA00000000000000004 /* CoreVideo.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreVideo.framework; path = System/Library/Frameworks/CoreVideo.framework; sourceTree = SDKROOT; };
+		C0FFEE300000000000000002 /* MiniSightLog.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightLog.m; sourceTree = "<group>"; };
+		C0FFEE400000000000000002 /* MiniSightChatPanel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightChatPanel.m; sourceTree = "<group>"; };
+		C0FFEE500000000000000002 /* CoreMotion.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMotion.framework; path = System/Library/Frameworks/CoreMotion.framework; sourceTree = SDKROOT; };
+		C0FFEE600000000000000002 /* ReplayKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ReplayKit.framework; path = System/Library/Frameworks/ReplayKit.framework; sourceTree = SDKROOT; };
+		C0FFEE700000000000000002 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+		C0FFEE900000000000000003 /* MiniSightAppRecorder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightAppRecorder.m; sourceTree = "<group>"; };
+		C0FFEE900000000000000006 /* MiniSightInAppRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightInAppRuntime.swift; sourceTree = "<group>"; };
+		C0FFEE900000000000000011 /* MiniSightRecorderModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightRecorderModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1365,6 +1401,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA9C2BF92F65996900F41633 /* SwiftMath in Frameworks */,
+				C0FFEE500000000000000001 /* CoreMotion.framework in Frameworks */,
+				C0FFEE600000000000000001 /* ReplayKit.framework in Frameworks */,
+				C0FFEE700000000000000001 /* AVFoundation.framework in Frameworks */,
+				C0FFEE500000000000000004 /* CoreMedia.framework in Frameworks */,
+				C0FFEE600000000000000004 /* CoreVideo.framework in Frameworks */,
+				C0FFEEA00000000000000001 /* QuartzCore.framework in Frameworks */,
 				AAF00F012F50A00000049557 /* FFmpeg.framework in Frameworks */,
 				RCL000010 /* Rclone.xcframework in Frameworks */,
 				AAF10F012F50A00000049557 /* libavcodec.framework in Frameworks */,
@@ -1546,6 +1588,28 @@
 			path = Backup;
 			sourceTree = "<group>";
 		};
+		C0FFEE900000000000000001 /* MiniSightCore */ = {
+			isa = PBXGroup;
+			children = (
+				C0FFEE000000000000000002 /* MiniSightPet.m */,
+				C0FFEE100000000000000002 /* MiniSightAI.m */,
+				C0FFEE200000000000000002 /* ChatCore.c */,
+				C0FFEE200000000000000003 /* ChatCore.h */,
+				C0FFEE900000000000000002 /* MiniSightAppRecorder.h */,
+				C0FFEE900000000000000007 /* MiniSightAI.h */,
+				C0FFEE900000000000000008 /* MiniSightPet.h */,
+				C0FFEE900000000000000009 /* MiniSightChatPanel.h */,
+				C0FFEE90000000000000000A /* MiniSightBridgeIO.h */,
+				C0FFEE90000000000000000B /* MiniSightLog.h */,
+				C0FFEE90000000000000000C /* MiniSightGeometry.h */,
+				C0FFEE90000000000000000D /* MiniSightGravity.h */,
+				C0FFEE300000000000000002 /* MiniSightLog.m */,
+				C0FFEE400000000000000002 /* MiniSightChatPanel.m */,
+				C0FFEE900000000000000003 /* MiniSightAppRecorder.m */,
+			);
+			path = MiniSightCore;
+			sourceTree = "<group>";
+		};
 		E51000030 = {
 			isa = PBXGroup;
 			children = (
@@ -1566,6 +1630,9 @@
 		E51000031 /* Minis */ = {
 			isa = PBXGroup;
 			children = (
+				C0FFEE900000000000000001 /* MiniSightCore */,
+				C0FFEE900000000000000006 /* MiniSightInAppRuntime.swift */,
+				C0FFEE900000000000000011 /* MiniSightRecorderModel.swift */,
 				E51000011 /* MinisApp.swift */,
 				E5QA0102 /* AppDelegate.swift */,
 				E5E000018 /* Minis.entitlements */,
@@ -2986,6 +3053,14 @@
 				F1PLG001 /* PluginDevView.swift in Sources */,
 				F1MSS001 /* MiniSightSettingsView.swift in Sources */,
 				F1MCF001 /* MiniSightConfirm.swift in Sources */,
+				C0FFEE000000000000000001 /* MiniSightPet.m in Sources */,
+				C0FFEE100000000000000001 /* MiniSightAI.m in Sources */,
+				C0FFEE200000000000000001 /* ChatCore.c in Sources */,
+				C0FFEE300000000000000001 /* MiniSightLog.m in Sources */,
+				C0FFEE400000000000000001 /* MiniSightChatPanel.m in Sources */,
+				C0FFEE900000000000000004 /* MiniSightAppRecorder.m in Sources */,
+				C0FFEE900000000000000005 /* MiniSightInAppRuntime.swift in Sources */,
+				C0FFEE900000000000000010 /* MiniSightRecorderModel.swift in Sources */,
 				F1W00011 /* MinisShareSheet.swift in Sources */,
 				F1W00901 /* LazyLongTextView.swift in Sources */,
 				F1W00101 /* PrintHelper.swift in Sources */,

@@ -65,15 +65,24 @@ private enum MiniSightPetFile {
         try? Data((on ? "1" : "0").utf8).write(to: shownURL, options: .atomic)
     }
 
-    static func loadAI() -> (String, String, String) {
+    static func loadAI() -> (String, String, String, String) {
         guard let data = try? Data(contentsOf: aiConfigURL),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String]
-        else { return ("", "", "") }
-        return (obj["url"] ?? "", obj["key"] ?? "", obj["model"] ?? "")
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return ("", "", "", "") }
+        return (obj["url"] as? String ?? "", obj["key"] as? String ?? "",
+                obj["model"] as? String ?? "", obj["system_prompt"] as? String ?? "")
     }
 
-    static func saveAI(url: String, key: String, model: String) throws {
-        let obj = ["url": url, "key": key, "model": model]
+    static func saveAI(url: String, key: String, model: String, systemPrompt: String) throws {
+        let existing = (try? Data(contentsOf: aiConfigURL))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        var obj = existing
+        obj["url"] = url
+        obj["key"] = key
+        obj["model"] = model
+        let trimmedPrompt = systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedPrompt.isEmpty { obj.removeValue(forKey: "system_prompt") }
+        else { obj["system_prompt"] = String(trimmedPrompt.prefix(2000)) }
         let data = try JSONSerialization.data(withJSONObject: obj)
         try data.write(to: aiConfigURL, options: .atomic)
     }
@@ -220,6 +229,11 @@ struct MiniSightSettingsView: View {
     @AppStorage("minisight.petSize") private var petSize = 96.0
     @AppStorage("minisight.gravity") private var gravity = false
     @AppStorage("minisight.diagnostics") private var diagnostics = false
+    @AppStorage("minisight.chat.height") private var chatHeight = 360.0
+    @AppStorage("minisight.chat.theme") private var chatTheme = 0
+    @AppStorage("minisight.chat.tintHex") private var chatTintHex = "8B5CF6"
+    @AppStorage("minisight.chat.tintAlpha") private var chatTintAlpha = 0.22
+    @AppStorage("minisight.ai.persona") private var aiPersona = ""
 
     @State private var aiURL = ""
     @State private var aiKey = ""
@@ -379,7 +393,49 @@ struct MiniSightSettingsView: View {
             } header: {
                 Text("桌宠 AI")
             } footer: {
-                Text("给桌宠点击说话用，OpenAI 兼容接口。不填或失败就用预置句子。Key 存在 App 容器的文件里，插件才能读到。\n「保存」只做本地校验并写 Documents/MiniSight/ai.json，不发任何网络请求；「测试」单独发一次请求，不改动已保存的配置，失败（含 429 限流）既不清空输入也不影响保存状态。冷却只作用于「测试」，「保存」随时可用。")
+                Text("App 内桌宠与越狱插件共用此设置。AI 地址、模型、Key 和可选人设保存在 Documents/MiniSight/ai.json；人设随聊天请求作为 system message 发送，不写诊断日志。「保存」只写本地文件，不发网络请求；「测试」独立发送一次请求。")
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("AI 人设 / 系统提示词").font(.subheadline.weight(.medium))
+                    TextEditor(text: $aiPersona)
+                        .frame(minHeight: 90, maxHeight: 150)
+                        .padding(6)
+                        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    Text("留空使用 MiniSight 默认人设。内容随 AI 请求发送，不会写入诊断日志。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("恢复默认人设") { aiPersona = "" }
+                        .font(.footnote)
+                }
+                HStack(spacing: 12) {
+                    Text("面板高度")
+                    Slider(value: $chatHeight, in: 280...440, step: 10)
+                    Text("\(Int(chatHeight))")
+                        .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                        .frame(width: 42, alignment: .trailing)
+                }
+                Picker("磨砂样式", selection: $chatTheme) {
+                    Text("柔和磨砂").tag(0)
+                    Text("深色磨砂").tag(1)
+                    Text("清透玻璃").tag(2)
+                }
+                .pickerStyle(.segmented)
+                ColorPicker("主题色", selection: chatTintBinding, supportsOpacity: false)
+                TextField("HEX 微调（6 位）", text: $chatTintHex)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                HStack(spacing: 12) {
+                    Text("色彩浓度")
+                    Slider(value: $chatTintAlpha, in: 0.05...0.55, step: 0.025)
+                    Text("\(Int(chatTintAlpha * 100))%")
+                        .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+            } header: {
+                Text("聊天外观与人设")
+            } footer: {
+                Text("这些设置同时供 Minis 内桌宠和越狱桌宠的聊天面板使用；实际磨砂强度受系统材质控制。")
             }
 
             Section {
@@ -416,9 +472,9 @@ struct MiniSightSettingsView: View {
             petImage = MiniSightPetFile.load()
             shown = MiniSightPetFile.loadShown()
             let ai = MiniSightPetFile.loadAI()
-            aiURL = ai.0; aiKey = ai.1; aiModel = ai.2
-            // 「已保存」状态从磁盘来（文件时间），与上次测试结果完全无关。
-            aiSavedSnapshot = [ai.0, ai.1, ai.2]
+            aiURL = ai.0; aiKey = ai.1; aiModel = ai.2; aiPersona = ai.3
+            // The App's AI credentials and persona remain in the existing ai.json.
+            aiSavedSnapshot = [ai.0, ai.1, ai.2, ai.3]
             aiSavedAt = MiniSightPetFile.aiConfigSavedAt
         }
         .onChange(of: style) { _ in flushAndPost("com.openminis.minisight.settings") }
@@ -430,6 +486,10 @@ struct MiniSightSettingsView: View {
         .onChange(of: petSize) { _ in flushAndPost("com.openminis.minisight.settings") }
         .onChange(of: gravity) { _ in flushAndPost("com.openminis.minisight.settings") }
         .onChange(of: diagnostics) { _ in flushAndPost("com.openminis.minisight.settings") }
+        .onChange(of: chatHeight) { _ in flushAndPost("com.openminis.minisight.settings") }
+        .onChange(of: chatTheme) { _ in flushAndPost("com.openminis.minisight.settings") }
+        .onChange(of: chatTintHex) { _ in flushAndPost("com.openminis.minisight.settings") }
+        .onChange(of: chatTintAlpha) { _ in flushAndPost("com.openminis.minisight.settings") }
         .sheet(isPresented: $showPhotoPicker) {
             MiniSightPhotoPicker { image in importImage(image) }
         }
@@ -473,6 +533,22 @@ struct MiniSightSettingsView: View {
         return formatter
     }()
 
+    private var chatTintBinding: Binding<Color> {
+        Binding(get: {
+            let hex = chatTintHex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+            let value = UInt64(hex, radix: 16) ?? 0x8B5CF6
+            return Color(.sRGB, red: Double((value >> 16) & 0xff) / 255,
+                         green: Double((value >> 8) & 0xff) / 255,
+                         blue: Double(value & 0xff) / 255, opacity: 1)
+        }, set: { color in
+            let ui = UIColor(color)
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 1
+            guard ui.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return }
+            chatTintHex = String(format: "%02X%02X%02X", Int((red * 255).rounded()),
+                                 Int((green * 255).rounded()), Int((blue * 255).rounded()))
+        })
+    }
+
     private var saveStateText: String {
         guard let aiSavedAt = aiSavedAt else { return "还没保存过。" }
         let stamp = "已保存 · " + Self.savedAtFormatter.string(from: aiSavedAt)
@@ -485,7 +561,8 @@ struct MiniSightSettingsView: View {
         let endpoint = Self.endpoint(for: aiURL) ?? aiURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let current = [endpoint,
                        aiKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                       aiModel.trimmingCharacters(in: .whitespacesAndNewlines)]
+                       aiModel.trimmingCharacters(in: .whitespacesAndNewlines),
+                       aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)]
         return current != aiSavedSnapshot
     }
 
@@ -535,11 +612,12 @@ struct MiniSightSettingsView: View {
             return
         }
         do {
-            try MiniSightPetFile.saveAI(url: config.endpoint, key: config.key, model: config.model)
-            aiSavedSnapshot = [config.endpoint, config.key, config.model]
+            try MiniSightPetFile.saveAI(url: config.endpoint, key: config.key, model: config.model, systemPrompt: aiPersona)
+            aiSavedSnapshot = [config.endpoint, config.key, config.model, aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)]
             aiSavedAt = MiniSightPetFile.aiConfigSavedAt ?? Date()
             aiSaveOK = true
             aiSaveNotice = "已保存：只写入本机 ai.json，没有发送任何网络请求。"
+            flushAndPost("com.openminis.minisight.settings")
         } catch {
             // localizedDescription 可能带文件 URL，不向界面回显。
             aiSavedAt = MiniSightPetFile.aiConfigSavedAt
@@ -575,11 +653,15 @@ struct MiniSightSettingsView: View {
         req.timeoutInterval = 8
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let testPrompt = aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+        let systemPrompt = testPrompt.isEmpty
+            ? "你是可爱的桌宠，说一句不超过20字的中文撒娇话，不要引号。"
+            : String(testPrompt.prefix(2000))
         let body: [String: Any] = [
             "model": model,
             "max_tokens": 40,
             "messages": [
-                ["role": "system", "content": "你是可爱的桌宠，说一句不超过20字的中文撒娇话，不要引号。"],
+                ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": "说一句"],
             ],
         ]

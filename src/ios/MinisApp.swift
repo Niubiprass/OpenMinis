@@ -225,6 +225,7 @@ struct MinisApp: App {
                 // tap-to-dismiss catcher), so no positioning wrapper here.
                 SpeechPlayerControl()
                 QuestionAlertBanner()
+                MiniSightInAppRuntime()
                 AppLockOverlay()
             }
                 .onReceive(SessionLockStore.shared.$appIsLocked) { locked in
