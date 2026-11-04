@@ -82,7 +82,7 @@ struct MiniSightInAppRuntime: View {
         .onChange(of: chatTintHex) { _ in refreshChatPanelAppearance() }
         .onChange(of: chatTintAlpha) { _ in refreshChatPanelAppearance() }
         .onChange(of: lockStore.appIsLocked) { locked in
-            if locked { MiniSightChatPanel.existingPanel()?.close() }
+            if locked { MiniSightChatPanel.existing()?.close() }
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             if scenePhase == .active {
@@ -120,7 +120,7 @@ struct MiniSightInAppRuntime: View {
     }
 
     private func refreshChatPanelAppearance() {
-        guard let panel = MiniSightChatPanel.existingPanel(), panel.isVisible else { return }
+        guard let panel = MiniSightChatPanel.existing(), panel.isVisible else { return }
         panel.appearancePreferences = MiniSightAppFiles.appearancePreferences
     }
 
@@ -132,7 +132,7 @@ struct MiniSightInAppRuntime: View {
     }
 
     private func openChat() {
-        let panel = MiniSightChatPanel.sharedPanel()
+        let panel = MiniSightChatPanel.shared()
         panel.containerPath = MiniSightAppFiles.containerPath
         panel.appearancePreferences = MiniSightAppFiles.appearancePreferences
         guard let scene = UIApplication.shared.connectedScenes
@@ -141,7 +141,7 @@ struct MiniSightInAppRuntime: View {
             toast = "聊天窗口暂不可用。"
             return
         }
-        if !panel.showInWindowScene(scene) { toast = "聊天窗口暂不可用。" }
+        if !panel.show(in: scene) { toast = "聊天窗口暂不可用。" }
     }
 
     private func toggleRecording() {
@@ -163,7 +163,7 @@ private enum MiniSightAppFiles {
         return "\(attrs[.size] ?? 0)|\(attrs[.modificationDate] ?? Date.distantPast)"
     }
     static func loadPet() -> UIImage? { UIImage(contentsOfFile: directory.appendingPathComponent("pet.png").path) }
-    static var appearancePreferences: [AnyHashable: Any] {
+    static var appearancePreferences: [String: Any] {
         let defaults = UserDefaults.standard
         return [
             "minisight.chat.height": defaults.object(forKey: "minisight.chat.height") ?? 360,
@@ -409,14 +409,14 @@ private struct MiniSightPetHost: UIViewRepresentable {
             window.rootViewController = controller
             self.petWindow = window
             self.host = root
-            let pet = MiniSightPetView(sprite: image, displaySize: CGSize(width: size, height: size))
+            let pet = MiniSightPetView(sprite: image, display: CGSize(width: size, height: size))
             handledShakeGeneration = parent.shakeGeneration
             pet.isUserInteractionEnabled = true
             pet.gravityEnabled = parent.gravityEnabled
             pet.longPressEnabled = parent.longPressEnabled
             pet.activityActive = parent.activityActive
-            host.pet = pet
-            host.addSubview(pet)
+            root.pet = pet
+            root.addSubview(pet)
             self.pet = pet
             let single = UITapGestureRecognizer(target: self, action: #selector(singleTap))
             let double = UITapGestureRecognizer(target: self, action: #selector(doubleTap))
@@ -526,7 +526,7 @@ private final class MiniSightPassthroughView: UIView {
         return pet.frame.insetBy(dx: -8, dy: -8).contains(point)
     }
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard point(inside: point, with: event), let pet else { return nil }
+        guard self.point(inside: point, with: event), let pet else { return nil }
         return pet.hitTest(convert(point, to: pet), with: event) ?? pet
     }
 }
