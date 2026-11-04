@@ -83,7 +83,7 @@ struct MiniSightInAppRuntime: View {
         .onChange(of: chatTintHex) { _ in refreshChatPanelAppearance() }
         .onChange(of: chatTintAlpha) { _ in refreshChatPanelAppearance() }
         .onChange(of: lockStore.appIsLocked) { locked in
-            if locked { MiniSightChatPanel.existingPanel()?.close() }
+            if locked { MiniSightChatPanel.existing()?.close() }
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             if scenePhase == .active {
@@ -121,8 +121,8 @@ struct MiniSightInAppRuntime: View {
     }
 
     private func refreshChatPanelAppearance() {
-        guard let panel = MiniSightChatPanel.existingPanel(), panel.isVisible else { return }
-        panel.appearancePreferences = MiniSightAppFiles.appearancePreferences
+        guard let panel = MiniSightChatPanel.existing(), panel.isVisible else { return }
+        panel.appearancePreferences = MiniSightAppFiles.appearancePreferences as? [String: Any] ?? [:]
     }
 
     private func showLocalLine() {
@@ -133,16 +133,16 @@ struct MiniSightInAppRuntime: View {
     }
 
     private func openChat() {
-        let panel = MiniSightChatPanel.sharedPanel()
+        let panel = MiniSightChatPanel.shared()
         panel.containerPath = MiniSightAppFiles.containerPath
-        panel.appearancePreferences = MiniSightAppFiles.appearancePreferences
+        panel.appearancePreferences = MiniSightAppFiles.appearancePreferences as? [String: Any] ?? [:]
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }) else {
             toast = "聊天窗口暂不可用。"
             return
         }
-        if !panel.showInWindowScene(scene) { toast = "聊天窗口暂不可用。" }
+        if !panel.show(in: scene) { toast = "聊天窗口暂不可用。" }
     }
 
     private func toggleRecording() {
@@ -284,7 +284,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
 
         func mount(image: UIImage, size: CGFloat, in host: MiniSightPassthroughView) {
             self.host = host
-            let pet = MiniSightPetView(sprite: image, displaySize: CGSize(width: size, height: size))
+            let pet = MiniSightPetView(sprite: image, display: CGSize(width: size, height: size))
             pet.isUserInteractionEnabled = true
             pet.gravityEnabled = parent.gravityEnabled
             pet.longPressEnabled = parent.longPressEnabled
@@ -382,7 +382,7 @@ private final class MiniSightPassthroughView: UIView {
         return pet.frame.insetBy(dx: -8, dy: -8).contains(point)
     }
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard point(inside: point, with: event), let pet else { return nil }
+        guard bounds.contains(point), let pet else { return nil }
         return pet.hitTest(convert(point, to: pet), with: event) ?? pet
     }
 }
