@@ -3071,17 +3071,6 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         }
 
         // Only an accepted composer send can answer a stopped workflow gate.
-        // CLI/job callbacks, scheduled prompts and synthetic sends never grant
-        // permission; they also revoke any unused permission from a prior turn.
-        if let sid = sessionId {
-            if usingComposer, !programmaticSilentTurn,
-               editingMessageIndex == nil, pendingAttachments.isEmpty, !text.isEmpty {
-                SessionAgentWorkflow.noteUserMessage(text, sessionId: sid)
-            } else {
-                SessionAgentWorkflow.invalidateAuthorization(sessionId: sid)
-            }
-        }
-
         // [T-auto-compact-entry] A fresh user turn starts a new visit: re-arm
         // the entry auto-compact check so the next load completion re-evaluates
         // the threshold (the pre-send check below keeps guarding this send).
@@ -3657,7 +3646,6 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// Retry the next agent loop iteration (continue from where the error occurred,
     /// keeping all previously completed tool blocks and conversation history).
     func retry() {
-        invalidateWorkflowApproval()
         guard !isProcessing else { return }
         guard let lastMsg = messages.last, lastMsg.role == .assistant else { return }
 
@@ -3868,7 +3856,6 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// Resume an interrupted agent loop. Injects a "Continue" user message
     /// into agentHistory so the model knows to pick up where it left off.
     func resume() {
-        invalidateWorkflowApproval()
         guard !isProcessing, canResume else { return }
         // [T-auto-compact-entry] User-initiated recovery is a new turn: re-arm
         // the entry auto-compact check for the next session visit.
@@ -4173,7 +4160,6 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     }
 
     func retryFromMessage(_ messageId: UUID, replacementAttachments: [InputAttachment]? = nil) {
-        invalidateWorkflowApproval()
         guard !isProcessing else { return }
         // [T-ios-retry-keyboard] Re-running from an existing user message is a
         // retry, not a new send.
@@ -5008,12 +4994,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         return s
     }
 
-    private func invalidateWorkflowApproval() {
-        if let sid = sessionId { SessionAgentWorkflow.invalidateAuthorization(sessionId: sid) }
-    }
-
     func cancel() {
-        invalidateWorkflowApproval()
         let lastBlocks = (messages.last?.role == .assistant) ? messages.last!.blocks.count : -1
         let lastRole = messages.last.map { $0.role == .assistant ? "assistant" : "user" } ?? "nil"
         logger.info("⏹️ cancel() START session=\(self.sessionId ?? "nil") isProcessing=\(self.isProcessing) lastRole=\(lastRole) lastBlocks=\(lastBlocks) currentTask=\(self.currentTask != nil)")
@@ -6176,10 +6157,6 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
            let skillFragment = SkillStore.shared.skillPromptFragment(for: sid) {
             userSystemPrompt += "\n\n" + skillFragment
         }
-        if let sid = helperConfig?.parentSessionId ?? sessionId,
-           let workflowFragment = SessionAgentWorkflow.promptFragment(for: sid) {
-            userSystemPrompt += "\n\n" + workflowFragment
-        }
 
         // [T-mcp-integration-ios] Inject Top-20 enabled MCP server metadata.
         if let sid = helperConfig?.parentSessionId ?? sessionId,
@@ -6945,10 +6922,6 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 if let sid = helperConfig?.parentSessionId ?? sessionId,
                    let skillFragment = SkillStore.shared.skillPromptFragment(for: sid) {
                     userSystemPrompt += "\n\n" + skillFragment
-                }
-                if let sid = helperConfig?.parentSessionId ?? sessionId,
-                   let workflowFragment = SessionAgentWorkflow.promptFragment(for: sid) {
-                    userSystemPrompt += "\n\n" + workflowFragment
                 }
                 // [T-mcp-integration-ios] Inject Top-20 enabled MCP metadata.
                 if let sid = helperConfig?.parentSessionId ?? sessionId,

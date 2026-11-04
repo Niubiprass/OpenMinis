@@ -348,12 +348,16 @@ struct StorageManagementView: View {
     /// [T-storage-swipe-delete-20261019] Session row queued for the
     /// swipe-to-delete confirmation. Mirrors the provider list's swipe flow:
     /// swipe reveals Delete, the destructive action still confirms first.
-    @State private var pendingClearSession: StorageManagementViewModel.SessionStorage?
+    private enum DeletionTarget {
+        case session(StorageManagementViewModel.SessionStorage)
+        case bucket(OverviewBucket)
+    }
+    @State private var pendingDeletion: DeletionTarget?
+    @State private var deletionError: String?
     /// [T-storage-overview-swipe-20261019] Overview bucket queued for the
     /// swipe-to-delete confirmation. Only buckets with a safe, well-defined
     /// cleanup are swipeable (see `OverviewBucket`); the shell rootfs, the chat
     /// database and the residual "Other" row deliberately are not.
-    @State private var pendingOverviewBucket: OverviewBucket?
     /// Folder drawer state, persisted locally. Empty = all groups expanded.
     @AppStorage("storage.collapsedGroups") private var collapsedGroupsRaw = ""
 
@@ -395,6 +399,13 @@ struct StorageManagementView: View {
 
     var body: some View {
         List {
+            if let deletionError {
+                Section {
+                    Label(deletionError, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .onTapGesture { self.deletionError = nil }
+                }
+            }
             Section {
                 // [T-storage-l10n-20261019] storageRow takes a plain String, so passing
 // bare literals bypassed the string catalog and showed English inside an
@@ -473,37 +484,51 @@ struct StorageManagementView: View {
         .navigationTitle("Storage")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { vm.load() }
-        // [T-storage-swipe-delete-20261019] Destructive action stays behind a
-        // confirmation, matching the detail view's "Clear Session Files" alert.
-        .alert("Clear Session Files?", isPresented: Binding(
-            get: { pendingClearSession != nil },
-            set: { if !$0 { pendingClearSession = nil } }
+        // [T-storage-swipe-delete-20261019] One alert for every destructive row.
+        // Two .alert modifiers on the same view make iOS 15 keep only the last
+        // one, which is why the session swipe looked dead.
+        .alert(pendingDeletionTitle, isPresented: Binding(
+            get: { pendingDeletion != nil },
+            set: { if !$0 { pendingDeletion = nil } }
         )) {
-            Button("Clear \(vm.format(pendingClearSession?.totalSize ?? 0))", role: .destructive) {
-                if let session = pendingClearSession { clearFiles(for: session) }
-                pendingClearSession = nil
-            }
-            Button("Cancel", role: .cancel) { pendingClearSession = nil }
+            Button(pendingDeletionButton, role: .destructive) { performPendingDeletion() }
+            Button("Cancel", role: .cancel) { pendingDeletion = nil }
         } message: {
-            Text("This will delete \(vm.format(pendingClearSession?.totalSize ?? 0)) of files. This action cannot be undone.")
-        }
-        // [T-storage-overview-swipe-20261019] Overview bucket confirmation.
-        .alert(
-            pendingOverviewBucket.map { AppLocalized($0.confirmTitleKey) } ?? "",
-            isPresented: Binding(
-                get: { pendingOverviewBucket != nil },
-                set: { if !$0 { pendingOverviewBucket = nil } }
-            )
-        ) {
-            Button("Delete", role: .destructive) {
-                if let bucket = pendingOverviewBucket { clearBucket(bucket) }
-                pendingOverviewBucket = nil
-            }
-            Button("Cancel", role: .cancel) { pendingOverviewBucket = nil }
-        } message: {
-            if let bucket = pendingOverviewBucket {
+            switch pendingDeletion {
+            case .session(let session):
+                Text("This will delete \(vm.format(session.totalSize)) of files. This action cannot be undone.")
+            case .bucket(let bucket):
                 Text(AppLocalized(bucket.detailKey))
+            case nil:
+                EmptyView()
             }
+        }
+    }
+
+    private var pendingDeletionTitle: String {
+        switch pendingDeletion {
+        case .session: return AppLocalized("Clear Session Files?")
+        case .bucket(let bucket): return AppLocalized(bucket.confirmTitleKey)
+        case nil: return ""
+        }
+    }
+
+    private var pendingDeletionButton: String {
+        if case .session(let session) = pendingDeletion { return "Clear \(vm.format(session.totalSize))" }
+        return AppLocalized("Delete")
+    }
+
+    private func performPendingDeletion() {
+        guard let target = pendingDeletion else { return }
+        pendingDeletion = nil
+        Task {
+            let failures: Int
+            switch target {
+            case .session(let session): failures = await clearFiles(for: session)
+            case .bucket(let bucket): failures = await clearBucket(bucket)
+            }
+            if failures > 0 { deletionError = "未能删除 \(failures) 项" }
+            vm.load()
         }
     }
 
@@ -525,7 +550,7 @@ struct StorageManagementView: View {
         // (conversation preserved), identical to the detail view.
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
-                pendingClearSession = session
+                pendingDeletion = .session(session)
             } label: {
                 Label("Delete", systemImage: "trash")
             }
@@ -536,21 +561,20 @@ struct StorageManagementView: View {
     /// ("Clear Session Files"): deletes this row's minis directory plus its
     /// [T-child-delete-storage] descendant directories, then reloads sizes.
     /// The conversation itself is preserved.
-    private func clearFiles(for session: StorageManagementViewModel.SessionStorage) {
+    @discardableResult
+    private func clearFiles(for session: StorageManagementViewModel.SessionStorage) async -> Int {
         let sessionId = session.id
         let descendants = session.descendantIds
-        Task.detached(priority: .userInitiated) {
+        return await Task.detached(priority: .userInitiated) {
             let fm = FileManager.default
             let lib = fm.urls(for: .libraryDirectory, in: .userDomainMask).first!
             let minisBase = lib.appendingPathComponent("MinisChat/minis", isDirectory: true)
+            var failures = 0
             for sid in [sessionId] + descendants {
-                SessionStorageCleanup.removeSessionDirectory(sid, minisBase: minisBase)
+                if !SessionStorageCleanup.removeSessionDirectory(sid, minisBase: minisBase) { failures += 1 }
             }
-
-            await MainActor.run {
-                vm.load()
-            }
-        }
+            return failures
+        }.value
     }
 
     /// [T-storage-overview-swipe-20261019] Overview row that reveals a Delete
@@ -560,7 +584,7 @@ struct StorageManagementView: View {
         storageRow(icon: icon, color: color, label: AppLocalized(bucket.titleKey), value: vm.format(size))
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) {
-                    pendingOverviewBucket = bucket
+                    pendingDeletion = .bucket(bucket)
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
@@ -570,8 +594,9 @@ struct StorageManagementView: View {
     /// [T-storage-overview-swipe-20261019] Clear one overview bucket. Each case
     /// touches only its own directory; the shell rootfs, the chat database and
     /// the residual bucket are not reachable from here.
-    private func clearBucket(_ bucket: OverviewBucket) {
-        Task.detached(priority: .userInitiated) {
+    private func clearBucket(_ bucket: OverviewBucket) async -> Int {
+        return await Task.detached(priority: .userInitiated) {
+            var failures = 0
             let fm = FileManager.default
             let lib = fm.urls(for: .libraryDirectory, in: .userDomainMask).first!
             let tmp = fm.temporaryDirectory
@@ -579,7 +604,7 @@ struct StorageManagementView: View {
 
             func removeContents(of dir: URL) {
                 let kids = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [])) ?? []
-                for kid in kids { try? fm.removeItem(at: kid) }
+                for kid in kids where (try? fm.removeItem(at: kid)) == nil { failures += 1 }
             }
 
             switch bucket {
@@ -596,7 +621,7 @@ struct StorageManagementView: View {
                 // the database, so this mirrors clearing each row in turn.
                 let base = lib.appendingPathComponent("MinisChat/minis", isDirectory: true)
                 let dirs = (try? fm.contentsOfDirectory(at: base, includingPropertiesForKeys: nil, options: [])) ?? []
-                for d in dirs { try? fm.removeItem(at: d) }
+                for d in dirs { do { try fm.removeItem(at: d) } catch { failures += 1 } }
             case .orphanedSessions:
                 // Session directories with no database row.
                 let base = lib.appendingPathComponent("MinisChat/minis", isDirectory: true)
@@ -610,12 +635,12 @@ struct StorageManagementView: View {
                 // neither delete nor reuse.
                 let kids = (try? fm.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil, options: [])) ?? []
                 for k in kids where k.lastPathComponent.hasPrefix(".alpine-rootfs-broken-") {
-                    try? fm.removeItem(at: k)
+                    do { try fm.removeItem(at: k) } catch { failures += 1 }
                 }
             }
 
-            await MainActor.run { vm.load() }
-        }
+            return failures
+        }.value
     }
 
     private func storageRow(icon: String, color: Color, label: String, value: String) -> some View {

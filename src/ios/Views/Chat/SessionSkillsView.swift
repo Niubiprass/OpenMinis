@@ -7,8 +7,7 @@
 
 import SwiftUI
 
-/// The engineering workflow state machine lives in
-/// `Agent/Chat/SessionWorkflowGate.swift`; this view only owns its toggle.
+/// Per-session capability sheet: persona, skills, MCP.
 
 struct SessionSkillsView: View {
     /// The real session id, or nil for a draft chat that hasn't sent its first
@@ -31,7 +30,6 @@ struct SessionSkillsView: View {
     @State private var showSoulEditor = false
     @State private var showPersonaPicker = false
     @State private var folderLoadError: String?
-    @State private var pluginEngineerEnabled = false
 
     init(sessionId: String?, ensureSessionId: (() async -> String)? = nil) {
         self.sessionId = sessionId
@@ -61,21 +59,6 @@ struct SessionSkillsView: View {
             await MainActor.run {
                 resolvedSessionId = sid
                 store.setSessionOverride(skillId: skill.id, sessionId: sid, enabled: enabled)
-            }
-        }
-    }
-
-    private func setPluginEngineer(_ enabled: Bool) {
-        pluginEngineerEnabled = enabled
-        if let sid = resolvedSessionId {
-            SessionAgentWorkflow.setEnabled(enabled, sessionId: sid)
-            return
-        }
-        Task {
-            guard let sid = await ensureSessionId?() else { return }
-            await MainActor.run {
-                resolvedSessionId = sid
-                SessionAgentWorkflow.setEnabled(enabled, sessionId: sid)
             }
         }
     }
@@ -123,29 +106,6 @@ struct SessionSkillsView: View {
 
         NavigationStack {
             List {
-                Section {
-                    HStack(spacing: 10) {
-                        Image(systemName: "hammer")
-                            .foregroundStyle(.blue)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("插件工程师")
-                            Text("先商讨、给结果，确认后才改；推送和安装前硬停")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Toggle("", isOn: Binding(
-                            get: { pluginEngineerEnabled },
-                            set: { setPluginEngineer($0) }
-                        ))
-                        .labelsHidden()
-                    }
-                } header: {
-                    Text("工程 Agent")
-                } footer: {
-                    Text("自动启用插件流程技能。先商讨，结论和结果分别确认；没批准时推送、安装、注销会被工具闸门拦下。")
-                }
-
                 Section {
                     Button {
                         showPersonaPicker = true
@@ -213,10 +173,8 @@ struct SessionSkillsView: View {
             .onAppear { store.reload() }
             .task(id: resolvedSessionId) {
                 guard let sid = resolvedSessionId else {
-                    pluginEngineerEnabled = false
                     return
                 }
-                pluginEngineerEnabled = SessionAgentWorkflow.isEnabled(sid)
                 do {
                     let context = try await ChatStore.shared.resolveFolderRuntimeContext(for: sid)
                     store.setFolderSkillDefaults(context.configuration.skillDefaults, for: sid)

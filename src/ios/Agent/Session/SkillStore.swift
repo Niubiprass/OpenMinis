@@ -1194,14 +1194,6 @@ Do not create extraneous files: README.md, INSTALLATION_GUIDE.md, CHANGELOG.md, 
     }
 
     func isEnabledForSession(_ skillId: String, sessionId: String) -> Bool {
-        // The engineer mode temporarily requires its workflow skill without
-        // overwriting any explicit/folder/global selection in the database.
-        // Turning the mode off (including after relaunch) restores that exact
-        // selection simply by removing this runtime overlay.
-        if skillId == SessionAgentWorkflow.workflowSkillId,
-           SessionAgentWorkflow.isEnabled(sessionId) {
-            return true
-        }
         if let override = dbSessionOverride(sessionId: sessionId, skillId: skillId) {
             return override
         }

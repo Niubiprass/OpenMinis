@@ -404,54 +404,6 @@ extension AIChatViewModel {
             return "{}"
         }()
 
-        // Plugin-engineer hard gates. This runs after argument preflight and
-        // before any switch case, so a blocked edit/push/install never reaches
-        // the host-approval bridge or the shell. The existing
-        // host-permission switch and per-command confirmation remain in force.
-        let workflowBlockedOutcome: (String) async -> ToolExecOutcome = { message in
-            ctLogger.info("[WorkflowGate] BLOCKED tool=\(tu.name) id=\(tu.id)")
-            let uiMessage = "等待批准"
-            if msgIdx < self.messages.count, blockIdx < self.messages[msgIdx].blocks.count {
-                self.messages[msgIdx].blocks[blockIdx].content = uiMessage
-                self.messages[msgIdx].blocks[blockIdx].toolStatus = .failed(message: uiMessage)
-            }
-            self.toolLoopDetector.record(
-                toolName: tu.name, params: tu.args,
-                result: nil, errorMessage: message, toolCallId: tu.id
-            )
-            let blockedSnap = ToolSnapshot(type: .text, text: message, mediaRef: nil, duration: nil)
-            let item = ToolSnapshotItem(
-                id: tu.id, toolName: tu.name, snapshot: blockedSnap,
-                mediaResolver: await ChatStore.shared.mediaFileURLResolver()
-            )
-            return ToolExecOutcome(
-                toolId: tu.id, toolName: tu.name,
-                resultPart: .toolResult(id: tu.id, name: tu.name, content: message, isError: true),
-                snapshotEntry: (toolName: tu.name, snapshot: blockedSnap),
-                snapshotItem: item,
-                cancelled: false
-            )
-        }
-
-        switch SessionAgentWorkflow.checkFileTool(tool: tu.name, argsJson: argsJson, sessionId: sessionId) {
-        case .blocked(_, let message): return await workflowBlockedOutcome(message)
-        case .approved, .notGated: break
-        }
-
-        if tu.name == "shell_execute",
-           let gateData = argsJson.data(using: .utf8),
-           let gateArgs = try? JSONSerialization.jsonObject(with: gateData) as? [String: Any],
-           let gateCommand = gateArgs["command"] as? String {
-            switch SessionAgentWorkflow.check(command: gateCommand, sessionId: sessionId) {
-            case .blocked(_, let message):
-                return await workflowBlockedOutcome(message)
-            case .approved:
-                break
-            case .notGated:
-                break
-            }
-        }
-
         do {
         switch tu.name {
         case "ask_user":

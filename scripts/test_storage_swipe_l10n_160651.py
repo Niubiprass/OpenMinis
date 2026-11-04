@@ -18,7 +18,7 @@ import unittest
 
 from pathlib import Path
 
-ROOT = Path('/var/minis/shared/OpenMinis-160649')
+ROOT = Path(__file__).resolve().parents[1]
 STORAGE = (ROOT / 'src/ios/Views/Settings/StorageManagementView.swift').read_text()
 XCSTRINGS = json.loads((ROOT / 'src/ios/Localizable.xcstrings').read_text())
 
@@ -29,13 +29,13 @@ class StorageSwipeDelete(unittest.TestCase):
     def test_swipe_action_reveals_delete(self):
         self.assertIn('.swipeActions(edge: .trailing, allowsFullSwipe: false)', STORAGE)
         self.assertIn('Label("Delete", systemImage: "trash")', STORAGE)
-        self.assertIn('pendingClearSession = session', STORAGE)
+        self.assertIn('pendingDeletion = .session(session)', STORAGE)
 
     def test_destructive_action_confirms_before_deleting(self):
-        self.assertIn('@State private var pendingClearSession', STORAGE)
-        self.assertIn('.alert("Clear Session Files?", isPresented: Binding(', STORAGE)
-        self.assertIn('Button("Clear \\(vm.format(pendingClearSession?.totalSize ?? 0))", role: .destructive)', STORAGE)
-        self.assertIn('Button("Cancel", role: .cancel) { pendingClearSession = nil }', STORAGE)
+        self.assertIn('@State private var pendingDeletion', STORAGE)
+        self.assertIn('.alert(pendingDeletionTitle, isPresented: Binding(', STORAGE)
+        self.assertIn('Button(pendingDeletionButton, role: .destructive)', STORAGE)
+        self.assertIn('Button("Cancel", role: .cancel) { pendingDeletion = nil }', STORAGE)
 
     def test_clear_matches_detail_view_file_removal(self):
         # Same removal as the detail view's "Clear Session Files": this row's
@@ -86,8 +86,8 @@ class StorageLabelLocalization(unittest.TestCase):
             self.assertNotIn(unsafe, STORAGE, unsafe)
 
     def test_overview_confirm_and_clear_wired(self):
-        self.assertIn('pendingOverviewBucket = bucket', STORAGE)
-        self.assertIn('private func clearBucket(_ bucket: OverviewBucket)', STORAGE)
+        self.assertIn('pendingDeletion = .bucket(bucket)', STORAGE)
+        self.assertIn('private func clearBucket(_ bucket: OverviewBucket) async -> Int', STORAGE)
         self.assertIn('LoggingManager.shared.deleteAllLogs()', STORAGE)
         self.assertIn('hasPrefix(".alpine-rootfs-broken-")', STORAGE)
 
