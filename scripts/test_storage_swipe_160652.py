@@ -14,7 +14,7 @@ def ok(cond, name):
     if not cond:
         fails.append(name)
 
-ok(list_view.count('.alert(') == 1, 'list has exactly one alert')
+ok(list_view.count('.alert(') == 0 and list_view.count('.confirmationDialog(') == 1, 'list has exactly one confirmation')
 ok('pendingDeletion' in list_view and 'DeletionTarget' in list_view, 'one shared deletion state')
 ok('.session(session)' in list_view, 'session swipe uses shared state')
 ok('.bucket(bucket)' in list_view, 'overview swipe uses shared state')

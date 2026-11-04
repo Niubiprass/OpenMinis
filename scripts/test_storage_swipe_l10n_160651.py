@@ -29,11 +29,11 @@ class StorageSwipeDelete(unittest.TestCase):
     def test_swipe_action_reveals_delete(self):
         self.assertIn('.swipeActions(edge: .trailing, allowsFullSwipe: false)', STORAGE)
         self.assertIn('Label("Delete", systemImage: "trash")', STORAGE)
-        self.assertIn('pendingDeletion = .session(session)', STORAGE)
+        self.assertIn('queueDeletion(.session(session))', STORAGE)
 
     def test_destructive_action_confirms_before_deleting(self):
         self.assertIn('@State private var pendingDeletion', STORAGE)
-        self.assertIn('.alert(pendingDeletionTitle, isPresented: Binding(', STORAGE)
+        self.assertIn('.confirmationDialog(pendingDeletionTitle, isPresented: Binding(', STORAGE)
         self.assertIn('Button(pendingDeletionButton, role: .destructive)', STORAGE)
         self.assertIn('Button("Cancel", role: .cancel) { pendingDeletion = nil }', STORAGE)
 
@@ -86,7 +86,7 @@ class StorageLabelLocalization(unittest.TestCase):
             self.assertNotIn(unsafe, STORAGE, unsafe)
 
     def test_overview_confirm_and_clear_wired(self):
-        self.assertIn('pendingDeletion = .bucket(bucket)', STORAGE)
+        self.assertIn('queueDeletion(.bucket(bucket))', STORAGE)
         self.assertIn('private func clearBucket(_ bucket: OverviewBucket) async -> Int', STORAGE)
         self.assertIn('LoggingManager.shared.deleteAllLogs()', STORAGE)
         self.assertIn('hasPrefix(".alpine-rootfs-broken-")', STORAGE)

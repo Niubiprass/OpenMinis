@@ -484,13 +484,14 @@ struct StorageManagementView: View {
         .navigationTitle("Storage")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { vm.load() }
-        // [T-storage-swipe-delete-20261019] One alert for every destructive row.
-        // Two .alert modifiers on the same view make iOS 15 keep only the last
-        // one, which is why the session swipe looked dead.
-        .alert(pendingDeletionTitle, isPresented: Binding(
+        // [T-storage-swipe-delete-20261019] A swipe action sets the row's
+        // state while the swipe is still settling; on iOS 15 an .alert attached
+        // to that List is often swallowed, so the confirmation is a
+        // confirmationDialog and the state is set on the next runloop turn.
+        .confirmationDialog(pendingDeletionTitle, isPresented: Binding(
             get: { pendingDeletion != nil },
             set: { if !$0 { pendingDeletion = nil } }
-        )) {
+        ), titleVisibility: .visible) {
             Button(pendingDeletionButton, role: .destructive) { performPendingDeletion() }
             Button("Cancel", role: .cancel) { pendingDeletion = nil }
         } message: {
@@ -503,6 +504,10 @@ struct StorageManagementView: View {
                 EmptyView()
             }
         }
+    }
+
+    private func queueDeletion(_ target: DeletionTarget) {
+        DispatchQueue.main.async { pendingDeletion = target }
     }
 
     private var pendingDeletionTitle: String {
@@ -550,7 +555,7 @@ struct StorageManagementView: View {
         // (conversation preserved), identical to the detail view.
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
-                pendingDeletion = .session(session)
+                queueDeletion(.session(session))
             } label: {
                 Label("Delete", systemImage: "trash")
             }
@@ -584,7 +589,7 @@ struct StorageManagementView: View {
         storageRow(icon: icon, color: color, label: AppLocalized(bucket.titleKey), value: vm.format(size))
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) {
-                    pendingDeletion = .bucket(bucket)
+                    queueDeletion(.bucket(bucket))
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
