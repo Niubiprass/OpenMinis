@@ -12,6 +12,7 @@
 #import "MiniSightCore/MiniSightAI.h"
 #import "MiniSightCore/MiniSightChatPanel.h"
 #import "MiniSightCore/MiniSightAppRecorder.h"
+#import "MiniSightCore/MiniSightLog.h"
 
 // CommonCrypto: PBKDF2 for the backup passphrase KDF (BackupCrypto.swift).
 // CryptoKit has no PBKDF2 and the SDK ships no Argon2, so this is the

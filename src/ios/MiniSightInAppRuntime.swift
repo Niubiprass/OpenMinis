@@ -8,9 +8,11 @@ import UIKit
 /// SpringBoard tweak owns cross-app/Home Screen presentation.
 struct MiniSightInAppRuntime: View {
     @AppStorage("minisight.style") private var style = 0
+    @AppStorage("minisight.renderer") private var renderer = 0
     @AppStorage("minisight.mode") private var mode = 0
     @AppStorage("minisight.petSize") private var petSize = 96.0
     @AppStorage("minisight.gravity") private var gravityEnabled = false
+    @AppStorage("minisight.diagnostics") private var diagnosticsEnabled = false
     @AppStorage("minisight.record") private var recordingEnabled = false
     @AppStorage("minisight.longPress") private var longPressEnabled = true
     @AppStorage("minisight.chat.height") private var chatHeight = 360.0
@@ -27,57 +29,54 @@ struct MiniSightInAppRuntime: View {
     @StateObject private var recorder = MiniSightAppRecorderModel()
     @State private var petImage: UIImage?
     @State private var petIdentity = ""
+    @State private var preferencesLoaded = false
     @State private var toast: String?
 
     private var visible: Bool {
-        style == 1 && activity.shown && petImage != nil && scenePhase == .active
+        preferencesLoaded && renderer == 1 && style == 1 && activity.shown && petImage != nil && scenePhase == .active
             && !lockStore.appIsLocked && (mode == 1 || activity.active)
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .topLeading) {
-                if visible, let petImage {
-                    MiniSightPetHost(image: petImage, displaySize: CGFloat(petSize), roll: motion.roll,
-                                     activityActive: activity.active, gravityEnabled: gravityEnabled,
-                                     longPressEnabled: longPressEnabled, centerX: $petX, centerY: $petY,
-                                     onSingleTap: showLocalLine, onDoubleTap: openChat,
-                                     onLongPress: toggleRecording)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .ignoresSafeArea()
-                        .accessibilityLabel("MiniSight 桌宠；双击聊天，长按录屏")
-                }
-                if let toast, visible {
-                    Text(toast)
-                        .font(.caption)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .position(x: proxy.size.width * petX, y: max(proxy.safeAreaInsets.top + 28, 32))
-                        .allowsHitTesting(false)
-                }
+        Group {
+            if visible, let petImage {
+                MiniSightPetHost(image: petImage, displaySize: CGFloat(petSize), roll: motion.roll,
+                                 activityActive: activity.active, gravityEnabled: gravityEnabled,
+                                 shakeGeneration: motion.shakeGeneration,
+                                 shakeDirection: motion.shakeDirection, shakeStrength: motion.shakeStrength,
+                                 longPressEnabled: longPressEnabled, centerX: $petX, centerY: $petY,
+                                 onSingleTap: showLocalLine, onDoubleTap: openChat,
+                                 onLongPress: toggleRecording)
+            .frame(width: 1, height: 1)
+                    .opacity(0.001)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .ignoresSafeArea()
         .onAppear {
             petIdentity = MiniSightAppFiles.petIdentity
             petImage = MiniSightAppFiles.loadPet()
             activity.refresh()
+            preferencesLoaded = true
             setAppForeground(scenePhase == .active)
-            motion.setEnabled(gravityEnabled && scenePhase == .active)
+            motion.configureDiagnostics(diagnosticsEnabled)
+            motion.setEnabled(gravityEnabled && visible)
         }
         .onChange(of: scenePhase) { phase in
             let active = phase == .active
             setAppForeground(active)
-            motion.setEnabled(gravityEnabled && active)
+            motion.setEnabled(gravityEnabled && visible)
             if active { activity.refresh() } else { recorder.stopIfNeeded() }
         }
+        .onChange(of: renderer) { _ in updateOwnershipMarker() }
         .onChange(of: style) { _ in updateOwnershipMarker() }
         .onChange(of: mode) { _ in updateOwnershipMarker() }
         .onChange(of: activity.shown) { _ in updateOwnershipMarker() }
         .onChange(of: activity.active) { _ in updateOwnershipMarker() }
         .onChange(of: petImage != nil) { _ in updateOwnershipMarker() }
-        .onChange(of: gravityEnabled) { enabled in motion.setEnabled(enabled && scenePhase == .active) }
+        .onChange(of: visible) { shown in motion.setEnabled(gravityEnabled && shown) }
+        .onChange(of: gravityEnabled) { enabled in motion.setEnabled(enabled && visible) }
+        .onChange(of: diagnosticsEnabled) { enabled in motion.configureDiagnostics(enabled) }
         .onChange(of: chatHeight) { _ in refreshChatPanelAppearance() }
         .onChange(of: chatTheme) { _ in refreshChatPanelAppearance() }
         .onChange(of: chatTintHex) { _ in refreshChatPanelAppearance() }
@@ -210,46 +209,152 @@ private final class MiniSightAppActivity: ObservableObject {
 @MainActor
 private final class MiniSightAppMotion: ObservableObject {
     @Published private(set) var roll = 0.0
+    @Published private(set) var shakeGeneration = 0
+    @Published private(set) var shakeDirection = 1.0
+    @Published private(set) var shakeStrength = 0.0
+
     private let manager = CMMotionManager()
-    private var lastSample = Date()
+    private var requestedEnabled = false
+    private var lastSampleTime: CFTimeInterval = 0
+    private var lastDiagnosticTime: CFTimeInterval = 0
+    private var gravityX = 0.0
+    private var gravityY = 0.0
+    private var gravityZ = 0.0
+    private var gravityEstimateReady = false
+    private var shakeLatched = false
+
+    func configureDiagnostics(_ enabled: Bool) {
+        MSDiagConfigure(enabled, MiniSightAppFiles.containerPath)
+    }
 
     func setEnabled(_ enabled: Bool) {
-        guard enabled else { manager.stopDeviceMotionUpdates(); manager.stopAccelerometerUpdates(); roll = 0; return }
+        requestedEnabled = enabled
+        guard enabled else {
+            manager.stopDeviceMotionUpdates()
+            manager.stopAccelerometerUpdates()
+            lastSampleTime = 0
+            gravityEstimateReady = false
+            gravityX = 0
+            gravityY = 0
+            gravityZ = 0
+            shakeLatched = false
+            roll = 0
+            MSDiagMessage("gravity app stopped reason=disabled")
+            return
+        }
         guard !manager.isDeviceMotionActive && !manager.isAccelerometerActive else { return }
+        guard manager.isDeviceMotionAvailable || manager.isAccelerometerAvailable else {
+            MSDiagMessage("gravity app unavailable deviceMotion=0 accelerometer=0")
+            return
+        }
         if manager.isDeviceMotionAvailable {
             manager.deviceMotionUpdateInterval = 1.0 / 30.0
-            manager.startDeviceMotionUpdates(to: .main) { [weak self] sample, _ in
+            manager.startDeviceMotionUpdates(to: .main) { [weak self] sample, error in
+                guard let self, self.requestedEnabled else { return }
+                if let error {
+                    MSDiagMessage("gravity app deviceMotion error=\(error.localizedDescription)")
+                    self.manager.stopDeviceMotionUpdates()
+                    self.startAccelerometerFallback()
+                    return
+                }
                 guard let sample else { return }
-                self?.apply(sample.gravity.x)
+                self.apply(gravityX: sample.gravity.x, gravityY: sample.gravity.y,
+                           userX: sample.userAcceleration.x, userY: sample.userAcceleration.y,
+                           userZ: sample.userAcceleration.z)
             }
-        } else if manager.isAccelerometerAvailable {
-            manager.accelerometerUpdateInterval = 1.0 / 30.0
-            manager.startAccelerometerUpdates(to: .main) { [weak self] sample, _ in
-                guard let sample else { return }
-                self?.apply(sample.acceleration.x)
-            }
+            MSDiagMessage("gravity app started source=deviceMotion interval=0.033")
+        } else {
+            startAccelerometerFallback()
         }
     }
 
-    private func apply(_ raw: Double) {
-        let target = abs(raw) < 0.035 ? 0 : min(1, max(-1, raw))
-        let dt = min(0.2, max(0.001, Date().timeIntervalSince(lastSample)))
-        lastSample = Date()
-        let alpha = 1 - exp(-dt / 0.12)
-        roll = min(1, max(-1, roll + (target - roll) * alpha))
+    private func startAccelerometerFallback() {
+        guard requestedEnabled, manager.isAccelerometerAvailable else {
+            MSDiagMessage("gravity app unavailable accelerometer=0")
+            return
+        }
+        gravityEstimateReady = false
+        manager.accelerometerUpdateInterval = 1.0 / 30.0
+        manager.startAccelerometerUpdates(to: .main) { [weak self] sample, error in
+            guard let self, self.requestedEnabled else { return }
+            if let error {
+                MSDiagMessage("gravity app accelerometer error=\(error.localizedDescription)")
+                self.manager.stopAccelerometerUpdates()
+                return
+            }
+            guard let sample else { return }
+            let a = sample.acceleration
+            let dt = self.sampleDeltaTime()
+            let alpha = 1.0 - exp(-dt / 0.8)
+            if !self.gravityEstimateReady {
+                self.gravityX = a.x
+                self.gravityY = a.y
+                self.gravityZ = a.z
+                self.gravityEstimateReady = true
+            } else {
+                self.gravityX += alpha * (a.x - self.gravityX)
+                self.gravityY += alpha * (a.y - self.gravityY)
+                self.gravityZ += alpha * (a.z - self.gravityZ)
+            }
+            self.apply(gravityX: self.gravityX, gravityY: self.gravityY,
+                       userX: a.x - self.gravityX, userY: a.y - self.gravityY,
+                       userZ: a.z - self.gravityZ, deltaTime: dt)
+        }
+        MSDiagMessage("gravity app started source=accelerometer interval=0.033")
+    }
+
+    private func sampleDeltaTime() -> Double {
+        let now = CACurrentMediaTime()
+        let dt = lastSampleTime > 0 ? min(0.2, max(0.001, now - lastSampleTime)) : 1.0 / 30.0
+        lastSampleTime = now
+        return dt
+    }
+
+    private func interfaceOrientation() -> Int32 {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive })
+            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        return Int32(scene?.interfaceOrientation.rawValue ?? UIInterfaceOrientation.portrait.rawValue)
+    }
+
+    private func apply(gravityX: Double, gravityY: Double,
+                       userX: Double, userY: Double, userZ: Double,
+                       deltaTime suppliedDelta: Double? = nil) {
+        let dt = suppliedDelta ?? sampleDeltaTime()
+        let target = MiniSightGravityRollForDevice(gravityX, gravityY, interfaceOrientation())
+        roll = MiniSightGravityFilterRoll(roll, target, dt)
+
+        let magnitude = sqrt(userX * userX + userY * userY + userZ * userZ)
+        if !shakeLatched && magnitude >= 0.75 {
+            shakeLatched = true
+            shakeDirection = abs(roll) >= 0.08 ? (roll >= 0 ? 1.0 : -1.0) : (userX >= 0 ? 1.0 : -1.0)
+            shakeStrength = min(1.0, max(0.2, (magnitude - 0.35) / 1.5))
+            shakeGeneration &+= 1
+        } else if shakeLatched && magnitude <= 0.35 {
+            shakeLatched = false
+        }
+
+        let now = CACurrentMediaTime()
+        if now - lastDiagnosticTime >= 1.0 {
+            lastDiagnosticTime = now
+            MSDiagMessage(String(format: "gravity app sample orientation=%d gx=%.3f gy=%.3f roll=%.3f shakeG=%.3f", interfaceOrientation(), gravityX, gravityY, roll, magnitude))
+        }
     }
 
     deinit { manager.stopDeviceMotionUpdates(); manager.stopAccelerometerUpdates() }
 }
 
-/// The transparent full-screen host reports hits only inside the pet, allowing
-/// the normal Minis controls underneath to receive every other touch.
+/// A zero-sized SwiftUI anchor owns a separate non-key pass-through pet window.
 private struct MiniSightPetHost: UIViewRepresentable {
     let image: UIImage
     let displaySize: CGFloat
     let roll: Double
     let activityActive: Bool
     let gravityEnabled: Bool
+    let shakeGeneration: Int
+    let shakeDirection: Double
+    let shakeStrength: Double
     let longPressEnabled: Bool
     @Binding var centerX: Double
     @Binding var centerY: Double
@@ -259,18 +364,21 @@ private struct MiniSightPetHost: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeUIView(context: Context) -> MiniSightPassthroughView {
-        let host = MiniSightPassthroughView(frame: .zero)
-        host.normalizedCenter = CGPoint(x: centerX, y: centerY)
-        context.coordinator.mount(image: image, size: displaySize, in: host)
-        return host
+    func makeUIView(context: Context) -> UIView {
+        let anchor = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+        anchor.isUserInteractionEnabled = false
+        context.coordinator.mount(image: image, size: displaySize)
+        return anchor
     }
 
-    func updateUIView(_ host: MiniSightPassthroughView, context: Context) {
+    func updateUIView(_ anchor: UIView, context: Context) {
         context.coordinator.parent = self
-        host.normalizedCenter = CGPoint(x: centerX, y: centerY)
         context.coordinator.update(image: image, size: displaySize, roll: roll,
-                                   active: activityActive, in: host)
+                                   active: activityActive)
+    }
+
+    static func dismantleUIView(_ anchor: UIView, coordinator: Coordinator) {
+        coordinator.teardown()
     }
 
     @MainActor
@@ -278,13 +386,31 @@ private struct MiniSightPetHost: UIViewRepresentable {
         var parent: MiniSightPetHost
         weak var host: MiniSightPassthroughView?
         weak var pet: MiniSightPetView?
+        private var petWindow: UIWindow?
         private var panStart = CGPoint.zero
+        private var handledShakeGeneration = 0
 
         init(_ parent: MiniSightPetHost) { self.parent = parent }
 
-        func mount(image: UIImage, size: CGFloat, in host: MiniSightPassthroughView) {
-            self.host = host
+        func mount(image: UIImage, size: CGFloat) {
+            guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }) else { return }
+            let window = UIWindow(windowScene: scene)
+            window.frame = scene.coordinateSpace.bounds
+            window.windowLevel = .normal + 1
+            window.backgroundColor = .clear
+            window.isOpaque = false
+            let root = MiniSightPassthroughView(frame: window.bounds)
+            root.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            root.normalizedCenter = CGPoint(x: parent.centerX, y: parent.centerY)
+            let controller = UIViewController()
+            controller.view = root
+            window.rootViewController = controller
+            self.petWindow = window
+            self.host = root
             let pet = MiniSightPetView(sprite: image, displaySize: CGSize(width: size, height: size))
+            handledShakeGeneration = parent.shakeGeneration
             pet.isUserInteractionEnabled = true
             pet.gravityEnabled = parent.gravityEnabled
             pet.longPressEnabled = parent.longPressEnabled
@@ -303,10 +429,12 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.addGestureRecognizer(single); pet.addGestureRecognizer(double)
             pet.addGestureRecognizer(longPress); pet.addGestureRecognizer(pan)
             pet.startPlaying()
+            window.isHidden = false
         }
 
-        func update(image: UIImage, size: CGFloat, roll: Double, active: Bool, in host: MiniSightPassthroughView) {
-            guard let pet else { mount(image: image, size: size, in: host); return }
+        func update(image: UIImage, size: CGFloat, roll: Double, active: Bool) {
+            guard let host else { mount(image: image, size: size); return }
+            guard let pet else { mount(image: image, size: size); return }
             if pet.frame.size != CGSize(width: size, height: size) {
                 pet.bounds = CGRect(x: 0, y: 0, width: size, height: size)
             }
@@ -315,6 +443,11 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.gravityRoll = roll
             pet.activityActive = active
             pet.reducedWork = ProcessInfo.processInfo.isLowPowerModeEnabled
+            if parent.shakeGeneration != handledShakeGeneration {
+                handledShakeGeneration = parent.shakeGeneration
+                pet.triggerGravityImpulse(withDirection: CGFloat(parent.shakeDirection),
+                                          strength: CGFloat(parent.shakeStrength))
+            }
             host.setNeedsLayout()
             host.layoutIfNeeded()
         }
@@ -347,6 +480,17 @@ private struct MiniSightPetHost: UIViewRepresentable {
             default: break
             }
         }
+
+        func teardown() {
+            pet?.stopPlaying()
+            pet = nil
+            host?.pet = nil
+            host = nil
+            petWindow?.isHidden = true
+            petWindow?.rootViewController = nil
+            petWindow = nil
+        }
+
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { false }
     }

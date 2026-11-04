@@ -53,8 +53,8 @@ ok('allowed = ["批准推送", "确认推送"]' in GATE,
 for marker in ("case .uninstall", "case .respring", "case .reboot", "case .ci"):
     ok(marker in GATE, "gate type includes " + marker)
 FLOW = (ROOT / ".github/workflows/ios15-v64-repair.yml").read_text()
-ok("CURRENT_PROJECT_VERSION=160652" in FLOW and "ios15-160652-four-features" in FLOW,
-   "dedicated build uses 160652 on an isolated trigger branch")
+ok("CURRENT_PROJECT_VERSION=160653" in FLOW and "local/minisight-187-integration-20261103" in FLOW,
+   "dedicated build uses 160653 on an isolated trigger branch")
 
 failed = [n for n, valid in checks if not valid]
 for n, valid in checks:

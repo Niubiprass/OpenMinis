@@ -222,6 +222,8 @@ private final class MiniSightAITestRedirectGuard: NSObject, URLSessionTaskDelega
 struct MiniSightSettingsView: View {
     /// 0 = capsule, 1 = pet.
     @AppStorage("minisight.style") private var style = 0
+    /// 0 = SpringBoard plugin (default), 1 = in-App renderer.
+    @AppStorage("minisight.renderer") private var renderer = 0
     @AppStorage("minisight.record") private var record = false
     @AppStorage("minisight.longPress") private var longPressToRecord = true
     @AppStorage("minisight.mode") private var mode = 0   // 0 = 仅调用时，1 = 常驻
@@ -269,6 +271,18 @@ struct MiniSightSettingsView: View {
                 Toggle("显示桌宠", isOn: $shown)
             } footer: {
                 Text("双击桌宠也会关掉它；关掉后 MCP 调用也不再出现，要恢复就在这里打开。")
+            }
+
+            Section {
+                Picker("显示端", selection: $renderer) {
+                    Text("插件（桌面/其他 App）").tag(0)
+                    Text("Minis App 内").tag(1)
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("桌宠由谁显示")
+            } footer: {
+                Text("插件模式由 SpringBoard 插件独占显示；App 模式只在 Minis 内显示。两种模式互斥。")
             }
 
             Section {
@@ -410,7 +424,7 @@ struct MiniSightSettingsView: View {
                 }
                 HStack(spacing: 12) {
                     Text("面板高度")
-                    Slider(value: $chatHeight, in: 280...440, step: 10)
+                    Slider(value: $chatHeight, in: 180...440, step: 10)
                     Text("\(Int(chatHeight))")
                         .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
                         .frame(width: 42, alignment: .trailing)
@@ -478,6 +492,7 @@ struct MiniSightSettingsView: View {
             aiSavedAt = MiniSightPetFile.aiConfigSavedAt
         }
         .onChange(of: style) { _ in flushAndPost("com.openminis.minisight.settings") }
+        .onChange(of: renderer) { _ in flushAndPost("com.openminis.minisight.settings") }
         .onChange(of: mode) { _ in flushAndPost("com.openminis.minisight.settings") }
         .onChange(of: shown) { value in
             MiniSightPetFile.saveShown(value)

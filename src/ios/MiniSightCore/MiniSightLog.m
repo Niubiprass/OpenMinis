@@ -23,6 +23,10 @@ void MSDiagConfigure(BOOL enabled, NSString *container) {
     atomic_store(&MSDiagEnabled, enabled && container.length > 0);
 }
 
+void MSDiagMessage(NSString *message) {
+    if (message.length) MSDiag(@"%@", message);
+}
+
 void MSDiag(NSString *format, ...) {
     MSDiagSetup();
     if (!atomic_load(&MSDiagEnabled)) return;

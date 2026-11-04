@@ -145,7 +145,7 @@ static MiniSightChatPanel *gMiniSightExistingChatPanel;
 - (CGFloat)configuredHeight {
     CGFloat configured = [self.appearancePreferences[@"minisight.chat.height"] respondsToSelector:@selector(doubleValue)]
         ? [self.appearancePreferences[@"minisight.chat.height"] doubleValue] : 360.0;
-    return MIN(MAX(280.0, configured), 440.0);
+    return MIN(MAX(180.0, configured), 440.0);
 }
 
 - (UIColor *)configuredTint {
@@ -611,9 +611,8 @@ static MiniSightChatPanel *gMiniSightExistingChatPanel;
 }
 
 - (CGFloat)preferredCardHeightForSize:(CGSize)size {
-    CGFloat available = MAX(240.0, size.height - self.window.safeAreaInsets.top - self.window.safeAreaInsets.bottom - 32.0);
-    CGFloat configured = [self configuredHeight];
-    return MIN(available, configured);
+    CGFloat available = MAX(200.0, size.height - self.window.safeAreaInsets.top - self.window.safeAreaInsets.bottom - 32.0);
+    return MIN(available, [self configuredHeight]);
 }
 
 - (void)layoutForCurrentScreen {

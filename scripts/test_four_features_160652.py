@@ -39,7 +39,7 @@ checks += [
     check('workflow has separate external gates', all(x in gate for x in ['case edit, push, ci, install, uninstall, respring, reboot', 'case .uninstall', 'case .respring', 'case .reboot'])),
     check('workflow uses composer-only approval', 'usingComposer' in vm and 'invalidateWorkflowApproval' in vm),
     check('workflow rejects generic approvals', 'allowed = ["批准推送", "确认推送"]' in gate and 'isApprovalText(text, for: pending)' in gate),
-    check('build number is 160652', 'CURRENT_PROJECT_VERSION=160652' in workflow and '160652-FourFeatures' in workflow),
+    check('build number is 160653', 'CURRENT_PROJECT_VERSION=160653' in workflow and '160653-MiniSightRepair' in workflow),
 ]
 
 # The user explicitly excluded #185 body-size budgeting and automatic 413 shrinking.

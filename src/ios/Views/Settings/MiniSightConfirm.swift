@@ -72,10 +72,10 @@ final class MiniSightConfirmBridge {
     }
 
     static func confirm(command: String) async -> Bool {
-        let appIsForeground = await MainActor.run {
-            UIApplication.shared.applicationState == .active
+        let renderer = await MainActor.run {
+            UserDefaults.standard.integer(forKey: "minisight.renderer")
         }
-        guard !appIsForeground else {
+        guard renderer == 0 else {
             return await MCPApprovalDialog.confirm(command)
         }
         let pluginAvailable = await MiniSightPetAvailability.probeJailbreakPlugin()

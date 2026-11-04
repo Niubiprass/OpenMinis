@@ -9,6 +9,7 @@ extern "C" {
 #endif
 void MSDiagConfigure(BOOL enabled, NSString * _Nullable container);
 void MSDiag(NSString * _Nonnull format, ...) NS_FORMAT_FUNCTION(1, 2);
+void MSDiagMessage(NSString * _Nonnull message);
 #ifdef __cplusplus
 }
 #endif

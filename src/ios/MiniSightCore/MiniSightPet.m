@@ -158,6 +158,15 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
 }
 @end
 
+double MiniSightGravityRollForDevice(double x, double y, int orientation) {
+    MSPoint projected = MSGravityProject(x, y, orientation);
+    return MSGravityRollFromProjected(projected.x);
+}
+
+double MiniSightGravityFilterRoll(double previous, double sample, double deltaTime) {
+    return MSGravityFilter(previous, sample, deltaTime);
+}
+
 @implementation MiniSightPetView
 @synthesize centerBounds = _centerBounds, onGeometryChanged = _onGeometryChanged;
 @synthesize activityActive = _activityActive, longPressEnabled = _longPressEnabled;
