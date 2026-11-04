@@ -75,7 +75,6 @@ static MSChatValue *MiniSightAIValueFromJSONData(NSData *data) {
 @property (nonatomic, copy, nullable) void (^pendingCompletion)(MiniSightAIReply *reply);
 @property (nonatomic, assign) MSChatContext history;
 @property (nonatomic, assign) MSChatRequestState requestState;
-@property (nonatomic, copy) NSString *systemPrompt;
 @end
 
 @implementation MiniSightAI
