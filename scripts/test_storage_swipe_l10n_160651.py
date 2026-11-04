@@ -29,20 +29,23 @@ class StorageSwipeDelete(unittest.TestCase):
     def test_swipe_action_reveals_delete(self):
         self.assertIn('.swipeActions(edge: .trailing, allowsFullSwipe: false)', STORAGE)
         self.assertIn('Label("Delete", systemImage: "trash")', STORAGE)
-        self.assertIn('queueDeletion(.session(session))', STORAGE)
+        self.assertIn('delete(.session(session))', STORAGE)
 
-    def test_destructive_action_confirms_before_deleting(self):
-        self.assertIn('@State private var pendingDeletion', STORAGE)
-        self.assertIn('.confirmationDialog(pendingDeletionTitle, isPresented: Binding(', STORAGE)
-        self.assertIn('Button(pendingDeletionButton, role: .destructive)', STORAGE)
-        self.assertIn('Button("Cancel", role: .cancel) { pendingDeletion = nil }', STORAGE)
+    def test_destructive_action_has_no_state_between_tap_and_removal(self):
+        # [T-storage-swipe-delete-20261104] A confirmation driven by a custom
+        # isPresented Binding cleared the pending target before the button
+        # action read it, so the dialog closed and nothing was deleted. The
+        # tap must reach removeItem with no intermediate state.
+        self.assertNotIn('@State private var pendingDeletion', STORAGE)
+        self.assertNotIn('.confirmationDialog(', STORAGE)
+        self.assertIn('private func delete(_ target: DeletionTarget)', STORAGE)
 
     def test_clear_matches_detail_view_file_removal(self):
         # Same removal as the detail view's "Clear Session Files": this row's
         # minis directory + descendants, then reload so sizes refresh.
         self.assertIn('private func clearFiles(for session: StorageManagementViewModel.SessionStorage)', STORAGE)
         self.assertIn('for sid in [sessionId] + descendants', STORAGE)
-        self.assertIn('SessionStorageCleanup.removeSessionDirectory(sid, minisBase: minisBase)', STORAGE)
+        self.assertIn('try fm.removeItem(at: dir)', STORAGE)
 
     def test_conversation_preserved_semantics(self):
         # The swipe path is a file-only cleanup; it must not call a session
@@ -86,7 +89,7 @@ class StorageLabelLocalization(unittest.TestCase):
             self.assertNotIn(unsafe, STORAGE, unsafe)
 
     def test_overview_confirm_and_clear_wired(self):
-        self.assertIn('queueDeletion(.bucket(bucket))', STORAGE)
+        self.assertIn('delete(.bucket(bucket))', STORAGE)
         self.assertIn('private func clearBucket(_ bucket: OverviewBucket) async -> Int', STORAGE)
         self.assertIn('LoggingManager.shared.deleteAllLogs()', STORAGE)
         self.assertIn('hasPrefix(".alpine-rootfs-broken-")', STORAGE)

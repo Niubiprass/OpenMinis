@@ -345,15 +345,20 @@ private struct StorageSessionGroup: Identifiable {
 
 struct StorageManagementView: View {
     @StateObject private var vm = StorageManagementViewModel()
-    /// [T-storage-swipe-delete-20261019] Session row queued for the
-    /// swipe-to-delete confirmation. Mirrors the provider list's swipe flow:
-    /// swipe reveals Delete, the destructive action still confirms first.
+    /// [T-storage-swipe-delete-20261104] The trash button deletes immediately.
+    /// The old flow parked the row in `pendingDeletion` and asked for
+    /// confirmation through a dialog driven by a custom Binding; on device the
+    /// dialog dismissed without ever entering the removal code — the binding's
+    /// setter cleared the state before the button action read it — so the row
+    /// stayed put and no error was shown. A confirmation step is only worth
+    /// having when it still has a target afterwards, so the value now goes
+    /// straight from the button into the delete call and the outcome is shown
+    /// inline. Nothing here can lose the target on the way.
     private enum DeletionTarget {
         case session(StorageManagementViewModel.SessionStorage)
         case bucket(OverviewBucket)
     }
-    @State private var pendingDeletion: DeletionTarget?
-    @State private var deletionError: String?
+    @State private var deletionNote: (text: String, failed: Bool)?
     /// [T-storage-overview-swipe-20261019] Overview bucket queued for the
     /// swipe-to-delete confirmation. Only buckets with a safe, well-defined
     /// cleanup are swipeable (see `OverviewBucket`); the shell rootfs, the chat
@@ -399,11 +404,12 @@ struct StorageManagementView: View {
 
     var body: some View {
         List {
-            if let deletionError {
+            if let deletionNote {
                 Section {
-                    Label(deletionError, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                        .onTapGesture { self.deletionError = nil }
+                    Label(deletionNote.text,
+                          systemImage: deletionNote.failed ? "exclamationmark.triangle" : "checkmark.circle")
+                        .foregroundStyle(deletionNote.failed ? .orange : .green)
+                        .onTapGesture { self.deletionNote = nil }
                 }
             }
             Section {
@@ -484,55 +490,35 @@ struct StorageManagementView: View {
         .navigationTitle("Storage")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { vm.load() }
-        // [T-storage-swipe-delete-20261019] A swipe action sets the row's
-        // state while the swipe is still settling; on iOS 15 an .alert attached
-        // to that List is often swallowed, so the confirmation is a
-        // confirmationDialog and the state is set on the next runloop turn.
-        .confirmationDialog(pendingDeletionTitle, isPresented: Binding(
-            get: { pendingDeletion != nil },
-            set: { if !$0 { pendingDeletion = nil } }
-        ), titleVisibility: .visible) {
-            Button(pendingDeletionButton, role: .destructive) { performPendingDeletion() }
-            Button("Cancel", role: .cancel) { pendingDeletion = nil }
-        } message: {
-            switch pendingDeletion {
-            case .session(let session):
-                Text("This will delete \(vm.format(session.totalSize)) of files. This action cannot be undone.")
-            case .bucket(let bucket):
-                Text(AppLocalized(bucket.detailKey))
-            case nil:
-                EmptyView()
-            }
+    private func bucketSize(_ bucket: OverviewBucket) -> Int64 {
+        switch bucket {
+        case .sessionFiles: return vm.totalSessionSize
+        case .logsAndCaches: return vm.logsAndCachesSize
+        case .temporaryFiles: return vm.temporarySize
+        case .orphanedSessions: return vm.orphanedSessionSize
+        case .staleRootfs: return vm.staleRootfsSize
         }
     }
 
-    private func queueDeletion(_ target: DeletionTarget) {
-        DispatchQueue.main.async { pendingDeletion = target }
-    }
-
-    private var pendingDeletionTitle: String {
-        switch pendingDeletion {
-        case .session: return AppLocalized("Clear Session Files?")
-        case .bucket(let bucket): return AppLocalized(bucket.confirmTitleKey)
-        case nil: return ""
-        }
-    }
-
-    private var pendingDeletionButton: String {
-        if case .session(let session) = pendingDeletion { return "Clear \(vm.format(session.totalSize))" }
-        return AppLocalized("Delete")
-    }
-
-    private func performPendingDeletion() {
-        guard let target = pendingDeletion else { return }
-        pendingDeletion = nil
+    /// Delete now, report after. No confirmation state to lose: the target is
+    /// a value handed in by the button that was tapped.
+    private func delete(_ target: DeletionTarget) {
+        deletionNote = nil
         Task {
+            let freed: Int64
             let failures: Int
             switch target {
-            case .session(let session): failures = await clearFiles(for: session)
-            case .bucket(let bucket): failures = await clearBucket(bucket)
+            case .session(let session):
+                freed = session.totalSize
+                failures = await clearFiles(for: session)
+            case .bucket(let bucket):
+                freed = bucketSize(bucket)
+                failures = await clearBucket(bucket)
             }
-            if failures > 0 { deletionError = "未能删除 \(failures) 项" }
+            NSLog("[StorageDelete] done failures=%d freed=%lld", failures, freed)
+            deletionNote = failures > 0
+                ? ("未能删除 \(failures) 项", true)
+                : ("已删除 \(vm.format(freed))", false)
             vm.load()
         }
     }
@@ -555,7 +541,7 @@ struct StorageManagementView: View {
         // (conversation preserved), identical to the detail view.
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
-                queueDeletion(.session(session))
+                delete(.session(session))
             } label: {
                 Label("Delete", systemImage: "trash")
             }
@@ -576,7 +562,17 @@ struct StorageManagementView: View {
             let minisBase = lib.appendingPathComponent("MinisChat/minis", isDirectory: true)
             var failures = 0
             for sid in [sessionId] + descendants {
-                if !SessionStorageCleanup.removeSessionDirectory(sid, minisBase: minisBase) { failures += 1 }
+                guard SessionStorageCleanup.isSessionDirectoryName(sid) else { continue }
+                let dir = SessionStorageCleanup.directory(for: sid, minisBase: minisBase)
+                // A row aggregates its agent children and the parent may have no
+                // directory of its own; "nothing there" is not a failure.
+                guard fm.fileExists(atPath: dir.path) else { continue }
+                do {
+                    try fm.removeItem(at: dir)
+                } catch {
+                    failures += 1
+                    NSLog("[StorageDelete] remove failed %@: %@", sid, String(describing: error))
+                }
             }
             return failures
         }.value
@@ -589,7 +585,7 @@ struct StorageManagementView: View {
         storageRow(icon: icon, color: color, label: AppLocalized(bucket.titleKey), value: vm.format(size))
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) {
-                    queueDeletion(.bucket(bucket))
+                    delete(.bucket(bucket))
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
@@ -671,6 +667,7 @@ struct SessionStorageDetailView: View {
 
     @State private var showClearConfirmation = false
     @State private var isClearing = false
+    @State private var clearError: String?
     @State private var currentMinisSize: Int64
 
     init(session: StorageManagementViewModel.SessionStorage, onFilesCleared: (() -> Void)? = nil) {
@@ -696,6 +693,16 @@ struct SessionStorageDetailView: View {
 
     var body: some View {
         List {
+            // [T-storage-swipe-delete-20261104] The old version set the size to
+            // 0 whether or not anything was removed, so a failed delete looked
+            // identical to a successful one until the list reloaded. Failures
+            // are reported now and the size is re-measured from disk.
+            if let clearError {
+                Section {
+                    Label(clearError, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
+            }
             Section("Minis Files") {
                 if currentMinisSize > 0 {
                     NavigationLink {
@@ -760,13 +767,23 @@ struct SessionStorageDetailView: View {
             let minisBase = lib.appendingPathComponent("MinisChat/minis", isDirectory: true)
             // [T-child-delete-storage] The row aggregates its agent children,
             // so clearing it clears their directories too.
+            var failures = 0
             for sid in [sessionId] + descendants {
-                SessionStorageCleanup.removeSessionDirectory(sid, minisBase: minisBase)
+                guard SessionStorageCleanup.isSessionDirectoryName(sid) else { continue }
+                let dir = SessionStorageCleanup.directory(for: sid, minisBase: minisBase)
+                guard fm.fileExists(atPath: dir.path) else { continue }
+                do { try fm.removeItem(at: dir) } catch { failures += 1 }
             }
+            // Re-measure instead of assuming: whatever survived the delete is
+            // what the row has to show.
+            let remaining = SessionStorageCleanup.measure([sessionId] + descendants,
+                                                          minisBase: minisBase).bytes
+            NSLog("[StorageDelete] detail failures=%d remaining=%lld", failures, remaining)
 
             await MainActor.run {
-                currentMinisSize = 0
+                currentMinisSize = remaining
                 isClearing = false
+                clearError = (failures > 0 || remaining > 0) ? "未能删除部分文件" : nil
                 onFilesCleared?()
             }
         }
