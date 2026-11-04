@@ -490,6 +490,8 @@ struct StorageManagementView: View {
         .navigationTitle("Storage")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { vm.load() }
+    }
+
     private func bucketSize(_ bucket: OverviewBucket) -> Int64 {
         switch bucket {
         case .sessionFiles: return vm.totalSessionSize
