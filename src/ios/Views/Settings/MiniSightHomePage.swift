@@ -70,7 +70,7 @@ struct MiniSightHomeView: View {
             }
 
             Section {
-                NavigationLink(MiniSightActivity(rawValue: config.activity)?.title ?? "活泼") {
+                NavigationLink(config.activity.title) {
                     MiniSightActivityPage()
                 }
                 Toggle("增强拖动响应", isOn: $config.dragResponse)

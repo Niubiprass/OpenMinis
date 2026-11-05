@@ -277,7 +277,7 @@ enum MiniSightConfig {
         case "quickOrder": return MiniSightSettingKey.quickOrder
         case "record": return MiniSightSettingKey.record
         case "longPressRecord": return MiniSightSettingKey.longPressRecord
-        default: return diagnostics
+        default: return MiniSightSettingKey.diagnostics
         }
     }
 
