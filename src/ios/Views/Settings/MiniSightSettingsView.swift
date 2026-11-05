@@ -192,7 +192,7 @@ enum MiniSightPetFile {
         guard let object = try? MiniSightAIConfigFile.read(aiTestRecordURL),
               let status = object["status"] as? String, status.count <= 1000 else { return nil }
         let date = Date(timeIntervalSince1970: object["time"] as? TimeInterval ?? 0)
-        let stamp = MiniSightSettingsView.savedAtFormatter.string(from: date)
+        let stamp = MiniSightSettingsDiagnostics.savedAtFormatter.string(from: date)
         let sameRevision = (object["revision"] as? String) == aiConfigRevision
         let text = "\(stamp) · \(status)" + (sameRevision ? "" : " 配置已变，需要重新测试。")
         let until = (object["cooldownUntil"] as? TimeInterval).map(Date.init(timeIntervalSince1970:))
@@ -283,6 +283,13 @@ struct MiniSightSettingsView: View {
 // MARK: - Safe local diagnostics (no network or automatic upload)
 
 enum MiniSightSettingsDiagnostics {
+    static let savedAtFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MM-dd HH:mm:ss"
+        return f
+    }()
+
     static let tailBytes = 60 * 1024
     static let safeDomains: Set<String> = ["NSCocoaErrorDomain", "NSPOSIXErrorDomain", "NSURLErrorDomain",
                                           "MiniSightAIConfigFile", "MiniSightSettings"]
@@ -409,8 +416,8 @@ enum MiniSightSettingsDiagnostics {
         let filename = logFiles[index]
         let file = MiniSightPetFile.directory.appendingPathComponent(filename)
         let attrs = try FileManager.default.attributesOfItem(atPath: file.path)
-        let modified = (attrs[.modificationDate] as? Date).map { MiniSightSettingsView.savedAtFormatter.string(from: $0) } ?? "未知"
-        let header = "来源：Documents/MiniSight/\(filename)\n文件修改：\(modified) · 刷新：\(MiniSightSettingsView.savedAtFormatter.string(from: Date()))\n"
+        let modified = (attrs[.modificationDate] as? Date).map { MiniSightSettingsDiagnostics.savedAtFormatter.string(from: $0) } ?? "未知"
+        let header = "来源：Documents/MiniSight/\(filename)\n文件修改：\(modified) · 刷新：\(MiniSightSettingsDiagnostics.savedAtFormatter.string(from: Date()))\n"
         guard !filename.hasPrefix("diagnostic.log") else {
             return header + "\n旧日志可能含未脱敏正文，本页不显示 raw 内容。请使用本地脚本生成脱敏摘要。"
         }

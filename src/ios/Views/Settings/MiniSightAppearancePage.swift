@@ -59,11 +59,11 @@ struct MiniSightAppearancePage: View {
                 }
             } header: { Text("素材") }
 
-            Section("角色配色") {
+            Section {
                 Picker("配色", selection: $config.tint) {
                     ForEach(MiniSightPetPalette.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
                 }
-            }
+            } header: { Text("角色配色") }
             Section {
                 if costumes.isEmpty {
                     Text("还没有可选择的素材包。导入的图集会记录在本地素材列表，不做虚假下载。")
@@ -85,7 +85,7 @@ struct MiniSightAppearancePage: View {
                 Text("选择素材包会应用对应的本地文件；没有下载源时不会显示可下载列表。")
             }
 
-            Section("素材来源") {
+            Section {
                 TextField("素材目录地址（可选）", text: $downloadAddress)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .onSubmit { UserDefaults.standard.set(downloadAddress, forKey: "minisight.asset.source") }
@@ -93,18 +93,18 @@ struct MiniSightAppearancePage: View {
                     Button("检查素材地址") { checkSource() }
                 }
                 Text(assetSource).font(.caption).foregroundStyle(.secondary)
-            } footer: {
+            } header: { Text("素材来源") } footer: {
                 Text("本地导入不依赖网络。素材来源和许可由素材包提供，导入前请在来源页确认。")
             }
 
-            Section("深浅色") {
+            Section {
                 Picker("外观", selection: $config.darkMode) {
                     Text("跟随系统").tag("system")
                     Text("浅色").tag("light")
                     Text("深色").tag("dark")
                 }
                 .pickerStyle(.segmented)
-            }
+            } header: { Text("深浅色") }
         }
         .navigationTitle("配色与服装")
         .onAppear { petImage = MiniSightPetFile.load() }
@@ -148,7 +148,7 @@ struct MiniSightAppearancePage: View {
             try MiniSightPetFile.delete()
             petImage = nil
             config.style = 0
-        } catch { error = "删除或删除后核对失败。" }
+        } catch { self.error = "删除或删除后核对失败。" }
     }
 
     private func checkSource() {

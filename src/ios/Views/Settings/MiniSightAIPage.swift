@@ -29,7 +29,7 @@ struct MiniSightAIPage: View {
 
     var body: some View {
         List {
-            Section("接口连接") {
+            Section {
                 TextField("接口地址，例如 https://api.openai.com/v1", text: $url)
                     .font(.system(.footnote, design: .monospaced))
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -49,17 +49,17 @@ struct MiniSightAIPage: View {
                 Text(testStatus ?? "还没有测试过；测试只使用已保存的配置。")
                     .font(.caption)
                     .foregroundStyle(testOK ? Color.green : (testStatus == nil ? Color.secondary : Color.red))
-            } footer: {
+            } header: { Text("接口连接") } footer: {
                 Text("地址、Key、模型需要点保存；两者读取同一份 ai.json。收到真实正文才算成功，HTTP 200 空正文按失败处理。")
             }
 
-            Section("AI 人设") {
+            Section {
                 TextEditor(text: $config.persona)
                     .frame(minHeight: 110)
                     .onChange(of: config.persona) { value in schedulePersona(value) }
                 Text(personaStatus).font(.caption).foregroundStyle(personaFailed ? Color.red : Color.secondary)
                 Button("恢复默认人设") { config.persona = ""; savePersonaNow() }
-            } footer: {
+            } header: { Text("AI 人设") } footer: {
                 Text("停止输入片刻或离开页面自动保存到 ai.json；最多 2000 字，失败保留输入。")
             }
 

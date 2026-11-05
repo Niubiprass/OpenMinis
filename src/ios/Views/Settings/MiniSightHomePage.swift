@@ -48,7 +48,7 @@ struct MiniSightHomeView: View {
                 Text("在主屏幕和 App 内显示；锁屏临时暂停，解锁恢复；隐藏时不显示。双击默认语音输入。")
             }
 
-            Section("AI") {
+            Section {
                 NavigationLink(MiniSightSupplier(rawValue: config.supplier)?.title ?? "选择供应商") {
                     MiniSightSupplierPage()
                 }
@@ -57,19 +57,19 @@ struct MiniSightHomeView: View {
                     Text("发送").tag("send")
                     Text("换行").tag("newline")
                 }
-            }
+            } header: { Text("AI") }
 
-            Section("配色与服装") {
+            Section {
                 NavigationLink(MiniSightPetPalette(rawValue: config.tint)?.title ?? "原图") {
                     MiniSightTintPage()
                 }
                 NavigationLink(config.costume.isEmpty ? "默认" : config.costume) { MiniSightCostumePage() }
                 NavigationLink("下载素材") { MiniSightDownloadPage() }
-            } footer: {
+            } header: { Text("配色与服装") } footer: {
                 Text("服装和配色的可用项来自本地已导入素材；没有素材源时不显示虚假下载列表。")
             }
 
-            Section("动作与手感") {
+            Section {
                 NavigationLink(MiniSightActivity(rawValue: config.activity)?.title ?? "活泼") {
                     MiniSightActivityPage()
                 }
@@ -83,11 +83,11 @@ struct MiniSightHomeView: View {
                 LabeledContent("倾斜强度 \(String(format: "%.1f", config.gravityStrength))") {
                     Slider(value: $config.gravityStrength, in: 0.4...1.6, step: 0.1)
                 }
-            } footer: {
+            } header: { Text("动作与手感") } footer: {
                 Text("动作音效只在自主活动和点击动作时响；帧率受屏幕刷新率限制。")
             }
 
-            Section("大小与位置") {
+            Section {
                 LabeledContent("角色大小 \(Int(config.petSize))") {
                     Slider(value: $config.petSize, in: 36...140, step: 2)
                 }
@@ -100,7 +100,7 @@ struct MiniSightHomeView: View {
                     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                         CFNotificationName("com.openminis.minisight.position" as CFString), nil, nil, true)
                 }
-            } footer: {
+            } header: { Text("大小与位置") } footer: {
                 Text("底部留白参考 10–40；数值越大离 Dock 越远，自动限制在安全区内。")
             }
 
@@ -251,11 +251,11 @@ struct MiniSightDownloadPage: View {
             } footer: {
                 Text("没有配置地址时只列出本地已导入素材，不显示假的下载条目。")
             }
-            Section("已导入") {
+            Section {
                 let items = MiniSightAssetCatalog.load()
                 if items.isEmpty { Text("暂无").font(.caption).foregroundStyle(.secondary) }
                 ForEach(items, id: \.name) { item in Text(item.name).font(.caption) }
-            }
+            } header: { Text("已导入") }
         }
         .navigationTitle("下载素材")
         .onAppear { address = config.downloadSource }

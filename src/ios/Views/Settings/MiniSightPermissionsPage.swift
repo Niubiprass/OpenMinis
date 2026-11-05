@@ -20,7 +20,7 @@ struct MiniSightPermissionsPage: View {
                 Text("关闭时 AI 不能改桌宠。开启后，只有勾选的项可直接执行；未勾选项先在气泡询问。")
             }
 
-            Section("可直接执行") {
+            Section {
                 ForEach(MiniSightAIPermission.allCases, id: \.self) { permission in
                     Toggle(permission.title, isOn: Binding(
                         get: { config.permissions.contains(permission) },
@@ -33,16 +33,16 @@ struct MiniSightPermissionsPage: View {
                 Button("全部允许") {
                     for permission in MiniSightAIPermission.allCases { config.setPermission(permission, allowed: true) }
                 }
-            }
+            } header: { Text("可直接执行") }
 
-            Section("最近调整") {
+            Section {
                 if config.adjustments.isEmpty {
                     Text("还没有 AI 调整记录").font(.caption).foregroundStyle(.secondary)
                 }
                 ForEach(Array(config.adjustments.enumerated()), id: \.offset) { _, text in
                     Text(text).font(.caption)
                 }
-            }
+            } header: { Text("最近调整") }
 
             Section {
                 Picker("调整确认", selection: Binding(

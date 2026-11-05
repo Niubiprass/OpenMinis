@@ -13,22 +13,22 @@ struct MiniSightDiagnosticsPage: View {
 
     var body: some View {
         List {
-            Section("录屏") {
+            Section {
                 Toggle("操作时录屏", isOn: $config.record)
                 Toggle("长按指示器切换录屏", isOn: $config.longPressRecord)
                 Text("保存在本机 Documents/MiniSight/recordings；只有文件通过校验才提示保存成功。")
                     .font(.caption).foregroundStyle(.secondary)
-            }
+            } header: { Text("录屏") }
 
-            Section("诊断") {
+            Section {
                 Toggle("记录详细诊断", isOn: $config.diagnostics)
                 Button { showLogs = true } label: { Label("查看运行日志", systemImage: "doc.text.magnifyingglass") }
                 Button { exportLogs() } label: { Label("导出脱敏日志", systemImage: "square.and.arrow.up") }
-            } footer: {
+            } header: { Text("诊断") } footer: {
                 Text("基础状态事件始终本机记录，开关只控制详细日志。导出不含 Key、人设或聊天正文。")
             }
 
-            Section("素材") {
+            Section {
                 if assets.isEmpty {
                     Text("没有可删除的已导入素材包").font(.caption).foregroundStyle(.secondary)
                 }
@@ -38,12 +38,12 @@ struct MiniSightDiagnosticsPage: View {
                 if !assets.isEmpty {
                     Button("删除已导入素材包", role: .destructive) { deleteAssets = true }
                 }
-            }
+            } header: { Text("素材") }
 
-            Section("清理") {
+            Section {
                 Button("清除桌宠聊天记录", role: .destructive) { clearChat = true }
                 Button("重置外观与位置", role: .destructive) { resetAppearance = true }
-            } footer: {
+            } header: { Text("清理") } footer: {
                 Text("清聊天只清桌宠对话，不删主会话或服务商配置；重置不会删除精灵图。")
             }
 
