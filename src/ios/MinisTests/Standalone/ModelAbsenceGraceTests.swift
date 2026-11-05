@@ -1,25 +1,18 @@
-// Tests for [T-model-absence-grace] — a catalog model the provider stops
-// listing must not be deleted on the spot, taking the user's overrides with it.
+// Tests for [T-model-refresh-authoritative] — the refresh response IS the
+// model list.
 //
-// The report: `gemini-3.8-flash-high` disappeared entirely from the CPA-Mini2
-// provider, and separately a context-window override on that same model
-// "reverted" after a refresh. Those were the same event seen from two sides.
+// The old rule was [T-model-absence-grace]: a catalog model a provider stopped
+// listing was kept for 7 days, labelled "Not listed by provider". On a relay
+// that drops a model from /v1/models for one response and lists it again on the
+// next — common with upstream rotation — the row flipped to "not listed",
+// reappeared, and the cycle repeated; the 7-day clock was never reached.
 //
-// `ProviderConfigStore.replaceEntries` rebuilds an instance's entries from the
-// API response. For a model STILL in the list it already does the right thing —
-// it looks `prior` up by model id and carries uuid / overrides / isHidden /
-// userModifiedAt forward, replacing only the base. The bug was the other branch:
-// a catalog entry (`isCustom == false`) missing from the response was deleted
-// immediately. `isCustom` entries were exempt; provider-supplied ones — which is
-// where user overrides actually live — were not.
-//
-// Neither existing guard covers it:
-//   * fetchModelsWithFallback rescues only an EMPTY list or an unreachable
-//     endpoint. A relay returning a valid list that merely omits one model is
-//     neither.
-//   * suspiciousShrink needs the list to roughly halve (`after*2 < before`), so
-//     losing 1 of 12 never trips it — and it protects only group references,
-//     never the entry, which `removeAll` has already dropped.
+// The rule under test: a catalog entry missing from the response is deleted on
+// the spot, no marker, no grace. A later response that lists it restores it —
+// with its overrides and its group memberships, from a local tombstone. The one
+// exception is a suspicious shrink (more than half of a list of at least four
+// gone at once), which keeps everything for one round because that is what a
+// truncated response looks like.
 //
 // Standalone (`swift ModelAbsenceGraceTests.swift`) like its neighbours:
 // deps/libs/libish_emu.a is device-only arm64, so the app cannot link for a
@@ -28,189 +21,140 @@
 import Foundation
 
 var failures = 0
-func ck(_ l: String, _ ok: Bool) {
-    if ok { print("  ✅ \(l)") } else { print("  ❌ \(l)"); failures += 1 }
-}
+func ck(_ l: String, _ ok: Bool) { if ok { print("  ✅ \(l)") } else { print("  ❌ \(l)"); failures += 1 } }
 func ckEq<T: Equatable>(_ l: String, _ a: T, _ b: T) {
     if a == b { print("  ✅ \(l)") } else { print("  ❌ \(l)\n     expected: \(b)\n     actual:   \(a)"); failures += 1 }
 }
 
-// MARK: - Model of the entry + the refresh rule
-
-let gracePeriod: TimeInterval = 7 * 24 * 60 * 60
+// MARK: - Model of the entry, tombstone and refresh rule
 
 struct Entry: Equatable {
     var modelId: String
-    var contextWindowOverride: Int?      // stands in for ModelOverrides
+    var contextWindowOverride: Int?
     var isCustom: Bool = false
-    var absentSince: Date? = nil
+    var groupIds: [String] = []
     var baseContextWindow: Int = 1_048_576
-
-    var isUnavailableFromProvider: Bool { absentSince != nil }
-    /// effective = override ?? base, the rule ModelEntry.model applies
     var effectiveContextWindow: Int { contextWindowOverride ?? baseContextWindow }
 }
 
-/// Mirrors the FIXED replaceEntries.
-func replaceEntries(existing: [Entry], returned: [String], now: Date,
-                    newBase: Int = 1_048_576) -> [Entry] {
-    let returnedSet = Set(returned)
-    var out: [Entry] = []
-    // Models present in the response: rebuild, carrying prior state forward.
-    for id in returned {
-        let prior = existing.first { $0.modelId == id }
-        out.append(Entry(modelId: id,
-                         contextWindowOverride: prior?.contextWindowOverride,
-                         isCustom: false,
-                         absentSince: nil,                 // listed again ⇒ clear
-                         baseContextWindow: newBase))
-    }
-    // Catalog models NOT in the response: keep within grace, else drop.
-    for e in existing where !e.isCustom && !returnedSet.contains(e.modelId) {
-        let since = e.absentSince ?? now
-        if now.timeIntervalSince(since) > gracePeriod { continue }   // expired → drop
-        var kept = e
-        kept.absentSince = since
-        out.append(kept)
-    }
-    // Custom entries are kept unconditionally (pre-existing behaviour).
-    for e in existing where e.isCustom && !returnedSet.contains(e.modelId) {
-        out.append(e)
-    }
-    return out
+struct Tombstone: Equatable {
+    let uuid: String
+    let contextWindowOverride: Int?
+    let groupIds: [String]
 }
 
-/// The OLD rule, kept so every behavioural claim below is falsifiable.
-func replaceEntriesOLD(existing: [Entry], returned: [String], newBase: Int = 1_048_576) -> [Entry] {
+/// Mirrors the NEW replaceEntries: delete unlisted catalog entries, restore
+/// re-listed ones from the tombstone, keep everything on a suspicious shrink.
+func replace(existing: [Entry], returned: [String], now: Date = Date(),
+             tombs: inout [String: Tombstone], newBase: Int = 1_048_576) -> [Entry] {
     let returnedSet = Set(returned)
+    let shrink = existing.count >= 4 && returned.count * 2 < existing.count
     var out: [Entry] = []
     for id in returned {
         let prior = existing.first { $0.modelId == id }
-        out.append(Entry(modelId: id, contextWindowOverride: prior?.contextWindowOverride,
+        let tomb = prior == nil ? tombs.removeValue(forKey: id) : nil
+        out.append(Entry(modelId: id,
+                         contextWindowOverride: prior?.contextWindowOverride ?? tomb?.contextWindowOverride,
+                         isCustom: false,
+                         groupIds: prior?.groupIds ?? tomb?.groupIds ?? [],
                          baseContextWindow: newBase))
     }
+    for e in existing where !e.isCustom && !returnedSet.contains(e.modelId) {
+        if shrink { out.append(e); continue }
+        tombs[e.modelId] = Tombstone(uuid: "uuid-\(e.modelId)",
+                                     contextWindowOverride: e.contextWindowOverride,
+                                     groupIds: e.groupIds)
+    }
     for e in existing where e.isCustom && !returnedSet.contains(e.modelId) { out.append(e) }
-    return out   // catalog entries not returned are simply gone
+    return out
 }
 
 let t0 = Date(timeIntervalSince1970: 1_800_000_000)
 func find(_ list: [Entry], _ id: String) -> Entry? { list.first { $0.modelId == id } }
 
-// MARK: - 1. The reported case
+// MARK: - 1. The reported loop is gone
 
-print("\n▶️  a catalog model the provider skips once is NOT deleted")
+print("\n▶️  a model skipped once disappears immediately")
 let target = "gemini-3.8-flash-high"
-let before = [
-    Entry(modelId: target, contextWindowOverride: 400_000),
-    Entry(modelId: "gemini-3.8-flash"),
-    Entry(modelId: "gpt-4o"),
-]
-// The relay returns a perfectly valid list that merely omits `target`.
-let after1 = replaceEntries(existing: before, returned: ["gemini-3.8-flash", "gpt-4o"], now: t0)
-ck("the entry survives the refresh", find(after1, target) != nil)
-ck("it is marked unavailable", find(after1, target)?.isUnavailableFromProvider == true)
-ckEq("and its override is intact", find(after1, target)?.contextWindowOverride, 400_000)
+var tombs: [String: Tombstone] = [:]
+let before = [Entry(modelId: target, contextWindowOverride: 400_000, groupIds: ["g1"]),
+              Entry(modelId: "gemini-3.8-flash"), Entry(modelId: "gpt-4o")]
+let after1 = replace(existing: before, returned: ["gemini-3.8-flash", "gpt-4o"], now: t0, tombs: &tombs)
+ck("the entry is gone", find(after1, target) == nil)
+ck("so no row can show a 'not listed' state", find(after1, target) == nil)
+ckEq("its override is not lost, it is tombstoned", tombs[target]?.contextWindowOverride, 400_000)
+ckEq("its group is remembered too", tombs[target]?.groupIds, ["g1"])
 
-print("\n▶️  the OLD rule fails both (so the test cannot pass vacuously)")
-let old1 = replaceEntriesOLD(existing: before, returned: ["gemini-3.8-flash", "gpt-4o"])
-ck("OLD: the entry is gone", find(old1, target) == nil)
-ck("OLD: the override went with it", find(old1, target)?.contextWindowOverride == nil)
+// MARK: - 2. Coming back restores everything
 
-// MARK: - 2. Coming back
+print("\n▶️  a later response that lists it brings it back intact")
+let after2 = replace(existing: after1, returned: [target, "gemini-3.8-flash", "gpt-4o"],
+                     now: t0.addingTimeInterval(60), tombs: &tombs)
+ckEq("entry is back", find(after2, target)?.modelId, target)
+ckEq("override restored", find(after2, target)?.contextWindowOverride, 400_000)
+ckEq("group restored", find(after2, target)?.groupIds, ["g1"])
+ck("tombstone consumed", tombs[target] == nil)
 
-print("\n▶️  when the provider lists it again, it is fully restored")
-let after2 = replaceEntries(existing: after1, returned: [target, "gemini-3.8-flash", "gpt-4o"],
-                            now: t0.addingTimeInterval(3600))
-ck("absence mark cleared", find(after2, target)?.absentSince == nil)
-ck("no longer unavailable", find(after2, target)?.isUnavailableFromProvider == false)
-ckEq("override still 400000", find(after2, target)?.contextWindowOverride, 400_000)
-ckEq("effective value is the override, not the vendor's", find(after2, target)?.effectiveContextWindow, 400_000)
+// MARK: - 3. Suspicious shrink defers deletion
 
-print("\n▶️  the base IS refreshed for models that are listed")
-let bumped = replaceEntries(existing: before, returned: [target, "gpt-4o"], now: t0, newBase: 2_000_000)
-ckEq("base picked up the vendor's new value", find(bumped, target)?.baseContextWindow, 2_000_000)
-ckEq("but the user's override still wins", find(bumped, target)?.effectiveContextWindow, 400_000)
-// A model with no override follows the vendor, which is the point of not
-// freezing entries wholesale.
-ckEq("an un-overridden model follows the vendor", find(bumped, "gpt-4o")?.effectiveContextWindow, 2_000_000)
+print("\n▶️  a half-length list keeps everything for one round")
+var shrinkTombs: [String: Tombstone] = [:]
+let big = (0..<12).map { Entry(modelId: "m\($0)") }
+let shrunk = replace(existing: big, returned: (0..<3).map { "m\($0)" }, now: t0, tombs: &shrinkTombs)
+ckEq("nothing deleted", shrunk.count, 12)
+ck("nothing tombstoned", shrinkTombs.isEmpty)
+// The next healthy refresh then deletes what is still missing.
+let healed = replace(existing: shrunk, returned: (0..<3).map { "m\($0)" }, now: t0.addingTimeInterval(600),
+                     tombs: &shrinkTombs)
+ckEq("the next healthy refresh deletes them", healed.count, 3)
+ckEq("and tombstones every one", shrinkTombs.count, 9)
 
-// MARK: - 3. The clock starts once and does not drift
+print("\n▶️  the shrink threshold matches the code")
+// existing >= 4 && returned*2 < existing
+ck("4 entries → 1 is a shrink", 4 >= 4 && 1 * 2 < 4)
+ck("4 entries → 2 is NOT a shrink", !(4 >= 4 && 2 * 2 < 4))
+ck("3 entries → 1 is NOT a shrink", !(3 >= 4 && 1 * 2 < 3))
 
-print("\n▶️  repeated absences keep the FIRST timestamp")
-var rolling = before
-var t = t0
-for i in 0..<5 {
-    t = t0.addingTimeInterval(Double(i) * 6 * 3600)          // a refresh every 6h
-    rolling = replaceEntries(existing: rolling, returned: ["gemini-3.8-flash", "gpt-4o"], now: t)
-}
-ckEq("absentSince is still the first miss", find(rolling, target)?.absentSince, t0)
-ck("still present after 5 consecutive misses", find(rolling, target) != nil)
-ckEq("override untouched throughout", find(rolling, target)?.contextWindowOverride, 400_000)
+// MARK: - 4. No collateral change
 
-// MARK: - 4. A genuinely removed model is eventually dropped
+print("\n▶️  unrelated behaviour is unchanged")
+var none: [String: Tombstone] = [:]
+let full = replace(existing: before, returned: [target, "gemini-3.8-flash", "gpt-4o"], now: t0, tombs: &none)
+ckEq("a full response keeps every entry", full.count, 3)
+ck("and tombstones nothing", none.isEmpty)
+let withCustom = [Entry(modelId: "my-custom", contextWindowOverride: 123, isCustom: true), Entry(modelId: "gpt-4o")]
+let customKept = replace(existing: withCustom, returned: ["gpt-4o"], now: t0, tombs: &none)
+ck("custom entries are still kept", find(customKept, "my-custom") != nil)
+ckEq("a plain model is not tombstoned twice", none["gpt-4o"], nil)
+ckEq("the vendor's new base still wins for un-overridden models",
+      find(full, "gpt-4o")?.effectiveContextWindow, 1_048_576)
 
-print("\n▶️  absence beyond the grace window finally deletes the entry")
-let justInside = replaceEntries(existing: rolling, returned: ["gemini-3.8-flash", "gpt-4o"],
-                                now: t0.addingTimeInterval(gracePeriod - 60))
-ck("still kept 1 minute before the deadline", find(justInside, target) != nil)
-let past = replaceEntries(existing: rolling, returned: ["gemini-3.8-flash", "gpt-4o"],
-                          now: t0.addingTimeInterval(gracePeriod + 60))
-ck("dropped 1 minute after the deadline", find(past, target) == nil)
-
-print("\n▶️  the grace window spans many automatic refreshes")
-// modelsRefreshWindow is 6h, so the window must cover far more than one.
-ck("7d grace ≫ 6h refresh window", gracePeriod / (6 * 3600) >= 20)
-
-// MARK: - 5. No collateral change
-
-print("\n▶️  everything else behaves as before")
-let normal = replaceEntries(existing: before, returned: [target, "gemini-3.8-flash", "gpt-4o"], now: t0)
-ckEq("a full response keeps every entry", normal.count, 3)
-ck("and marks none of them absent", normal.allSatisfy { !$0.isUnavailableFromProvider })
-
-let withCustom = [
-    Entry(modelId: "my-custom", contextWindowOverride: 123, isCustom: true),
-    Entry(modelId: "gpt-4o"),
-]
-let customKept = replaceEntries(existing: withCustom, returned: ["gpt-4o"], now: t0)
-ck("custom entries are still kept unconditionally", find(customKept, "my-custom") != nil)
-ck("and are NOT marked absent (they never were listed)",
-   find(customKept, "my-custom")?.isUnavailableFromProvider == false)
-
-// MARK: - 6. Source invariants
+// MARK: - 5. Source invariants
 
 print("\n▶️  source invariants")
 func read(_ p: String) -> String? { try? String(contentsOfFile: p, encoding: .utf8) }
-guard let store = read("../../Providers/ProviderConfigStore.swift"),
-      let entryS = read("../../Providers/ModelEntry.swift"),
-      let picker = read("../../Views/Providers/UnifiedModelPicker.swift") else {
-    print("  ❌ could not read sources"); failures += 1; exit(1)
+guard let store = read("../../Providers/ProviderConfigStore.swift") else {
+    print("  ❌ could not read ProviderConfigStore.swift"); exit(1)
 }
-
-ck("the field exists", entryS.contains("var absentSince: Date?"))
-ck("and a readable accessor", entryS.contains("var isUnavailableFromProvider: Bool { absentSince != nil }"))
-// Absence is a local observation; it must not make an untouched entry sync.
-let umRange = entryS.range(of: "var isUserModified: Bool {").map {
-    String(entryS[$0.lowerBound...].prefix(160))
-} ?? ""
-ck("absence is NOT part of isUserModified", !umRange.contains("absentSince"))
-// Equality must see it, or the DB row-dirty check skips persisting the change.
-ck("equality includes it", entryS.contains("lhs.absentSince == rhs.absentSince"))
-
-ck("the grace constant exists", store.contains("static let modelAbsenceGracePeriod"))
-ck("unlisted catalog entries are kept, not dropped",
+ck("unlisted catalog entries are collected for deletion, not kept",
    store.contains("let absentCatalog = existing.filter { !$0.isCustom && !refreshedModelIds.contains($0.baseModel.id) }"))
-ck("being listed again clears the mark", store.contains("absentSince: nil"))
-ck("expiry is measured against the grace period",
-   store.contains("now.timeIntervalSince(since) > Self.modelAbsenceGracePeriod"))
-
-// Routing must skip an unavailable model while it is retained.
-ck("the picker reports it as unavailable",
-   picker.contains("if entry.isUnavailableFromProvider { return AppLocalized(\"Not listed by provider\") }"))
+ck("they are only appended on a suspicious shrink",
+   store.contains("if suspiciousShrink {"))
+ck("a normal refresh logs a deletion",
+   store.contains("deleted \\(absentCatalog.count) unlisted catalog entr"))
+ck("the old grace expiry no longer drives deletion",
+   !store.contains("now.timeIntervalSince(since) > Self.modelAbsenceGracePeriod"))
+ck("tombstones carry overrides, hidden flag and groups",
+   store.contains("struct RetiredModelOverride: Codable"))
+ck("a re-listed model is restored from its tombstone",
+   store.contains("retired.removeValue(forKey: retiredKey(instanceId, model.id))"))
+ck("group membership is restored", store.contains("restored \\("))
+ck("tombstones expire", store.contains("retiredModelTTL: TimeInterval = 90 * 24 * 60 * 60"))
+ck("the rule is tagged", store.contains("[T-model-refresh-authoritative]"))
 
 print("\n" + String(repeating: "─", count: 60))
 if failures == 0 {
-    print("✅ All model-absence-grace tests passed")
+    print("✅ All model-refresh-authoritative tests passed")
     exit(0)
 } else {
     print("❌ \(failures) failure(s)")

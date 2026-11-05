@@ -6,6 +6,14 @@
 	<array>
 		<string>com.openminis.app.liveactivity-refresh</string>
 	</array>
+	<!-- [T-inapp-update-beta] Needed for canOpenURL before handing an IPA to TrollStore. -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>apple-magnifier</string>
+	</array>
+	<!-- Overwritten with the CI run number at package time; 0 = local build. -->
+	<key>MinisBuildNumber</key>
+	<string>0</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>

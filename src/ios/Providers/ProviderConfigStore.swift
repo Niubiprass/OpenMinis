@@ -1773,8 +1773,26 @@ final class ProviderConfigStore: ObservableObject {
             }
             return dict
         }()
+        // [T-model-refresh-authoritative] A model deleted by an earlier refresh
+        // leaves a small local tombstone (uuid, overrides, hidden flag, group
+        // ids). If the provider lists it again, it comes back as the same entry
+        // rather than as a blank one, and returns to the groups it belonged to.
+        let retiredBefore = loadRetiredModelOverrides()
+        var retired = retiredBefore
+        var restoredGroups: [(String, [String])] = []
+
         let newEntries = models.map { model -> ModelEntry in
-            let prior = existingByModelId[model.id]
+            var prior = existingByModelId[model.id]
+            if prior == nil, let tomb = retired.removeValue(forKey: retiredKey(instanceId, model.id)) {
+                prior = ModelEntry(
+                    uuid: tomb.uuid,
+                    providerInstanceId: instanceId,
+                    model: model,
+                    overrides: tomb.overrides,
+                    isCustom: false,
+                    isHidden: tomb.isHidden)
+                restoredGroups.append((model.id, tomb.groupIds))
+            }
             var resolved = model.withInferredModality()
             if let templateModality = templateModalityById[model.id] {
                 resolved = resolved.withModalityOverride(templateModality)
@@ -1795,51 +1813,71 @@ final class ProviderConfigStore: ObservableObject {
         }
         config.modelEntries.append(contentsOf: newEntries)
 
-        // [T-model-absence-grace] Catalog entries the provider did NOT list this
-        // time are KEPT, marked unavailable, and only deleted once the absence
-        // has outlived `modelAbsenceGracePeriod`.
+        // [T-model-refresh-authoritative] The response IS the list. A catalog
+        // entry it does not mention is gone from the UI on the spot — no
+        // "not listed" marker and no grace window. A later refresh that lists
+        // the model again simply brings it back (see the tombstone restore
+        // above, which also returns its overrides and groups).
         //
-        // Previously they were deleted on the spot, which conflated two
-        // different facts: "this response did not mention the model" and "this
-        // model is gone". Relay/aggregator endpoints drop a model from
-        // /v1/models transiently (upstream quota, backend rotation, a partial
-        // outage) and list it again minutes later — and the deletion took the
-        // user's `overrides` with it, permanently. That is the reported case:
-        // `gemini-3.8-flash-high` vanished from CPA-Mini2, and a context-window
-        // override "reverted" on a later refresh, which was the same deletion
-        // seen from the other side.
+        // The one exception is a suspicious shrink: the response lost more than
+        // half of a list of at least four, which is the signature of a
+        // truncated/partial response rather than of a real removal. That round
+        // keeps everything; the next healthy refresh deletes whatever is still
+        // missing. A single missing model out of twelve is NOT a shrink and is
+        // deleted immediately — that is the reported loop where a relay omitted
+        // `gemini-3.8-flash-high`, the row flipped to "not listed", the model
+        // reappeared on the next refresh, and the cycle repeated.
         //
-        // `isCustom` entries already had this protection (they are kept
-        // unconditionally below); this extends the same courtesy to entries the
-        // provider itself gave us, which is where user overrides actually live.
-        //
-        // The two existing guards do not cover this: `fetchModelsWithFallback`
-        // only rescues an EMPTY list or an unreachable endpoint, and
-        // `suspiciousShrink` needs the list to roughly halve — losing one model
-        // out of twelve trips neither, and `suspiciousShrink` protects only
-        // group references, never the entry.
+        // `isCustom` entries are kept unconditionally below; they were never
+        // provider-supplied in the first place.
         let now = Date()
+        let suspiciousShrink = existing.count >= 4 && models.count * 2 < existing.count
         let absentCatalog = existing.filter { !$0.isCustom && !refreshedModelIds.contains($0.baseModel.id) }
-        var keptAbsent: [ModelEntry] = []
-        var expiredAbsent: [ModelEntry] = []
-        for entry in absentCatalog {
-            let since = entry.absentSince ?? now
-            if now.timeIntervalSince(since) > Self.modelAbsenceGracePeriod {
-                expiredAbsent.append(entry)
-            } else {
+        if suspiciousShrink {
+            config.modelEntries.append(contentsOf: absentCatalog.map { entry -> ModelEntry in
                 var kept = entry
-                kept.absentSince = since   // first miss stamps the clock; later misses keep it
-                keptAbsent.append(kept)
+                kept.absentSince = nil    // the old grace marker no longer drives anything
+                return kept
+            })
+            logger.warning("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) SUSPICIOUS SHRINK before=\(existing.count) after=\(models.count) — deferred \(absentCatalog.count) deletion(s) to the next healthy refresh")
+        } else if !absentCatalog.isEmpty {
+            var groupsByEntry: [String: [String]] = [:]
+            for group in config.modelGroups {
+                for entryId in group.memberEntryIds { groupsByEntry[entryId, default: []].append(group.id) }
+            }
+            for entry in absentCatalog {
+                retired[retiredKey(instanceId, entry.baseModel.id)] = RetiredModelOverride(
+                    uuid: entry.uuid,
+                    overrides: entry.overrides,
+                    isHidden: entry.isHidden,
+                    groupIds: groupsByEntry[entry.id] ?? [],
+                    retiredAt: now)
+            }
+            logger.info("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) deleted \(absentCatalog.count) unlisted catalog entr(ies): [\(absentCatalog.map { $0.baseModel.id }.prefix(10).joined(separator: ","))]")
+        }
+
+        // Groups: a re-listed model returns to the groups it was in.
+        if !restoredGroups.isEmpty {
+            var restoredCount = 0
+            for (modelId, groupIds) in restoredGroups {
+                guard let entry = config.modelEntries.first(where: {
+                    $0.providerInstanceId == instanceId && $0.baseModel.id == modelId
+                }) else { continue }
+                for groupId in groupIds {
+                    guard let index = config.modelGroups.firstIndex(where: { $0.id == groupId }) else { continue }
+                    if !config.modelGroups[index].memberEntryIds.contains(entry.id) {
+                        config.modelGroups[index].memberEntryIds.append(entry.id)
+                        config.modelGroups[index].addedMembers[entry.id] = now
+                        config.modelGroups[index].removedMembers[entry.id] = nil
+                        restoredCount += 1
+                    }
+                }
+            }
+            if restoredCount > 0 {
+                logger.info("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) restored \(restoredCount) group membership(s) for re-listed model(s)")
             }
         }
-        config.modelEntries.append(contentsOf: keptAbsent)
-        if !keptAbsent.isEmpty {
-            let newlyAbsent = keptAbsent.filter { $0.absentSince == now }.count
-            logger.info("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) kept \(keptAbsent.count) unlisted catalog entr(ies) within the \(Int(Self.modelAbsenceGracePeriod / 3600))h grace window (\(newlyAbsent) newly absent): [\(keptAbsent.map { $0.baseModel.id }.prefix(10).joined(separator: ","))]")
-        }
-        if !expiredAbsent.isEmpty {
-            logger.info("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) dropped \(expiredAbsent.count) catalog entr(ies) absent for more than the grace window: [\(expiredAbsent.map { $0.baseModel.id }.prefix(10).joined(separator: ","))]")
-        }
+        if retired != retiredBefore { saveRetiredModelOverrides(retired) }
 
         // Keep custom entries whose model ID was NOT covered by the refreshed list — enrich them too
         let remainingCustom = existing.filter { $0.isCustom && !refreshedModelIds.contains($0.baseModel.id) }
@@ -1918,10 +1956,9 @@ final class ProviderConfigStore: ObservableObject {
         //     not after. So a genuine local removal, once uploaded, is final.
         let survivingEntryIds = Set(config.modelEntries.map(\.id))
         let prunedEntryIds = existingEntryIds.subtracting(survivingEntryIds)
-        let suspiciousShrink = existing.count >= 4 && models.count * 2 < existing.count
         if !prunedEntryIds.isEmpty {
             if suspiciousShrink {
-                logger.warning("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) SUSPICIOUS SHRINK before=\(existing.count) after=\(models.count) — stale entries removed from modelEntries but group/agent-loop references PRESERVED as stale (user will see them as unavailable)")
+                logger.warning("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) SUSPICIOUS SHRINK before=\(existing.count) after=\(models.count) — entries kept; group/agent-loop references left untouched")
             } else {
                 var affectedGroups: [String] = []
                 for i in config.modelGroups.indices {
@@ -2828,16 +2865,54 @@ final class ProviderConfigStore: ObservableObject {
     static let modelsRefreshWindow: TimeInterval = 6 * 60 * 60
 
     /// [T-model-absence-grace] How long a catalog model may stay unlisted by its
-    /// provider before the entry (and its overrides) is really deleted.
+    /// provider before the entry (and its overrides) is really deleted. Kept
+    /// for the legacy callers/tests that still name it; the deletion itself no
+    /// longer waits on it.
     ///
-    /// 7 days, chosen against `modelsRefreshWindow` above: automatic refreshes
-    /// are at most every 6h, so this spans roughly 28 of them. A model has to be
-    /// missing from many consecutive responses — not one unlucky one — before
-    /// anything is lost, which is the whole point. Deliberately generous: the
-    /// cost of keeping a dead entry a few days too long is one greyed-out row,
-    /// while the cost of deleting a live one is the user's overrides, silently
-    /// and permanently.
+    /// [T-model-refresh-authoritative] The refresh response now decides:
+    /// unlisted = deleted immediately, listed again = restored from the
+    /// tombstone below. The 7-day window only survives as documentation of the
+    /// old rule.
     static let modelAbsenceGracePeriod: TimeInterval = 7 * 24 * 60 * 60
+
+    // MARK: - Retired model tombstones
+    //
+    // [T-model-refresh-authoritative] Deleting a model on the spot must not cost
+    // the user their overrides. Every deleted catalog entry leaves this small
+    // local record for 90 days; if the provider lists the same model id again,
+    // `replaceEntries` restores the uuid, overrides and hidden flag from it and
+    // puts the entry back into its old groups. Local-only (UserDefaults, same
+    // as the rest of the device-scoped refresh state): no iCloud merge surface,
+    // and another device simply has its own tombstones.
+
+    struct RetiredModelOverride: Codable, Equatable {
+        let uuid: String
+        let overrides: ModelOverrides
+        let isHidden: Bool
+        let groupIds: [String]
+        let retiredAt: Date
+    }
+
+    static let retiredModelDefaultsKey = "provider.retiredModelOverrides.v1"
+    static let retiredModelTTL: TimeInterval = 90 * 24 * 60 * 60
+
+    func retiredKey(_ instanceId: String, _ modelId: String) -> String {
+        instanceId + "\u{1F}" + modelId
+    }
+
+    func loadRetiredModelOverrides() -> [String: RetiredModelOverride] {
+        guard let data = UserDefaults.standard.data(forKey: Self.retiredModelDefaultsKey),
+              let map = try? JSONDecoder().decode([String: RetiredModelOverride].self, from: data)
+        else { return [:] }
+        let cutoff = Date().addingTimeInterval(-Self.retiredModelTTL)
+        return map.filter { $0.value.retiredAt > cutoff }
+    }
+
+    func saveRetiredModelOverrides(_ map: [String: RetiredModelOverride]) {
+        guard let data = try? JSONEncoder().encode(map) else { return }
+        UserDefaults.standard.set(data, forKey: Self.retiredModelDefaultsKey)
+    }
+
 
     func refreshAllModelsIfNeeded() {
         let key = "lastModelsRefreshDate"

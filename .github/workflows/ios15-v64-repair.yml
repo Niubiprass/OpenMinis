@@ -7,7 +7,7 @@ on:
     paths: ['src/ios/**', 'scripts/test_*.py', 'scripts/run_ios15_geometry_probe.py', 'scripts/fixtures/**', 'scripts/v64r_package.py', 'deps/build_rclone_ios.sh', '.github/workflows/ios15-v64-repair.yml']
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ios15-v64-repair-${{ github.ref }}
@@ -42,6 +42,8 @@ jobs:
           python3 scripts/test_export_160651.py
           python3 scripts/test_quota_160651.py
           python3 scripts/test_v64r_text_layout.py
+          python3 scripts/test_model_refresh_authoritative_160652.py
+          python3 scripts/test_inapp_update_160652.py
           python3 scripts/test_v64r_render_contracts.py
           python3 scripts/test_stream_text_fade_source.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_autocompress.py
@@ -135,6 +137,10 @@ jobs:
           # Preserve only source entitlements; no sandbox-disabling additions.
           python3 scripts/v64r_package.py Payload/Minis.app
           /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Payload/Minis.app/Info.plist
+          # [T-inapp-update-beta] Monotonic build stamp for the in-app updater.
+          /usr/libexec/PlistBuddy -c "Set :MinisBuildNumber ${{ github.run_number }}" Payload/Minis.app/Info.plist \
+            || /usr/libexec/PlistBuddy -c "Add :MinisBuildNumber string ${{ github.run_number }}" Payload/Minis.app/Info.plist
+          /usr/libexec/PlistBuddy -c 'Print :MinisBuildNumber' Payload/Minis.app/Info.plist
           xcrun vtool -show-build Payload/Minis.app/Minis | tee minos-v64r.txt
           zip -qry Minis-160652-FourFeatures-iOS15.5.ipa Payload
           unzip -tq Minis-160652-FourFeatures-iOS15.5.ipa
@@ -158,3 +164,39 @@ jobs:
             minos-v64r.txt
           if-no-files-found: ignore
           retention-days: 14
+      # [T-inapp-update-beta] Feed for the in-app updater. A fixed tag is
+      # recreated on every successful build, so the app only ever has to know
+      # one URL. Manifest first-class: build/version/size/sha256, the IPA as an
+      # asset of the same release. `contents: write` above is for this step.
+      - name: Publish beta release for the in-app updater
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          TAG=beta-latest
+          BUILD="${{ github.run_number }}"
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Payload/Minis.app/Info.plist)
+          SHA=$(cut -d' ' -f1 SHA256SUMS)
+          SIZE=$(stat -f%z Minis-160652-FourFeatures-iOS15.5.ipa)
+          python3 - "$BUILD" "$VERSION" "$SHA" "$SIZE" <<'PY'
+          import json, sys
+          build, version, sha, size = sys.argv[1:5]
+          json.dump({
+              "build": int(build),
+              "version": version,
+              "notes": "",
+              "ipa": "Minis-160652-FourFeatures-iOS15.5.ipa",
+              "sha256": sha,
+              "size": int(size),
+          }, open("latest.json", "w"))
+          PY
+          cat latest.json
+          gh release delete "$TAG" --cleanup-tag --yes || true
+          gh release create "$TAG" \
+            Minis-160652-FourFeatures-iOS15.5.ipa latest.json \
+            --title "测试版 build $BUILD" \
+            --prerelease \
+            --notes "${COMMIT_MESSAGE:-自动构建}
+
+          commit ${{ github.sha }} · run ${{ github.run_number }}"
