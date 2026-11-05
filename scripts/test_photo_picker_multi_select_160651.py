@@ -30,8 +30,8 @@ class PhotoPickerMultiSelect(unittest.TestCase):
         self.assertNotIn('stride(from: 0, to: jobs.count, by: 2)', CHAT)
 
     def test_watchdog_bounds_every_load(self):
-        self.assertIn('await Task.sleep(nanoseconds: 30_000_000_000)', CHAT)
-        self.assertIn('if attempt == 1 {\n                AppLogger(category: "PhotoPicker").error("load timeout(30s) attempt1', CHAT)
+        self.assertIn('await Task.sleep(nanoseconds: 10_000_000_000)', CHAT)
+        self.assertIn('if attempt == 1 {\n                AppLogger(category: "PhotoPicker").error("load timeout(10s) attempt1', CHAT)
         self.assertIn('vm.markPlaceholderFailed(id: job.id)', CHAT)
 
     def test_failed_chip_retries_in_place(self):

@@ -445,7 +445,7 @@ extension AIChatViewModel {
     /// the file and flip the chip to `.ready` in place (no reordering, so photos
     /// keep their picked order). If the placeholder was already removed by the
     /// user, the bytes are simply dropped.
-    func finalizeImagePlaceholder(id: UUID, data: Data, fileExtension: String?, originalDate: Date? = nil) {
+    func finalizeImagePlaceholder(id: UUID, data: Data, fileExtension: String?, originalDate: Date? = nil) async {
         guard let idx = attachments.firstIndex(where: { $0.id == id }) else { return }
         let fm = FileManager.default
         let dir = attachmentCacheDir
@@ -459,7 +459,8 @@ extension AIChatViewModel {
         let fileName = "photo_\(UUID().uuidString.prefix(8)).\(normalizedExt)"
         let url = dir.appendingPathComponent(fileName)
         do {
-            try data.write(to: url)
+            let payload = data
+            try await Task.detached(priority: .userInitiated) { try payload.write(to: url) }.value
             if let date = originalDate {
                 try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: url.path)
             }
@@ -479,7 +480,7 @@ extension AIChatViewModel {
     /// Resolve a Photos picker image from its temporary file representation.
     /// Copy bytes on disk instead of materializing full-resolution Data for each
     /// selected photo, keeping large multi-select peak memory bounded.
-    func finalizeImagePlaceholder(id: UUID, from sourceURL: URL) {
+    func finalizeImagePlaceholder(id: UUID, from sourceURL: URL) async {
         guard attachments.contains(where: { $0.id == id }) else {
             try? FileManager.default.removeItem(at: sourceURL)
             return
@@ -494,7 +495,8 @@ extension AIChatViewModel {
         let destination = dir.appendingPathComponent(fileName)
         defer { try? fm.removeItem(at: sourceURL) }
         do {
-            try fm.copyItem(at: sourceURL, to: destination)
+            let source = sourceURL, dest = destination
+            try await Task.detached(priority: .userInitiated) { try FileManager.default.copyItem(at: source, to: dest) }.value
             guard let index = attachments.firstIndex(where: { $0.id == id }) else {
                 try? fm.removeItem(at: destination)
                 return
@@ -512,7 +514,7 @@ extension AIChatViewModel {
     /// Resolve a `.loading` video placeholder by copying the loaded file in and
     /// flipping to `.ready`. Mirrors `addFileAttachment` but targets an existing
     /// placeholder so the chip doesn't jump to the end.
-    func finalizeVideoPlaceholder(id: UUID, from sourceURL: URL, originalDate: Date? = nil) {
+    func finalizeVideoPlaceholder(id: UUID, from sourceURL: URL, originalDate: Date? = nil) async {
         guard attachments.contains(where: { $0.id == id }) else { return }
         let fm = FileManager.default
         let dir = attachmentCacheDir
@@ -522,7 +524,8 @@ extension AIChatViewModel {
         let destURL = dir.appendingPathComponent(fileName)
         do {
             try? fm.removeItem(at: destURL)
-            try fm.copyItem(at: sourceURL, to: destURL)
+            let source = sourceURL, dest = destURL
+            try await Task.detached(priority: .userInitiated) { try FileManager.default.copyItem(at: source, to: dest) }.value
             if let date = originalDate {
                 try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: destURL.path)
             }
