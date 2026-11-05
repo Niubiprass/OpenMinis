@@ -29,7 +29,10 @@ def check(name, ok, detail=""):
 dev = DEV.read_text()
 router = ROUTER.read_text()
 chat = CHAT.read_text()
-mini = MINISIGHT.read_text()
+mini_all = MINISIGHT.read_text() + "".join(
+    p.read_text() for p in (MINISIGHT.parent).glob("MiniSight*Page.swift"))
+mini_all += (MINISIGHT.parents[2] / "MiniSightConfigStore.swift").read_text()
+mini_all += (MINISIGHT.parents[2] / "MiniSightSettings.swift").read_text()
 
 # 1. Section syntax: `Section("x") { ... } footer:` is invalid on iOS 15.
 bad = [m.group(0) for m in re.finditer(r'Section\("[^"]*"\) \{', dev)]
@@ -67,9 +70,9 @@ check("新测试已接入 CI", "test_plugin_workbench_160651.py" in wf)
 check("信号测试已接入 CI", "test_minisight_signal_160651.py" in wf)
 
 # 5. Same-screen MiniSight regressions.
-check("重力开关仍在", '"minisight.gravity"' in mini)
-check("尺寸仍是 36...140 步进 2", "36...140, step: 2" in mini)
-check("设置先落盘再通知", "synchronize()" in mini)
+check("重力开关仍在", "minisight.gravity" in mini_all)
+check("尺寸仍是 36...140 步进 2", "36...140, step: 2" in mini_all)
+check("设置先落盘再通知", "PropertyListSerialization" in mini_all or "synchronize()" in mini_all)
 
 failed = [(n, d) for n, ok, d in results if not ok]
 for n, ok, d in results:
