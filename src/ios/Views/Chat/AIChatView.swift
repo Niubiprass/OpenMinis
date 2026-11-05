@@ -1470,18 +1470,14 @@ struct AIChatView: View {
                         group.addTask {
                             if job.isVideo {
                                 if let videoURL = try? await job.item.loadTransferable(type: VideoFileTransferable.self) {
-                                    await MainActor.run {
-                                        await vm.finalizeVideoPlaceholder(id: job.id, from: videoURL.url, originalDate: job.date)
-                                    }
+                                    await vm.finalizeVideoPlaceholder(id: job.id, from: videoURL.url, originalDate: job.date)
                                 } else {
                                     await MainActor.run { vm.markPlaceholderFailed(id: job.id) }
                                 }
                             } else if let data = try? await job.item.loadTransferable(type: Data.self) {
                                 // Preserve original encoded bytes (PNG transparency,
                                 // HEIC, animated GIFs, EXIF) — written verbatim.
-                                await MainActor.run {
-                                    await vm.finalizeImagePlaceholder(id: job.id, data: data, fileExtension: job.ext, originalDate: job.date)
-                                }
+                                await vm.finalizeImagePlaceholder(id: job.id, data: data, fileExtension: job.ext, originalDate: job.date)
                             } else {
                                 await MainActor.run { vm.markPlaceholderFailed(id: job.id) }
                             }
