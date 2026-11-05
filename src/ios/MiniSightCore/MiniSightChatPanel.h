@@ -21,6 +21,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Minis App container; required before the built-in client can read ai.json.
 @property (nonatomic, copy, nullable) NSString *containerPath;
+/// Shared MiniSight AppStorage appearance snapshot (bubble height/theme/tint).
+@property (nonatomic, copy) NSDictionary<NSString *, id> *appearancePreferences;
+/// Actual pet/pill view. Weak: geometry updates never retain or recreate a host.
+@property (nonatomic, weak, nullable) UIView *anchorView;
+/// Relayouts only an already-visible presentation; never builds or opens UI.
+- (void)refreshAnchorLocation;
 
 @property (nonatomic, readonly, getter=isVisible) BOOL visible;
 @property (nonatomic, readonly, getter=isSending) BOOL sending;
@@ -31,12 +37,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^visibilityHandler)(BOOL visible);
 /// Invoked by the chat menu to hide the pet/indicator through the host lifecycle.
 @property (nonatomic, copy, nullable) void (^hidePetHandler)(void);
-/// App-owned visual preferences; does not contain API credentials.
-@property (nonatomic, copy) NSDictionary<NSString *, id> *appearancePreferences;
 
 /// Shows (or re-keys) the panel. Returns NO only when no window scene exists.
 + (BOOL)showInWindowScene:(nullable UIWindowScene *)scene;
 - (BOOL)showInWindowScene:(nullable UIWindowScene *)scene;
+
+/// Local-only speech/status; never sends a network request or steals an editor.
+- (void)showLocalText:(NSString *)text inWindowScene:(nullable UIWindowScene *)scene
+    NS_SWIFT_NAME(showLocalText(_:in:));
 
 /// Cancels an in-flight request, resigns key, hides the window.
 - (void)close;

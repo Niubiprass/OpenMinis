@@ -10,10 +10,91 @@
 //
 
 import CoreFoundation
+import Foundation
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
+
+// MARK: - MiniSight AI file store (Foundation-only; exercised by standalone tests)
+
+/// One authoritative file. Persona-only writes never capture unsaved connection fields.
+/// Corrupt/unreadable files are NOT treated as empty dictionaries and silently replaced.
+enum MiniSightAIConfigFile {
+    static let maxBytes = 64 * 1024
+    enum Failure: Error { case invalidFile, tooLarge, verificationFailed }
+
+    static func normalizedPersona(_ text: String) -> String {
+        String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(2000))
+    }
+
+    static func read(_ url: URL) throws -> [String: Any] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard ((attributes[.size] as? NSNumber)?.intValue ?? 0) <= maxBytes else {
+            throw Failure.tooLarge
+        }
+        let data = try Data(contentsOf: url)
+        guard data.count <= maxBytes else { throw Failure.tooLarge }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw Failure.invalidFile
+        }
+        return object
+    }
+
+    @discardableResult
+    static func writeAndVerify(_ object: [String: Any], to url: URL,
+                               onWrite: (() -> Void)? = nil) throws -> [String: Any] {
+        let data = try JSONSerialization.data(withJSONObject: object)
+        guard data.count <= maxBytes else { throw Failure.tooLarge }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+        onWrite?()
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        let verified = try read(url)
+        guard NSDictionary(dictionary: verified).isEqual(NSDictionary(dictionary: object)) else {
+            throw Failure.verificationFailed
+        }
+        return verified
+    }
+
+    static func replacingPersona(_ text: String, in object: [String: Any]) -> [String: Any] {
+        var updated = object
+        let prompt = normalizedPersona(text)
+        if prompt.isEmpty { updated.removeValue(forKey: "system_prompt") }
+        else { updated["system_prompt"] = prompt }
+        return updated
+    }
+
+    @discardableResult
+    static func savePersona(_ text: String, to url: URL, onWrite: (() -> Void)? = nil) throws -> String {
+        let current = try read(url)
+        let updated = replacingPersona(text, in: current)
+        // Avoid rewriting the same file on every onAppear and invalidating a valid test.
+        if !NSDictionary(dictionary: current).isEqual(NSDictionary(dictionary: updated)) ||
+            !FileManager.default.fileExists(atPath: url.path) {
+            _ = try writeAndVerify(updated, to: url, onWrite: onWrite)
+        } else { onWrite?() }
+        let verified = try read(url)
+        let expected = normalizedPersona(text)
+        guard (verified["system_prompt"] as? String ?? "") == expected else {
+            throw Failure.verificationFailed
+        }
+        return expected
+    }
+
+    static func saveConnection(url: String, key: String, model: String,
+                               persona: String, to file: URL, onWrite: (() -> Void)? = nil) throws {
+        var updated = replacingPersona(persona, in: try read(file))
+        updated["url"] = url
+        updated["key"] = key
+        updated["model"] = model
+        _ = try writeAndVerify(updated, to: file, onWrite: onWrite)
+    }
+}
+
+// MARK: - Pet files and AI UI metadata
 
 private enum MiniSightPetFile {
     static var directory: URL {
@@ -32,7 +113,7 @@ private enum MiniSightPetFile {
     }
 
     /// 9-row sheets are 1536 px wide on Petdex; 768 is plenty for a 96 pt pet.
-    static func save(_ image: UIImage) -> Bool {
+    static func save(_ image: UIImage, onWrite: () -> Void) throws {
         let maxWidth: CGFloat = 768
         let scale = min(1, maxWidth / max(image.size.width, 1))
         let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
@@ -40,20 +121,24 @@ private enum MiniSightPetFile {
         let scaled = renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: size))
         }
-        guard let data = scaled.pngData() else { return false }
-        do {
-            try data.write(to: url, options: .atomic)
-            return true
-        } catch {
-            return false
+        guard let data = scaled.pngData() else { throw MiniSightAIConfigFile.Failure.invalidFile }
+        try data.write(to: url, options: .atomic)
+        onWrite()
+        let verified = try Data(contentsOf: url)
+        guard verified == data, UIImage(data: verified) != nil else {
+            throw MiniSightAIConfigFile.Failure.verificationFailed
         }
     }
 
-    static func delete() {
-        try? FileManager.default.removeItem(at: url)
+    static func delete() throws {
+        try FileManager.default.removeItem(at: url)
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            throw MiniSightAIConfigFile.Failure.verificationFailed
+        }
     }
 
     static var aiConfigURL: URL { directory.appendingPathComponent("ai.json") }
+    static var containerPath: String { directory.deletingLastPathComponent().deletingLastPathComponent().path }
     static var shownURL: URL { directory.appendingPathComponent("shown") }
 
     static func loadShown() -> Bool {
@@ -61,30 +146,57 @@ private enum MiniSightPetFile {
         return String(data: data, encoding: .utf8) != "0"
     }
 
-    static func saveShown(_ on: Bool) {
-        try? Data((on ? "1" : "0").utf8).write(to: shownURL, options: .atomic)
+    static func saveShown(_ on: Bool, onWrite: () -> Void) throws {
+        let expected = Data((on ? "1" : "0").utf8)
+        try expected.write(to: shownURL, options: .atomic)
+        onWrite()
+        guard try Data(contentsOf: shownURL) == expected else {
+            throw MiniSightAIConfigFile.Failure.verificationFailed
+        }
     }
 
     static func loadAI() -> (String, String, String, String) {
-        guard let data = try? Data(contentsOf: aiConfigURL),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return ("", "", "", "") }
+        guard let obj = try? MiniSightAIConfigFile.read(aiConfigURL) else { return ("", "", "", "") }
         return (obj["url"] as? String ?? "", obj["key"] as? String ?? "",
                 obj["model"] as? String ?? "", obj["system_prompt"] as? String ?? "")
     }
 
-    static func saveAI(url: String, key: String, model: String, systemPrompt: String) throws {
-        let existing = (try? Data(contentsOf: aiConfigURL))
-            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
-        var obj = existing
-        obj["url"] = url
-        obj["key"] = key
-        obj["model"] = model
-        let trimmedPrompt = systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedPrompt.isEmpty { obj.removeValue(forKey: "system_prompt") }
-        else { obj["system_prompt"] = String(trimmedPrompt.prefix(2000)) }
-        let data = try JSONSerialization.data(withJSONObject: obj)
-        try data.write(to: aiConfigURL, options: .atomic)
+    static func saveAI(url: String, key: String, model: String, systemPrompt: String,
+                       onWrite: (() -> Void)? = nil) throws {
+        try MiniSightAIConfigFile.saveConnection(url: url, key: key, model: model,
+                                                persona: systemPrompt, to: aiConfigURL, onWrite: onWrite)
+    }
+
+    static func savePersona(_ text: String, onWrite: (() -> Void)? = nil) throws -> String {
+        try MiniSightAIConfigFile.savePersona(text, to: aiConfigURL, onWrite: onWrite)
+    }
+
+    /// Revision is metadata only, never a key/URL/prompt. Changed settings invalidate old green results.
+    static var aiConfigRevision: String {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: aiConfigURL.path),
+              let date = attributes[.modificationDate] as? Date else { return "missing" }
+        return "\(date.timeIntervalSince1970)|\(attributes[.size] as? NSNumber ?? 0)"
+    }
+
+    static var aiTestRecordURL: URL { directory.appendingPathComponent("ai-test-status.json") }
+
+    /// Persist only result metadata, not the response, credentials or persona.
+    static func saveTestRecord(ok: Bool, status: String, cooldownUntil: Date?, revision: String) throws {
+        var object: [String: Any] = ["ok": ok, "status": status, "revision": revision,
+                                     "time": Date().timeIntervalSince1970]
+        if let cooldownUntil { object["cooldownUntil"] = cooldownUntil.timeIntervalSince1970 }
+        _ = try MiniSightAIConfigFile.writeAndVerify(object, to: aiTestRecordURL)
+    }
+
+    static func loadTestRecord() -> (status: String, ok: Bool, cooldown: Date?)? {
+        guard let object = try? MiniSightAIConfigFile.read(aiTestRecordURL),
+              let status = object["status"] as? String, status.count <= 1000 else { return nil }
+        let date = Date(timeIntervalSince1970: object["time"] as? TimeInterval ?? 0)
+        let stamp = MiniSightSettingsView.savedAtFormatter.string(from: date)
+        let sameRevision = (object["revision"] as? String) == aiConfigRevision
+        let text = "\(stamp) · \(status)" + (sameRevision ? "" : " 配置已变，需要重新测试。")
+        let until = (object["cooldownUntil"] as? TimeInterval).map(Date.init(timeIntervalSince1970:))
+        return (text, sameRevision && (object["ok"] as? Bool ?? false), until)
     }
 
     /// 配置文件的落盘时间；没有文件时为 nil。给「已保存」状态单独一行用，
@@ -97,9 +209,8 @@ private enum MiniSightPetFile {
     }
 }
 
-/// 仅供设置页的显式单次测试使用；不记录原始错误响应。
+/// Endpoint validation and UI-only redaction; no second network client/parser.
 private enum MiniSightAITest {
-    static let maxBodyBytes = 64 * 1024
 
     static func endpoint(for base: String) -> String? {
         let raw = base.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -141,7 +252,7 @@ private enum MiniSightAITest {
     }
 
     /// 先脱敏再截断：包括已知 Key/查询值、Bearer、常见 sk- token 和链接。
-    private static func safeText(_ text: String, secrets: [String], limit: Int) -> String {
+    static func safeText(_ text: String, secrets: [String], limit: Int) -> String {
         var cleaned = text
         for secret in Set(secrets.filter { !$0.isEmpty }).sorted(by: { $0.count > $1.count }) {
             cleaned = cleaned.replacingOccurrences(of: secret, with: "[已隐藏]")
@@ -159,69 +270,13 @@ private enum MiniSightAITest {
         return String(cleaned.prefix(limit)) + (cleaned.count > limit ? "…" : "")
     }
 
-    private static func object(_ data: Data) -> [String: Any]? {
-        guard data.count <= maxBodyBytes, String(data: data, encoding: .utf8) != nil else { return nil }
-        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    }
-
-    static func failure(_ status: Int, data: Data, tooLarge: Bool, secrets: [String]) -> String {
-        let summary: String
-        if status == 429 {
-            summary = "HTTP 429（限流／配额／上游拥堵）：这是本次测试请求被拒，与配置有没有保存无关；按 Retry-After 冷却（无效时 30 秒，最长 300 秒），不会自动重试，也不影响已保存的配置。"
-        } else if (300...399).contains(status) {
-            summary = "测试返回 HTTP \(status)；为保护凭据未跟随重定向（不影响已保存的配置）。"
-        } else {
-            summary = "测试失败：HTTP \(status)（这次测试不发网络以外的影响，已保存的配置保持原样）。"
-        }
-        guard !tooLarge, data.count <= maxBodyBytes else {
-            return summary + " 错误详情超过 64 KiB，已忽略。"
-        }
-        guard let error = object(data)?["error"] as? [String: Any] else {
-            return summary + " 未提供可解析的 OpenAI JSON 错误详情（不回显原始响应）。"
-        }
-        var fields: [String] = []
-        for (name, limit) in [("code", 64), ("type", 64), ("message", 200)] {
-            let raw = (error[name] as? String) ?? (error[name] as? NSNumber)?.stringValue ?? ""
-            let value = safeText(raw, secrets: secrets, limit: limit)
-            if !value.isEmpty { fields.append("\(name)=\(value)") }
-        }
-        return summary + (fields.isEmpty ? " 错误详情为空。" : "\n" + fields.joined(separator: "；"))
-    }
-
-    static func reply(_ data: Data, tooLarge: Bool, secrets: [String]) -> String {
-        guard !tooLarge, data.count <= maxBodyBytes else {
-            return "HTTP 200，但响应超过 64 KiB，未解析（非 HTTP 错误）。"
-        }
-        guard let obj = object(data) else {
-            return "HTTP 200，但响应不是有效 UTF-8 JSON（非 HTTP 错误）。"
-        }
-        let choices = obj["choices"] as? [[String: Any]]
-        let message = choices?.first?["message"] as? [String: Any]
-        var content = message?["content"] as? String ?? ""
-        if let segments = message?["content"] as? [[String: Any]] {
-            content = segments.compactMap { segment -> String? in
-                guard let type = segment["type"] as? String, ["text", "output_text"].contains(type) else { return nil }
-                return segment["text"] as? String
-            }.joined(separator: "\n")
-        }
-        let result = safeText(content, secrets: secrets, limit: 240)
-        return result.isEmpty
-            ? "HTTP 200，但没有可显示的 message.content（非 HTTP 错误；不把推理字段当回复）。"
-            : "测试成功：" + result
-    }
-}
-
-private final class MiniSightAITestRedirectGuard: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-                    completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil)
-    }
 }
 
 struct MiniSightSettingsView: View {
     /// 0 = capsule, 1 = pet.
     @AppStorage("minisight.style") private var style = 0
+    @AppStorage("minisight.renderer") private var renderer = 0 // 0: plugin, 1: App
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("minisight.record") private var record = false
     @AppStorage("minisight.longPress") private var longPressToRecord = true
     @AppStorage("minisight.mode") private var mode = 0   // 0 = 仅调用时，1 = 常驻
@@ -229,11 +284,17 @@ struct MiniSightSettingsView: View {
     @AppStorage("minisight.petSize") private var petSize = 96.0
     @AppStorage("minisight.gravity") private var gravity = false
     @AppStorage("minisight.diagnostics") private var diagnostics = false
-    @AppStorage("minisight.chat.height") private var chatHeight = 360.0
+    @AppStorage("minisight.chat.height") private var chatHeight = 160.0
     @AppStorage("minisight.chat.theme") private var chatTheme = 0
     @AppStorage("minisight.chat.tintHex") private var chatTintHex = "8B5CF6"
     @AppStorage("minisight.chat.tintAlpha") private var chatTintAlpha = 0.22
-    @AppStorage("minisight.ai.persona") private var aiPersona = ""
+    @State private var aiPersona = ""
+    @State private var savedPersona = ""
+    @State private var personaLoaded = false
+    @State private var personaSaveGeneration = 0
+    @State private var personaSaveWork: DispatchWorkItem?
+    @State private var personaSaveFailed = false
+    @State private var personaSaveStatus = "人设尚未读取。"
 
     @State private var aiURL = ""
     @State private var aiKey = ""
@@ -247,11 +308,17 @@ struct MiniSightSettingsView: View {
     @State private var aiTestStatus: String?
     @State private var aiTestOK = false
     @State private var aiTesting = false
+    @State private var aiTestClient: MiniSightAI?
+    @State private var aiTestGeneration = 0
     @State private var aiCooldownUntil: Date?
     @State private var petImage: UIImage?
     @State private var showPhotoPicker = false
     @State private var showFilePicker = false
     @State private var importError: String?
+    @State private var settingsError: String?
+    @State private var settingsLoaded = false
+    @State private var showRuntimeLogs = false
+    @State private var aiTestRequest = ""
 
     var body: some View {
         List {
@@ -261,14 +328,21 @@ struct MiniSightSettingsView: View {
                     Text("桌宠").tag(1)
                 }
                 .pickerStyle(.segmented)
+                if style == 1 {
+                    Picker("桌宠显示端", selection: $renderer) {
+                        Text("越狱插件").tag(0)
+                        Text("App 内").tag(1)
+                    }
+                    .pickerStyle(.segmented)
+                }
             } footer: {
-                Text("切换后立即生效。桌宠只在导入后可用。")
+                Text("切换后立即生效。越狱插件可跨 App 显示；App 内只在 Minis 中显示。只启用选中的一端，不重复画两只。")
             }
 
             Section {
                 Toggle("显示桌宠", isOn: $shown)
             } footer: {
-                Text("双击桌宠也会关掉它；关掉后 MCP 调用也不再出现，要恢复就在这里打开。")
+                Text("双击打开对话；对话菜单里可以隐藏桌宠。隐藏后 MCP 调用也不再出现，可在这里恢复。")
             }
 
             Section {
@@ -313,9 +387,16 @@ struct MiniSightSettingsView: View {
                 }
                 if petImage != nil {
                     Button(role: .destructive) {
-                        MiniSightPetFile.delete()
-                        petImage = nil
-                        style = 0
+                        do {
+                            try MiniSightPetFile.delete()
+                            MSDiagEvent("assets", "readback", "ok", ["setting": "pet", "source": "delete", "readback": true])
+                            petImage = nil
+                            style = 0
+                            flushAndPost("com.openminis.minisight.settings", setting: "pet")
+                        } catch {
+                            MSDiagEvent("assets", "readback", "failed", MiniSightSettingsDiagnostics.errorFields(error, setting: "pet"))
+                            importError = "删除失败或删除后核对失败，请刷新后重试。"
+                        }
                     } label: {
                         Label("删除当前桌宠", systemImage: "trash")
                     }
@@ -378,6 +459,10 @@ struct MiniSightSettingsView: View {
                         .buttonStyle(.bordered)
                         .disabled(aiTesting || remaining > 0)
                     }
+                    if aiTesting {
+                        Button("取消测试") { cancelAITest() }
+                            .buttonStyle(.bordered)
+                    }
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     statusLine(title: "配置状态", text: saveStateText,
@@ -393,7 +478,7 @@ struct MiniSightSettingsView: View {
             } header: {
                 Text("桌宠 AI")
             } footer: {
-                Text("App 内桌宠与越狱插件共用此设置。AI 地址、模型、Key 和可选人设保存在 Documents/MiniSight/ai.json；人设随聊天请求作为 system message 发送，不写诊断日志。「保存」只写本地文件，不发网络请求；「测试」独立发送一次请求。")
+                Text("地址、Key、模型点保存后生效；人设独立自动保存。两端聊天和测试都读同一份 Documents/MiniSight/ai.json；测试只验证已保存配置，不替你保存未完成的连接编辑。收到真实回答才判成功。")
             }
 
             Section {
@@ -403,14 +488,25 @@ struct MiniSightSettingsView: View {
                         .frame(minHeight: 90, maxHeight: 150)
                         .padding(6)
                         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                    Text("留空使用 MiniSight 默认人设。内容随 AI 请求发送，不会写入诊断日志。")
+                    Text("人设独立自动保存，停止输入片刻或离开页面时落盘；最多 2000 字。留空使用默认人设，不会写入诊断日志。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("恢复默认人设") { aiPersona = "" }
-                        .font(.footnote)
+                    Text(personaSaveStatus)
+                        .font(.caption)
+                        .foregroundStyle(personaSaveFailed ? Color.red : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if personaSaveFailed {
+                        Button("重试保存人设") { savePersonaNow() }
+                            .font(.footnote)
+                    }
+                    Button("恢复默认人设") {
+                        aiPersona = ""
+                        savePersonaNow()
+                    }
+                    .font(.footnote)
                 }
                 HStack(spacing: 12) {
-                    Text("面板高度")
-                    Slider(value: $chatHeight, in: 280...440, step: 10)
+                    Text("气泡记录最大高度")
+                    Slider(value: $chatHeight, in: 80...200, step: 10)
                     Text("\(Int(chatHeight))")
                         .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
                         .frame(width: 42, alignment: .trailing)
@@ -440,8 +536,10 @@ struct MiniSightSettingsView: View {
 
             Section {
                 Button("测试显示 3 秒") {
+                    MSDiagEvent("settings", "publish", "pending", ["setting": "display_test", "reason": "awaiting_runtime"])
                     post("com.openminis.agent.started")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        MSDiagEvent("settings", "publish", "pending", ["setting": "display_test", "reason": "stop_requested"])
                         post("com.openminis.agent.stopped")
                     }
                 }
@@ -459,39 +557,72 @@ struct MiniSightSettingsView: View {
             }
 
             Section {
-                Toggle("记录诊断日志", isOn: $diagnostics)
+                Toggle("记录详细诊断", isOn: $diagnostics)
+                Button { showRuntimeLogs = true } label: {
+                    Label("查看运行日志", systemImage: "doc.text.magnifyingglass")
+                }
+                if let settingsError {
+                    Text(settingsError).font(.caption).foregroundStyle(Color.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("重试保存设置") {
+                        persistShown(shown)
+                    }
+                }
             } header: {
                 Text("诊断")
             } footer: {
-                Text("默认关闭。开启后只在本机 Documents/MiniSight/diagnostic.log 记录状态、错误码和计数，超过 200KB 轮转一份；不记 Key、提示词、命令正文或响应正文，不自动上传。")
+                Text("基础状态事件始终在本机记录；开关只控制详细诊断。Documents/MiniSight/ 下 App 与插件各写 diagnostic-app.log / diagnostic-plugin.log，每文件上限 200KB，另保留一份 .1 轮转，旧记录会被覆盖。只记录脱敏状态、错误码和计数，不记 Key、地址、提示词或正文，不自动上传。")
             }
         }
         .navigationTitle("操作指示器")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
+            settingsLoaded = false
+            MSDiagConfigure(diagnostics, MiniSightPetFile.containerPath)
             petImage = MiniSightPetFile.load()
             shown = MiniSightPetFile.loadShown()
-            let ai = MiniSightPetFile.loadAI()
-            aiURL = ai.0; aiKey = ai.1; aiModel = ai.2; aiPersona = ai.3
-            // The App's AI credentials and persona remain in the existing ai.json.
-            aiSavedSnapshot = [ai.0, ai.1, ai.2, ai.3]
-            aiSavedAt = MiniSightPetFile.aiConfigSavedAt
+            // Migrate the old half-screen card height to the compact bubbles' range.
+            if !chatHeight.isFinite || chatHeight < 80 || chatHeight > 200 {
+                chatHeight = chatHeight.isFinite ? min(200, max(80, chatHeight)) : 160
+            }
+            loadAISettings()
+            settingsLoaded = true
+            for item in settingsSnapshot {
+                settingEvent(item.key, stage: "load", result: "pending", reason: "settings_page")
+            }
+            settingEvent("shown", stage: "load", result: "pending", reason: "settings_page")
         }
-        .onChange(of: style) { _ in flushAndPost("com.openminis.minisight.settings") }
-        .onChange(of: mode) { _ in flushAndPost("com.openminis.minisight.settings") }
-        .onChange(of: shown) { value in
-            MiniSightPetFile.saveShown(value)
-            flushAndPost(value ? "com.openminis.minisight.show" : "com.openminis.minisight.settings")
+        .onDisappear {
+            savePersonaNow()
+            cancelAITest()
         }
-        .onChange(of: petSize) { _ in flushAndPost("com.openminis.minisight.settings") }
-        .onChange(of: gravity) { _ in flushAndPost("com.openminis.minisight.settings") }
-        .onChange(of: diagnostics) { _ in flushAndPost("com.openminis.minisight.settings") }
-        .onChange(of: chatHeight) { _ in flushAndPost("com.openminis.minisight.settings") }
-        .onChange(of: chatTheme) { _ in flushAndPost("com.openminis.minisight.settings") }
-        .onChange(of: chatTintHex) { _ in flushAndPost("com.openminis.minisight.settings") }
-        .onChange(of: chatTintAlpha) { _ in flushAndPost("com.openminis.minisight.settings") }
+        .onChange(of: scenePhase) { phase in
+            if phase != .active { savePersonaNow() }
+            if phase == .background { cancelAITest() }
+        }
+        .onChange(of: aiPersona) { value in schedulePersonaSave(value) }
+        .onChange(of: renderer) { _ in flushAndPost("com.openminis.minisight.settings", setting: "minisight.renderer") }
+        .onChange(of: style) { _ in flushAndPost("com.openminis.minisight.settings", setting: "minisight.style") }
+        .onChange(of: mode) { _ in flushAndPost("com.openminis.minisight.settings", setting: "minisight.mode") }
+        .onChange(of: shown) { value in if settingsLoaded && MiniSightPetFile.loadShown() != value { persistShown(value) } }
+        .onChange(of: petSize) { _ in flushAndPost("com.openminis.minisight.settings", setting: "minisight.petSize") }
+        .onChange(of: gravity) { _ in flushAndPost("com.openminis.minisight.settings", setting: "minisight.gravity") }
+        .onChange(of: diagnostics) { _ in
+            MSDiagConfigure(diagnostics, MiniSightPetFile.containerPath)
+            flushAndPost("com.openminis.minisight.settings", setting: "minisight.diagnostics")
+        }
+        .onChange(of: record) { _ in flushAndPost("com.openminis.minisight.settings", setting: "minisight.record") }
+        .onChange(of: longPressToRecord) { _ in flushAndPost("com.openminis.minisight.settings", setting: "minisight.longPress") }
+        .onChange(of: chatHeight) { _ in flushAndPost("com.openminis.minisight.settings", setting: "minisight.chat.height") }
+        .onChange(of: chatTheme) { _ in flushAndPost("com.openminis.minisight.settings", setting: "minisight.chat.theme") }
+        .onChange(of: chatTintHex) { _ in flushAndPost("com.openminis.minisight.settings", setting: "minisight.chat.tintHex") }
+        .onChange(of: chatTintAlpha) { _ in flushAndPost("com.openminis.minisight.settings", setting: "minisight.chat.tintAlpha") }
+        .sheet(isPresented: $showRuntimeLogs) { MiniSightRuntimeLogView() }
         .sheet(isPresented: $showPhotoPicker) {
-            MiniSightPhotoPicker { image in importImage(image) }
+            MiniSightPhotoPicker(onPick: { image in importImage(image, source: "photos") }, onFailure: {
+                MSDiagEvent("assets", "receive", "failed", ["setting": "pet", "source": "photos", "reason": "decode_failed"])
+                importError = "照片无法读取，请换一张图片重试。"
+            })
         }
         .sheet(isPresented: $showFilePicker) {
             MiniSightDocumentPicker { url in importFile(url) }
@@ -506,12 +637,22 @@ struct MiniSightSettingsView: View {
         }
     }
 
-    private func importImage(_ image: UIImage) {
-        if MiniSightPetFile.save(image) {
+    private func importImage(_ image: UIImage, source: String) {
+        MSDiagEvent("assets", "receive", "pending", ["setting": "pet", "source": source])
+        var didWrite = false
+        do {
+            try MiniSightPetFile.save(image, onWrite: {
+                didWrite = true
+                MSDiagEvent("assets", "save", "ok", ["setting": "pet", "source": source, "saved": true])
+            })
             petImage = MiniSightPetFile.load()
+            guard petImage != nil else { throw MiniSightAIConfigFile.Failure.verificationFailed }
+            MSDiagEvent("assets", "readback", "ok", ["setting": "pet", "source": source, "readback": true])
             style = 1
-        } else {
-            importError = "保存失败，存储空间可能不足。"
+            flushAndPost("com.openminis.minisight.settings", setting: "pet")
+        } catch {
+            MSDiagEvent("assets", didWrite ? "readback" : "save", "failed", MiniSightSettingsDiagnostics.errorFields(error, setting: "pet"))
+            importError = "素材写入或读回核对失败，请重试。"
         }
     }
 
@@ -526,7 +667,7 @@ struct MiniSightSettingsView: View {
     }
 
     /// 「已保存」状态行的文案：只看本机文件，与网络无关。
-    private static let savedAtFormatter: DateFormatter = {
+    fileprivate static let savedAtFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "MM-dd HH:mm:ss"
@@ -549,10 +690,111 @@ struct MiniSightSettingsView: View {
         })
     }
 
+    private func loadAISettings() {
+        personaLoaded = false
+        do {
+            let object = try MiniSightAIConfigFile.read(MiniSightPetFile.aiConfigURL)
+            let legacy = UserDefaults.standard.string(forKey: "minisight.ai.persona") ?? ""
+            // Recover an old defaults-only persona once, without overwriting a file persona.
+            if object["system_prompt"] == nil && !MiniSightAIConfigFile.normalizedPersona(legacy).isEmpty {
+                _ = try MiniSightPetFile.savePersona(legacy)
+                UserDefaults.standard.removeObject(forKey: "minisight.ai.persona")
+            }
+            let verified = try MiniSightAIConfigFile.read(MiniSightPetFile.aiConfigURL)
+            let ai = (verified["url"] as? String ?? "", verified["key"] as? String ?? "",
+                      verified["model"] as? String ?? "", verified["system_prompt"] as? String ?? "")
+            aiURL = ai.0; aiKey = ai.1; aiModel = ai.2; aiPersona = ai.3
+            savedPersona = MiniSightAIConfigFile.normalizedPersona(ai.3)
+            aiSavedSnapshot = [Self.endpoint(for: ai.0) ?? ai.0.trimmingCharacters(in: .whitespacesAndNewlines),
+                               ai.1.trimmingCharacters(in: .whitespacesAndNewlines),
+                               ai.2.trimmingCharacters(in: .whitespacesAndNewlines)]
+            aiSavedAt = MiniSightPetFile.aiConfigSavedAt
+            personaSaveFailed = false
+            personaSaveStatus = savedPersona.isEmpty ? "默认人设；修改后会自动保存。" : "人设已从本机文件读取。"
+            MSDiagEvent("settings", "load", "ok", ["setting": "ai_persona", "readback": true, "chars": savedPersona.count])
+            MSDiagEvent("settings", "load", "ok", ["setting": "ai_connection", "readback": true])
+        } catch {
+            // Keep corrupt/unreadable ai.json intact. Never dump its contents or error URL.
+            personaSaveFailed = true
+            personaSaveStatus = "人设读取失败：原配置文件已保留。修改后可重试保存。"
+            aiSavedSnapshot = []
+            aiSavedAt = nil
+            MSDiagEvent("settings", "load", "failed", MiniSightSettingsDiagnostics.errorFields(error, setting: "ai_persona"))
+            MSDiagEvent("settings", "load", "failed", MiniSightSettingsDiagnostics.errorFields(error, setting: "ai_connection"))
+            aiSaveOK = false
+            aiSaveNotice = "读取失败：原配置文件已保留，没有覆盖。"
+        }
+        personaLoaded = true
+        restoreLastTestStatus()
+    }
+
+    private func schedulePersonaSave(_ value: String) {
+        guard personaLoaded else { return }
+        if value.count > 2000 {
+            aiPersona = String(value.prefix(2000))
+            return
+        }
+        personaSaveWork?.cancel()
+        personaSaveGeneration += 1
+        let generation = personaSaveGeneration
+        guard MiniSightAIConfigFile.normalizedPersona(value) != savedPersona || personaSaveFailed else { return }
+        personaSaveStatus = "等待自动保存…"
+        let work = DispatchWorkItem {
+            guard generation == personaSaveGeneration, personaLoaded else { return }
+            savePersonaNow()
+        }
+        personaSaveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
+    }
+
+    /// Runs on the UI queue on debounce, explicit retry, navigation or backgrounding.
+    /// Only system_prompt is merged; URL/Key/model drafts never enter this write.
+    private func savePersonaNow() {
+        personaSaveWork?.cancel()
+        personaSaveWork = nil
+        personaSaveGeneration += 1
+        guard personaLoaded else { return }
+        let prompt = MiniSightAIConfigFile.normalizedPersona(aiPersona)
+        guard prompt != savedPersona || personaSaveFailed else { return }
+        var didWrite = false
+        MSDiagEvent("settings", "save", "pending", ["setting": "ai_persona", "generation": personaSaveGeneration])
+        do {
+            savedPersona = try MiniSightPetFile.savePersona(prompt, onWrite: {
+                didWrite = true
+                MSDiagEvent("settings", "save", "ok", ["setting": "ai_persona", "saved": true])
+            })
+            MSDiagEvent("settings", "readback", "ok", ["setting": "ai_persona", "readback": true, "chars": savedPersona.count])
+            UserDefaults.standard.removeObject(forKey: "minisight.ai.persona")
+            aiSavedAt = MiniSightPetFile.aiConfigSavedAt
+            personaSaveFailed = false
+            personaSaveStatus = "人设已保存并核对 · " + Self.savedAtFormatter.string(from: aiSavedAt ?? Date())
+            flushAndPost("com.openminis.minisight.settings", setting: "ai_persona")
+            if !aiTesting { restoreLastTestStatus() }
+        } catch {
+            personaSaveFailed = true
+            personaSaveStatus = "人设保存失败，输入还在这里。请重试；没有改动接口、Key 或模型。"
+            MSDiagEvent("settings", didWrite ? "readback" : "save", "failed",
+                        MiniSightSettingsDiagnostics.errorFields(error, setting: "ai_persona"))
+        }
+    }
+
+    private func restoreLastTestStatus() {
+        guard !aiTesting else { return }
+        if let record = MiniSightPetFile.loadTestRecord() {
+            aiTestStatus = record.status
+            aiTestOK = record.ok
+            aiCooldownUntil = record.cooldown
+        } else {
+            aiTestStatus = nil
+            aiTestOK = false
+        }
+    }
+
     private var saveStateText: String {
-        guard let aiSavedAt = aiSavedAt else { return "还没保存过。" }
+        guard aiSavedSnapshot.count == 3, aiSavedSnapshot.allSatisfy({ !$0.isEmpty }),
+              let aiSavedAt = aiSavedAt else { return "接口、Key 和模型还没有完整保存。" }
         let stamp = "已保存 · " + Self.savedAtFormatter.string(from: aiSavedAt)
-        return aiDirty ? stamp + "，当前输入还没保存。" : stamp
+        return aiDirty ? stamp + "，接口/Key/模型有未保存改动；测试只用已保存配置。" : stamp
     }
 
     /// 界面输入是否与最近一次成功保存的内容不同。地址按补全后的端点比较，
@@ -561,8 +803,7 @@ struct MiniSightSettingsView: View {
         let endpoint = Self.endpoint(for: aiURL) ?? aiURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let current = [endpoint,
                        aiKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                       aiModel.trimmingCharacters(in: .whitespacesAndNewlines),
-                       aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)]
+                       aiModel.trimmingCharacters(in: .whitespacesAndNewlines)]
         return current != aiSavedSnapshot
     }
 
@@ -605,117 +846,266 @@ struct MiniSightSettingsView: View {
     /// 因此保存成功与否只取决于磁盘，不受限流、断网、429 影响。
     @MainActor
     private func saveAIConfig() {
+        cancelAITest()
+        savePersonaNow()
         let (config, problem) = validatedAIInput()
         guard let config = config else {
             aiSaveOK = false
             aiSaveNotice = "未保存：" + (problem ?? "输入不完整。") + "（这一步只看输入，不联网）"
+            MSDiagEvent("settings", "save", "skipped", ["setting": "ai_connection", "reason": "invalid_input"])
             return
         }
+        var didWrite = false
+        MSDiagEvent("settings", "save", "pending", ["setting": "ai_connection"])
         do {
-            try MiniSightPetFile.saveAI(url: config.endpoint, key: config.key, model: config.model, systemPrompt: aiPersona)
-            aiSavedSnapshot = [config.endpoint, config.key, config.model, aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)]
+            try MiniSightPetFile.saveAI(url: config.endpoint, key: config.key, model: config.model, systemPrompt: aiPersona, onWrite: {
+                didWrite = true
+                MSDiagEvent("settings", "save", "ok", ["setting": "ai_connection", "saved": true])
+            })
+            MSDiagEvent("settings", "readback", "ok", ["setting": "ai_connection", "readback": true])
+            aiSavedSnapshot = [config.endpoint, config.key, config.model]
             aiSavedAt = MiniSightPetFile.aiConfigSavedAt ?? Date()
+            savedPersona = MiniSightAIConfigFile.normalizedPersona(aiPersona)
+            personaSaveFailed = false
+            personaSaveStatus = "人设已保存并核对 · " + Self.savedAtFormatter.string(from: aiSavedAt ?? Date())
             aiSaveOK = true
-            aiSaveNotice = "已保存：只写入本机 ai.json，没有发送任何网络请求。"
-            flushAndPost("com.openminis.minisight.settings")
+            aiSaveNotice = "已保存并核对：只写本机文件，没有发送网络请求。"
+            flushAndPost("com.openminis.minisight.settings", setting: "ai_connection")
+            restoreLastTestStatus()
         } catch {
-            // localizedDescription 可能带文件 URL，不向界面回显。
-            aiSavedAt = MiniSightPetFile.aiConfigSavedAt
+            // NSError descriptions can contain paths; expose only a fixed message and code/domain metadata.
+            MSDiagEvent("settings", didWrite ? "readback" : "save", "failed",
+                        MiniSightSettingsDiagnostics.errorFields(error, setting: "ai_connection"))
+            aiSavedAt = nil
+            aiSavedSnapshot = []
             aiSaveOK = false
             aiSaveNotice = "保存失败：配置没能写入本机文件（可能是存储空间或权限问题）。这是写盘失败，与接口能不能连通无关。"
         }
     }
 
-    /// 「测试」：只发一次连通性请求（输入取本次快照），不写 ai.json、不碰保存状态。
+    /// The test reads the same saved file and uses the same MiniSightAI client as chat.
+    /// It never implicitly saves connection drafts and never treats HTTP alone as success.
     @MainActor
     private func testAI() async {
-        // UI 禁用以外再设入口闸门；不重试，输入也只取本次快照。
-        guard !aiTesting, Self.cooldownSeconds(until: aiCooldownUntil, now: Date()) == 0 else { return }
+        let request = UUID().uuidString
+        MSDiagEvent("ai_test", "click", "pending", ["request": request, "source": "settings"])
+        guard !aiTesting else {
+            MSDiagEvent("ai_test", "skip", "skipped", ["request": request, "reason": "busy"])
+            return
+        }
+        guard Self.cooldownSeconds(until: aiCooldownUntil, now: Date()) == 0 else {
+            MSDiagEvent("ai_test", "skip", "skipped", ["request": request, "reason": "cooldown"])
+            return
+        }
+        savePersonaNow()
+        guard !personaSaveFailed else {
+            aiTestOK = false
+            aiTestStatus = "未测试：人设尚未成功保存，请先重试保存人设。"
+            MSDiagEvent("ai_test", "skip", "skipped", ["request": request, "reason": "persona_unsaved"])
+            MSDiagEvent("ai_test", "display", "failed", ["request": request, "reason": "persona_unsaved"])
+            return
+        }
+        guard !aiDirty else {
+            aiTestOK = false
+            aiTestStatus = "未测试：接口、Key 或模型有未保存改动，请先点上方保存。"
+            MSDiagEvent("ai_test", "skip", "skipped", ["request": request, "reason": "connection_unsaved"])
+            MSDiagEvent("ai_test", "display", "failed", ["request": request, "reason": "connection_unsaved"])
+            return
+        }
         let (config, problem) = validatedAIInput()
         guard let config = config, let url = URL(string: config.endpoint) else {
             aiTestOK = false
-            aiTestStatus = "未测试：" + (problem ?? "接口地址不合法。") + "（不影响已保存的配置）"
+            aiTestStatus = "未测试：" + (problem ?? "接口地址不合法。")
+            MSDiagEvent("ai_test", "skip", "skipped", ["request": request, "reason": "invalid_input"])
+            MSDiagEvent("ai_test", "display", "failed", ["request": request, "reason": "invalid_input"])
             return
         }
+        aiTestGeneration += 1
+        let generation = aiTestGeneration
+        let revision = MiniSightPetFile.aiConfigRevision
         let key = config.key
-        let model = config.model
-
+        let startedAt = Date()
+        aiTestRequest = request
         aiTesting = true
         aiTestOK = false
-        aiTestStatus = "正在测试连通性…（不会改动已保存的配置）"
-        defer { aiTesting = false }
+        aiTestStatus = "正在用已保存配置请求真实回答…（与聊天共用接入；可取消）"
+        MSDiagConfigure(diagnostics, MiniSightPetFile.containerPath)
+        MSDiagEvent("ai_test", "start", "pending", ["request": request, "generation": generation, "source": "settings"])
+        let client = MiniSightAI(container: MiniSightPetFile.containerPath)
+        aiTestClient = client
+        defer {
+            if generation == aiTestGeneration {
+                aiTesting = false
+                aiTestClient = nil
+            }
+        }
 
         let queryValues = (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [])
             .compactMap { $0.value }.filter { !$0.isEmpty }
         let secrets = [key] + queryValues
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.timeoutInterval = 8
-        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let testPrompt = aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
-        let systemPrompt = testPrompt.isEmpty
-            ? "你是可爱的桌宠，说一句不超过20字的中文撒娇话，不要引号。"
-            : String(testPrompt.prefix(2000))
-        let body: [String: Any] = [
-            "model": model,
-            "max_tokens": 40,
-            "messages": [
-                ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": "说一句"],
-            ],
-        ]
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 8
-        configuration.timeoutIntervalForResource = 15
-        // 不跟随重定向，避免向另一地址转发 Authorization/查询凭据。
-        let session = URLSession(configuration: configuration,
-                                 delegate: MiniSightAITestRedirectGuard(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        var receivedStatus: Int?
+        let reply: MiniSightAIReply = await withCheckedContinuation { continuation in
+            client.send("你好，请只回答一句简短的中文。", completion: { reply in
+                continuation.resume(returning: reply)
+            })
+        }
+        MSDiagEvent("ai_test", "response", reply.isSuccess ? "ok" : "failed",
+                    ["request": request, "generation": generation, "code": reply.status,
+                     "chars": reply.text.count, "duration_ms": Int(Date().timeIntervalSince(startedAt) * 1000)])
+        guard generation == aiTestGeneration else {
+            MSDiagEvent("ai_test", "display", "skipped", ["request": request, "reason": "stale_generation"])
+            return
+        }
+        if reply.status == 429 {
+            aiCooldownUntil = Date().addingTimeInterval(min(300, max(1, reply.retryAfterSeconds)))
+        }
+        let sameRevision = revision == MiniSightPetFile.aiConfigRevision
+        aiTestOK = reply.isSuccess && sameRevision
+        let summary: String
+        if reply.isSuccess {
+            summary = "收到真实回答（\(reply.text.count) 字；回答正文未保存）。"
+            let preview = MiniSightAITest.safeText(reply.text, secrets: secrets, limit: 240)
+            aiTestStatus = sameRevision ? "测试成功：" + preview
+                : "请求收到回答，但测试过程中配置已变，请重新测试。"
+        } else {
+            summary = "请求失败（状态码 \(reply.status)；未保存响应正文）。"
+            aiTestStatus = "测试失败：请查看运行日志中的状态码及请求阶段。"
+        }
+        MSDiagEvent("ai_test", "display", aiTestOK ? "ok" : "failed",
+                    ["request": request, "generation": generation, "visible": true,
+                     "reason": sameRevision ? "response_received" : "config_changed"])
         do {
-            req.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (bytes, response) = try await session.bytes(for: req)
-            guard let http = response as? HTTPURLResponse else {
-                aiTestOK = false
-                aiTestStatus = "测试失败：未收到 HTTP 响应（不影响已保存的配置）。"
-                return
-            }
-            receivedStatus = http.statusCode
-            // 先应用响应头，即使错误体过大、无效或读取失败，也要冷却。
-            if http.statusCode == 429 {
-                let now = Date()
-                let delay = MiniSightAITest.retryDelay(http.value(forHTTPHeaderField: "Retry-After"), now: now)
-                aiCooldownUntil = now.addingTimeInterval(delay)
-            }
-            var data = Data()
-            var tooLarge = false
-            for try await byte in bytes {
-                if data.count >= MiniSightAITest.maxBodyBytes { tooLarge = true; break }
-                data.append(byte)
-            }
-            aiTestOK = http.statusCode == 200
-            aiTestStatus = aiTestOK
-                ? MiniSightAITest.reply(data, tooLarge: tooLarge, secrets: secrets)
-                : MiniSightAITest.failure(http.statusCode, data: data, tooLarge: tooLarge, secrets: secrets)
+            try MiniSightPetFile.saveTestRecord(ok: aiTestOK, status: summary,
+                                               cooldownUntil: aiCooldownUntil, revision: revision)
+            MSDiagEvent("ai_test", "readback", "ok", ["request": request, "setting": "ai_test_status", "readback": true])
         } catch {
-            aiTestOK = false
-            if let status = receivedStatus, status != 200 {
-                aiTestStatus = MiniSightAITest.failure(status, data: Data(), tooLarge: false, secrets: secrets)
-                    + "（错误详情读取未完成）"
-            } else if receivedStatus == 200 {
-                aiTestStatus = "HTTP 200，但响应读取未完成（非 HTTP 错误；不影响已保存的配置）。"
-            } else {
-                aiTestStatus = "测试失败：请求未完成，请检查网络或超时情况（不影响已保存的配置）。"
-            }
+            var fields = MiniSightSettingsDiagnostics.errorFields(error, setting: "ai_test_status")
+            fields["request"] = request
+            MSDiagEvent("ai_test", "save", "failed", fields)
+            aiTestStatus = (aiTestStatus ?? "") + "（结果未能保存，离开页面后可能丢失。）"
         }
     }
 
-    /// AppStorage 写的是内存里的 defaults，异步落盘；插件收到通知会立刻读
-    /// plist，没落盘就读到旧值（表现为要拨两次才生效）。先强写盘再发。
-    private func flushAndPost(_ name: String) {
-        UserDefaults.standard.synchronize()
-        post(name)
+    private func cancelAITest() {
+        guard aiTesting else { return }
+        MSDiagEvent("ai_test", "cancel", "pending", ["request": aiTestRequest, "generation": aiTestGeneration])
+        aiTestGeneration += 1
+        aiTesting = false
+        let client = aiTestClient
+        aiTestClient = nil
+        client?.cancel()
+        aiTestOK = false
+        aiTestStatus = "测试已取消；未修改连接配置。"
+        MSDiagEvent("ai_test", "display", "cancelled", ["request": aiTestRequest, "visible": true])
+        do {
+            try MiniSightPetFile.saveTestRecord(ok: false, status: "测试已取消。",
+                                               cooldownUntil: aiCooldownUntil,
+                                               revision: MiniSightPetFile.aiConfigRevision)
+            MSDiagEvent("ai_test", "readback", "ok", ["request": aiTestRequest, "setting": "ai_test_status", "readback": true])
+        } catch {
+            MSDiagEvent("ai_test", "save", "failed", MiniSightSettingsDiagnostics.errorFields(error, setting: "ai_test_status"))
+            aiTestStatus = "测试已取消；结果保存失败。"
+        }
+    }
+
+    /// AppStorage's cached read is insufficient: compare every value with the on-disk
+    /// application domain after synchronization. A Darwin post is not an apply ACK.
+    private var settingsSnapshot: [(key: String, value: Any)] {
+        [("minisight.style", style), ("minisight.renderer", renderer),
+         ("minisight.record", record), ("minisight.longPress", longPressToRecord),
+         ("minisight.mode", mode), ("minisight.petSize", petSize),
+         ("minisight.gravity", gravity), ("minisight.diagnostics", diagnostics),
+         ("minisight.chat.height", chatHeight), ("minisight.chat.theme", chatTheme),
+         ("minisight.chat.tintHex", chatTintHex), ("minisight.chat.tintAlpha", chatTintAlpha)]
+    }
+
+    private func settingEvent(_ key: String, stage: String, result: String,
+                              revision: String? = nil, reason: String? = nil) {
+        var fields: [String: Any] = ["setting": key, "source": "settings"]
+        if let revision { fields["revision"] = revision }
+        if let reason { fields["reason"] = reason }
+        switch key {
+        case "minisight.record": fields["enabled"] = record
+        case "minisight.longPress": fields["enabled"] = longPressToRecord
+        case "minisight.gravity": fields["enabled"] = gravity
+        case "minisight.diagnostics": fields["enabled"] = diagnostics
+        case "shown": fields["enabled"] = shown
+        case "minisight.mode": fields["mode"] = mode
+        case "minisight.style": fields["style"] = style
+        case "minisight.renderer": fields["renderer"] = renderer
+        case "minisight.petSize": fields["value"] = petSize
+        case "minisight.chat.height": fields["value"] = chatHeight
+        case "minisight.chat.theme": fields["value"] = chatTheme
+        case "minisight.chat.tintAlpha": fields["value"] = chatTintAlpha
+        case "minisight.chat.tintHex":
+            if chatTintHex.count == 6, let rgb = UInt32(chatTintHex, radix: 16) { fields["value"] = rgb }
+        default: break // Never log persona or connection strings.
+        }
+        MSDiagEvent(key == "minisight.record" || key == "minisight.longPress" ? "recording" : "settings",
+                    stage, result, fields)
+    }
+
+    private func persistShown(_ value: Bool) {
+        var didWrite = false
+        do {
+            try MiniSightPetFile.saveShown(value, onWrite: {
+                didWrite = true
+                settingEvent("shown", stage: "save", result: "ok")
+            })
+            settingEvent("shown", stage: "readback", result: "ok")
+            flushAndPost(value ? "com.openminis.minisight.show" : "com.openminis.minisight.settings", setting: "shown")
+        } catch {
+            MSDiagEvent("settings", didWrite ? "readback" : "save", "failed",
+                        MiniSightSettingsDiagnostics.errorFields(error, setting: "shown"))
+            settingsError = "显示状态写入或读回失败；未通知运行端，请重试保存。"
+        }
+    }
+
+    private func flushAndPost(_ name: String, setting: String = "ai_connection") {
+        guard settingsLoaded else { return }
+        MSDiagConfigure(diagnostics, MiniSightPetFile.containerPath)
+        let revision = UUID().uuidString
+        let snapshot = settingsSnapshot
+        let defaults = UserDefaults.standard
+        for item in snapshot { defaults.set(item.value, forKey: item.key) }
+        defaults.set(revision, forKey: "minisight.settings.revision")
+        for item in snapshot { settingEvent(item.key, stage: "save", result: "pending", revision: revision) }
+        _ = defaults.synchronize() // Its Bool is not evidence of a successful write.
+        do {
+            let persisted = try MiniSightSettingsDiagnostics.readDefaultsDomain()
+            var mismatches = 0
+            for item in snapshot {
+                let matches = (persisted[item.key] as? NSObject)?.isEqual(item.value) == true
+                if !matches { mismatches += 1 }
+                settingEvent(item.key, stage: "readback", result: matches ? "ok" : "failed", revision: revision)
+                settingEvent(item.key, stage: "save", result: matches ? "ok" : "failed", revision: revision)
+            }
+            let revisionMatches = persisted["minisight.settings.revision"] as? String == revision
+            MSDiagEvent("settings", "readback", revisionMatches ? "ok" : "failed",
+                        ["setting": "minisight.settings.revision", "revision": revision, "readback": revisionMatches])
+            let shownMatches: Bool
+            if FileManager.default.fileExists(atPath: MiniSightPetFile.shownURL.path) {
+                shownMatches = (try Data(contentsOf: MiniSightPetFile.shownURL)) == Data((shown ? "1" : "0").utf8)
+            } else { shownMatches = shown } // Missing file is the runtime's default-on state.
+            settingEvent("shown", stage: "readback", result: shownMatches ? "ok" : "failed", revision: revision)
+            if !shownMatches { mismatches += 1 }
+            guard mismatches == 0, revisionMatches else {
+                settingsError = "设置磁盘读回不一致；未通知运行端。请点重试保存，日志可定位具体设置。"
+                MSDiagEvent("settings", "publish", "skipped", ["setting": setting, "revision": revision, "reason": "readback_mismatch", "count": mismatches])
+                return
+            }
+            settingsError = nil
+            post(name)
+            settingEvent(setting, stage: "publish", result: "pending", revision: revision, reason: "awaiting_runtime")
+            for item in snapshot {
+                settingEvent(item.key, stage: "publish", result: "pending", revision: revision, reason: "awaiting_runtime")
+            }
+        } catch {
+            var fields = MiniSightSettingsDiagnostics.errorFields(error, setting: setting)
+            fields["revision"] = revision
+            MSDiagEvent("settings", "readback", "failed", fields)
+            MSDiagEvent("settings", "publish", "skipped", ["setting": setting, "revision": revision, "reason": "readback_failed"])
+            settingsError = "设置落盘核对失败；未通知运行端，请重试保存。"
+        }
     }
 
     private func post(_ name: String) {
@@ -727,18 +1117,230 @@ struct MiniSightSettingsView: View {
     private func importFile(_ url: URL) {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url), let image = UIImage(data: data) else {
-            importError = "这个文件不是可识别的图片。"
-            return
+        do {
+            let data = try Data(contentsOf: url)
+            guard let image = UIImage(data: data) else { throw MiniSightAIConfigFile.Failure.invalidFile }
+            importImage(image, source: "files")
+        } catch {
+            MSDiagEvent("assets", "receive", "failed", MiniSightSettingsDiagnostics.errorFields(error, setting: "pet"))
+            importError = "这个文件无法读取或不是可识别的图片。"
         }
-        importImage(image)
     }
+}
+
+// MARK: - Safe local diagnostics (no network or automatic upload)
+
+private enum MiniSightSettingsDiagnostics {
+    static let tailBytes = 60 * 1024
+    static let safeDomains: Set<String> = ["NSCocoaErrorDomain", "NSPOSIXErrorDomain", "NSURLErrorDomain",
+                                          "MiniSightAIConfigFile", "MiniSightSettings"]
+    static func errorFields(_ error: Error, setting: String) -> [String: Any] {
+        let ns = error as NSError
+        return ["setting": setting, "code": ns.code,
+                "domain": safeDomains.contains(ns.domain) ? ns.domain : "MiniSightSettings"]
+    }
+
+    static func readDefaultsDomain() throws -> [String: Any] {
+        guard let identifier = Bundle.main.bundleIdentifier else { throw MiniSightAIConfigFile.Failure.invalidFile }
+        let file = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Preferences")
+            .appendingPathComponent(identifier + ".plist")
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: 4 * 1024 * 1024 + 1) ?? Data()
+        guard data.count <= 4 * 1024 * 1024,
+              let object = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
+            throw MiniSightAIConfigFile.Failure.invalidFile
+        }
+        return object
+    }
+
+    /// Bounded at the handle, not after Data(contentsOf:) has loaded the whole log.
+    static func tail(_ file: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let end = try handle.seekToEnd()
+        let offset = end > UInt64(tailBytes) ? end - UInt64(tailBytes) : 0
+        try handle.seek(toOffset: offset)
+        var data = try handle.read(upToCount: tailBytes) ?? Data()
+        if offset > 0 { // Never render a partial event from the head of the tail.
+            if let newline = data.firstIndex(of: 10) { data = Data(data.suffix(from: data.index(after: newline))) }
+            else { data = Data() }
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static let features: Set<String> = ["activity", "ai", "ai_test", "approval", "assets", "bubble", "chat", "drag", "gesture", "gravity", "ownership", "recording", "runtime", "screen", "settings", "voice"]
+    static let stages: Set<String> = ["apply", "begin", "build", "callback", "cancel", "change", "click", "close", "composer", "config", "configure", "deliver", "display", "editor", "end", "entry", "error", "finish", "hide", "identity", "interruption", "keyboard", "layout", "load", "network", "parse", "publish", "readback", "ready", "receive", "reload", "reply", "request", "response", "rotate", "sample", "save", "send", "show", "skip", "start", "state", "stop", "visibility"]
+    static let allowed: Set<String> = ["active", "below", "bytes", "chars", "code", "count", "domain", "duration_ms", "enabled", "executing", "field", "finish", "generation", "h", "http", "issue", "keyboard", "mode", "present", "readback", "reason", "reasoning", "renderer", "request", "revision", "roll", "samples", "saved", "sending", "sequence", "setting", "source", "style", "valid", "value", "version", "visible", "w", "x", "y"]
+
+    static func asciiToken(_ value: String, limit: Int = 80) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= limit, value.utf8.allSatisfy({
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 95 || $0 == 45 || $0 == 46
+        }) else { return false }
+        let lower = value.lowercased()
+        return !lower.hasPrefix("sk-") && !lower.hasPrefix("sk_") && !lower.hasPrefix("bearer") &&
+            !lower.contains("apikey") && !lower.contains("api_key") && !lower.contains("token")
+    }
+
+    static func requestID(_ text: String) -> String? {
+        let parts = text.replacingOccurrences(of: "/", with: ".").split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 1 || parts.count == 2, let first = parts.first,
+              let uuid = UUID(uuidString: String(first)) else { return nil }
+        guard parts.count == 2 else { return uuid.uuidString }
+        guard (1...15).contains(parts[1].utf8.count), parts[1].utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+        return uuid.uuidString + "." + parts[1]
+    }
+
+    static func safeValue(_ value: Any, field: String) -> Any? {
+        if let number = value as? NSNumber {
+            return number.doubleValue.isFinite && abs(number.doubleValue) <= 9_007_199_254_740_991 ? number : nil
+        }
+        guard let text = value as? String else { return nil }
+        if field == "request" { return requestID(text) }
+        if field == "revision" { return UUID(uuidString: text) == nil ? nil : text }
+        if field == "domain" { return safeDomains.contains(text) ? text : nil }
+        let strings: Set<String> = ["setting", "source", "reason", "renderer", "mode", "style", "field", "code", "issue", "finish", "version"]
+        return strings.contains(field) && asciiToken(text) ? text : nil
+    }
+
+    /// Real writer contract: UTC time pid=… process=… runId=… seq=… event=<JSON>.
+    /// Only rebuild validated metadata; no raw line or free-form legacy text survives.
+    static func eventObject(_ line: String) -> [String: Any]? {
+        guard line.utf8.count <= 8192, let marker = line.range(of: " event="),
+              let data = String(line[marker.upperBound...]).data(using: .utf8),
+              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["v"] as? Int) == 1 else { return nil }
+        let prefix = line[..<marker.lowerBound].split(whereSeparator: { $0.isWhitespace })
+        guard prefix.count == 5, prefix[0].utf8.count <= 40 else { return nil }
+        let stamp = String(prefix[0])
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard formatter.date(from: stamp) != nil else { return nil }
+        var metadata: [String: String] = [:]
+        for token in prefix.dropFirst() {
+            let pair = token.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pair.count == 2 else { return nil }
+            metadata[String(pair[0])] = String(pair[1])
+        }
+        guard let pidText = metadata["pid"], let pid = Int(pidText), pid > 0,
+              let process = metadata["process"], asciiToken(process),
+              let run = metadata["runId"], UUID(uuidString: run) != nil,
+              let seqText = metadata["seq"], let seq = UInt64(seqText), seq > 0, seq <= 9_007_199_254_740_991 else { return nil }
+        object["time"] = stamp; object["pid"] = pid; object["process"] = process
+        object["runId"] = run; object["seq"] = seq
+        return object
+    }
+
+    static func sanitizedEvent(_ line: String) -> String? {
+        guard let object = eventObject(line),
+              let feature = object["feature"] as? String, features.contains(feature),
+              let stage = object["stage"] as? String, stages.contains(stage),
+              let result = object["result"] as? String,
+              ["ok", "failed", "skipped", "cancelled", "pending", "unsupported"].contains(result) else { return nil }
+        var clean: [String: Any] = ["feature": feature, "stage": stage, "result": result]
+        var fields: [String: Any] = [:]
+        let input = object["fields"] as? [String: Any] ?? [:]
+        for (key, value) in input where allowed.contains(key) {
+            if let safe = safeValue(value, field: key) { fields[key] = safe }
+        }
+        clean["fields"] = fields
+        for key in ["time", "pid", "process", "runId", "seq"] { clean[key] = object[key] }
+        guard let output = try? JSONSerialization.data(withJSONObject: clean, options: [.sortedKeys]),
+              let text = String(data: output, encoding: .utf8) else { return nil }
+        return text
+    }
+
+    static let logFiles = ["diagnostic-app.log", "diagnostic-app.log.1", "diagnostic-plugin.log",
+                           "diagnostic-plugin.log.1", "diagnostic.log", "diagnostic.log.1"]
+    static func logText(_ selection: Int) throws -> String {
+        let index = min(max(0, selection), logFiles.count - 1)
+        let filename = logFiles[index]
+        let file = MiniSightPetFile.directory.appendingPathComponent(filename)
+        let attrs = try FileManager.default.attributesOfItem(atPath: file.path)
+        let modified = (attrs[.modificationDate] as? Date).map { MiniSightSettingsView.savedAtFormatter.string(from: $0) } ?? "未知"
+        let header = "来源：Documents/MiniSight/\(filename)\n文件修改：\(modified) · 刷新：\(MiniSightSettingsView.savedAtFormatter.string(from: Date()))\n"
+        guard !filename.hasPrefix("diagnostic.log") else {
+            return header + "\n旧日志可能含未脱敏正文，本页不显示 raw 内容。请使用本地脚本生成脱敏摘要。"
+        }
+        let lines = try tail(file).split(separator: "\n").compactMap { sanitizedEvent(String($0)) }
+        return header + "\n" + (lines.isEmpty ? "最后 60KB 内没有可显示的基础事件；无法解析的旧文本已隐藏。" : lines.joined(separator: "\n"))
+    }
+}
+
+private struct MiniSightRuntimeLogView: View {
+    @Environment(\.presentationMode) private var presentationMode
+    @State private var source = 0 // Current process's latest log, never the legacy log.
+    @State private var text = ""
+    @State private var failure: String?
+    @State private var copied = false
+    @State private var refreshGeneration = 0
+
+    var body: some View {
+        NavigationView {
+            VStack(alignment: .leading, spacing: 12) {
+                Picker("日志来源", selection: $source) {
+                    Text("App · 最新（本进程）").tag(0)
+                    Text("App · 上一份").tag(1)
+                    Text("插件 · 最新").tag(2)
+                    Text("插件 · 上一份").tag(3)
+                    Text("旧诊断 · 最新（摘要提示）").tag(4)
+                    Text("旧诊断 · 上一份（摘要提示）").tag(5)
+                }
+                .pickerStyle(.menu)
+                Text("只显示最后约 60KB 中的脱敏基础事件；基础日志始终开启，轮转后旧记录会被覆盖。复制仅进入本机剪贴板，不自动上传。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let failure { Text(failure).font(.caption).foregroundStyle(Color.red) }
+                ScrollView {
+                    Text(text.isEmpty ? "暂无日志。" : text)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack {
+                    Button("刷新") { refresh() }.buttonStyle(.bordered)
+                    Button(copied ? "已复制脱敏文本" : "复制脱敏文本") {
+                        UIPasteboard.general.string = text
+                        copied = true
+                    }.buttonStyle(.bordered).disabled(text.isEmpty || failure != nil)
+                }
+            }
+            .padding()
+            .navigationTitle("运行日志")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("完成") { presentationMode.wrappedValue.dismiss() } } }
+            .onAppear { refresh() }
+            .onChange(of: source) { _ in refresh() }
+        }
+        .navigationViewStyle(.stack)
+    }
+
+    private func refresh() {
+        copied = false
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        let selection = source
+        DispatchQueue.global(qos: .utility).async {
+            let result = Result { try MiniSightSettingsDiagnostics.logText(selection) }
+            DispatchQueue.main.async {
+                guard generation == refreshGeneration, selection == source else { return }
+                switch result {
+                case .success(let value): text = value; failure = nil
+                case .failure(let error):
+                    text = ""
+                    failure = "日志暂不可读或尚未生成，请稍后刷新。来源：Documents/MiniSight/" + MiniSightSettingsDiagnostics.logFiles[selection]
+                    MSDiagEvent("settings", "load", "failed", MiniSightSettingsDiagnostics.errorFields(error, setting: "runtime_logs"))
+                }
+            }
+        }
+    }
+
 }
 
 // MARK: - Pickers
 
 private struct MiniSightPhotoPicker: UIViewControllerRepresentable {
     let onPick: (UIImage) -> Void
+    let onFailure: () -> Void
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration(photoLibrary: .shared())
@@ -751,19 +1353,27 @@ private struct MiniSightPhotoPicker: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: PHPickerViewController, context: Context) {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick, onFailure: onFailure) }
 
     final class Coordinator: NSObject, PHPickerViewControllerDelegate {
         let onPick: (UIImage) -> Void
-        init(onPick: @escaping (UIImage) -> Void) { self.onPick = onPick }
+        let onFailure: () -> Void
+        init(onPick: @escaping (UIImage) -> Void, onFailure: @escaping () -> Void) {
+            self.onPick = onPick; self.onFailure = onFailure
+        }
 
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
             picker.dismiss(animated: true)
-            guard let provider = results.first?.itemProvider,
-                  provider.canLoadObject(ofClass: UIImage.self) else { return }
+            guard let provider = results.first?.itemProvider else {
+                MSDiagEvent("assets", "receive", "cancelled", ["setting": "pet", "source": "photos"])
+                return
+            }
+            guard provider.canLoadObject(ofClass: UIImage.self) else { onFailure(); return }
             provider.loadObject(ofClass: UIImage.self) { object, _ in
-                guard let image = object as? UIImage else { return }
-                DispatchQueue.main.async { self.onPick(image) }
+                DispatchQueue.main.async {
+                    guard let image = object as? UIImage else { self.onFailure(); return }
+                    self.onPick(image)
+                }
             }
         }
     }

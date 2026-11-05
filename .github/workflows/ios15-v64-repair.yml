@@ -69,6 +69,8 @@ jobs:
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_memory_swiftui_160651.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_model_group_picker_toolbar_160651.py
           python3 scripts/test_minisight_signal_160651.py
+          python3 scripts/verify_minisight_integration.py
+          python3 scripts/test_minisight_settings_diagnostics.py
           python3 scripts/test_multikey_160651.py
           python3 scripts/test_multikey_persistence_160651.py
           python3 scripts/test_multikey_freeze_20261101.py

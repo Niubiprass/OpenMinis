@@ -76,12 +76,12 @@ final class MiniSightConfirmBridge {
             UIApplication.shared.applicationState == .active
         }
         guard !appIsForeground else {
-            return await MCPApprovalDialog.confirm(command)
+            return await MiniSightHostAdapter.confirm(command: command)
         }
         let pluginAvailable = await MiniSightPetAvailability.probeJailbreakPlugin()
         let petAvailable = MiniSightPetAvailability.isOnScreen && pluginAvailable
         guard petAvailable else {
-            return await MCPApprovalDialog.confirm(command)
+            return await MiniSightHostAdapter.confirm(command: command)
         }
         return await shared.request(command: command)
     }
@@ -89,12 +89,12 @@ final class MiniSightConfirmBridge {
     private func request(command: String) async -> Bool {
         guard !requestInFlight else { return false }
         guard command.lengthOfBytes(using: .utf8) <= 8192 else { return false }
-        guard let dir else { return await MCPApprovalDialog.confirm(command) }
+        guard let dir else { return await MiniSightHostAdapter.confirm(command: command) }
         requestInFlight = true
         installObserverIfNeeded()
         let id = UUID().uuidString
         requestId = id
-        let action = AIChatViewModel.describeMCPCommand(command).title
+        let action = MiniSightHostAdapter.commandTitle(command)
         do {
             try await Task.detached(priority: .userInitiated) {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -107,7 +107,7 @@ final class MiniSightConfirmBridge {
         } catch {
             requestInFlight = false
             requestId = nil
-            return await MCPApprovalDialog.confirm(command)
+            return await MiniSightHostAdapter.confirm(command: command)
         }
         guard !Task.isCancelled else {
             requestInFlight = false

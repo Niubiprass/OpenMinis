@@ -26,19 +26,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = (ROOT / 'src/ios/Agent/Chat/AIChatViewModel+ConcurrentTools.swift').read_text()
+SIGNAL = (ROOT / 'src/ios/MiniSightSignal.swift').read_text()
 
 
 def signal_body():
-    i = TOOLS.index('final class MiniSightSignal: @unchecked Sendable {')
-    return TOOLS[i:]
+    i = SIGNAL.index('final class MiniSightSignal: @unchecked Sendable {')
+    return SIGNAL[i:]
 
 
 class SignalContract(unittest.TestCase):
 
     def test_names_match_the_tweak(self):
         # debs/MiniSight/Tweak.xm / README: com.openminis.agent.started|stopped
-        self.assertIn('static let startedNotification = "com.openminis.agent.started"', TOOLS)
-        self.assertIn('static let stoppedNotification = "com.openminis.agent.stopped"', TOOLS)
+        self.assertIn('static let startedNotification = "com.openminis.agent.started"', SIGNAL)
+        self.assertIn('static let stoppedNotification = "com.openminis.agent.stopped"', SIGNAL)
 
     def test_posts_on_darwin_centre(self):
         body = signal_body()
@@ -52,7 +53,7 @@ class SignalContract(unittest.TestCase):
         self.assertIn('guard activities.isEmpty else { publishLocked(); return }', body)
 
     def test_minimum_visible_floor(self):
-        self.assertIn('private static let minimumVisible: TimeInterval = 0.6', TOOLS)
+        self.assertIn('private static let minimumVisible: TimeInterval = 0.6', SIGNAL)
         self.assertIn('delay = Self.minimumVisible - elapsed', signal_body())
 
     def test_delayed_hide_is_cancellable(self):

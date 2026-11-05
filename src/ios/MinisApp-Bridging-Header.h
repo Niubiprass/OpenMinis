@@ -10,6 +10,7 @@
 
 #import "MiniSightCore/MiniSightPet.h"
 #import "MiniSightCore/MiniSightAI.h"
+#import "MiniSightCore/MiniSightLog.h"
 #import "MiniSightCore/MiniSightChatPanel.h"
 #import "MiniSightCore/MiniSightAppRecorder.h"
 

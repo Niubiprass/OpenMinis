@@ -103,10 +103,11 @@ typedef enum {
     MSChatExtractShape
 } MSChatExtractResult;
 
-// Extract choices[0].message.content (also accepts choices[0].text,
-// output_text/output and candidates[0]). String content is copied, array
-// content joins every text part with a newline, dictionary content recurses
-// through text / content / parts exactly like MiniSightAITextFromObject did.
+// Extract choices[0].message.content. An explicit message is authoritative:
+// empty content never falls back to sibling text/output fields. Without a
+// message, choices[0].text, output_text/output or candidates[0] are supported.
+// Reasoning/analysis/thinking-tagged blocks are ignored, never shown as answers.
+// Text parts are joined with newlines; nested text/content/parts are supported.
 MSChatExtractResult MSChatExtractReplyText(const MSChatValue *root,
                                            char *out, size_t capacity);
 

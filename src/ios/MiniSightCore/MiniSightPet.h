@@ -11,6 +11,9 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+FOUNDATION_EXPORT double MiniSightGravityRollForDevice(double x, double y, int orientation);
+FOUNDATION_EXPORT double MiniSightGravityFilterRoll(double previous, double sample, double deltaTime);
+
 @interface MiniSightPetView : UIImageView
 
 /// Main-thread API, like UIView. sprite is an already decoded/downsampled,

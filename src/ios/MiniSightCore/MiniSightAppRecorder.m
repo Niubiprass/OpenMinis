@@ -1,4 +1,5 @@
 #import "MiniSightAppRecorder.h"
+#import "MiniSightLog.h"
 #import "tools/recorder/MiniSightRecorderFile.h"
 #import <ReplayKit/ReplayKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -41,14 +42,22 @@
 
 - (void)start {
     NSCAssert(NSThread.isMainThread, @"ReplayKit start is main-thread owned");
-    if (self.recording) return;
+    if (self.recording) {
+        MSDiagEvent(@"recording", @"skip", @"skipped", @{ @"source": @"app", @"reason": @"already_recording" });
+        return;
+    }
+    MSDiagEvent(@"recording", @"start", @"pending", @{ @"source": @"app", @"reason": @"capture_requested" });
     RPScreenRecorder *recorder = RPScreenRecorder.sharedRecorder;
-    if (!recorder.isAvailable) { [self emit:@"系统暂不允许开始屏幕录制。"]; return; }
+    if (!recorder.isAvailable) {
+        MSDiagEvent(@"recording", @"start", @"failed", @{ @"source": @"app", @"reason": @"system_unavailable" });
+        [self emit:@"系统暂不允许开始屏幕录制。"]; return;
+    }
 
     NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
     NSURL *directory = [documents URLByAppendingPathComponent:@"MiniSight/recordings" isDirectory:YES];
     NSError *directoryError = nil;
     if (![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:&directoryError]) {
+        MSDiagEvent(@"recording", @"start", @"failed", @{ @"source": @"app", @"reason": @"destination", @"code": @(directoryError.code) });
         [self emit:@"录屏目录创建失败。"];
         return;
     }
@@ -58,14 +67,18 @@
     self.finalURL = [directory URLByAppendingPathComponent:[stem stringByAppendingString:@".mp4"]];
     NSError *writerError = nil;
     self.writer = [[AVAssetWriter alloc] initWithURL:self.temporaryURL fileType:AVFileTypeMPEG4 error:&writerError];
-    if (!self.writer) { [NSFileManager.defaultManager removeItemAtURL:self.temporaryURL error:nil]; self.temporaryURL = nil; self.finalURL = nil; [self emit:@"录屏文件初始化失败。"]; return; }
+    if (!self.writer) {
+        MSDiagEvent(@"recording", @"start", @"failed", @{ @"source": @"app", @"reason": @"writer_init", @"code": @(writerError.code) }); [NSFileManager.defaultManager removeItemAtURL:self.temporaryURL error:nil]; self.temporaryURL = nil; self.finalURL = nil; [self emit:@"录屏文件初始化失败。"]; return; }
     self.startedSession = NO;
     [self setRecordingState:YES];
 
     __weak typeof(self) weakSelf = self;
     dispatch_queue_t queue = self.writerQueue;
     [recorder startCaptureWithHandler:^(CMSampleBufferRef sampleBuffer, RPSampleBufferType type, NSError *error) {
-        if (error || !sampleBuffer) return;
+        if (error || !sampleBuffer) {
+            if (error) MSDiagEvent(@"recording", @"callback", @"failed", @{ @"source": @"app", @"reason": @"capture_error", @"code": @(error.code) });
+            return;
+        }
         CFRetain(sampleBuffer);
         dispatch_async(queue, ^{
             MiniSightAppRecorder *strongSelf = weakSelf;
@@ -73,6 +86,7 @@
             CFRelease(sampleBuffer);
         });
     } completionHandler:^(NSError *error) {
+        MSDiagEvent(@"recording", @"start", error ? @"failed" : @"ok", @{ @"source": @"app", @"code": @(error.code), @"reason": @"capture_callback" });
         if (error) {
             dispatch_async(queue, ^{
                 MiniSightAppRecorder *strongSelf = weakSelf;
@@ -103,6 +117,7 @@
         if (![self.writer startWriting]) { [self failWriter]; return; }
         [self.writer startSessionAtSourceTime:pts];
         self.startedSession = YES;
+        MSDiagEvent(@"recording", @"sample", @"ok", @{ @"source": @"app", @"reason": @"first_video_frame" });
     }
     if (!self.startedSession || self.writer.status != AVAssetWriterStatusWriting) return;
     if (type != RPSampleBufferTypeVideo) return;
@@ -110,6 +125,7 @@
 }
 
 - (void)failWriter {
+    MSDiagEvent(@"recording", @"error", @"failed", @{ @"source": @"app", @"reason": @"writer_failed", @"code": @(self.writer.error.code), @"value": @(self.writer.status) });
     if (self.writer.status == AVAssetWriterStatusWriting) [self.writer cancelWriting];
 }
 
@@ -117,7 +133,11 @@
 
 - (void)stop {
     NSCAssert(NSThread.isMainThread, @"ReplayKit stop is main-thread owned");
-    if (!self.recording) return;
+    if (!self.recording) {
+        MSDiagEvent(@"recording", @"skip", @"skipped", @{ @"source": @"app", @"reason": @"not_recording" });
+        return;
+    }
+    MSDiagEvent(@"recording", @"stop", @"pending", @{ @"source": @"app" });
     [self setRecordingState:NO];
     __weak typeof(self) weakSelf = self;
     dispatch_queue_t queue = self.writerQueue;
@@ -127,6 +147,7 @@
             if (!strongSelf) return;
             AVAssetWriter *writer = strongSelf.writer;
             if (captureError || !writer || !strongSelf.startedSession || writer.status != AVAssetWriterStatusWriting) {
+                MSDiagEvent(@"recording", @"stop", @"failed", @{ @"source": @"app", @"reason": @"stop_or_encoding", @"code": @(captureError.code), @"value": @(writer.status) });
                 [strongSelf cleanupOnWriterQueue];
                 [strongSelf emit:@"录屏停止或编码失败，没有保留无效文件。"];
                 return;
@@ -144,6 +165,7 @@
 - (void)verifyAndPublish {
     AVAssetWriter *writer = self.writer;
     if (writer.status != AVAssetWriterStatusCompleted) {
+        MSDiagEvent(@"recording", @"finish", @"failed", @{ @"source": @"app", @"reason": @"encoding_incomplete", @"value": @(writer.status) });
         [self cleanupOnWriterQueue]; [self emit:@"录屏编码未完成，未发布文件。"]; return;
     }
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:self.temporaryURL options:nil];
@@ -156,11 +178,12 @@
             valid &= asset.playable && [asset tracksWithMediaType:AVMediaTypeVideo].count > 0 &&
                      CMTIME_IS_NUMERIC(duration) && CMTimeGetSeconds(duration) > 0;
             if (!valid) {
+                MSDiagEvent(@"recording", @"readback", @"failed", @{ @"source": @"app", @"reason": @"asset_verification" });
                 [self cleanupOnWriterQueue]; [self emit:@"录屏文件校验失败，未发布。"]; return;
             }
             int dir = open(self.finalURL.URLByDeletingLastPathComponent.fileSystemRepresentation,
                            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-            if (dir < 0) { [self cleanupOnWriterQueue]; [self emit:@"录屏目录打开失败。"]; return; }
+            if (dir < 0) { MSDiagEvent(@"recording", @"publish", @"failed", @{ @"source": @"app", @"reason": @"open_destination", @"code": @(errno) }); [self cleanupOnWriterQueue]; [self emit:@"录屏目录打开失败。"]; return; }
             atomic_bool cancelled; atomic_init(&cancelled, false);
             bool published = false; int publishError = 0;
             struct stat st;
@@ -173,13 +196,16 @@
                 dir, self.temporaryURL.lastPathComponent.fileSystemRepresentation,
                 self.finalURL.lastPathComponent.fileSystemRepresentation, bytes,
                 &cancelled, &published, &publishError);
+            MSDiagEvent(@"recording", @"publish", ok ? @"ok" : @"failed", @{ @"source": @"app", @"reason": @"file_publish", @"code": @(publishError), @"bytes": @(bytes), @"duration_ms": @(CMTimeGetSeconds(duration) * 1000.0) });
             MSRFileCleanup(dir, self.temporaryURL.lastPathComponent.fileSystemRepresentation,
                 self.finalURL.lastPathComponent.fileSystemRepresentation, published && !ok);
+            close(dir);
             if (!ok) {
                 [self cleanupOnWriterQueue];
                 [self emit:[NSString stringWithFormat:@"录屏文件发布失败（errno %d）。", publishError]];
                 return;
             }
+            MSDiagEvent(@"recording", @"finish", @"ok", @{ @"source": @"app", @"reason": @"verified_file", @"bytes": @(bytes), @"duration_ms": @(CMTimeGetSeconds(duration) * 1000.0) });
             [self finishPublishedFile];
             [self emit:@"录屏已保存到 MiniSight/recordings。"];
         });

@@ -2,7 +2,10 @@
 """Guard the capability bit consumed by the tweak to avoid double foreground opens."""
 import pathlib, sys
 root = pathlib.Path(__file__).resolve().parents[1]
-app = (root / 'src/ios/Agent/Chat/AIChatViewModel+ConcurrentTools.swift').read_text()
+signal_path = root / 'src/ios/MiniSightSignal.swift'
+# Older source trees kept the signal at the end of the tool file. This module
+# extracts it; inspect its real owner, not a duplicate copy in the host caller.
+app = signal_path.read_text() if signal_path.is_file() else (root / 'src/ios/Agent/Chat/AIChatViewModel+ConcurrentTools.swift').read_text()
 plugin_path = root.parent / 'MiniSight-repair/debs/MiniSight/Tweak.xm'
 if not plugin_path.exists():
     plugin_path = pathlib.Path('/var/minis/workspace/MiniSight-repair/debs/MiniSight/Tweak.xm')

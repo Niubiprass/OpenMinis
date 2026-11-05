@@ -2,11 +2,18 @@
 #ifndef MINISIGHT_GRAVITY_H
 #define MINISIGHT_GRAVITY_H
 #include "MiniSightGeometry.h"
-#define MS_GRAVITY_MAX_ANGLE (3.14159265358979323846 / 6.0)
-#define MS_GRAVITY_TILT_ANGLE (3.14159265358979323846 / 10.0)
+#define MS_GRAVITY_MAX_ANGLE (2.0 * 3.14159265358979323846 / 9.0)
+#define MS_GRAVITY_TILT_ANGLE (8.0 * 3.14159265358979323846 / 45.0)
+#define MS_GRAVITY_INPUT_GAIN (1.0 / 0.55)
+
+static inline double MSGravityRollFromProjected(double lateral) {
+    double value = MSFinite(lateral, 0.) * MS_GRAVITY_INPUT_GAIN;
+    if (fabs(value) < .025) value = 0.;
+    return MSClamp(value, -1., 1.);
+}
 
 static inline double MSGravitySway(double width) {
-    return MSClamp(MSFinite(width, 56.) * .12, 4., 12.);
+    return MSClamp(MSFinite(width, 56.) * .16, 8., 18.);
 }
 static inline double MSGravityAngle(double roll, double impulse, double progress) {
     double base = MSClamp(roll, -1., 1.) * MS_GRAVITY_TILT_ANGLE;

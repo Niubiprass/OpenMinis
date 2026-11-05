@@ -342,6 +342,17 @@ static void msc_append_trimmed(char *out, size_t capacity, size_t *used, const c
     free(block);
 }
 
+static int msc_reasoning_block(const MSChatValue *value) {
+    const char *tags[] = {"type", "channel"};
+    for (size_t i = 0; i < 2; ++i) {
+        const MSChatValue *tag = msc_dict_get(value, tags[i]);
+        if (!tag || tag->type != MSChatValueString) continue;
+        if (!strncmp(tag->string, "reasoning", 9) || !strcmp(tag->string, "analysis") ||
+            !strcmp(tag->string, "thinking")) return 1;
+    }
+    return 0;
+}
+
 static void msc_append_text(const MSChatValue *value, char *out, size_t capacity,
                             size_t *used, int depth) {
     size_t i;
@@ -356,6 +367,7 @@ static void msc_append_text(const MSChatValue *value, char *out, size_t capacity
             }
             break;
         case MSChatValueDict: {
+            if (msc_reasoning_block(value)) break;
             const MSChatValue *direct = msc_dict_get(value, "text");
             if (!direct) direct = msc_dict_get(value, "output_text");
             if (direct) msc_append_text(direct, out, capacity, used, depth + 1);
@@ -390,11 +402,16 @@ MSChatExtractResult MSChatExtractReplyText(const MSChatValue *root,
         first = choices->items[0];
         if (first && first->type == MSChatValueDict) {
             candidate = msc_dict_get(first, "message");
-            if (candidate) msc_append_text(candidate, out, capacity, &used, 0);
-            if (used == 0) {
-                candidate = msc_dict_get(first, "text");
-                if (candidate) msc_append_text(candidate, out, capacity, &used, 0);
+            if (candidate) {
+                if (candidate->type != MSChatValueDict) return MSChatExtractShape;
+                if (!msc_reasoning_block(candidate)) {
+                    msc_append_text(msc_dict_get(candidate, "content"), out, capacity, &used, 0);
+                }
+                // Explicit message.content is authoritative, even when empty.
+                return used > 0 ? MSChatExtractOK : MSChatExtractEmpty;
             }
+            candidate = msc_dict_get(first, "text");
+            if (candidate) msc_append_text(candidate, out, capacity, &used, 0);
         } else {
             msc_append_text(first, out, capacity, &used, 0);
         }
@@ -439,7 +456,7 @@ const char *MSChatMessageForIssue(MSChatIssue issue, long status) {
         case MSChatIssueURL:
             return "AI 地址不合法：需要 http(s) 地址，且不能带用户名、密码或 # 片段";
         case MSChatIssueTimeout:
-            return "AI 超时了（30 秒没回），请检查网络后重试";
+            return "AI 请求超时，已停止等待；请检查网络后重试";
         case MSChatIssueNetwork:
             return "连不上 AI 服务，请检查网络或代理";
         case MSChatIssueEmpty:

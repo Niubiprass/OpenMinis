@@ -591,6 +591,8 @@
 		C0FFEE900000000000000004 /* MiniSightAppRecorder.m in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE900000000000000003 /* MiniSightAppRecorder.m */; };
 		C0FFEE900000000000000005 /* MiniSightInAppRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE900000000000000006 /* MiniSightInAppRuntime.swift */; };
 		C0FFEE900000000000000010 /* MiniSightRecorderModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE900000000000000011 /* MiniSightRecorderModel.swift */; };
+		A15E9A170000000000000001 /* MiniSightSignal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15E9A170000000000000002 /* MiniSightSignal.swift */; };
+		A15E9A170000000000000003 /* MiniSightHostAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15E9A170000000000000004 /* MiniSightHostAdapter.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1352,6 +1354,8 @@
 		C0FFEE900000000000000003 /* MiniSightAppRecorder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightAppRecorder.m; sourceTree = "<group>"; };
 		C0FFEE900000000000000006 /* MiniSightInAppRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightInAppRuntime.swift; sourceTree = "<group>"; };
 		C0FFEE900000000000000011 /* MiniSightRecorderModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightRecorderModel.swift; sourceTree = "<group>"; };
+		A15E9A170000000000000002 /* MiniSightSignal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightSignal.swift; sourceTree = "<group>"; };
+		A15E9A170000000000000004 /* MiniSightHostAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightHostAdapter.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1632,6 +1636,8 @@
 			children = (
 				C0FFEE900000000000000001 /* MiniSightCore */,
 				C0FFEE900000000000000006 /* MiniSightInAppRuntime.swift */,
+				A15E9A170000000000000004 /* MiniSightHostAdapter.swift */,
+				A15E9A170000000000000002 /* MiniSightSignal.swift */,
 				C0FFEE900000000000000011 /* MiniSightRecorderModel.swift */,
 				E51000011 /* MinisApp.swift */,
 				E5QA0102 /* AppDelegate.swift */,
@@ -3059,6 +3065,8 @@
 				C0FFEE400000000000000001 /* MiniSightChatPanel.m in Sources */,
 				C0FFEE900000000000000004 /* MiniSightAppRecorder.m in Sources */,
 				C0FFEE900000000000000005 /* MiniSightInAppRuntime.swift in Sources */,
+				A15E9A170000000000000003 /* MiniSightHostAdapter.swift in Sources */,
+				A15E9A170000000000000001 /* MiniSightSignal.swift in Sources */,
 				C0FFEE900000000000000010 /* MiniSightRecorderModel.swift in Sources */,
 				F1W00011 /* MinisShareSheet.swift in Sources */,
 				F1W00901 /* LazyLongTextView.swift in Sources */,
