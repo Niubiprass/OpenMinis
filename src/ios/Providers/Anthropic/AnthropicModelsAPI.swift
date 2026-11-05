@@ -102,28 +102,50 @@ enum AnthropicModelsAPI {
     }
 
     private static func performFetch(_ request: URLRequest) async throws -> [LLMModel] {
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            let truncated = body.count <= 50 ? body : "\(body.prefix(20))...\(body.suffix(20))"
-            throw LLMError.providerError(message: "Failed to fetch models (\(statusCode)): \(truncated)")
+        guard let start = request.url else {
+            throw LLMError.providerError(message: "Missing models URL")
+        }
+        // Anthropic pages with `has_more` + `last_id`; `after_id` requests the
+        // next page. A response that says there is more but gives no id fails
+        // the refresh rather than looking short.
+        let rows = try await ModelPagination.collect(start: start) { url in
+            var pageRequest = request
+            pageRequest.url = url
+            let (data, response) = try await URLSession.shared.data(for: pageRequest)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(statusCode) else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                let truncated = body.count <= 50 ? body : "\(body.prefix(20))...\(body.suffix(20))"
+                throw LLMError.providerError(message: "Failed to fetch models (\(statusCode)): \(truncated)")
+            }
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            guard let pageRows = json["data"] as? [[String: Any]] else {
+                throw LLMError.decodingError(underlying: NSError(domain: "ModelsAPI", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Missing data array"]))
+            }
+            let hasMore = (json["has_more"] as? Bool) ?? false
+            var next: URL?
+            if let lastId = json["last_id"] as? String, !lastId.isEmpty,
+               var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                var items = components.queryItems ?? []
+                if let index = items.firstIndex(where: { $0.name == "after_id" }) {
+                    items[index].value = lastId
+                } else {
+                    items.append(URLQueryItem(name: "after_id", value: lastId))
+                }
+                components.queryItems = items
+                next = components.url
+            }
+            return ModelPage(items: pageRows, next: next, advertisedNext: hasMore || next != nil)
         }
 
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        guard let dataArray = json["data"] as? [[String: Any]] else {
-            throw LLMError.decodingError(underlying: NSError(domain: "ModelsAPI", code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Missing data array"]))
-        }
-
-        if let first = dataArray.first,
+        if let first = rows.first,
            let debugData = try? JSONSerialization.data(withJSONObject: first, options: [.prettyPrinted, .sortedKeys]),
            let debugStr = String(data: debugData, encoding: .utf8) {
             logger.info("First model raw JSON:\n\(debugStr)")
         }
 
-        let raw = dataArray.compactMap { item -> LLMModel? in
+        let raw = rows.compactMap { item -> LLMModel? in
             guard let id = item["id"] as? String else { return nil }
             // Anthropic format uses "display_name"; OpenAI-compatible proxies use "id" only
             let displayName = (item["display_name"] as? String) ?? modelDisplayName(from: id)

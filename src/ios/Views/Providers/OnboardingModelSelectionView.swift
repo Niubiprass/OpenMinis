@@ -191,10 +191,19 @@ struct OnboardingModelSelectionView: View {
             } catch {
                 errors = [error.localizedDescription]
             }
-            // Only an EMPTY page is a failure the user has to act on; a partial
-            // result (one of two providers answered) simply shows what arrived.
+            // Only an EMPTY page needs a message; a partial result simply
+            // shows what arrived. An empty page is different depending on
+            // whether the providers answered: a successful response with no
+            // models means the site has none to offer, not that the request
+            // failed.
             if allEntries.isEmpty {
-                fetchError = errors.first ?? AppLocalized("Could not fetch the model list automatically.")
+                if let first = errors.first {
+                    fetchError = first
+                } else if errors.isEmpty {
+                    fetchError = AppLocalized("The provider returned no models. Add one manually, or skip.")
+                } else {
+                    fetchError = AppLocalized("Could not fetch the model list automatically.")
+                }
             }
         }
     }

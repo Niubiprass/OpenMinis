@@ -24,7 +24,19 @@ enum OpenAIModelsAPI {
         let isCustomBase = baseURL != nil
         let base = appendV1Suffix ? stripV1Suffix(baseURL ?? defaultBaseURL) : (baseURL ?? defaultBaseURL)
         let v1Path = appendV1Suffix ? "/v1" : ""
-        guard let url = URL(string: URLBuilding.join(base, v1Path, "/models")) else {
+        guard let plain = URL(string: URLBuilding.join(base, v1Path, "/models")),
+              var components = URLComponents(url: plain, resolvingAgainstBaseURL: false) else {
+            throw LLMError.providerError(message: "Invalid base URL: \(base)")
+        }
+        // Ask for a page size so servers that paginate page, and so the parser
+        // knows paging is understood. Servers that do not paginate ignore both.
+        var queryItems = components.queryItems ?? []
+        for (name, value) in [("limit", "100"), ("page_size", "100")]
+        where !queryItems.contains(where: { $0.name == name }) {
+            queryItems.append(URLQueryItem(name: name, value: value))
+        }
+        components.queryItems = queryItems
+        guard let url = components.url else {
             throw LLMError.providerError(message: "Invalid base URL: \(base)")
         }
         var request = URLRequest(url: url)
@@ -290,23 +302,42 @@ enum OpenAIModelsAPI {
     }
 
     private static func performFetch(_ request: URLRequest, filterOpenAIOnly: Bool = true) async throws -> [LLMModel] {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let http = response as? HTTPURLResponse
-        let statusCode = http?.statusCode ?? -1
-
-        guard (200..<300).contains(statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            logger.error("OpenAI models API error — status \(statusCode)")
-            if statusCode == 401 || statusCode == 403 {
-                throw LLMError.invalidAPIKey(detail: "OpenAI HTTP \(statusCode): \(String(body.prefix(200)))")
-            }
-            throw LLMError.providerError(message: "Failed to fetch OpenAI models (HTTP \(statusCode)): \(body.prefix(500))")
+        guard let start = request.url else {
+            throw LLMError.providerError(message: "Missing models URL")
         }
+        // Page only when the caller asked for a page size — that also confirms
+        // the endpoint understands paging. A page count on its own means nothing:
+        // the last page legitimately has fewer rows, and the whole list may be
+        // two entries.
+        let askedForPaging = URLComponents(url: start, resolvingAgainstBaseURL: false)?
+            .queryItems?.contains { $0.name == "limit" || $0.name == "page_size" } ?? false
 
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        guard let modelsArray = json["data"] as? [[String: Any]] else {
-            throw LLMError.decodingError(underlying: NSError(domain: "OpenAIModelsAPI", code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Missing data array in response"]))
+        let modelsArray = try await ModelPagination.collect(start: start) { url in
+            var pageRequest = request
+            pageRequest.url = url
+            let (data, response) = try await URLSession.shared.data(for: pageRequest)
+            let http = response as? HTTPURLResponse
+            let statusCode = http?.statusCode ?? -1
+            guard (200..<300).contains(statusCode) else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                logger.error("OpenAI models API error — status \(statusCode)")
+                if statusCode == 401 || statusCode == 403 {
+                    throw LLMError.invalidAPIKey(detail: "OpenAI HTTP \(statusCode): \(String(body.prefix(200)))")
+                }
+                throw LLMError.providerError(message: "Failed to fetch OpenAI models (HTTP \(statusCode)): \(body.prefix(500))")
+            }
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            guard let rows = json["data"] as? [[String: Any]] else {
+                throw LLMError.decodingError(underlying: NSError(domain: "OpenAIModelsAPI", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Missing data array in response"]))
+            }
+            guard askedForPaging else {
+                return ModelPage(items: rows, next: nil, advertisedNext: false)
+            }
+            let hasMore = (json["has_more"] as? Bool) ?? (json["hasMore"] as? Bool) ?? false
+            let cursorRaw = json["last_id"] ?? json["next_cursor"] ?? json["next_page_token"] ?? json["next"]
+            let next = nextPageURL(base: url, cursor: cursorRaw)
+            return ModelPage(items: rows, next: next, advertisedNext: hasMore || next != nil)
         }
 
         // For official OpenAI endpoints, filter to chat-capable models only.
@@ -391,6 +422,28 @@ enum OpenAIModelsAPI {
             logger.info("First model raw JSON:\n\(debugStr)")
         }
         return enriched
+    }
+
+    /// Build the next page URL from whatever cursor shape a compatible relay
+    /// used. Only cursor-carrying parameters are rewritten; page size and auth
+    /// stay as they were.
+    private static func nextPageURL(base: URL, cursor raw: Any?) -> URL? {
+        if let absolute = ModelPagination.absolute(raw, relativeTo: base),
+           absolute.absoluteString != base.absoluteString,
+           URLComponents(url: absolute, resolvingAgainstBaseURL: false)?.query != nil {
+            return absolute
+        }
+        guard let token = raw as? String, !token.isEmpty,
+              var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
+        let cursorNames = ["after", "before", "page", "offset", "page_token", "cursor"]
+        var items = components.queryItems ?? []
+        if let index = items.firstIndex(where: { cursorNames.contains($0.name) }) {
+            items[index].value = token
+        } else {
+            items.append(URLQueryItem(name: "after", value: token))
+        }
+        components.queryItems = items
+        return components.url
     }
 
     /// Strip `_input` / `_output` suffix and lowercase. Provider APIs are inconsistent —

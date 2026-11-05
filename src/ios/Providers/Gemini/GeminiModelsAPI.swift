@@ -34,7 +34,9 @@ enum GeminiModelsAPI {
         guard var components = URLComponents(string: modelsURL) else {
             throw LLMError.providerError(message: "Invalid Gemini base URL: \(modelsURL)")
         }
-        components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
+        var queryItems = components.queryItems ?? []
+        queryItems.append(URLQueryItem(name: "key", value: apiKey))
+        components.queryItems = queryItems
 
         // Also guarded: `components.url` is a SECOND failure point. Percent-encoding
         // rules differ between the parser and the serializer, so a string that parsed
@@ -100,48 +102,67 @@ enum GeminiModelsAPI {
     }
 
     private static func performFetch(_ request: URLRequest) async throws -> [LLMModel] {
-        // Redact API key from logged URL
-        let logURL: String
-        if let url = request.url, var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
-            let redacted = comps.queryItems?.map { item in
-                item.name == "key" ? URLQueryItem(name: "key", value: "***") : item
+        guard let start = request.url else {
+            throw LLMError.providerError(message: "Missing Gemini models URL")
+        }
+        // `nextPageToken` marks a genuine page break. A token with no rows is
+        // treated as an unfinished list by ModelPagination.
+        let rows = try await ModelPagination.collect(start: start) { url in
+            var pageRequest = request
+            pageRequest.url = url
+            // Redact API key from logged URL
+            let logURL: String
+            if var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                comps.queryItems = comps.queryItems?.map { item in
+                    item.name == "key" ? URLQueryItem(name: "key", value: "***") : item
+                }
+                logURL = comps.string ?? url.absoluteString
+            } else {
+                logURL = url.absoluteString
             }
-            comps.queryItems = redacted
-            logURL = comps.string ?? url.absoluteString
-        } else {
-            logURL = "<nil>"
-        }
-        logger.info("GET \(logURL)")
+            logger.info("GET \(logURL)")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let http = response as? HTTPURLResponse
-        let statusCode = http?.statusCode ?? -1
-        let responseBody = String(data: data, encoding: .utf8) ?? "<binary>"
+            let (data, response) = try await URLSession.shared.data(for: pageRequest)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let responseBody = String(data: data, encoding: .utf8) ?? "<binary>"
+            logger.info("Response status: \(statusCode)")
 
-        logger.info("Response status: \(statusCode)")
-
-        guard (200..<300).contains(statusCode) else {
-            logger.error("Gemini models API error — status \(statusCode)")
-            #if DEBUG
-            logger.error("Response body: \(responseBody)")
-            #endif
-            if statusCode == 401 || statusCode == 403 {
-                throw LLMError.invalidAPIKey(detail: "Gemini HTTP \(statusCode): \(String(responseBody.prefix(200)))")
+            guard (200..<300).contains(statusCode) else {
+                logger.error("Gemini models API error — status \(statusCode)")
+                #if DEBUG
+                logger.error("Response body: \(responseBody)")
+                #endif
+                if statusCode == 401 || statusCode == 403 {
+                    throw LLMError.invalidAPIKey(detail: "Gemini HTTP \(statusCode): \(String(responseBody.prefix(200)))")
+                }
+                throw LLMError.providerError(message: "Failed to fetch Gemini models (HTTP \(statusCode)): \(responseBody.prefix(500))")
             }
-            throw LLMError.providerError(message: "Failed to fetch Gemini models (HTTP \(statusCode)): \(responseBody.prefix(500))")
+
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            guard let pageRows = json["models"] as? [[String: Any]] else {
+                logger.error("Missing 'models' array in response. Keys: \(Array(json.keys).joined(separator: ", "))")
+                #if DEBUG
+                logger.error("Response body: \(responseBody.prefix(500))")
+                #endif
+                throw LLMError.decodingError(underlying: NSError(domain: "GeminiModelsAPI", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Missing models array in response"]))
+            }
+            let token = json["nextPageToken"] as? String
+            var next: URL?
+            if let token, !token.isEmpty, var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                var items = comps.queryItems ?? []
+                if let index = items.firstIndex(where: { $0.name == "pageToken" }) {
+                    items[index].value = token
+                } else {
+                    items.append(URLQueryItem(name: "pageToken", value: token))
+                }
+                comps.queryItems = items
+                next = comps.url
+            }
+            return ModelPage(items: pageRows, next: next, advertisedNext: token != nil)
         }
 
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        guard let modelsArray = json["models"] as? [[String: Any]] else {
-            logger.error("Missing 'models' array in response. Keys: \(Array(json.keys).joined(separator: ", "))")
-            #if DEBUG
-            logger.error("Response body: \(responseBody.prefix(500))")
-            #endif
-            throw LLMError.decodingError(underlying: NSError(domain: "GeminiModelsAPI", code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Missing models array in response"]))
-        }
-
-        let models = modelsArray.compactMap { item -> LLMModel? in
+        let models = rows.compactMap { item -> LLMModel? in
             // name format: "models/gemini-2.5-flash"
             guard let fullName = item["name"] as? String else { return nil }
             let id = fullName.replacingOccurrences(of: "models/", with: "")
@@ -155,8 +176,8 @@ enum GeminiModelsAPI {
         }
 
         let enriched = ModelsDevAPI.enrichModels(models)
-        logger.info("Fetched \(modelsArray.count) total models, \(enriched.count) chat-capable")
-        if let first = modelsArray.first,
+        logger.info("Fetched \(rows.count) total models, \(enriched.count) chat-capable")
+        if let first = rows.first,
            let debugData = try? JSONSerialization.data(withJSONObject: first, options: [.prettyPrinted, .sortedKeys]),
            let debugStr = String(data: debugData, encoding: .utf8) {
             logger.info("First model raw JSON:\n\(debugStr)")

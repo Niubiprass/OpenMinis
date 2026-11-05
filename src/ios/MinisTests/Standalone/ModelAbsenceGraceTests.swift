@@ -10,9 +10,8 @@
 // The rule under test: a catalog entry missing from the response is deleted on
 // the spot, no marker, no grace. A later response that lists it restores it —
 // with its overrides and its group memberships, from a local tombstone. The one
-// exception is a suspicious shrink (more than half of a list of at least four
-// gone at once), which keeps everything for one round because that is what a
-// truncated response looks like.
+// count is irrelevant: 12 models may become 2 today and 20 tomorrow. Only a
+// failed or unfinished request keeps the old list.
 //
 // Standalone (`swift ModelAbsenceGraceTests.swift`) like its neighbours:
 // deps/libs/libish_emu.a is device-only arm64, so the app cannot link for a
@@ -43,12 +42,10 @@ struct Tombstone: Equatable {
     let groupIds: [String]
 }
 
-/// Mirrors the NEW replaceEntries: delete unlisted catalog entries, restore
-/// re-listed ones from the tombstone, keep everything on a suspicious shrink.
+/// Mirrors replaceEntries: the returned ids are the list. No count heuristic.
 func replace(existing: [Entry], returned: [String], now: Date = Date(),
              tombs: inout [String: Tombstone], newBase: Int = 1_048_576) -> [Entry] {
     let returnedSet = Set(returned)
-    let shrink = existing.count >= 4 && returned.count * 2 < existing.count
     var out: [Entry] = []
     for id in returned {
         let prior = existing.first { $0.modelId == id }
@@ -60,7 +57,6 @@ func replace(existing: [Entry], returned: [String], now: Date = Date(),
                          baseContextWindow: newBase))
     }
     for e in existing where !e.isCustom && !returnedSet.contains(e.modelId) {
-        if shrink { out.append(e); continue }
         tombs[e.modelId] = Tombstone(uuid: "uuid-\(e.modelId)",
                                      contextWindowOverride: e.contextWindowOverride,
                                      groupIds: e.groupIds)
@@ -95,25 +91,28 @@ ckEq("override restored", find(after2, target)?.contextWindowOverride, 400_000)
 ckEq("group restored", find(after2, target)?.groupIds, ["g1"])
 ck("tombstone consumed", tombs[target] == nil)
 
-// MARK: - 3. Suspicious shrink defers deletion
+// MARK: - 3. Count changes are not a signal
 
-print("\n▶️  a half-length list keeps everything for one round")
+print("\n▶️  a big drop is applied at once, not deferred")
 var shrinkTombs: [String: Tombstone] = [:]
 let big = (0..<12).map { Entry(modelId: "m\($0)") }
 let shrunk = replace(existing: big, returned: (0..<3).map { "m\($0)" }, now: t0, tombs: &shrinkTombs)
-ckEq("nothing deleted", shrunk.count, 12)
-ck("nothing tombstoned", shrinkTombs.isEmpty)
-// The next healthy refresh then deletes what is still missing.
-let healed = replace(existing: shrunk, returned: (0..<3).map { "m\($0)" }, now: t0.addingTimeInterval(600),
-                     tombs: &shrinkTombs)
-ckEq("the next healthy refresh deletes them", healed.count, 3)
-ckEq("and tombstones every one", shrinkTombs.count, 9)
+ckEq("only the returned rows remain", shrunk.count, 3)
+ckEq("every dropped model is tombstoned", shrinkTombs.count, 9)
+// The old rule needed a second refresh; this one must not.
+ckEq("nothing is carried over", find(shrunk, "m11"), nil)
 
-print("\n▶️  the shrink threshold matches the code")
-// existing >= 4 && returned*2 < existing
-ck("4 entries → 1 is a shrink", 4 >= 4 && 1 * 2 < 4)
-ck("4 entries → 2 is NOT a shrink", !(4 >= 4 && 2 * 2 < 4))
-ck("3 entries → 1 is NOT a shrink", !(3 >= 4 && 1 * 2 < 3))
+print("\n▶️  a full empty response empties the list")
+var emptyTombs: [String: Tombstone] = [:]
+let emptied = replace(existing: big, returned: [], now: t0, tombs: &emptyTombs)
+ckEq("list is empty", emptied.count, 0)
+ckEq("all twelve are tombstoned", emptyTombs.count, 12)
+
+print("\n▶️  a later full list brings all of them back")
+var backTombs = emptyTombs
+let returnedAll = replace(existing: emptied, returned: big.map { $0.modelId }, now: t0.addingTimeInterval(60), tombs: &backTombs)
+ckEq("all twelve return", returnedAll.count, 12)
+ck("tombstones consumed", backTombs.isEmpty)
 
 // MARK: - 4. No collateral change
 
@@ -138,8 +137,7 @@ guard let store = read("../../Providers/ProviderConfigStore.swift") else {
 }
 ck("unlisted catalog entries are collected for deletion, not kept",
    store.contains("let absentCatalog = existing.filter { !$0.isCustom && !refreshedModelIds.contains($0.baseModel.id) }"))
-ck("they are only appended on a suspicious shrink",
-   store.contains("if suspiciousShrink {"))
+ck("no count heuristic remains", !store.contains("suspiciousShrink"))
 ck("a normal refresh logs a deletion",
    store.contains("deleted \\(absentCatalog.count) unlisted catalog entr"))
 ck("the old grace expiry no longer drives deletion",
@@ -151,6 +149,11 @@ ck("a re-listed model is restored from its tombstone",
 ck("group membership is restored", store.contains("restored \\("))
 ck("tombstones expire", store.contains("retiredModelTTL: TimeInterval = 90 * 24 * 60 * 60"))
 ck("the rule is tagged", store.contains("[T-model-refresh-authoritative]"))
+ck("a successful response replaces even when empty", store.contains("return ModelFetchResult(models: models, source: \"api\""))
+ck("pagination must finish before replacement",
+   ["OpenAI/OpenAIModelsAPI.swift", "Anthropic/AnthropicModelsAPI.swift", "Gemini/GeminiModelsAPI.swift"].allSatisfy { rel in
+       (read("../../Providers/" + rel) ?? "").contains("ModelPagination.collect")
+   })
 
 print("\n" + String(repeating: "─", count: 60))
 if failures == 0 {

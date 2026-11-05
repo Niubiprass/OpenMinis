@@ -1819,28 +1819,15 @@ final class ProviderConfigStore: ObservableObject {
         // the model again simply brings it back (see the tombstone restore
         // above, which also returns its overrides and groups).
         //
-        // The one exception is a suspicious shrink: the response lost more than
-        // half of a list of at least four, which is the signature of a
-        // truncated/partial response rather than of a real removal. That round
-        // keeps everything; the next healthy refresh deletes whatever is still
-        // missing. A single missing model out of twelve is NOT a shrink and is
-        // deleted immediately — that is the reported loop where a relay omitted
-        // `gemini-3.8-flash-high`, the row flipped to "not listed", the model
-        // reappeared on the next refresh, and the cycle repeated.
-        //
-        // `isCustom` entries are kept unconditionally below; they were never
-        // provider-supplied in the first place.
+        // [T-model-refresh-count-is-not-completeness] The number of returned
+        // models says nothing about response completeness. A successful full
+        // response may contain fewer models, more models, or none. Pagination
+        // must finish before this method is called; failed requests never reach
+        // replacement. Do not keep old rows just because the count fell.
+        // User-authored custom entries remain independent of provider discovery.
         let now = Date()
-        let suspiciousShrink = existing.count >= 4 && models.count * 2 < existing.count
         let absentCatalog = existing.filter { !$0.isCustom && !refreshedModelIds.contains($0.baseModel.id) }
-        if suspiciousShrink {
-            config.modelEntries.append(contentsOf: absentCatalog.map { entry -> ModelEntry in
-                var kept = entry
-                kept.absentSince = nil    // the old grace marker no longer drives anything
-                return kept
-            })
-            logger.warning("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) SUSPICIOUS SHRINK before=\(existing.count) after=\(models.count) — deferred \(absentCatalog.count) deletion(s) to the next healthy refresh")
-        } else if !absentCatalog.isEmpty {
+        if !absentCatalog.isEmpty {
             var groupsByEntry: [String: [String]] = [:]
             for group in config.modelGroups {
                 for entryId in group.memberEntryIds { groupsByEntry[entryId, default: []].append(group.id) }
@@ -1926,51 +1913,25 @@ final class ProviderConfigStore: ObservableObject {
             }
         }
 
-        // Prune dangling references: any entry UUID that was for this instance before the
-        // refresh but is no longer present (because the provider dropped the model from its
-        // list and it wasn't a custom entry) is a candidate for removal from groups and the
-        // agent-loop list.
-        //
-        // SAFETY GUARD against API degradation (e.g. provider returns a temporarily shrunk
-        // list during an outage): if the new list is less than half the size of the old one
-        // AND the old list had at least 4 models, we skip the group/agent-loop prune. The
-        // now-stale entries are still removed from `modelEntries` (API is authoritative for
-        // what the provider exposes), so the router won't try to use them; but group and
-        // agent-loop references are left dangling so the UI can surface them as
-        // `staleMemberRow` and the user can decide. If the next refresh confirms the drop,
-        // the references remain visible until the user clears them or the model returns.
-        //
-        // Why this is safe with iCloud sync:
-        //   - `replaceEntries` is a local-only side effect of a device's own refresh; iCloud
-        //     merge never calls into it. So the skip decision is per-device and the guard
-        //     can't create cross-device reverberation.
-        //   - `memberEntryIds` IS synced. When device A prunes on a healthy refresh, device B
-        //     will also prune on its next healthy refresh (both APIs agree) — they converge
-        //     without needing to coordinate. When device A skips-prune on a degraded refresh,
-        //     it uploads unchanged memberEntryIds; device B also uploads unchanged on its own
-        //     skip — no flip-flop. The merge's union-of-members semantics means a member
-        //     removal only fully propagates when both devices have done a healthy refresh and
-        //     pruned the same UUIDs in their own local state, which is exactly the convergent
-        //     outcome we want.
-        //   - We never "un-prune" a reference we already removed: skip happens before removal,
-        //     not after. So a genuine local removal, once uploaded, is final.
+        // A complete successful refresh removes stale references as well as
+        // rows, regardless of how many models disappeared. Stamp group removals
+        // so a peer's older group snapshot cannot silently restore the member.
         let survivingEntryIds = Set(config.modelEntries.map(\.id))
         let prunedEntryIds = existingEntryIds.subtracting(survivingEntryIds)
         if !prunedEntryIds.isEmpty {
-            if suspiciousShrink {
-                logger.warning("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) SUSPICIOUS SHRINK before=\(existing.count) after=\(models.count) — entries kept; group/agent-loop references left untouched")
-            } else {
-                var affectedGroups: [String] = []
-                for i in config.modelGroups.indices {
-                    let before = config.modelGroups[i].memberEntryIds.count
-                    config.modelGroups[i].memberEntryIds.removeAll { prunedEntryIds.contains($0) }
-                    if config.modelGroups[i].memberEntryIds.count != before {
-                        affectedGroups.append(config.modelGroups[i].name)
-                    }
+            var affectedGroups: [String] = []
+            for i in config.modelGroups.indices {
+                let removedMembers = config.modelGroups[i].memberEntryIds.filter { prunedEntryIds.contains($0) }
+                guard !removedMembers.isEmpty else { continue }
+                config.modelGroups[i].memberEntryIds.removeAll { prunedEntryIds.contains($0) }
+                for entryId in removedMembers {
+                    config.modelGroups[i].removedMembers[entryId] = now
+                    config.modelGroups[i].addedMembers[entryId] = nil
                 }
-                config.agentLoopModelEntryIds.removeAll { prunedEntryIds.contains($0) }
-                logger.info("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) pruned \(prunedEntryIds.count) stale entries from groups=[\(affectedGroups.joined(separator: ","))]")
+                affectedGroups.append(config.modelGroups[i].name)
             }
+            config.agentLoopModelEntryIds.removeAll { prunedEntryIds.contains($0) }
+            logger.info("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) pruned \(prunedEntryIds.count) stale entries from groups=[\(affectedGroups.joined(separator: ","))]")
         }
 
         save()
@@ -2777,10 +2738,22 @@ final class ProviderConfigStore: ObservableObject {
 
     // MARK: - Model Refresh
 
-    /// Manual refresh: fetch models from the API (with models.dev fallback) and merge into entries.
-    /// Appends new models without removing user-added custom entries.
-    /// Errors are logged but not thrown (fire-and-forget friendly).
-    func refreshModels(for instance: ProviderInstance) async {
+    /// Manual refresh: fetch the provider's list and replace this instance's
+    /// provider-supplied rows with exactly what came back. Failed requests
+    /// leave the rows untouched; user-added custom rows are never removed.
+    struct ModelRefreshOutcome {
+        let label: String
+        let succeeded: Bool
+        let count: Int
+        let degraded: Bool
+        let message: String?
+    }
+
+    /// Manual refresh. Returns the outcome so a caller refreshing several
+    /// providers can say which ones failed instead of reporting "all good"
+    /// while the old rows are still on screen.
+    @discardableResult
+    func refreshModels(for instance: ProviderInstance) async -> ModelRefreshOutcome {
         // [T-mimo-shadow-voice] No longer skipped for "voice-only" providers.
         // Refresh ALWAYS runs the real /models fetch so a mixed vendor (e.g.
         // MiMo: text chat + voice on one host) gets its text models; audio-modality
@@ -2792,24 +2765,27 @@ final class ProviderConfigStore: ObservableObject {
             replaceEntries(for: instance.id, models: result.models, caller: "refreshModels(manual)")
             logger.info("[ModelList] refreshModels (MANUAL): instance=\(instance.label) source=\(result.source) count=\(result.models.count)")
             for w in result.warnings { logger.warning("⚠️ \(w)") }
+            return ModelRefreshOutcome(label: instance.label, succeeded: true, count: result.models.count,
+                                       degraded: result.degraded, message: nil)
         } catch {
             logger.error("[ModelList] refreshModels (MANUAL): instance=\(instance.label) FAILED — \(error)")
+            return ModelRefreshOutcome(label: instance.label, succeeded: false, count: 0,
+                                       degraded: false, message: error.localizedDescription)
         }
     }
 
-    /// Auto-refresh: fetch models for a single instance, skipping if user has custom models.
+    /// Auto-refresh: fetch models for a single instance. A user-added custom
+    /// model is not a reason to skip the provider's own list — `replaceEntries`
+    /// keeps custom rows by design, so the catalogue stays current too.
     private func autoRefreshModels(for instance: ProviderInstance) async {
         // [T-mimo-shadow-voice] No longer skipped for "voice-only" providers —
         // audio-modality template seed entries survive replaceEntries.
-        let hasCustomModels = config.modelEntries.contains { $0.providerInstanceId == instance.id && $0.isCustom }
-        if hasCustomModels {
-            logger.info("[ModelList] autoRefreshModels (DAILY): instance=\(instance.label) SKIP — user has custom models")
-            return
-        }
         do {
             logger.info("[ModelList] autoRefreshModels (DAILY): instance=\(instance.label) starting fetch")
             let result = try await Self.fetchModelsWithFallback(instance, forceRefresh: true)
             replaceEntries(for: instance.id, models: result.models, caller: "autoRefreshModels(daily)")
+            // A success starts the 6h window; a failure must not.
+            UserDefaults.standard.set(Date(), forKey: "lastModelsRefreshDate")
             logger.info("[ModelList] autoRefreshModels (DAILY): instance=\(instance.label) source=\(result.source) count=\(result.models.count)")
         } catch {
             logger.error("[ModelList] autoRefreshModels (DAILY): instance=\(instance.label) FAILED — \(error)")
@@ -2936,6 +2912,13 @@ final class ProviderConfigStore: ObservableObject {
             logger.info("[ModelList] refreshAllModelsIfNeeded: SKIP — refreshed \(Int(Date().timeIntervalSince(lastRefresh)))s ago (window \(Int(Self.modelsRefreshWindow))s, lastRefresh=\(lastStr))")
             return
         }
+        // A round where every provider failed must not cost another six hours;
+        // retry it on a later foreground, but not on every single one.
+        if let lastAttempt = UserDefaults.standard.object(forKey: "lastModelsRefreshAttempt") as? Date,
+           Date().timeIntervalSince(lastAttempt) < 10 * 60 {
+            logger.info("[ModelList] refreshAllModelsIfNeeded: SKIP — last attempt failed \(Int(Date().timeIntervalSince(lastAttempt)))s ago")
+            return
+        }
 
         let enabledInstances = config.instances.filter(\.isEnabled)
         guard !enabledInstances.isEmpty else {
@@ -2944,7 +2927,7 @@ final class ProviderConfigStore: ObservableObject {
         }
 
         logger.info("[ModelList] refreshAllModelsIfNeeded: FIRE — lastRefresh=\(lastStr) instanceCount=\(enabledInstances.count) instances=[\(enabledInstances.map { $0.label }.joined(separator: ","))]")
-        UserDefaults.standard.set(Date(), forKey: key)
+        UserDefaults.standard.set(Date(), forKey: "lastModelsRefreshAttempt")
 
         for instance in enabledInstances {
             Task {
@@ -3150,8 +3133,12 @@ final class ProviderConfigStore: ObservableObject {
     /// Result of a model fetch with fallback — includes diagnostic warnings for each step.
     struct ModelFetchResult {
         let models: [LLMModel]
-        let source: String            // "api", "models.dev", or "none"
+        let source: String            // "api" or "built-in"
         let warnings: [String]        // Diagnostic messages from each failed step
+        /// True when the list did not come from the provider this round. The
+        /// rows are still replaced, but they are not proof of what the site
+        /// offers.
+        let degraded: Bool
     }
 
     /// Whether the instance uses a third-party (non-official) OpenAI-compatible base URL
@@ -3238,75 +3225,33 @@ final class ProviderConfigStore: ObservableObject {
         return !officialHosts.contains(where: { custom.contains($0) })
     }
 
-    /// Fetch models from the provider API, falling back to models.dev when the API
-    /// returns an empty list or fails (e.g. custom base URL without /v1/models support).
+    /// Fetch models from the provider API. A successful response — including an
+    /// empty one — is authoritative. A failure keeps the caller's existing rows;
+    /// only providers with no list endpoint at all fall back to their compiled-in
+    /// catalogue, and they say so with `degraded`.
     static func fetchModelsWithFallback(_ instance: ProviderInstance, forceRefresh: Bool = false) async throws -> ModelFetchResult {
         var warnings: [String] = []
-        let isThirdParty = isThirdPartyOpenAICompat(instance)
-
-        // Step 1: Try /v1/models API
         do {
             let models = try await fetchModelsForInstance(instance, forceRefresh: forceRefresh)
-            if !models.isEmpty {
-                return ModelFetchResult(models: models, source: "api", warnings: [])
-            }
-            let msg = "API returned empty model list"
-            warnings.append(msg)
-            logger.info("\(msg) for \(instance.label)")
+            // [T-model-refresh-count-is-not-completeness] A successful response
+            // is authoritative even when it lists 0 models; callers replace the
+            // visible list with exactly this.
+            logger.info("Model list: \(models.count) model(s) from \(instance.label)")
+            return ModelFetchResult(models: models, source: "api", warnings: [], degraded: false)
         } catch let error as ModelRefreshError {
-            throw error  // No credential — don't attempt fallback
+            throw error  // No credential — the caller can say so directly.
         } catch {
-            let msg = "API fetch failed: \(error.localizedDescription)"
-            warnings.append(msg)
-            logger.info("\(msg) for \(instance.label)")
-            // Third-party endpoints (vLLM, Ollama, etc.): do not fall back to
-            // built-in GPT models — keep the previously fetched list intact.
-            if isThirdParty {
-                logger.info("Third-party endpoint unreachable, preserving existing models for \(instance.label)")
-                throw ModelRefreshError.modelsDevNoMatch(warnings: warnings)
-            }
+            let message = "API fetch failed: \(error.localizedDescription)"
+            warnings.append(message)
+            logger.info("\(message) for \(instance.label)")
+            guard instance.providerType.usesBuiltInCatalogOnly,
+                  instance.effectiveCustomBaseURL?.isEmpty ?? true else { throw error }
+            let catalog = instance.providerType.builtInModels
+            guard !catalog.isEmpty else { throw error }
+            let builtIn = ModelsDevAPI.enrichModels(catalog)
+            logger.info("Using \(builtIn.count) built-in models for \(instance.label) (degraded)")
+            return ModelFetchResult(models: builtIn, source: "built-in", warnings: warnings, degraded: true)
         }
-
-        // Step 2: Try models.dev fallback (skip for third-party endpoints)
-        let baseURL = modelsDevBaseURL(for: instance)
-        guard let baseURL else {
-            let msg = "No base URL resolved, cannot try models.dev"
-            warnings.append(msg)
-            logger.info("\(msg) for \(instance.label)")
-            if isThirdParty {
-                throw ModelRefreshError.modelsDevNoMatch(warnings: warnings)
-            }
-            // Fall back to built-in models
-            let builtIn = ModelsDevAPI.enrichModels(instance.providerType.builtInModels)
-            if !builtIn.isEmpty {
-                logger.info("Using \(builtIn.count) built-in models for \(instance.label)")
-                return ModelFetchResult(models: builtIn, source: "built-in", warnings: warnings)
-            }
-            throw ModelRefreshError.modelsDevNoMatch(warnings: warnings)
-        }
-
-        logger.info("models.dev fallback: matching baseURL=\(baseURL) for \(instance.label)")
-        let fallbackModels = ModelsDevAPI.fetchModels(forBaseURL: baseURL)
-        if !fallbackModels.isEmpty {
-            logger.info("models.dev fallback returned \(fallbackModels.count) models for \(instance.label)")
-            return ModelFetchResult(models: fallbackModels, source: "models.dev", warnings: warnings)
-        }
-        let msg = "models.dev: no match for baseURL \(baseURL)"
-        warnings.append(msg)
-        logger.info("\(msg)")
-
-        // Step 3: Fall back to provider's built-in models (skip for third-party endpoints)
-        if isThirdParty {
-            logger.info("Third-party endpoint, skipping built-in fallback for \(instance.label)")
-            throw ModelRefreshError.modelsDevNoMatch(warnings: warnings)
-        }
-        let builtIn = ModelsDevAPI.enrichModels(instance.providerType.builtInModels)
-        if !builtIn.isEmpty {
-            logger.info("Using \(builtIn.count) built-in models for \(instance.label)")
-            return ModelFetchResult(models: builtIn, source: "built-in", warnings: warnings)
-        }
-
-        throw ModelRefreshError.modelsDevNoMatch(warnings: warnings)
     }
 
     /// Resolve the effective API base URL for an instance (for models.dev matching).

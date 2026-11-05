@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		E5MPG001 /* ModelPagination.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5MPG002 /* ModelPagination.swift */; };
 		160649A00000000000000001 /* MemoryDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 160649A00000000000000002 /* MemoryDocumentStore.swift */; };
 		160649A00000000000000003 /* ScopedMemoryLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 160649A00000000000000004 /* ScopedMemoryLibraryView.swift */; };
 		IOS15COMPAT0000000000000B /* iOS15Compat.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOS15COMPAT0000000000000A /* iOS15Compat.swift */; };
@@ -674,6 +675,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		E5MPG002 /* ModelPagination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPagination.swift; sourceTree = "<group>"; };
 		160649A00000000000000002 /* MemoryDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDocumentStore.swift; sourceTree = "<group>"; };
 		E5QSRCH01R /* ChatSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChatSearchView.swift; path = Views/Chat/ChatSearchView.swift; sourceTree = SOURCE_ROOT; };
 		E5SCHED01R /* ScheduledTasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ScheduledTasksView.swift; path = Views/Settings/ScheduledTasksView.swift; sourceTree = SOURCE_ROOT; };
@@ -1704,6 +1706,7 @@
 				E5SUB0010 /* SubAgentStore.swift */,
 				E5TWS002 /* ThinkingRuleResolver.swift */,
 				E5D00015 /* ProviderConfigStore.swift */,
+				E5MPG002 /* ModelPagination.swift */,
 				E5D00199 /* ProviderConfigDB.swift */,
 				E5D00016 /* ModelGroupRouter.swift */,
 				E5DA0002 /* VisionGroupResolver.swift */,
@@ -3210,6 +3213,7 @@
 				E5TWR001 /* ThinkingRule.swift in Sources */,
 				E5TWS001 /* ThinkingRuleResolver.swift in Sources */,
 				E5D00005 /* ProviderConfigStore.swift in Sources */,
+				E5MPG001 /* ModelPagination.swift in Sources */,
 				E5D00099 /* ProviderConfigDB.swift in Sources */,
 				E5D00006 /* ModelGroupRouter.swift in Sources */,
 				E5DA0001 /* VisionGroupResolver.swift in Sources */,

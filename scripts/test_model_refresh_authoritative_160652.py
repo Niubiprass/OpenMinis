@@ -3,9 +3,11 @@
 
 The refresh response is the model list: an unlisted catalog entry is deleted
 immediately, no "not listed" marker and no grace window; a later response that
-lists it restores it (overrides + groups) from a local tombstone. Only a
-suspicious shrink (more than half of a list of >= 4 gone) defers deletion for one
-round.
+lists it restores it (overrides + groups) from a local tombstone. The number of
+models is never used as a completeness signal: 12 -> 2 and 2 -> 12 are both
+applied at once. A successful response replaces even when it is empty; failed or
+unfinished requests keep the old list. Paginated providers must finish paging
+before replacement.
 
 Runs in seconds; the behavioural model lives in
 src/ios/MinisTests/Standalone/ModelAbsenceGraceTests.swift.
@@ -34,14 +36,15 @@ def main():
     # The deletion path.
     need("let absentCatalog = existing.filter { !$0.isCustom && !refreshedModelIds.contains($0.baseModel.id) }" in store,
          "unlisted catalog entries are collected for deletion")
-    need("let suspiciousShrink = existing.count >= 4 && models.count * 2 < existing.count" in store,
-         "shrink threshold is the documented one")
-    need("if suspiciousShrink {" in store, "shrink defers deletion")
+    need("suspiciousShrink" not in store, "no count heuristic remains")
+    need("return ModelFetchResult(models: models, source: \"api\"" in store,
+         "a successful response is accepted even when empty")
+    need("degraded: false" in store, "success is marked as authoritative")
     need("deleted \\(absentCatalog.count) unlisted catalog entr" in store,
          "a normal refresh logs the deletion")
     need("now.timeIntervalSince(since) > Self.modelAbsenceGracePeriod" not in store,
          "grace expiry no longer decides deletion")
-    need("kept.absentSince = nil" in store, "the old marker is normalised away")
+    need("absentSince: nil" in store, "returned entries carry no stale marker")
 
     # Restoration.
     need("struct RetiredModelOverride: Codable" in store, "tombstone type exists")
@@ -53,8 +56,18 @@ def main():
     need("saveRetiredModelOverrides(retired)" in store, "tombstones are persisted")
 
     # Group refs still pruned on a real removal.
-    need("if suspiciousShrink {" in store and "prunedEntryIds" in store,
-         "group references are pruned only for real removals")
+    need("removedMembers[entryId] = now" in store,
+         "group removals are stamped for sync")
+    need("safer" not in store, "no stale finder left")
+    for rel in ("OpenAI/OpenAIModelsAPI.swift", "Anthropic/AnthropicModelsAPI.swift", "Gemini/GeminiModelsAPI.swift"):
+        need("ModelPagination.collect" in (ROOT / "src/ios/Providers" / rel).read_text(),
+             f"{rel} finishes pagination before replacing")
+    need("struct ModelPage" in (ROOT / "src/ios/Providers/ModelPagination.swift").read_text(),
+         "pagination helper exists")
+    need("advertised another page but gave no cursor" in (ROOT / "src/ios/Providers/ModelPagination.swift").read_text(),
+         "a missing cursor is an incomplete list, not a short one")
+    need("func refreshModels(for instance: ProviderInstance) async -> ModelRefreshOutcome" in store,
+         "refresh reports success or failure")
 
     # Rule tag present in both places, so the intent is traceable.
     need("[T-model-refresh-authoritative]" in store, "store rule is tagged")

@@ -969,24 +969,30 @@ struct UnifiedModelPicker: View {
     /// [T-picker-refresh-all] Ask every ENABLED provider for its current model
     /// list. Each site is queried with its own base URL and its own key — the
     /// results are independent, so a slow or broken relay cannot affect the
-    /// others, and nothing is merged across sites. A model a site no longer
-    /// lists keeps its local entry but gains `absentSince`, which renders as
-    /// "供应商未列出" (greyed, unselectable) in this picker.
+    /// others, and nothing is merged across sites. A site's successful answer
+    /// replaces that site's rows exactly — dropped models disappear, returned
+    /// ones appear. Only a failed site keeps its previous rows, and the note
+    /// says so.
     private func refreshAllModels() {
         guard !isRefreshingAll else { return }
         isRefreshingAll = true
         refreshNote = nil
         Task { @MainActor in
             let targets = store.instances.filter { $0.isEnabled }
+            var failed: [String] = []
             for target in targets {
-                await store.refreshModels(for: target)
+                let outcome = await store.refreshModels(for: target)
+                if !outcome.succeeded { failed.append(outcome.label) }
             }
             loadSections()
             isRefreshingAll = false
-            let unavailable = store.modelEntries.filter { $0.isUnavailableFromProvider }.count
-            refreshNote = unavailable > 0
-                ? "已刷新 \(targets.count) 个供应商 · \(unavailable) 个模型不再提供"
-                : "已刷新 \(targets.count) 个供应商 · 全部正常"
+            if failed.isEmpty {
+                refreshNote = "已刷新 \(targets.count) 个供应商"
+            } else if failed.count == targets.count {
+                refreshNote = "刷新失败，已保留原列表（\(failed.joined(separator: "、"))）"
+            } else {
+                refreshNote = "已刷新 \(targets.count - failed.count) 个 · \(failed.count) 个失败，已保留原列表"
+            }
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             if !isRefreshingAll { refreshNote = nil }
         }

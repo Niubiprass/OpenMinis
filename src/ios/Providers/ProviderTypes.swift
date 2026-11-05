@@ -91,6 +91,16 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
         }
     }
 
+    /// No model-list endpoint worth calling: the catalogue is compiled in.
+    /// Only these may fall back to `builtInModels` when a request fails;
+    /// every other provider, relays included, keeps the previous rows.
+    var usesBuiltInCatalogOnly: Bool {
+        switch self {
+        case .antigravity, .openAIResponses: return true
+        default: return false
+        }
+    }
+
     /// Built-in models for this provider type.
     var builtInModels: [LLMModel] {
         switch self {
