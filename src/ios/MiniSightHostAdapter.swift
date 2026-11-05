@@ -19,7 +19,7 @@ final class MiniSightHostState: ObservableObject {
 }
 
 enum MiniSightModule {
-    static let version = "0.7.0-local.2"
+    static let version = "0.8.0-local.3"
     static let protocolVersion = 1
 }
 

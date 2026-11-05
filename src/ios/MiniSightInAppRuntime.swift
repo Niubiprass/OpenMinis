@@ -31,6 +31,9 @@ struct MiniSightInAppRuntime: View {
     @State private var petIdentity = ""
     @State private var preferencesLoaded = false
     @State private var toast: String?
+    @State private var proactiveClient: MiniSightAI?
+    @State private var lastProactive = Date()
+    @State private var proactiveBusy = false
 
     private var visible: Bool {
         preferencesLoaded && renderer == 1 && style == 1 && activity.shown && petImage != nil && scenePhase == .active
@@ -67,6 +70,7 @@ struct MiniSightInAppRuntime: View {
             preferencesLoaded = true
             setAppForeground(scenePhase == .active)
             motion.configureDiagnostics(diagnosticsEnabled)
+            if voiceInput { MiniSightVoiceBridge.shared.install() }
             MSDiagEvent("runtime", "identity", "ok", ["source": "app", "version": MiniSightModule.version])
             traceReceivedSettings()
             traceVisibility()
@@ -95,6 +99,7 @@ struct MiniSightInAppRuntime: View {
         }
         .onChange(of: gravityEnabled) { enabled in motion.setEnabled(enabled && visible) }
         .onChange(of: diagnosticsEnabled) { enabled in motion.configureDiagnostics(enabled) }
+        .onChange(of: voiceInput) { enabled in if enabled { MiniSightVoiceBridge.shared.install() } }
         .onChange(of: chatHeight) { _ in refreshChatPanelAppearance() }
         .onChange(of: chatTheme) { _ in refreshChatPanelAppearance() }
         .onChange(of: chatTintHex) { _ in refreshChatPanelAppearance() }
@@ -111,6 +116,7 @@ struct MiniSightInAppRuntime: View {
                     petImage = MiniSightAppFiles.loadPet()
                     updateOwnershipMarker()
                 }
+                proactiveTick()
             }
         }
         .onReceive(activity.$executing.dropFirst()) { executing in
@@ -159,6 +165,29 @@ struct MiniSightInAppRuntime: View {
         MSDiagEvent("runtime", "visibility", visible ? "pending" : "skipped", ["source": "app", "reason": visibilityReason, "visible": visible, "renderer": renderer, "style": style, "mode": mode])
     }
 
+    /// Proactive line: only while visible, never while a chat is open.
+    private func proactiveTick() {
+        guard MiniSightConfig.bool("minisight.proactive", false), visible, !proactiveBusy else { return }
+        if MiniSightChatPanel.existing()?.isVisible == true { return }
+        let minutes = max(10, MiniSightConfig.double("minisight.proactive.interval", 30))
+        guard Date().timeIntervalSince(lastProactive) >= minutes * 60 else { return }
+        proactiveBusy = true
+        lastProactive = Date()
+        let client = MiniSightAI(container: MiniSightAppFiles.containerPath)
+        proactiveClient = client
+        MSDiagEvent("ai", "request", "pending", ["source": "proactive", "reason": "timer"])
+        client.send("请主动说一句很短的话，不超过 20 字，不要提问。") { reply in
+            proactiveBusy = false
+            proactiveClient = nil
+            guard reply.isSuccess, let pet = MiniSightAppFiles.loadPet() as UIImage?, pet.size.width > 0 else { return }
+            let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+            MiniSightChatPanel.shared().containerPath = MiniSightAppFiles.containerPath
+            MiniSightChatPanel.shared().appearancePreferences = MiniSightAppFiles.appearancePreferences
+            MiniSightChatPanel.shared().showLocalText(reply.text, in: scene)
+            MSDiagEvent("ai", "display", "ok", ["source": "proactive", "chars": reply.text.count])
+        }
+    }
+
     private func setAppForeground(_ active: Bool) {
         MiniSightAppFiles.postForegroundChanged()
         if active { activity.refresh() }
@@ -174,6 +203,11 @@ struct MiniSightInAppRuntime: View {
     }
 
     private func showLocalLine(_ anchor: UIView) {
+        if let panel = MiniSightChatPanel.existing(), panel.isVisible {
+            panel.anchorView = anchor
+            panel.revealComposerIfNeeded()
+            return
+        }
         let lines = ["你好呀，我在这里。", "想聊点什么？", "我听着呢。"]
         let line = lines[Int.random(in: 0..<lines.count)]
         let panel = MiniSightChatPanel.shared()
@@ -244,6 +278,15 @@ private enum MiniSightAppFiles {
             "minisight.chat.tintHex": defaults.string(forKey: "minisight.chat.tintHex") ?? "8B5CF6",
             "minisight.chat.tintAlpha": defaults.object(forKey: "minisight.chat.tintAlpha") ?? 0.22,
             "minisight.settings.revision": defaults.string(forKey: "minisight.settings.revision") ?? "legacy",
+            "bubbleScale": defaults.object(forKey: "minisight.dialogue.scale") ?? 1,
+            "textScale": defaults.object(forKey: "minisight.dialogue.textScale") ?? 1,
+            "dwell": defaults.object(forKey: "minisight.dialogue.dwell") ?? 1,
+            "returnKey": defaults.string(forKey: "minisight.dialogue.return") ?? "send",
+            "darkMode": defaults.string(forKey: "minisight.darkMode") ?? "system",
+            "quick": defaults.object(forKey: "minisight.quick.enabled") ?? true,
+            "quickOrder": defaults.string(forKey: "minisight.quick.order") ?? "",
+            "quickLines": defaults.dictionary(forKey: "minisight.quick.lines") ?? [:],
+            "sound": defaults.object(forKey: "minisight.petSound") ?? false,
         ]
     }
     static func postForegroundChanged() {

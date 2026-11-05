@@ -17,6 +17,7 @@ bridge = (root / "src/ios/MinisApp-Bridging-Header.h").read_text()
 runtime = (root / "src/ios/MiniSightInAppRuntime.swift").read_text()
 settings = (root / "src/ios/Views/Settings/MiniSightSettingsView.swift").read_text()
 confirm = (root / "src/ios/Views/Settings/MiniSightConfirm.swift").read_text()
+page = (root / "src/ios/Views/Settings/MiniSightAIPage.swift").read_text()
 core = root / "src/ios/MiniSightCore"
 
 # Xcode objects are 24-hex IDs; nested buildSettings/TargetAttributes keys are
@@ -40,7 +41,7 @@ check("root_overlay_mounted", "MiniSightInAppRuntime()" in app)
 check("objc_bridging", all(x in bridge for x in ["MiniSightPet.h", "MiniSightAI.h", "MiniSightChatPanel.h", "MiniSightAppRecorder.h"]))
 check("app_recorder_model_exists", (root / "src/ios/MiniSightRecorderModel.swift").is_file())
 check("app_approval_fallback", "MiniSightHostAdapter.confirm(command: command)" in confirm and "probeJailbreakPlugin" in confirm)
-check("persona_saved_to_ai_json", "system_prompt" in settings and "saveAI(url: config.endpoint" in settings)
+check("persona_saved_to_ai_json", "system_prompt" in settings and ("saveAI(url: config.endpoint" in settings or "saveAI(url: endpoint" in page))
 check("persona_single_setting_page", 'static func savePersona(' in settings and 'replacingPersona(text, in: current)' in settings and '@AppStorage("minisight.ai.persona")' not in runtime)
 check("no_swift_fullscreen_hit_test", ".allowsHitTesting(visible)" not in runtime)
 check("foreground_protocol_notification", 'com.openminis.minisight.app-active' in runtime and 'postForegroundChanged' in runtime)

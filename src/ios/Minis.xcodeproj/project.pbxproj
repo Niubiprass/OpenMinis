@@ -593,6 +593,17 @@
 		C0FFEE900000000000000010 /* MiniSightRecorderModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE900000000000000011 /* MiniSightRecorderModel.swift */; };
 		A15E9A170000000000000001 /* MiniSightSignal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15E9A170000000000000002 /* MiniSightSignal.swift */; };
 		A15E9A170000000000000003 /* MiniSightHostAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15E9A170000000000000004 /* MiniSightHostAdapter.swift */; };
+		CDFCA385BE20F6A4103D888D /* MiniSightSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9CE2D5AF8B57EEC1795081D /* MiniSightSettings.swift */; };
+		FCA41672E4F16454494A6D8B /* MiniSightConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6DE242CC618A8346E99F28 /* MiniSightConfigStore.swift */; };
+		20176A14369C3E928DDE3B4C /* MiniSightVoiceBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03083761BE7ABA94B4DD74A4 /* MiniSightVoiceBridge.swift */; };
+		5A4318BD2D1F837735FAA183 /* MiniSightHomePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E68D884EB9F8A75C624AD5E /* MiniSightHomePage.swift */; };
+		E0DA0E4E0EC597E37519FDBF /* MiniSightAIPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98EA448072951D8177A4F8BD /* MiniSightAIPage.swift */; };
+		0A30EDF6CEA04868CA49215E /* MiniSightAppearancePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE1DA56A9356E8BC8028F6F8 /* MiniSightAppearancePage.swift */; };
+		E8172243CE0FF08A8D15E41F /* MiniSightDialoguePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */; };
+		07AA6B30430A0638FCBF5B5A /* MiniSightPermissionsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3928179DAE09F0D69627A454 /* MiniSightPermissionsPage.swift */; };
+		63413472B5887EEF5542D812 /* MiniSightShortcutsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA62B70DEB2A0D469D8647F3 /* MiniSightShortcutsPage.swift */; };
+		CEB43D49446E8ACCA220BDD6 /* MiniSightDiagnosticsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E80B32D8FD2173F59EFE852 /* MiniSightDiagnosticsPage.swift */; };
+		183B23FFC4D212E6FF98FA77 /* MiniSightPreviewPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF6016052A430B939521EDF /* MiniSightPreviewPage.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1356,6 +1367,17 @@
 		C0FFEE900000000000000011 /* MiniSightRecorderModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightRecorderModel.swift; sourceTree = "<group>"; };
 		A15E9A170000000000000002 /* MiniSightSignal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightSignal.swift; sourceTree = "<group>"; };
 		A15E9A170000000000000004 /* MiniSightHostAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightHostAdapter.swift; sourceTree = "<group>"; };
+		F9CE2D5AF8B57EEC1795081D /* MiniSightSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightSettings.swift; sourceTree = "<group>"; };
+		4D6DE242CC618A8346E99F28 /* MiniSightConfigStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightConfigStore.swift; sourceTree = "<group>"; };
+		03083761BE7ABA94B4DD74A4 /* MiniSightVoiceBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightVoiceBridge.swift; sourceTree = "<group>"; };
+		6E68D884EB9F8A75C624AD5E /* MiniSightHomePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightHomePage.swift; sourceTree = "<group>"; };
+		98EA448072951D8177A4F8BD /* MiniSightAIPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightAIPage.swift; sourceTree = "<group>"; };
+		CE1DA56A9356E8BC8028F6F8 /* MiniSightAppearancePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightAppearancePage.swift; sourceTree = "<group>"; };
+		24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightDialoguePage.swift; sourceTree = "<group>"; };
+		3928179DAE09F0D69627A454 /* MiniSightPermissionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightPermissionsPage.swift; sourceTree = "<group>"; };
+		FA62B70DEB2A0D469D8647F3 /* MiniSightShortcutsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightShortcutsPage.swift; sourceTree = "<group>"; };
+		2E80B32D8FD2173F59EFE852 /* MiniSightDiagnosticsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightDiagnosticsPage.swift; sourceTree = "<group>"; };
+		BBF6016052A430B939521EDF /* MiniSightPreviewPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightPreviewPage.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1636,6 +1658,9 @@
 			children = (
 				C0FFEE900000000000000001 /* MiniSightCore */,
 				C0FFEE900000000000000006 /* MiniSightInAppRuntime.swift */,
+				03083761BE7ABA94B4DD74A4 /* MiniSightVoiceBridge.swift */,
+				4D6DE242CC618A8346E99F28 /* MiniSightConfigStore.swift */,
+				F9CE2D5AF8B57EEC1795081D /* MiniSightSettings.swift */,
 				A15E9A170000000000000004 /* MiniSightHostAdapter.swift */,
 				A15E9A170000000000000002 /* MiniSightSignal.swift */,
 				C0FFEE900000000000000011 /* MiniSightRecorderModel.swift */,
@@ -2453,6 +2478,14 @@
 				F1DEV002 /* DeveloperSettings.swift */,
 				F1PLG002 /* PluginDevView.swift */,
 				F1MSS002 /* MiniSightSettingsView.swift */,
+				BBF6016052A430B939521EDF /* MiniSightPreviewPage.swift */,
+				2E80B32D8FD2173F59EFE852 /* MiniSightDiagnosticsPage.swift */,
+				FA62B70DEB2A0D469D8647F3 /* MiniSightShortcutsPage.swift */,
+				3928179DAE09F0D69627A454 /* MiniSightPermissionsPage.swift */,
+				24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */,
+				CE1DA56A9356E8BC8028F6F8 /* MiniSightAppearancePage.swift */,
+				98EA448072951D8177A4F8BD /* MiniSightAIPage.swift */,
+				6E68D884EB9F8A75C624AD5E /* MiniSightHomePage.swift */,
 				F1MCF002 /* MiniSightConfirm.swift */,
 				E5S000014 /* CloudSyncSettingsView.swift */,
 				E5G000013 /* EnhancedBackgroundSettingsView.swift */,
@@ -3057,6 +3090,14 @@
 				F1DEV001 /* DeveloperSettings.swift in Sources */,
 				F1PLG001 /* PluginDevView.swift in Sources */,
 				F1MSS001 /* MiniSightSettingsView.swift in Sources */,
+				183B23FFC4D212E6FF98FA77 /* MiniSightPreviewPage.swift in Sources */,
+				CEB43D49446E8ACCA220BDD6 /* MiniSightDiagnosticsPage.swift in Sources */,
+				63413472B5887EEF5542D812 /* MiniSightShortcutsPage.swift in Sources */,
+				07AA6B30430A0638FCBF5B5A /* MiniSightPermissionsPage.swift in Sources */,
+				E8172243CE0FF08A8D15E41F /* MiniSightDialoguePage.swift in Sources */,
+				0A30EDF6CEA04868CA49215E /* MiniSightAppearancePage.swift in Sources */,
+				E0DA0E4E0EC597E37519FDBF /* MiniSightAIPage.swift in Sources */,
+				5A4318BD2D1F837735FAA183 /* MiniSightHomePage.swift in Sources */,
 				F1MCF001 /* MiniSightConfirm.swift in Sources */,
 				C0FFEE000000000000000001 /* MiniSightPet.m in Sources */,
 				C0FFEE100000000000000001 /* MiniSightAI.m in Sources */,
@@ -3065,6 +3106,9 @@
 				C0FFEE400000000000000001 /* MiniSightChatPanel.m in Sources */,
 				C0FFEE900000000000000004 /* MiniSightAppRecorder.m in Sources */,
 				C0FFEE900000000000000005 /* MiniSightInAppRuntime.swift in Sources */,
+				20176A14369C3E928DDE3B4C /* MiniSightVoiceBridge.swift in Sources */,
+				FCA41672E4F16454494A6D8B /* MiniSightConfigStore.swift in Sources */,
+				CDFCA385BE20F6A4103D888D /* MiniSightSettings.swift in Sources */,
 				A15E9A170000000000000003 /* MiniSightHostAdapter.swift in Sources */,
 				A15E9A170000000000000001 /* MiniSightSignal.swift in Sources */,
 				C0FFEE900000000000000010 /* MiniSightRecorderModel.swift in Sources */,

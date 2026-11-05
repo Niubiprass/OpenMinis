@@ -469,6 +469,22 @@ static id MiniSightAIContentObject(id object) {
         systemPrompt = [config[@"system_prompt"] isKindOfClass:NSString.class] ? config[@"system_prompt"] : @"";
     }
     systemPrompt = [systemPrompt stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    // Models otherwise answer with their training date. Always hand them the
+    // device clock; the formatter is POSIX-fixed so the wording stays stable.
+    static NSDateFormatter *clockFormatter;
+    static dispatch_once_t clockOnce;
+    dispatch_once(&clockOnce, ^{
+        clockFormatter = [NSDateFormatter new];
+        clockFormatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"zh_CN"];
+        clockFormatter.timeZone = [NSTimeZone localTimeZone];
+        clockFormatter.dateFormat = @"yyyy年M月d日 EEEE HH:mm";
+    });
+    NSString *clock = [NSString stringWithFormat:@"当前时间：%@（%@时区）。回答与时间相关的问题时以此为准。",
+                       [clockFormatter stringFromDate:NSDate.date],
+                       [NSTimeZone localTimeZone].abbreviation ?: @"本地"];
+    systemPrompt = systemPrompt.length ? [systemPrompt stringByAppendingFormat:@"\n%@", clock] : clock;
+    NSString *adjustRule = @"若要调整桌宠外观，可在回答末尾追加一行 [[ms:{\"petSize\":108}]]，可用键：petSize(36-140)、bubbleScale、textScale、darkMode(system/light/dark)、sound(true/false)、tint(natural/warm/cool/mint/rose)、nickname。没有要改的就不要写。";
+    systemPrompt = [systemPrompt stringByAppendingFormat:@"\n%@", adjustRule];
     if (systemPrompt.length > kMiniSightAIMaxPromptLength) {
         __block NSUInteger characters = 0;
         __block NSUInteger end = 0;
