@@ -604,6 +604,7 @@
 		63413472B5887EEF5542D812 /* MiniSightShortcutsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA62B70DEB2A0D469D8647F3 /* MiniSightShortcutsPage.swift */; };
 		CEB43D49446E8ACCA220BDD6 /* MiniSightDiagnosticsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E80B32D8FD2173F59EFE852 /* MiniSightDiagnosticsPage.swift */; };
 		183B23FFC4D212E6FF98FA77 /* MiniSightPreviewPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF6016052A430B939521EDF /* MiniSightPreviewPage.swift */; };
+		4747D26C804CC6201A3E41DD /* MiniSightBlip.m in Sources */ = {isa = PBXBuildFile; fileRef = 2027A85A60830ED6F755AABD /* MiniSightBlip.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1378,6 +1379,7 @@
 		FA62B70DEB2A0D469D8647F3 /* MiniSightShortcutsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightShortcutsPage.swift; sourceTree = "<group>"; };
 		2E80B32D8FD2173F59EFE852 /* MiniSightDiagnosticsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightDiagnosticsPage.swift; sourceTree = "<group>"; };
 		BBF6016052A430B939521EDF /* MiniSightPreviewPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightPreviewPage.swift; sourceTree = "<group>"; };
+		2027A85A60830ED6F755AABD /* MiniSightBlip.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightBlip.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1631,6 +1633,7 @@
 				C0FFEE90000000000000000D /* MiniSightGravity.h */,
 				C0FFEE300000000000000002 /* MiniSightLog.m */,
 				C0FFEE400000000000000002 /* MiniSightChatPanel.m */,
+				2027A85A60830ED6F755AABD /* MiniSightBlip.m */,
 				C0FFEE900000000000000003 /* MiniSightAppRecorder.m */,
 			);
 			path = MiniSightCore;
@@ -3104,6 +3107,7 @@
 				C0FFEE200000000000000001 /* ChatCore.c in Sources */,
 				C0FFEE300000000000000001 /* MiniSightLog.m in Sources */,
 				C0FFEE400000000000000001 /* MiniSightChatPanel.m in Sources */,
+				4747D26C804CC6201A3E41DD /* MiniSightBlip.m in Sources */,
 				C0FFEE900000000000000004 /* MiniSightAppRecorder.m in Sources */,
 				C0FFEE900000000000000005 /* MiniSightInAppRuntime.swift in Sources */,
 				20176A14369C3E928DDE3B4C /* MiniSightVoiceBridge.swift in Sources */,
