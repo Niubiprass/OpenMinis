@@ -174,7 +174,7 @@ enum MiniSightConfig {
             MiniSightSettingKey.dragResponse: true,
             MiniSightSettingKey.petSound: false,
             MiniSightSettingKey.bottomGap: 12.0,
-            MiniSightSettingKey.tint: "natural"
+            MiniSightSettingKey.tint: "natural",
             MiniSightSettingKey.supplier: MiniSightSupplier.deepseek.rawValue,
             MiniSightSettingKey.darkMode: "system",
             MiniSightSettingKey.aiAdjust: false,
@@ -318,9 +318,8 @@ enum MiniSightRuntimeSnapshot {
             "dragResponse": MiniSightConfig.bool(MiniSightSettingKey.dragResponse, true),
             "sound": MiniSightConfig.bool(MiniSightSettingKey.petSound, false),
             "bottomGap": MiniSightConfig.double(MiniSightSettingKey.bottomGap, 12),
-            "tint": MiniSightConfig.string(MiniSightSettingKey.tint, "natural")
-            "supplier": MiniSightConfig.string(MiniSightSettingKey.supplier, "deepseek")
-            "sound": MiniSightConfig.bool(MiniSightSettingKey.petSound, false),
+            "tint": MiniSightConfig.string(MiniSightSettingKey.tint, "natural"),
+            "supplier": MiniSightConfig.string(MiniSightSettingKey.supplier, "deepseek"),
             "darkMode": MiniSightConfig.string(MiniSightSettingKey.darkMode, "system"),
             "proactive": MiniSightConfig.bool(MiniSightSettingKey.proactive, false),
             "proactiveInterval": MiniSightConfig.double(MiniSightSettingKey.proactiveInterval, 30),
