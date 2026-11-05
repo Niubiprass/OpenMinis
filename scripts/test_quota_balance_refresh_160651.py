@@ -113,11 +113,13 @@ class PickerRefreshAll(unittest.TestCase):
 
     def test_refreshes_each_enabled_instance_independently(self):
         self.assertIn('let targets = store.instances.filter { $0.isEnabled }', PICKER)
-        self.assertIn('for target in targets {\n                await store.refreshModels(for: target)', PICKER)
+        self.assertIn('for target in targets {\n                let outcome = await store.refreshModels(for: target)', PICKER)
 
-    def test_reports_unlisted_count(self):
-        self.assertIn('store.modelEntries.filter { $0.isUnavailableFromProvider }.count', PICKER)
-        self.assertIn('个模型不再提供', PICKER)
+    def test_reports_failed_providers(self):
+        # [T-model-refresh-count-is-not-completeness] The unavailable count is
+        # always zero now, so the note reports which providers failed instead.
+        self.assertIn('if !outcome.succeeded { failed.append(outcome.label) }', PICKER)
+        self.assertIn('已保留原列表', PICKER)
 
     def test_does_not_merge_sites(self):
         # No global merge: refresh calls go per instance, and sections are

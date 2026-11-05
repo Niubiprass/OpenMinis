@@ -191,10 +191,14 @@ class IOSSwiftUITypecheck(unittest.TestCase):
         wrapper = '''import SwiftUI
 struct ProviderInstance { var id: String; var isEnabled: Bool }
 struct ModelEntry { var isUnavailableFromProvider: Bool }
+struct ModelRefreshOutcome { let label: String; let succeeded: Bool }
 class ProviderConfigStore: ObservableObject {
     var instances: [ProviderInstance] = []
     var modelEntries: [ModelEntry] = []
-    func refreshModels(for instance: ProviderInstance) async {}
+    @discardableResult
+    func refreshModels(for instance: ProviderInstance) async -> ModelRefreshOutcome {
+        ModelRefreshOutcome(label: instance.id, succeeded: true)
+    }
 }
 struct PickerToolbarConfig { var onAddMulti: ((Set<String>) -> Void)? }
 struct PickerToolbarHarness: View {
