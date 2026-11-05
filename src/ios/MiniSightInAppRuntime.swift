@@ -13,6 +13,7 @@ struct MiniSightInAppRuntime: View {
     @AppStorage("minisight.petSize") private var petSize = 96.0
     @AppStorage("minisight.gravity") private var gravityEnabled = false
     @AppStorage("minisight.diagnostics") private var diagnosticsEnabled = false
+    @AppStorage("minisight.voice.input") private var voiceInput = false
     @AppStorage("minisight.record") private var recordingEnabled = false
     @AppStorage("minisight.longPress") private var longPressEnabled = true
     @AppStorage("minisight.chat.height") private var chatHeight = 160.0

@@ -80,7 +80,7 @@ final class MiniSightConfigStore: ObservableObject {
         singleTap = MiniSightConfig.gesture(MiniSightSettingKey.singleTap, .interact)
         doubleTap = MiniSightConfig.gesture(MiniSightSettingKey.doubleTap, .conversation)
         longPress = MiniSightConfig.gesture(MiniSightSettingKey.longPress, .menu)
-        activity = MiniSightActivity(rawValue: MiniSightConfig.string(MiniSightSettingKey.activity, "natural")) ?? .natural
+        activity = MiniSightActivity(rawValue: MiniSightConfig.string(MiniSightSettingKey.activity, "lively")) ?? .lively
         activityInterval = MiniSightConfig.double(MiniSightSettingKey.activityInterval, 7)
         frameLimit = MiniSightConfig.int(MiniSightSettingKey.frameLimit, 0)
         dragResponse = MiniSightConfig.bool(MiniSightSettingKey.dragResponse, true)
@@ -232,7 +232,7 @@ final class MiniSightConfigStore: ObservableObject {
     func writeSnapshot() { MiniSightRuntimeSnapshot.write(container: container) }
 
     func persistAll() {
-        for key in MiniSightSettingKey.all { UserDefaults.standard.set(raw(key), forKey: key) }
+        for key in MiniSightConfig.all { UserDefaults.standard.set(raw(key), forKey: key) }
         writeSnapshot()
     }
 

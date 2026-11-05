@@ -91,6 +91,6 @@ final class MiniSightVoiceBridge {
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
         try? data.write(to: files.appendingPathComponent("voice-result.json"), options: .atomic)
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-            Self.resultNote as CFString, nil, nil, true)
+            CFNotificationName(Self.resultNote as CFString), nil, nil, true)
     }
 }

@@ -46,6 +46,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)showLocalText:(NSString *)text inWindowScene:(nullable UIWindowScene *)scene
     NS_SWIFT_NAME(showLocalText(_:in:));
 
+/// Reveals the input row if it is hidden (second tap). Never builds the panel.
+- (void)revealComposerIfNeeded;
+
 /// Cancels an in-flight request, resigns key, hides the window.
 - (void)close;
 /// Hides without key-window transitions for host teardown paths.

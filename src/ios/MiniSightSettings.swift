@@ -56,6 +56,7 @@ enum MiniSightSettingKey {
     static let diagnostics = "minisight.diagnostics"
     static let shown = "minisight.shown"
     static let shownRevision = "minisight.settings.revision"
+    static var all: [String] { MiniSightConfig.all }
 }
 
 enum MiniSightGesture: String, CaseIterable {
@@ -239,43 +240,43 @@ enum MiniSightConfig {
         "voiceReply","voiceInput","snore","quickButtons","quickPosition","quickOrder","record",
         "longPressRecord","diagnostics"].map { value in
         switch value {
-        case "style": return style
-        case "renderer": return renderer
-        case "mode": return mode
-        case "petSize": return petSize
-        case "gravity": return gravity
-        case "gravityStrength": return gravityStrength
-        case "gravityShake": return gravityShake
-        case "interaction": return interaction
-        case "singleTap": return singleTap
-        case "doubleTap": return doubleTap
-        case "longPress": return longPress
-        case "activity": return activity
-        case "activityInterval": return activityInterval
-        case "frameLimit": return frameLimit
-        case "dragResponse": return dragResponse
-        case "petSound": return petSound
-        case "bottomGap": return bottomGap
-        case "tint": return tint
-        case "costume": return costume
-        case "darkMode": return darkMode
-        case "nickname": return nickname
-        case "aiPermissions": return aiPermissions
-        case "aiAdjust": return aiAdjust
-        case "proactive": return proactive
-        case "proactiveInterval": return proactiveInterval
-        case "bubbleScale": return bubbleScale
-        case "textScale": return textScale
-        case "dwell": return dwell
-        case "returnKey": return returnKey
-        case "voiceReply": return voiceReply
-        case "voiceInput": return voiceInput
-        case "snore": return snore
-        case "quickButtons": return quickButtons
-        case "quickPosition": return quickPosition
-        case "quickOrder": return quickOrder
-        case "record": return record
-        case "longPressRecord": return longPressRecord
+        case "style": return MiniSightSettingKey.style
+        case "renderer": return MiniSightSettingKey.renderer
+        case "mode": return MiniSightSettingKey.mode
+        case "petSize": return MiniSightSettingKey.petSize
+        case "gravity": return MiniSightSettingKey.gravity
+        case "gravityStrength": return MiniSightSettingKey.gravityStrength
+        case "gravityShake": return MiniSightSettingKey.gravityShake
+        case "interaction": return MiniSightSettingKey.interaction
+        case "singleTap": return MiniSightSettingKey.singleTap
+        case "doubleTap": return MiniSightSettingKey.doubleTap
+        case "longPress": return MiniSightSettingKey.longPress
+        case "activity": return MiniSightSettingKey.activity
+        case "activityInterval": return MiniSightSettingKey.activityInterval
+        case "frameLimit": return MiniSightSettingKey.frameLimit
+        case "dragResponse": return MiniSightSettingKey.dragResponse
+        case "petSound": return MiniSightSettingKey.petSound
+        case "bottomGap": return MiniSightSettingKey.bottomGap
+        case "tint": return MiniSightSettingKey.tint
+        case "costume": return MiniSightSettingKey.costume
+        case "darkMode": return MiniSightSettingKey.darkMode
+        case "nickname": return MiniSightSettingKey.nickname
+        case "aiPermissions": return MiniSightSettingKey.aiPermissions
+        case "aiAdjust": return MiniSightSettingKey.aiAdjust
+        case "proactive": return MiniSightSettingKey.proactive
+        case "proactiveInterval": return MiniSightSettingKey.proactiveInterval
+        case "bubbleScale": return MiniSightSettingKey.bubbleScale
+        case "textScale": return MiniSightSettingKey.textScale
+        case "dwell": return MiniSightSettingKey.dwell
+        case "returnKey": return MiniSightSettingKey.returnKey
+        case "voiceReply": return MiniSightSettingKey.voiceReply
+        case "voiceInput": return MiniSightSettingKey.voiceInput
+        case "snore": return MiniSightSettingKey.snore
+        case "quickButtons": return MiniSightSettingKey.quickButtons
+        case "quickPosition": return MiniSightSettingKey.quickPosition
+        case "quickOrder": return MiniSightSettingKey.quickOrder
+        case "record": return MiniSightSettingKey.record
+        case "longPressRecord": return MiniSightSettingKey.longPressRecord
         default: return diagnostics
         }
     }
