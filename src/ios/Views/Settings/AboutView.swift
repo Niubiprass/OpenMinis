@@ -706,15 +706,24 @@ final class UpdateChecker: ObservableObject {
 
     // MARK: - Networking
 
-    private struct ReleaseResponse: Decodable {
-        struct Asset: Decodable {
-            let id: Int64
-            let name: String
-            let size: Int64
-            let browser_download_url: URL
+    /// Releases are addressed by FIXED paths, never through api.github.com.
+    ///
+    /// The anonymous REST API allows 60 requests per hour per IP; the app, the
+    /// developer and every tool on the same network share it, and exhausting it
+    /// made every check fail with 403 (reported on device 2026-11-05). The
+    /// release tag and the asset name are constant, so the plain
+    /// `releases/download/<tag>/<asset>` URLs serve the same bytes through the
+    /// download path, which has no such quota. Nothing here needs the API.
+    private static func releaseAssetURL(_ name: String) -> URL? {
+        guard !name.isEmpty, name == (name as NSString).lastPathComponent,
+              !name.contains("\\"),
+              var components = URLComponents(string: "https://github.com/\(repository)/releases/download/\(channelTag)/\(name)") else {
+            return nil
         }
-        let body: String?
-        let assets: [Asset]
+        // A build republishes the same tag, so never trust a cached body. The
+        // query only defeats intermediaries; GitHub ignores it.
+        components.queryItems = [URLQueryItem(name: "v", value: UUID().uuidString)]
+        return components.url
     }
 
     private static func isReleaseURL(_ url: URL) -> Bool {
@@ -734,62 +743,46 @@ final class UpdateChecker: ObservableObject {
 
     private static func requireOK(_ response: URLResponse, stage: String) throws {
         guard let http = response as? HTTPURLResponse else {
-            throw UpdateError("\(stage)：没有收到 HTTP 响应")
+            throw UpdateError("\(stage):没有收到 HTTP 响应")
         }
         guard http.statusCode == 200 else {
             let detail: String
             switch http.statusCode {
+            case 404, 410:
+                // The publisher deletes and recreates the tag on every build:
+                // this is the publish gap, not a broken repository.
+                detail = "更新可能正在发布,请稍后重试"
             case 403, 429:
                 if http.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0" {
-                    detail = "GitHub 请求额度已用完，请稍后重试"
+                    detail = "GitHub 请求额度已用完,请稍后重试"
                 } else {
-                    detail = "GitHub 暂时拒绝或限制了请求，请稍后重试"
+                    detail = "GitHub 暂时拒绝或限制了请求,请稍后重试"
                 }
-            case 404: detail = "更新发布或文件暂时不可用，请稍后重试"
-            case 500...599: detail = "GitHub 服务暂时异常，请稍后重试"
+            case 500...599: detail = "GitHub 服务暂时异常,请稍后重试"
             default: detail = "服务器未能完成请求"
             }
-            throw UpdateError("\(stage)：HTTP \(http.statusCode)，\(detail)")
+            throw UpdateError("\(stage):HTTP \(http.statusCode),\(detail)")
         }
     }
 
     private func fetchManifest() async throws -> (UpdateManifest, URL) {
-        guard var components = URLComponents(string: "https://api.github.com/repos/\(Self.repository)/releases/tags/\(Self.channelTag)") else {
-            throw UpdateError("更新地址不合法")
+        guard let manifestURL = Self.releaseAssetURL("latest.json"),
+              Self.isReleaseURL(manifestURL) else {
+            throw UpdateError("版本清单地址不合法")
         }
-        components.queryItems = [URLQueryItem(name: "check", value: UUID().uuidString)]
-        guard let url = components.url else { throw UpdateError("更新地址不合法") }
-        let (data, response) = try await URLSession.shared.data(for: Self.request(url, accept: "application/vnd.github+json"))
-        try Self.requireOK(response, stage: "检查发布")
-        let release: ReleaseResponse
-        do { release = try JSONDecoder().decode(ReleaseResponse.self, from: data) }
-        catch { throw UpdateError("发布信息格式不正确，请稍后重试") }
-        guard let asset = release.assets.first(where: { $0.name == "latest.json" }),
-              Self.isReleaseURL(asset.browser_download_url),
-              var manifestURL = URLComponents(url: asset.browser_download_url, resolvingAgainstBaseURL: false) else {
-            throw UpdateError("发布尚未包含有效版本清单，请稍后重试")
-        }
-        manifestURL.queryItems = [URLQueryItem(name: "asset", value: String(asset.id))]
-        guard let manifestAddress = manifestURL.url else { throw UpdateError("版本清单地址不合法") }
-        let (mData, mResponse) = try await URLSession.shared.data(for: Self.request(manifestAddress, accept: "application/json"))
-        try Self.requireOK(mResponse, stage: "读取版本清单")
+        let (data, response) = try await URLSession.shared.data(
+            for: Self.request(manifestURL, accept: "application/json"))
+        try Self.requireOK(response, stage: "读取版本清单")
         var manifest: UpdateManifest
-        do { manifest = try JSONDecoder().decode(UpdateManifest.self, from: mData) }
-        catch { throw UpdateError("版本清单格式不正确，请稍后重试") }
+        do { manifest = try JSONDecoder().decode(UpdateManifest.self, from: data) }
+        catch { throw UpdateError("版本清单格式不正确,请稍后重试") }
         guard manifest.isValid else { throw UpdateError("版本清单的构建号、文件名、大小或校验值无效") }
-        if manifest.notes.isEmpty {
-            manifest = UpdateManifest(build: manifest.build, version: manifest.version,
-                notes: release.body ?? "", ipa: manifest.ipa, sha256: manifest.sha256, size: manifest.size)
+        // The IPA sits next to the manifest under the same tag; the manifest
+        // names it, and `isValid` already rejected any path-like name.
+        guard let ipaURL = Self.releaseAssetURL(manifest.ipa), Self.isReleaseURL(ipaURL) else {
+            throw UpdateError("安装包地址不合法")
         }
-        guard let ipa = release.assets.first(where: { $0.name == manifest.ipa }),
-              ipa.size == manifest.size, Self.isReleaseURL(ipa.browser_download_url),
-              var ipaURL = URLComponents(url: ipa.browser_download_url, resolvingAgainstBaseURL: false) else {
-            throw UpdateError("发布文件与清单尚未同步，请稍后重试")
-        }
-        ipaURL.queryItems = [URLQueryItem(name: "asset", value: String(ipa.id)),
-                             URLQueryItem(name: "sha256", value: manifest.sha256)]
-        guard let downloadURL = ipaURL.url else { throw UpdateError("安装包地址不合法") }
-        return (manifest, downloadURL)
+        return (manifest, ipaURL)
     }
 
     nonisolated static func verifyFile(_ file: URL, manifest: UpdateManifest) throws {

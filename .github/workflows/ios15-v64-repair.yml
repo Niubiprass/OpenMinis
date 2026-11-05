@@ -181,12 +181,14 @@ jobs:
           SHA=$(cut -d' ' -f1 SHA256SUMS)
           SIZE=$(stat -f%z Minis-160652-FourFeatures-iOS15.5.ipa)
           python3 - "$BUILD" "$VERSION" "$SHA" "$SIZE" <<'PY'
-          import json, sys
+          import json, os, sys
           build, version, sha, size = sys.argv[1:5]
           json.dump({
               "build": int(build),
               "version": version,
-              "notes": "",
+              # The in-app update surface reads this instead of the release
+              # body, so the commit subject reaches the user's About page.
+              "notes": os.environ.get("COMMIT_MESSAGE", "").strip(),
               "ipa": "Minis-160652-FourFeatures-iOS15.5.ipa",
               "sha256": sha,
               "size": int(size),

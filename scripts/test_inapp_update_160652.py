@@ -91,6 +91,14 @@ def main():
     # The old byte-by-byte reader is gone.
     need("URLSession.shared.bytes(from:" not in about, "no byte-by-byte reader remains")
 
+    # [T-inapp-update-no-api] The anonymous REST API is capped at 60 requests
+    # per hour per IP; exhausting it broke every check on device 2026-11-05.
+    # The fixed releases/download path serves the same bytes without that quota.
+    need("https://api.github.com" not in about, "no api.github.com dependency")
+    need("releases/download/" in about, "reads the release through the download path")
+    need("func releaseAssetURL" in about, "asset URLs are built from fixed names")
+    need("case 404, 410:" in about, "the publish gap is reported as such")
+
     # Affordances the UI contract asks for.
     need("立即更新" in about and "检查更新" in about, "the two affordances exist")
     need("安装更新" in about, "a ready download can be installed on demand")
