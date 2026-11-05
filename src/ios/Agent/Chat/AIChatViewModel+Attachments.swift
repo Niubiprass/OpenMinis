@@ -570,50 +570,52 @@ extension AIChatViewModel {
     }
 
     /// Save a file picked via document picker to Caches and add as attachment.
+    /// The copy runs off-main: Files/iCloud providers can take seconds to
+    /// materialize a large file and used to freeze the composer for 20 s
+    /// (scene-update watchdog, 2026-11-06 stacks).
     func addFileAttachment(from sourceURL: URL, originalDate: Date? = nil) {
-        let fm = FileManager.default
-        let dir = attachmentCacheDir
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-
-        let fileName = sourceURL.lastPathComponent
-        let destURL = dir.appendingPathComponent("\(UUID().uuidString.prefix(8))_\(fileName)")
-        do {
-            // sourceURL may be security-scoped
-            let accessed = sourceURL.startAccessingSecurityScopedResource()
-            defer { if accessed { sourceURL.stopAccessingSecurityScopedResource() } }
-            try fm.copyItem(at: sourceURL, to: destURL)
-
-            if let date = originalDate {
-                try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: destURL.path)
+        let probe = "upload-\(UUID().uuidString.prefix(8))"
+        let started = Date()
+        let name = sourceURL.lastPathComponent
+        let bytes = (try? sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1
+        let log = logger
+        log.info("[UploadProbe] \(probe) pick name=\(name) bytes=\(bytes) main=\(Thread.isMainThread)")
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let fm = FileManager.default
+            guard let self else { return }
+            let dir = await self.attachmentCacheDir
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let destURL = dir.appendingPathComponent("\(UUID().uuidString.prefix(8))_\(name)")
+            do {
+                let accessed = sourceURL.startAccessingSecurityScopedResource()
+                defer { if accessed { sourceURL.stopAccessingSecurityScopedResource() } }
+                let copyStart = Date()
+                try fm.copyItem(at: sourceURL, to: destURL)
+                log.info("[UploadProbe] \(probe) copy ms=\(Int(Date().timeIntervalSince(copyStart) * 1000))")
+                if let date = originalDate {
+                    try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: destURL.path)
+                }
+                let kind = await Self.classifyAttachment(dest: destURL, name: name)
+                log.info("[UploadProbe] \(probe) classify kind=\(kind) total_ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+                await MainActor.run {
+                    self.attachments.append(InputAttachment(fileName: name, cacheURL: destURL, kind: kind))
+                    log.info("[UploadProbe] \(probe) appended count=\(self.attachments.count)")
+                }
+            } catch {
+                log.error("[UploadProbe] \(probe) copy failed code=\((error as NSError).code) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
             }
-
-            // Classify the attachment. Files-app picks can surface images whose
-            // UTType reports only public.data / whose name lacks a recognisable
-            // extension (GH report: PNG from Files rendered the generic doc chip
-            // while the same PNG from Photos previewed fine). Decide in order:
-            //   1. the file's declared content type (resource values on the local
-            //      copy — no security scope needed),
-            //   2. the extension list,
-            //   3. magic-byte sniff of the copied file's header (cheap 16-byte
-            //      read — never loads the whole file).
-            let kind: InputAttachment.Kind
-            let ext = sourceURL.pathExtension.lowercased()
-            let imageExts = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "tiff"]
-            let videoExts = ["mp4", "mov", "m4v", "avi", "mkv"]
-            let contentType = try? destURL.resourceValues(forKeys: [.contentTypeKey]).contentType
-            if contentType?.conforms(to: .image) == true || imageExts.contains(ext) {
-                kind = .image
-            } else if contentType?.conforms(to: .movie) == true || videoExts.contains(ext) {
-                kind = .video
-            } else if Self.detectImageType(atFileURL: destURL) != nil {
-                kind = .image
-            } else {
-                kind = .document
-            }
-            attachments.append(InputAttachment(fileName: fileName, cacheURL: destURL, kind: kind))
-        } catch {
-            logger.error("Failed to cache file attachment: \(error.localizedDescription)")
         }
+    }
+
+    private nonisolated static func classifyAttachment(dest: URL, name: String) async -> InputAttachment.Kind {
+        let ext = (name as NSString).pathExtension.lowercased()
+        let imageExts = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "tiff"]
+        let videoExts = ["mp4", "mov", "m4v", "avi", "mkv"]
+        let contentType = try? dest.resourceValues(forKeys: [.contentTypeKey]).contentType
+        if contentType?.conforms(to: .image) == true || imageExts.contains(ext) { return .image }
+        if contentType?.conforms(to: .movie) == true || videoExts.contains(ext) { return .video }
+        if await detectImageType(atFileURL: dest) != nil { return .image }
+        return .document
     }
 
     /// Add an attachment from raw data (e.g. from Shortcuts IntentFile).

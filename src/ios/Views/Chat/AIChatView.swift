@@ -207,6 +207,7 @@ struct AIChatView: View {
 
     private func handlePHPickerResults(_ results: [PHPickerResult]) {
         guard !results.isEmpty else { return }
+        AppLogger(category: "PhotoPicker").info("[UploadProbe] picker returned n=\(results.count) main=\(Thread.isMainThread)")
         let kinds: [InputAttachment.Kind] = results.map { result in
             result.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) ? .video : .image
         }
@@ -235,14 +236,14 @@ struct AIChatView: View {
     /// a tappable failed chip instead of hanging.
     private func startPhotoLoad(_ job: (id: UUID, provider: NSItemProvider, isVideo: Bool), attempt: Int) {
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
             guard vm.attachmentLoadState(id: job.id) == .loading else { return }
             let shortID = job.id.uuidString.prefix(8)
             if attempt == 1 {
-                AppLogger(category: "PhotoPicker").error("load timeout(30s) attempt1 id=\(shortID) — auto retrying")
+                AppLogger(category: "PhotoPicker").error("load timeout(10s) attempt1 id=\(shortID) — auto retrying")
                 startPhotoLoad(job, attempt: 2)
             } else {
-                AppLogger(category: "PhotoPicker").error("load timeout(30s) attempt2 id=\(shortID) — failed chip, tap to retry")
+                AppLogger(category: "PhotoPicker").error("load timeout(10s) attempt2 id=\(shortID) — failed chip, tap to retry")
                 vm.markPlaceholderFailed(id: job.id)
             }
         }
