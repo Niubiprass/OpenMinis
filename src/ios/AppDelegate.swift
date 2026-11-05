@@ -10,9 +10,8 @@
 //  launch (via launchOptions) AND warm tap (via
 //  `application(_:performActionFor:completionHandler:)`).
 //
-//  Everything else (URL handling, scene phase, etc.) continues to
-//  flow through the SwiftUI App lifecycle — this class only forwards
-//  shortcut events to `QuickActionRouter`.
+//  URL handling still flows through the SwiftUI lifecycle. This delegate also
+//  reconnects the app-wide background updater before its completion events.
 //
 
 import CoreLocation
@@ -69,6 +68,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // can change when the user switches in-app language.
         Task { @MainActor in
             QuickActionRouter.registerShortcutItems()
+            // Restores cached results and existing transfers without opening About.
+            UpdateChecker.shared.autoCheckIfEnabled()
         }
         logger.info("didFinishLaunching (scene-based; shortcut routing happens in SceneDelegate)")
         // In a scene-based SwiftUI app, `launchOptions[.shortcutItem]`
@@ -79,6 +80,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // `windowScene(_:performActionFor:completionHandler:)` rather
         // than the UIApplication delegate. See SceneDelegate below.
         return true
+    }
+
+    // UIKit delivers this on main, before the background session's event batch.
+    func application(_ application: UIApplication,
+                     handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        guard identifier == UpdateDownloadCoordinator.sessionIdentifier else {
+            completionHandler()
+            return
+        }
+        MainActor.assumeIsolated {
+            UpdateDownloadCoordinator.shared.handleBackgroundEvents(completionHandler: completionHandler)
+        }
     }
 
     /// Tell UIKit to instantiate our `SceneDelegate` for every window
@@ -142,6 +156,13 @@ final class SceneDelegate: NSObject, UIWindowSceneDelegate {
         // the SAME pipeline `.onOpenURL` uses.
         if !connectionOptions.urlContexts.isEmpty {
             Self.handleURLContexts(connectionOptions.urlContexts, phase: "willConnectTo")
+        }
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        Task { @MainActor in
+            guard scene.activationState == .foregroundActive else { return }
+            UpdateChecker.shared.becameActive()
         }
     }
 

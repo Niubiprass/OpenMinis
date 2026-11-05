@@ -2,11 +2,11 @@ import SwiftUI
 import UIKit
 import Foundation
 import CryptoKit
+import Combine
 
 struct AboutView: View {
-    /// [T-inapp-update-beta] Checker lives with the page that uses it: this
-    /// file is already in the target, and the update surface is About-only.
-    @StateObject private var updater = UpdateChecker()
+    /// App-wide state survives leaving About and also drives the Settings badge.
+    @ObservedObject private var updater = UpdateChecker.shared
     @AppStorage("update.autoCheck") private var autoCheckEnabled = true
 
     /// [T-version-display] Shows ONLY the marketing version ("1.15").
@@ -199,6 +199,9 @@ struct AboutView: View {
         .onAppear {
             updater.autoCheckIfDue(enabled: autoCheckEnabled)
         }
+        .onChange(of: autoCheckEnabled) { enabled in
+            if enabled { updater.check(manual: true) }
+        }
     }
 
     /// Build stamp injected by CI; 0 when an older/local build lacks it.
@@ -263,6 +266,11 @@ struct AboutView: View {
                     Spacer()
                 }
             }
+        case .restoring:
+            HStack(spacing: 11) {
+                ProgressView()
+                Text("正在恢复后台下载…")
+            }
         case let .downloading(fraction):
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 11) {
@@ -274,6 +282,30 @@ struct AboutView: View {
                         .buttonStyle(.borderless)
                 }
                 ProgressView(value: fraction)
+            }
+        case let .downloadReady(version):
+            HStack(spacing: 11) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("下载完成")
+                    Text("版本 \(version) 已准备好安装")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("安装更新") { updater.installDownloaded() }
+                    .buttonStyle(.borderless)
+            }
+        case .verifying:
+            HStack(spacing: 11) {
+                ProgressView()
+                Text("正在校验安装包…")
+            }
+        case .openingInstaller:
+            HStack(spacing: 11) {
+                ProgressView()
+                Text("正在打开安装器…")
             }
         case .installing:
             HStack(spacing: 11) {
@@ -304,21 +336,52 @@ struct AboutView: View {
                         .buttonStyle(.borderless)
                 }
             }
-        case let .failed(message):
-            HStack(spacing: 11) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("检查失败")
-                    Text(message)
+        case let .failed(title, message):
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 11) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("重试") { updater.retry() }
+                        .buttonStyle(.borderless)
+                }
+                if updater.hasUpdate {
+                    Text("仍有可用更新，更新提示会保留。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Button("重试") { updater.check(manual: true) }
-                    .buttonStyle(.borderless)
             }
         }
+    }
+}
+
+// This small row accessory observes the updater; progress must not invalidate
+// the entire SettingsSheet (which contains unrelated providers and permissions).
+struct AboutUpdateBadge: View {
+    @ObservedObject private var updater = UpdateChecker.shared
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if updater.hasUpdate {
+                Circle().fill(Color.red).frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+                Text("有更新")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.red)
+            } else if updater.isLatest {
+                Text("已是最新")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -333,13 +396,22 @@ struct AboutView: View {
 // is enough (60 requests/hour, and the automatic check is capped at one a day).
 // No token is shipped in the binary.
 
-struct UpdateManifest: Decodable, Equatable {
+struct UpdateManifest: Codable, Equatable {
     let build: Int
     let version: String
     let notes: String
     let ipa: String
     let sha256: String
     let size: Int64
+
+    var isValid: Bool {
+        build > 0 && !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && size > 0 && !ipa.isEmpty && ipa == (ipa as NSString).lastPathComponent
+            && !ipa.contains("\\") && ipa.lowercased().hasSuffix(".ipa")
+            && !ipa.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+            && sha256.utf8.count == 64
+            && sha256.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
+    }
 }
 
 @MainActor
@@ -349,102 +421,286 @@ final class UpdateChecker: ObservableObject {
         case checking
         case latest
         case available(build: Int, version: String, size: Int64, notes: String)
+        case restoring
         case downloading(Double)
+        case downloadReady(String)
+        case verifying
+        case openingInstaller
         case installing
         case schemeMissing(String)
-        case failed(String)
+        case failed(title: String, message: String)
     }
 
+    static let shared = UpdateChecker()
     static let repository = "Niubiprass/OpenMinis"
     static let channelTag = "beta-latest"
     static let trollStoreScheme = "apple-magnifier://install?url="
     private static let lastCheckKey = "update.lastCheck"
     private static let pendingBuildKey = "update.pendingBuild"
+    private static let cachedManifestKey = "update.cachedManifest"
+    private static let cachedIPAURLKey = "update.cachedIPAURL"
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var hasUpdate = false
+    @Published private(set) var isLatest = false
 
     private var manifest: UpdateManifest?
     private var ipaURL: URL?
     private var task: Task<Void, Never>?
+    private var verificationTask: Task<Void, Never>?
+    private var downloadObservation: AnyCancellable?
+    private var lastAttempt: Date?
+    private var checkID = UUID()
+    private var installID = UUID()
+    private var retryAction: RetryAction = .check
     private let build: Int
+    private enum RetryAction { case check, download, install }
+    private static let checkedBuildKey = "update.checkedBuild"
+    private static let lastAttemptKey = "update.lastAttempt"
 
     init() {
         build = (Bundle.main.infoDictionary?["MinisBuildNumber"] as? String).flatMap(Int.init) ?? 0
-        if let pending = UserDefaults.standard.object(forKey: Self.pendingBuildKey) as? Int,
-           pending > 0, build >= pending {
-            UserDefaults.standard.removeObject(forKey: Self.pendingBuildKey)
-            phase = .latest
+        let defaults = UserDefaults.standard
+        lastAttempt = defaults.object(forKey: Self.lastAttemptKey) as? Date
+        // A freshly installed build should re-check at once, not wait behind the
+        // previous build's five-minute retry gate.
+        if defaults.integer(forKey: Self.checkedBuildKey) != build {
+            defaults.removeObject(forKey: Self.lastAttemptKey)
+            lastAttempt = nil
+        }
+        if let pending = defaults.object(forKey: Self.pendingBuildKey) as? Int, build >= pending {
+            defaults.removeObject(forKey: Self.pendingBuildKey)
+        }
+        if let data = defaults.data(forKey: Self.cachedManifestKey),
+           let cached = try? JSONDecoder().decode(UpdateManifest.self, from: data), cached.isValid,
+           let rawURL = defaults.string(forKey: Self.cachedIPAURLKey),
+           let url = URL(string: rawURL), Self.isReleaseURL(url) {
+            manifest = cached
+            ipaURL = url
+            showManifest()
+        }
+        downloadObservation = UpdateDownloadCoordinator.shared.$state.sink { [weak self] state in
+            self?.acceptDownloadState(state)
         }
     }
 
-    /// Automatic check: at most once every 24h, and only if the switch is on.
+    /// Used from launch, foreground, Settings and About. Cached results survive
+    /// the daily throttle; failures retry after five minutes, not after a day.
     func autoCheckIfDue(enabled: Bool) {
-        guard enabled else { return }
-        if let last = UserDefaults.standard.object(forKey: Self.lastCheckKey) as? Date,
-           Date().timeIntervalSince(last) < 24 * 3600 { return }
+        let defaults = UserDefaults.standard
+        let sameBuild = defaults.integer(forKey: Self.checkedBuildKey) == build
+        guard UpdateCheckSchedule.shouldCheck(enabled: enabled,
+            hasCachedResult: manifest != nil && sameBuild,
+            lastSuccess: defaults.object(forKey: Self.lastCheckKey) as? Date,
+            lastAttempt: lastAttempt, now: Date()) else { return }
         check(manual: false)
     }
 
+    func autoCheckIfEnabled() {
+        guard UIApplication.shared.applicationState == .active else { return }
+        let enabled = UserDefaults.standard.object(forKey: "update.autoCheck") as? Bool ?? true
+        autoCheckIfDue(enabled: enabled)
+    }
+
     func check(manual: Bool) {
-        _ = manual
-        guard task == nil else { return }
+        guard task == nil, !transferBusy, verificationTask == nil else { return }
+        if case .downloadReady = phase { return }
+        if case .openingInstaller = phase { return }
+        if case .installing = phase { return }
+        lastAttempt = Date()
+        UserDefaults.standard.set(lastAttempt, forKey: Self.lastAttemptKey)
+        retryAction = .check
+        isLatest = false
         phase = .checking
-        hasUpdate = false
+        // A failed recheck must not erase a previously discovered update badge.
+        let id = UUID()
+        checkID = id
         task = Task { [weak self] in
             guard let self else { return }
-            defer { self.task = nil }
+            defer { if self.checkID == id { self.task = nil } }
             do {
-                let (manifest, ipa) = try await self.fetchManifest()
-                UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
-                self.manifest = manifest
-                self.ipaURL = ipa
-                if manifest.build > self.build {
-                    self.hasUpdate = true
-                    self.phase = .available(build: manifest.build, version: manifest.version,
-                                            size: manifest.size, notes: manifest.notes)
-                } else {
-                    self.phase = .latest
+                let (fresh, ipa) = try await self.fetchManifest()
+                try Task.checkCancellation()
+                guard self.checkID == id else { return }
+                if let known = self.manifest, known.build > fresh.build {
+                    throw UpdateError("更新服务器返回了较旧清单，请稍后重试")
                 }
+                let data = try JSONEncoder().encode(fresh)
+                let defaults = UserDefaults.standard
+                defaults.set(data, forKey: Self.cachedManifestKey)
+                defaults.set(ipa.absoluteString, forKey: Self.cachedIPAURLKey)
+                defaults.set(self.build, forKey: Self.checkedBuildKey)
+                defaults.set(Date(), forKey: Self.lastCheckKey)
+                self.manifest = fresh
+                self.ipaURL = ipa
+                self.showManifest()
+                NSLog("[AppUpdate] check success build=%d manual=%d", fresh.build, manual ? 1 : 0)
             } catch {
-                if Task.isCancelled { return }
-                self.phase = .failed((error as? UpdateError)?.text ?? "网络或仓库暂时不可用")
+                guard !Task.isCancelled, self.checkID == id else { return }
+                self.phase = .failed(title: "检查失败", message: Self.errorText(error))
+                NSLog("[AppUpdate] check failed: %@", Self.errorText(error))
             }
+        }
+    }
+
+    private func showManifest() {
+        guard let manifest else {
+            hasUpdate = false
+            isLatest = false
+            phase = .idle
+            return
+        }
+        hasUpdate = manifest.build > build
+        isLatest = !hasUpdate
+        phase = hasUpdate ? .available(build: manifest.build, version: manifest.version,
+                                      size: manifest.size, notes: manifest.notes) : .latest
+    }
+
+    private var transferBusy: Bool {
+        switch UpdateDownloadCoordinator.shared.state {
+        case .restoring, .downloading: return true
+        default: return false
         }
     }
 
     func downloadAndInstall() {
-        guard phase.isAvailable, let manifest = manifest, let ipaURL = ipaURL, task == nil else { return }
-        guard let schemeProbe = URL(string: "apple-magnifier://") , UIApplication.shared.canOpenURL(schemeProbe) else {
-            phase = .schemeMissing(manifest.version)
-            return
+        guard let manifest, manifest.build > build, let ipaURL,
+              task == nil, verificationTask == nil, !transferBusy else { return }
+        guard schemeAvailable else { phase = .schemeMissing(manifest.version); return }
+        retryAction = .download
+        do {
+            try UpdateDownloadCoordinator.shared.start(manifest: manifest, from: ipaURL)
+        } catch {
+            phase = .failed(title: "下载失败", message: Self.errorText(error))
         }
-        phase = .downloading(0)
-        task = Task { [weak self] in
+    }
+
+    private var schemeAvailable: Bool {
+        guard let url = URL(string: "apple-magnifier://") else { return false }
+        return UIApplication.shared.canOpenURL(url)
+    }
+
+    private func adoptDownload(_ download: UpdateManifest) {
+        if manifest != download || ipaURL == nil {
+            ipaURL = UpdateDownloadCoordinator.shared.restoredSourceURL
+        }
+        manifest = download
+    }
+
+    private func acceptDownloadState(_ state: UpdateDownloadCoordinator.State) {
+        switch state {
+        case .idle:
+            if phase == .restoring {
+                showManifest()
+                // @Published emits before the coordinator's stored state changes.
+                // Defer one turn so the initial restore cannot swallow auto-check.
+                Task { @MainActor [weak self] in self?.autoCheckIfEnabled() }
+            }
+        case .restoring:
+            phase = .restoring
+        case let .downloading(download, fraction):
+            adoptDownload(download)
+            hasUpdate = download.build > build
+            isLatest = !hasUpdate
+            phase = .downloading(fraction)
+        case let .downloaded(download, _):
+            if download.build <= build {
+                if manifest == nil { manifest = download }
+                showManifest()
+                Task { @MainActor in UpdateDownloadCoordinator.shared.discardDownload() }
+                return
+            }
+            adoptDownload(download)
+            hasUpdate = true
+            isLatest = false
+            retryAction = .install
+            phase = .downloadReady(download.version)
+        case let .failed(download, message):
+            if let download, download.build <= build {
+                if manifest == nil { manifest = download }
+                showManifest()
+                return
+            }
+            if let download { manifest = download; hasUpdate = true; isLatest = false }
+            retryAction = ipaURL == nil ? .check : .download
+            phase = .failed(title: "下载失败", message: message)
+        }
+    }
+
+    /// Hash on a utility thread; foreground handoff always needs a user tap.
+    func installDownloaded() {
+        guard task == nil, verificationTask == nil,
+              case let .downloaded(download, file) = UpdateDownloadCoordinator.shared.state,
+              download.build > build else { return }
+        guard schemeAvailable else { phase = .schemeMissing(download.version); return }
+        let id = UUID()
+        installID = id
+        retryAction = .install
+        phase = .verifying
+        verificationTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.task = nil }
+            defer { if self.installID == id { self.verificationTask = nil } }
             do {
-                let file = try await self.download(manifest: manifest, from: ipaURL)
-                self.phase = .installing
-                self.hasUpdate = false
-                UserDefaults.standard.set(manifest.build, forKey: Self.pendingBuildKey)
-                self.handToTrollStore(file: file)
+                let worker = Task.detached(priority: .utility) {
+                    try Self.verifyFile(file, manifest: download)
+                }
+                try await withTaskCancellationHandler(operation: {
+                    try await worker.value
+                }, onCancel: { worker.cancel() })
+                try Task.checkCancellation()
+                guard self.installID == id else { return }
             } catch {
-                if Task.isCancelled { return }
-                self.phase = .failed((error as? UpdateError)?.text ?? "下载失败")
+                guard !Task.isCancelled, self.installID == id else { return }
+                UpdateDownloadCoordinator.shared.discardDownload()
+                self.retryAction = .download
+                self.phase = .failed(title: "校验失败", message: Self.errorText(error))
+                return
+            }
+            guard UIApplication.shared.applicationState == .active else {
+                self.phase = .downloadReady(download.version)
+                return
+            }
+            self.phase = .openingInstaller
+            do {
+                try await self.handToTrollStore(file: file, build: download.build)
+            } catch {
+                guard self.installID == id else { return }
+                self.phase = .failed(title: "打开安装器失败", message: Self.errorText(error))
             }
         }
     }
 
+    func retry() {
+        switch retryAction {
+        case .check: check(manual: true)
+        case .download: downloadAndInstall()
+        case .install: installDownloaded()
+        }
+    }
+
     func cancel() {
+        checkID = UUID()
+        installID = UUID()
         task?.cancel()
+        verificationTask?.cancel()
         task = nil
-        phase = manifest.map { Phase.available(build: $0.build, version: $0.version, size: $0.size, notes: $0.notes) } ?? .idle
+        verificationTask = nil
+        UpdateDownloadCoordinator.shared.cancel()
+        showManifest()
+    }
+
+    func schemeSettingsReturned() {
+        guard case .schemeMissing = phase, schemeAvailable else { return }
+        if case let .downloaded(download, _) = UpdateDownloadCoordinator.shared.state {
+            phase = .downloadReady(download.version)
+        } else {
+            showManifest()
+        }
     }
 
     func openTrollStore() {
         if let url = URL(string: "apple-magnifier://") {
-            _ = UIApplication.shared.open(url)
+            UIApplication.shared.open(url, options: [:], completionHandler: nil)
         }
     }
 
@@ -452,105 +708,548 @@ final class UpdateChecker: ObservableObject {
 
     private struct ReleaseResponse: Decodable {
         struct Asset: Decodable {
+            let id: Int64
             let name: String
+            let size: Int64
             let browser_download_url: URL
         }
         let body: String?
         let assets: [Asset]
     }
 
-    private func fetchManifest() async throws -> (UpdateManifest, URL) {
-        guard let releaseURL = URL(string: "https://api.github.com/repos/\(Self.repository)/releases/tags/\(Self.channelTag)") else {
-            throw UpdateError("地址不合法")
-        }
-        var request = URLRequest(url: releaseURL)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.timeoutInterval = 20
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw UpdateError("仓库里还没有发布的测试版")
-        }
-        let release = try JSONDecoder().decode(ReleaseResponse.self, from: data)
-        guard let manifestAsset = release.assets.first(where: { $0.name == "latest.json" }) else {
-            throw UpdateError("这个发布缺少版本清单")
-        }
-        let (mData, _) = try await URLSession.shared.data(from: manifestAsset.browser_download_url)
-        var manifest = try JSONDecoder().decode(UpdateManifest.self, from: mData)
-        if manifest.notes.isEmpty { manifest = UpdateManifest(build: manifest.build, version: manifest.version,
-                                                              notes: release.body ?? "", ipa: manifest.ipa,
-                                                              sha256: manifest.sha256, size: manifest.size) }
-        guard let ipa = release.assets.first(where: { $0.name == manifest.ipa }) else {
-            throw UpdateError("这个发布缺少安装包")
-        }
-        return (manifest, ipa.browser_download_url)
+    private static func isReleaseURL(_ url: URL) -> Bool {
+        url.scheme == "https" && url.host?.lowercased() == "github.com"
+            && url.path.hasPrefix("/\(repository)/releases/download/")
+            && url.user == nil && url.password == nil
     }
 
-    /// Streams to disk in 1 MB chunks, hashing as it goes, so a 76 MB IPA never
-    /// sits in memory twice.
-    private func download(manifest: UpdateManifest, from url: URL) async throws -> URL {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("updates", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let destination = directory.appendingPathComponent(manifest.ipa)
-        try? FileManager.default.removeItem(at: destination)
-        guard FileManager.default.createFile(atPath: destination.path, contents: nil),
-              let handle = try? FileHandle(forWritingTo: destination) else {
-            throw UpdateError("无法写入临时文件")
-        }
-        defer { try? handle.close() }
+    private static func request(_ url: URL, accept: String) -> URLRequest {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
+                                 timeoutInterval: 25)
+        request.setValue("OpenMinis-Updater/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        return request
+    }
 
-        let (bytes, response) = try await URLSession.shared.bytes(from: url)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw UpdateError("下载地址返回错误")
+    private static func requireOK(_ response: URLResponse, stage: String) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw UpdateError("\(stage)：没有收到 HTTP 响应")
         }
-        var hasher = SHA256()
-        var chunk = [UInt8]()
-        chunk.reserveCapacity(1 << 20)
-        var written = 0
-        let expected = max(manifest.size, 1)
-        var lastTick = Date.distantPast
-        for try await byte in bytes {
-            if Task.isCancelled { throw UpdateError("已取消") }
-            chunk.append(byte)
-            if chunk.count >= (1 << 20) {
-                let data = Data(chunk)
-                hasher.update(data: data)
-                try handle.write(contentsOf: data)
-                written += data.count
-                chunk.removeAll(keepingCapacity: true)
-                if Date().timeIntervalSince(lastTick) > 0.2 {
-                    lastTick = Date()
-                    phase = .downloading(min(Double(written) / Double(expected), 0.99))
+        guard http.statusCode == 200 else {
+            let detail: String
+            switch http.statusCode {
+            case 403, 429:
+                if http.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0" {
+                    detail = "GitHub 请求额度已用完，请稍后重试"
+                } else {
+                    detail = "GitHub 暂时拒绝或限制了请求，请稍后重试"
                 }
+            case 404: detail = "更新发布或文件暂时不可用，请稍后重试"
+            case 500...599: detail = "GitHub 服务暂时异常，请稍后重试"
+            default: detail = "服务器未能完成请求"
             }
+            throw UpdateError("\(stage)：HTTP \(http.statusCode)，\(detail)")
         }
-        if !chunk.isEmpty {
-            let data = Data(chunk)
+    }
+
+    private func fetchManifest() async throws -> (UpdateManifest, URL) {
+        guard var components = URLComponents(string: "https://api.github.com/repos/\(Self.repository)/releases/tags/\(Self.channelTag)") else {
+            throw UpdateError("更新地址不合法")
+        }
+        components.queryItems = [URLQueryItem(name: "check", value: UUID().uuidString)]
+        guard let url = components.url else { throw UpdateError("更新地址不合法") }
+        let (data, response) = try await URLSession.shared.data(for: Self.request(url, accept: "application/vnd.github+json"))
+        try Self.requireOK(response, stage: "检查发布")
+        let release: ReleaseResponse
+        do { release = try JSONDecoder().decode(ReleaseResponse.self, from: data) }
+        catch { throw UpdateError("发布信息格式不正确，请稍后重试") }
+        guard let asset = release.assets.first(where: { $0.name == "latest.json" }),
+              Self.isReleaseURL(asset.browser_download_url),
+              var manifestURL = URLComponents(url: asset.browser_download_url, resolvingAgainstBaseURL: false) else {
+            throw UpdateError("发布尚未包含有效版本清单，请稍后重试")
+        }
+        manifestURL.queryItems = [URLQueryItem(name: "asset", value: String(asset.id))]
+        guard let manifestAddress = manifestURL.url else { throw UpdateError("版本清单地址不合法") }
+        let (mData, mResponse) = try await URLSession.shared.data(for: Self.request(manifestAddress, accept: "application/json"))
+        try Self.requireOK(mResponse, stage: "读取版本清单")
+        var manifest: UpdateManifest
+        do { manifest = try JSONDecoder().decode(UpdateManifest.self, from: mData) }
+        catch { throw UpdateError("版本清单格式不正确，请稍后重试") }
+        guard manifest.isValid else { throw UpdateError("版本清单的构建号、文件名、大小或校验值无效") }
+        if manifest.notes.isEmpty {
+            manifest = UpdateManifest(build: manifest.build, version: manifest.version,
+                notes: release.body ?? "", ipa: manifest.ipa, sha256: manifest.sha256, size: manifest.size)
+        }
+        guard let ipa = release.assets.first(where: { $0.name == manifest.ipa }),
+              ipa.size == manifest.size, Self.isReleaseURL(ipa.browser_download_url),
+              var ipaURL = URLComponents(url: ipa.browser_download_url, resolvingAgainstBaseURL: false) else {
+            throw UpdateError("发布文件与清单尚未同步，请稍后重试")
+        }
+        ipaURL.queryItems = [URLQueryItem(name: "asset", value: String(ipa.id)),
+                             URLQueryItem(name: "sha256", value: manifest.sha256)]
+        guard let downloadURL = ipaURL.url else { throw UpdateError("安装包地址不合法") }
+        return (manifest, downloadURL)
+    }
+
+    nonisolated static func verifyFile(_ file: URL, manifest: UpdateManifest) throws {
+        guard manifest.isValid else { throw UpdateError("版本清单无效") }
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        var written: Int64 = 0
+        while true {
+            try Task.checkCancellation()
+            let data = try handle.read(upToCount: 1 << 20) ?? Data()
+            if data.isEmpty { break }
+            written += Int64(data.count)
+            guard written <= manifest.size else { throw UpdateError("包大小超出版本清单") }
             hasher.update(data: data)
-            try handle.write(contentsOf: data)
-            written += data.count
         }
-        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         guard written == manifest.size else {
             throw UpdateError("包大小不符（\(written) / \(manifest.size)）")
         }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         guard digest.caseInsensitiveCompare(manifest.sha256) == .orderedSame else {
-            throw UpdateError("校验失败，安装包不完整")
+            throw UpdateError("SHA-256 校验失败，请重新下载")
         }
-        return destination
     }
 
-    private func handToTrollStore(file: URL) {
-        guard let url = URL(string: Self.trollStoreScheme + (file.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? file.absoluteString)) else {
-            phase = .failed("无法生成安装链接")
-            return
+    private func handToTrollStore(file: URL, build: Int) async throws {
+        guard var components = URLComponents(string: "apple-magnifier://install") else {
+            throw UpdateError("无法生成安装链接")
         }
-        _ = UIApplication.shared.open(url)
+        components.queryItems = [URLQueryItem(name: "url", value: file.absoluteString)]
+        guard let url = components.url else { throw UpdateError("无法生成安装链接") }
+        UserDefaults.standard.set(build, forKey: Self.pendingBuildKey)
+        let opened = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            UIApplication.shared.open(url, options: [:]) { accepted in
+                continuation.resume(returning: accepted)
+            }
+        }
+        guard opened else {
+            UserDefaults.standard.removeObject(forKey: Self.pendingBuildKey)
+            throw UpdateError("无法打开 TrollStore，请确认已启用 URL Scheme")
+        }
+        phase = .installing
+    }
+
+    func becameActive() {
+        schemeSettingsReturned()
+        if case .installing = phase,
+           case let .downloaded(download, _) = UpdateDownloadCoordinator.shared.state {
+            phase = .downloadReady(download.version)
+        }
+        autoCheckIfEnabled()
+    }
+
+    private static func errorText(_ error: Error) -> String {
+        if let error = error as? UpdateError { return error.text }
+        if let error = error as? URLError {
+            switch error.code {
+            case .timedOut: return "网络请求超时，请重试"
+            case .notConnectedToInternet: return "当前没有网络连接"
+            case .networkConnectionLost: return "网络连接中断，请重试"
+            case .cannotFindHost, .cannotConnectToHost: return "无法连接 GitHub，请检查网络"
+            default: return "网络错误（\(error.errorCode)）：\(error.localizedDescription)"
+            }
+        }
+        return error.localizedDescription
     }
 }
 
 struct UpdateError: Error {
     let text: String
     init(_ text: String) { self.text = text }
+}
+
+enum UpdateCheckSchedule {
+    static let successInterval: TimeInterval = 24 * 3600
+    static let retryInterval: TimeInterval = 5 * 60
+
+    static func shouldCheck(enabled: Bool, hasCachedResult: Bool,
+                            lastSuccess: Date?, lastAttempt: Date?, now: Date) -> Bool {
+        guard enabled else { return false }
+        if let lastAttempt, (0..<retryInterval).contains(now.timeIntervalSince(lastAttempt)) { return false }
+        let failedSinceSuccess = lastAttempt.map { attempt in
+            lastSuccess.map { attempt > $0 } ?? true
+        } ?? false
+        if hasCachedResult, !failedSinceSuccess, let lastSuccess,
+           (0..<successInterval).contains(now.timeIntervalSince(lastSuccess)) { return false }
+        return true
+    }
+}
+
+private struct PersistedUpdateDownload: Codable {
+    let transferID: String
+    let manifest: UpdateManifest
+    let sourceURL: String
+    let relativePath: String
+    let taskIdentifier: Int
+
+    var isValid: Bool {
+        guard manifest.isValid, UUID(uuidString: transferID) != nil,
+              let url = URL(string: sourceURL), url.scheme == "https",
+              url.host?.lowercased() == "github.com",
+              url.path.hasPrefix("/Niubiprass/OpenMinis/releases/download/"),
+              url.user == nil, url.password == nil else { return false }
+        return relativePath == "MinisUpdates/\(transferID)/\(manifest.ipa)"
+    }
+}
+
+private enum UpdateDownloadPersistence {
+    static let key = "update.download.pending" // migrate older local candidates
+    static let rootName = "MinisUpdates"
+
+    static var root: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(rootName, isDirectory: true)
+    }
+    static var metadataURL: URL { root.appendingPathComponent("download.json") }
+
+    static func load() -> PersistedUpdateDownload? {
+        // Atomic disk metadata is durable before resume. UserDefaults alone can
+        // still be pending in cfprefsd when the app is suspended or reclaimed.
+        let data: Data?
+        if FileManager.default.fileExists(atPath: metadataURL.path) {
+            data = try? Data(contentsOf: metadataURL)
+        } else {
+            data = UserDefaults.standard.data(forKey: key)
+        }
+        guard let data else { return nil }
+        return try? JSONDecoder().decode(PersistedUpdateDownload.self, from: data)
+    }
+
+    static func save(_ record: PersistedUpdateDownload) throws {
+        guard record.isValid else { throw UpdateError("下载记录无效") }
+        try prepareDirectory(root)
+        try JSONEncoder().encode(record).write(to: metadataURL, options: .atomic)
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    static func clear() throws {
+        if FileManager.default.fileExists(atPath: metadataURL.path) {
+            try FileManager.default.removeItem(at: metadataURL)
+        }
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    static func prepareDirectory(_ directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var url = directory
+        try url.setResourceValues(values)
+    }
+
+    static func fileURL(relativePath: String) -> URL {
+        // Callers validate the exact UUID/name-derived relative path first.
+        root.deletingLastPathComponent().appendingPathComponent(relativePath, isDirectory: false)
+    }
+}
+
+// This delegate is used only with OperationQueue.main. Synchronous forwarding
+// preserves callback order and moves the temporary file before returning.
+@MainActor
+private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadDelegate {
+    weak var owner: UpdateDownloadCoordinator?
+
+    nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                                didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                                totalBytesExpectedToWrite: Int64) {
+        MainActor.assumeIsolated {
+            guard let id = downloadTask.taskDescription else { return }
+            owner?.didWrite(transferID: id, received: totalBytesWritten,
+                            expected: totalBytesExpectedToWrite)
+        }
+    }
+
+    nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                                didFinishDownloadingTo location: URL) {
+        MainActor.assumeIsolated {
+            owner?.receivedFile(task: downloadTask, location: location)
+        }
+    }
+
+    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask,
+                                didCompleteWithError error: Error?) {
+        MainActor.assumeIsolated {
+            guard let id = task.taskDescription else { return }
+            owner?.didComplete(transferID: id, message: error?.localizedDescription)
+        }
+    }
+
+    nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        MainActor.assumeIsolated { owner?.didDrainBackgroundEvents() }
+    }
+}
+
+@MainActor
+final class UpdateDownloadCoordinator: ObservableObject {
+    enum State: Equatable {
+        case idle
+        case restoring
+        case downloading(UpdateManifest, Double)
+        case downloaded(UpdateManifest, URL)
+        case failed(UpdateManifest?, String)
+    }
+
+    static let shared = UpdateDownloadCoordinator()
+    nonisolated static let sessionIdentifier = "com.openminis.app.update-download"
+
+    @Published private(set) var state: State = .idle
+
+    var restoredSourceURL: URL? {
+        guard let record = UpdateDownloadPersistence.load(), record.isValid,
+              record.transferID == currentTransferID else { return nil }
+        return URL(string: record.sourceURL)
+    }
+
+    private let delegate: UpdateDownloadSessionDelegate
+    private let session: URLSession
+    private var currentTransferID: String?
+    private var currentTaskIdentifier: Int?
+    private var currentManifest: UpdateManifest?
+    private var lastProgressPublish = Date.distantPast
+    private var backgroundCompletions: [() -> Void] = []
+    private var backgroundEventsFinished = false
+    private var restorationID = UUID()
+
+    init() {
+        let delegate = UpdateDownloadSessionDelegate()
+        self.delegate = delegate
+        let configuration = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
+        configuration.isDiscretionary = false
+        configuration.sessionSendsLaunchEvents = true
+        configuration.allowsCellularAccess = true
+        configuration.waitsForConnectivity = true
+        configuration.timeoutIntervalForResource = 24 * 3600
+        self.session = URLSession(configuration: configuration, delegate: delegate,
+                                   delegateQueue: OperationQueue.main)
+        delegate.owner = self
+        restore()
+    }
+
+    func start(manifest: UpdateManifest, from url: URL) throws {
+        guard manifest.isValid else { throw UpdateError("版本清单无效") }
+        guard url.scheme?.lowercased() == "https", url.host?.lowercased() == "github.com",
+              url.path.hasPrefix("/Niubiprass/OpenMinis/releases/download/"),
+              url.user == nil, url.password == nil else {
+            throw UpdateError("下载地址不安全")
+        }
+        guard manifest.ipa == (manifest.ipa as NSString).lastPathComponent,
+              !manifest.ipa.contains("\\") else {
+            throw UpdateError("安装包文件名不安全")
+        }
+        switch state {
+        case .restoring, .downloading:
+            throw UpdateError("下载已经在进行中")
+        default:
+            break
+        }
+        guard finishAndClear(cancelTask: true) else { throw UpdateError("无法清除旧下载记录，请重试") }
+
+        let transferID = UUID().uuidString
+        let relativePath = "\(UpdateDownloadPersistence.rootName)/\(transferID)/\(manifest.ipa)"
+        let destination = UpdateDownloadPersistence.fileURL(relativePath: relativePath)
+        try UpdateDownloadPersistence.prepareDirectory(destination.deletingLastPathComponent())
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue("OpenMinis-Updater/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        let task = session.downloadTask(with: request)
+        task.taskDescription = transferID
+        let record = PersistedUpdateDownload(transferID: transferID, manifest: manifest,
+                                              sourceURL: url.absoluteString,
+                                              relativePath: relativePath,
+                                              taskIdentifier: task.taskIdentifier)
+        do { try UpdateDownloadPersistence.save(record) }
+        catch {
+            task.cancel()
+            try? FileManager.default.removeItem(at: destination.deletingLastPathComponent())
+            throw error
+        }
+        currentTransferID = transferID
+        currentTaskIdentifier = task.taskIdentifier
+        currentManifest = manifest
+        lastProgressPublish = .distantPast
+        backgroundEventsFinished = false
+        state = .downloading(manifest, 0)
+        task.resume()
+    }
+
+    func cancel() {
+        finishAndClear(cancelTask: true)
+    }
+
+    func discardDownload() {
+        finishAndClear(cancelTask: true)
+    }
+
+    func handleBackgroundEvents(completionHandler: @escaping () -> Void) {
+        backgroundCompletions.append(completionHandler)
+        // A finished batch from yesterday must not acknowledge today's batch.
+        backgroundEventsFinished = false
+        // A cold reconnection can find no tasks because all terminal callbacks
+        // were delivered just before UIKit registered this handler. A one-shot
+        // snapshot covers that case without a timer or prematurely acknowledging
+        // an active download. File moves/terminal state writes are synchronous.
+        session.getAllTasks { [weak self] tasks in
+            guard tasks.isEmpty else { return }
+            Task { @MainActor [weak self] in self?.finishBackgroundEventsIfIdle() }
+        }
+    }
+
+    private func finishBackgroundEventsIfIdle() {
+        guard !backgroundCompletions.isEmpty, currentTaskIdentifier == nil else { return }
+        switch state {
+        case .restoring, .downloading: return
+        default: didDrainBackgroundEvents()
+        }
+    }
+
+    fileprivate func didWrite(transferID: String, received: Int64, expected: Int64) {
+        guard transferID == currentTransferID, let manifest = currentManifest else { return }
+        switch state {
+        case .downloaded, .failed: return
+        default: break
+        }
+        let now = Date()
+        guard now.timeIntervalSince(lastProgressPublish) >= 0.2 || received == expected else { return }
+        lastProgressPublish = now
+        let fraction = min(max(Double(received) / Double(max(manifest.size, 1)), 0), 0.99)
+        state = .downloading(manifest, fraction)
+    }
+
+    fileprivate func didFinish(transferID: String, file: URL) {
+        guard transferID == currentTransferID,
+              let record = UpdateDownloadPersistence.load(), record.transferID == transferID else {
+            return
+        }
+        currentTaskIdentifier = nil
+        currentManifest = record.manifest
+        state = .downloaded(record.manifest, file)
+    }
+
+    fileprivate func didComplete(transferID: String, message: String?) {
+        guard transferID == currentTransferID else { return }
+        currentTaskIdentifier = nil
+        switch state {
+        case .downloaded, .failed: return
+        default: break
+        }
+        state = .failed(currentManifest, message ?? "下载结束但未保存安装包，请重新下载")
+    }
+
+    fileprivate func didDrainBackgroundEvents() {
+        backgroundEventsFinished = true
+        finishBackgroundCompletions()
+    }
+
+    private func finishBackgroundCompletions() {
+        guard backgroundEventsFinished, !backgroundCompletions.isEmpty else { return }
+        let handlers = backgroundCompletions
+        backgroundCompletions.removeAll()
+        handlers.forEach { $0() }
+    }
+
+    @discardableResult
+    private func finishAndClear(cancelTask: Bool) -> Bool {
+        let transferID = currentTransferID
+        let record = UpdateDownloadPersistence.load()
+        currentTransferID = nil
+        currentTaskIdentifier = nil
+        currentManifest = nil
+        restorationID = UUID()
+        if cancelTask, let transferID {
+            session.getAllTasks { tasks in
+                tasks.filter { $0.taskDescription == transferID }.forEach { $0.cancel() }
+            }
+        }
+        do {
+            try UpdateDownloadPersistence.clear()
+            if let record, record.isValid {
+                let path = UpdateDownloadPersistence.fileURL(relativePath: record.relativePath)
+                if FileManager.default.fileExists(atPath: path.deletingLastPathComponent().path) {
+                    try FileManager.default.removeItem(at: path.deletingLastPathComponent())
+                }
+            }
+            state = .idle
+            return true
+        } catch {
+            state = .failed(record?.manifest, "清除旧下载失败：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func restore() {
+        let saved = UpdateDownloadPersistence.load()
+        let record = saved?.isValid == true ? saved : nil
+        if saved != nil && record == nil { try? UpdateDownloadPersistence.clear() }
+        currentTransferID = record?.transferID
+        currentManifest = record?.manifest
+        state = .restoring
+        let restoreID = UUID()
+        restorationID = restoreID
+        session.getAllTasks { [weak self] tasks in
+            Task { @MainActor [weak self] in
+                guard let self, self.restorationID == restoreID else { return }
+                guard self.currentTransferID == record?.transferID else { return }
+                let file = record.map { UpdateDownloadPersistence.fileURL(relativePath: $0.relativePath) }
+                let fileExists = file.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+                let matching = record.flatMap { saved in
+                    tasks.first { $0.taskDescription == saved.transferID
+                        && $0.taskIdentifier == saved.taskIdentifier }
+                }
+                // This session identifier belongs exclusively to app updates.
+                tasks.filter { fileExists || $0 !== matching }.forEach { $0.cancel() }
+                guard case .restoring = self.state else { return }
+                defer { if tasks.isEmpty { self.finishBackgroundEventsIfIdle() } }
+                guard let record else { self.state = .idle; return }
+                if fileExists, let file {
+                    self.currentTaskIdentifier = nil
+                    self.state = .downloaded(record.manifest, file)
+                } else if let matching {
+                    self.currentTaskIdentifier = matching.taskIdentifier
+                    let expected = max(record.manifest.size, 1)
+                    let fraction = min(max(Double(matching.countOfBytesReceived) / Double(expected), 0), 0.99)
+                    self.state = .downloading(record.manifest, fraction)
+                    if matching.state == .suspended { matching.resume() }
+                } else {
+                    self.state = .failed(record.manifest, "后台下载未完成，请重新下载")
+                }
+            }
+        }
+    }
+
+    fileprivate func receivedFile(task: URLSessionDownloadTask, location: URL) {
+        guard let id = task.taskDescription, id == currentTransferID,
+              let record = UpdateDownloadPersistence.load(), record.transferID == id,
+              record.isValid else { return }
+        do {
+            guard let http = task.response as? HTTPURLResponse else {
+                throw UpdateError("下载没有收到 HTTP 响应")
+            }
+            guard http.statusCode == 200 else {
+                throw UpdateError("下载失败：HTTP \(http.statusCode)，请重试")
+            }
+            let attributes = try FileManager.default.attributesOfItem(atPath: location.path)
+            guard (attributes[.size] as? NSNumber)?.int64Value == record.manifest.size else {
+                throw UpdateError("下载包大小不符，请重新检查更新")
+            }
+            let destination = UpdateDownloadPersistence.fileURL(relativePath: record.relativePath)
+            try UpdateDownloadPersistence.prepareDirectory(destination.deletingLastPathComponent())
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.moveItem(at: location, to: destination)
+            didFinish(transferID: id, file: destination)
+        } catch {
+            let message = (error as? UpdateError)?.text ?? "无法保存安装包：\(error.localizedDescription)"
+            currentTaskIdentifier = nil
+            state = .failed(record.manifest, message)
+        }
+    }
 }
 
 private extension UpdateChecker.Phase {

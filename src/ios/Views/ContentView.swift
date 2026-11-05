@@ -9200,14 +9200,18 @@ private struct SettingsSheet: View {
                     NavigationLink {
                         AboutView()
                     } label: {
-                        Label {
-                            Text("About Minis")
-                        } icon: {
-                            Image(systemName: "info")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.white)
-                                .frame(width: 21, height: 21)
-                                .background(.indigo, in: Circle())
+                        HStack(spacing: 8) {
+                            Label {
+                                Text("About Minis")
+                            } icon: {
+                                Image(systemName: "info")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 21, height: 21)
+                                    .background(.indigo, in: Circle())
+                            }
+                            Spacer(minLength: 8)
+                            AboutUpdateBadge()
                         }
                     }
                     Link(destination: URL(string: "https://openminis.github.io/privacy-policy.html")!) {
@@ -9310,6 +9314,7 @@ private struct SettingsSheet: View {
                 }
             }
             .onAppear {
+                UpdateChecker.shared.autoCheckIfEnabled()
                 applyPendingDeepLink()
                 // Legacy flags — kept so older call sites keep working.
                 if deepLink.showEnvironmentVariables {
