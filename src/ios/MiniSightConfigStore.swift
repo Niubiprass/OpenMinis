@@ -31,6 +31,8 @@ final class MiniSightConfigStore: ObservableObject {
 
     @Published var tint: String { didSet { publish(MiniSightSettingKey.tint) } }
     @Published var costume: String { didSet { publish(MiniSightSettingKey.costume) } }
+    @Published var supplier: String
+    @Published var downloadSource: String
     @Published var darkMode: String { didSet { publish(MiniSightSettingKey.darkMode) } }
 
     @Published var persona: String
@@ -86,6 +88,8 @@ final class MiniSightConfigStore: ObservableObject {
         bottomGap = MiniSightConfig.double(MiniSightSettingKey.bottomGap, 12)
         tint = MiniSightConfig.string(MiniSightSettingKey.tint, "natural")
         costume = MiniSightConfig.string(MiniSightSettingKey.costume, "")
+        supplier = MiniSightConfig.string(MiniSightSettingKey.supplier, MiniSightSupplier.deepseek.rawValue)
+        downloadSource = MiniSightConfig.string(MiniSightSettingKey.downloadSource, "")
         darkMode = MiniSightConfig.string(MiniSightSettingKey.darkMode, "system")
         persona = MiniSightConfig.string(MiniSightSettingKey.persona, "")
         nickname = MiniSightConfig.string(MiniSightSettingKey.nickname, "")
