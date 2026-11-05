@@ -44,6 +44,7 @@ jobs:
           python3 scripts/test_v64r_text_layout.py
           python3 scripts/test_model_refresh_authoritative_160652.py
           python3 scripts/test_inapp_update_160652.py
+          python3 scripts/test_multikey_quota_failover_20261105.py
           python3 scripts/test_v64r_render_contracts.py
           python3 scripts/test_stream_text_fade_source.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_autocompress.py

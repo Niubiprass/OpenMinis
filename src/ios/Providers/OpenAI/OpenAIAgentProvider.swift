@@ -294,12 +294,11 @@ final class OpenAIAgentProvider: AgentProvider {
                         guard let data = payload.data(using: .utf8),
                               let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
 
-                        // Check for error in SSE stream (OpenRouter / proxy providers)
-                        if let error = event["error"] as? [String: Any] {
-                            let message = error["message"] as? String ?? "Unknown streaming error"
-                            let code = error["code"] as? Int
-                            logger.error("SSE stream error: \(message)")
-                            throw LLMError.providerError(message: "[\(code ?? -1)] \(message)")
+                        // HTTP 200 can still carry a structured service error.
+                        // Preserve string codes/types; never synthesize an HTTP
+                        // status from an arbitrary numeric JSON error code.
+                        if let error = ProviderServiceError.streamError(in: event) {
+                            throw error
                         }
 
                         // [T-agent-model-identity] Every chunk carries the served
@@ -708,6 +707,9 @@ final class OpenAIAgentProvider: AgentProvider {
                               let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
 
                         let type = event["type"] as? String ?? ""
+                        if let error = ProviderServiceError.streamError(in: event) {
+                            throw error
+                        }
 
                         switch type {
                         // Reasoning text deltas (Responses API)
@@ -808,26 +810,6 @@ final class OpenAIAgentProvider: AgentProvider {
                                 functionCallAccum[itemId] = (callId: callId, name: name, json: "")
                                 continuation.yield(.contentBlockStart(.toolUse(id: combinedId, name: name)))
                             }
-
-                        case "response.failed":
-                            // [T-responses-terminal-events] Explicit terminal
-                            // handling instead of the generic fallthrough: pull
-                            // the structured error off the response object so
-                            // the thrown LLMError carries the real reason (and
-                            // so retry/fallback classification can act on it).
-                            // Official shape: response.status == "failed",
-                            // response.error = {code, message}.
-                            let response = event["response"] as? [String: Any]
-                            let err = response?["error"] as? [String: Any]
-                            let code = (err?["code"] as? String) ?? "unknown"
-                            let message = (err?["message"] as? String) ?? "response.failed with no error detail"
-                            logger.error("response.failed — code: \(code), message: \(message)")
-                            if code == "server_error" || code == "rate_limit_exceeded" {
-                                // Transient family: retry on the same model
-                                // rather than falling back through the group.
-                                throw LLMError.transientError(message: "[\(code)] \(message)")
-                            }
-                            throw LLMError.providerError(message: "[\(code)] \(message)")
 
                         case "response.incomplete":
                             // [T-responses-terminal-events] The server ended

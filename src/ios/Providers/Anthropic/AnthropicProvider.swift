@@ -526,6 +526,7 @@ final class AnthropicProvider: LLMProvider {
         if error is CancellationError {
             return .cancelled
         }
+        if let llm = error as? LLMError { return llm }
 
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain {
@@ -547,25 +548,10 @@ final class AnthropicProvider: LLMProvider {
                 ?? Self.extractAPIErrorMessage(from: description)
         }
 
-        // Preferred path: a real status code. Classify purely from it.
+        // Real status keeps transport/size precedence; structured billing
+        // detail is retained so HTTP 429 is not blindly treated as throttling.
         if let status = captured.statusCode {
-            switch status {
-            case 401:
-                return .invalidAPIKey(detail: detail())
-            case 403:
-                return .providerError(message: "[403] access denied: \(detail().prefix(200))")
-            case 413:
-                return .providerError(message: "[413] request too large: \(detail().prefix(160))")
-            case 429:
-                return .rateLimited
-            case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529:
-                return .transientError(message: detail(), statusCode: status)
-            default:
-                // Every other 4xx (400 included) is a request the provider
-                // rejected outright — `providerError` is `isFallbackable`, so
-                // the group advances instead of retrying a doomed request.
-                return .providerError(message: detail())
-            }
+            return ProviderServiceError.httpError(statusCode: status, body: capturedBody ?? detail())
         }
 
         // Fallback path: no status was captured (a transport-level failure that
@@ -575,37 +561,18 @@ final class AnthropicProvider: LLMProvider {
         // explicit "status code: 503" phrase, never a bare digit run, so a body
         // mentioning `max_tokens: 8500` can no longer masquerade as a 5xx.
         if let status = Self.extractStatusCode(from: description) {
-            switch status {
-            case 401:
-                return .invalidAPIKey(detail: detail())
-            case 403:
-                return .providerError(message: "[403] access denied: \(detail().prefix(200))")
-            case 413:
-                return .providerError(message: "[413] request too large: \(detail().prefix(160))")
-            case 429:
-                return .rateLimited
-            case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529:
-                return .transientError(message: detail(), statusCode: status)
-            default:
-                return .providerError(message: detail())
-            }
+            return ProviderServiceError.httpError(statusCode: status, body: capturedBody ?? detail())
         }
 
-        // No status anywhere. Fall back to the SDK's own wording, which is the
-        // only signal left. Kept narrow: these two phrases are unambiguous,
-        // unlike a numeric search.
-        if description.lowercased().contains("authentication") {
-            return .invalidAPIKey(detail: detail())
+        // SDK stream errors have no HTTP failure status (often HTTP 200 SSE).
+        // Their service error type/code/message must still reach classification.
+        let detailedMessage = detail()
+        let result = LLMError.providerError(message: detailedMessage)
+        switch MultiKeyFailureKind.classify(result) {
+        case .credential: return .invalidAPIKey(detail: detailedMessage)
+        case .rateLimit: return .rateLimited
+        default: return result
         }
-        if description.lowercased().contains("rate limit") {
-            return .rateLimited
-        }
-
-        // Try to extract a detailed message from the captured error body first,
-        // then fall back to parsing the SDK's error description
-        let detailedMessage = Self.extractMessageFromBody(capturedBody)
-            ?? Self.extractAPIErrorMessage(from: description)
-        return .providerError(message: detailedMessage)
     }
 
     /// Parse the JSON error body captured by the URLProtocol to extract the human-readable message.
@@ -616,15 +583,10 @@ final class AnthropicProvider: LLMProvider {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
-        // Anthropic official format: error is a dict with type + message
-        if let error = json["error"] as? [String: Any],
-           let message = error["message"] as? String {
-            let errorType = error["type"] as? String ?? "error"
-            return "[\(errorType)] \(message)"
-        }
-        // Proxy format: error is a plain string
-        if let message = json["error"] as? String {
-            return message
+        // Preserve machine-readable code/type/status even if the human
+        // message is generic or missing; decode escaped Chinese as well.
+        if json["error"] != nil || json["message"] != nil || json["code"] != nil || json["type"] != nil {
+            return ProviderServiceError.detail(from: body)
         }
         // Generic: return raw body if it's short enough
         if body.count <= 500 {

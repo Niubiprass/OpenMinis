@@ -70,15 +70,12 @@ enum MultiKeyFailureKind: Sendable {
             case .invalidAPIKey: return .credential
             case .rateLimited: return .rateLimit
             case .networkError: return .network
-            case .transientError(_, let statusCode):
-                // Connection-level 408 is a line timeout; a 5xx came from the
-                // origin. Cloudflare 520–523 mean the origin is unreachable,
-                // so changing key does not help; 524 is a slow gateway.
-                if statusCode == 408 { return .network }
-                guard statusCode != nil else { return .other }
-                if let code = statusCode, (520...523).contains(code) { return .other }
-                if statusCode == 524 { return .gatewayTimeout }
-                return .transient
+            case .transientError(let message, let statusCode):
+                // Preserve the real HTTP status AND its service error payload.
+                // A 503 model_not_found is routing, not a faulty credential.
+                // Local/transport-generated transients have no HTTP evidence.
+                guard let statusCode else { return .other }
+                return classifyProviderMessage("HTTP \(statusCode): \(message)")
             case .providerError(let message): return classifyProviderMessage(message)
             case .unknown(let e):
                 if let e { return classifyUncancelled(e, depth: depth + 1) }
@@ -95,50 +92,153 @@ enum MultiKeyFailureKind: Sendable {
     }
 
     private static func classifyProviderMessage(_ text: String) -> MultiKeyFailureKind {
-        let message = text.lowercased()
-        // A 5xx can still mean "this deployment has no channel". That is a
-        // routing/config fact, not capacity: retrying or changing key is useless.
-        if message.contains("model_not_found") || message.contains("no available channel")
-            || message.contains("无可用渠道") {
-            return .other
-        }
-        // Only a leading HTTP status / [status] is evidence, not numbers in a body.
-        let pattern = #"(?i)^\s*(?:HTTP\s*(?:\[\s*(\d{3})\s*\]|(\d{3}))|\[\s*(\d{3})\s*\])(?=$|[\s:;,\.\-])"#
+        // Only a leading HTTP status / [status] is evidence, not numbers in a
+        // body or a provider's symbolic error code. Keep the rest as service
+        // detail so a 429 cannot hide an explicit exhausted-credit error.
+        var status: Int?
+        var body = text
+        let pattern = #"(?i)^\s*(?:HTTP\s+(?:\[\s*(\d{3})\s*\]|(\d{3}))|\[\s*(\d{3})\s*\])(?=$|[\s:;,\.\-])"#
         if let regex = try? NSRegularExpression(pattern: pattern),
            let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-           let code = (1..<match.numberOfRanges).compactMap({ index -> Int? in
-               guard let range = Range(match.range(at: index), in: text) else { return nil }
-               return Int(text[range])
-           }).first {
-            switch code {
-            case 401: return .credential
-            case 403: return .forbidden
-            case 402: return .quota
-            case 429: return .rateLimit
-            case 413: return .requestTooLarge
-            case 520...523: return .other
-            case 524: return .gatewayTimeout
-            case 408: return .network
-            case 500...599: return .transient
-            case 400: break // Some relays report exhausted credit with HTTP 400; inspect its explicit reason.
-            default: break
-            }
+           let whole = Range(match.range, in: text) {
+            status = (1..<match.numberOfRanges).compactMap { index -> Int? in
+                guard let range = Range(match.range(at: index), in: text) else { return nil }
+                return Int(text[range])
+            }.first
+            body = String(text[whole.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n:;,.\u{002D}"))
         }
+        // Status-first exceptions: these concern transport or request size,
+        // regardless of any quota wording the body happens to contain.
+        if status == 408 { return .network }
+        if status == 413 { return .requestTooLarge }
+        if let status, (520...523).contains(status) { return .other }
+        let message = ProviderServiceError.detail(from: body).lowercased()
         if ["context length", "context_length", "maximum context", "invalid schema",
             "invalid_schema", "content policy", "content_policy", "content_filter",
             "model not found", "model_not_found", "no available channel", "无可用渠道"].contains(where: { message.contains($0) }) { return .other }
-        if ["insufficient balance", "insufficient_balance", "insufficient quota", "insufficient_quota",
-            "quota exhausted", "quota_exhausted", "quota exceeded", "quota_exceeded",
+        switch status {
+        case 401: return .credential
+        case 403: return .forbidden
+        case 402: return .quota
+        case 524: return .gatewayTimeout
+        case .some(500...599): return .transient
+        default: break
+        }
+        // Explicit billing/account exhaustion wins even when the envelope says
+        // rate_limit_exceeded (several OpenAI-compatible relays do exactly that).
+        if ["insufficient balance", "insufficient_balance", "insufficientbalance", "balance_not_enough",
+            "insufficient quota", "insufficient_quota", "insufficient_user_quota", "insufficient funds",
+            "insufficient_funds", "billing_hard_limit_reached", "billing_limit_reached",
+            "you exceeded your current quota", "exceeded your current quota", "payment_required",
             "balance exhausted", "insufficient credits", "credit balance too low", "credits exhausted",
-            "余额不足", "额度耗尽", "额度不足"].contains(where: { message.contains($0) }) { return .quota }
-        if ["invalid api key", "invalid_api_key", "incorrect api key", "authentication",
-            "unauthorized", "permission denied", "permission_denied", "insufficient permissions",
-            "does not have permission", "access denied"].contains(where: { message.contains($0) }) { return .credential }
-        if ["rate limit", "rate_limit", "too many requests", "concurrency limit",
+            "余额不足", "余额耗尽", "余额已耗尽", "余额用完", "余额已用完", "余额为零",
+            "额度耗尽", "额度已耗尽", "额度不足", "额度用尽", "额度已用完",
+            "配额不足", "配额耗尽", "配额已耗尽", "配额用尽", "配额已用完",
+            "欠费", "积分不足", "点数不足", "arrearage"].contains(where: { message.contains($0) }) { return .quota }
+        // Per-minute/second token/request quotas are throttling, not debt.
+        // Do not infer exhaustion merely from RESOURCE_EXHAUSTED or "quota".
+        let shortWindow = ["per minute", "per-minute", "per_minute", "perminute",
+                           "per second", "per-second", "per_second", "persecond", "每分钟", "每秒"]
+            .contains(where: { message.contains($0) })
+        if !shortWindow, ["quota exhausted", "quota_exhausted", "quotaexhausted", "quota exceeded", "quota_exceeded",
+                          "token quota", "token_quota", "not enough quota", "usage_limit_reached"]
+            .contains(where: { message.contains($0) }) { return .quota }
+        if status == 429 { return .rateLimit }
+        if ["invalid api key", "invalid_api_key", "incorrect api key", "authentication_error",
+            "authentication failed", "unauthorized", "api_key_invalid", "expired api key", "revoked api key"]
+            .contains(where: { message.contains($0) }) { return .credential }
+        if ["permission denied", "permission_denied", "insufficient permissions", "does not have permission", "access denied"]
+            .contains(where: { message.contains($0) }) { return .forbidden }
+        if ["rate limit", "rate_limit", "too many requests", "concurrency limit", "resource_exhausted",
             "concurrent request", "requests-per-minute", "requests per minute",
             "request per minute", "限流", "请求过于频繁", "并发超限"]
             .contains(where: { message.contains($0) }) { return .rateLimit }
+        if shortWindow, message.contains("quota") { return .rateLimit }
         return .other
+    }
+}
+
+/// Service-error decoding shared by HTTP and SSE entry points. It only reads
+/// error-envelope fields, never generated text/tool arguments, and never turns
+/// a symbolic/numeric JSON `code` into an invented HTTP status. No bodies are
+/// logged or stored here; MultiKey records category summaries only.
+enum ProviderServiceError {
+    static func detail(from body: String) -> String {
+        guard let data = body.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return String(body.prefix(2048))
+        }
+        return detail(fromError: json)
+    }
+
+    private static func detail(fromError value: Any, depth: Int = 0) -> String {
+        guard depth < 6 else { return "Provider error" }
+        if let text = value as? String { return String(text.prefix(2048)) }
+        guard let object = value as? [String: Any] else { return "Provider error" }
+        if let error = object["error"], !(error is NSNull) {
+            return detail(fromError: error, depth: depth + 1)
+        }
+        if let response = object["response"] as? [String: Any], let error = response["error"], !(error is NSNull) {
+            return detail(fromError: error, depth: depth + 1)
+        }
+        // Put short machine-readable reasons first; a long message must not
+        // truncate away billing_hard_limit_reached / insufficient_quota.
+        let tags = ["code", "type", "status", "reason"].compactMap { name -> String? in
+            if let text = object[name] as? String { return "\(name)=\(text.prefix(160))" }
+            if let number = object[name] as? Int { return "\(name)=\(number)" }
+            return nil
+        }
+        let message = (object["message"] as? String) ?? "Provider returned an error without a message"
+        return (tags + [String(message.prefix(2048))]).joined(separator: ": ")
+    }
+
+    static func httpError(statusCode: Int, body: String) -> LLMError {
+        let message = "HTTP \(statusCode): \(detail(from: body))"
+        let error = LLMError.providerError(message: message)
+        if statusCode == 401 { return .invalidAPIKey(detail: message) }
+        // Preserve ordinary .rateLimited behavior, but never discard an
+        // explicit billing reason hidden inside a 429 response.
+        if statusCode == 429, MultiKeyFailureKind.classify(error) == .rateLimit { return .rateLimited }
+        let transientStatuses: Set<Int> = [408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]
+        if transientStatuses.contains(statusCode) {
+            let kind = MultiKeyFailureKind.classify(error)
+            // Keep origin-unreachable 520–523 on the existing transient path;
+            // the key classifier still forbids rotation. Routing/context
+            // errors, in contrast, are permanent request/provider failures.
+            if kind != .other || (520...523).contains(statusCode) {
+                return .transientError(message: message, statusCode: statusCode)
+            }
+        }
+        return error
+    }
+
+    static func streamError(in event: [String: Any]) -> LLMError? {
+        let response = event["response"] as? [String: Any]
+        let candidate = event["error"] ?? response?["error"]
+        let error = candidate.flatMap { $0 is NSNull ? nil : $0 }
+        let type = event["type"] as? String
+        let status = (event["status"] as? String) ?? (response?["status"] as? String)
+        guard error != nil || type == "error" || type == "response.failed" || status == "failed" else { return nil }
+        let message = "Stream error: \(detail(fromError: error ?? event))"
+        let result = LLMError.providerError(message: message)
+        let kind = MultiKeyFailureKind.classify(result)
+        // An explicit billing/account problem must keep its real kind so the
+        // caller can move to the next key instead of throttling-retrying.
+        if kind == .quota || kind == .credential { return result }
+        // Retain the existing server/overload countdown without inventing an
+        // HTTP code. `rate_limit_exceeded` used to take this path too: it is a
+        // same-model retry, NOT a reason to fall back through the model group,
+        // so it must stay transient unless its wording was billing (above).
+        if let object = error as? [String: Any] {
+            let code = object["code"] as? String
+            let errorType = object["type"] as? String
+            if code == "server_error" || code == "rate_limit_exceeded"
+                || errorType == "overloaded_error" || errorType == "server_error" {
+                return .transientError(message: message)
+            }
+        }
+        if kind == .rateLimit { return .rateLimited }
+        return result
     }
 }
 

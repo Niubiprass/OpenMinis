@@ -660,6 +660,7 @@ final class OpenAIProvider: LLMProvider {
         }
 
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        if let error = ProviderServiceError.streamError(in: json) { throw error }
 
         if usesChatCompletionsAPI {
             return parseChatCompletionsResult(json)
@@ -753,6 +754,7 @@ final class OpenAIProvider: LLMProvider {
                         }
                         guard let eventData = payload.data(using: .utf8),
                               let event = try? JSONSerialization.jsonObject(with: eventData) as? [String: Any] else { continue }
+                        if let error = ProviderServiceError.streamError(in: event) { throw error }
 
                         if self.usesChatCompletionsAPI {
                             if let choices = event["choices"] as? [[String: Any]],
@@ -2270,7 +2272,7 @@ final class OpenAIProvider: LLMProvider {
             // parking this one for five minutes.
             return .providerError(message: "[403] access denied: \(body.prefix(200))")
         }
-        if statusCode == 429 { return .rateLimited }
+        if statusCode == 429 { return ProviderServiceError.httpError(statusCode: statusCode, body: body) }
         if statusCode == 413 {
             return .providerError(message: "[413] request too large: \(body.prefix(160))")
         }
@@ -2285,21 +2287,9 @@ final class OpenAIProvider: LLMProvider {
             return .providerError(message: "[\(statusCode)] model has no available channel: \(body.prefix(300))")
         }
 
-        // Transient server errors: retry same model, do not trigger group fallback.
-        // 524 is Cloudflare's origin timeout (the model was still generating).
-        let transientStatusCodes: Set<Int> = [408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]
-        if transientStatusCodes.contains(statusCode) {
-            return .transientError(message: "HTTP \(statusCode): \(body.prefix(200))", statusCode: statusCode)
-        }
-
-        // Try to extract error message from JSON body
-        if let data = body.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let error = json["error"] as? [String: Any],
-           let message = error["message"] as? String {
-            return .providerError(message: "[\(statusCode)] \(message)")
-        }
-
-        return .providerError(message: "HTTP \(statusCode): \(body.prefix(500))")
+        // Preserve structured code/type as well as message (including 400
+        // relay billing errors and 503 routing errors). No error reason is
+        // discarded before the request-scoped key classifier sees it.
+        return ProviderServiceError.httpError(statusCode: statusCode, body: body)
     }
 }

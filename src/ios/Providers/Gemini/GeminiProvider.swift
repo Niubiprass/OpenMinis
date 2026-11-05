@@ -126,10 +126,11 @@ final class GeminiProvider: LLMProvider {
                     for try await line in bytes.lines {
                         guard !Task.isCancelled else { break }
 
-                        guard line.hasPrefix("data: ") else { continue }
-                        let jsonStr = String(line.dropFirst(6))
+                        guard line.hasPrefix("data:") else { continue }
+                        let jsonStr = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
                         guard let jsonData = jsonStr.data(using: .utf8),
                               let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else { continue }
+                        if let error = ProviderServiceError.streamError(in: json) { throw error }
 
                         if !started {
                             continuation.yield(.started)
@@ -209,11 +210,12 @@ final class GeminiProvider: LLMProvider {
                 do {
                     for try await line in bytes.lines {
                         guard !Task.isCancelled else { break }
-                        guard line.hasPrefix("data: ") else { continue }
+                        guard line.hasPrefix("data:") else { continue }
 
-                        let jsonStr = String(line.dropFirst(6))
+                        let jsonStr = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
                         guard let jsonData = jsonStr.data(using: .utf8),
                               let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else { continue }
+                        if let error = ProviderServiceError.streamError(in: json) { throw error }
 
                         let events = self.parseStreamChunk(json)
                         #if DEBUG
@@ -674,61 +676,18 @@ final class GeminiProvider: LLMProvider {
         logger.error("Gemini streaming API error \(http.statusCode)")
         #endif
 
-        if http.statusCode == 401 {
-            throw LLMError.invalidAPIKey(detail: "Gemini HTTP 401: \(String(body.prefix(200)))")
-        }
-        if http.statusCode == 403 {
-            throw LLMError.providerError(message: "[403] access denied: \(body.prefix(200))")
-        }
-        if http.statusCode == 413 {
-            throw LLMError.providerError(message: "[413] request too large: \(body.prefix(160))")
-        }
-        if http.statusCode == 429 {
-            throw LLMError.rateLimited
-        }
-        let transientStatusCodes: Set<Int> = [408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]
-        if transientStatusCodes.contains(http.statusCode) {
-            throw LLMError.transientError(message: "Gemini API error \(http.statusCode): \(body.prefix(200))", statusCode: http.statusCode)
-        }
-        throw LLMError.providerError(message: "Gemini API error \(http.statusCode): \(body.prefix(500))")
+        throw ProviderServiceError.httpError(statusCode: http.statusCode, body: body)
     }
 
     private func checkHTTPResponse(_ response: URLResponse, data: Data?) throws {
         guard let http = response as? HTTPURLResponse else { return }
 
-        let bodyStr = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        if http.statusCode == 401 {
-            throw LLMError.invalidAPIKey(detail: "Gemini HTTP 401: \(String(bodyStr.prefix(200)))")
-        }
-        if http.statusCode == 403 {
-            throw LLMError.providerError(message: "[403] access denied: \(bodyStr.prefix(200))")
-        }
-
-        if http.statusCode == 413 {
-            throw LLMError.providerError(message: "[413] request too large: \(bodyStr.prefix(160))")
-        }
-        if http.statusCode == 429 {
-            throw LLMError.rateLimited
-        }
-
+        let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         guard (200..<300).contains(http.statusCode) else {
-            let body: String
-            if let data {
-                body = String(data: data, encoding: .utf8) ?? ""
-            } else {
-                body = "HTTP \(http.statusCode)"
-            }
-            #if DEBUG
-            logger.error("Gemini API error \(http.statusCode): \(body.prefix(500))")
-            #else
-            logger.error("Gemini API error \(http.statusCode)")
-            #endif
-            let transientStatusCodes: Set<Int> = [408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]
-            if transientStatusCodes.contains(http.statusCode) {
-                throw LLMError.transientError(message: "Gemini API error \(http.statusCode): \(body.prefix(200))", statusCode: http.statusCode)
-            }
-            throw LLMError.providerError(message: "Gemini API error \(http.statusCode): \(body.prefix(200))")
+            throw ProviderServiceError.httpError(statusCode: http.statusCode, body: body)
         }
+        if let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let error = ProviderServiceError.streamError(in: json) { throw error }
     }
 
     func mapError(_ error: Error) -> LLMError {

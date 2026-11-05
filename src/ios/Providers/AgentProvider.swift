@@ -398,9 +398,10 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
         let active = await manager.isActiveAsync(for: instanceId)
         let ring = await manager.keysAsync(for: instanceId)
         let keyCount = active ? ring.count : 0
-        // Priority mode gets two same-key retries before failover. The budget
-        // includes those retry slots so a three-key ring cannot exhaust the
-        // loop before the later keys are reached.
+        // Only transient service failures get bounded same-key retries in
+        // priority mode. Exhausted/invalid credentials and ordinary throttling
+        // must let the next key serve this request immediately. Include retry
+        // slots so a three-key ring still reaches its later keys.
         let priorityRetries = manager.strategy(for: instanceId) == .priority ? 2 : 0
         // One extra slot for a 524 same-key retry. Gateway timeouts are usually
         // the origin being slow, so rotating immediately only restarts the same
@@ -415,10 +416,7 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                 var attempted = initialExclusions
                 var attemptedSecrets = Set<String>()
                 var lastError: Error?
-                var retryLease: ProviderKeyLease?
-                if let retained = takeNetworkRetryLease() {
-                    retryLease = await manager.validatedRetryLeaseAsync(retained, for: instanceId)
-                }
+                var retryLease = takeNetworkRetryLease()
                 var sameKeyRetries = 0
                 var gatewayRetries = 0
                 for _ in 0..<budget {
@@ -427,9 +425,14 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                     let lease: ProviderKeyLease
                     let isSameKeyRetry: Bool
                     if let pending = retryLease {
-                        lease = pending
                         retryLease = nil
-                        attempted.insert(lease.id)
+                        attempted.insert(pending.id)
+                        // Every same-key retry (including priority/524) must
+                        // re-check current identity, enabled switch and cooldown
+                        // off-main. A retained lease is not permission to reuse
+                        // a key the user removed, replaced or disabled.
+                        guard let validated = await manager.validatedRetryLeaseAsync(pending, for: instanceId) else { continue }
+                        lease = validated
                         attemptedSecrets.insert(lease.key)
                         isSameKeyRetry = true
                     } else {
@@ -512,7 +515,7 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                         // Priority: keep the same key for a bounded number of
                         // retries before treating it as broken. Other strategies
                         // keep their existing one-failure-per-key behavior.
-                        if kind != .gatewayTimeout, priorityRetries > 0, sameKeyRetries < priorityRetries {
+                        if kind == .transient, priorityRetries > 0, sameKeyRetries < priorityRetries {
                             sameKeyRetries += 1
                             // New startedAt so a success after a failed retry
                             // clears the parked/error state instead of being
