@@ -1091,7 +1091,7 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
                                 didCompleteWithError error: Error?) {
         MainActor.assumeIsolated {
             guard let id = task.taskDescription else { return }
-            owner?.didComplete(transferID: id, message: error?.localizedDescription)
+            owner?.didComplete(transferID: id, task: task, error: error)
         }
     }
 
@@ -1123,6 +1123,18 @@ final class UpdateDownloadCoordinator: ObservableObject {
 
     private let delegate: UpdateDownloadSessionDelegate
     private let session: URLSession
+    /// Fallback when the background session fails before receiving any byte
+    /// (NSURLErrorUnknown on this TrollStore install). A normal session works
+    /// while the About page is open.
+    private lazy var foregroundSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForResource = 24 * 3600
+        configuration.waitsForConnectivity = true
+        return URLSession(configuration: configuration, delegate: delegate,
+                          delegateQueue: OperationQueue.main)
+    }()
+    private var fallbackAttempted = false
     private var currentTransferID: String?
     private var currentTaskIdentifier: Int?
     private var currentManifest: UpdateManifest?
@@ -1187,6 +1199,7 @@ final class UpdateDownloadCoordinator: ObservableObject {
         currentTransferID = transferID
         currentTaskIdentifier = task.taskIdentifier
         currentManifest = manifest
+        fallbackAttempted = false
         lastProgressPublish = .distantPast
         backgroundEventsFinished = false
         state = .downloading(manifest, 0)
@@ -1246,14 +1259,63 @@ final class UpdateDownloadCoordinator: ObservableObject {
         state = .downloaded(record.manifest, file)
     }
 
-    fileprivate func didComplete(transferID: String, message: String?) {
+    fileprivate func didComplete(transferID: String, task: URLSessionTask, error: Error?) {
         guard transferID == currentTransferID else { return }
         currentTaskIdentifier = nil
         switch state {
         case .downloaded, .failed: return
         default: break
         }
-        state = .failed(currentManifest, UpdateError(message ?? "下载结束但未保存安装包，请重新下载"))
+        let ns = error as NSError?
+        NSLog("[UpdateDownload] task didComplete id=%@ bytes=%lld domain=%@ code=%d error=%@",
+              transferID, task.countOfBytesReceived,
+              ns?.domain ?? "none", ns?.code ?? 0,
+              error?.localizedDescription ?? "none")
+        // A background session that dies before its first byte (observed as
+        // NSURLErrorUnknown on this install) would otherwise fail every
+        // update. Retry once on a normal session, keeping the same record,
+        // destination and verification.
+        if task.countOfBytesReceived == 0, !fallbackAttempted,
+           let record = UpdateDownloadPersistence.load(),
+           record.transferID == transferID, record.isValid {
+            fallbackAttempted = true
+            do {
+                try startForegroundFallback(record)
+                return
+            } catch {
+                NSLog("[UpdateDownload] foreground fallback start failed: %@", String(describing: error))
+            }
+        }
+        let detail: String
+        if let ns, ns.code != 0 || !ns.domain.isEmpty {
+            detail = "\(error?.localizedDescription ?? "下载失败")（\(ns.domain) \(ns.code)）"
+        } else {
+            detail = message ?? "下载结束但未保存安装包，请重新下载"
+        }
+        state = .failed(currentManifest, UpdateError(detail))
+    }
+
+    private func startForegroundFallback(_ record: PersistedUpdateDownload) throws {
+        guard let url = URL(string: record.sourceURL) else {
+            throw UpdateError("下载地址不合法")
+        }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: 60)
+        request.setValue("OpenMinis-Updater/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        let task = foregroundSession.downloadTask(with: request)
+        task.taskDescription = record.transferID
+        let updated = PersistedUpdateDownload(transferID: record.transferID,
+                                              manifest: record.manifest,
+                                              sourceURL: record.sourceURL,
+                                              relativePath: record.relativePath,
+                                              taskIdentifier: task.taskIdentifier)
+        try UpdateDownloadPersistence.save(updated)
+        currentTaskIdentifier = task.taskIdentifier
+        currentManifest = record.manifest
+        state = .downloading(record.manifest, 0)
+        NSLog("[UpdateDownload] background session failed at 0 bytes — retrying on foreground session")
+        task.resume()
     }
 
     fileprivate func didDrainBackgroundEvents() {
@@ -1280,7 +1342,11 @@ final class UpdateDownloadCoordinator: ObservableObject {
             session.getAllTasks { tasks in
                 tasks.filter { $0.taskDescription == transferID }.forEach { $0.cancel() }
             }
+            foregroundSession.getAllTasks { tasks in
+                tasks.filter { $0.taskDescription == transferID }.forEach { $0.cancel() }
+            }
         }
+        fallbackAttempted = false
         do {
             try UpdateDownloadPersistence.clear()
             if let record, record.isValid {
@@ -1365,7 +1431,9 @@ final class UpdateDownloadCoordinator: ObservableObject {
             try FileManager.default.moveItem(at: location, to: destination)
             didFinish(transferID: id, file: destination)
         } catch {
-            let message = (error as? UpdateError) ?? UpdateError("无法保存安装包：\(error.localizedDescription)")
+            let ns = error as NSError
+            let message = (error as? UpdateError)
+                ?? UpdateError("无法保存安装包：\(error.localizedDescription)（\(ns.domain) \(ns.code)）")
             currentTaskIdentifier = nil
             state = .failed(record.manifest, message)
         }

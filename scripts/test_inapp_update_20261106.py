@@ -28,6 +28,14 @@ need("$0.taskIdentifier == saved.taskIdentifier" not in ABOUT.split("let matchin
      "restore does not require the old process-local task identifier")
 need("tasks.filter { fileExists || $0 !== matching }.forEach { $0.cancel() }" in ABOUT,
      "only non-matching tasks are cancelled")
+need("private lazy var foregroundSession: URLSession" in ABOUT,
+     "a normal-session fallback exists")
+need("task.countOfBytesReceived == 0, !fallbackAttempted" in ABOUT,
+     "fallback triggers only before the first byte")
+need("startForegroundFallback(record)" in ABOUT, "fallback keeps the record")
+need("foregroundSession.getAllTasks" in ABOUT, "cancel also reaches the fallback")
+need(r"domain=%@ code=%d" in ABOUT, "task errors log domain and code")
+need(r"（\(ns.domain) \(ns.code)）" in ABOUT, "task errors show domain and code")
 
 # Failure carries a structured error with retry-after support.
 need("case failed(UpdateManifest?, UpdateError)" in ABOUT, "state failed carries UpdateError")
