@@ -233,13 +233,14 @@ enum MiniSightConfig {
         UserDefaults.standard.set(MiniSightAIPermission.allCases.filter(set.contains).map(\.rawValue).joined(separator: ","),
                                   forKey: MiniSightSettingKey.aiPermissions)
     }
-    static let all = ["style","renderer","mode","petSize","gravity","gravityStrength","gravityShake",
+    static let all = ["shown","style","renderer","mode","petSize","gravity","gravityStrength","gravityShake",
         "interaction","singleTap","doubleTap","longPress","activity","activityInterval","frameLimit",
         "dragResponse","petSound","bottomGap","tint","costume","darkMode","nickname","aiPermissions",
         "aiAdjust","proactive","proactiveInterval","bubbleScale","textScale","dwell","returnKey",
         "voiceReply","voiceInput","snore","quickButtons","quickPosition","quickOrder","record",
         "longPressRecord","diagnostics"].map { value in
         switch value {
+        case "shown": return MiniSightSettingKey.shown
         case "style": return MiniSightSettingKey.style
         case "renderer": return MiniSightSettingKey.renderer
         case "mode": return MiniSightSettingKey.mode

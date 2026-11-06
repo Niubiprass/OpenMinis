@@ -74,6 +74,7 @@ jobs:
           python3 scripts/test_minisight_signal_160651.py
           python3 scripts/verify_minisight_integration.py
           python3 scripts/test_minisight_settings_diagnostics.py
+          python3 scripts/test_minisight_shown_toggle_20261106.py
           python3 scripts/test_multikey_160651.py
           python3 scripts/test_multikey_persistence_160651.py
           python3 scripts/test_multikey_freeze_20261101.py

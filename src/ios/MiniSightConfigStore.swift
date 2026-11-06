@@ -58,7 +58,7 @@ final class MiniSightConfigStore: ObservableObject {
     @Published var record: Bool { didSet { publish(MiniSightSettingKey.record) } }
     @Published var longPressRecord: Bool { didSet { publish(MiniSightSettingKey.longPressRecord) } }
     @Published var diagnostics: Bool { didSet { publish(MiniSightSettingKey.diagnostics) } }
-    @Published var shown: Bool
+    @Published var shown: Bool { didSet { publishShown() } }
     @Published private(set) var lastError: String?
     @Published private(set) var saveState = "已加载"
 
@@ -111,7 +111,12 @@ final class MiniSightConfigStore: ObservableObject {
         record = MiniSightConfig.bool(MiniSightSettingKey.record, false)
         longPressRecord = MiniSightConfig.bool(MiniSightSettingKey.longPressRecord, true)
         diagnostics = MiniSightConfig.bool(MiniSightSettingKey.diagnostics, false)
-        shown = MiniSightConfig.bool(MiniSightSettingKey.shown, true)
+        // `shown` has two consumers with different formats: the plist key for
+        // settings and the plain "shown" file the SpringBoard runtime reads.
+        // The file is authoritative; load it instead of the stale default.
+        let fileShown = MiniSightAIConfigFile.loadShown()
+        shown = fileShown
+        UserDefaults.standard.set(fileShown, forKey: MiniSightSettingKey.shown)
         loaded = true
     }
 
@@ -122,6 +127,7 @@ final class MiniSightConfigStore: ObservableObject {
 
     private func raw(_ key: String) -> Any {
         switch key {
+        case MiniSightSettingKey.shown: return shown
         case MiniSightSettingKey.style: return style
         case MiniSightSettingKey.renderer: return renderer
         case MiniSightSettingKey.mode: return mode
@@ -164,6 +170,35 @@ final class MiniSightConfigStore: ObservableObject {
         case MiniSightSettingKey.aiPermissions: return MiniSightAIPermission.allCases.filter(permissions.contains).map(\.rawValue).joined(separator: ",")
         default: return ""
         }
+    }
+
+    /// The pet switch writes BOTH channels before notifying: the shown file is
+    /// what the plugin/runtime actually reads, the plist is what the settings
+    /// readback verifies. Without this the toggle only changed memory and the
+    /// next scene-active refresh reverted it from the untouched file.
+    private func publishShown() {
+        guard loaded else { return }
+        let on = shown
+        do {
+            try MiniSightAIConfigFile.saveShown(on) {
+                UserDefaults.standard.set(on, forKey: MiniSightSettingKey.shown)
+            }
+            publish(MiniSightSettingKey.shown)
+        } catch {
+            lastError = "桌宠显示状态没能保存，请重试。"
+            saveState = "保存失败"
+            let rev = UUID().uuidString
+            MSDiagEvent("settings", "save", "failed",
+                        ["setting": MiniSightSettingKey.shown, "source": "settings",
+                         "revision": rev, "code": (error as NSError).code])
+        }
+    }
+
+    /// The hide action in the pet menu writes only the file. Sync the switch
+    /// when its page appears instead of showing an outdated ON state.
+    func reloadShownFromFile() {
+        let fileValue = MiniSightAIConfigFile.loadShown()
+        if shown != fileValue { shown = fileValue }
     }
 
     /// Persist locally, read back the actual plist, then let the retry loop
@@ -233,6 +268,7 @@ final class MiniSightConfigStore: ObservableObject {
 
     func persistAll() {
         for key in MiniSightConfig.all { UserDefaults.standard.set(raw(key), forKey: key) }
+        try? MiniSightAIConfigFile.saveShown(shown) { }
         writeSnapshot()
     }
 

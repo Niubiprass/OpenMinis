@@ -123,7 +123,10 @@ struct MiniSightHomeView: View {
         }
         .navigationTitle("桌宠")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { petImage = MiniSightPetFile.load() }
+        .onAppear {
+            petImage = MiniSightPetFile.load()
+            config.reloadShownFromFile()
+        }
         .onDisappear { config.persistAll() }
         .fullScreenCover(isPresented: $preview) { MiniSightPreviewPage() }
     }
