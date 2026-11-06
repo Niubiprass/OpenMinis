@@ -309,57 +309,57 @@ enum MiniSightRuntimeSnapshot {
     /// MiniSightRuntimeSnapshot.write on the first persistAll (2026-11-06 crash log).
     static func write(container: URL) {
         var values: [String: Any] = [:]
-            "version": 1,
-            "style": MiniSightConfig.int(MiniSightSettingKey.style, 0),
-            "renderer": MiniSightConfig.int(MiniSightSettingKey.renderer, 0),
-            "mode": MiniSightConfig.int(MiniSightSettingKey.mode, 0),
-            "petSize": MiniSightConfig.double(MiniSightSettingKey.petSize, 96),
-            "gravity": MiniSightConfig.bool(MiniSightSettingKey.gravity, false),
-            "gravityStrength": MiniSightConfig.double(MiniSightSettingKey.gravityStrength, 1),
-            "gravityShake": MiniSightConfig.bool(MiniSightSettingKey.gravityShake, true),
-            "interaction": MiniSightConfig.bool(MiniSightSettingKey.interaction, true),
-            "activity": MiniSightConfig.string(MiniSightSettingKey.activity, "natural"),
-            "activityInterval": MiniSightConfig.double(MiniSightSettingKey.activityInterval, 7),
-            "frameLimit": MiniSightConfig.int(MiniSightSettingKey.frameLimit, 0),
-            "dragResponse": MiniSightConfig.bool(MiniSightSettingKey.dragResponse, true),
-            "sound": MiniSightConfig.bool(MiniSightSettingKey.petSound, false),
-            "bottomGap": MiniSightConfig.double(MiniSightSettingKey.bottomGap, 12),
-            "tint": MiniSightConfig.string(MiniSightSettingKey.tint, "natural"),
-            "supplier": MiniSightConfig.string(MiniSightSettingKey.supplier, "deepseek"),
-            "darkMode": MiniSightConfig.string(MiniSightSettingKey.darkMode, "system"),
-            "proactive": MiniSightConfig.bool(MiniSightSettingKey.proactive, false),
-            "proactiveInterval": MiniSightConfig.double(MiniSightSettingKey.proactiveInterval, 30),
-            "voiceReply": MiniSightConfig.bool(MiniSightSettingKey.voiceReply, false),
-            "quick": MiniSightConfig.bool(MiniSightSettingKey.quickButtons, true),
-            "costume": MiniSightConfig.string(MiniSightSettingKey.costume, ""),
-            "bubbleScale": MiniSightConfig.double(MiniSightSettingKey.bubbleScale, 1),
-            "textScale": MiniSightConfig.double(MiniSightSettingKey.textScale, 1),
-            "dwell": MiniSightConfig.double(MiniSightSettingKey.dwell, 1),
-            "singleTap": MiniSightConfig.gesture(MiniSightSettingKey.singleTap, .interact).rawValue,
-            "doubleTap": MiniSightConfig.gesture(MiniSightSettingKey.doubleTap, .voice).rawValue,
-            "longPress": MiniSightConfig.gesture(MiniSightSettingKey.longPress, .menu).rawValue,
-            "returnKey": MiniSightConfig.string(MiniSightSettingKey.returnKey, "send"),
-            "voiceInput": MiniSightConfig.bool(MiniSightSettingKey.voiceInput, false),
-            "snore": MiniSightConfig.string(MiniSightSettingKey.snore, "off"),
-            "quickPosition": MiniSightConfig.string(MiniSightSettingKey.quickPosition, "above"),
-            "quickOrder": MiniSightConfig.string(MiniSightSettingKey.quickOrder, ""),
-            "quickLines": UserDefaults.standard.dictionary(forKey: MiniSightSettingKey.quickLines) ?? [:],
-            "persona": MiniSightConfig.string(MiniSightSettingKey.persona, ""),
-            "nickname": MiniSightConfig.string(MiniSightSettingKey.nickname, ""),
-            "aiAdjust": MiniSightConfig.bool(MiniSightSettingKey.aiAdjust, false),
-            "aiPermissions": MiniSightConfig.string(MiniSightSettingKey.aiPermissions, ""),
-            "record": MiniSightConfig.bool(MiniSightSettingKey.record, false),
-            "longPressRecord": MiniSightConfig.bool(MiniSightSettingKey.longPressRecord, true),
-            "diagnostics": MiniSightConfig.bool(MiniSightSettingKey.diagnostics, false),
-            "shown": MiniSightConfig.bool(MiniSightSettingKey.shown, true),
-            "revision": MiniSightConfig.string(MiniSightSettingKey.shownRevision, ""),
-            "adjustments": MiniSightConfig.string(MiniSightSettingKey.adjustments, ""),
-            "downloadSource": MiniSightConfig.string(MiniSightSettingKey.downloadSource, ""),
-            "pet.tint": MiniSightConfig.string(MiniSightSettingKey.tint, "natural"),
-            "pet.costume": MiniSightConfig.string(MiniSightSettingKey.costume, ""),
-            "ai.supplier": MiniSightConfig.string(MiniSightSettingKey.supplier, ""),
-            "ai.nickname": MiniSightConfig.string(MiniSightSettingKey.nickname, ""),
-            "dialogue.scale": MiniSightConfig.double(MiniSightSettingKey.bubbleScale, 1),
+        values["version"] = 1
+        values["style"] = MiniSightConfig.int(MiniSightSettingKey.style, 0)
+        values["renderer"] = MiniSightConfig.int(MiniSightSettingKey.renderer, 0)
+        values["mode"] = MiniSightConfig.int(MiniSightSettingKey.mode, 0)
+        values["petSize"] = MiniSightConfig.double(MiniSightSettingKey.petSize, 96)
+        values["gravity"] = MiniSightConfig.bool(MiniSightSettingKey.gravity, false)
+        values["gravityStrength"] = MiniSightConfig.double(MiniSightSettingKey.gravityStrength, 1)
+        values["gravityShake"] = MiniSightConfig.bool(MiniSightSettingKey.gravityShake, true)
+        values["interaction"] = MiniSightConfig.bool(MiniSightSettingKey.interaction, true)
+        values["activity"] = MiniSightConfig.string(MiniSightSettingKey.activity, "natural")
+        values["activityInterval"] = MiniSightConfig.double(MiniSightSettingKey.activityInterval, 7)
+        values["frameLimit"] = MiniSightConfig.int(MiniSightSettingKey.frameLimit, 0)
+        values["dragResponse"] = MiniSightConfig.bool(MiniSightSettingKey.dragResponse, true)
+        values["sound"] = MiniSightConfig.bool(MiniSightSettingKey.petSound, false)
+        values["bottomGap"] = MiniSightConfig.double(MiniSightSettingKey.bottomGap, 12)
+        values["tint"] = MiniSightConfig.string(MiniSightSettingKey.tint, "natural")
+        values["supplier"] = MiniSightConfig.string(MiniSightSettingKey.supplier, "deepseek")
+        values["darkMode"] = MiniSightConfig.string(MiniSightSettingKey.darkMode, "system")
+        values["proactive"] = MiniSightConfig.bool(MiniSightSettingKey.proactive, false)
+        values["proactiveInterval"] = MiniSightConfig.double(MiniSightSettingKey.proactiveInterval, 30)
+        values["voiceReply"] = MiniSightConfig.bool(MiniSightSettingKey.voiceReply, false)
+        values["quick"] = MiniSightConfig.bool(MiniSightSettingKey.quickButtons, true)
+        values["costume"] = MiniSightConfig.string(MiniSightSettingKey.costume, "")
+        values["bubbleScale"] = MiniSightConfig.double(MiniSightSettingKey.bubbleScale, 1)
+        values["textScale"] = MiniSightConfig.double(MiniSightSettingKey.textScale, 1)
+        values["dwell"] = MiniSightConfig.double(MiniSightSettingKey.dwell, 1)
+        values["singleTap"] = MiniSightConfig.gesture(MiniSightSettingKey.singleTap, .interact).rawValue
+        values["doubleTap"] = MiniSightConfig.gesture(MiniSightSettingKey.doubleTap, .voice).rawValue
+        values["longPress"] = MiniSightConfig.gesture(MiniSightSettingKey.longPress, .menu).rawValue
+        values["returnKey"] = MiniSightConfig.string(MiniSightSettingKey.returnKey, "send")
+        values["voiceInput"] = MiniSightConfig.bool(MiniSightSettingKey.voiceInput, false)
+        values["snore"] = MiniSightConfig.string(MiniSightSettingKey.snore, "off")
+        values["quickPosition"] = MiniSightConfig.string(MiniSightSettingKey.quickPosition, "above")
+        values["quickOrder"] = MiniSightConfig.string(MiniSightSettingKey.quickOrder, "")
+        values["quickLines"] = UserDefaults.standard.dictionary(forKey: MiniSightSettingKey.quickLines) ?? [:]
+        values["persona"] = MiniSightConfig.string(MiniSightSettingKey.persona, "")
+        values["nickname"] = MiniSightConfig.string(MiniSightSettingKey.nickname, "")
+        values["aiAdjust"] = MiniSightConfig.bool(MiniSightSettingKey.aiAdjust, false)
+        values["aiPermissions"] = MiniSightConfig.string(MiniSightSettingKey.aiPermissions, "")
+        values["record"] = MiniSightConfig.bool(MiniSightSettingKey.record, false)
+        values["longPressRecord"] = MiniSightConfig.bool(MiniSightSettingKey.longPressRecord, true)
+        values["diagnostics"] = MiniSightConfig.bool(MiniSightSettingKey.diagnostics, false)
+        values["shown"] = MiniSightConfig.bool(MiniSightSettingKey.shown, true)
+        values["revision"] = MiniSightConfig.string(MiniSightSettingKey.shownRevision, "")
+        values["adjustments"] = MiniSightConfig.string(MiniSightSettingKey.adjustments, "")
+        values["downloadSource"] = MiniSightConfig.string(MiniSightSettingKey.downloadSource, "")
+        values["pet.tint"] = MiniSightConfig.string(MiniSightSettingKey.tint, "natural")
+        values["pet.costume"] = MiniSightConfig.string(MiniSightSettingKey.costume, "")
+        values["ai.supplier"] = MiniSightConfig.string(MiniSightSettingKey.supplier, "")
+        values["ai.nickname"] = MiniSightConfig.string(MiniSightSettingKey.nickname, "")
+        values["dialogue.scale"] = MiniSightConfig.double(MiniSightSettingKey.bubbleScale, 1)
 
         let url = container.appendingPathComponent("Documents/MiniSight/runtime.json")
         guard let data = try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys]) else { return }
