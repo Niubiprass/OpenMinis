@@ -4,7 +4,10 @@ import SwiftUI
 /// AI, palette/costume/download, feel, size. Rhythm + permissions live one
 /// level deeper. Every row edits MiniSightConfigStore only.
 struct MiniSightHomeView: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     @State private var petImage: UIImage?
     @State private var preview = false
 
@@ -129,7 +132,10 @@ struct MiniSightHomeView: View {
 // MARK: - Simple pickers
 
 struct MiniSightSupplierPage: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     var body: some View {
         List {
             Section {
@@ -164,7 +170,10 @@ struct MiniSightSupplierPage: View {
 }
 
 struct MiniSightTintPage: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     var body: some View {
         List {
             ForEach(MiniSightPetPalette.allCases, id: \.self) { item in
@@ -184,7 +193,10 @@ struct MiniSightTintPage: View {
 }
 
 struct MiniSightCostumePage: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     @State private var items: [MiniSightAssetCatalog.Item] = []
     var body: some View {
         List {
@@ -207,7 +219,10 @@ struct MiniSightCostumePage: View {
 }
 
 struct MiniSightFramePage: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     var body: some View {
         List {
             ForEach([(0, "自动"), (1, "30 FPS"), (2, "60 FPS"), (3, "120 FPS（受屏幕刷新率限制）")], id: \.0) { item in
@@ -221,7 +236,10 @@ struct MiniSightFramePage: View {
 }
 
 struct MiniSightActivityPage: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     var body: some View {
         List {
             LabeledContent("活动间隔 \(Int(config.activityInterval)) 秒") {
@@ -238,7 +256,10 @@ struct MiniSightActivityPage: View {
 }
 
 struct MiniSightDownloadPage: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     @State private var address = ""
     @State private var notice = ""
     var body: some View {

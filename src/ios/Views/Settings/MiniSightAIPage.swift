@@ -4,7 +4,10 @@ import UIKit
 /// AI connection, persona and test. Connection save never implies a successful
 /// reply; test and both chat surfaces use the same MiniSightAI client.
 struct MiniSightAIPage: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     @State private var url = ""
     @State private var key = ""
     @State private var model = ""

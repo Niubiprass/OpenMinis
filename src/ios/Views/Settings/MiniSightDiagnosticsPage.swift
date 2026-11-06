@@ -2,7 +2,10 @@ import SwiftUI
 import UIKit
 
 struct MiniSightDiagnosticsPage: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     @State private var showLogs = false
     @State private var exportURL: URL?
     @State private var resetAppearance = false

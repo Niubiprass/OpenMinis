@@ -302,8 +302,13 @@ enum MiniSightConfig {
 /// Fixed numeric runtime snapshot. User strings remain in the settings plist
 /// and ai.json; no credentials are copied into this file.
 enum MiniSightRuntimeSnapshot {
+    /// [T-minisight-snapshot-dup-keys] Built with a MUTABLE dictionary, not one
+    /// literal: the literal previously listed several keys twice (gravityStrength,
+    /// gravityShake, interaction, dragResponse, aiAdjust, aiPermissions, gravity),
+    /// and Swift traps at runtime on a duplicate key — SIGTRAP in
+    /// MiniSightRuntimeSnapshot.write on the first persistAll (2026-11-06 crash log).
     static func write(container: URL) {
-        let values: [String: Any] = [
+        var values: [String: Any] = [:]
             "version": 1,
             "style": MiniSightConfig.int(MiniSightSettingKey.style, 0),
             "renderer": MiniSightConfig.int(MiniSightSettingKey.renderer, 0),
@@ -327,10 +332,6 @@ enum MiniSightRuntimeSnapshot {
             "voiceReply": MiniSightConfig.bool(MiniSightSettingKey.voiceReply, false),
             "quick": MiniSightConfig.bool(MiniSightSettingKey.quickButtons, true),
             "costume": MiniSightConfig.string(MiniSightSettingKey.costume, ""),
-            "gravityStrength": MiniSightConfig.double(MiniSightSettingKey.gravityStrength, 1),
-            "gravityShake": MiniSightConfig.bool(MiniSightSettingKey.gravityShake, true),
-            "interaction": MiniSightConfig.bool(MiniSightSettingKey.interaction, true),
-            "dragResponse": MiniSightConfig.bool(MiniSightSettingKey.dragResponse, true),
             "bubbleScale": MiniSightConfig.double(MiniSightSettingKey.bubbleScale, 1),
             "textScale": MiniSightConfig.double(MiniSightSettingKey.textScale, 1),
             "dwell": MiniSightConfig.double(MiniSightSettingKey.dwell, 1),
@@ -354,15 +355,12 @@ enum MiniSightRuntimeSnapshot {
             "revision": MiniSightConfig.string(MiniSightSettingKey.shownRevision, ""),
             "adjustments": MiniSightConfig.string(MiniSightSettingKey.adjustments, ""),
             "downloadSource": MiniSightConfig.string(MiniSightSettingKey.downloadSource, ""),
-            "aiAdjust": MiniSightConfig.bool(MiniSightSettingKey.aiAdjust, false),
-            "aiPermissions": MiniSightConfig.string(MiniSightSettingKey.aiPermissions, ""),
             "pet.tint": MiniSightConfig.string(MiniSightSettingKey.tint, "natural"),
             "pet.costume": MiniSightConfig.string(MiniSightSettingKey.costume, ""),
             "ai.supplier": MiniSightConfig.string(MiniSightSettingKey.supplier, ""),
             "ai.nickname": MiniSightConfig.string(MiniSightSettingKey.nickname, ""),
             "dialogue.scale": MiniSightConfig.double(MiniSightSettingKey.bubbleScale, 1),
-            "gravity": MiniSightConfig.bool(MiniSightSettingKey.gravity, false),
-        ]
+
         let url = container.appendingPathComponent("Documents/MiniSight/runtime.json")
         guard let data = try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys]) else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

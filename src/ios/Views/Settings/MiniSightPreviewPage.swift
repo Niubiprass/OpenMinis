@@ -3,7 +3,10 @@ import SwiftUI
 /// Lightweight in-app preview. It uses the same imported atlas as the host,
 /// but it is intentionally a local preview, not a second display runtime.
 struct MiniSightPreviewPage: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     @Environment(\.dismiss) private var dismiss
     @State private var image: UIImage?
     private let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()

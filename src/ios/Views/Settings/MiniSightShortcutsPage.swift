@@ -3,7 +3,10 @@ import SwiftUI
 extension MiniSightQuickAction: Identifiable { var id: String { rawValue } }
 
 struct MiniSightShortcutsPage: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     @State private var editing: MiniSightQuickAction?
     @State private var showReset = false
 
@@ -67,7 +70,10 @@ struct MiniSightShortcutsPage: View {
 }
 
 private struct MiniSightShortcutEditor: View {
-    @EnvironmentObject private var config: MiniSightConfigStore
+    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
+    // are pushed from several hosts and an un-injected EnvironmentObject traps
+    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
+    @StateObject private var config = MiniSightConfigStore.shared
     @Environment(\.dismiss) private var dismiss
     let action: MiniSightQuickAction
     @State private var text = ""
