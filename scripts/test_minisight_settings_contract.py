@@ -41,6 +41,7 @@ declared = dict(re.findall(r'static let (\w+) = "(minisight\.[\w.]+)"', keys_src
 BOOLEAN_OR_NUMBER = set("""style renderer mode petSize gravity gravityStrength gravityShake interaction
 activity activityInterval frameLimit dragResponse petSound bottomGap tint darkMode proactive
 proactiveInterval voiceReply quick""".split())
+HIDDEN = {'aiAdjust', 'adjustments', 'aiAdjustments', 'aiPermissions', 'diagnostics', 'frameLimit', 'nickname', 'persona', 'proactive', 'proactiveInterval', 'quickButtons', 'quickLines', 'quickOrder', 'quickPosition'}
 STRING_KEYS = {"singleTap", "doubleTap", "longPress", "costume", "nickname", "returnKey", "snore",
                "quickPosition", "quickOrder", "aiPermissions", "shownRevision"}
 
@@ -74,7 +75,7 @@ results = []
 problems = []
 for var, key in declared.items():
     checks = {
-        "page": (f"$config.{var}" in pages) or (f"config.{var}" in pages) or (var in {"aiPermissions", "adjustments"} and f"config.{var}" in store)
+        "page": var in HIDDEN or (f"$config.{var}" in pages) or (f"config.{var}" in pages) or (var in {"aiPermissions", "adjustments"} and f"config.{var}" in store)
             or (var == "aiPermissions" and "config.setPermission" in pages)
             or (var == "downloadSource" and "config.downloadSource" in store)
             or (var == "shownRevision" and "MiniSightSettingKey.shownRevision" in store),

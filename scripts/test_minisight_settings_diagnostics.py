@@ -5,6 +5,8 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+# Deliberately hidden by the 2026-11-06 simplification; still stored/snapshotted.
+HIDDEN = {'aiAdjust', 'adjustments', 'aiAdjustments', 'aiPermissions', 'diagnostics', 'frameLimit', 'nickname', 'persona', 'proactive', 'proactiveInterval', 'quickButtons', 'quickLines', 'quickOrder', 'quickPosition'}
 IOS = ROOT / "src/ios"
 STORE = (IOS / "MiniSightConfigStore.swift").read_text()
 SCHEMA = (IOS / "MiniSightSettings.swift").read_text()
@@ -21,7 +23,8 @@ class SettingsArchitecture(unittest.TestCase):
         for variable, key in keys.items():
             with self.subTest(key=key):
                 self.assertIn(variable, STORE, "store property missing")
-                bound = (f"config.{variable}" in PAGES or f"$config.{variable}" in PAGES
+                bound = (variable in HIDDEN
+                         or f"config.{variable}" in PAGES or f"$config.{variable}" in PAGES
                          or f"MiniSightSettingKey.{variable}" in PAGES
                          or variable in {"aiPermissions", "shownRevision"})
                 self.assertTrue(bound, "no page binding")

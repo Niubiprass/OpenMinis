@@ -9,23 +9,21 @@ struct MiniSightHomeView: View {
     // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
     @StateObject private var config = MiniSightConfigStore.shared
     @State private var petImage: UIImage?
-    @State private var preview = false
 
     var body: some View {
         List {
-            Section {
-                VStack(spacing: 8) {
-                    if let petImage {
-                        Image(uiImage: petImage).resizable().scaledToFit()
-                            .frame(height: 120).clipShape(RoundedRectangle(cornerRadius: 16))
-                    }
-                    Text(config.nickname.isEmpty ? "我的桌宠" : config.nickname)
-                        .font(.title3.weight(.semibold))
+            VStack(spacing: 8) {
+                if let petImage {
+                    Image(uiImage: petImage).resizable().scaledToFit()
+                        .frame(height: 140)
                 }
-                .frame(maxWidth: .infinity)
-                .listRowBackground(Color.clear)
-                Button { preview = true } label: { Label("预览效果", systemImage: "play.rectangle") }
+                Text(config.nickname.isEmpty ? "我的桌宠" : config.nickname)
+                    .font(.title3.weight(.semibold))
             }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
 
             Section {
                 Toggle("启用桌宠", isOn: $config.shown)
@@ -38,6 +36,10 @@ struct MiniSightHomeView: View {
                 }
                 Picker("长按手势", selection: $config.longPress) {
                     ForEach(MiniSightGesture.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                Picker("样式", selection: $config.style) {
+                    Text("桌宠").tag(1)
+                    Text("胶囊").tag(0)
                 }
                 Picker("显示方式", selection: $config.mode) {
                     Text("仅调用时").tag(0)
@@ -55,11 +57,7 @@ struct MiniSightHomeView: View {
                 NavigationLink(MiniSightSupplier(rawValue: config.supplier)?.title ?? "选择供应商") {
                     MiniSightSupplierPage()
                 }
-                Toggle("对话声音（朗读）", isOn: $config.voiceReply)
-                Picker("回车键", selection: $config.returnKey) {
-                    Text("发送").tag("send")
-                    Text("换行").tag("newline")
-                }
+                NavigationLink("AI 连接") { MiniSightAIPage() }
             } header: { Text("AI") }
 
             Section {
@@ -77,9 +75,6 @@ struct MiniSightHomeView: View {
                     MiniSightActivityPage()
                 }
                 Toggle("增强拖动响应", isOn: $config.dragResponse)
-                NavigationLink(config.frameLimit == 0 ? "自动" : "\([0, 30, 60, 120][min(config.frameLimit, 3)]) FPS") {
-                    MiniSightFramePage()
-                }
                 Toggle("动作音效", isOn: $config.petSound)
                 Toggle("重力感应", isOn: $config.gravity)
                 Toggle("摇晃触发失衡", isOn: $config.gravityShake)
@@ -87,7 +82,7 @@ struct MiniSightHomeView: View {
                     Slider(value: $config.gravityStrength, in: 0.4...1.6, step: 0.1)
                 }
             } header: { Text("动作与手感") } footer: {
-                Text("动作音效只在自主活动和点击动作时响；帧率受屏幕刷新率限制。")
+                Text("动作音效只在互动和自主活动时响。")
             }
 
             Section {
@@ -108,12 +103,11 @@ struct MiniSightHomeView: View {
             }
 
             Section {
-                NavigationLink("对话节奏与 AI 权限") { MiniSightPermissionsPage() }
-                NavigationLink("快捷按钮与短句") { MiniSightShortcutsPage() }
-                NavigationLink("录屏与诊断") { MiniSightDiagnosticsPage() }
-                NavigationLink("气泡与文字") { MiniSightDialoguePage() }
-                NavigationLink("AI 连接与人设") { MiniSightAIPage() }
-            }
+                NavigationLink("聊天、语音与录屏") { MiniSightDialoguePage() }
+                Button("清除桌宠聊天记录", role: .destructive) {
+                    MiniSightChatPanel.existing()?.clearConversation()
+                }
+            } header: { Text("聊天与录屏") }
 
             Section {
                 Text(config.saveState).font(.caption).foregroundStyle(.secondary)
@@ -128,7 +122,6 @@ struct MiniSightHomeView: View {
             config.reloadShownFromFile()
         }
         .onDisappear { config.persistAll() }
-        .fullScreenCover(isPresented: $preview) { MiniSightPreviewPage() }
     }
 }
 
@@ -218,23 +211,6 @@ struct MiniSightCostumePage: View {
         }
         .navigationTitle("服装")
         .onAppear { items = MiniSightAssetCatalog.load() }
-    }
-}
-
-struct MiniSightFramePage: View {
-    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
-    // are pushed from several hosts and an un-injected EnvironmentObject traps
-    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
-    @StateObject private var config = MiniSightConfigStore.shared
-    var body: some View {
-        List {
-            ForEach([(0, "自动"), (1, "30 FPS"), (2, "60 FPS"), (3, "120 FPS（受屏幕刷新率限制）")], id: \.0) { item in
-                Button { config.frameLimit = item.0 } label: {
-                    HStack { Text(item.1); Spacer(); if config.frameLimit == item.0 { Image(systemName: "checkmark") } }
-                }
-            }
-        }
-        .navigationTitle("帧率")
     }
 }
 

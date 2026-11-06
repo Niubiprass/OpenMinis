@@ -55,25 +55,8 @@ struct MiniSightAIPage: View {
             } header: { Text("接口连接") } footer: {
                 Text("地址、Key、模型需要点保存；两者读取同一份 ai.json。收到真实正文才算成功，HTTP 200 空正文按失败处理。")
             }
-
-            Section {
-                TextEditor(text: $config.persona)
-                    .frame(minHeight: 110)
-                    .onChange(of: config.persona) { value in schedulePersona(value) }
-                Text(personaStatus).font(.caption).foregroundStyle(personaFailed ? Color.red : Color.secondary)
-                Button("恢复默认人设") { config.persona = ""; savePersonaNow() }
-            } header: { Text("AI 人设") } footer: {
-                Text("停止输入片刻或离开页面自动保存到 ai.json；最多 2000 字，失败保留输入。")
-            }
-
-            Section {
-                TextField("例如：小北", text: $config.nickname)
-                    .textInputAutocapitalization(.never)
-            } header: { Text("用户称呼") } footer: {
-                Text("会加入给桌宠的系统提示词；留空不写入。")
-            }
         }
-        .navigationTitle("AI 服务与人设")
+        .navigationTitle("AI 连接")
         .onAppear(perform: load)
         .onDisappear { savePersonaNow() }
         .onChange(of: config.darkMode) { _ in config.persistAll() }

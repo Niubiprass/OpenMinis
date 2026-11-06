@@ -31,6 +31,13 @@ struct MiniSightDialoguePage: View {
             } header: { Text("输入") }
 
             Section {
+                Toggle("操作时录屏", isOn: $config.record)
+                Toggle("长按桌宠切换录屏", isOn: $config.longPressRecord)
+                Text("录像保存在本机 Documents/MiniSight/recordings，文件校验通过才提示成功。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } header: { Text("录屏") }
+
+            Section {
                 Toggle("对话朗读", isOn: $config.voiceReply)
                 Toggle("语音输入", isOn: $config.voiceInput)
                 Picker("入睡打鼾", selection: $config.snore) {
@@ -44,7 +51,7 @@ struct MiniSightDialoguePage: View {
                      : "语音输入开启后会申请麦克风和语音识别权限；拒绝时仍可用键盘。")
             }
         }
-        .navigationTitle("气泡、聊天与声音")
+        .navigationTitle("聊天、语音与录屏")
         .onDisappear { config.persistAll() }
     }
 }

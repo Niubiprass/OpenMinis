@@ -599,12 +599,7 @@
 		20176A14369C3E928DDE3B4C /* MiniSightVoiceBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03083761BE7ABA94B4DD74A4 /* MiniSightVoiceBridge.swift */; };
 		5A4318BD2D1F837735FAA183 /* MiniSightHomePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E68D884EB9F8A75C624AD5E /* MiniSightHomePage.swift */; };
 		E0DA0E4E0EC597E37519FDBF /* MiniSightAIPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98EA448072951D8177A4F8BD /* MiniSightAIPage.swift */; };
-		0A30EDF6CEA04868CA49215E /* MiniSightAppearancePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE1DA56A9356E8BC8028F6F8 /* MiniSightAppearancePage.swift */; };
 		E8172243CE0FF08A8D15E41F /* MiniSightDialoguePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */; };
-		07AA6B30430A0638FCBF5B5A /* MiniSightPermissionsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3928179DAE09F0D69627A454 /* MiniSightPermissionsPage.swift */; };
-		63413472B5887EEF5542D812 /* MiniSightShortcutsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA62B70DEB2A0D469D8647F3 /* MiniSightShortcutsPage.swift */; };
-		CEB43D49446E8ACCA220BDD6 /* MiniSightDiagnosticsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E80B32D8FD2173F59EFE852 /* MiniSightDiagnosticsPage.swift */; };
-		183B23FFC4D212E6FF98FA77 /* MiniSightPreviewPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF6016052A430B939521EDF /* MiniSightPreviewPage.swift */; };
 		4747D26C804CC6201A3E41DD /* MiniSightBlip.m in Sources */ = {isa = PBXBuildFile; fileRef = 2027A85A60830ED6F755AABD /* MiniSightBlip.m */; };
 /* End PBXBuildFile section */
 
@@ -1375,12 +1370,7 @@
 		03083761BE7ABA94B4DD74A4 /* MiniSightVoiceBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightVoiceBridge.swift; sourceTree = "<group>"; };
 		6E68D884EB9F8A75C624AD5E /* MiniSightHomePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightHomePage.swift; sourceTree = "<group>"; };
 		98EA448072951D8177A4F8BD /* MiniSightAIPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightAIPage.swift; sourceTree = "<group>"; };
-		CE1DA56A9356E8BC8028F6F8 /* MiniSightAppearancePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightAppearancePage.swift; sourceTree = "<group>"; };
 		24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightDialoguePage.swift; sourceTree = "<group>"; };
-		3928179DAE09F0D69627A454 /* MiniSightPermissionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightPermissionsPage.swift; sourceTree = "<group>"; };
-		FA62B70DEB2A0D469D8647F3 /* MiniSightShortcutsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightShortcutsPage.swift; sourceTree = "<group>"; };
-		2E80B32D8FD2173F59EFE852 /* MiniSightDiagnosticsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightDiagnosticsPage.swift; sourceTree = "<group>"; };
-		BBF6016052A430B939521EDF /* MiniSightPreviewPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightPreviewPage.swift; sourceTree = "<group>"; };
 		2027A85A60830ED6F755AABD /* MiniSightBlip.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightBlip.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -2484,12 +2474,7 @@
 				F1DEV002 /* DeveloperSettings.swift */,
 				F1PLG002 /* PluginDevView.swift */,
 				F1MSS002 /* MiniSightSettingsView.swift */,
-				BBF6016052A430B939521EDF /* MiniSightPreviewPage.swift */,
-				2E80B32D8FD2173F59EFE852 /* MiniSightDiagnosticsPage.swift */,
-				FA62B70DEB2A0D469D8647F3 /* MiniSightShortcutsPage.swift */,
-				3928179DAE09F0D69627A454 /* MiniSightPermissionsPage.swift */,
 				24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */,
-				CE1DA56A9356E8BC8028F6F8 /* MiniSightAppearancePage.swift */,
 				98EA448072951D8177A4F8BD /* MiniSightAIPage.swift */,
 				6E68D884EB9F8A75C624AD5E /* MiniSightHomePage.swift */,
 				F1MCF002 /* MiniSightConfirm.swift */,
@@ -3097,12 +3082,7 @@
 				F1DEV001 /* DeveloperSettings.swift in Sources */,
 				F1PLG001 /* PluginDevView.swift in Sources */,
 				F1MSS001 /* MiniSightSettingsView.swift in Sources */,
-				183B23FFC4D212E6FF98FA77 /* MiniSightPreviewPage.swift in Sources */,
-				CEB43D49446E8ACCA220BDD6 /* MiniSightDiagnosticsPage.swift in Sources */,
-				63413472B5887EEF5542D812 /* MiniSightShortcutsPage.swift in Sources */,
-				07AA6B30430A0638FCBF5B5A /* MiniSightPermissionsPage.swift in Sources */,
 				E8172243CE0FF08A8D15E41F /* MiniSightDialoguePage.swift in Sources */,
-				0A30EDF6CEA04868CA49215E /* MiniSightAppearancePage.swift in Sources */,
 				E0DA0E4E0EC597E37519FDBF /* MiniSightAIPage.swift in Sources */,
 				5A4318BD2D1F837735FAA183 /* MiniSightHomePage.swift in Sources */,
 				F1MCF001 /* MiniSightConfirm.swift in Sources */,
