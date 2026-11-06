@@ -1290,7 +1290,7 @@ final class UpdateDownloadCoordinator: ObservableObject {
         if let ns, ns.code != 0 || !ns.domain.isEmpty {
             detail = "\(error?.localizedDescription ?? "下载失败")（\(ns.domain) \(ns.code)）"
         } else {
-            detail = message ?? "下载结束但未保存安装包，请重新下载"
+            detail = error?.localizedDescription ?? "下载结束但未保存安装包，请重新下载"
         }
         state = .failed(currentManifest, UpdateError(detail))
     }
