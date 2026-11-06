@@ -96,24 +96,40 @@ struct FollowUpSessionIntent: AppIntent {
             }
         }
 
-        // Add file attachments if provided
-        logger.info("📎 FollowUp files param: \(files == nil ? "nil" : "\(files!.count) files")")
+        // Stage files off-main. Prepared attachments are handed over without
+        // reading or clearing the user's in-flight composer selection.
+        var staged: [InputAttachment] = []
         if let intentFiles = files {
-            for (i, file) in intentFiles.enumerated() {
-                let name = SendPromptIntent.resolvedFileName(for: file)
-                let dataSize = file.data.count
-                logger.info("📎 FollowUp file[\(i)]: name=\(name) dataSize=\(dataSize) type=\(file.type?.identifier ?? "nil")")
-                vm.addDataAttachment(data: file.data, fileName: name)
+            logger.info("📎 FollowUp files param: \(intentFiles.count) files")
+            do {
+                staged = try await SendPromptIntent.stageFiles(intentFiles)
+            } catch {
+                let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                ShortcutRunTracker.markCompleted(recordId: pendingId, reason: "attachmentFailed")
+                return .result(value: SendPromptResult(
+                    sessionId: session.id, modelName: vm.selectedModel.displayName,
+                    status: "Rejected", isNewSession: false,
+                    prompt: prompt, responseText: reason),
+                    dialog: IntentDialog(stringLiteral: AppLocalized("Attachment import failed: \(reason)")))
             }
         }
-        logger.info("📎 FollowUp vm.attachments after add: \(vm.attachments.count)")
 
         // [T-programmatic-prompt-no-composer] Carry the prompt as an
         // argument: this is the user's live session vm, and assigning
         // `inputText` would overwrite (then clear) a draft they are in the
         // middle of typing.
-        vm.send(overrideText: prompt)
-        logger.info("📎 FollowUp send() called, isProcessing=\(vm.isProcessing)")
+        let outcome = vm.submitProgrammaticPrompt(prompt, origin: .shortcut, silent: true,
+                                                  preparedAttachments: staged)
+        if case .rejected(let reason) = outcome {
+            SendPromptIntent.discardStaged(staged)
+            ShortcutRunTracker.markCompleted(recordId: pendingId, reason: "rejected.\(reason)")
+            return .result(value: SendPromptResult(
+                sessionId: session.id, modelName: vm.selectedModel.displayName,
+                status: "Rejected", isNewSession: false,
+                prompt: prompt, responseText: reason),
+                dialog: IntentDialog(stringLiteral: AppLocalized("Minis could not accept the prompt (\(reason)).")))
+        }
+        logger.info("📎 FollowUp submitted, isProcessing=\(vm.isProcessing)")
 
         let sid = vm.sessionId ?? session.id
 

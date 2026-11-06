@@ -718,7 +718,7 @@ struct RerunFromToolBlockListener: ViewModifier {
     func body(content: Content) -> some View {
         content.onReceive(NotificationCenter.default.publisher(for: .rerunFromToolBlock)) { note in
             guard let blockId = note.userInfo?["blockId"] as? UUID else { return }
-            vm.retryFromToolBlock(blockId: blockId)
+            Task { @MainActor in await vm.retryFromToolBlock(blockId: blockId) }
             vm.forceScrollToBottom.send()
         }
     }

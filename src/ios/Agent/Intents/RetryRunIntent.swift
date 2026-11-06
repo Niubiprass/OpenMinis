@@ -156,21 +156,24 @@ struct RetryRunIntent: AppIntent {
 
         let promptPreview = String(targetMessage.content.prefix(50))
 
-        // Convert intent files to InputAttachments for replacement (if provided)
+        // Stage replacements independently of the live composer selection.
         var replacementAttachments: [InputAttachment]? = nil
         if let intentFiles = files, !intentFiles.isEmpty {
-            // Stage files via the VM's cache, then detach them for retryFromMessage
-            let countBefore = vm.attachments.count
-            for file in intentFiles {
-                let name = SendPromptIntent.resolvedFileName(for: file)
-                vm.addDataAttachment(data: file.data, fileName: name)
+            do {
+                replacementAttachments = try await SendPromptIntent.stageFiles(intentFiles)
+            } catch {
+                let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                ShortcutRunTracker.markCompleted(recordId: pendingId, reason: "attachmentFailed")
+                return .result(value: SendPromptResult(
+                    sessionId: session.id, modelName: vm.selectedModel.displayName,
+                    status: "Error", isNewSession: false,
+                    prompt: targetMessage.content, responseText: reason),
+                    dialog: IntentDialog(stringLiteral: AppLocalized("Attachment import failed: \(reason)")))
             }
-            replacementAttachments = Array(vm.attachments.dropFirst(countBefore))
-            vm.attachments.removeSubrange(countBefore...)
         }
 
         // Retry from that message (replacement attachments override the original ones)
-        vm.retryFromMessage(targetMessage.id, replacementAttachments: replacementAttachments)
+        await vm.retryFromMessage(targetMessage.id, replacementAttachments: replacementAttachments)
 
         let sid = vm.sessionId ?? session.id
 

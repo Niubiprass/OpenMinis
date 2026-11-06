@@ -21,14 +21,15 @@ class ShareViewController: UIViewController {
     // 关键顺序: 先把 PendingShare 写盘, 再唤主 App, 最后才 completeRequest ——
     // 旧实现超时后立刻 completeRequest, 会把仍在复制文件的扩展进程杀掉,
     // 结果就是"分享进来了但什么都没有"。
-            let saved = await ShareViewModel.processAndSave(items)
-            NSLog("[ShareExt] save() returned: %@", saved ? "true" : "false")
+            let outcome = await ShareViewModel.processAndSave(items)
+            NSLog("[ShareExt] save() returned saved=%@ timedOut=%@",
+                  outcome.saved ? "true" : "false", outcome.timedOut ? "true" : "false")
 
-            if !saved {
+            if outcome.timedOut {
                 // A hung provider won the race; the pipeline is still running and
                 // may still land its record. Poll briefly before tearing the
                 // extension down, otherwise the copy is lost with the process.
-                for _ in 0..<20 {
+                for _ in 0..<40 {
                     try? await Task.sleep(nanoseconds: 500_000_000)
                     if SharedContainerStore.loadPendingShare() != nil { break }
                 }
@@ -44,6 +45,7 @@ class ShareViewController: UIViewController {
                 }
             } else {
                 NSLog("[ShareExt] WARNING: loadPendingShare returned nil after save!")
+                await presentImportFailure()
             }
 
             // Verify shared file directory
@@ -80,6 +82,28 @@ class ShareViewController: UIViewController {
             extensionContext?.completeRequest(returningItems: [])
         } else {
             NSLog("[ShareExt] viewDidAppear — processing still in progress, deferring dismiss")
+        }
+    }
+
+
+    /// Don't dismiss a blank sheet as if the share worked when nothing landed.
+    private func presentImportFailure() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            var resumed = false
+            let finish = {
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume()
+            }
+            let alert = UIAlertController(
+                title: "没有导入任何内容",
+                message: "来源 App 没有提供可读文件，或共享容器不可写。请先下载原文件，再从「文件」App 重新分享。",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "知道了", style: .default) { _ in finish() })
+            // The sheet may not have a window yet on the zero-item path; never
+            // hold the extension open longer than the watchdog because of it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { finish() }
+            present(alert, animated: true)
         }
     }
 

@@ -2963,6 +2963,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// atomic and spans the `await runAgentLoop()` suspension where the second
     /// drainer would otherwise slip in. [T-ios-concurrent-stop-double-request]
     private var isDrainingQueue = false
+    /// A failed batch preparation requeues prompts and pauses automatic drains
+    /// until new input arrives; re-draining a permanently unreadable file in a
+    /// tight loop would otherwise burn CPU forever.
+    var queuePreparationBlocked = false
     /// [T-compact-queued-drain] True while a post-compact queue drain has been
     /// scheduled (task created) but not finished. Dedup guard so the two
     /// schedulers (compactBefore's success tail + compactAndSend's failure
@@ -2979,6 +2983,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// When non-nil, the next send() acts as an edit: truncates conversation from this
     /// message index and re-sends. Cleared after the edit is applied.
     @Published var editingMessageIndex: Int?
+    /// Identifies the in-flight attachment preparation of the current send so
+    /// a late failure from a cancelled send cannot restore over a newer draft.
+    var attachmentSendToken: UUID?
+    /// Cancels/ownership token for the await preceding a retry truncation.
+    var retryPrepareToken: UUID?
     /// Set when the background task expires mid-agent-loop; cleared on resume.
     var backgroundSuspended = false
     /// Continuation used to pause the agent loop while suspended in background.
@@ -3041,11 +3050,16 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // suppress a focus the user does want.
         turnStartedByRetry = false
 
-        // [T-ios-photo-pick-placeholder] Drop any non-ready attachments (failed
-        // photo loads, or a stray still-loading placeholder) so only fully-loaded
-        // files are sent. `canSend` already blocks sending while anything loads,
-        // so in practice this just prunes failed chips the user left in place.
-        attachments.removeAll { $0.loadState != .ready }
+        // [T-ios-photo-pick-placeholder] Do not silently discard a failed chip.
+        // A loading chip blocks earlier via canSend; a genuinely failed import
+        // stays visible and the send is refused with an explanation so the
+        // user can retry/remove it instead of losing the attachment quietly.
+        if let notReady = attachments.first(where: { $0.loadState != .ready }) {
+            let name = notReady.fileName.isEmpty ? "附件" : notReady.fileName
+            errorMessage = "\(name) 尚未加载完成，已保留在输入栏，请稍后重试或移除。"
+            logger.warning("🔑DRAFT send() BLOCKED — non-ready attachment \(name)")
+            return
+        }
 
         // [T-paste-mediaref] The draft's `[Pasted#N]` literals are NO LONGER
         // expanded here. They now survive into agentHistory and the stored
@@ -3069,6 +3083,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             logger.warning("🔑DRAFT [vm=\(self.vmInstanceId)] send() GUARD FAILED — text.isEmpty=\(text.isEmpty) attachments.isEmpty=\(pendingAttachments.isEmpty) isProcessing=\(self.isProcessing)")
             return
         }
+
+        // New work is a good point to retry a queue paused by a failed import.
+        queuePreparationBlocked = false
 
         // Only an accepted composer send can answer a stopped workflow gate.
         // [T-auto-compact-entry] A fresh user turn starts a new visit: re-arm
@@ -3279,6 +3296,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // Snapshot and clear attachments synchronously so the UI clears immediately
         clearAttachments()
         scrollToBottomSignal.send()
+        let transferID = UUID()
+        attachmentSendToken = transferID
 
         isProcessing = true
         errorMessage = nil
@@ -3310,143 +3329,61 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             let now = Date()
             let nowStr = isoFormatter.string(from: now)
 
-            var attachmentMetas: [AttachmentMeta] = []
-            var userParts: [AgentContentPart] = []
-
-            // User attachments always take priority over history images — see
-            // the same rationale in buildUserMessageParts. Stale history
-            // images will be evicted by the trim pass before the next API
-            // call.
-            let inlineBudget = Self.kImageContextKeepCount
-            var inlinedImages = 0
-            // Cumulative BASE64 bytes of all inlined image payloads in this
-            // message — i.e. the space they take in the request body, not
-            // their decoded size ([T-image-budget-base64]). Once this passes
-            // kMessageImageMaxBytes the remaining images are dropped to a text
-            // placeholder instead of being base64-inlined.
-            // T-imgsize-13b7d81c.
-            var cumulativeImageBytes = 0
-
-            logger.info("📎[SEND-ASYNC] Processing \(pendingAttachments.count) attachments, uploadsDir=\(uploadsDir.path), imageBudget=\(inlineBudget) byteBudget=\(Self.kMessageImageMaxBytes)")
-            for (i, attachment) in pendingAttachments.enumerated() {
-                let fileExists = fm.fileExists(atPath: attachment.cacheURL.path)
-                logger.info("📎[SEND-ASYNC] attachment[\(i)] kind=\(String(describing: attachment.kind)) file=\(attachment.fileName) cacheExists=\(fileExists)")
-
-                guard fileExists else {
-                    logger.error("📎[SEND-ASYNC]   FAILED — source missing at \(attachment.cacheURL.path)")
-                    continue
+            let prepared: PreparedAttachmentBatch
+            do {
+                if pendingAttachments.isEmpty {
+                    prepared = PreparedAttachmentBatch()
+                } else {
+                    prepared = try await AttachmentBatchProcessor.prepare(
+                        pendingAttachments, uploadsDir: uploadsDir,
+                        inlineLimit: Self.kImageContextKeepCount,
+                        perImageBase64Limit: Self.kPerImageMaxBytes,
+                        messageBase64Limit: Self.kMessageImageMaxBytes,
+                        phase: "send", nowStr: nowStr)
                 }
-
-                // [T-ios-attachment-oom-bg-kill] Read file metadata (date + size)
-                // WITHOUT loading the file into memory. Previously this did
-                // `Data(contentsOf:)` on every attachment just to copy it to the
-                // uploads dir and record its size — for a large attachment (e.g. a
-                // 368 MB sysdiagnose) that spiked the app footprint by the file's
-                // full size (~370 MB → ~690 MB total) for several seconds per send.
-                // Backgrounding inside that window let iOS jetsam-SIGKILL the
-                // process (it reclaims high-memory background apps first), which
-                // looked like "the message stopped instantly / was never sent".
-                let attrs = try? fm.attributesOfItem(atPath: attachment.cacheURL.path)
-                // Preserve original file date if available (e.g. PHAsset creation date)
-                let fileDate: Date = (attrs?[.modificationDate] as? Date) ?? now
-                let fileSize = (attrs?[.size] as? Int) ?? 0
-
-                let safeName = Self.uniqueFileName(for: attachment.fileName, in: uploadsDir)
-                let destURL = uploadsDir.appendingPathComponent(safeName)
-                // Stream the file on disk (near-zero RAM) instead of materializing
-                // it as Data and writing it back out. copyItem won't overwrite, and
-                // uniqueFileName already guarantees a fresh name, so no clobber.
-                do {
-                    try fm.copyItem(at: attachment.cacheURL, to: destURL)
-                } catch {
-                    logger.error("📎[SEND-ASYNC]   FAILED to copy \(attachment.cacheURL.lastPathComponent) → \(destURL.path): \(error.localizedDescription)")
-                    continue
-                }
-                try? fm.setAttributes([.creationDate: fileDate, .modificationDate: fileDate], ofItemAtPath: destURL.path)
-                let linuxPath = "/var/minis/attachments/uploads/\(safeName)"
-                let meta = AttachmentMeta(path: linuxPath, size: fileSize, modified: fileDate)
-                attachmentMetas.append(meta)
-                logger.info("📎[SEND-ASYNC]   saved \(safeName): \(fileSize) bytes → \(linuxPath)")
-
-                // [T-ios-attachment-oom-bg-kill] Only IMAGES need the bytes in
-                // memory (for resize/compress/inline below). Non-image attachments
-                // are already persisted via the streaming copy above — never load
-                // them into RAM. Images are small (camera/screenshot/photo), so
-                // loading them here is bounded and safe.
-                guard attachment.kind == .image else { continue }
-                guard let data = try? Data(contentsOf: attachment.cacheURL) else {
-                    logger.error("📎[SEND-ASYNC]   image load failed (kept on disk) \(attachment.cacheURL.path)")
-                    continue
-                }
-
-                // For images: send a resized + size-budgeted copy to the
-                // model. Two budgets layered on top of the existing 20-image
-                // count cap:
-                //   1. Per-image: if the resize-to-2000px output is still
-                //      over 5 MB, run the compressor ladder (smaller edges,
-                //      lower JPEG quality) until it fits or until we've
-                //      shrunk it as far as we usefully can.
-                //   2. Per-message: cap cumulative inlined bytes at 20 MB.
-                //      Once that's hit, remaining images fall through to
-                //      the same text placeholder the count cap uses.
-                // T-imgsize-13b7d81c.
-                // (Reaching here implies .image — the non-image guard above
-                // already `continue`d. Kept as an explicit guard for clarity.)
-                if attachment.kind == .image {
-                    if inlinedImages < inlineBudget {
-                        let resized = await MainActor.run { Self.resizedImageData(data, maxLongEdge: 2000) } ?? data
-                        // [T-image-budget-base64] The ladder measures its output
-                        // in RAW bytes, so hand it the raw equivalent of the
-                        // per-image base64 budget; every comparison below is
-                        // then done in base64 bytes, the unit the budgets are in.
-                        let perImageRawTarget = Self.rawBytesForBase64Budget(Self.kPerImageMaxBytes)
-                        let compressed: Data = await MainActor.run {
-                            Self.compressedImageDataUnderBudget(resized, targetMaxBytes: perImageRawTarget).data
+            } catch {
+                let cancelled = error is CancellationError
+                logger.error("📎[SEND] preparation \(cancelled ? "cancelled" : "FAILED"): \(error.localizedDescription)")
+                await MainActor.run {
+                    // A newer send may already own the loop after a fast
+                    // cancel→resend. Restore this failed draft regardless, but
+                    // only the owner may clear isProcessing.
+                    let ownsTurn = self.attachmentSendToken == transferID
+                    if ownsTurn { self.attachmentSendToken = nil }
+                    self.messages.removeAll { $0.id == userMsg.id }
+                    if usingComposer {
+                        // A failed send must put its text and files back, but
+                        // must not erase chips/typing the user added while the
+                        // preparation was running.
+                        if self.inputText.isEmpty {
+                            self.inputText = text
+                        } else if !text.isEmpty {
+                            self.inputText = text + "\n" + self.inputText
                         }
-                        let compressedB64 = Self.estimatedBase64Length(compressed.count)
-                        let stillOversize = compressedB64 > Self.kPerImageMaxBytes
-                        let wouldOverflowMessage = (cumulativeImageBytes + compressedB64) > Self.kMessageImageMaxBytes
-                        if wouldOverflowMessage {
-                            // Drop to placeholder rather than risk a 413 on
-                            // the whole message — the user keeps the file on
-                            // disk and can still reference it via shell tools.
-                            let placeholder = Self.imagePlaceholderText(data: data, originalPath: linuxPath, snapshotPath: nil)
-                            userParts.append(.text(placeholder))
-                            logger.warning("📎[SEND-ASYNC]   image \(i) dropped to placeholder — cumulative \(cumulativeImageBytes) + this \(compressedB64) (base64 of \(compressed.count) raw) > \(Self.kMessageImageMaxBytes) message budget")
-                        } else {
-                            let ext = attachment.cacheURL.pathExtension.lowercased()
-                            let mime: String
-                            if compressed.count != data.count {
-                                // We re-encoded (resize or compressor ladder
-                                // ran). Output is always JPEG.
-                                mime = "image/jpeg"
-                            } else {
-                                switch ext {
-                                case "png":  mime = "image/png"
-                                case "gif":  mime = "image/gif"
-                                case "webp": mime = "image/webp"
-                                default:     mime = "image/jpeg"
-                                }
-                            }
-                            userParts.append(.text("[attached image: \(linuxPath)]"))
-                            userParts.append(.imageData(data: compressed, mimeType: mime, linuxPath: linuxPath))
-                            inlinedImages += 1
-                            cumulativeImageBytes += compressedB64
-                            logger.info("📎[SEND-ASYNC]   image \(inlinedImages)/\(inlineBudget) inlined: orig=\(data.count) resized=\(resized.count) final=\(compressed.count) base64=\(compressedB64) cumulative=\(cumulativeImageBytes)/\(Self.kMessageImageMaxBytes) mime=\(mime) stillOversize=\(stillOversize)")
-                            if stillOversize {
-                                logger.warning("📎[SEND-ASYNC]   image \(i) still over per-image budget after compression ladder — Provider may 413; sent anyway")
-                            }
-                        }
+                        let existingIDs = Set(self.attachments.map(\.id))
+                        self.attachments = pendingAttachments.filter { !existingIDs.contains($0.id) }
+                            + self.attachments
                     } else {
-                        let placeholder = Self.imagePlaceholderText(data: data, originalPath: linuxPath, snapshotPath: nil)
-                        userParts.append(.text(placeholder))
-                        logger.info("📎[SEND-ASYNC]   image not inlined (count budget \(inlineBudget) exhausted), placeholder for \(linuxPath)")
+                        // A programmatic caller owns its staged batch and has
+                        // already been told the turn failed; those cache files
+                        // are not shown anywhere, so don't orphan them.
+                        Self.cleanupAttachmentFiles(pendingAttachments)
+                    }
+                    if !cancelled {
+                        self.errorMessage = Self.friendlyErrorMessage((error as? LocalizedError)?.errorDescription
+                            ?? error.localizedDescription)
+                    }
+                    if ownsTurn {
+                        self.isProcessing = false
+                        self.endBackgroundProcessing()
                     }
                 }
+                return
             }
+            let attachmentMetas = prepared.metas
+            var userParts = prepared.parts
+            let inlinedImages = prepared.inlinedImages
 
-            // Clean up cached attachment files now that data has been copied
-            Self.cleanupAttachmentFiles(pendingAttachments)
 
             // Update ChatMessage with structured attachment metadata for UI display
             //
@@ -3477,29 +3414,6 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                     NotificationCenter.default.post(name: .minisUserAttachmentsMounted,
                                                     object: userMsg.id)
                 }
-            }
-
-            // Build <user-attached-files> XML metadata for the model (no base64 data)
-            if !attachmentMetas.isEmpty {
-                var xml = "<user-attached-files>\n"
-                for meta in attachmentMetas {
-                    xml += "  <file path=\"\(meta.path)\" url=\"\(meta.minisURL)\" size=\"\(meta.size)\" modified=\"\(nowStr)\" />\n"
-                }
-                xml += "</user-attached-files>"
-                userParts.append(.text(xml))
-            }
-
-            // Batch-reading tip when images were omitted
-            let totalImageAttachments = pendingAttachments.filter { $0.kind == .image }.count
-            if totalImageAttachments > inlinedImages {
-                let omitted = totalImageAttachments - inlinedImages
-                userParts.append(.text(
-                    "<system-reminder>Only \(inlinedImages) of \(totalImageAttachments) images are inlined above."
-                    + " The remaining \(omitted) are saved to disk — use read_image to view them."
-                    + " To stay within the context image limit (\(Self.kImageContextKeepCount)),"
-                    + " process images in batches: read a batch, analyze, then summarize your findings"
-                    + " before reading the next batch.</system-reminder>"
-                ))
             }
 
             // [T-paste-single-split] Expand `[Pasted#N]` literals HERE, at the
@@ -3534,6 +3448,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             let userMessage = AgentMessage(role: .user, parts: userParts)
             let userIdx = self.agentHistory.count
             self.agentHistory.append(userMessage)
+            // Copies and inference data now exist. The upload dir files are the
+            // durable copy; cache chips can go. On failure above they are kept.
+            await AttachmentIO.remove(pendingAttachments.map(\.cacheURL))
+            await MainActor.run { if self.attachmentSendToken == transferID { self.attachmentSendToken = nil } }
 
             // Persist user message and write the DB id back into agentHistory so
             // compact can later resolve boundaries by id.
@@ -4159,8 +4077,63 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         return hasVisibleText || (hasNonToolPayload && !hasSyntheticText)
     }
 
-    func retryFromMessage(_ messageId: UUID, replacementAttachments: [InputAttachment]? = nil) {
+    private func abandonRetryPreparation(_ token: UUID) {
+        guard retryPrepareToken == token else { return }
+        retryPrepareToken = nil
+        isProcessing = false
+        endBackgroundProcessing()
+    }
+
+    func retryFromMessage(_ messageId: UUID, replacementAttachments: [InputAttachment]? = nil) async {
         guard !isProcessing else { return }
+        guard let targetIdx = messages.firstIndex(where: { $0.id == messageId }),
+              messages[targetIdx].role == .user else { return }
+
+        // Own the stop button during preparation without truncating yet.
+        let prepareToken = UUID()
+        retryPrepareToken = prepareToken
+        isProcessing = true
+        beginBackgroundProcessing()
+
+        // Prepare replacement files BEFORE truncating anything. A slow
+        // FileProvider/image decode therefore cannot leave the UI on a
+        // half-truncated conversation, and a failed copy keeps the old turn.
+        var preparedReplacement: PreparedAttachmentBatch?
+        if let newAttachments = replacementAttachments, !newAttachments.isEmpty {
+            guard newAttachments.allSatisfy({ $0.loadState == .ready }) else {
+                errorMessage = "替换附件尚未加载完成，未执行重试。"
+                abandonRetryPreparation(prepareToken)
+                return
+            }
+            let uploadsDir = Self.minisUploadsDir(for: sessionId ?? "draft")
+            let nowStr = ISO8601DateFormatter().string(from: Date())
+            do {
+                preparedReplacement = try await AttachmentBatchProcessor.prepare(
+                    newAttachments, uploadsDir: uploadsDir,
+                    inlineLimit: Self.kImageContextKeepCount,
+                    perImageBase64Limit: Self.kPerImageMaxBytes,
+                    messageBase64Limit: Self.kMessageImageMaxBytes,
+                    phase: "retry", nowStr: nowStr)
+            } catch {
+                if retryPrepareToken == prepareToken, !(error is CancellationError) {
+                    errorMessage = Self.friendlyErrorMessage((error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription)
+                }
+                abandonRetryPreparation(prepareToken)
+                return
+            }
+        }
+        // Stop/send may have changed ownership across the await.
+        guard retryPrepareToken == prepareToken,
+              let idx = messages.firstIndex(where: { $0.id == messageId }),
+              messages[idx].role == .user else {
+            if let preparedReplacement {
+                for url in preparedReplacement.uploadedURLs { try? FileManager.default.removeItem(at: url) }
+            }
+            abandonRetryPreparation(prepareToken)
+            return
+        }
+        retryPrepareToken = nil
         // [T-ios-retry-keyboard] Re-running from an existing user message is a
         // retry, not a new send.
         turnStartedByRetry = true
@@ -4221,29 +4194,23 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         }
 
         // Replace attachments in the last user message of agentHistory if new ones are provided
-        if let newAttachments = replacementAttachments, !newAttachments.isEmpty {
-            let uploadsDir = Self.minisUploadsDir(for: sessionId ?? "draft")
-            let fm = FileManager.default
-            try? fm.createDirectory(at: uploadsDir, withIntermediateDirectories: true)
-            let nowStr = ISO8601DateFormatter().string(from: Date())
-            let (newParts, newMetas) = processAttachments(newAttachments, uploadsDir: uploadsDir, nowStr: nowStr)
-            Self.cleanupAttachmentFiles(newAttachments)
-
+        if let prepared = preparedReplacement, let newAttachments = replacementAttachments {
             // Replace parts in the last user agentHistory entry:
             // keep only .text parts that are NOT <user-attached-files>, then append new parts
-            if !agentHistory.isEmpty {
+            if !agentHistory.isEmpty, keepUpTo >= 0, keepUpTo < agentHistory.count {
                 var lastEntry = agentHistory[keepUpTo]
                 let filteredParts = lastEntry.parts.filter { part in
                     if case .text(let t) = part, t.contains("<user-attached-files>") { return false }
                     if case .imageData = part { return false }
                     return true
                 }
-                lastEntry.parts = filteredParts + newParts
+                lastEntry.parts = filteredParts + prepared.parts
                 agentHistory[keepUpTo] = lastEntry
             }
 
             // Update the ChatMessage's attachments for display
-            messages[idx].attachments = newMetas
+            messages[idx].attachments = prepared.metas
+            await AttachmentIO.remove(newAttachments.map(\.cacheURL))
             // [T-ios-user-attach-mount-invalidate] FOURTH mount site. Unlike the
             // send/drain sites this one has no two-phase race — it rewrites the
             // attachments of an EXISTING message — but that is precisely why it
@@ -4251,7 +4218,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             // height by now, and swapping the tile set is an in-place height
             // change on an item whose identity does not move, so the cached
             // value would be served until something else forced a relayout.
-            if !newMetas.isEmpty {
+            if !prepared.metas.isEmpty {
                 NotificationCenter.default.post(name: .minisUserAttachmentsMounted,
                                                 object: messages[idx].id)
             }
@@ -4550,7 +4517,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     /// message and nothing precedes it in that turn, this is equivalent to
     /// truncating at the preceding user message — delegate to
     /// retryFromMessage(precedingUser) and skip the sub-message rewrite.
-    func retryFromToolBlock(blockId: UUID) {
+    func retryFromToolBlock(blockId: UUID) async {
         guard !isProcessing else { return }
 
         // Locate the assistant UI message + the target block's index within it.
@@ -4577,7 +4544,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 // Normal degenerate case: a user message precedes this turn —
                 // truncate at it and re-run (existing whole-turn path).
                 logger.info("[RerunToolBlock] degenerate → retryFromMessage(precedingUser) tuId=\(targetToolUseId.prefix(12))")
-                retryFromMessage(messages[userIdx].id)
+                await retryFromMessage(messages[userIdx].id)
                 return
             }
             // [T-ios-retry-double-header] No preceding user message (session
@@ -5068,6 +5035,9 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             foregroundObserver = nil
         }
         userDidCancel = true
+        // A retry still preparing attachments has no currentTask yet; drop its
+        // token so the post-await guard abandons it and restores idle state.
+        retryPrepareToken = nil
         currentTask?.cancel()
         currentTask = nil
         autoRetryAttempt = 0
@@ -5181,7 +5151,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     func startDrainIfIdle(reason: String) {
         guard remoteDeviceId == nil else { return }
         guard !isQueueBlockedByCompaction else { return }
-        guard !isProcessing, !isDrainingQueue, !isCompacting, !postCompactDrainPending else {
+        guard !isProcessing, !isDrainingQueue, !isCompacting, !postCompactDrainPending,
+              !queuePreparationBlocked else {
             logger.info("📨[DRAIN] startDrainIfIdle(\(reason)) skipped — isProcessing=\(self.isProcessing) draining=\(self.isDrainingQueue) compacting=\(self.isCompacting) postCompactPending=\(self.postCompactDrainPending)")
             return
         }
@@ -5258,8 +5229,57 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             logger.info("📨[DRAIN] Draining \(queued.count) queued prompt(s)")
 
             let queuedIds = Set(queued.map(\.id))
+            let sid = self.sessionId ?? "unknown"
+            let uploadsDir = Self.minisUploadsDir(for: sid)
+            let isoFmt = ISO8601DateFormatter()
+            isoFmt.formatOptions = [.withInternetDateTime]
+            let nowStr = isoFmt.string(from: Date())
+
+            // Prepare the whole batch off-main before consuming any queue item.
+            // A failed copy/decode requeues everything intact: the alternative
+            // (mark sent, then discover a missing file) silently drops context.
+            var preparedByID: [UUID: PreparedAttachmentBatch] = [:]
+            do {
+                for prompt in queued where !prompt.attachments.isEmpty {
+                    preparedByID[prompt.id] = try await AttachmentBatchProcessor.prepare(
+                        prompt.attachments, uploadsDir: uploadsDir,
+                        inlineLimit: Self.kImageContextKeepCount,
+                        perImageBase64Limit: Self.kPerImageMaxBytes,
+                        messageBase64Limit: Self.kMessageImageMaxBytes,
+                        phase: "queue-drain", nowStr: nowStr)
+                }
+            } catch {
+                for batch in preparedByID.values {
+                    for url in batch.uploadedURLs { try? FileManager.default.removeItem(at: url) }
+                }
+                self.promptQueue.insert(contentsOf: queued, at: 0)
+                // All bubbles are still isQueued here; their files were not
+                // consumed, so the user can withdraw or retry.
+                queuePreparationBlocked = true
+                errorMessage = Self.friendlyErrorMessage((error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription)
+                logger.error("📨[DRAIN] attachment preparation failed, requeued \(queued.count) prompt(s): \(error.localizedDescription)")
+                return
+            }
+
+            // The user can withdraw a bubble while preparation was awaiting a
+            // provider. Its prompt is already out of `promptQueue`, so sending
+            // it anyway would deliver a message with no bubble. Drop and clean
+            // only those truly withdrawn.
+            let live = queued.filter { prompt in
+                self.messages.contains { $0.queuedPromptId == prompt.id }
+            }
+            for prompt in queued where !live.contains(where: { $0.id == prompt.id }) {
+                await AttachmentIO.remove(prompt.attachments.map(\.cacheURL))
+                if let batch = preparedByID[prompt.id] {
+                    for url in batch.uploadedURLs { try? FileManager.default.removeItem(at: url) }
+                }
+                logger.info("📨[DRAIN] prompt \(prompt.id.uuidString.prefix(8)) withdrawn during preparation — dropped")
+            }
+            guard !live.isEmpty else { return }
+            let liveIDs = Set(live.map(\.id))
             for msg in self.messages where msg.isQueued {
-                if let pid = msg.queuedPromptId, queuedIds.contains(pid) {
+                if let pid = msg.queuedPromptId, liveIDs.contains(pid) {
                     // Queue drain: isQueued true -> false. The withdraw button
                     // disappears here, so the bubble's wrap width widens by
                     // ~28pt and any measurement taken while queued is
@@ -5269,22 +5289,14 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             }
             self.scrollToBottomSignal.send()
 
-            let sid = self.sessionId ?? "unknown"
-            let uploadsDir = Self.minisUploadsDir(for: sid)
-            let isoFmt = ISO8601DateFormatter()
-            isoFmt.formatOptions = [.withInternetDateTime]
-            let nowStr = isoFmt.string(from: Date())
-            try? FileManager.default.createDirectory(at: uploadsDir, withIntermediateDirectories: true)
-
             var combinedParts: [AgentContentPart] = []
             var drainPastedParts: [String: [ContentPart]] = [:]
-            for prompt in queued {
-                if !prompt.attachments.isEmpty {
-                    let (attParts, attMetas) = self.processAttachments(prompt.attachments, uploadsDir: uploadsDir, nowStr: nowStr)
-                    combinedParts.append(contentsOf: attParts)
-                    Self.cleanupAttachmentFiles(prompt.attachments)
+            for prompt in live {
+                if let batch = preparedByID[prompt.id] {
+                    combinedParts.append(contentsOf: batch.parts)
+                    await AttachmentIO.remove(prompt.attachments.map(\.cacheURL))
                     if let chatMsg = self.messages.first(where: { $0.queuedPromptId == prompt.id }) {
-                        chatMsg.attachments = attMetas
+                        chatMsg.attachments = batch.metas
                         chatMsg.inputAttachments = []
                         // [T-ios-user-attach-mount-invalidate #182-followup] The
                         // mount above is an in-place +70pt/row content change on
@@ -5411,30 +5423,62 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         promptQueue.removeAll()
         // Mark corresponding chat messages as no longer queued (remove dashed border + X)
         let queuedIds = Set(queued.map(\.id))
-        for msg in messages where msg.isQueued {
-            if let pid = msg.queuedPromptId, queuedIds.contains(pid) {
-                msg.isQueued = false
-            }
-        }
 
-        // Build combined parts from all queued prompts (text + attachments)
+        // Same all-or-nothing preparation as the drain path.
         let qSid = sessionId ?? "unknown"
         let qUploadsDir = Self.minisUploadsDir(for: qSid)
         let qIsoFormatter = ISO8601DateFormatter()
         qIsoFormatter.formatOptions = [.withInternetDateTime]
         let qNowStr = qIsoFormatter.string(from: Date())
-        try? FileManager.default.createDirectory(at: qUploadsDir, withIntermediateDirectories: true)
+        var qPrepared: [UUID: PreparedAttachmentBatch] = [:]
+        do {
+            for prompt in queued where !prompt.attachments.isEmpty {
+                qPrepared[prompt.id] = try await AttachmentBatchProcessor.prepare(
+                    prompt.attachments, uploadsDir: qUploadsDir,
+                    inlineLimit: Self.kImageContextKeepCount,
+                    perImageBase64Limit: Self.kPerImageMaxBytes,
+                    messageBase64Limit: Self.kMessageImageMaxBytes,
+                    phase: "queue-inject", nowStr: qNowStr)
+            }
+        } catch {
+            for batch in qPrepared.values {
+                for url in batch.uploadedURLs { try? FileManager.default.removeItem(at: url) }
+            }
+            promptQueue.insert(contentsOf: queued, at: 0)
+            queuePreparationBlocked = true
+            errorMessage = Self.friendlyErrorMessage((error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription)
+            logger.error("injectQueuedPromptsAsNewTurn: preparation failed, requeued \(queued.count): \(error.localizedDescription)")
+            return false
+        }
+
+        let live = queued.filter { prompt in
+            self.messages.contains { $0.queuedPromptId == prompt.id }
+        }
+        for prompt in queued where !live.contains(where: { $0.id == prompt.id }) {
+            await AttachmentIO.remove(prompt.attachments.map(\.cacheURL))
+            if let batch = qPrepared[prompt.id] {
+                for url in batch.uploadedURLs { try? FileManager.default.removeItem(at: url) }
+            }
+            logger.info("injectQueuedPromptsAsNewTurn: prompt \(prompt.id.uuidString.prefix(8)) withdrawn while preparing — dropped")
+        }
+        guard !live.isEmpty else { return false }
+        let liveIDs = Set(live.map(\.id))
+        for msg in messages where msg.isQueued {
+            if let pid = msg.queuedPromptId, liveIDs.contains(pid) {
+                msg.isQueued = false
+            }
+        }
 
         var qCombinedParts: [AgentContentPart] = []
         var qPastedParts: [String: [ContentPart]] = [:]
-        for prompt in queued {
-            if !prompt.attachments.isEmpty {
-                let (attParts, attMetas) = processAttachments(prompt.attachments, uploadsDir: qUploadsDir, nowStr: qNowStr)
-                qCombinedParts.append(contentsOf: attParts)
-                Self.cleanupAttachmentFiles(prompt.attachments)
+        for prompt in live {
+            if let batch = qPrepared[prompt.id] {
+                qCombinedParts.append(contentsOf: batch.parts)
+                await AttachmentIO.remove(prompt.attachments.map(\.cacheURL))
                 // Update the corresponding ChatMessage so attachment thumbnails appear in the UI
                 if let chatMsg = messages.first(where: { $0.queuedPromptId == prompt.id }) {
-                    chatMsg.attachments = attMetas
+                    chatMsg.attachments = batch.metas
                     chatMsg.inputAttachments = []
                     // [T-ios-user-attach-mount-invalidate] See the sibling drain site.
                     NotificationCenter.default.post(name: .minisUserAttachmentsMounted, object: chatMsg.id)

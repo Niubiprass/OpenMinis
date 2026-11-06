@@ -18,6 +18,29 @@ struct ChatSession: Equatable {
     var parentSessionId: String? = nil
     var isChild: Bool { parentSessionId != nil }
 }
+struct InputAttachment: Identifiable {
+    let id = UUID()
+    let fileName: String
+    let cacheURL: URL
+    enum Kind { case image, video, document }
+    let kind: Kind
+}
+struct PreparedAttachmentBatch { var uploadedURLs: [URL] = [] }
+enum AttachmentProcessingError: LocalizedError {
+    case invalidFile(String)
+    var errorDescription: String? { "invalid" }
+}
+enum AttachmentIO {
+    static func stageFile(_ url: URL, fileName: String? = nil) async throws -> InputAttachment {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fixture-attachments-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent(url.lastPathComponent)
+        try FileManager.default.copyItem(at: url, to: dest)
+        return InputAttachment(fileName: fileName ?? url.lastPathComponent, cacheURL: dest, kind: .document)
+    }
+}
+
 struct FolderRuntimeContext {
     var folderId: String?
     var configuration: ChatFolderConfiguration
@@ -226,7 +249,8 @@ enum PromptOutcome: Equatable { case sent, queued, rejected(String) }
         store.events.append("refresh:" + (folderRuntimeContext?.folderId ?? "none"))
     }
     func addDataAttachment(data: Data, fileName: String) { attachments.append(fileName) }
-    func submitProgrammaticPrompt(_ prompt: String, origin: PromptOrigin, silent: Bool) -> PromptOutcome {
+    func submitProgrammaticPrompt(_ prompt: String, origin: PromptOrigin, silent: Bool,
+                                  preparedAttachments: [InputAttachment]? = nil) -> PromptOutcome {
         let store = ChatStore.shared
         store.events.append("send:" + (sessionId ?? "nil"))
         ViewModelCache.shared.submissions.append((sessionId ?? "nil", prompt))

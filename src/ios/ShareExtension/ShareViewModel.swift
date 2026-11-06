@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 /// container, and writes a PendingShare for the main app to consume.
 final class ShareViewModel {
     private var pendingItems: [PendingShare.Item] = []
+    private var failureCount = 0
     private let inlineTextLimit = 1000
 
     /// Per-provider deadline. iOS 15 Photos / Files providers occasionally never
@@ -13,7 +14,10 @@ final class ShareViewModel {
     /// outer timeout tore the process down BEFORE anything was saved — the
     /// "shared file never arrives" report. Bounding each load means a hung
     /// provider costs this one item, not the entire share.
-    private static let perItemTimeout: TimeInterval = 5.0
+    /// 5s proved too tight for cold iCloud/Files providers and silently
+    /// dropped shared originals; the pre-44e4591 implementation had no deadline
+    /// and worked. 20s matches the extension's outer safety net.
+    private static let perItemTimeout: TimeInterval = 12.0
 
     /// Run the whole pipeline off the main thread, returning whether a share
     /// record was written.
@@ -26,30 +30,31 @@ final class ShareViewModel {
     /// running (cancellation cannot interrupt an NSItemProvider callback) so a
     /// late save still lands.
     static func processAndSave(_ items: [NSExtensionItem],
-                              hardTimeout: TimeInterval = 20.0) async -> Bool {
+                              hardTimeout: TimeInterval = 30.0) async -> (saved: Bool, timedOut: Bool) {
         let vm = ShareViewModel()
+        let gate = ShareCompletion<Bool>()
         let work = Task.detached(priority: .userInitiated) { () -> Bool in
             await vm.processExtensionItems(items)
-            return vm.save()
+            let saved = vm.save()
+            gate.finish(saved)
+            return saved
         }
-        let timeout = Task {
-            try? await Task.sleep(nanoseconds: UInt64(hardTimeout * 1_000_000_000))
-            return false
+        // The timeout is a real deadline: do NOT await the losing task in a
+        // task group (exiting it waits for the provider). The detached work
+        // keeps running and can still save a late result.
+        gate.armTimeout(after: hardTimeout, returning: false)
+        let result = await gate.wait()
+        let timedOut = gate.didTimeOut
+        if timedOut {
+            NSLog("[ShareExt] processAndSave: deadline hit after %.0fs; late save may still land", hardTimeout)
         }
-        // Whichever finishes first decides the answer; `work` is NOT cancelled
-        // when the timeout wins, so its save still reaches the shared container.
-        let result = await withTaskGroup(of: Bool.self) { group -> Bool in
-            group.addTask { await work.value }
-            group.addTask { await timeout.value }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
-        }
-        if !result {
-            NSLog("[ShareExt] processAndSave: timed out after %.0fs — pipeline left running for a late save", hardTimeout)
-        }
-        return result
+        // Keep the detached task alive through the extension's short grace
+        // period by retaining its handle in a global.
+        Self.lastWork = work
+        return (result, timedOut)
     }
+
+    private static var lastWork: Task<Bool, Never>?
 
     /// Load one item with a deadline, so a silent provider cannot stall the
     /// entire share. Returns nil on timeout or error.
@@ -112,17 +117,28 @@ final class ShareViewModel {
     /// checkForPendingShare's staleness cutoff; anything older is abandoned
     /// content whose files the main app will clean up.
     func save() -> Bool {
-        guard !pendingItems.isEmpty else { return false }
         var items = pendingItems
         if let existing = SharedContainerStore.loadPendingShare(),
            Date().timeIntervalSince(existing.timestamp) < 300 {
             NSLog("[ShareExt] save: merging %d existing unconsumed items with %d new",
                   existing.items.count, pendingItems.count)
-            items = existing.items + items
+            // Drop only exact duplicates (same kind + same value), then give
+            // every legacy item a stable id so two consumers cannot erase
+            // each other's text by value. Keep the older share first.
+            let extra = existing.items.filter { old in
+                !items.contains(where: { $0.kind == old.kind && $0.value == old.value })
+            }
+            items.insert(contentsOf: extra, at: 0)
         }
-        let share = PendingShare(items: items, timestamp: Date())
-        SharedContainerStore.savePendingShare(share)
-        return true
+        guard !items.isEmpty else {
+            NSLog("[ShareExt] save: no item survived (failures=\(failureCount))")
+            return false
+        }
+        let share = PendingShare(items: items, timestamp: Date()).assigningItemIDs()
+        let ok = SharedContainerStore.savePendingShare(share)
+        NSLog("[ShareExt] save: %d item(s), failures=%d, wrote=%@",
+              items.count, failureCount, ok ? "YES" : "NO")
+        return ok
     }
 
     // MARK: - Processors
@@ -141,32 +157,58 @@ final class ShareViewModel {
     }
 
     /// Copy a local file URL to the shared container as an attachment.
+    /// Original bytes are preserved (PNG transparency/GIF animation/HEIC/EXIF);
+    /// re-encoding every image to JPEG lost all of those.
     private func copyFileToShared(from url: URL) async {
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-
-        // If it's an image, process through image pipeline for JPEG conversion
-        let ext = url.pathExtension.lowercased()
-        if ["jpg", "jpeg", "png", "gif", "webp", "heic"].contains(ext),
-           let data = try? Data(contentsOf: url),
-           let image = UIImage(data: data) {
-            let fileName = "shared-image-\(UUID().uuidString.prefix(8)).jpg"
-            if let dir = SharedContainerStore.sharedFileDirectory,
-               let jpegData = image.jpegData(compressionQuality: 0.85) {
-                let fileURL = dir.appendingPathComponent(fileName)
-                try? jpegData.write(to: fileURL)
-                pendingItems.append(.init(kind: .attachment, value: fileName))
-            }
+        guard let name = Self.copyNow(url: url,
+                                      prefix: "shared",
+                                      fallbackExtension: "dat") else {
+            failureCount += 1
+            NSLog("[ShareExt] copyFileToShared failed: %@", url.lastPathComponent)
             return
         }
+        pendingItems.append(.init(kind: .attachment, value: name))
+    }
 
-        // General file copy
-        let fileName = "shared-\(UUID().uuidString.prefix(8))_\(url.lastPathComponent)"
-        if let dir = SharedContainerStore.sharedFileDirectory {
-            let destURL = dir.appendingPathComponent(fileName)
-            try? FileManager.default.copyItem(at: url, to: destURL)
-            pendingItems.append(.init(kind: .attachment, value: fileName))
+    /// Copy a provider file representation synchronously inside its callback,
+    /// because the callback URL expires immediately afterwards.
+    private static func copyNow(url: URL, prefix: String, fallbackExtension: String) -> String? {
+        guard let dir = SharedContainerStore.sharedFileDirectory else { return nil }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let ext = url.pathExtension.isEmpty ? fallbackExtension : url.pathExtension
+        let name = "\(prefix)-\(UUID().uuidString.prefix(8)).\(ext)"
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        do {
+            try FileManager.default.copyItem(at: url, to: dir.appendingPathComponent(name))
+            return name
+        } catch {
+            NSLog("[ShareExt] copy %@ failed: %@", url.lastPathComponent, error.localizedDescription)
+            return nil
         }
+    }
+
+    /// Load a file representation from a provider without waiting past the
+    /// deadline; the representation is copied before its callback returns.
+    private static func copyRepresentation(_ provider: NSItemProvider,
+                                           typeIdentifier: String,
+                                           prefix: String,
+                                           fallbackExtension: String) async -> (name: String?, timedOut: Bool) {
+        let gate = ShareCompletion<String?>()
+        provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, error in
+            guard gate.claimCallback() else { return }
+            guard let url else {
+                gate.finish(nil)
+                return
+            }
+            // MUST be synchronous: the provider deletes this URL as soon as the
+            // callback returns.
+            gate.finish(copyNow(url: url, prefix: prefix,
+                                fallbackExtension: fallbackExtension))
+        }
+        gate.armTimeout(after: perItemTimeout, returning: nil)
+        let name = await gate.wait()
+        return (name, gate.didTimeOut)
     }
 
     private func processText(_ provider: NSItemProvider) async {
@@ -186,57 +228,113 @@ final class ShareViewModel {
     }
 
     private func processImage(_ provider: NSItemProvider) async {
-        if let item = await Self.loadItem(provider, UTType.image.identifier) {
-            var image: UIImage?
-            if let uiImage = item as? UIImage {
-                image = uiImage
-            } else if let imageData = item as? Data {
-                image = UIImage(data: imageData)
-            } else if let url = item as? URL, let data = try? Data(contentsOf: url) {
-                image = UIImage(data: data)
-            }
-
-            if let image {
-                let fileName = "shared-image-\(UUID().uuidString.prefix(8)).jpg"
-                if let dir = SharedContainerStore.sharedFileDirectory,
-                   let jpegData = image.jpegData(compressionQuality: 0.85) {
-                    let fileURL = dir.appendingPathComponent(fileName)
-                    try? jpegData.write(to: fileURL)
-                    pendingItems.append(.init(kind: .attachment, value: fileName))
-                }
-            }
+        // Preferred: original encoded file, byte for byte.
+        let copied = await Self.copyRepresentation(provider,
+                                                   typeIdentifier: UTType.image.identifier,
+                                                   prefix: "shared-image",
+                                                   fallbackExtension: "jpg")
+        if let name = copied.name {
+            pendingItems.append(.init(kind: .attachment, value: name))
+            return
         }
+        // A timed-out file request would only stall again; fall back solely
+        // when the provider answered with no usable representation.
+        if copied.timedOut {
+            failureCount += 1
+            return
+        }
+
+        // Fallback for providers that only expose decoded pixels/Data.
+        guard let item = await Self.loadItem(provider, UTType.image.identifier) else {
+            failureCount += 1
+            return
+        }
+        var data: Data?
+        var ext = "jpg"
+        if let image = item as? UIImage {
+            data = image.jpegData(compressionQuality: 0.92)
+        } else if let raw = item as? Data {
+            data = raw
+            ext = Self.imageExtension(raw) ?? "jpg"
+        } else if let url = item as? URL {
+            data = try? Data(contentsOf: url)
+            ext = url.pathExtension.isEmpty ? (Self.imageExtension(data ?? Data()) ?? "jpg") : url.pathExtension
+        }
+        guard let data, let dir = SharedContainerStore.sharedFileDirectory else {
+            failureCount += 1
+            return
+        }
+        let name = "shared-image-\(UUID().uuidString.prefix(8)).\(ext)"
+        do {
+            try data.write(to: dir.appendingPathComponent(name), options: .atomic)
+            pendingItems.append(.init(kind: .attachment, value: name))
+        } catch {
+            failureCount += 1
+        }
+    }
+
+    private static func imageExtension(_ data: Data) -> String? {
+        let b = [UInt8](data.prefix(12))
+        guard b.count >= 4 else { return nil }
+        if b.starts(with: [0xff, 0xd8, 0xff]) { return "jpg" }
+        if b.starts(with: [0x89, 0x50, 0x4e, 0x47]) { return "png" }
+        if b.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "gif" }
+        return nil
     }
 
     private func processVideo(_ provider: NSItemProvider) async {
-        guard let item = await Self.loadItem(provider, UTType.movie.identifier),
-              let url = item as? URL else { return }
-
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-
-        let ext = url.pathExtension.lowercased()
-        let suffix = ext.isEmpty ? "mov" : ext
-        let fileName = "shared-video-\(UUID().uuidString.prefix(8)).\(suffix)"
-        if let dir = SharedContainerStore.sharedFileDirectory {
-            let destURL = dir.appendingPathComponent(fileName)
-            try? FileManager.default.copyItem(at: url, to: destURL)
-            pendingItems.append(.init(kind: .attachment, value: fileName))
+        let copied = await Self.copyRepresentation(provider,
+                                                   typeIdentifier: UTType.movie.identifier,
+                                                   prefix: "shared-video",
+                                                   fallbackExtension: "mov")
+        if let name = copied.name {
+            pendingItems.append(.init(kind: .attachment, value: name))
+            return
         }
+        if copied.timedOut {
+            failureCount += 1
+            return
+        }
+        guard let item = await Self.loadItem(provider, UTType.movie.identifier),
+              let url = item as? URL,
+              let name = Self.copyNow(url: url, prefix: "shared-video", fallbackExtension: "mov") else {
+            failureCount += 1
+            return
+        }
+        pendingItems.append(.init(kind: .attachment, value: name))
     }
 
     private func processFile(_ provider: NSItemProvider) async {
-        guard let item = await Self.loadItem(provider, UTType.item.identifier),
-              let url = item as? URL else { return }
-
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-
-        let fileName = "shared-\(UUID().uuidString.prefix(8))_\(url.lastPathComponent)"
-        if let dir = SharedContainerStore.sharedFileDirectory {
-            let destURL = dir.appendingPathComponent(fileName)
-            try? FileManager.default.copyItem(at: url, to: destURL)
-            pendingItems.append(.init(kind: .attachment, value: fileName))
+        let copied = await Self.copyRepresentation(provider,
+                                                   typeIdentifier: UTType.item.identifier,
+                                                   prefix: "shared",
+                                                   fallbackExtension: "dat")
+        if let name = copied.name {
+            pendingItems.append(.init(kind: .attachment, value: name))
+            return
         }
+        if copied.timedOut {
+            failureCount += 1
+            return
+        }
+        // Some document providers only vend a URL/Data object. Keep a fallback
+        // so a conforming-but-representation-less provider is not lost.
+        guard let item = await Self.loadItem(provider, UTType.item.identifier) else {
+            failureCount += 1
+            return
+        }
+        if let url = item as? URL,
+           let name = Self.copyNow(url: url, prefix: "shared", fallbackExtension: "dat") {
+            pendingItems.append(.init(kind: .attachment, value: name))
+            return
+        }
+        if let data = item as? Data, let dir = SharedContainerStore.sharedFileDirectory {
+            let name = "shared-\(UUID().uuidString.prefix(8)).dat"
+            if (try? data.write(to: dir.appendingPathComponent(name), options: .atomic)) != nil {
+                pendingItems.append(.init(kind: .attachment, value: name))
+                return
+            }
+        }
+        failureCount += 1
     }
 }

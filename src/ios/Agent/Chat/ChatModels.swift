@@ -6,7 +6,7 @@ import UIKit
 // MARK: - Models
 
 /// Structured metadata for a user-attached file (image, document, etc.).
-struct AttachmentMeta: Identifiable, Equatable {
+struct AttachmentMeta: Identifiable, Equatable, Sendable {
     let id = UUID()
     /// Linux path, e.g. `/var/minis/attachments/uploads/photo.jpg`
     let path: String
@@ -699,7 +699,7 @@ struct ToolSnapshotItem: Identifiable {
 }
 
 /// An attachment queued for the next message (stored in Caches).
-struct InputAttachment: Identifiable {
+struct InputAttachment: Identifiable, Sendable {
     let id: UUID
     var fileName: String
     /// URL in the app's Caches directory. For a `.loading` placeholder this is a
@@ -712,13 +712,13 @@ struct InputAttachment: Identifiable {
     /// `.ready` by default so all existing construction sites are unchanged.
     var loadState: LoadState
 
-    enum Kind {
+    enum Kind: Sendable {
         case image      // JPEG/PNG/GIF/WebP
         case video      // MP4/MOV/etc.
         case document   // PDF or other file
     }
 
-    enum LoadState: Equatable {
+    enum LoadState: Equatable, Sendable {
         case ready
         case loading
         case failed

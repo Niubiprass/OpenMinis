@@ -368,33 +368,33 @@ extension AIChatViewModel {
     /// prefer ``addImageAttachment(data:fileExtension:originalDate:)`` so the original
     /// encoding is preserved verbatim.
     func addImageAttachment(_ image: UIImage, originalDate: Date? = nil) {
-        let fm = FileManager.default
         let dir = attachmentCacheDir
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-
-        // [T-ios-camera-capture-image-too-large] Built-in camera hands us a
-        // full-resolution UIImage (~12MP). Saving it as lossless PNG /
-        // jpegData(1.0) produced 15–25 MB attachments (GH#33 / #565), while
-        // photo-library / screenshot images — which arrive as already-compressed
-        // bytes — weigh only a few hundred KB to a few MB. Downsample + JPEG-
-        // encode the capture so a single photo lands around 1–3 MB, matching the
-        // library path. Fall back to a plain JPEG encode only if downsampling
-        // can't produce data.
-        guard let data = Self.downsampledCameraJPEG(image)
-                ?? image.jpegData(compressionQuality: 0.82) else {
-            return
-        }
-        let ext = "jpg"
-        let fileName = "photo_\(UUID().uuidString.prefix(8)).\(ext)"
-        let url = dir.appendingPathComponent(fileName)
-        do {
-            try data.write(to: url)
-            if let date = originalDate {
-                try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: url.path)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            // The camera hands in a full-resolution (~12MP) UIImage. Encode and
+            // write it on a worker; doing this in the capture callback was the
+            // same main-thread ImageIO stall as the send path.
+            guard let data = Self.downsampledCameraJPEG(image)
+                    ?? image.jpegData(compressionQuality: 0.82) else {
+                await MainActor.run { self?.errorMessage = "图片编码失败，请重试。" }
+                return
             }
-            attachments.append(InputAttachment(fileName: fileName, cacheURL: url, kind: .image))
-        } catch {
-            logger.error("Failed to cache image attachment: \(error.localizedDescription)")
+            let fileName = "photo_\(UUID().uuidString.prefix(8)).jpg"
+            let url = dir.appendingPathComponent(fileName)
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                try data.write(to: url, options: .atomic)
+                if let originalDate {
+                    try? FileManager.default.setAttributes(
+                        [.creationDate: originalDate, .modificationDate: originalDate],
+                        ofItemAtPath: url.path)
+                }
+                await MainActor.run {
+                    self?.attachments.append(InputAttachment(fileName: fileName, cacheURL: url, kind: .image))
+                }
+            } catch {
+                AppLogger(category: "AIChatVM").error("Failed to cache image attachment: \(error.localizedDescription)")
+                await MainActor.run { self?.errorMessage = "图片保存失败，请重试。" }
+            }
         }
     }
 
@@ -405,25 +405,30 @@ extension AIChatViewModel {
     /// `fileExtension` should be the lowercase extension (e.g. "png", "heic", "jpg");
     /// if missing/unrecognised, magic bytes are sniffed.
     func addImageAttachment(data: Data, fileExtension: String?, originalDate: Date? = nil) {
-        let fm = FileManager.default
         let dir = attachmentCacheDir
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-
         let knownImageExts = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "tiff"]
         let normalizedExt: String = {
             if let e = fileExtension?.lowercased(), knownImageExts.contains(e) { return e }
             return Self.detectImageType(from: data) ?? "bin"
         }()
         let fileName = "photo_\(UUID().uuidString.prefix(8)).\(normalizedExt)"
-        let url = dir.appendingPathComponent(fileName)
-        do {
-            try data.write(to: url)
-            if let date = originalDate {
-                try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: url.path)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let url = dir.appendingPathComponent(fileName)
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                try data.write(to: url, options: .atomic)
+                if let originalDate {
+                    try? FileManager.default.setAttributes(
+                        [.creationDate: originalDate, .modificationDate: originalDate],
+                        ofItemAtPath: url.path)
+                }
+                await MainActor.run {
+                    self?.attachments.append(InputAttachment(fileName: fileName, cacheURL: url, kind: .image))
+                }
+            } catch {
+                AppLogger(category: "AIChatVM").error("Failed to cache image attachment data: \(error.localizedDescription)")
+                await MainActor.run { self?.errorMessage = "图片保存失败，请重试。" }
             }
-            attachments.append(InputAttachment(fileName: fileName, cacheURL: url, kind: .image))
-        } catch {
-            logger.error("Failed to cache image attachment data: \(error.localizedDescription)")
         }
     }
 
@@ -619,10 +624,12 @@ extension AIChatViewModel {
                     log.info("[UploadProbe] \(probe) appended count=\(self.attachments.count)")
                     completion?(true)
                 }
+                // Only a saved cache copy may consume the shared/temp source.
                 if removeSourceAfterCopy { try? fm.removeItem(at: sourceURL) }
             } catch {
                 log.error("[UploadProbe] \(probe) copy failed code=\((error as NSError).code) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
-                if removeSourceAfterCopy { try? fm.removeItem(at: sourceURL) }
+                // Keep the source on failure so a retry/the next app run still
+                // has the original instead of losing the share entirely.
                 await MainActor.run { completion?(false) }
             }
         }
@@ -683,7 +690,7 @@ extension AIChatViewModel {
     }
 
     /// Detect image format from data magic bytes. Returns a file extension string or nil.
-    static func detectImageType(from data: Data) -> String? {
+    nonisolated static func detectImageType(from data: Data) -> String? {
         guard data.count >= 4 else { return nil }
         let bytes = [UInt8](data.prefix(12))
 
@@ -712,7 +719,7 @@ extension AIChatViewModel {
     /// File-URL variant of ``detectImageType(from:)`` — reads only the first
     /// 16 bytes so classifying a multi-hundred-MB file never loads it into
     /// memory.
-    static func detectImageType(atFileURL url: URL) -> String? {
+    nonisolated static func detectImageType(atFileURL url: URL) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let head = try? handle.read(upToCount: 16), head.count >= 4 else { return nil }
@@ -770,110 +777,15 @@ extension AIChatViewModel {
         _ attachments: [InputAttachment],
         uploadsDir: URL,
         nowStr: String
-    ) -> (parts: [AgentContentPart], metas: [AttachmentMeta]) {
-        let fm = FileManager.default
-        var parts: [AgentContentPart] = []
-        var metas: [AttachmentMeta] = []
-
-        // The user's latest attachments always take priority: inline up to
-        // `kImageContextKeepCount` of them regardless of how many images are
-        // already in `agentHistory`. Older history images get evicted by the
-        // next `trimOldImagesFromHistory` pass before the API call. Without
-        // this, a long agent loop that already filled the image quota would
-        // silently placeholder fresh user uploads — and the model, seeing
-        // only `[image omitted ...]`, falls back to OCR or refuses to answer.
-        let inlineBudget = Self.kImageContextKeepCount
-        var inlinedImages = 0
-
-        for (i, attachment) in attachments.enumerated() {
-            let fileExists = fm.fileExists(atPath: attachment.cacheURL.path)
-            logger.info("📎[QUEUE-DRAIN] attachment[\(i)] kind=\(String(describing: attachment.kind)) file=\(attachment.fileName) cacheExists=\(fileExists)")
-
-            guard fileExists else {
-                logger.error("📎[QUEUE-DRAIN]   FAILED — source missing at \(attachment.cacheURL.path)")
-                continue
-            }
-
-            // [T-ios-attachment-oom-bg-kill] Stream the file to the uploads dir
-            // and read its size from filesystem attributes — do NOT load it into
-            // memory. Mirrors the SEND-ASYNC path fix: a large non-image
-            // attachment (e.g. a 368 MB sysdiagnose) here would spike the app
-            // footprint by its full size and let iOS jetsam-SIGKILL the process
-            // on backgrounding. This QUEUE-DRAIN path runs for messages sent
-            // WHILE the agent is busy (queued prompts), so it must be fixed too.
-            let attrs = try? fm.attributesOfItem(atPath: attachment.cacheURL.path)
-            // Preserve original file date if available (e.g. PHAsset creation date)
-            let fileDate: Date = (attrs?[.modificationDate] as? Date) ?? Date()
-            let fileSize = (attrs?[.size] as? Int) ?? 0
-
-            let safeName = Self.uniqueFileName(for: attachment.fileName, in: uploadsDir)
-            let destURL = uploadsDir.appendingPathComponent(safeName)
-            do {
-                try fm.copyItem(at: attachment.cacheURL, to: destURL)
-            } catch {
-                logger.error("📎[QUEUE-DRAIN]   FAILED to copy \(attachment.cacheURL.lastPathComponent) → \(destURL.path): \(error.localizedDescription)")
-                continue
-            }
-            try? fm.setAttributes([.creationDate: fileDate, .modificationDate: fileDate], ofItemAtPath: destURL.path)
-            let linuxPath = "/var/minis/attachments/uploads/\(safeName)"
-            let meta = AttachmentMeta(path: linuxPath, size: fileSize, modified: fileDate)
-            metas.append(meta)
-            logger.info("📎[QUEUE-DRAIN]   saved \(safeName): \(fileSize) bytes → \(linuxPath)")
-
-            // [T-ios-attachment-oom-bg-kill] Only IMAGES need bytes in memory
-            // (resize/inline). Non-image attachments are already persisted above.
-            guard attachment.kind == .image else { continue }
-            guard let data = try? Data(contentsOf: attachment.cacheURL) else {
-                logger.error("📎[QUEUE-DRAIN]   image load failed (kept on disk) \(attachment.cacheURL.path)")
-                continue
-            }
-
-            if attachment.kind == .image {
-                if inlinedImages < inlineBudget {
-                    let resized = Self.resizedImageData(data, maxLongEdge: 2000) ?? data
-                    let ext = attachment.cacheURL.pathExtension.lowercased()
-                    let mime: String
-                    switch ext {
-                    case "png": mime = resized.count == data.count ? "image/png" : "image/jpeg"
-                    case "gif": mime = "image/gif"
-                    case "webp": mime = "image/webp"
-                    default: mime = "image/jpeg"
-                    }
-                    parts.append(.text("[attached image: \(linuxPath)]"))
-                    parts.append(.imageData(data: resized, mimeType: mime, linuxPath: linuxPath))
-                    inlinedImages += 1
-                    logger.info("📎[QUEUE-DRAIN]   image \(inlinedImages)/\(inlineBudget) inlined for inference: \(resized.count) bytes, mime=\(mime)")
-                } else {
-                    let placeholder = Self.imagePlaceholderText(data: data, originalPath: linuxPath, snapshotPath: nil)
-                    parts.append(.text(placeholder))
-                    logger.info("📎[QUEUE-DRAIN]   image not inlined (budget \(inlineBudget) exhausted), placeholder added for \(linuxPath)")
-                }
-            }
-        }
-
-        // Build <user-attached-files> XML block
-        if !metas.isEmpty {
-            var xml = "<user-attached-files>\n"
-            for meta in metas {
-                xml += "  <file path=\"\(meta.path)\" url=\"\(meta.minisURL)\" size=\"\(meta.size)\" modified=\"\(nowStr)\" />\n"
-            }
-            xml += "</user-attached-files>"
-            parts.append(.text(xml))
-        }
-
-        // When some images were omitted, add a tip so the model knows to batch-read
-        let totalImageAttachments = attachments.filter { $0.kind == .image }.count
-        if totalImageAttachments > inlinedImages {
-            let omitted = totalImageAttachments - inlinedImages
-            parts.append(.text(
-                "<system-reminder>Only \(inlinedImages) of \(totalImageAttachments) images are inlined above."
-                + " The remaining \(omitted) are saved to disk — use read_image to view them."
-                + " To stay within the context image limit (\(Self.kImageContextKeepCount)),"
-                + " process images in batches: read a batch, analyze, then summarize your findings"
-                + " before reading the next batch.</system-reminder>"
-            ))
-        }
-
-        return (parts, metas)
+    ) async throws -> PreparedAttachmentBatch {
+        // Composer, queue, retry and programmatic batches share one backend
+        // implementation. `nowStr` is retained for source compatibility; the
+        // batch itself now carries the same XML/reminder parts as send().
+        try await AttachmentBatchProcessor.prepare(
+            attachments, uploadsDir: uploadsDir,
+            inlineLimit: Self.kImageContextKeepCount,
+            perImageBase64Limit: Self.kPerImageMaxBytes,
+            messageBase64Limit: Self.kMessageImageMaxBytes,
+            phase: "queue", nowStr: nowStr)
     }
 }

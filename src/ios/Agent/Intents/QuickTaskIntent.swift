@@ -157,18 +157,38 @@ struct QuickTaskIntent: AppIntent {
             }
         }
 
-        // Add file attachments if provided
+        // Stage files off-main before touching the new session.
+        var staged: [InputAttachment] = []
         if let intentFiles = files {
-            for file in intentFiles {
-                let name = SendPromptIntent.resolvedFileName(for: file)
-                vm.addDataAttachment(data: file.data, fileName: name)
+            do {
+                staged = try await SendPromptIntent.stageFiles(intentFiles)
+            } catch {
+                let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                ShortcutRunTracker.markCompleted(recordId: pendingId, reason: "attachmentFailed")
+                return .result(value: SendPromptResult(
+                    sessionId: vm.sessionId ?? "unknown",
+                    modelName: vm.selectedModel.displayName,
+                    status: "Rejected", isNewSession: true,
+                    prompt: task.prompt, responseText: reason),
+                    dialog: IntentDialog(stringLiteral: AppLocalized("Attachment import failed: \(reason)")))
             }
         }
 
         // [T-programmatic-prompt-no-composer] Always a fresh draft session
         // here, so there is no draft to lose — but keep the composer out of
         // the send path anyway, so it stays true for every caller.
-        vm.send(overrideText: task.prompt)
+        let outcome = vm.submitProgrammaticPrompt(task.prompt, origin: .shortcut, silent: true,
+                                                  preparedAttachments: staged)
+        if case .rejected(let reason) = outcome {
+            SendPromptIntent.discardStaged(staged)
+            ShortcutRunTracker.markCompleted(recordId: pendingId, reason: "rejected.\(reason)")
+            return .result(value: SendPromptResult(
+                sessionId: vm.sessionId ?? "unknown",
+                modelName: vm.selectedModel.displayName,
+                status: "Rejected", isNewSession: true,
+                prompt: task.prompt, responseText: reason),
+                dialog: IntentDialog(stringLiteral: AppLocalized("Minis could not accept the prompt (\(reason)).")))
+        }
 
         let sid = vm.sessionId ?? "unknown"
 

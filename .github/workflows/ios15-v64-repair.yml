@@ -37,6 +37,8 @@ jobs:
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_feature_compile_160651.py
           python3 scripts/test_photo_picker_multi_select_160651.py
           python3 scripts/test_attachment_preview_160651.py
+          python3 scripts/test_attachment_send_20261106.py
+          python3 scripts/test_attachment_share_20261106.py
           python3 scripts/test_launch_icon_160651.py
           python3 scripts/test_ask_card_160651.py
           python3 scripts/test_export_160651.py
@@ -44,6 +46,7 @@ jobs:
           python3 scripts/test_v64r_text_layout.py
           python3 scripts/test_model_refresh_authoritative_160652.py
           python3 scripts/test_inapp_update_160652.py
+          python3 scripts/test_inapp_update_20261106.py
           python3 scripts/test_multikey_quota_failover_20261105.py
           python3 scripts/test_v64r_render_contracts.py
           python3 scripts/test_stream_text_fade_source.py

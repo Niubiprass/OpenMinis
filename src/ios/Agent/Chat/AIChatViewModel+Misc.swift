@@ -69,6 +69,7 @@ extension AIChatViewModel {
     func enqueuePrompt(silent: Bool = false, deferUntilIdle: Bool = false,
                        overrideText: String? = nil) {
         let usingComposer = overrideText == nil
+        queuePreparationBlocked = false
         let text = (overrideText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty, isProcessing else { return }
         if !silent {
@@ -114,8 +115,12 @@ extension AIChatViewModel {
     func withdrawQueuedMessage(_ messageId: UUID) {
         guard let msg = messages.first(where: { $0.id == messageId }), msg.isQueued,
               let promptId = msg.queuedPromptId else { return }
+        let cached = promptQueue.first(where: { $0.id == promptId })?.attachments.map(\.cacheURL) ?? []
         promptQueue.removeAll { $0.id == promptId }
         messages.removeAll { $0.id == messageId }
+        if !cached.isEmpty {
+            Task { await AttachmentIO.remove(cached) }
+        }
         logger.info("Withdrew queued message, queue size=\(self.promptQueue.count)")
     }
 
@@ -177,7 +182,7 @@ extension AIChatViewModel {
     /// what photo-library / screenshot attachments already weigh. If the image
     /// is already at/under `maxLongEdge` we skip the resize but still JPEG-encode.
     /// Returns nil only if the image has no backing `cgImage`.
-    static func downsampledCameraJPEG(_ image: UIImage,
+    nonisolated static func downsampledCameraJPEG(_ image: UIImage,
                                       maxLongEdge: CGFloat = 2560,
                                       quality: CGFloat = 0.82) -> Data? {
         guard image.cgImage != nil else {
@@ -201,10 +206,18 @@ extension AIChatViewModel {
         return resized.jpegData(compressionQuality: quality)
     }
 
+    /// Escape a value for the double-quoted attributes of the model-facing
+    /// `<user-attached-files>` block. Filenames are user-controlled.
+    nonisolated static func xmlEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
     /// Resize image so its longest edge is at most `maxLongEdge` pixels.
     /// Returns nil if the image is already within bounds.
-    static func resizedImageData(_ data: Data, maxLongEdge: CGFloat = 2000) -> Data? {
-        guard let image = UIImage(data: data), image.cgImage != nil else { return nil }
+    static func resizedImageData(_ data: Data, maxLongEdge: CGFloat = 2000) -> Data? {        guard let image = UIImage(data: data), image.cgImage != nil else { return nil }
         let pixelW = image.size.width * image.scale
         let pixelH = image.size.height * image.scale
         let longest = max(pixelW, pixelH)

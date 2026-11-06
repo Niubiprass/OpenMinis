@@ -162,11 +162,22 @@ struct SendPromptIntent: AppIntent {
             }
         }
 
-        // Add file attachments if provided
+        // Stage files off-main first. Unknown file names are sanitized and
+        // magic-byte classified; a failed import is reported, never silently
+        // sent text-only.
+        var staged: [InputAttachment] = []
         if let intentFiles = files {
-            for file in intentFiles {
-                let name = Self.resolvedFileName(for: file)
-                vm.addDataAttachment(data: file.data, fileName: name)
+            do {
+                staged = try await Self.stageFiles(intentFiles)
+            } catch {
+                let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                ShortcutRunTracker.markCompleted(recordId: pendingId, reason: "attachmentFailed")
+                return .result(value: SendPromptResult(
+                    sessionId: vm.sessionId ?? "unknown",
+                    modelName: vm.selectedModel.displayName,
+                    status: "Rejected", isNewSession: isNewSession,
+                    prompt: prompt, responseText: reason),
+                    dialog: IntentDialog(stringLiteral: AppLocalized("Attachment import failed: \(reason)")))
             }
         }
 
@@ -175,7 +186,8 @@ struct SendPromptIntent: AppIntent {
         // isProcessing guard and report "Running" for a prompt that never
         // went anywhere; now it is queued as the next turn, and a genuine
         // refusal is surfaced instead of faked.
-        let submitOutcome = vm.submitProgrammaticPrompt(prompt, origin: .shortcut, silent: true)
+        let submitOutcome = vm.submitProgrammaticPrompt(prompt, origin: .shortcut, silent: true,
+                                                        preparedAttachments: staged)
 
         let sid = vm.sessionId ?? "unknown"
         // [T-shortcut-wait-queued-turn] Captured right here, before any await:
@@ -184,6 +196,7 @@ struct SendPromptIntent: AppIntent {
         let queuedPromptId = vm.lastQueuedProgrammaticPromptId(for: submitOutcome)
 
         if case .rejected(let reason) = submitOutcome {
+            Self.discardStaged(staged)
             ShortcutRunTracker.markCompleted(recordId: pendingId, reason: "rejected.\(reason)")
             let rejected = SendPromptResult(
                 sessionId: sid,
@@ -341,6 +354,30 @@ struct SendPromptIntent: AppIntent {
     /// Shortcuts often passes files with no extension (e.g. "IMG_1234") or a
     /// generic name like "Photo". This uses the IntentFile's UTType to append
     /// a proper extension when the filename lacks one.
+    /// Import every Shortcut file into the private attachment cache. Runs
+    /// provider/file IO off-main; returns complete attachments in order.
+    static func stageFiles(_ files: [IntentFile]) async throws -> [InputAttachment] {
+        var staged: [InputAttachment] = []
+        do {
+            for file in files {
+                let name = resolvedFileName(for: file)
+                if let url = file.fileURL {
+                    staged.append(try await AttachmentIO.stageFile(url, fileName: name))
+                } else {
+                    staged.append(try await AttachmentIO.stageData(file.data, fileName: name))
+                }
+            }
+            return staged
+        } catch {
+            discardStaged(staged)
+            throw error
+        }
+    }
+
+    static func discardStaged(_ staged: [InputAttachment]) {
+        for attachment in staged { try? FileManager.default.removeItem(at: attachment.cacheURL) }
+    }
+
     static func resolvedFileName(for file: IntentFile) -> String {
         let name = file.filename
         let ext = (name as NSString).pathExtension.lowercased()

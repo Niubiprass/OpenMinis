@@ -78,21 +78,31 @@ extension AIChatViewModel {
     @discardableResult
     func submitProgrammaticPrompt(_ text: String,
                                   origin: ProgrammaticPromptOrigin,
-                                  silent: Bool = true) -> ProgrammaticSubmitOutcome {
+                                  silent: Bool = true,
+                                  preparedAttachments: [InputAttachment]? = nil) -> ProgrammaticSubmitOutcome {
         let tag = "📨[Programmatic] origin=\(origin.logLabel) vm=\(vmInstanceId) sid=\(sessionId?.prefix(8) ?? "nil")"
 
         guard remoteDeviceId == nil else {
             logger.warning("\(tag) REJECTED — read-only remote session")
             return .rejected(reason: "read_only_remote_session")
         }
+        // A caller can prepare a complete batch without touching the live
+        // composer. Hand it off in this synchronous MainActor turn only;
+        // send/enqueue capture it before returning. No await is allowed in
+        // this swap window, and rejected batches remain owned by the caller.
+        let composerAttachments = attachments
+        if let preparedAttachments { attachments = preparedAttachments }
+        defer {
+            if preparedAttachments != nil { attachments = composerAttachments }
+        }
+        guard attachments.allSatisfy({ $0.loadState == .ready }) else {
+            logger.warning("\(tag) REJECTED — attachment batch is not ready")
+            return .rejected(reason: "attachments_not_ready")
+        }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        // send() prunes non-ready attachments before its own guard, so a
-        // pure-attachment prompt whose files never loaded would pass a naive
-        // check here and still vanish inside send(). Mirror that pruning.
-        let readyAttachments = attachments.filter { $0.loadState == .ready }
-        guard !trimmed.isEmpty || !readyAttachments.isEmpty else {
-            logger.warning("\(tag) REJECTED — empty prompt and no ready attachment (staged=\(self.attachments.count))")
-            return .rejected(reason: attachments.isEmpty ? "empty_prompt" : "attachments_not_ready")
+        guard !trimmed.isEmpty || !attachments.isEmpty else {
+            logger.warning("\(tag) REJECTED — empty prompt and no attachment")
+            return .rejected(reason: "empty_prompt")
         }
         if isCompacting {
             // compactAndSend has its own queue + post-compact drain; a foreign
@@ -119,10 +129,10 @@ extension AIChatViewModel {
         // resets `voiceUsedInComposition`, so a write/restore pair would
         // shut an open mention popup and disturb the caret mid-typing.
         //
-        // `attachments` stays shared on purpose — the CLI and the Shortcut
-        // intent both stage files onto it before calling (see
-        // SessionsOffloadBridge.stageAttachments / SendPromptIntent), and the
-        // doc comment above promises they are included.
+        // Legacy callers may still use staged composer attachments. New
+        // CLI/Shortcut callers pass preparedAttachments (including [] when
+        // there are no external files) so a background request cannot consume
+        // the user's unrelated selection. They own rejected batches.
 
         if isProcessing {
             // Busy: hand to the queue.

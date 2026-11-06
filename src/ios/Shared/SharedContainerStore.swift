@@ -55,15 +55,20 @@ enum SharedContainerStore {
 
     // MARK: - Write (called by Share Extension)
 
-    static func savePendingShare(_ share: PendingShare) {
+    @discardableResult
+    static func savePendingShare(_ share: PendingShare) -> Bool {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(share) else { return }
+        guard let data = try? encoder.encode(share) else { return false }
+        var defaultsOK = false
         if let defaults = sharedDefaults {
             defaults.set(data, forKey: pendingShareKey)
-            defaults.synchronize()
+            defaultsOK = defaults.synchronize()
         }
-        try? data.write(to: pendingShareFileURL)
+        let fileOK = (try? data.write(to: pendingShareFileURL, options: .atomic)) != nil
+        // The manifest file is the cross-container truth; defaults is a second
+        // channel. One working channel is enough.
+        return fileOK || defaultsOK
     }
 
     // MARK: - Read & Consume (called by main app)

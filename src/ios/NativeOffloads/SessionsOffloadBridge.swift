@@ -221,21 +221,32 @@ private struct SessionFolderSendError: LocalizedError {
         }
     }
 
-    /// Load attachment files from disk and stage them on the VM.
-    /// Returns the number of attachments successfully added.
+    /// Import paths into the private cache, off-main. Returns complete
+    /// attachments; a throw leaves no partially staged path behind and never
+    /// touches the composer's current selection.
     @MainActor
-    private static func stageAttachments(paths: [String], on vm: AIChatViewModel) -> Int {
-        var added = 0
-        for path in paths {
-            guard let data = FileManager.default.contents(atPath: path), !data.isEmpty else {
-                logger.info("attachment file unreadable or empty: \(path)")
-                continue
+    private static func stageAttachments(paths: [String]) async throws -> [InputAttachment] {
+        var staged: [InputAttachment] = []
+        do {
+            for path in paths {
+                let url = URL(fileURLWithPath: path)
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir),
+                      !isDir.boolValue else {
+                    throw AttachmentProcessingError.invalidFile((path as NSString).lastPathComponent)
+                }
+                staged.append(try await AttachmentIO.stageFile(url))
             }
-            let name = (path as NSString).lastPathComponent
-            vm.addDataAttachment(data: data, fileName: name)
-            added += 1
+            return staged
+        } catch {
+            discardStaged(staged)
+            throw error
         }
-        return added
+    }
+
+    @MainActor
+    private static func discardStaged(_ staged: [InputAttachment]) {
+        for attachment in staged { try? FileManager.default.removeItem(at: attachment.cacheURL) }
     }
 
     // MARK: - Send Prompt
@@ -413,11 +424,25 @@ private struct SessionFolderSendError: LocalizedError {
                 store.setBinding(binding, for: sid)
             }
 
-            // Attachments.
-            _ = stageAttachments(paths: attachmentPaths, on: vm)
+            // Attachments: stage before dispatch so a busy queue cannot pick
+            // up somebody else's composer chips, and a failure is reported.
+            var staged: [InputAttachment] = []
+            if !attachmentPaths.isEmpty {
+                do {
+                    staged = try await stageAttachments(paths: attachmentPaths)
+                } catch {
+                    output = ["ok": false, "error": "attachment_failed",
+                              "session_id": sid,
+                              "message": (error as? LocalizedError)?.errorDescription
+                                  ?? error.localizedDescription]
+                    sem.signal()
+                    return
+                }
+            }
 
             // Send through the one programmatic channel.
-            let outcome = vm.submitProgrammaticPrompt(prompt, origin: .cli, silent: true)
+            let outcome = vm.submitProgrammaticPrompt(prompt, origin: .cli, silent: true,
+                                                       preparedAttachments: staged)
 
             // Resolve model name for the response.
             var modelName = vm.selectedModel.displayName
@@ -443,6 +468,7 @@ private struct SessionFolderSendError: LocalizedError {
                     "response_text": "",
                 ]
             case .rejected(let reason):
+                discardStaged(staged)
                 output = [
                     "ok": false,
                     "action": "send",
@@ -509,18 +535,22 @@ private struct SessionFolderSendError: LocalizedError {
                 return
             }
 
-            // Build replacement attachments (mirror RetryRunIntent's stage-then-detach pattern).
+            // Build replacement attachments independently of the composer.
             var replacementAttachments: [InputAttachment]? = nil
             if !attachmentPaths.isEmpty {
-                let countBefore = vm.attachments.count
-                _ = stageAttachments(paths: attachmentPaths, on: vm)
-                if vm.attachments.count > countBefore {
-                    replacementAttachments = Array(vm.attachments.dropFirst(countBefore))
-                    vm.attachments.removeSubrange(countBefore...)
+                do {
+                    replacementAttachments = try await stageAttachments(paths: attachmentPaths)
+                } catch {
+                    output = ["ok": false, "error": "attachment_failed",
+                              "session_id": sessionId,
+                              "message": (error as? LocalizedError)?.errorDescription
+                                  ?? error.localizedDescription]
+                    sem.signal()
+                    return
                 }
             }
 
-            vm.retryFromMessage(targetMessage.id, replacementAttachments: replacementAttachments)
+            await vm.retryFromMessage(targetMessage.id, replacementAttachments: replacementAttachments)
 
             // Resolve model name.
             var modelName = vm.selectedModel.displayName

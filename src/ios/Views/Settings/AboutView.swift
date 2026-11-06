@@ -8,6 +8,7 @@ struct AboutView: View {
     /// App-wide state survives leaving About and also drives the Settings badge.
     @ObservedObject private var updater = UpdateChecker.shared
     @AppStorage("update.autoCheck") private var autoCheckEnabled = true
+    @State private var confirmUpdateInstall = false
 
     /// [T-version-display] Shows ONLY the marketing version ("1.15").
     ///
@@ -202,6 +203,12 @@ struct AboutView: View {
         .onChange(of: autoCheckEnabled) { enabled in
             if enabled { updater.check(manual: true) }
         }
+        .alert("安装更新？", isPresented: $confirmUpdateInstall) {
+            Button("取消", role: .cancel) { }
+            Button("交给 TrollStore") { updater.installDownloaded() }
+        } message: {
+            Text("将先校验安装包，再打开 TrollStore；仍需在安装器内确认。不会自动安装或删除现有数据。")
+        }
     }
 
     /// Build stamp injected by CI; 0 when an older/local build lacks it.
@@ -289,12 +296,12 @@ struct AboutView: View {
                     .foregroundStyle(.green)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("下载完成")
-                    Text("版本 \(version) 已准备好安装")
+                    Text("版本 \(version) · 安装前将校验 SHA-256")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("安装更新") { updater.installDownloaded() }
+                Button("安装更新") { confirmUpdateInstall = true }
                     .buttonStyle(.borderless)
             }
         case .verifying:
@@ -392,9 +399,8 @@ struct AboutUpdateBadge: View {
 // checker reads the manifest, compares build numbers, downloads and hands the
 // verified file to TrollStore through its URL scheme.
 //
-// Deliberately no auth: the repository is public, so a read-only anonymous GET
-// is enough (60 requests/hour, and the automatic check is capped at one a day).
-// No token is shipped in the binary.
+// Deliberately no auth: fixed public release paths avoid the anonymous REST
+// API quota. No token is shipped in the binary.
 
 struct UpdateManifest: Codable, Equatable {
     let build: Int
@@ -404,11 +410,20 @@ struct UpdateManifest: Codable, Equatable {
     let sha256: String
     let size: Int64
 
+    static func isSafeAssetName(_ name: String) -> Bool {
+        // A portable, single URL path component. In particular, reject %, ?
+        // and # rather than letting URLComponents reinterpret a manifest name.
+        !name.isEmpty && name.utf8.count <= 200 && name != "." && name != ".."
+            && name.utf8.allSatisfy {
+                (48...57).contains($0) || (65...90).contains($0)
+                    || (97...122).contains($0) || [45, 46, 95].contains($0)
+            }
+    }
+
     var isValid: Bool {
         build > 0 && !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && size > 0 && !ipa.isEmpty && ipa == (ipa as NSString).lastPathComponent
-            && !ipa.contains("\\") && ipa.lowercased().hasSuffix(".ipa")
-            && !ipa.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+            && version.utf8.count <= 128 && notes.utf8.count <= 32768
+            && size >= 4 && Self.isSafeAssetName(ipa) && ipa.lowercased().hasSuffix(".ipa")
             && sha256.utf8.count == 64
             && sha256.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
     }
@@ -432,8 +447,8 @@ final class UpdateChecker: ObservableObject {
     }
 
     static let shared = UpdateChecker()
-    static let repository = "Niubiprass/OpenMinis"
-    static let channelTag = "beta-latest"
+    nonisolated static let repository = "Niubiprass/OpenMinis"
+    nonisolated static let channelTag = "beta-latest"
     static let trollStoreScheme = "apple-magnifier://install?url="
     private static let lastCheckKey = "update.lastCheck"
     private static let pendingBuildKey = "update.pendingBuild"
@@ -457,24 +472,31 @@ final class UpdateChecker: ObservableObject {
     private enum RetryAction { case check, download, install }
     private static let checkedBuildKey = "update.checkedBuild"
     private static let lastAttemptKey = "update.lastAttempt"
+    private static let attemptBuildKey = "update.attemptBuild"
+    private static let failureCountKey = "update.failureCount"
+    private static let retryNotBeforeKey = "update.retryNotBefore"
+    private static let serverRetryNotBeforeKey = "update.serverRetryNotBefore"
 
     init() {
         build = (Bundle.main.infoDictionary?["MinisBuildNumber"] as? String).flatMap(Int.init) ?? 0
         let defaults = UserDefaults.standard
-        lastAttempt = defaults.object(forKey: Self.lastAttemptKey) as? Date
-        // A freshly installed build should re-check at once, not wait behind the
-        // previous build's five-minute retry gate.
-        if defaults.integer(forKey: Self.checkedBuildKey) != build {
-            defaults.removeObject(forKey: Self.lastAttemptKey)
-            lastAttempt = nil
+        // checkedBuild is a SUCCESS marker. Using it here reset the failure
+        // gate on every relaunch of a build that had never checked successfully.
+        let attemptedBuild = defaults.object(forKey: Self.attemptBuildKey) as? Int
+            ?? defaults.object(forKey: Self.checkedBuildKey) as? Int
+        if attemptedBuild != build {
+            for key in [Self.lastAttemptKey, Self.failureCountKey, Self.retryNotBeforeKey, Self.serverRetryNotBeforeKey] {
+                defaults.removeObject(forKey: key)
+            }
         }
+        lastAttempt = defaults.object(forKey: Self.lastAttemptKey) as? Date
         if let pending = defaults.object(forKey: Self.pendingBuildKey) as? Int, build >= pending {
             defaults.removeObject(forKey: Self.pendingBuildKey)
         }
         if let data = defaults.data(forKey: Self.cachedManifestKey),
            let cached = try? JSONDecoder().decode(UpdateManifest.self, from: data), cached.isValid,
            let rawURL = defaults.string(forKey: Self.cachedIPAURLKey),
-           let url = URL(string: rawURL), Self.isReleaseURL(url) {
+           let url = URL(string: rawURL), Self.isReleaseURL(url, asset: cached.ipa) {
             manifest = cached
             ipaURL = url
             showManifest()
@@ -492,7 +514,8 @@ final class UpdateChecker: ObservableObject {
         guard UpdateCheckSchedule.shouldCheck(enabled: enabled,
             hasCachedResult: manifest != nil && sameBuild,
             lastSuccess: defaults.object(forKey: Self.lastCheckKey) as? Date,
-            lastAttempt: lastAttempt, now: Date()) else { return }
+            lastAttempt: lastAttempt, now: Date(),
+            retryNotBefore: defaults.object(forKey: Self.retryNotBeforeKey) as? Date) else { return }
         check(manual: false)
     }
 
@@ -503,13 +526,32 @@ final class UpdateChecker: ObservableObject {
     }
 
     func check(manual: Bool) {
+        performCheck(manual: manual, downloadAfterCheck: false)
+    }
+
+    /// A download tap always refreshes the small manifest first. The old
+    /// beta-latest/constant-name URL did NOT pin bytes to the cached build;
+    /// retrying it after republishing repeated the same size/hash failure.
+    private func performCheck(manual: Bool, downloadAfterCheck: Bool) {
         guard task == nil, !transferBusy, verificationTask == nil else { return }
         if case .downloadReady = phase { return }
         if case .openingInstaller = phase { return }
         if case .installing = phase { return }
-        lastAttempt = Date()
-        UserDefaults.standard.set(lastAttempt, forKey: Self.lastAttemptKey)
-        retryAction = .check
+        retryAction = downloadAfterCheck ? .download : .check
+        let defaults = UserDefaults.standard
+        let now = Date()
+        // Automatic checks respect Retry-After; a manual tap should always
+        // actually try. A stale 24h server backoff otherwise makes the update
+        // button look permanently broken until one check succeeds.
+        if !manual,
+           let until = defaults.object(forKey: Self.serverRetryNotBeforeKey) as? Date, until > now {
+            isLatest = false
+            phase = .failed(title: "暂时无法更新", message: "服务器要求稍后重试，至少 \(Int(ceil(until.timeIntervalSince(now)))) 秒后重试")
+            return
+        }
+        lastAttempt = now
+        defaults.set(now, forKey: Self.lastAttemptKey)
+        defaults.set(build, forKey: Self.attemptBuildKey)
         isLatest = false
         phase = .checking
         // A failed recheck must not erase a previously discovered update badge.
@@ -531,16 +573,43 @@ final class UpdateChecker: ObservableObject {
                 defaults.set(ipa.absoluteString, forKey: Self.cachedIPAURLKey)
                 defaults.set(self.build, forKey: Self.checkedBuildKey)
                 defaults.set(Date(), forKey: Self.lastCheckKey)
+                for key in [Self.failureCountKey, Self.retryNotBeforeKey, Self.serverRetryNotBeforeKey] {
+                    defaults.removeObject(forKey: key)
+                }
                 self.manifest = fresh
                 self.ipaURL = ipa
                 self.showManifest()
                 NSLog("[AppUpdate] check success build=%d manual=%d", fresh.build, manual ? 1 : 0)
+                if downloadAfterCheck, fresh.build > self.build {
+                    guard self.schemeAvailable else { self.phase = .schemeMissing(fresh.version); return }
+                    self.retryAction = .download
+                    do { try UpdateDownloadCoordinator.shared.start(manifest: fresh, from: ipa) }
+                    catch { self.phase = .failed(title: "下载失败", message: Self.errorText(error)) }
+                }
             } catch {
                 guard !Task.isCancelled, self.checkID == id else { return }
+                self.recordFailure(error)
                 self.phase = .failed(title: "检查失败", message: Self.errorText(error))
                 NSLog("[AppUpdate] check failed: %@", Self.errorText(error))
             }
         }
+    }
+
+    private func recordFailure(_ error: Error) {
+        let defaults = UserDefaults.standard
+        let now = Date()
+        let failures = min(defaults.integer(forKey: Self.failureCountKey) + 1, 10)
+        defaults.set(failures, forKey: Self.failureCountKey)
+        defaults.set(build, forKey: Self.attemptBuildKey)
+        lastAttempt = now
+        defaults.set(now, forKey: Self.lastAttemptKey)
+        var until = now.addingTimeInterval(UpdateCheckSchedule.retryDelay(failures: failures))
+        if let server = (error as? UpdateError)?.retryAfter, server > now {
+            defaults.set(server, forKey: Self.serverRetryNotBeforeKey)
+            until = max(until, server)
+        }
+        if let server = defaults.object(forKey: Self.serverRetryNotBeforeKey) as? Date { until = max(until, server) }
+        defaults.set(until, forKey: Self.retryNotBeforeKey)
     }
 
     private func showManifest() {
@@ -564,15 +633,11 @@ final class UpdateChecker: ObservableObject {
     }
 
     func downloadAndInstall() {
-        guard let manifest, manifest.build > build, let ipaURL,
+        guard let manifest, manifest.build > build,
               task == nil, verificationTask == nil, !transferBusy else { return }
         guard schemeAvailable else { phase = .schemeMissing(manifest.version); return }
-        retryAction = .download
-        do {
-            try UpdateDownloadCoordinator.shared.start(manifest: manifest, from: ipaURL)
-        } catch {
-            phase = .failed(title: "下载失败", message: Self.errorText(error))
-        }
+        // Download only; installation has a separate, explicit confirmation.
+        performCheck(manual: true, downloadAfterCheck: true)
     }
 
     private var schemeAvailable: Bool {
@@ -615,15 +680,17 @@ final class UpdateChecker: ObservableObject {
             isLatest = false
             retryAction = .install
             phase = .downloadReady(download.version)
-        case let .failed(download, message):
+        case let .failed(download, error):
             if let download, download.build <= build {
                 if manifest == nil { manifest = download }
                 showManifest()
                 return
             }
-            if let download { manifest = download; hasUpdate = true; isLatest = false }
-            retryAction = ipaURL == nil ? .check : .download
-            phase = .failed(title: "下载失败", message: message)
+            if let download { adoptDownload(download); hasUpdate = true }
+            isLatest = false
+            recordFailure(error)
+            retryAction = manifest == nil ? .check : .download
+            phase = .failed(title: "下载失败", message: error.text)
         }
     }
 
@@ -674,7 +741,12 @@ final class UpdateChecker: ObservableObject {
         switch retryAction {
         case .check: check(manual: true)
         case .download: downloadAndInstall()
-        case .install: installDownloaded()
+        case .install:
+            // Retrying a scheme/open failure must return to the labelled install
+            // button, not bypass the About view's confirmation dialog.
+            if case let .downloaded(download, _) = UpdateDownloadCoordinator.shared.state {
+                phase = .downloadReady(download.version)
+            }
         }
     }
 
@@ -716,7 +788,7 @@ final class UpdateChecker: ObservableObject {
     /// download path, which has no such quota. Nothing here needs the API.
     private static func releaseAssetURL(_ name: String) -> URL? {
         guard !name.isEmpty, name == (name as NSString).lastPathComponent,
-              !name.contains("\\"),
+              !name.contains("\\"), !name.contains("?"), !name.contains("#"),
               var components = URLComponents(string: "https://github.com/\(repository)/releases/download/\(channelTag)/\(name)") else {
             return nil
         }
@@ -732,6 +804,17 @@ final class UpdateChecker: ObservableObject {
             && url.user == nil && url.password == nil
     }
 
+    /// Pin both the fixed tag and (when given) the exact asset. A release tag
+    /// is deleted and recreated, so a stale manifest must not be trusted just
+    /// because it points somewhere under releases/download.
+    private static func isReleaseURL(_ url: URL, asset: String?) -> Bool {
+        guard isReleaseURL(url) else { return false }
+        guard let asset, !asset.isEmpty else { return true }
+        let components = url.pathComponents
+        guard components.count >= 7 else { return false }
+        return components[5] == channelTag && components[6] == asset
+    }
+
     private static func request(_ url: URL, accept: String) -> URLRequest {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
                                  timeoutInterval: 25)
@@ -742,44 +825,26 @@ final class UpdateChecker: ObservableObject {
     }
 
     private static func requireOK(_ response: URLResponse, stage: String) throws {
-        guard let http = response as? HTTPURLResponse else {
-            throw UpdateError("\(stage):没有收到 HTTP 响应")
-        }
-        guard http.statusCode == 200 else {
-            let detail: String
-            switch http.statusCode {
-            case 404, 410:
-                // The publisher deletes and recreates the tag on every build:
-                // this is the publish gap, not a broken repository.
-                detail = "更新可能正在发布,请稍后重试"
-            case 403, 429:
-                if http.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0" {
-                    detail = "GitHub 请求额度已用完,请稍后重试"
-                } else {
-                    detail = "GitHub 暂时拒绝或限制了请求,请稍后重试"
-                }
-            case 500...599: detail = "GitHub 服务暂时异常,请稍后重试"
-            default: detail = "服务器未能完成请求"
-            }
-            throw UpdateError("\(stage):HTTP \(http.statusCode),\(detail)")
-        }
+        // One policy for checks and downloads, including Retry-After.
+        try UpdateHTTPPolicy.requireOK(response, stage: stage)
     }
 
     private func fetchManifest() async throws -> (UpdateManifest, URL) {
         guard let manifestURL = Self.releaseAssetURL("latest.json"),
-              Self.isReleaseURL(manifestURL) else {
+              Self.isReleaseURL(manifestURL, asset: "latest.json") else {
             throw UpdateError("版本清单地址不合法")
         }
         let (data, response) = try await URLSession.shared.data(
             for: Self.request(manifestURL, accept: "application/json"))
         try Self.requireOK(response, stage: "读取版本清单")
-        var manifest: UpdateManifest
+        let manifest: UpdateManifest
         do { manifest = try JSONDecoder().decode(UpdateManifest.self, from: data) }
         catch { throw UpdateError("版本清单格式不正确,请稍后重试") }
         guard manifest.isValid else { throw UpdateError("版本清单的构建号、文件名、大小或校验值无效") }
         // The IPA sits next to the manifest under the same tag; the manifest
         // names it, and `isValid` already rejected any path-like name.
-        guard let ipaURL = Self.releaseAssetURL(manifest.ipa), Self.isReleaseURL(ipaURL) else {
+        guard let ipaURL = Self.releaseAssetURL(manifest.ipa),
+              Self.isReleaseURL(ipaURL, asset: manifest.ipa) else {
             throw UpdateError("安装包地址不合法")
         }
         return (manifest, ipaURL)
@@ -851,18 +916,72 @@ final class UpdateChecker: ObservableObject {
     }
 }
 
-struct UpdateError: Error {
+struct UpdateError: Error, Equatable {
     let text: String
-    init(_ text: String) { self.text = text }
+    let retryAfter: Date?
+    init(_ text: String, retryAfter: Date? = nil) {
+        self.text = text
+        self.retryAfter = retryAfter
+    }
 }
 
+/// Pure policy, shared by manifest checks and downloads; no blanket "no beta".
+enum UpdateHTTPPolicy {
+    static func retryAfter(_ http: HTTPURLResponse, now: Date) -> Date? {
+        var dates: [Date] = []
+        if let value = http.value(forHTTPHeaderField: "Retry-After") {
+            if let seconds = TimeInterval(value.trimmingCharacters(in: .whitespaces)), seconds.isFinite, seconds >= 0 {
+                dates.append(now.addingTimeInterval(min(seconds, 24 * 3600)))
+            } else {
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = TimeZone(secondsFromGMT: 0)
+                formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+                if let date = formatter.date(from: value) { dates.append(date) }
+            }
+        }
+        if http.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0",
+           let raw = http.value(forHTTPHeaderField: "X-RateLimit-Reset"),
+           let seconds = TimeInterval(raw), seconds.isFinite {
+            dates.append(Date(timeIntervalSince1970: seconds))
+        }
+        guard let date = dates.max(), date > now else { return nil }
+        return min(date, now.addingTimeInterval(24 * 3600))
+    }
+
+    static func requireOK(_ response: URLResponse, stage: String, now: Date = Date()) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw UpdateError("\(stage)：没有收到 HTTP 响应")
+        }
+        guard http.statusCode == 200 else {
+            let detail: String
+            switch http.statusCode {
+            case 404, 410: detail = "发布或文件暂时不可用（可能正在发布），请重新检查更新"
+            case 403, 429:
+                detail = http.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0"
+                    ? "GitHub 请求额度已用完，请稍后重试" : "GitHub 拒绝或限制了请求，请检查网络并稍后重试"
+            case 500...599: detail = "GitHub 服务暂时异常，请稍后重试"
+            default: detail = "服务器未能完成请求"
+            }
+            throw UpdateError("\(stage)：HTTP \(http.statusCode)，\(detail)", retryAfter: retryAfter(http, now: now))
+        }
+    }
+}
+
+// Checks and download retries share one persisted backoff across app launches.
 enum UpdateCheckSchedule {
     static let successInterval: TimeInterval = 24 * 3600
     static let retryInterval: TimeInterval = 5 * 60
 
+    static func retryDelay(failures: Int) -> TimeInterval {
+        min(3600, retryInterval * pow(2, Double(min(max(failures - 1, 0), 4))))
+    }
+
     static func shouldCheck(enabled: Bool, hasCachedResult: Bool,
-                            lastSuccess: Date?, lastAttempt: Date?, now: Date) -> Bool {
+                            lastSuccess: Date?, lastAttempt: Date?, now: Date,
+                            retryNotBefore: Date? = nil) -> Bool {
         guard enabled else { return false }
+        if let retryNotBefore, retryNotBefore > now { return false }
         if let lastAttempt, (0..<retryInterval).contains(now.timeIntervalSince(lastAttempt)) { return false }
         let failedSinceSuccess = lastAttempt.map { attempt in
             lastSuccess.map { attempt > $0 } ?? true
@@ -884,8 +1003,11 @@ private struct PersistedUpdateDownload: Codable {
         guard manifest.isValid, UUID(uuidString: transferID) != nil,
               let url = URL(string: sourceURL), url.scheme == "https",
               url.host?.lowercased() == "github.com",
-              url.path.hasPrefix("/Niubiprass/OpenMinis/releases/download/"),
               url.user == nil, url.password == nil else { return false }
+        let components = url.pathComponents
+        guard components.count >= 7,
+              components[5] == UpdateChecker.channelTag,
+              components[6] == manifest.ipa else { return false }
         return relativePath == "MinisUpdates/\(transferID)/\(manifest.ipa)"
     }
 }
@@ -985,7 +1107,7 @@ final class UpdateDownloadCoordinator: ObservableObject {
         case restoring
         case downloading(UpdateManifest, Double)
         case downloaded(UpdateManifest, URL)
-        case failed(UpdateManifest?, String)
+        case failed(UpdateManifest?, UpdateError)
     }
 
     static let shared = UpdateDownloadCoordinator()
@@ -1131,7 +1253,7 @@ final class UpdateDownloadCoordinator: ObservableObject {
         case .downloaded, .failed: return
         default: break
         }
-        state = .failed(currentManifest, message ?? "下载结束但未保存安装包，请重新下载")
+        state = .failed(currentManifest, UpdateError(message ?? "下载结束但未保存安装包，请重新下载"))
     }
 
     fileprivate func didDrainBackgroundEvents() {
@@ -1170,7 +1292,7 @@ final class UpdateDownloadCoordinator: ObservableObject {
             state = .idle
             return true
         } catch {
-            state = .failed(record?.manifest, "清除旧下载失败：\(error.localizedDescription)")
+            state = .failed(record?.manifest, UpdateError("清除旧下载失败：\(error.localizedDescription)"))
             return false
         }
     }
@@ -1190,9 +1312,14 @@ final class UpdateDownloadCoordinator: ObservableObject {
                 guard self.currentTransferID == record?.transferID else { return }
                 let file = record.map { UpdateDownloadPersistence.fileURL(relativePath: $0.relativePath) }
                 let fileExists = file.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+                // `taskIdentifier` is local to the process/session instance;
+                // after a relaunch it can differ. The stable transfer id in
+                // taskDescription is the reliable identity. Matching on the
+                // old identifier made restore CANCEL its own live download
+                // whenever the app had been relaunched (crash/foreground kill),
+                // leaving an empty directory and a permanent failed record.
                 let matching = record.flatMap { saved in
-                    tasks.first { $0.taskDescription == saved.transferID
-                        && $0.taskIdentifier == saved.taskIdentifier }
+                    tasks.first { $0.taskDescription == saved.transferID }
                 }
                 // This session identifier belongs exclusively to app updates.
                 tasks.filter { fileExists || $0 !== matching }.forEach { $0.cancel() }
@@ -1209,7 +1336,7 @@ final class UpdateDownloadCoordinator: ObservableObject {
                     self.state = .downloading(record.manifest, fraction)
                     if matching.state == .suspended { matching.resume() }
                 } else {
-                    self.state = .failed(record.manifest, "后台下载未完成，请重新下载")
+                    self.state = .failed(record.manifest, UpdateError("后台下载未完成，请重新下载"))
                 }
             }
         }
@@ -1238,7 +1365,7 @@ final class UpdateDownloadCoordinator: ObservableObject {
             try FileManager.default.moveItem(at: location, to: destination)
             didFinish(transferID: id, file: destination)
         } catch {
-            let message = (error as? UpdateError)?.text ?? "无法保存安装包：\(error.localizedDescription)"
+            let message = (error as? UpdateError) ?? UpdateError("无法保存安装包：\(error.localizedDescription)")
             currentTaskIdentifier = nil
             state = .failed(record.manifest, message)
         }

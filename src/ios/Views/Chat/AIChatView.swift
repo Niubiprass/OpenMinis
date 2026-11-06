@@ -199,7 +199,11 @@ struct AIChatView: View {
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
         picker.allowsMultipleSelection = true
         attachmentPickerCoordinator.onFiles = { [self] urls in
-            for url in urls { vm.addFileAttachment(from: url) }
+            for url in urls {
+                vm.addFileAttachment(from: url) { ok in
+                    if !ok { vm.errorMessage = AppLocalized("文件读取失败，请从「文件」App 重新选择。") }
+                }
+            }
         }
         picker.delegate = attachmentPickerCoordinator
         UIKitPickerPresenter.present(picker)
@@ -236,14 +240,14 @@ struct AIChatView: View {
     /// a tappable failed chip instead of hanging.
     private func startPhotoLoad(_ job: (id: UUID, provider: NSItemProvider, isVideo: Bool), attempt: Int) {
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
             guard vm.attachmentLoadState(id: job.id) == .loading else { return }
             let shortID = job.id.uuidString.prefix(8)
             if attempt == 1 {
-                AppLogger(category: "PhotoPicker").error("load timeout(10s) attempt1 id=\(shortID) — auto retrying")
+                AppLogger(category: "PhotoPicker").error("load timeout(20s) attempt1 id=\(shortID) — auto retrying")
                 startPhotoLoad(job, attempt: 2)
             } else {
-                AppLogger(category: "PhotoPicker").error("load timeout(10s) attempt2 id=\(shortID) — failed chip, tap to retry")
+                AppLogger(category: "PhotoPicker").error("load timeout(20s) attempt2 id=\(shortID) — failed chip, tap to retry")
                 vm.markPlaceholderFailed(id: job.id)
             }
         }
@@ -1494,7 +1498,9 @@ struct AIChatView: View {
             switch result {
             case .success(let urls):
                 for url in urls {
-                    vm.addFileAttachment(from: url)
+                    vm.addFileAttachment(from: url) { ok in
+                        if !ok { vm.errorMessage = AppLocalized("文件读取失败，请从「文件」App 重新选择。") }
+                    }
                 }
             case .failure(let error):
                 minisLogger.error("File import failed: \(error.localizedDescription)")
@@ -1935,14 +1941,34 @@ _ios15Seg7
                 if pendingProviderImport == nil, let json = Self.providerExportJSON(at: fileURL) {
                     let tempURL = FileManager.default.temporaryDirectory
                         .appendingPathComponent("provider-share-\(UUID().uuidString).json")
-                    try? FileManager.default.copyItem(at: fileURL, to: tempURL)
-                    pendingProviderImport = PendingProviderImport(json: json, fileURL: tempURL)
+                    if (try? FileManager.default.copyItem(at: fileURL, to: tempURL)) != nil {
+                        // The prompt now owns the temp copy; this item never
+                        // goes through addFileAttachment's source cleanup.
+                        try? FileManager.default.removeItem(at: fileURL)
+                        pendingProviderImport = PendingProviderImport(json: json, fileURL: tempURL)
+                    }
                     minisLogger.info("[Share] item[\(i)] detected Provider export JSON — prompting import vs attachment")
                     continue
                 }
-                vm.addFileAttachment(from: fileURL, originalDate: nil, removeSourceAfterCopy: true) { _ in
-                    minisLogger.info("[Share] item[\(i)] addFileAttachment finished, attachments count=\(self.vm.attachments.count)")
+                // The shared source is only deleted after a successful cache
+                // copy. A transient provider/disk failure therefore has the
+                // original available for exactly one automatic retry.
+                func importShared(_ retry: Bool) {
+                    vm.addFileAttachment(from: fileURL, originalDate: nil,
+                                         removeSourceAfterCopy: true) { ok in
+                        minisLogger.info("[Share] item[\(i)] addFileAttachment finished ok=\(ok) count=\(self.vm.attachments.count)")
+                        if !ok && retry {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                importShared(false)
+                            }
+                        } else if !ok {
+                            DispatchQueue.main.async {
+                                self.vm.errorMessage = AppLocalized("部分分享附件导入失败，请重新分享。")
+                            }
+                        }
+                    }
                 }
+                importShared(true)
             }
         }
 
@@ -2886,7 +2912,10 @@ _ios15Seg7
             CollectionViewMessageListV3(
                 vm: vm,
                 inputFocused: inputFocused,
-                onRetryMessage: { vm.retryFromMessage($0); vm.forceScrollToBottom.send() },
+                onRetryMessage: { id in
+                    Task { @MainActor in await vm.retryFromMessage(id) }
+                    vm.forceScrollToBottom.send()
+                },
                 onRetryLast: { vm.retry(); vm.forceScrollToBottom.send() },
                 // [T-ios-assistant-header-open-soul] Routed through the same
                 // handler every `minis://` link in the transcript uses, so the
@@ -3724,7 +3753,11 @@ _ios15Seg7
                     viewModel: voiceVM,
                     inputText: inputTextBinding,
                     onPasteImage: { image in vm.addImageAttachment(image) },
-                    onPasteFile: { url in vm.addFileAttachment(from: url) },
+                    onPasteFile: { url in
+                        vm.addFileAttachment(from: url) { ok in
+                            if !ok { vm.errorMessage = AppLocalized("粘贴文件读取失败，请重试。") }
+                        }
+                    },
                     onPasteLongText: { text in vm.stashPastedText(text) },
                     conversationContext: { voiceCorrectionContext(from: vm.messages) },
                     // [T-ios-context-usage-hint] Same request the text composer
@@ -3816,7 +3849,11 @@ _ios15Seg7
             // were gone — `objectdestroy.NNTm` under `destroy for
             // PastableTextView` (build 25, iOS 16.0.3 / 17.3.1).
             onPasteImage: { [vm] image in vm.addImageAttachment(image) },
-            onPasteFile: { [vm] url in vm.addFileAttachment(from: url) },
+            onPasteFile: { [vm] url in
+                vm.addFileAttachment(from: url) { ok in
+                    if !ok { vm.errorMessage = AppLocalized("粘贴文件读取失败，请重试。") }
+                }
+            },
             // [T-paste-placeholder] Long pasted text stays inline: the vm
             // stashes it and the composer inserts the returned `[pasted#N]`.
             onPasteLongText: { [vm] text in vm.stashPastedText(text) },

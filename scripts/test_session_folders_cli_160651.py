@@ -80,6 +80,7 @@ def extracted_swift():
     methods = "\n".join(declaration(sends, marker) for marker in (
         "@MainActor\n    private static func resolveBindingModelName(",
         "@MainActor\n    private static func stageAttachments(",
+        "@MainActor\n    private static func discardStaged(",
         "@objc public static func callerSessionId(",
         "@objc public static func sendPrompt("))
     actual = (configuration + "\n" + folders + "\n" +

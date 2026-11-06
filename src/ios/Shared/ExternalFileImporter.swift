@@ -66,6 +66,9 @@ enum ExternalFileImporter {
                 if let copyErr { throw copyErr }
             } catch {
                 importLog.error("[Share] ingest: failed to copy \(url.lastPathComponent): \(error.localizedDescription)")
+                await MainActor.run {
+                    ShareFeedbackToast.show("文件导入失败，请先在「文件」App 下载原文件后重试。")
+                }
                 return
             }
 
@@ -77,8 +80,12 @@ enum ExternalFileImporter {
                 items.append(PendingShare.Item(kind: .inlineText, value: text))
             }
             items.append(PendingShare.Item(kind: .attachment, value: stagedName))
-            let share = PendingShare(items: items, timestamp: Date())
-            SharedContainerStore.savePendingShare(share)
+            let share = PendingShare(items: items, timestamp: Date()).assigningItemIDs()
+            guard SharedContainerStore.savePendingShare(share) else {
+                importLog.error("[Share] ingest: manifest write failed for \(stagedName)")
+                await MainActor.run { ShareFeedbackToast.show("无法保存待导入文件，请检查剩余空间后重试。") }
+                return
+            }
             importLog.info("[Share] ingest: staged \(url.lastPathComponent) as \(stagedName) and raising pending share")
             await MainActor.run { coordinator.raisePendingShare() }
         }
