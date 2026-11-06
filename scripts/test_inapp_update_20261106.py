@@ -87,3 +87,5 @@ if fails:
         print("   -", f)
     sys.exit(1)
 print("✅ update failure guard passed (static only)")
+
+# build 227: exercise the foreground fallback in the in-app updater.
