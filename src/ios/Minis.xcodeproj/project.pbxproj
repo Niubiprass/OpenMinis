@@ -114,7 +114,7 @@
 		E52000009 /* AnthropicModelsAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = E52000018 /* AnthropicModelsAPI.swift */; };
 		E53000001 /* AIChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E53000011 /* AIChatViewModel.swift */; };
 		E5ATP0001 /* AttachmentProcessing.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5ATP0011 /* AttachmentProcessing.swift */; };
-		E5MSC0001 /* MiniSightCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5MSC0011 /* MiniSightCatalog.swift */; };
+		E5CAT0001 /* MiniSightCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CAT0011 /* MiniSightCatalog.swift */; };
 		E53000002 /* AIChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E53000012 /* AIChatView.swift */; };
 		E53000004 /* ChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E53000014 /* ChatStore.swift */; };
 		E53000005 /* UsageStatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E53000015 /* UsageStatsView.swift */; };
@@ -846,7 +846,7 @@
 		E52000018 /* AnthropicModelsAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnthropicModelsAPI.swift; sourceTree = "<group>"; };
 		E53000011 /* AIChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIChatViewModel.swift; sourceTree = "<group>"; };
 		E5ATP0011 /* AttachmentProcessing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentProcessing.swift; sourceTree = "<group>"; };
-		E5MSC0011 /* MiniSightCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightCatalog.swift; sourceTree = "<group>"; };
+		E5CAT0011 /* MiniSightCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightCatalog.swift; sourceTree = "<group>"; };
 		E53000012 /* AIChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIChatView.swift; sourceTree = "<group>"; };
 		E53000014 /* ChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStore.swift; sourceTree = "<group>"; };
 		E53000015 /* UsageStatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageStatsView.swift; sourceTree = "<group>"; };
@@ -2258,7 +2258,7 @@
 				E53000011 /* AIChatViewModel.swift */,
 				E5VMA0011 /* AIChatViewModel+Attachments.swift */,
 				E5ATP0011 /* AttachmentProcessing.swift */,
-				E5MSC0011 /* MiniSightCatalog.swift */,
+				E5CAT0011 /* MiniSightCatalog.swift */,
 				E5VMA0012 /* AIChatViewModel+SlashCommands.swift */,
 				E5VMA0013 /* AIChatViewModel+MentionMenu.swift */,
 				E5VMA0014 /* AIChatViewModel+TitleGeneration.swift */,
@@ -3027,7 +3027,7 @@
 				E53000001 /* AIChatViewModel.swift in Sources */,
 				E5VMA0001 /* AIChatViewModel+Attachments.swift in Sources */,
 				E5ATP0001 /* AttachmentProcessing.swift in Sources */,
-				E5MSC0001 /* MiniSightCatalog.swift in Sources */,
+				E5CAT0001 /* MiniSightCatalog.swift in Sources */,
 				E5VMA0002 /* AIChatViewModel+SlashCommands.swift in Sources */,
 				E5VMA0003 /* AIChatViewModel+MentionMenu.swift in Sources */,
 				E5VMA0004 /* AIChatViewModel+TitleGeneration.swift in Sources */,
