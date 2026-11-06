@@ -26,17 +26,17 @@ def need(cond, what):
 need("@Published var shown: Bool { didSet { publishShown() } }" in STORE,
      "shown toggle publishes on change")
 need("private func publishShown()" in STORE, "shown has a dedicated publisher")
-need("try MiniSightAIConfigFile.saveShown(on)" in STORE,
+need("try MiniSightPetFile.saveShown(on)" in STORE,
      "shown writes the runtime file")
 need("UserDefaults.standard.set(on, forKey: MiniSightSettingKey.shown)" in STORE,
      "shown writes the plist key")
 need("publish(MiniSightSettingKey.shown)" in STORE, "shown goes through readback/deliver")
 need("case MiniSightSettingKey.shown: return shown" in STORE,
      "shown is in raw() for readback")
-need("MiniSightAIConfigFile.loadShown()" in STORE, "init takes the file as truth")
+need("MiniSightPetFile.loadShown()" in STORE, "init takes the file as truth")
 need("func reloadShownFromFile()" in STORE, "menu-hide state can be re-synced")
 need("config.reloadShownFromFile()" in HOME, "home page re-syncs before showing the toggle")
-need("try? MiniSightAIConfigFile.saveShown(shown)" in STORE,
+need("try? MiniSightPetFile.saveShown(shown)" in STORE,
      "persistAll also maintains the file")
 need('"shown","style"' in SETTINGS, "shown is part of the snapshot key list")
 need('case "shown": return MiniSightSettingKey.shown' in SETTINGS,
