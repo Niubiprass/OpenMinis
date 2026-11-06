@@ -12,6 +12,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = Path("/var/minis/shared/MiniSight-complete-20261105/debs/MiniSight")
+if not (PLUGIN / "Tweak.xm").is_file():
+    print("SKIP MiniSight live-settings guard: plugin worktree not mounted")
+    sys.exit(0)
 TWEAK = (PLUGIN / "Tweak.xm").read_text()
 PANEL = (PLUGIN / "MiniSightChatPanel.m").read_text()
 
