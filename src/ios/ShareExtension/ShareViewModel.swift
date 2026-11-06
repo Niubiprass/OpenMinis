@@ -8,6 +8,72 @@ final class ShareViewModel {
     private var pendingItems: [PendingShare.Item] = []
     private let inlineTextLimit = 1000
 
+    /// Per-provider deadline. iOS 15 Photos / Files providers occasionally never
+    /// call back; one hung provider used to stall the whole extension until the
+    /// outer timeout tore the process down BEFORE anything was saved — the
+    /// "shared file never arrives" report. Bounding each load means a hung
+    /// provider costs this one item, not the entire share.
+    private static let perItemTimeout: TimeInterval = 5.0
+
+    /// Run the whole pipeline off the main thread, returning whether a share
+    /// record was written.
+    ///
+    /// [T-share-offmain] The extension's UI is a blank view; the expensive part
+    /// is provider loading + copying, which must not sit on the main thread —
+    /// that is what the extension watchdog punishes.
+    ///
+    /// `hardTimeout` is a safety net only. On expiry the pipeline is left
+    /// running (cancellation cannot interrupt an NSItemProvider callback) so a
+    /// late save still lands.
+    static func processAndSave(_ items: [NSExtensionItem],
+                              hardTimeout: TimeInterval = 20.0) async -> Bool {
+        let vm = ShareViewModel()
+        let work = Task.detached(priority: .userInitiated) { () -> Bool in
+            await vm.processExtensionItems(items)
+            return vm.save()
+        }
+        let timeout = Task {
+            try? await Task.sleep(nanoseconds: UInt64(hardTimeout * 1_000_000_000))
+            return false
+        }
+        // Whichever finishes first decides the answer; `work` is NOT cancelled
+        // when the timeout wins, so its save still reaches the shared container.
+        let result = await withTaskGroup(of: Bool.self) { group -> Bool in
+            group.addTask { await work.value }
+            group.addTask { await timeout.value }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        if !result {
+            NSLog("[ShareExt] processAndSave: timed out after %.0fs — pipeline left running for a late save", hardTimeout)
+        }
+        return result
+    }
+
+    /// Load one item with a deadline, so a silent provider cannot stall the
+    /// entire share. Returns nil on timeout or error.
+    private static func loadItem(_ provider: NSItemProvider,
+                                 _ typeIdentifier: String) async -> NSSecureCoding? {
+        await withCheckedContinuation { (cont: CheckedContinuation<NSSecureCoding?, Never>) in
+            let lock = NSLock()
+            var finished = false
+            let finish: (NSSecureCoding?) -> Void = { value in
+                lock.lock()
+                if finished { lock.unlock(); return }
+                finished = true
+                lock.unlock()
+                cont.resume(returning: value)
+            }
+            provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { item, _ in
+                finish(item)
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + perItemTimeout) {
+                finish(nil)
+            }
+        }
+    }
+
     /// Process all extension items from the share context.
     func processExtensionItems(_ extensionItems: [NSExtensionItem]) async {
         pendingItems.removeAll()
@@ -62,7 +128,7 @@ final class ShareViewModel {
     // MARK: - Processors
 
     private func processURL(_ provider: NSItemProvider) async {
-        guard let item = try? await provider.loadItem(forTypeIdentifier: UTType.url.identifier),
+        guard let item = await Self.loadItem(provider, UTType.url.identifier),
               let url = item as? URL else { return }
 
         // file:// URLs are local files — treat as file attachment, not inline text
@@ -104,7 +170,7 @@ final class ShareViewModel {
     }
 
     private func processText(_ provider: NSItemProvider) async {
-        guard let item = try? await provider.loadItem(forTypeIdentifier: UTType.plainText.identifier),
+        guard let item = await Self.loadItem(provider, UTType.plainText.identifier),
               let text = item as? String else { return }
 
         if text.count <= inlineTextLimit {
@@ -120,7 +186,7 @@ final class ShareViewModel {
     }
 
     private func processImage(_ provider: NSItemProvider) async {
-        if let item = try? await provider.loadItem(forTypeIdentifier: UTType.image.identifier) {
+        if let item = await Self.loadItem(provider, UTType.image.identifier) {
             var image: UIImage?
             if let uiImage = item as? UIImage {
                 image = uiImage
@@ -143,7 +209,7 @@ final class ShareViewModel {
     }
 
     private func processVideo(_ provider: NSItemProvider) async {
-        guard let item = try? await provider.loadItem(forTypeIdentifier: UTType.movie.identifier),
+        guard let item = await Self.loadItem(provider, UTType.movie.identifier),
               let url = item as? URL else { return }
 
         let accessed = url.startAccessingSecurityScopedResource()
@@ -160,7 +226,7 @@ final class ShareViewModel {
     }
 
     private func processFile(_ provider: NSItemProvider) async {
-        guard let item = try? await provider.loadItem(forTypeIdentifier: UTType.item.identifier),
+        guard let item = await Self.loadItem(provider, UTType.item.identifier),
               let url = item as? URL else { return }
 
         let accessed = url.startAccessingSecurityScopedResource()

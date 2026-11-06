@@ -38,9 +38,15 @@ enum SharedContainerStore {
     // 此处直接复用, 不再重复声明, 否则触发 "invalid redeclaration"。
 
     static var sharedFileDirectory: URL? {
-        FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
-            .appendingPathComponent("ShareExtension", isDirectory: true)
+        let fm = FileManager.default
+        if let container = fm.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) {
+            return container.appendingPathComponent("ShareExtension", isDirectory: true)
+        }
+        // Never return nil: a nil here makes every processor drop its item
+        // silently (the extension copies nothing and the app finds no file),
+        // which reads to the user as "sharing into Minis does nothing at all".
+        // Fall back to the same best-effort directory containerDirectory uses.
+        return containerDirectory.appendingPathComponent("ShareExtension", isDirectory: true)
     }
 
     private static var pendingShareFileURL: URL {

@@ -1940,13 +1940,16 @@ _ios15Seg7
                     minisLogger.info("[Share] item[\(i)] detected Provider export JSON — prompting import vs attachment")
                     continue
                 }
-                vm.addFileAttachment(from: fileURL)
-                minisLogger.info("[Share] item[\(i)] addFileAttachment done, attachments count=\(self.vm.attachments.count)")
+                vm.addFileAttachment(from: fileURL, originalDate: nil, removeSourceAfterCopy: true) { _ in
+                    minisLogger.info("[Share] item[\(i)] addFileAttachment finished, attachments count=\(self.vm.attachments.count)")
+                }
             }
         }
 
-        // Clean up shared files after ingestion
-        SharedContainerStore.cleanSharedFiles()
+        // Shared transfer files are removed by each attachment's own copy task
+        // (removeSourceAfterCopy) — NOT here. The cache copy is asynchronous, so
+        // a blanket cleanSharedFiles() at this point deletes the staged original
+        // mid-copy and the share arrives with no attachment at all.
 
         minisLogger.info("[Share] Injection complete. inputText='\(String(self.vm.inputText.prefix(100)))' attachments=\(self.vm.attachments.count)")
 

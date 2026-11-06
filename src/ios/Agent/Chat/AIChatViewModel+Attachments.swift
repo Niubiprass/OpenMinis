@@ -169,11 +169,9 @@ extension AIChatViewModel {
             return false
         }
         // Same entry point a Files-app pick uses, so classification, the chip,
-        // upload and deletion all behave identically.
-        addFileAttachment(from: url)
-        // addFileAttachment copies into the attachment cache; the temp original
-        // is no longer needed.
-        try? fm.removeItem(at: url)
+        // upload and deletion all behave identically. The cache-copy task owns
+        // removal of this temporary source after the copy succeeds.
+        addFileAttachment(from: url, removeSourceAfterCopy: true)
         return true
     }
 
@@ -576,24 +574,40 @@ extension AIChatViewModel {
     /// The copy runs off-main: Files/iCloud providers can take seconds to
     /// materialize a large file and used to freeze the composer for 20 s
     /// (scene-update watchdog, 2026-11-06 stacks).
-    func addFileAttachment(from sourceURL: URL, originalDate: Date? = nil) {
+    func addFileAttachment(from sourceURL: URL, originalDate: Date? = nil,
+                           removeSourceAfterCopy: Bool = false,
+                           completion: (@MainActor (Bool) -> Void)? = nil) {
         let probe = "upload-\(UUID().uuidString.prefix(8))"
         let started = Date()
         let name = sourceURL.lastPathComponent
-        let bytes = (try? sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1
         let log = logger
-        log.info("[UploadProbe] \(probe) pick name=\(name) bytes=\(bytes) main=\(Thread.isMainThread)")
+        // Do not query file metadata here: resourceValues may synchronously
+        // enter FileProvider/iCloud and block the main thread before the task
+        // even starts (the same scene-update watchdog seen in the latest IPS).
+        log.info("[UploadProbe] \(probe) pick name=\(name) main=\(Thread.isMainThread)")
         Task.detached(priority: .userInitiated) { [weak self] in
             let fm = FileManager.default
-            guard let self else { return }
+            guard let self else {
+                await MainActor.run { completion?(false) }
+                return
+            }
             let dir = await self.attachmentCacheDir
-            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            let destURL = dir.appendingPathComponent("\(UUID().uuidString.prefix(8))_\(name)")
             do {
                 let accessed = sourceURL.startAccessingSecurityScopedResource()
                 defer { if accessed { sourceURL.stopAccessingSecurityScopedResource() } }
+                let bytes = (try? sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1
+                log.info("[UploadProbe] \(probe) source bytes=\(bytes) main=\(Thread.isMainThread)")
+                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                let destURL = dir.appendingPathComponent("\(UUID().uuidString.prefix(8))_\(name)")
                 let copyStart = Date()
-                try fm.copyItem(at: sourceURL, to: destURL)
+                var coordinationError: NSError?
+                var copyError: Error?
+                NSFileCoordinator().coordinate(readingItemAt: sourceURL, options: [], error: &coordinationError) { readURL in
+                    do { try fm.copyItem(at: readURL, to: destURL) }
+                    catch { copyError = error }
+                }
+                if let coordinationError { throw coordinationError }
+                if let copyError { throw copyError }
                 log.info("[UploadProbe] \(probe) copy ms=\(Int(Date().timeIntervalSince(copyStart) * 1000))")
                 if let date = originalDate {
                     try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: destURL.path)
@@ -603,9 +617,13 @@ extension AIChatViewModel {
                 await MainActor.run {
                     self.attachments.append(InputAttachment(fileName: name, cacheURL: destURL, kind: kind))
                     log.info("[UploadProbe] \(probe) appended count=\(self.attachments.count)")
+                    completion?(true)
                 }
+                if removeSourceAfterCopy { try? fm.removeItem(at: sourceURL) }
             } catch {
                 log.error("[UploadProbe] \(probe) copy failed code=\((error as NSError).code) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+                if removeSourceAfterCopy { try? fm.removeItem(at: sourceURL) }
+                await MainActor.run { completion?(false) }
             }
         }
     }

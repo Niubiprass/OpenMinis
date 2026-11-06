@@ -12,28 +12,29 @@ class ShareViewController: UIViewController {
         NSLog("[ShareExt] viewDidLoad — starting processing")
 
         Task { @MainActor in
-            let vm = ShareViewModel()
             let items = (extensionContext?.inputItems as? [NSExtensionItem]) ?? []
             NSLog("[ShareExt] inputItems count: %d", items.count)
     // ios15-port IOS15_SHARE_TIMEOUT
     // 之前 await 单个 NSItemProvider 时, 若它在 iOS 15 上不回调, 整个处理会
     // 永久挂住: 分享面板既没反应也不关闭, 主 App 也收不到 minis://share。
-    // 这里加 8 秒超时: 超时也要继续走 redirectToHostApp + completeRequest,
-    // 至少把主 App 唤起来。
-            let saved = await withTaskGroup(of: Bool.self) { group -> Bool in
-                group.addTask { @MainActor in
-                    await vm.processExtensionItems(items)
-                    return vm.save()
-                }
-                group.addTask {
-                    try? await Task.sleep(nanoseconds: 8_000_000_000)
-                    return false
-                }
-                let first = await group.next() ?? false
-                group.cancelAll()
-                return first
-            }
+    // 现在: 每个 provider 5s 超时 + 整体 20s 兜底, 且处理在后台线程跑。
+    // 关键顺序: 先把 PendingShare 写盘, 再唤主 App, 最后才 completeRequest ——
+    // 旧实现超时后立刻 completeRequest, 会把仍在复制文件的扩展进程杀掉,
+    // 结果就是"分享进来了但什么都没有"。
+            let saved = await ShareViewModel.processAndSave(items)
             NSLog("[ShareExt] save() returned: %@", saved ? "true" : "false")
+
+            if !saved {
+                // A hung provider won the race; the pipeline is still running and
+                // may still land its record. Poll briefly before tearing the
+                // extension down, otherwise the copy is lost with the process.
+                for _ in 0..<20 {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    if SharedContainerStore.loadPendingShare() != nil { break }
+                }
+                NSLog("[ShareExt] post-timeout wait finished, record=%@",
+                      SharedContainerStore.loadPendingShare() != nil ? "present" : "absent")
+            }
 
             // Verify what was saved
             if let pending = SharedContainerStore.loadPendingShare() {
