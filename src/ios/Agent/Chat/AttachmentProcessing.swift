@@ -416,22 +416,30 @@ enum AttachmentBatchProcessor {
                         return nil
                     }
                     try check()
-                    if let (data, mime) = image,
-                       base64Length(data.count) <= perImageBase64Limit,
-                       base64Length(data.count) <= messageBase64Limit - cumulativeBase64 {
-                        batch.parts.append(.text("[attached image: \(linuxPath)]"))
-                        batch.parts.append(.imageData(data: data, mimeType: mime, linuxPath: linuxPath))
-                        cumulativeBase64 += base64Length(data.count)
-                        batch.inlinedImages += 1
-                        log.info("[UploadProbe] stage=prepare.image phase=\(phase) bytes=\(data.count) mime=\(mime) main=\(Thread.isMainThread)")
-                    } else if data != nil, batch.inlinedImages >= inlineLimit || base64Length(data?.0.count ?? 0) > messageBase64Limit - cumulativeBase64 {
-                        // Explicit budget deferral, original stays usable.
+                    if let (data, mime) = image {
+                        let inlineBase64 = base64Length(data.count)
+                        if inlineBase64 <= perImageBase64Limit,
+                           inlineBase64 <= messageBase64Limit - cumulativeBase64 {
+                            batch.parts.append(.text("[attached image: \(linuxPath)]"))
+                            batch.parts.append(.imageData(data: data, mimeType: mime, linuxPath: linuxPath))
+                            cumulativeBase64 += inlineBase64
+                            batch.inlinedImages += 1
+                            log.info("[UploadProbe] stage=prepare.image phase=\(phase) bytes=\(data.count) mime=\(mime) main=\(Thread.isMainThread)")
+                        } else {
+                            // Encoded fine but over this message's bytes; the
+                            // original still works with read_image.
+                            batch.parts.append(.text("[image not inlined — original: \(linuxPath), use read_image to view it]"))
+                            log.info("[UploadProbe] stage=prepare.image.deferred phase=\(phase) original=preserved")
+                        }
+                    } else if batch.inlinedImages >= inlineLimit {
+                        // The codec was not even opened because the count cap
+                        // was already full.
                         batch.parts.append(.text("[image not inlined — original: \(linuxPath), use read_image to view it]"))
                         log.info("[UploadProbe] stage=prepare.image.deferred phase=\(phase) original=preserved")
                     } else {
-                        // The image was eligible but ImageIO could not read or
-                        // encode it. Fail rather than send a silent placeholder
-                        // the user believes was attached and analyzed.
+                        // Eligible but ImageIO could not read or encode it.
+                        // Fail rather than send a silent placeholder the user
+                        // believes was attached and analyzed.
                         throw AttachmentProcessingError.imageDecodeFailed
                     }
                 } catch is CancellationError { throw CancellationError() }
