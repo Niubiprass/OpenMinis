@@ -114,7 +114,7 @@ final class MiniSightConfigStore: ObservableObject {
         // `shown` has two consumers with different formats: the plist key for
         // settings and the plain "shown" file the SpringBoard runtime reads.
         // The file is authoritative; load it instead of the stale default.
-        let fileShown = MiniSightAIConfigFile.loadShown()
+        let fileShown = MiniSightPetFile.loadShown()
         shown = fileShown
         UserDefaults.standard.set(fileShown, forKey: MiniSightSettingKey.shown)
         loaded = true
@@ -180,7 +180,7 @@ final class MiniSightConfigStore: ObservableObject {
         guard loaded else { return }
         let on = shown
         do {
-            try MiniSightAIConfigFile.saveShown(on) {
+            try MiniSightPetFile.saveShown(on) {
                 UserDefaults.standard.set(on, forKey: MiniSightSettingKey.shown)
             }
             publish(MiniSightSettingKey.shown)
@@ -197,7 +197,7 @@ final class MiniSightConfigStore: ObservableObject {
     /// The hide action in the pet menu writes only the file. Sync the switch
     /// when its page appears instead of showing an outdated ON state.
     func reloadShownFromFile() {
-        let fileValue = MiniSightAIConfigFile.loadShown()
+        let fileValue = MiniSightPetFile.loadShown()
         if shown != fileValue { shown = fileValue }
     }
 
@@ -268,7 +268,7 @@ final class MiniSightConfigStore: ObservableObject {
 
     func persistAll() {
         for key in MiniSightConfig.all { UserDefaults.standard.set(raw(key), forKey: key) }
-        try? MiniSightAIConfigFile.saveShown(shown) { }
+        try? MiniSightPetFile.saveShown(shown) { }
         writeSnapshot()
     }
 
