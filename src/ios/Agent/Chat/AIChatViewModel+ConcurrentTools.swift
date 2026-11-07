@@ -431,8 +431,9 @@ extension AIChatViewModel {
 
             // Keep the existing policy; also recognize the native host CLIs
             // and bin/mcp wrappers that the old substring gate missed.
-            let needsHostApproval = HostAccessPermission.isDangerous(command)
-                || MiniSightSignal.requiresHostApproval(command)
+            let needsHostApproval = (HostAccessPermission.isDangerous(command)
+                || MiniSightSignal.requiresHostApproval(command))
+                && !HostAccessPermission.isReadOnlyShell(command)
             if needsHostApproval && !HostAccessPermission.isEnabled {
                 let msg = "Error: 这条会改设备（终端/写文件/装卸/改系统设置），主机权限未开启。只读和点击操作不受影响。要执行请到 设置 → MCP 集成 → Minis 内置工具 打开「允许 AI 操作手机」。"
                 ctLogger.info("[HostAccess] blocked dangerous MCP command: master switch off")

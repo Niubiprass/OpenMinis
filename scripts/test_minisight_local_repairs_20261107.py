@@ -41,6 +41,8 @@ tools = read(ROOT / 'Agent/Chat/AIChatViewModel+ConcurrentTools.swift')
 need('await AttachmentImageCodec.resizedJPEG' in tools, 'tool screenshot resize is off-main')
 need('await AttachmentImageCodec.analyzeForRead' in tools, 'read_image decode is off-main')
 need('toolImageData = Self.resizedImageData' not in tools, 'no sync tool image resize remains')
+need('isReadOnlyShell' in tools and 'isReadOnlyShell' in read(ROOT / 'Views/Settings/PluginDevView.swift'), 'read-only commands bypass approval')
+need('"git"' in read(ROOT / 'Views/Settings/PluginDevView.swift'), 'read-only classifier handles git')
 
 # Attachment first-chip hit target is inside the chip.
 chip = read(ROOT / 'Views/Chat/ChatInputBar.swift')
@@ -57,6 +59,9 @@ need('ImportKind' in home and '.petdex8x9' in cat, 'single image vs 8x9 is expli
 need('MiniSightAssetCatalog.activate' in home, 'catalog items can be activated')
 need('MiniSightAssetCatalog.preview' in home or 'preview(at:' in home, 'header uses single-cell preview')
 need('frame(width: 128, height: 139)' in home, 'header width is fixed, not the 2304pt atlas')
+need('LazyVGrid' in home and 'variant: item.variant' in home, 'gallery selects individual pets')
+need('width * 936 - height * 768' in cat and 'migrateLegacySingleImages' in cat, '64x81 pack validation and migration')
+need('.petdex8x9' in cat, 'explicit pack format remains')
 
 # Connection page: shared client, custom URL, saves before test.
 ai = read(ROOT / 'Views/Settings/MiniSightAIPage.swift')

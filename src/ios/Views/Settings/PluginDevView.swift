@@ -37,6 +37,74 @@ enum HostAccessPermission {
         guard command.contains("minis-mcp-cli") else { return false }
         return dangerousTools.contains { command.contains($0) }
     }
+
+    /// Conservative syntax classification. Only a command made entirely of
+    /// known readers skips the confirmation. Anything unknown still asks.
+    static func isReadOnlyShell(_ raw: String) -> Bool {
+        guard raw.contains("run_command"), !raw.contains("write_file"), !raw.contains("uninstall_app") else { return false }
+        let pattern = #""command"\s*:\s*"((?:\\.|[^"\\])*)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
+              let range = Range(match.range(at: 1), in: raw) else { return false }
+        let literal = "\"" + String(raw[range]) + "\""
+        guard let data = literal.data(using: .utf8),
+              let inner = try? JSONSerialization.jsonObject(with: data) as? String else { return false }
+        if inner.isEmpty || inner.contains("`") { return false }
+        // Any real output redirection writes a file.
+        if inner.range(of: #"(?<![0-9&])>>?(?!\s*/dev/null)(?!&1)"#, options: .regularExpression) != nil { return false }
+        var scan = ""
+        var quote: Character?
+        let chars = Array(inner)
+        var i = 0
+        while i < chars.count {
+            let ch = chars[i]
+            if let q = quote {
+                scan.append(ch)
+                if ch == q { quote = nil }
+            } else if ch == "'" || ch == "\"" {
+                quote = ch; scan.append(ch)
+            } else if ch == "&" && i + 1 < chars.count && chars[i + 1] == "&" {
+                scan.append("\n"); i += 1
+            } else if ch == "|" {
+                scan.append("\n")
+                if i + 1 < chars.count && chars[i + 1] == "|" { i += 1 }
+            } else if ch == ";" || ch == "\n" {
+                scan.append("\n")
+            } else {
+                scan.append(ch)
+            }
+            i += 1
+        }
+        let readers: Set<String> = ["ls","find","grep","egrep","fgrep","rg","cat","head","tail","sed","awk",
+            "cut","sort","uniq","wc","stat","file","readlink","realpath","printf","echo","pwd","whoami",
+            "id","uname","date","ps","pgrep","du","df","md5sum","sha256sum","shasum","basename","dirname",
+            "test","[","true","jq","plutil","otool","nm","strings","readelf","objdump","cd"]
+        for rawLine in scan.split(separator: "\n") {
+            var words = rawLine.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+            while let first = words.first, ["do","done","then","fi","else","{","}"].contains(first) { words.removeFirst() }
+            if words.isEmpty { continue }
+            if words[0] == "for" { continue }
+            var command = (words.first! as NSString).lastPathComponent
+            var args = Array(words.dropFirst())
+            if command == "timeout" { command = args.first.map { ($0 as NSString).lastPathComponent } ?? ""; args = Array(args.dropFirst()) }
+            if command == "env" { command = args.first.map { ($0 as NSString).lastPathComponent } ?? ""; args = Array(args.dropFirst()) }
+            if command == "git" {
+                let sub = args.first ?? ""
+                guard ["status","diff","log","show","rev-parse","branch","ls-files","describe"].contains(sub) else { return false }
+            } else if command == "defaults" {
+                guard args.first == "read" else { return false }
+            } else if command == "sed" {
+                guard !args.contains("-i") else { return false }
+            } else if command == "find" {
+                guard !args.contains("-delete") && !args.contains("-exec") else { return false }
+            } else if command.hasPrefix("$") || command.hasPrefix("{") || command.contains("=") {
+                continue
+            } else if !readers.contains(command) {
+                return false
+            }
+        }
+        return true
+    }
 }
 
 enum PluginProjectStatus: String, Codable, CaseIterable, Hashable {

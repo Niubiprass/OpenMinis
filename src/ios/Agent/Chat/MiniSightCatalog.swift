@@ -76,6 +76,9 @@ enum MiniSightAssetCatalog {
         var frameCounts = [6, 8, 8, 4, 5, 8, 6, 6, 6]
         var previewRow = 0
         var previewColumn = 0
+        var selectedVariant: Int? = 0
+        var variants: Int? = 72
+        var layoutVersion: Int? = 2
         var bytes: Int
         var sha256: String
         var revision: String
@@ -84,6 +87,8 @@ enum MiniSightAssetCatalog {
             schema == 1 && format == "minisight-atlas-v1" && UUID(uuidString: id) != nil &&
             columns == 8 && rows == 9 && cellWidth == 96 && cellHeight == 104 &&
             frameCounts == [6, 8, 8, 4, 5, 8, 6, 6, 6] && previewRow == 0 && previewColumn == 0 &&
+            (selectedVariant ?? 0) >= 0 && (selectedVariant ?? 0) < 72 && (variants ?? 72) == 72 &&
+            (layoutVersion ?? 1) <= 2 &&
             ImportKind(rawValue: sourceKind) != nil && bytes > 0 && bytes <= maxStoredBytes &&
             sha256.count == 64 && UUID(uuidString: revision) != nil && title.utf8.count <= 512
         }
@@ -92,9 +97,10 @@ enum MiniSightAssetCatalog {
         let name: String
         let title: String
         let bytes: Int
+        let variant: Int
         let metadata: Metadata?
         let preview: UIImage?
-        var id: String { name }
+        var id: String { "\(name)#\(variant)" }
     }
     struct Snapshot {
         let items: [Item]
@@ -108,6 +114,7 @@ enum MiniSightAssetCatalog {
     static let resourceNotification = "com.openminis.minisight.resources"
     static var dir: URL { MiniSightPetFile.directory.appendingPathComponent("costumes", isDirectory: true) }
     static var metadataURL: URL { MiniSightPetFile.directory.appendingPathComponent("pet.json") }
+    static var currentVariant: Int { (try? metadata(at: metadataURL))?.selectedVariant ?? 0 }
     private static func sidecar(_ file: URL) -> URL { file.deletingPathExtension().appendingPathExtension("json") }
     private static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
@@ -164,8 +171,10 @@ enum MiniSightAssetCatalog {
               Int64(width) * Int64(height) <= 40_000_000 else { throw Failure.dimensions }
         if kind == .petdex8x9 {
             let orientation = (props[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
-            guard uti == "public.png", orientation == 1, width % 8 == 0, height % 9 == 0,
-                  (width / 8) * 13 == (height / 9) * 12 else { throw Failure.atlasLayout }
+            // 8x9 outer cells, each cell a 8x9 animation atlas. Require the
+            // same 768:936 proportion; support the original 2304x2808 too.
+            guard uti == "public.png", orientation == 1,
+                  abs(width * 936 - height * 768) <= 768 * 4 else { throw Failure.atlasLayout }
         }
         let thumbnailOptions: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -186,13 +195,16 @@ enum MiniSightAssetCatalog {
         if kind == .petdex8x9 {
             context.draw(decoded, in: CGRect(x: 0, y: 0, width: 768, height: 936))
         } else {
-            let scale = min(96.0 / Double(decoded.width), 104.0 / Double(decoded.height))
+            // A single photo becomes all 72 outer pets, each with 8x9 identical
+            // inner frames, so the selector still offers real pet-sized cells.
+            let fw = 768.0 / 64.0, fh = 936.0 / 81.0
+            let scale = min(fw / Double(decoded.width), fh / Double(decoded.height))
             let w = Double(decoded.width) * scale, h = Double(decoded.height) * scale
-            for row in 0..<9 {
+            for row in 0..<81 {
                 try operation.check()
-                for col in 0..<8 {
-                    context.draw(decoded, in: CGRect(x: Double(col * 96) + (96 - w) / 2,
-                                                     y: Double(row * 104) + (104 - h) / 2, width: w, height: h))
+                for col in 0..<64 {
+                    context.draw(decoded, in: CGRect(x: Double(col) * fw + (fw - w) / 2,
+                                                     y: Double(row) * fh + (fh - h) / 2, width: w, height: h))
                 }
             }
         }
@@ -224,15 +236,20 @@ enum MiniSightAssetCatalog {
         }
     }
 
-    static func preview(at file: URL) throws -> UIImage {
-        let data = try boundedData(file, limit: maxStoredBytes)
+    static func preview(at file: URL, variant: Int = 0) throws -> UIImage {
+        var data = try boundedData(file, limit: maxStoredBytes)
         guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
               let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
               w > 0, h > 0, w <= 16384, h <= 16384, Int64(w) * Int64(h) <= 40_000_000 else { throw Failure.unreadable }
         let metaFile = file == MiniSightPetFile.url ? metadataURL : sidecar(file)
-        let meta = FileManager.default.fileExists(atPath: metaFile.path) ? try metadata(at: metaFile) : nil
+        var meta = FileManager.default.fileExists(atPath: metaFile.path) ? try metadata(at: metaFile) : nil
+        if let meta, meta.sourceKind == ImportKind.singleImage.rawValue, meta.layoutVersion == nil {
+            migrateLegacySingleImages()
+            data = try boundedData(file, limit: maxStoredBytes)
+            meta = FileManager.default.fileExists(atPath: metaFile.path) ? try metadata(at: metaFile) : nil
+        }
         if let meta { try verify(data, metadata: meta) }
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
                                       kCGImageSourceCreateThumbnailWithTransform: true,
@@ -241,25 +258,97 @@ enum MiniSightAssetCatalog {
         guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw Failure.unreadable }
         // Legacy files have no declared layout. Never guess and cut a portrait.
         guard meta != nil else { return UIImage(cgImage: cg, scale: 1, orientation: .up) }
-        guard let cell = cg.cropping(to: CGRect(x: 0, y: 0, width: cg.width / 8, height: cg.height / 9)) else {
+        let v = min(71, max(0, variant))
+        let fw = cg.width / 64, fh = cg.height / 81
+        guard fw > 0, fh > 0,
+              let cell = cg.cropping(to: CGRect(x: (v % 8) * 8 * fw, y: (v / 8) * 9 * fh, width: fw, height: fh)) else {
             throw Failure.verification
         }
         return UIImage(cgImage: cell, scale: 1, orientation: .up)
     }
 
+    /// v1 single-photo imports tiled one copy into each OUTER 96x104 cell.
+    /// The current renderer needs each outer cell to contain its own 8x9 inner
+    /// frames. Convert once; layoutVersion marks the new sheet.
+    private static func migrateLegacySingleImages() {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { return }
+        for file in files where ["png", "jpg", "jpeg"].contains(file.pathExtension.lowercased()) {
+            guard let meta = try? metadata(at: sidecar(file)),
+                  meta.sourceKind == ImportKind.singleImage.rawValue,
+                  meta.layoutVersion == nil,
+                  let data = try? boundedData(file, limit: maxStoredBytes),
+                  let source = CGImageSourceCreateWithData(data as CFData, sourceOptions as CFDictionary),
+                  let outer = CGImageSourceCreateThumbnailAtIndex(source, 0,
+                    [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                     kCGImageSourceCreateThumbnailWithTransform: true,
+                     kCGImageSourceThumbnailMaxPixelSize: 936] as CFDictionary),
+                  let context = CGContext(data: nil, width: 768, height: 936, bitsPerComponent: 8,
+                                          bytesPerRow: 768 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { continue }
+            context.interpolationQuality = .high
+            context.translateBy(x: 0, y: 936); context.scaleBy(x: 1, y: -1)
+            let ow = 96, oh = 104, fw = 768.0 / 64.0, fh = 936.0 / 81.0
+            for row in 0..<9 {
+                for col in 0..<8 {
+                    guard let cell = outer.cropping(to: CGRect(x: col * ow, y: row * oh, width: ow, height: oh)) else { continue }
+                    for ir in 0..<9 {
+                        for ic in 0..<8 {
+                            let x = Double((col * 8 + ic)) * fw
+                            let y = Double((row * 9 + ir)) * fh
+                            context.draw(cell, in: CGRect(x: x, y: y, width: fw, height: fh))
+                        }
+                    }
+                }
+            }
+            guard let cg = context.makeImage() else { continue }
+            let out = NSMutableData()
+            guard let writer = CGImageDestinationCreateWithData(out, UTType.png.identifier as CFString, 1, nil) else { continue }
+            CGImageDestinationAddImage(writer, cg, nil)
+            guard CGImageDestinationFinalize(writer) else { continue }
+            let bytes = out as Data
+            var updated = meta
+            updated.bytes = bytes.count
+            updated.sha256 = digest(bytes)
+            updated.layoutVersion = 2
+            updated.revision = UUID().uuidString
+            do {
+                try write(bytes, to: file)
+                try write(try JSONEncoder().encode(updated), to: sidecar(file))
+                let current = try? metadata(at: metadataURL)
+                if current?.id == meta.id {
+                    var selected = updated
+                    selected.selectedVariant = current?.selectedVariant ?? 0
+                    try replaceCurrent(bytes, json: try JSONEncoder().encode(selected), keepBackup: true)
+                }
+            } catch { continue }
+        }
+    }
+
     static func snapshot() throws -> Snapshot {
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        migrateLegacySingleImages()
         let files = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey])
         let imageFiles = files.filter { ["png", "jpg", "jpeg", "heic", "heif", "webp"].contains($0.pathExtension.lowercased()) }
         guard imageFiles.count <= 500 else { throw Failure.tooLarge }
-        let items = imageFiles.sorted { $0.lastPathComponent < $1.lastPathComponent }.map { file -> Item in
+        var items: [Item] = []
+        for file in imageFiles.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             let meta = try? metadata(at: sidecar(file))
             let bytes = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            return Item(name: file.lastPathComponent, title: meta?.title ?? file.lastPathComponent,
-                        bytes: bytes, metadata: meta, preview: nil)
+            if meta?.sourceKind == ImportKind.petdex8x9.rawValue {
+                for v in 0..<72 {
+                    items.append(Item(name: file.lastPathComponent,
+                                      title: "\(meta?.title ?? "图集") · \(v + 1)",
+                                      bytes: bytes, variant: v, metadata: meta, preview: nil))
+                }
+            } else {
+                items.append(Item(name: file.lastPathComponent, title: meta?.title ?? file.lastPathComponent,
+                                  bytes: bytes, variant: 0, metadata: meta, preview: nil))
+            }
         }
-        let currentID = try? metadata(at: metadataURL).id
+        let currentMeta = try? metadata(at: metadataURL)
+        let currentID = currentMeta.map { "\($0.id)#\($0.selectedVariant ?? 0)" }
         let backup = MiniSightPetFile.directory.appendingPathComponent("pet.backup.png")
         return Snapshot(items: items, currentID: currentID, canRestore: fm.fileExists(atPath: backup.path))
     }
@@ -306,8 +395,10 @@ enum MiniSightAssetCatalog {
         let data = try boundedData(file, limit: maxStoredBytes)
         try verify(data, metadata: meta)
         var selected = meta
+        selected.selectedVariant = item.variant
         selected.revision = UUID().uuidString
         try replaceCurrent(data, json: JSONEncoder().encode(selected), keepBackup: true)
+        try? Data("\(item.variant)".utf8).write(to: MiniSightPetFile.directory.appendingPathComponent("variant"), options: .atomic)
     }
 
     /// Backup first, then image, then JSON manifest (commit marker). If any step

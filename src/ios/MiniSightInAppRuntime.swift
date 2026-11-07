@@ -44,7 +44,7 @@ struct MiniSightInAppRuntime: View {
     var body: some View {
         Group {
             if visible, let petImage {
-                MiniSightPetHost(image: petImage, displaySize: CGFloat(petSize), roll: motion.roll,
+                MiniSightPetHost(image: petImage, displaySize: CGFloat(petSize), variant: MiniSightAppFiles.variantIndex, roll: motion.roll,
                                  activityActive: activity.active, gravityEnabled: gravityEnabled,
                                  shakeGeneration: motion.shakeGeneration,
                                  shakeDirection: motion.shakeDirection, shakeStrength: motion.shakeStrength,
@@ -272,9 +272,19 @@ private enum MiniSightAppFiles {
     static var petIdentity: String {
         let path = directory.appendingPathComponent("pet.png").path
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else { return "missing" }
-        return "\(attrs[.size] ?? 0)|\(attrs[.modificationDate] ?? Date.distantPast)"
+        let variant = (try? String(contentsOf: directory.appendingPathComponent("variant"), encoding: .utf8)) ?? "0"
+        return "\(attrs[.size] ?? 0)|\(attrs[.modificationDate] ?? Date.distantPast)|\(variant.trimmingCharacters(in: .whitespacesAndNewlines))"
     }
-    static func loadPet() -> UIImage? { UIImage(contentsOfFile: directory.appendingPathComponent("pet.png").path) }
+    static var variantIndex: Int {
+        let text = (try? String(contentsOf: directory.appendingPathComponent("variant"), encoding: .utf8)) ?? "0"
+        return min(71, max(0, Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0))
+    }
+    static func loadPet() -> UIImage? {
+        guard let image = UIImage(contentsOfFile: directory.appendingPathComponent("pet.png").path),
+              let cg = image.cgImage,
+              let keyed = MiniSightPetFile.keyOutBlackBackground(cg) else { return UIImage(contentsOfFile: directory.appendingPathComponent("pet.png").path) }
+        return UIImage(cgImage: keyed, scale: 1, orientation: .up)
+    }
     static var appearancePreferences: [String: Any] {
         let defaults = UserDefaults.standard
         return [
@@ -541,6 +551,7 @@ private final class MiniSightAppMotion: ObservableObject {
 private struct MiniSightPetHost: UIViewRepresentable {
     let image: UIImage
     let displaySize: CGFloat
+    let variant: Int
     let roll: Double
     let activityActive: Bool
     let gravityEnabled: Bool
@@ -608,6 +619,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.isUserInteractionEnabled = true
             pet.gravityEnabled = parent.gravityEnabled
             pet.longPressEnabled = parent.longPressEnabled
+            pet.variantIndex = parent.variant
             pet.activityActive = parent.activityActive
             root.pet = pet
             root.addSubview(pet)
@@ -636,6 +648,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             }
             pet.gravityEnabled = parent.gravityEnabled
             pet.longPressEnabled = parent.longPressEnabled
+            pet.variantIndex = parent.variant
             pet.gravityRoll = roll
             pet.activityActive = active
             pet.reducedWork = ProcessInfo.processInfo.isLowPowerModeEnabled

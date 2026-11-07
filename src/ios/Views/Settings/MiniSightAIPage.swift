@@ -22,9 +22,16 @@ struct MiniSightAIPage: View {
     var body: some View {
         List {
             Section {
-                Picker("接口预设", selection: Binding(get: { supplier }, set: applySupplier)) {
-                    ForEach(presets, id: \.self) { Text($0.title).tag($0.rawValue) }
-                }.disabled(testing)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(presets, id: \.self) { item in
+                            Button(item.title) { applySupplier(item.rawValue) }
+                                .buttonStyle(.bordered)
+                                .tint(item.rawValue == supplier ? .accentColor : .secondary)
+                                .disabled(testing)
+                        }
+                    }.padding(.vertical, 2)
+                }
                 TextField("接口链接（Base URL 或完整 chat/completions）", text: $url)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                     .disabled(testing)
@@ -36,9 +43,10 @@ struct MiniSightAIPage: View {
                 Text("只支持 OpenAI 兼容接口。Claude 请使用中转/兼容链接；切换预设会清空旧 Key 和模型，避免发错服务。")
             }
             Section {
-                TextEditor(text: $persona).frame(minHeight: 64).font(.footnote)
+                TextField("人设（可选，自动保存）", text: $persona)
+                    .font(.footnote).textInputAutocapitalization(.never)
                     .onChange(of: persona) { _ in schedulePersona() }
-            } header: { Text("人设（可选，自动保存）") }
+            } header: { Text("人设") }
             Section {
                 Button("保存连接") { _ = saveConnection() }.disabled(testing)
                 Button(testing ? "等待真实回答…" : "保存并测试真实回答") { Task { await runTest() } }

@@ -131,7 +131,7 @@ struct MiniSightHomeView: View {
     }
     private func refreshPreview() {
         MiniSightAssetCatalog.io.async {
-            let image = try? MiniSightAssetCatalog.preview(at: MiniSightPetFile.url)
+            let image = try? MiniSightAssetCatalog.preview(at: MiniSightPetFile.url, variant: MiniSightAssetCatalog.currentVariant)
             DispatchQueue.main.async { petImage = image }
         }
     }
@@ -200,6 +200,7 @@ struct MiniSightDownloadPage: View {
     @State private var showPhotos = false
     @State private var operation: MiniSightAssetOperation?
     @State private var downloader: MiniSightAssetDownload?
+    @State private var thumbs: [String: UIImage] = [:]
 
     var body: some View {
         List {
@@ -226,21 +227,36 @@ struct MiniSightDownloadPage: View {
             } header: { Text("素材来源") }
             Section {
                 if items.isEmpty { Text("尚未添加素材").foregroundStyle(.secondary) }
-                ForEach(items) { item in
-                    HStack {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 12) {
+                    ForEach(items) { item in
                         Button { activate(item) } label: {
-                            HStack {
-                                Text(item.title).lineLimit(1)
-                                Spacer()
-                                if item.metadata?.id == currentID { Image(systemName: "checkmark") }
+                            VStack(spacing: 4) {
+                                ZStack(alignment: .topTrailing) {
+                                    if let image = thumbs[item.id] {
+                                        Image(uiImage: image).resizable().scaledToFit()
+                                    } else {
+                                        Color.secondary.opacity(0.10)
+                                    }
+                                    if item.id == currentID {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.white, Color.accentColor)
+                                    }
+                                }
+                                .frame(height: 72)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.25), lineWidth: 0.5))
+                                Text(item.title).font(.caption2).lineLimit(1)
                             }
-                        }.disabled(importing || item.metadata == nil)
-                        Button(role: .destructive) { remove(item) } label: { Image(systemName: "trash") }
-                            .buttonStyle(.borderless).disabled(importing)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(importing || item.metadata == nil)
+                        .contextMenu {
+                            Button(role: .destructive) { remove(item) } label: { Label("删除", systemImage: "trash") }
+                        }
                     }
                 }
                 if canRestore { Button("恢复上一次素材") { restore() }.disabled(importing) }
-            } header: { Text("我的素材 · 点击切换") }
+            } header: { Text("我的宠物 · 点一只直接切换") }
         }
         .navigationTitle("添加素材")
         .onAppear { reload() }
@@ -319,7 +335,13 @@ struct MiniSightDownloadPage: View {
         MiniSightAssetCatalog.io.async {
             do {
                 let snapshot = try MiniSightAssetCatalog.snapshot()
-                DispatchQueue.main.async { items = snapshot.items; currentID = snapshot.currentID; canRestore = snapshot.canRestore }
+                var images: [String: UIImage] = [:]
+                for item in snapshot.items {
+                    if let image = try? MiniSightAssetCatalog.preview(at: MiniSightAssetCatalog.dir.appendingPathComponent(item.name), variant: item.variant) {
+                        images[item.id] = image
+                    }
+                }
+                DispatchQueue.main.async { items = snapshot.items; thumbs = images; currentID = snapshot.currentID; canRestore = snapshot.canRestore }
             } catch { DispatchQueue.main.async { failed = true; notice = error.localizedDescription } }
         }
     }
@@ -329,7 +351,7 @@ struct MiniSightDownloadPage: View {
     }
     private func remove(_ item: MiniSightAssetCatalog.Item) {
         perform { try MiniSightAssetCatalog.delete(item) }
-        if item.metadata?.id == currentID { config.costume = "" }
+        if item.id == currentID { config.costume = "" }
     }
     private func restore() { perform { try MiniSightAssetCatalog.restorePrevious() }; config.costume = "" }
     private func perform(_ work: @escaping () throws -> Void) {

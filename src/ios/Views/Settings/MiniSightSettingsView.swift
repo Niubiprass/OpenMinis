@@ -122,7 +122,40 @@ enum MiniSightPetFile {
               let cell = sheet.cropping(to: CGRect(x: 0, y: 0, width: cellW, height: cellH)) else {
             return load()
         }
-        return UIImage(cgImage: cell, scale: 1, orientation: .up)
+        let cleaned = Self.keyOutBlackBackground(cell) ?? cell
+        return UIImage(cgImage: cleaned, scale: 1, orientation: .up)
+    }
+
+    /// Some imported sheets bake a black rectangle behind the character. Flood
+    /// only near-black pixels connected to a cell edge, so black eyes/clothes
+    /// inside the character stay opaque. Runs on the asset I/O queue.
+    static func keyOutBlackBackground(_ image: CGImage) -> CGImage? {
+        let w = image.width, h = image.height
+        guard w > 1, h > 1, w * h < 2_000_000 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        func dark(_ x: Int, _ y: Int) -> Bool {
+            let i = (y * w + x) * 4
+            return pixels[i + 3] > 0 && pixels[i] < 32 && pixels[i + 1] < 32 && pixels[i + 2] < 32
+        }
+        var queue = [Int](); queue.reserveCapacity(w * h)
+        for x in 0..<w { if dark(x, 0) { queue.append(x) }; if dark(x, h - 1) { queue.append((h - 1) * w + x) } }
+        for y in 0..<h { if dark(0, y) { queue.append(y * w) }; if dark(w - 1, y) { queue.append(y * w + w - 1) } }
+        var seen = [Bool](repeating: false, count: w * h)
+        var head = 0
+        while head < queue.count {
+            let p = queue[head]; head += 1
+            if seen[p] { continue }; seen[p] = true
+            let x = p % w, y = p / w
+            if !dark(x, y) { continue }
+            pixels[p * 4 + 3] = 0
+            if x > 0 { queue.append(p - 1) }; if x + 1 < w { queue.append(p + 1) }
+            if y > 0 { queue.append(p - w) }; if y + 1 < h { queue.append(p + w) }
+        }
+        return ctx.makeImage()
     }
 
     /// 9-row sheets are 1536 px wide on Petdex; 768 is plenty for a 96 pt pet.
