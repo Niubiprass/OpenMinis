@@ -247,7 +247,7 @@ struct MiniSightDownloadPage: View {
         .onDisappear { _ = operation?.cancel() }
         .sheet(isPresented: $showFiles) { MiniSightFilePicker { file in showFiles = false; importFile(file) } }
         .sheet(isPresented: $showPhotos) {
-            MiniSightPhotoPicker { provider in
+            MiniSightAssetPhotoPicker { provider in
                 showPhotos = false
                 guard let provider else { return }
                 let op = begin()
@@ -361,7 +361,7 @@ struct MiniSightFilePicker: UIViewControllerRepresentable {
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { if let url = urls.first { onPick(url) } }
     }
 }
-struct MiniSightPhotoPicker: UIViewControllerRepresentable {
+struct MiniSightAssetPhotoPicker: UIViewControllerRepresentable {
     let picked: (NSItemProvider?) -> Void
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration(photoLibrary: .shared()); config.filter = .images; config.selectionLimit = 1
