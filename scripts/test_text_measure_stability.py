@@ -116,6 +116,15 @@ class StabilityTests(unittest.TestCase):
         self.assertIn('verticalFittingPriority: .fittingSizeLevel', infrastructure)
         self.assertNotIn('height: attrs.size.height)', infrastructure)
 
+    def test_seeded_rows_are_remeasured_after_settle(self):
+        infrastructure = (ROOT / 'src/ios/Agent/MessageList/MessageListInfrastructure.swift').read_text()
+        list = (ROOT / 'src/ios/Agent/MessageList/CollectionViewMessageListV3.swift').read_text()
+        self.assertIn('usedSeedForMeasurement = true', infrastructure)
+        self.assertIn('usedSeedForMeasurement = false', infrastructure)
+        self.assertIn('.filter { $0.usedSeedForMeasurement }', list)
+        self.assertIn('cell.clearCachedHeight()', list)
+        self.assertIn('[SeedHeal]', list)
+
     def test_production_swift_methods_against_foundation_shim(self):
         swift = shutil.which('swift')
         required = os.environ.get('V64R_REQUIRE_SWIFT') == '1'

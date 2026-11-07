@@ -51,40 +51,47 @@ extension AIChatViewModel {
         folderRuntimeContext?.memoryDirectory ?? Self.minisMemoryPersistentDir
     }
 
+    /// Global SOUL.md is always the primary personality. A session/folder
+    /// persona is an ADDITION after it, never a replacement. An explicitly
+    /// blank persona therefore means "global only", not "no personality".
+    private func soulWithGlobalPrimary(_ extra: String?) -> String? {
+        let global = SoulStore.load()?.body.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let tail = extra?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if tail.isEmpty { return global.isEmpty ? nil : global }
+        if global.isEmpty { return tail }
+        return global + "\n\n" + tail
+    }
+
     var effectiveSoulPrompt: String? {
         if let sid = helperConfig?.parentSessionId ?? sessionId {
-            // [T-persona-library] Session persona wins. An empty id is an
-            // explicit "blank" choice; a missing key means inherit.
+            // [T-persona-library] Session persona is appended to the global
+            // soul. An empty id is an explicit "no extra persona" choice.
             if let pid = UserDefaults.standard.string(forKey: "session.persona.id.\(sid)") {
-                if pid.isEmpty { return "" }
+                if pid.isEmpty { return nil }
                 if let persona = PersonaStore.shared.persona(id: pid) {
-                    return persona.body
+                    return soulWithGlobalPrimary(persona.body)
                 }
             }
             if let override = UserDefaults.standard.string(forKey: "session.soul.body.\(sid)") {
-                return override // explicit empty string disables the inherited body
+                return soulWithGlobalPrimary(override)
             }
         }
         guard let configuration = folderRuntimeContext?.configuration else {
-            return nil // follow the global SOUL.md body
+            return nil // identitySection loads the global SOUL.md itself
         }
         if let pid = configuration.personaId {
-            if pid.isEmpty { return "" }
+            if pid.isEmpty { return nil }
             if let persona = PersonaStore.shared.persona(id: pid) {
-                return persona.body
+                return soulWithGlobalPrimary(persona.body)
             }
         }
         switch configuration.soulMode {
-        case "inherit":
-            return nil // follow the global SOUL.md body
-        case "clear":
-            return ""
+        case "inherit", "clear":
+            return nil // global soul still applies
         case "append":
-            return [SoulStore.load()?.body ?? "", configuration.soulPrompt ?? ""]
-                .filter { !$0.isEmpty }.joined(separator: "\n\n")
+            return soulWithGlobalPrimary(configuration.soulPrompt)
         default:
-            if let prompt = configuration.soulPrompt, !prompt.isEmpty { return prompt }
-            return nil // follow the global SOUL.md body
+            return soulWithGlobalPrimary(configuration.soulPrompt)
         }
     }
 

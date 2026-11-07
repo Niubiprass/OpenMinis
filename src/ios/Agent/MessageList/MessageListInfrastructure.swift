@@ -218,6 +218,10 @@ class SelfSizingCell: UICollectionViewCell {
     /// measurement path.
     private var seededHeight: CGFloat?
     private var seededWidth: CGFloat?
+    /// True when the current height came from a memo seed instead of a real
+    /// measure. Settle re-measures these visible rows once: a stale seed
+    /// otherwise survives forever and lets text overflow the next row.
+    private(set) var usedSeedForMeasurement = false
 
     // [V53-PROBE] 滑动期高度短路三来源诊断 —— 见 MSG_V53_P。
     //
@@ -375,6 +379,7 @@ class SelfSizingCell: UICollectionViewCell {
         // re-seeds (from the memo, keyed by the NEW content) right after this.
         seededHeight = nil
         seededWidth = nil
+        usedSeedForMeasurement = false
     }
 
     private static let sizingLogger = AppLogger(category: "CellSizing")
@@ -585,6 +590,7 @@ class SelfSizingCell: UICollectionViewCell {
            !v53DebtIsRipe, !v53SurplusIsRipe {
             seededHeight = nil
             seededWidth = nil
+            usedSeedForMeasurement = true
             lastComputedHeight = sh
             lastComputedWidth = layoutAttributes.size.width
             lastMeasureMediaTime = CACurrentMediaTime()
@@ -1020,6 +1026,7 @@ class SelfSizingCell: UICollectionViewCell {
         lastMeasureMediaTime = nil
         seededHeight = nil
         seededWidth = nil
+        usedSeedForMeasurement = false
     }
 
     override func prepareForReuse() {
@@ -1028,6 +1035,7 @@ class SelfSizingCell: UICollectionViewCell {
         lastComputedHeight = nil
         lastComputedWidth = nil
         lastMeasureMediaTime = nil
+        usedSeedForMeasurement = false
         // [T-ios-contextmenu-liquidmorph-reuse] Cancel any context-menu
         // presentation still in flight for THIS cell before UIKit hands it to a
         // different message.

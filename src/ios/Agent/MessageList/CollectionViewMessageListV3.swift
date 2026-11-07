@@ -6692,6 +6692,21 @@ extension CollectionViewMessageListV3 {
             layout.invalidateLayout()
             cv.layoutIfNeeded()
 
+            // [SeedHeal] A seeded height is only a guess from a prior appearance.
+            // If the content render state changed while the seed still matched,
+            // live measurement never runs (`seeded=N live=0` in field logs) and
+            // the too-short row lets text overflow into the next one. Now that
+            // scrolling has actually stopped, spend one real measure on the
+            // visible rows that used a seed. Off-screen rows keep the cheap path.
+            let seededVisible = cv.visibleCells.compactMap { $0 as? SelfSizingCell }
+                .filter { $0.usedSeedForMeasurement }
+            if !seededVisible.isEmpty {
+                for cell in seededVisible { cell.clearCachedHeight() }
+                layout.invalidateLayout()
+                UIView.performWithoutAnimation { cv.layoutIfNeeded() }
+                AppLogger(category: "CellSizing").info("[SeedHeal] re-measured \(seededVisible.count) seeded visible row(s) after settle")
+            }
+
             if scrollMode == .userBrowsing {
                 let currentIP = anchorItem.flatMap { dataSource?.indexPath(for: $0) }
                 let postY = currentIP.flatMap { layout.layoutAttributesForItem(at: $0)?.frame.minY }
