@@ -6,7 +6,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 # Deliberately hidden by the 2026-11-06 simplification; still stored/snapshotted.
-HIDDEN = {'aiAdjust', 'adjustments', 'aiAdjustments', 'aiPermissions', 'diagnostics', 'frameLimit', 'nickname', 'persona', 'proactive', 'proactiveInterval', 'quickButtons', 'quickLines', 'quickOrder', 'quickPosition'}
+HIDDEN = {'aiAdjust', 'adjustments', 'aiAdjustments', 'aiPermissions', 'diagnostics', 'frameLimit', 'nickname', 'persona', 'proactive', 'proactiveInterval', 'quickButtons', 'quickLines', 'quickOrder', 'quickPosition', 'longPressRecord'}
 IOS = ROOT / "src/ios"
 STORE = (IOS / "MiniSightConfigStore.swift").read_text()
 SCHEMA = (IOS / "MiniSightSettings.swift").read_text()

@@ -1,177 +1,141 @@
-//
-//  MiniSightConfirm.swift
-//  Minis
-//
-//  Destructive MCP calls (run_command / write_file / uninstall_app) need a
-//  yes/no. When the desktop pet is on screen the question is asked **in its
-//  speech bubble** (the tweak draws the buttons); when there is no pet we fall
-//  back to the modal dialog so the call can never hang without a UI.
-//
-//  App <-> tweak protocol (files in Documents/MiniSight, Darwin notifications):
-//    confirm.json  {id, command, action}   app -> tweak
-//    com.openminis.minisight.confirm       app -> tweak "show it"
-//    confirm-result.txt  "<id>:1|0"        tweak -> app
-//    com.openminis.minisight.confirm.result tweak -> app "answered"
-//
-
 import CoreFoundation
 import Foundation
-import UIKit
 
-private enum MiniSightPetAvailability {
-    static var appDirectory: URL? {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("MiniSight", isDirectory: true)
-    }
-
-    static var isOnScreen: Bool {
-        let defaults = UserDefaults.standard
-        guard defaults.integer(forKey: "minisight.style") == 1,
-              let dir = appDirectory else { return false }
-        let shown = (try? String(contentsOf: dir.appendingPathComponent("shown"), encoding: .utf8)) ?? "1"
-        return shown != "0" && FileManager.default.fileExists(atPath: dir.appendingPathComponent("pet.png").path)
-    }
-
-    static func probeJailbreakPlugin() async -> Bool {
-        guard let dir = appDirectory else { return false }
-        let nonce = UUID().uuidString
-        let replyURL = dir.appendingPathComponent("plugin-probe-reply.txt")
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try? FileManager.default.removeItem(at: replyURL)
-            try Data(nonce.utf8).write(to: dir.appendingPathComponent("plugin-probe.txt"), options: .atomic)
-            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                CFNotificationName("com.openminis.minisight.plugin-probe" as CFString), nil, nil, true)
-            for _ in 0..<5 {
-                try Task.checkCancellation()
-                try await Task.sleep(nanoseconds: 100_000_000)
-                if (try? String(contentsOf: replyURL, encoding: .utf8)) == nonce { return true }
-            }
-        } catch { return false }
-        return false
-    }
-}
-
+/// Files belong only to MiniSight, not the App's general logs. Every response
+/// must match this request's nonce. The pet is preferred in foreground too.
 @MainActor
 final class MiniSightConfirmBridge {
     static let shared = MiniSightConfirmBridge()
+    private var busy = false
+    private static let note = "com.openminis.minisight.confirm"
+    private static let cancelNote = "com.openminis.minisight.confirm.cancel"
 
-    private static let confirmName = "com.openminis.minisight.confirm"
-    private static let resultName = "com.openminis.minisight.confirm.result"
-    private static let cancelName = "com.openminis.minisight.confirm.cancel"
-
-    private var continuation: CheckedContinuation<Bool, Never>?
-    private var requestId: String?
-    private var timeoutWork: DispatchWorkItem?
-    private var observing = false
-    private var requestInFlight = false
-
-    private var dir: URL? {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+    private var directory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             .appendingPathComponent("MiniSight", isDirectory: true)
     }
 
     static func confirm(command: String) async -> Bool {
-        let appIsForeground = await MainActor.run {
-            UIApplication.shared.applicationState == .active
-        }
-        guard !appIsForeground else {
-            return await MiniSightHostAdapter.confirm(command: command)
-        }
-        let pluginAvailable = await MiniSightPetAvailability.probeJailbreakPlugin()
-        let petAvailable = MiniSightPetAvailability.isOnScreen && pluginAvailable
-        guard petAvailable else {
-            return await MiniSightHostAdapter.confirm(command: command)
-        }
-        return await shared.request(command: command)
+        await shared.confirmOwned(command)
     }
 
-    private func request(command: String) async -> Bool {
-        guard !requestInFlight else { return false }
-        guard command.lengthOfBytes(using: .utf8) <= 8192 else { return false }
-        guard let dir else { return await MiniSightHostAdapter.confirm(command: command) }
-        requestInFlight = true
-        installObserverIfNeeded()
+    private func confirmOwned(_ command: String) async -> Bool {
+        // Concurrent tools queue rather than reject a second request silently.
+        while busy {
+            do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return false }
+        }
+        guard !Task.isCancelled else { return false }
+        busy = true
+        defer { busy = false }
         let id = UUID().uuidString
-        requestId = id
+        let dir = directory
+        let defaults = UserDefaults.standard
+        let shown = (try? String(contentsOf: dir.appendingPathComponent("shown"), encoding: .utf8)) ?? "0"
+        let usesPlugin = defaults.integer(forKey: "minisight.renderer") == 0
+        let petStyle = defaults.integer(forKey: "minisight.style") == 1
+        if usesPlugin && petStyle && shown.trimmingCharacters(in: .whitespacesAndNewlines) == "1" {
+            if let result = await requestPet(command, id: id, directory: dir) { return result }
+        } else {
+            log("route", "ok", id: id, reason: "pet_unavailable", route: "modal")
+        }
+        guard !Task.isCancelled else { return false }
+        // This fallback is intentional: with no pet/plugin the App must still
+        // be able to approve commands. An explicit denial never falls back.
+        let result = await MiniSightHostAdapter.confirm(command: command)
+        log("answer", "ok", id: id, reason: result ? "allow" : "deny", route: "modal")
+        return !Task.isCancelled && result
+    }
+
+    /// nil = no visible pet UI (use App). false = explicit denial/cancel/timeout.
+    private func requestPet(_ command: String, id: String, directory dir: URL) async -> Bool? {
+        guard command.lengthOfBytes(using: .utf8) <= 65536 else {
+            log("route", "skipped", id: id, reason: "oversized_command", route: "modal")
+            return nil
+        }
+        guard await probeJailbreakPlugin(id: id, directory: dir) else {
+            log("route", "skipped", id: id, reason: "plugin_no_reply", route: "modal")
+            return nil
+        }
         let action = MiniSightHostAdapter.commandTitle(command)
         do {
             try await Task.detached(priority: .userInitiated) {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 let resultURL = dir.appendingPathComponent("confirm-result.txt")
                 try? FileManager.default.removeItem(at: resultURL)
-                let payload: [String: String] = ["id": id, "command": command, "action": action]
-                let data = try JSONSerialization.data(withJSONObject: payload)
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent("confirm-shown.txt"))
+                let data = try JSONSerialization.data(withJSONObject: ["id": id, "command": command, "action": action])
                 try data.write(to: dir.appendingPathComponent("confirm.json"), options: .atomic)
             }.value
         } catch {
-            requestInFlight = false
-            requestId = nil
-            return await MiniSightHostAdapter.confirm(command: command)
+            log("request", "failed", id: id, reason: "write_failed", route: "modal")
+            return nil
         }
-        guard !Task.isCancelled else {
-            requestInFlight = false
-            requestId = nil
-            return false
-        }
-
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-                continuation = cont
-                let work = DispatchWorkItem { [weak self] in self?.finish(false, cancelPet: true) }
-                timeoutWork = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: work)
-                post(Self.confirmName)
+        guard !Task.isCancelled else { await cancelPet(id, directory: dir); return false }
+        // Post FIRST, then await an acknowledgment. The previous candidate did
+        // the reverse, making every request time out without ever showing it.
+        Self.post(Self.note)
+        log("request", "pending", id: id, reason: "sent", route: "pet")
+        let deadline = Date().addingTimeInterval(60)
+        let ackDeadline = Date().addingTimeInterval(1.5)
+        var acknowledged = false
+        while Date() < deadline {
+            if Task.isCancelled { await cancelPet(id, directory: dir); return false }
+            let state = await Task.detached(priority: .utility) { () -> (Bool, Bool?) in
+                let ack = (try? String(contentsOf: dir.appendingPathComponent("confirm-shown.txt"), encoding: .utf8))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) == id
+                let text = (try? String(contentsOf: dir.appendingPathComponent("confirm-result.txt"), encoding: .utf8)) ?? ""
+                let parts = text.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ":")
+                let result: Bool? = parts.count == 2 && parts[0] == Substring(id) && (parts[1] == "1" || parts[1] == "0")
+                    ? parts[1] == "1" : nil
+                return (ack, result)
+            }.value
+            if let result = state.1 {
+                log("answer", "ok", id: id, reason: result ? "allow" : "deny", route: "pet")
+                return !Task.isCancelled && result
             }
-        } onCancel: { [weak self] in
-            Task { @MainActor in self?.finish(false, cancelPet: true) }
-        }
-    }
-
-    private func installObserverIfNeeded() {
-        guard !observing else { return }
-        observing = true
-        let center = CFNotificationCenterGetDarwinNotifyCenter()
-        let observer = Unmanaged.passUnretained(self).toOpaque()
-        CFNotificationCenterAddObserver(center, observer, { _, observer, _, _, _ in
-            guard let observer else { return }
-            let bridge = Unmanaged<MiniSightConfirmBridge>.fromOpaque(observer).takeUnretainedValue()
-            DispatchQueue.main.async { bridge.readResult() }
-        }, Self.resultName as CFString, nil, .deliverImmediately)
-    }
-
-    private func readResult() {
-        guard let dir, let id = requestId else { return }
-        guard let text = try? String(contentsOf: dir.appendingPathComponent("confirm-result.txt"), encoding: .utf8) else { return }
-        let parts = text.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ":")
-        guard parts.count == 2, String(parts[0]) == id else { return }
-        finish(parts[1] == "1")
-    }
-
-    private func finish(_ allowed: Bool, cancelPet: Bool = false) {
-        guard let cont = continuation else { return }
-        let id = requestId
-        if cancelPet, let id, let dir {
-            let url = dir.appendingPathComponent("confirm-cancel.txt")
-            let cancelName = Self.cancelName
-            Task.detached(priority: .utility) {
-                try? Data(id.utf8).write(to: url, options: .atomic)
-                CFNotificationCenterPostNotification(
-                    CFNotificationCenterGetDarwinNotifyCenter(),
-                    CFNotificationName(cancelName as CFString), nil, nil, true)
+            if state.0 && !acknowledged {
+                acknowledged = true
+                log("show", "ok", id: id, reason: "visible_ack", route: "pet")
             }
+            if !acknowledged && Date() >= ackDeadline {
+                await cancelPet(id, directory: dir)
+                log("route", "skipped", id: id, reason: "no_visible_ack", route: "modal")
+                return nil
+            }
+            do { try await Task.sleep(nanoseconds: 100_000_000) }
+            catch { await cancelPet(id, directory: dir); return false }
         }
-        continuation = nil
-        requestId = nil
-        requestInFlight = false
-        timeoutWork?.cancel()
-        timeoutWork = nil
-        cont.resume(returning: allowed)
+        await cancelPet(id, directory: dir)
+        log("finish", "failed", id: id, reason: "timeout", route: "pet")
+        return false
     }
 
-    private func post(_ name: String) {
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotifyCenter(),
+    private func probeJailbreakPlugin(id: String, directory dir: URL) async -> Bool {
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data(id.utf8).write(to: dir.appendingPathComponent("plugin-probe.txt"), options: .atomic)
+            Self.post("com.openminis.minisight.plugin-probe")
+            for _ in 0..<5 {
+                try Task.checkCancellation()
+                try await Task.sleep(nanoseconds: 100_000_000)
+                let reply = try? String(contentsOf: dir.appendingPathComponent("plugin-probe-reply.txt"), encoding: .utf8)
+                if reply == id { return true }
+            }
+        } catch { return false }
+        return false
+    }
+
+    private func cancelPet(_ id: String, directory dir: URL) async {
+        await Task.detached(priority: .utility) {
+            try? Data(id.utf8).write(to: dir.appendingPathComponent("confirm-cancel.txt"), options: .atomic)
+        }.value
+        Self.post(Self.cancelNote)
+    }
+    private static func post(_ name: String) {
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
             CFNotificationName(name as CFString), nil, nil, true)
+    }
+    private func log(_ stage: String, _ result: String, id: String, reason: String, route: String) {
+        MSDiagEvent("approval", stage, result, ["source": "app", "request": id, "reason": reason, "route": route])
     }
 }

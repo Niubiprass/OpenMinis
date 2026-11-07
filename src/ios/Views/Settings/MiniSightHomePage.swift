@@ -1,4 +1,8 @@
+import Foundation
 import SwiftUI
+import UIKit
+import PhotosUI
+import UniformTypeIdentifiers
 
 /// Settings overview mirroring the reference layout: pet header, identity,
 /// AI, palette/costume/download, feel, size. Rhythm + permissions live one
@@ -14,8 +18,10 @@ struct MiniSightHomeView: View {
         List {
             VStack(spacing: 8) {
                 if let petImage {
+                    // Fixed width too: an unconstrained scaledToFit keeps the
+                    // 2304pt atlas ideal width and makes List reflow forever.
                     Image(uiImage: petImage).resizable().scaledToFit()
-                        .frame(height: 140)
+                        .frame(width: 128, height: 139)
                 }
                 Text(config.nickname.isEmpty ? "我的桌宠" : config.nickname)
                     .font(.title3.weight(.semibold))
@@ -49,25 +55,26 @@ struct MiniSightHomeView: View {
                     Text("越狱插件").tag(0)
                     Text("App 内").tag(1)
                 }
+                Picker("深浅色", selection: $config.darkMode) {
+                    Text("跟随系统").tag("system")
+                    Text("浅色").tag("light")
+                    Text("深色").tag("dark")
+                }
             } footer: {
                 Text("在主屏幕和 App 内显示；锁屏临时暂停，解锁恢复；隐藏时不显示。双击默认语音输入。")
             }
 
             Section {
-                NavigationLink(MiniSightSupplier(rawValue: config.supplier)?.title ?? "选择供应商") {
-                    MiniSightSupplierPage()
-                }
-                NavigationLink("AI 连接") { MiniSightAIPage() }
+                NavigationLink("AI 连接（服务商 / 自定义链接）") { MiniSightAIPage() }
             } header: { Text("AI") }
 
             Section {
                 NavigationLink(MiniSightPetPalette(rawValue: config.tint)?.title ?? "原图") {
                     MiniSightTintPage()
                 }
-                NavigationLink(config.costume.isEmpty ? "默认" : config.costume) { MiniSightCostumePage() }
-                NavigationLink("下载素材") { MiniSightDownloadPage() }
+                NavigationLink("素材与服装") { MiniSightCostumePage() }
             } header: { Text("配色与服装") } footer: {
-                Text("服装和配色的可用项来自本地已导入素材；没有素材源时不显示虚假下载列表。")
+                Text("素材和配色来自本机导入；单图会铺成通用 8×9 图集，全部角色共用同一套物理。")
             }
 
             Section {
@@ -110,60 +117,27 @@ struct MiniSightHomeView: View {
             } header: { Text("聊天与录屏") }
 
             Section {
-                Text(config.saveState).font(.caption).foregroundStyle(.secondary)
                 if let error = config.lastError { Text(error).font(.caption).foregroundStyle(.red) }
-                Text("PETDFY · 本地素材").font(.caption2).foregroundStyle(.tertiary)
             }
         }
         .navigationTitle("桌宠")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            petImage = MiniSightPetFile.load()
+            refreshPreview()
             config.reloadShownFromFile()
         }
+        .onReceive(NotificationCenter.default.publisher(for: MiniSightAssetCatalog.didChange)) { _ in refreshPreview() }
         .onDisappear { config.persistAll() }
+    }
+    private func refreshPreview() {
+        MiniSightAssetCatalog.io.async {
+            let image = try? MiniSightAssetCatalog.preview(at: MiniSightPetFile.url)
+            DispatchQueue.main.async { petImage = image }
+        }
     }
 }
 
 // MARK: - Simple pickers
-
-struct MiniSightSupplierPage: View {
-    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
-    // are pushed from several hosts and an un-injected EnvironmentObject traps
-    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
-    @StateObject private var config = MiniSightConfigStore.shared
-    var body: some View {
-        List {
-            Section {
-                ForEach(MiniSightSupplier.allCases, id: \.self) { item in
-                    Button { apply(item) } label: {
-                        HStack {
-                            Text(item.title)
-                            Spacer()
-                            if config.supplier == item.rawValue {
-                                Image(systemName: "checkmark").foregroundStyle(.tint)
-                            }
-                        }
-                    }
-                }
-            } footer: {
-                Text("只填入默认接口地址，Key 和模型仍要自己填；DeepSeek Harness 需手填地址。")
-            }
-        }
-        .navigationTitle("供应商设置")
-        .onDisappear { config.persistAll() }
-    }
-
-    private func apply(_ item: MiniSightSupplier) {
-        config.supplier = item.rawValue
-        guard let endpoint = item.endpoint else { return }
-        // Only pre-fill the URL file; never touch an already saved key/model.
-        var object = (try? MiniSightAIConfigFile.read(MiniSightPetFile.aiConfigURL)) ?? [:]
-        object["url"] = endpoint
-        _ = try? MiniSightAIConfigFile.writeAndVerify(object, to: MiniSightPetFile.aiConfigURL)
-        MSDiagEvent("settings", "apply", "ok", ["setting": "ai_supplier", "source": "settings"])
-    }
-}
 
 struct MiniSightTintPage: View {
     // [T-minisight-page-no-envobject] Read the shared store directly: the pages
@@ -189,29 +163,7 @@ struct MiniSightTintPage: View {
 }
 
 struct MiniSightCostumePage: View {
-    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
-    // are pushed from several hosts and an un-injected EnvironmentObject traps
-    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
-    @StateObject private var config = MiniSightConfigStore.shared
-    @State private var items: [MiniSightAssetCatalog.Item] = []
-    var body: some View {
-        List {
-            Button { config.costume = "" } label: {
-                HStack { Text("默认"); Spacer(); if config.costume.isEmpty { Image(systemName: "checkmark") } }
-            }
-            ForEach(items, id: \.name) { item in
-                Button { config.costume = item.name } label: {
-                    HStack { Text(item.name); Spacer(); if config.costume == item.name { Image(systemName: "checkmark") } }
-                }
-            }
-            if items.isEmpty {
-                Text("还没有导入素材包，可在“下载素材”或相册导入。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .navigationTitle("服装")
-        .onAppear { items = MiniSightAssetCatalog.load() }
-    }
+    var body: some View { MiniSightDownloadPage() }
 }
 
 struct MiniSightActivityPage: View {
@@ -235,37 +187,191 @@ struct MiniSightActivityPage: View {
 }
 
 struct MiniSightDownloadPage: View {
-    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
-    // are pushed from several hosts and an un-injected EnvironmentObject traps
-    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
     @StateObject private var config = MiniSightConfigStore.shared
-    @State private var address = ""
+    @State private var link = ""
+    @State private var kind = MiniSightAssetCatalog.ImportKind.singleImage
+    @State private var items: [MiniSightAssetCatalog.Item] = []
+    @State private var currentID: String?
+    @State private var canRestore = false
     @State private var notice = ""
+    @State private var failed = false
+    @State private var importing = false
+    @State private var showFiles = false
+    @State private var showPhotos = false
+    @State private var operation: MiniSightAssetOperation?
+    @State private var downloader: MiniSightAssetDownload?
+
     var body: some View {
         List {
             Section {
-                TextField("素材目录地址（可选）", text: $address)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("保存并检查") { check() }
-                Text(notice).font(.caption).foregroundStyle(.secondary)
-            } footer: {
-                Text("没有配置地址时只列出本地已导入素材，不显示假的下载条目。")
+                Picker("素材格式", selection: $kind) {
+                    ForEach(MiniSightAssetCatalog.ImportKind.allCases) { Text($0.title).tag($0) }
+                }.disabled(importing)
+                TextField("图片或 PNG 图集直链", text: $link)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                Button("从链接添加") { importLink() }.disabled(importing || link.isEmpty)
+                Button("从相册添加") { showPhotos = true }.disabled(importing)
+                Button("从文件添加") { showFiles = true }.disabled(importing)
+                if importing {
+                    HStack { ProgressView(); Button("取消") { if operation?.cancel() == true { notice = "正在取消…" } } }
+                }
+                if !notice.isEmpty { Text(notice).font(.caption).foregroundStyle(failed ? Color.red : Color.secondary) }
+            } header: { Text("添加素材") } footer: {
+                Text("支持图片直链、相册或文件；网页和 ZIP 不直接导入。图集必须是 Petdex 8 列 × 9 行 PNG。所有角色共用摇摆、抛摔和回弹；单图会重复铺帧，因而没有独立走路动作。添加不会替你打开桌宠。")
             }
             Section {
-                let items = MiniSightAssetCatalog.load()
-                if items.isEmpty { Text("暂无").font(.caption).foregroundStyle(.secondary) }
-                ForEach(items, id: \.name) { item in Text(item.name).font(.caption) }
-            } header: { Text("已导入") }
+                TextField("素材目录地址（可选记录）", text: $config.downloadSource)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                Text("留作参考；单张素材仍用上方链接/相册/文件添加。").font(.caption).foregroundStyle(.secondary)
+            } header: { Text("素材来源") }
+            Section {
+                if items.isEmpty { Text("尚未添加素材").foregroundStyle(.secondary) }
+                ForEach(items) { item in
+                    HStack {
+                        Button { activate(item) } label: {
+                            HStack {
+                                Text(item.title).lineLimit(1)
+                                Spacer()
+                                if item.metadata?.id == currentID { Image(systemName: "checkmark") }
+                            }
+                        }.disabled(importing || item.metadata == nil)
+                        Button(role: .destructive) { remove(item) } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless).disabled(importing)
+                    }
+                }
+                if canRestore { Button("恢复上一次素材") { restore() }.disabled(importing) }
+            } header: { Text("我的素材 · 点击切换") }
         }
-        .navigationTitle("下载素材")
-        .onAppear { address = config.downloadSource }
+        .navigationTitle("添加素材")
+        .onAppear { reload() }
+        .onDisappear { _ = operation?.cancel() }
+        .sheet(isPresented: $showFiles) { MiniSightFilePicker { file in showFiles = false; importFile(file) } }
+        .sheet(isPresented: $showPhotos) {
+            MiniSightPhotoPicker { provider in
+                showPhotos = false
+                guard let provider else { return }
+                let op = begin()
+                let selectedKind = kind
+                let type = provider.registeredTypeIdentifiers.first { UTType($0)?.conforms(to: .image) == true } ?? UTType.image.identifier
+                provider.loadFileRepresentation(forTypeIdentifier: type) { url, error in
+                    guard let url else { complete(.failure(error ?? MiniSightAssetCatalog.Failure.unreadable)); return }
+                    // Provider URLs expire at callback return: stage bytes here,
+                    // on its background callback, not a later main-queue job.
+                    do {
+                        let staged = try MiniSightAssetCatalog.stage(file: url, operation: op)
+                        process(staged, kind: selectedKind, operation: op)
+                    } catch { complete(.failure(error)) }
+                }
+            }
+        }
     }
-
-    private func check() {
-        guard let url = URL(string: address), url.scheme == "https" || url.scheme == "http" else {
-            notice = "地址格式不正确。"; return
+    private func begin() -> MiniSightAssetOperation {
+        let op = MiniSightAssetOperation()
+        operation = op; importing = true; failed = false; notice = "正在读取素材…"
+        MSDiagEvent("assets", "request", "pending", ["source": "settings"])
+        return op
+    }
+    private func importFile(_ url: URL) {
+        let op = begin(), selectedKind = kind
+        MiniSightAssetCatalog.io.async {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let staged = try MiniSightAssetCatalog.stage(file: url, operation: op)
+                process(staged, kind: selectedKind, operation: op)
+            } catch { complete(.failure(error)) }
         }
-        config.downloadSource = address
-        notice = "地址已保存；具体素材包仍需放到该目录后由本地导入。"
+    }
+    private func importLink() {
+        do {
+            let url = try MiniSightAssetCatalog.inputURL(link)
+            let op = begin(), selectedKind = kind
+            let download = MiniSightAssetDownload(operation: op, progress: { count, expected in
+                DispatchQueue.main.async { notice = expected > 0 ? "下载中 \(count * 100 / max(Int(expected), 1))%" : "下载中 \(count / 1024) KB" }
+            }, completion: { result in
+                MiniSightAssetCatalog.io.async {
+                    do {
+                        let item = try MiniSightAssetCatalog.importData(result.get(), kind: selectedKind, title: "链接素材", operation: op)
+                        complete(.success(item))
+                    } catch { complete(.failure(error)) }
+                }
+            })
+            downloader = download; download.start(url)
+        } catch { failed = true; notice = error.localizedDescription }
+    }
+    private func process(_ staged: URL, kind: MiniSightAssetCatalog.ImportKind, operation: MiniSightAssetOperation) {
+        MiniSightAssetCatalog.io.async {
+            do { complete(.success(try MiniSightAssetCatalog.importFile(staged, kind: kind, title: "本地素材", operation: operation))) }
+            catch { complete(.failure(error)) }
+        }
+    }
+    private func complete(_ result: Result<MiniSightAssetCatalog.Item, Error>) {
+        DispatchQueue.main.async {
+            importing = false; operation = nil; downloader = nil
+            switch result {
+            case .success: failed = false; notice = "已添加，点击列表中的素材切换。"; reload()
+            case .failure(let error): failed = true; notice = error.localizedDescription
+            }
+            MSDiagEvent("assets", "finish", failed ? "failed" : "ok", ["source": "settings"])
+        }
+    }
+    private func reload() {
+        MiniSightAssetCatalog.io.async {
+            do {
+                let snapshot = try MiniSightAssetCatalog.snapshot()
+                DispatchQueue.main.async { items = snapshot.items; currentID = snapshot.currentID; canRestore = snapshot.canRestore }
+            } catch { DispatchQueue.main.async { failed = true; notice = error.localizedDescription } }
+        }
+    }
+    private func activate(_ item: MiniSightAssetCatalog.Item) {
+        perform { try MiniSightAssetCatalog.activate(item) }
+        config.costume = item.title
+    }
+    private func remove(_ item: MiniSightAssetCatalog.Item) {
+        perform { try MiniSightAssetCatalog.delete(item) }
+        if item.metadata?.id == currentID { config.costume = "" }
+    }
+    private func restore() { perform { try MiniSightAssetCatalog.restorePrevious() }; config.costume = "" }
+    private func perform(_ work: @escaping () throws -> Void) {
+        importing = true
+        MiniSightAssetCatalog.io.async {
+            do {
+                try work()
+                DispatchQueue.main.async {
+                    importing = false; failed = false; notice = "素材已更新。"
+                    MiniSightAssetCatalog.publishChange(); reload()
+                }
+            } catch { DispatchQueue.main.async { importing = false; failed = true; notice = error.localizedDescription } }
+        }
+    }
+}
+
+struct MiniSightFilePicker: UIViewControllerRepresentable {
+    let onPick: (URL) -> Void
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.image], asCopy: true)
+        picker.delegate = context.coordinator
+        return picker
+    }
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(onPick) }
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        init(_ onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { if let url = urls.first { onPick(url) } }
+    }
+}
+struct MiniSightPhotoPicker: UIViewControllerRepresentable {
+    let picked: (NSItemProvider?) -> Void
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration(photoLibrary: .shared()); config.filter = .images; config.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: config); picker.delegate = context.coordinator; return picker
+    }
+    func updateUIViewController(_ controller: PHPickerViewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(picked) }
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let picked: (NSItemProvider?) -> Void
+        init(_ picked: @escaping (NSItemProvider?) -> Void) { self.picked = picked }
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) { picked(results.first?.itemProvider) }
     }
 }

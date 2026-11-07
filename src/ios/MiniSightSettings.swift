@@ -85,11 +85,12 @@ enum MiniSightActivity: String, CaseIterable { case lively, quiet, off
 }
 
 enum MiniSightSupplier: String, CaseIterable {
-    case deepseek, deepseekHarness, chatgpt, claude, gemini, qwen, kimi, minimax
+    case deepseek, deepseekHarness, custom, chatgpt, claude, gemini, qwen, kimi, minimax
     var title: String {
         switch self {
         case .deepseek: return "DeepSeek"
         case .deepseekHarness: return "DeepSeek Harness"
+        case .custom: return "自定义（手填链接）"
         case .chatgpt: return "ChatGPT"
         case .claude: return "Claude"
         case .gemini: return "Gemini"
@@ -103,12 +104,12 @@ enum MiniSightSupplier: String, CaseIterable {
         switch self {
         case .deepseek: return "https://api.deepseek.com/v1"
         case .chatgpt: return "https://api.openai.com/v1"
-        case .claude: return "https://api.anthropic.com/v1"
+        case .claude: return nil // native Anthropic is not OpenAI-compatible
         case .gemini: return "https://generativelanguage.googleapis.com/v1beta/openai"
         case .qwen: return "https://dashscope.aliyuncs.com/compatible-mode/v1"
         case .kimi: return "https://api.moonshot.cn/v1"
         case .minimax: return "https://api.minimax.chat/v1"
-        case .deepseekHarness: return nil
+        case .deepseekHarness, .custom: return nil
         }
     }
 }
@@ -158,9 +159,45 @@ enum MiniSightAIPermission: String, CaseIterable {
 /// Raw defaults access used by the ObjC bridge and the App. Absent values must
 /// keep the old behavior: pet + plugin + call mode.
 enum MiniSightConfig {
-    static func installDefaults() {
-        let defaults = UserDefaults.standard
-        let initial: [String: Any] = [
+    // Exactly 45 transport keys, including the transaction revision. The legacy
+    // boolean minisight.longPress must NEVER alias minisight.gesture.long.
+    static let runtimeFields: [String: String] = [
+        MiniSightSettingKey.style: "style", MiniSightSettingKey.renderer: "renderer",
+        MiniSightSettingKey.mode: "mode", MiniSightSettingKey.petSize: "petSize",
+        MiniSightSettingKey.gravity: "gravity", MiniSightSettingKey.gravityStrength: "gravityStrength",
+        MiniSightSettingKey.gravityShake: "gravityShake", MiniSightSettingKey.interaction: "interaction",
+        MiniSightSettingKey.singleTap: "singleTap", MiniSightSettingKey.doubleTap: "doubleTap",
+        MiniSightSettingKey.longPress: "longPress", MiniSightSettingKey.activity: "activity",
+        MiniSightSettingKey.activityInterval: "activityInterval", MiniSightSettingKey.frameLimit: "frameLimit",
+        MiniSightSettingKey.dragResponse: "dragResponse", MiniSightSettingKey.petSound: "sound",
+        MiniSightSettingKey.bottomGap: "bottomGap", MiniSightSettingKey.tint: "tint",
+        MiniSightSettingKey.costume: "costume", MiniSightSettingKey.supplier: "supplier",
+        MiniSightSettingKey.downloadSource: "downloadSource", MiniSightSettingKey.darkMode: "darkMode",
+        MiniSightSettingKey.persona: "persona", MiniSightSettingKey.nickname: "nickname",
+        MiniSightSettingKey.aiAdjust: "aiAdjust", MiniSightSettingKey.aiPermissions: "aiPermissions",
+        MiniSightSettingKey.adjustments: "adjustments", MiniSightSettingKey.proactive: "proactive",
+        MiniSightSettingKey.proactiveInterval: "proactiveInterval", MiniSightSettingKey.bubbleScale: "bubbleScale",
+        MiniSightSettingKey.textScale: "textScale", MiniSightSettingKey.dwell: "dwell",
+        MiniSightSettingKey.returnKey: "returnKey", MiniSightSettingKey.voiceReply: "voiceReply",
+        MiniSightSettingKey.voiceInput: "voiceInput", MiniSightSettingKey.snore: "snore",
+        MiniSightSettingKey.quickButtons: "quick", MiniSightSettingKey.quickPosition: "quickPosition",
+        MiniSightSettingKey.quickLines: "quickLines", MiniSightSettingKey.quickOrder: "quickOrder",
+        MiniSightSettingKey.record: "record", MiniSightSettingKey.longPressRecord: "longPressRecord",
+        MiniSightSettingKey.diagnostics: "diagnostics", MiniSightSettingKey.shown: "shown",
+        MiniSightSettingKey.shownRevision: "revision",
+    ]
+    static let all = runtimeFields.keys.sorted()
+    static let initial: [String: Any] = [
+        MiniSightSettingKey.style: 1,
+            MiniSightSettingKey.renderer: 0,
+            MiniSightSettingKey.gravity: false,
+            MiniSightSettingKey.costume: "",
+            MiniSightSettingKey.downloadSource: "",
+            MiniSightSettingKey.persona: "",
+            MiniSightSettingKey.nickname: "",
+            MiniSightSettingKey.adjustments: [String](),
+            MiniSightSettingKey.shown: true,
+            MiniSightSettingKey.shownRevision: "",
             MiniSightSettingKey.mode: 0,
             MiniSightSettingKey.petSize: 96.0,
             MiniSightSettingKey.gravityStrength: 1.0,
@@ -196,7 +233,10 @@ enum MiniSightConfig {
             MiniSightSettingKey.record: false,
             MiniSightSettingKey.longPressRecord: true,
             MiniSightSettingKey.diagnostics: false,
-        ]
+    ]
+
+    static func installDefaults() {
+        let defaults = UserDefaults.standard
         for (key, value) in initial where defaults.object(forKey: key) == nil {
             defaults.set(value, forKey: key)
         }
@@ -233,54 +273,6 @@ enum MiniSightConfig {
         UserDefaults.standard.set(MiniSightAIPermission.allCases.filter(set.contains).map(\.rawValue).joined(separator: ","),
                                   forKey: MiniSightSettingKey.aiPermissions)
     }
-    static let all = ["shown","style","renderer","mode","petSize","gravity","gravityStrength","gravityShake",
-        "interaction","singleTap","doubleTap","longPress","activity","activityInterval","frameLimit",
-        "dragResponse","petSound","bottomGap","tint","costume","darkMode","nickname","aiPermissions",
-        "aiAdjust","proactive","proactiveInterval","bubbleScale","textScale","dwell","returnKey",
-        "voiceReply","voiceInput","snore","quickButtons","quickPosition","quickOrder","record",
-        "longPressRecord","diagnostics"].map { value in
-        switch value {
-        case "shown": return MiniSightSettingKey.shown
-        case "style": return MiniSightSettingKey.style
-        case "renderer": return MiniSightSettingKey.renderer
-        case "mode": return MiniSightSettingKey.mode
-        case "petSize": return MiniSightSettingKey.petSize
-        case "gravity": return MiniSightSettingKey.gravity
-        case "gravityStrength": return MiniSightSettingKey.gravityStrength
-        case "gravityShake": return MiniSightSettingKey.gravityShake
-        case "interaction": return MiniSightSettingKey.interaction
-        case "singleTap": return MiniSightSettingKey.singleTap
-        case "doubleTap": return MiniSightSettingKey.doubleTap
-        case "longPress": return MiniSightSettingKey.longPress
-        case "activity": return MiniSightSettingKey.activity
-        case "activityInterval": return MiniSightSettingKey.activityInterval
-        case "frameLimit": return MiniSightSettingKey.frameLimit
-        case "dragResponse": return MiniSightSettingKey.dragResponse
-        case "petSound": return MiniSightSettingKey.petSound
-        case "bottomGap": return MiniSightSettingKey.bottomGap
-        case "tint": return MiniSightSettingKey.tint
-        case "costume": return MiniSightSettingKey.costume
-        case "darkMode": return MiniSightSettingKey.darkMode
-        case "nickname": return MiniSightSettingKey.nickname
-        case "aiPermissions": return MiniSightSettingKey.aiPermissions
-        case "aiAdjust": return MiniSightSettingKey.aiAdjust
-        case "proactive": return MiniSightSettingKey.proactive
-        case "proactiveInterval": return MiniSightSettingKey.proactiveInterval
-        case "bubbleScale": return MiniSightSettingKey.bubbleScale
-        case "textScale": return MiniSightSettingKey.textScale
-        case "dwell": return MiniSightSettingKey.dwell
-        case "returnKey": return MiniSightSettingKey.returnKey
-        case "voiceReply": return MiniSightSettingKey.voiceReply
-        case "voiceInput": return MiniSightSettingKey.voiceInput
-        case "snore": return MiniSightSettingKey.snore
-        case "quickButtons": return MiniSightSettingKey.quickButtons
-        case "quickPosition": return MiniSightSettingKey.quickPosition
-        case "quickOrder": return MiniSightSettingKey.quickOrder
-        case "record": return MiniSightSettingKey.record
-        case "longPressRecord": return MiniSightSettingKey.longPressRecord
-        default: return MiniSightSettingKey.diagnostics
-        }
-    }
 
     static func quickOrder() -> [MiniSightQuickAction] {
         let raw = string(MiniSightSettingKey.quickOrder, "").split(separator: ",")
@@ -300,74 +292,52 @@ enum MiniSightConfig {
     }
 }
 
-/// Fixed numeric runtime snapshot. User strings remain in the settings plist
-/// and ai.json; no credentials are copied into this file.
+/// Local runtime transport of the 45 allowlisted settings, never credentials.
+/// User strings belong in this file but must never be passed to diagnostics.
 enum MiniSightRuntimeSnapshot {
-    /// [T-minisight-snapshot-dup-keys] Built with a MUTABLE dictionary, not one
-    /// literal: the literal previously listed several keys twice (gravityStrength,
-    /// gravityShake, interaction, dragResponse, aiAdjust, aiPermissions, gravity),
-    /// and Swift traps at runtime on a duplicate key — SIGTRAP in
-    /// MiniSightRuntimeSnapshot.write on the first persistAll (2026-11-06 crash log).
-    static func write(container: URL) {
-        var values: [String: Any] = [:]
-        values["version"] = 1
-        values["style"] = MiniSightConfig.int(MiniSightSettingKey.style, 0)
-        values["renderer"] = MiniSightConfig.int(MiniSightSettingKey.renderer, 0)
-        values["mode"] = MiniSightConfig.int(MiniSightSettingKey.mode, 0)
-        values["petSize"] = MiniSightConfig.double(MiniSightSettingKey.petSize, 96)
-        values["gravity"] = MiniSightConfig.bool(MiniSightSettingKey.gravity, false)
-        values["gravityStrength"] = MiniSightConfig.double(MiniSightSettingKey.gravityStrength, 1)
-        values["gravityShake"] = MiniSightConfig.bool(MiniSightSettingKey.gravityShake, true)
-        values["interaction"] = MiniSightConfig.bool(MiniSightSettingKey.interaction, true)
-        values["activity"] = MiniSightConfig.string(MiniSightSettingKey.activity, "natural")
-        values["activityInterval"] = MiniSightConfig.double(MiniSightSettingKey.activityInterval, 7)
-        values["frameLimit"] = MiniSightConfig.int(MiniSightSettingKey.frameLimit, 0)
-        values["dragResponse"] = MiniSightConfig.bool(MiniSightSettingKey.dragResponse, true)
-        values["sound"] = MiniSightConfig.bool(MiniSightSettingKey.petSound, false)
-        values["bottomGap"] = MiniSightConfig.double(MiniSightSettingKey.bottomGap, 12)
-        values["tint"] = MiniSightConfig.string(MiniSightSettingKey.tint, "natural")
-        values["supplier"] = MiniSightConfig.string(MiniSightSettingKey.supplier, "deepseek")
-        values["darkMode"] = MiniSightConfig.string(MiniSightSettingKey.darkMode, "system")
-        values["proactive"] = MiniSightConfig.bool(MiniSightSettingKey.proactive, false)
-        values["proactiveInterval"] = MiniSightConfig.double(MiniSightSettingKey.proactiveInterval, 30)
-        values["voiceReply"] = MiniSightConfig.bool(MiniSightSettingKey.voiceReply, false)
-        values["quick"] = MiniSightConfig.bool(MiniSightSettingKey.quickButtons, true)
-        values["costume"] = MiniSightConfig.string(MiniSightSettingKey.costume, "")
-        values["bubbleScale"] = MiniSightConfig.double(MiniSightSettingKey.bubbleScale, 1)
-        values["textScale"] = MiniSightConfig.double(MiniSightSettingKey.textScale, 1)
-        values["dwell"] = MiniSightConfig.double(MiniSightSettingKey.dwell, 1)
-        values["singleTap"] = MiniSightConfig.gesture(MiniSightSettingKey.singleTap, .interact).rawValue
-        values["doubleTap"] = MiniSightConfig.gesture(MiniSightSettingKey.doubleTap, .voice).rawValue
-        values["longPress"] = MiniSightConfig.gesture(MiniSightSettingKey.longPress, .menu).rawValue
-        values["returnKey"] = MiniSightConfig.string(MiniSightSettingKey.returnKey, "send")
-        values["voiceInput"] = MiniSightConfig.bool(MiniSightSettingKey.voiceInput, false)
-        values["snore"] = MiniSightConfig.string(MiniSightSettingKey.snore, "off")
-        values["quickPosition"] = MiniSightConfig.string(MiniSightSettingKey.quickPosition, "above")
-        values["quickOrder"] = MiniSightConfig.string(MiniSightSettingKey.quickOrder, "")
-        values["quickLines"] = UserDefaults.standard.dictionary(forKey: MiniSightSettingKey.quickLines) ?? [:]
-        values["persona"] = MiniSightConfig.string(MiniSightSettingKey.persona, "")
-        values["nickname"] = MiniSightConfig.string(MiniSightSettingKey.nickname, "")
-        values["aiAdjust"] = MiniSightConfig.bool(MiniSightSettingKey.aiAdjust, false)
-        values["aiPermissions"] = MiniSightConfig.string(MiniSightSettingKey.aiPermissions, "")
-        values["record"] = MiniSightConfig.bool(MiniSightSettingKey.record, false)
-        values["longPressRecord"] = MiniSightConfig.bool(MiniSightSettingKey.longPressRecord, true)
-        values["diagnostics"] = MiniSightConfig.bool(MiniSightSettingKey.diagnostics, false)
-        values["shown"] = MiniSightConfig.bool(MiniSightSettingKey.shown, true)
-        values["revision"] = MiniSightConfig.string(MiniSightSettingKey.shownRevision, "")
-        values["adjustments"] = MiniSightConfig.string(MiniSightSettingKey.adjustments, "")
-        values["downloadSource"] = MiniSightConfig.string(MiniSightSettingKey.downloadSource, "")
-        values["pet.tint"] = MiniSightConfig.string(MiniSightSettingKey.tint, "natural")
-        values["pet.costume"] = MiniSightConfig.string(MiniSightSettingKey.costume, "")
-        values["ai.supplier"] = MiniSightConfig.string(MiniSightSettingKey.supplier, "")
-        values["ai.nickname"] = MiniSightConfig.string(MiniSightSettingKey.nickname, "")
-        values["dialogue.scale"] = MiniSightConfig.double(MiniSightSettingKey.bubbleScale, 1)
+    @discardableResult
+    static func write(container: URL) -> Bool {
+        var rawValues: [String: Any] = [:]
+        for key in MiniSightConfig.all {
+            rawValues[key] = UserDefaults.standard.object(forKey: key) ?? MiniSightConfig.initial[key]
+        }
+        return write(container: container, rawValues: rawValues)
+    }
 
+    @discardableResult
+    static func write(container: URL, rawValues: [String: Any]) -> Bool {
+        guard MiniSightConfig.runtimeFields.count == 45,
+              MiniSightConfig.all.allSatisfy({ rawValues[$0] != nil }) else { return false }
+        var canonical: [String: Any] = [:]
+        var values: [String: Any] = ["version": 2]
+        // Mutable dictionaries avoid duplicate-literal SIGTRAP. One mapping is
+        // shared by legacy runtime aliases and the canonical preferences bag.
+        for (key, field) in MiniSightConfig.runtimeFields {
+            guard let value = rawValues[key] else { return false }
+            canonical[key] = value
+            values[field] = value
+        }
+        values["preferences"] = canonical
         let url = container.appendingPathComponent("Documents/MiniSight/runtime.json")
-        guard let data = try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys]) else { return }
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: url, options: .atomic)
-        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-            CFNotificationName("com.openminis.minisight.settings" as CFString), nil, nil, true)
-        MSDiagEvent("settings", "publish", "ok", ["source": "app", "reason": "runtime_snapshot", "chars": data.count])
+        do {
+            let data = try JSONSerialization.data(withJSONObject: values, options: [.sortedKeys])
+            guard !data.isEmpty else { return false }
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+            let readback = try Data(contentsOf: url)
+            guard !readback.isEmpty,
+                  let decoded = try JSONSerialization.jsonObject(with: readback) as? [String: Any],
+                  NSDictionary(dictionary: decoded).isEqual(to: values) else { return false }
+            // Consumers cannot observe a notification before the complete file.
+            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                CFNotificationName("com.openminis.minisight.settings" as CFString), nil, nil, true)
+            MSDiagEvent("settings", "publish", "ok",
+                        ["source": "app", "reason": "runtime_snapshot", "chars": data.count])
+            return true
+        } catch {
+            MSDiagEvent("settings", "publish", "failed",
+                        ["source": "app", "reason": "runtime_snapshot", "code": (error as NSError).code])
+            return false
+        }
     }
 }

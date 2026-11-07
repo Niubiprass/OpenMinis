@@ -727,6 +727,9 @@ extension AIChatViewModel {
     }
 
     func removeAttachment(_ attachment: InputAttachment) {
+        MSDiagEvent("attach", "remove", "ok",
+                    ["id": attachment.id.uuidString, "kind": String(describing: attachment.kind),
+                     "name": attachment.fileName, "remaining": attachments.count - 1])
         try? FileManager.default.removeItem(at: attachment.cacheURL)
         attachments.removeAll { $0.id == attachment.id }
         pendingPhotoProviders.removeValue(forKey: attachment.id)

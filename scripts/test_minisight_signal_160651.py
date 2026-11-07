@@ -108,11 +108,12 @@ class SignalScope(unittest.TestCase):
 class ApprovalBridgeContracts(unittest.TestCase):
     def test_single_request_and_cancel_are_fail_closed(self):
         bridge = (ROOT / 'src/ios/Views/Settings/MiniSightConfirm.swift').read_text()
-        self.assertIn('guard !requestInFlight else { return false }', bridge)
-        self.assertIn('withTaskCancellationHandler', bridge)
-        self.assertIn('finish(false, cancelPet: true)', bridge)
+        self.assertIn('while busy {', bridge)
+        self.assertIn('Task.isCancelled', bridge)
+        self.assertIn('guard !Task.isCancelled', bridge)
+        self.assertIn('cancelPet(id, directory: dir)', bridge)
         self.assertIn('confirm-cancel.txt', bridge)
-        self.assertIn('Self.cancelName', bridge)
+        self.assertIn('Self.cancelNote', bridge)
         self.assertIn('try? FileManager.default.removeItem(at: resultURL)', bridge)
 
 

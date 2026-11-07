@@ -36,11 +36,10 @@ need("case MiniSightSettingKey.shown: return shown" in STORE,
 need("MiniSightPetFile.loadShown()" in STORE, "init takes the file as truth")
 need("func reloadShownFromFile()" in STORE, "menu-hide state can be re-synced")
 need("config.reloadShownFromFile()" in HOME, "home page re-syncs before showing the toggle")
-need("try? MiniSightPetFile.saveShown(shown)" in STORE,
+need("MiniSightPetFile.saveShown(shown)" in STORE,
      "persistAll also maintains the file")
-need('"shown","style"' in SETTINGS, "shown is part of the snapshot key list")
-need('case "shown": return MiniSightSettingKey.shown' in SETTINGS,
-     "shown has a key mapping")
+need('MiniSightSettingKey.shown: "shown"' in SETTINGS,
+     "shown is part of the snapshot transport map")
 
 # The plugin must keep treating the file as the runtime truth.
 need('appendingPathComponent("shown")' in

@@ -1,174 +1,137 @@
+import Foundation
 import SwiftUI
-import UIKit
 
-/// AI connection, persona and test. Connection save never implies a successful
-/// reply; test and both chat surfaces use the same MiniSightAI client.
+/// One connection editor. A provider label is only a URL preset, never proof
+/// that a key/model was tested. The test saves exactly these three fields first.
 struct MiniSightAIPage: View {
-    // [T-minisight-page-no-envobject] Read the shared store directly: the pages
-    // are pushed from several hosts and an un-injected EnvironmentObject traps
-    // at body evaluation (SIGTRAP in MiniSightPermissionsPage.body, 2026-11-06).
     @StateObject private var config = MiniSightConfigStore.shared
+    @State private var supplier = MiniSightSupplier.custom.rawValue
     @State private var url = ""
     @State private var key = ""
     @State private var model = ""
-    @State private var savedSnapshot: [String] = []
-    @State private var savedAt: Date?
-    @State private var saveNotice: String?
-    @State private var saveOK = false
-    @State private var testStatus: String?
-    @State private var testOK = false
+    @State private var persona = ""
+    @State private var notice = ""
+    @State private var failed = false
     @State private var testing = false
     @State private var client: MiniSightAI?
-    @State private var testGeneration = 0
-    @State private var cooldownUntil: Date?
-    @State private var loaded = false
-    @State private var personaStatus = "人设尚未读取"
-    @State private var personaFailed = false
-    @State private var saveWork: DispatchWorkItem?
-    @State private var saveGeneration = 0
-    @State private var request = ""
-
-    private var descendant: String { config.persona }
+    @State private var generation = 0
+    @State private var cooldownUntil = Date.distantPast
+    @State private var personaWork: DispatchWorkItem?
+    private let presets: [MiniSightSupplier] = [.custom, .deepseek, .chatgpt, .gemini, .qwen, .kimi, .minimax]
 
     var body: some View {
         List {
             Section {
-                TextField("接口地址，例如 https://api.openai.com/v1", text: $url)
-                    .font(.system(.footnote, design: .monospaced))
+                Picker("接口预设", selection: Binding(get: { supplier }, set: applySupplier)) {
+                    ForEach(presets, id: \.self) { Text($0.title).tag($0.rawValue) }
+                }.disabled(testing)
+                TextField("接口链接（Base URL 或完整 chat/completions）", text: $url)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    .disabled(testing)
+                SecureField("API Key", text: $key).disabled(testing)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                SecureField("API Key", text: $key).font(.system(.footnote, design: .monospaced))
-                TextField("模型名", text: $model)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                HStack {
-                    Button("保存") { saveConnection() }.buttonStyle(.bordered)
-                    Button(testing ? "测试中…" : "测试真实回答") { Task { await runTest() } }
-                        .buttonStyle(.bordered).disabled(testing || (cooldownUntil ?? .distantPast) > Date())
-                    if testing { Button("取消") { cancelTest() }.buttonStyle(.bordered) }
-                }
-                if let saveNotice {
-                    Text(saveNotice).font(.caption)
-                        .foregroundStyle(saveOK ? Color.secondary : Color.red)
-                }
-                Text(testStatus ?? "还没有测试过；测试只使用已保存的配置。")
-                    .font(.caption)
-                    .foregroundStyle(testOK ? Color.green : (testStatus == nil ? Color.secondary : Color.red))
-            } header: { Text("接口连接") } footer: {
-                Text("地址、Key、模型需要点保存；两者读取同一份 ai.json。收到真实正文才算成功，HTTP 200 空正文按失败处理。")
+                TextField("模型 ID", text: $model)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().disabled(testing)
+            } header: { Text("AI 连接") } footer: {
+                Text("只支持 OpenAI 兼容接口。Claude 请使用中转/兼容链接；切换预设会清空旧 Key 和模型，避免发错服务。")
+            }
+            Section {
+                TextEditor(text: $persona).frame(minHeight: 64).font(.footnote)
+                    .onChange(of: persona) { _ in schedulePersona() }
+            } header: { Text("人设（可选，自动保存）") }
+            Section {
+                Button("保存连接") { _ = saveConnection() }.disabled(testing)
+                Button(testing ? "等待真实回答…" : "保存并测试真实回答") { Task { await runTest() } }
+                    .disabled(testing || cooldownUntil > Date())
+                if testing { Button("取消测试") { cancelTest() } }
+                if !notice.isEmpty { Text(notice).font(.caption).foregroundStyle(failed ? Color.red : Color.secondary) }
+            } footer: {
+                Text("收到真实回答才算成功；HTTP 200 空正文也会报错。保存连接不等于对话已成功。")
             }
         }
         .navigationTitle("AI 连接")
         .onAppear(perform: load)
-        .onDisappear { savePersonaNow() }
-        .onChange(of: config.darkMode) { _ in config.persistAll() }
+        .onDisappear { if testing { cancelTest() } }
     }
-
-    private var aiURL: URL { MiniSightPetFile.aiConfigURL }
-
     private func load() {
-        let ai = MiniSightPetFile.loadAI()
-        url = ai.0; key = ai.1; model = ai.2
-        savedSnapshot = [ai.0, ai.1, ai.2]
-        savedAt = MiniSightPetFile.aiConfigSavedAt
-        loaded = true
-        if config.persona != ai.3 {
-            config.persona = ai.3
-        }
-        personaStatus = ai.3.isEmpty ? "默认人设" : "已从本机读取"
-        restoreTestStatus()
+        let stored = MiniSightPetFile.loadAI()
+        url = stored.0; key = stored.1; model = stored.2; persona = stored.3
+        supplier = presets.first { preset in
+            guard let endpoint = preset.endpoint else { return false }
+            return url == endpoint || url == endpoint + "/chat/completions"
+        }?.rawValue ?? MiniSightSupplier.custom.rawValue
     }
-
-    private func saveConnection() {
+    private func applySupplier(_ raw: String) {
+        guard raw != supplier, let item = MiniSightSupplier(rawValue: raw) else { return }
+        supplier = raw; url = item.endpoint ?? ""; key = ""; model = ""
+        notice = "请填写此接口的 Key 和模型，再保存测试。"; failed = false
+    }
+    @discardableResult private func saveConnection() -> Bool {
         let cleanKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let endpoint = MiniSightAITest.endpoint(for: url),
-              !cleanKey.isEmpty, !cleanModel.isEmpty else {
-            saveNotice = "未保存：地址、Key 或模型不完整。"; saveOK = false; return
+        guard let endpoint = MiniSightAITest.endpoint(for: url), let parsed = URLComponents(string: endpoint),
+              parsed.user == nil, parsed.password == nil, parsed.fragment == nil,
+              parsed.host?.lowercased() != "api.anthropic.com",
+              !cleanKey.isEmpty, cleanKey.rangeOfCharacter(from: .controlCharacters) == nil,
+              !cleanModel.isEmpty, cleanModel.rangeOfCharacter(from: .controlCharacters) == nil else {
+            notice = "未保存：请填写有效的兼容链接、Key 和模型。"; failed = true
+            MSDiagEvent("ai_test", "skip", "skipped", ["source": "settings", "reason": "invalid_connection"])
+            return false
         }
-        MSDiagEvent("settings", "save", "pending", ["setting": "ai_connection", "source": "settings"])
+        let request = UUID().uuidString
+        MSDiagEvent("settings", "save", "pending", ["source": "settings", "setting": "ai_connection", "request": request])
         do {
-            try MiniSightPetFile.saveAI(url: endpoint, key: cleanKey, model: cleanModel, systemPrompt: config.persona)
-            savedSnapshot = [endpoint, cleanKey, cleanModel]
-            savedAt = MiniSightPetFile.aiConfigSavedAt ?? Date()
-            saveNotice = "已保存并核对（只写本机文件）。"; saveOK = true
-            MSDiagEvent("settings", "readback", "ok", ["setting": "ai_connection", "source": "settings", "readback": true])
+            try MiniSightPetFile.saveAI(url: endpoint, key: cleanKey, model: cleanModel, systemPrompt: persona)
+            config.supplier = supplier
+            notice = "连接已保存，尚未测试回答。"; failed = false
+            MSDiagEvent("settings", "readback", "ok", ["source": "settings", "setting": "ai_connection", "request": request, "readback": true])
+            return true
         } catch {
-            saveNotice = "保存失败：写盘或读回核对失败。"; saveOK = false
-            MSDiagEvent("settings", "readback", "failed", ["setting": "ai_connection", "code": (error as NSError).code])
+            notice = "保存失败，原连接未确认替换。"; failed = true
+            MSDiagEvent("settings", "readback", "failed", ["source": "settings", "setting": "ai_connection", "request": request, "code": (error as NSError).code])
+            return false
         }
     }
-
-    private func schedulePersona(_ value: String) {
-        guard loaded else { return }
-        saveWork?.cancel(); saveGeneration += 1
-        let generation = saveGeneration
-        let work = DispatchWorkItem { guard generation == saveGeneration, loaded else { return }; savePersonaNow() }
-        saveWork = work
+    private func schedulePersona() {
+        personaWork?.cancel()
+        let work = DispatchWorkItem { savePersonaNow() }
+        personaWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
-
     private func savePersonaNow() {
-        saveWork?.cancel(); saveWork = nil; saveGeneration += 1
-        let prompt = MiniSightAIConfigFile.normalizedPersona(config.persona)
-        MSDiagEvent("settings", "save", "pending", ["setting": "ai_persona", "source": "settings"])
+        guard !persona.isEmpty || MiniSightPetFile.loadAI().3.isEmpty else { return }
         do {
-            _ = try MiniSightPetFile.savePersona(prompt)
-            personaFailed = false
-            personaStatus = "人设已保存并核对"
-            MSDiagEvent("settings", "readback", "ok", ["setting": "ai_persona", "readback": true])
+            _ = try MiniSightPetFile.savePersona(persona)
+            MSDiagEvent("settings", "save", "ok", ["source": "settings", "setting": "ai_persona"])
         } catch {
-            personaFailed = true
-            personaStatus = "人设保存失败，输入仍保留。"
-            MSDiagEvent("settings", "readback", "failed", ["setting": "ai_persona", "code": (error as NSError).code])
+            notice = "人设保存失败。"; failed = true
         }
     }
-
     private func runTest() async {
-        request = UUID().uuidString
-        MSDiagEvent("ai_test", "click", "pending", ["request": request, "source": "settings"])
-        guard let endpoint = MiniSightAITest.endpoint(for: url),
-              let target = URL(string: endpoint),
-              !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            testStatus = "未测试：地址、Key 或模型不完整"; testOK = false
-            MSDiagEvent("ai_test", "skip", "skipped", ["request": request, "reason": "invalid_input"])
-            return
-        }
-        savePersonaNow()
-        testing = true; testOK = false
-        testStatus = "请求中…"
-        testGeneration += 1
-        let generation = testGeneration
+        guard saveConnection() else { return }
+        testing = true; failed = false; notice = "正在等待回答…"
+        generation &+= 1
+        let owned = generation, request = UUID().uuidString, started = Date()
         let client = MiniSightAI(container: MiniSightPetFile.containerPath)
         self.client = client
-        let started = Date()
+        MSDiagEvent("ai_test", "click", "pending", ["source": "settings", "request": request])
         let reply: MiniSightAIReply = await withCheckedContinuation { cont in
-            client.send("你好，请只回答一句简短的中文。") { reply in cont.resume(returning: reply) }
+            client.send("请用中文回答：1+1等于几？") { cont.resume(returning: $0) }
         }
-        defer { if generation == testGeneration { testing = false; self.client = nil } }
-        guard generation == testGeneration else { return }
-        let duration = Int(Date().timeIntervalSince(started) * 1000)
-        MSDiagEvent("ai_test", "response", reply.isSuccess ? "ok" : "failed",
-                    ["request": request, "code": reply.status, "chars": reply.text.count, "duration_ms": duration])
+        guard owned == generation else { return }
+        testing = false; self.client = nil
+        failed = !reply.isSuccess
         if reply.status == 429 { cooldownUntil = Date().addingTimeInterval(30) }
-        testOK = reply.isSuccess
-        testStatus = reply.isSuccess ? "收到真实回答（\(reply.text.count) 字）" : "失败：\(reply.issue.rawValue)，状态 \(reply.status)"
-        try? MiniSightPetFile.saveTestRecord(ok: testOK, status: testStatus ?? "", cooldownUntil: cooldownUntil,
-                                            revision: MiniSightPetFile.aiConfigRevision)
-        _ = target
+        notice = reply.isSuccess ? "测试回答：" + String(reply.text.prefix(180)) : reply.displayText
+        MSDiagEvent("ai_test", "response", reply.isSuccess ? "ok" : "failed",
+                    ["source": "settings", "request": request, "code": reply.status,
+                     "chars": reply.text.count, "duration_ms": Int(Date().timeIntervalSince(started) * 1000)])
+        // Keep only the outcome, never the answer, key, URL or model in diagnostics.
+        try? MiniSightPetFile.saveTestRecord(ok: reply.isSuccess, status: reply.isSuccess ? "真实回答通过" : "测试失败 HTTP \(reply.status)",
+                                            cooldownUntil: cooldownUntil, revision: MiniSightPetFile.aiConfigRevision)
     }
-
     private func cancelTest() {
-        testGeneration += 1
-        testing = false
-        client?.cancel()
-        client = nil
-        testStatus = "测试已取消"
-        testOK = false
-    }
-
-    private func restoreTestStatus() {
-        if let item = MiniSightPetFile.loadTestRecord() {
-            testStatus = item.status; testOK = item.ok; cooldownUntil = item.cooldown
-        }
+        generation &+= 1; client?.cancel(); client = nil; testing = false
+        notice = "测试已取消。"; failed = false
     }
 }

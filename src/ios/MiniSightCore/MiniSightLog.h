@@ -15,7 +15,9 @@ extern "C" {
 void MSDiagConfigure(BOOL enabled, NSString * _Nullable container);
 void MSDiag(NSString * _Nonnull format, ...) NS_FORMAT_FUNCTION(1, 2);
 void MSDiagMessage(NSString * _Nonnull message);
-/// feature/stage/result are fixed ASCII enums (README).
+/// feature/stage/result and string fields are fixed, per-field enums.
+/// action/old/new/route allow enum values only; generation is numeric.
+/// No arbitrary ASCII identifiers, commands, filenames or URLs are accepted.
 /// Unknown fields and unsafe values are dropped, never stringified.
 void MSDiagEvent(NSString * _Nonnull feature, NSString * _Nonnull stage,
                  NSString * _Nonnull result,

@@ -40,7 +40,7 @@ for src in ["MiniSightPet.m", "MiniSightAI.m", "MiniSightChatPanel.m", "MiniSigh
 check("root_overlay_mounted", "MiniSightInAppRuntime()" in app)
 check("objc_bridging", all(x in bridge for x in ["MiniSightPet.h", "MiniSightAI.h", "MiniSightChatPanel.h", "MiniSightAppRecorder.h"]))
 check("app_recorder_model_exists", (root / "src/ios/MiniSightRecorderModel.swift").is_file())
-check("app_approval_fallback", "MiniSightHostAdapter.confirm(command: command)" in confirm and "probeJailbreakPlugin" in confirm)
+check("app_approval_fallback", "MiniSightHostAdapter.confirm(command: command)" in confirm and "probeJailbreakPlugin(id:" in confirm)
 check("persona_saved_to_ai_json", "system_prompt" in settings and ("saveAI(url: config.endpoint" in settings or "saveAI(url: endpoint" in page))
 check("persona_single_setting_page", 'static func savePersona(' in settings and 'replacingPersona(text, in: current)' in settings and '@AppStorage("minisight.ai.persona")' not in runtime)
 check("no_swift_fullscreen_hit_test", ".allowsHitTesting(visible)" not in runtime)

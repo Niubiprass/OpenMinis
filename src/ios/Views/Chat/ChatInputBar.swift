@@ -223,7 +223,6 @@ private struct AttachmentChip: View {
             }
         }
         .onAppear { loadThumbnailIfNeeded() }
-        .onTapGesture { showPreview = true }
         .sheet(isPresented: $showPreview) {
             NavigationStack {
                 AttachmentPreviewView(url: attachment.cacheURL)
@@ -273,15 +272,7 @@ private struct AttachmentChip: View {
             }
             .buttonStyle(.plain)
 
-            Button {
-                onRemove()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.5), radius: 2)
-            }
-            .offset(x: 4, y: -4)
+            removeBadge
         }
         .fixedSize()
     }
@@ -299,6 +290,8 @@ private struct AttachmentChip: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
                         .shadow(color: .black.opacity(0.08), radius: 2, x: 0, y: 1)
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                        .onTapGesture { showPreview = true }
 
                     if isVideo {
                         Image(systemName: "play.fill")
@@ -311,20 +304,32 @@ private struct AttachmentChip: View {
                     }
                 }
 
-                Button {
-                    onRemove()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.5), radius: 2)
-                }
-                .offset(x: 4, y: -4)
+                removeBadge
             }
             .fixedSize()
         } else {
             fileChip
         }
+    }
+
+    /// 26pt clear hit target, kept INSIDE the 64pt chip. The old 18pt icon was
+    /// offset 4pt past the chip edge: hit testing used the un-offset frame and
+    /// the enclosing horizontal scroll view clipped most of it, so the first
+    /// chip's × needed a corner-perfect tap (and another chip tap to re-hit).
+    private var removeBadge: some View {
+        Button {
+            onRemove()
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.55), radius: 2)
+                .frame(width: 26, height: 26)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .padding(2)
+        .zIndex(2)
     }
 
     private static func loadImage(from url: URL) -> UIImage? {
@@ -407,16 +412,10 @@ private struct AttachmentChip: View {
             .background(ChatColors.secondaryBg)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .onTapGesture { showPreview = true }
 
-            Button {
-                onRemove()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 16))
-                    .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.4), radius: 2)
-            }
-            .offset(x: 4, y: -4)
+            removeBadge
         }
         .fixedSize()
     }
@@ -488,12 +487,15 @@ struct PastedTextChipRow: View {
                             onRemove(entry.id)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 16))
+                                .font(.system(size: 17))
                                 .foregroundStyle(.white)
-                                .shadow(color: .black.opacity(0.4), radius: 2)
+                                .shadow(color: .black.opacity(0.5), radius: 2)
+                                .frame(width: 26, height: 26)
+                                .contentShape(Circle())
                         }
                         .buttonStyle(.plain)
-                        .offset(x: 4, y: -4)
+                        .padding(2)
+                        .zIndex(2)
                     }
                     .fixedSize()
                 }

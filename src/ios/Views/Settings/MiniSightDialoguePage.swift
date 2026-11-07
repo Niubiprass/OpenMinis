@@ -32,7 +32,6 @@ struct MiniSightDialoguePage: View {
 
             Section {
                 Toggle("操作时录屏", isOn: $config.record)
-                Toggle("长按桌宠切换录屏", isOn: $config.longPressRecord)
                 Text("录像保存在本机 Documents/MiniSight/recordings，文件校验通过才提示成功。")
                     .font(.caption).foregroundStyle(.secondary)
             } header: { Text("录屏") }
@@ -46,9 +45,7 @@ struct MiniSightDialoguePage: View {
                     Text("醒来前持续").tag("until_wake")
                 }
             } header: { Text("声音") } footer: {
-                Text(config.voiceInput
-                     ? "语音输入已启用：点输入条的麦克风开始听写，转写进入草稿，仍需手动发送。"
-                     : "语音输入开启后会申请麦克风和语音识别权限；拒绝时仍可用键盘。")
+                Text("点输入条麦克风开始，再点一次结束；转写进入草稿，仍需手动发送。首次会申请麦克风/语音权限，拒绝或引擎不可用时保留键盘输入。")
             }
         }
         .navigationTitle("聊天、语音与录屏")

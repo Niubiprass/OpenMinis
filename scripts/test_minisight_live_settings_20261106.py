@@ -60,7 +60,7 @@ need('gMiniSightShown = ![shownText isEqualToString:@"0"];' in TWEAK,
      "shown state follows the file immediately")
 
 # Compact composer + motion, not a wide card.
-need('CGFloat barWidth = MIN(212 *' in PANEL, "composer is compact")
+need('MIN(216., safe.size.width)' in PANEL and 'MSChatFloatingLayoutWithComposer' in PANEL, "composer is compact")
 need('- (void)animatePresentationIn' in PANEL, "presentation animates")
 need('animatePresentationIn];' in PANEL, "animation is called on show/reveal")
 need('bubble.transform = CGAffineTransformConcat' in PANEL, "new bubbles animate")

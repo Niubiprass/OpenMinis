@@ -34,14 +34,14 @@ keys_src = read(KEYS)
 store = read(STORE)
 runtime = read(RUNTIME)
 pages = "\n".join(p.read_text() for p in sorted(PAGES.glob("MiniSight*.swift")))
-snapshot = keys_src[keys_src.index("enum MiniSightRuntimeSnapshot"):] if "enum MiniSightRuntimeSnapshot" in keys_src else ""
+snapshot = keys_src  # runtimeFields mapping and snapshot live in this one allowlist file
 
 declared = dict(re.findall(r'static let (\w+) = "(minisight\.[\w.]+)"', keys_src))
 # Keys applied by the runtime rather than bridged as numbers need their own check.
 BOOLEAN_OR_NUMBER = set("""style renderer mode petSize gravity gravityStrength gravityShake interaction
 activity activityInterval frameLimit dragResponse petSound bottomGap tint darkMode proactive
 proactiveInterval voiceReply quick""".split())
-HIDDEN = {'aiAdjust', 'adjustments', 'aiAdjustments', 'aiPermissions', 'diagnostics', 'frameLimit', 'nickname', 'persona', 'proactive', 'proactiveInterval', 'quickButtons', 'quickLines', 'quickOrder', 'quickPosition'}
+HIDDEN = {'aiAdjust', 'adjustments', 'aiAdjustments', 'aiPermissions', 'diagnostics', 'frameLimit', 'nickname', 'persona', 'proactive', 'proactiveInterval', 'quickButtons', 'quickLines', 'quickOrder', 'quickPosition', 'longPressRecord'}
 STRING_KEYS = {"singleTap", "doubleTap", "longPress", "costume", "nickname", "returnKey", "snore",
                "quickPosition", "quickOrder", "aiPermissions", "shownRevision"}
 

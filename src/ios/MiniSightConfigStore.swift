@@ -31,11 +31,11 @@ final class MiniSightConfigStore: ObservableObject {
 
     @Published var tint: String { didSet { publish(MiniSightSettingKey.tint) } }
     @Published var costume: String { didSet { publish(MiniSightSettingKey.costume) } }
-    @Published var supplier: String
-    @Published var downloadSource: String
+    @Published var supplier: String { didSet { publish(MiniSightSettingKey.supplier) } }
+    @Published var downloadSource: String { didSet { publish(MiniSightSettingKey.downloadSource) } }
     @Published var darkMode: String { didSet { publish(MiniSightSettingKey.darkMode) } }
 
-    @Published var persona: String
+    @Published var persona: String { didSet { publish(MiniSightSettingKey.persona) } }
     @Published var nickname: String { didSet { publish(MiniSightSettingKey.nickname) } }
     @Published var aiAdjust: Bool { didSet { publish(MiniSightSettingKey.aiAdjust) } }
     @Published var proactive: Bool { didSet { publish(MiniSightSettingKey.proactive) } }
@@ -118,11 +118,16 @@ final class MiniSightConfigStore: ObservableObject {
         shown = fileShown
         UserDefaults.standard.set(fileShown, forKey: MiniSightSettingKey.shown)
         loaded = true
+        // Older installs have plist values but no runtime snapshot. Without
+        // this, the plugin falls back to menu until the first settings edit.
+        if !FileManager.default.fileExists(atPath: container.appendingPathComponent("Documents/MiniSight/runtime.json").path) {
+            _ = writeSnapshot()
+        }
     }
 
     private var container: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
     }
 
     private func raw(_ key: String) -> Any {
@@ -168,7 +173,11 @@ final class MiniSightConfigStore: ObservableObject {
         case MiniSightSettingKey.longPressRecord: return longPressRecord
         case MiniSightSettingKey.diagnostics: return diagnostics
         case MiniSightSettingKey.aiPermissions: return MiniSightAIPermission.allCases.filter(permissions.contains).map(\.rawValue).joined(separator: ",")
-        default: return ""
+        case MiniSightSettingKey.persona: return persona
+        case MiniSightSettingKey.adjustments: return adjustments
+        case MiniSightSettingKey.quickLines: return quickLines
+        case MiniSightSettingKey.shownRevision: return UserDefaults.standard.string(forKey: key) ?? ""
+        default: preconditionFailure("Unknown MiniSight transport key")
         }
     }
 
@@ -201,75 +210,69 @@ final class MiniSightConfigStore: ObservableObject {
         if shown != fileValue { shown = fileValue }
     }
 
-    /// Persist locally, read back the actual plist, then let the retry loop
-    /// deliver. Missing prefs are retried instead of being a hard stop.
+    /// Defaults keep the App's local view; the atomic, verified runtime file is
+    /// the delivery contract. CFPreferences' asynchronous flush is NOT an ACK.
     private func publish(_ key: String) {
         guard loaded else { return }
-        let values = raw(key)
         let d = UserDefaults.standard
-        d.set(values, forKey: key)
-        let rev = UUID().uuidString
-        d.set(rev, forKey: MiniSightSettingKey.shownRevision)
-        saveState = "已保存，正在核对…"
+        d.set(raw(key), forKey: key)
+        let revision = UUID().uuidString
+        d.set(revision, forKey: MiniSightSettingKey.shownRevision)
         publishGeneration &+= 1
-        let generation = publishGeneration
-        MSDiagEvent("settings", "save", "pending", ["setting": key, "source": "settings", "revision": rev])
-        let prefsURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Preferences")
-            .appendingPathComponent((Bundle.main.bundleIdentifier ?? "com.openminis.app") + ".plist")
-        Task.detached(priority: .utility) {
-            let verified = (try? Data(contentsOf: prefsURL)).flatMap {
-                try? PropertyListSerialization.propertyList(from: $0, options: [], format: nil) as? [String: Any]
-            }
-            await MainActor.run {
-                guard generation == self.publishGeneration else { return }
-                let saved = verified?[key] as? NSObject
-                let expected = values as? NSObject
-                let ok = saved?.isEqual(expected) == true
-                self.lastError = ok ? nil : "设置尚未完成落盘，正在重试。"
-                self.saveState = ok ? "已保存并核对" : "等待磁盘确认…"
-                MSDiagEvent("settings", "readback", ok ? "ok" : "failed",
-                            ["setting": key, "source": "settings", "revision": rev, "readback": ok])
-                self.deliver(generation: generation, revision: rev, attempt: ok ? 0 : 1)
-            }
-        }
+        saveState = "正在保存并核对…"
+        // Never pass values: persona, nickname, quick lines, asset source and
+        // custom costume names are free text, even when they look harmless.
+        MSDiagEvent("settings", "save", "pending",
+                    ["setting": key, "source": "settings", "revision": revision,
+                     "generation": publishGeneration])
+        deliver(generation: publishGeneration, revision: revision, attempt: 0)
     }
 
-    /// The revision is only metadata. Once the edited value is verified, post
-    /// immediately; retry the revision marker separately up to four times.
     private func deliver(generation: Int, revision: String, attempt: Int) {
-        Self.writeSnapshot()
-        let prefsURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Preferences")
-            .appendingPathComponent((Bundle.main.bundleIdentifier ?? "com.openminis.app") + ".plist")
-        Task.detached(priority: .utility) {
-            let object = (try? Data(contentsOf: prefsURL)).flatMap {
-                try? PropertyListSerialization.propertyList(from: $0, options: [], format: nil) as? [String: Any]
-            }
-            let revisionOK = object?[MiniSightSettingKey.shownRevision] as? String == revision
-            await MainActor.run {
-                guard generation == self.publishGeneration else { return }
-                MSDiagEvent("settings", "publish", revisionOK ? "ok" : "pending",
-                            ["source": "app", "revision": revision, "reason": revisionOK ? "revision_visible" : "revision_retry", "count": attempt])
-                if revisionOK || attempt >= 4 {
-                    self.lastError = revisionOK ? nil : "设置已保存，但内部版本标记延迟；通知仍然成功。"
-                    self.saveState = revisionOK ? "已保存并通知运行端" : "已保存，通知已发"
-                    return
-                }
-                let delay = DispatchTimeInterval.milliseconds([350, 700, 1200, 2000][min(attempt, 3)])
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                    self?.deliver(generation: generation, revision: revision, attempt: attempt + 1)
-                }
-            }
+        guard generation == publishGeneration else { return }
+        let ok = self.writeSnapshot()
+        MSDiagEvent("settings", "readback", ok ? "ok" : "failed",
+                    ["source": "app", "revision": revision, "readback": ok,
+                     "generation": generation, "count": attempt,
+                     "reason": ok ? "snapshot_verified" : "snapshot_write_failed"])
+        if ok {
+            MSDiagEvent("settings", "publish", "ok",
+                        ["source": "app", "revision": revision, "reason": "revision_visible"])
+            lastError = nil
+            saveState = "已保存并核对"
+            return
+        }
+        MSDiagEvent("settings", "publish", "pending",
+                    ["source": "app", "revision": revision, "reason": "revision_retry"])
+        lastError = attempt < 4 ? "设置尚未完成落盘，正在重试。" : "设置保存失败，请重试。"
+        saveState = attempt < 4 ? "等待磁盘确认…" : "保存失败"
+        guard attempt < 4 else { return } // attempt >= 4: bounded retries exhausted
+        let delay = DispatchTimeInterval.milliseconds([350, 700, 1200, 2000][attempt])
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.deliver(generation: generation, revision: revision, attempt: attempt + 1)
         }
     }
 
-    private static func writeSnapshot() { }
-
-    func writeSnapshot() { MiniSightRuntimeSnapshot.write(container: container) }
+    @discardableResult
+    func writeSnapshot() -> Bool {
+        var values: [String: Any] = [:]
+        for key in MiniSightConfig.all { values[key] = raw(key) }
+        return MiniSightRuntimeSnapshot.write(container: container, rawValues: values)
+    }
 
     func persistAll() {
-        for key in MiniSightConfig.all { UserDefaults.standard.set(raw(key), forKey: key) }
-        try? MiniSightPetFile.saveShown(shown) { }
-        writeSnapshot()
+        let d = UserDefaults.standard
+        d.set(UUID().uuidString, forKey: MiniSightSettingKey.shownRevision)
+        for key in MiniSightConfig.all { d.set(raw(key), forKey: key) }
+        do {
+            try MiniSightPetFile.saveShown(shown) { }
+            publishGeneration &+= 1
+            deliver(generation: publishGeneration,
+                    revision: d.string(forKey: MiniSightSettingKey.shownRevision) ?? "", attempt: 0)
+        } catch {
+            lastError = "桌宠显示状态没能保存，请重试。"
+            saveState = "保存失败"
+        }
     }
 
     func setPermission(_ permission: MiniSightAIPermission, allowed: Bool) {
@@ -283,6 +286,7 @@ final class MiniSightConfigStore: ObservableObject {
 
     func setQuickLine(_ text: String, for action: MiniSightQuickAction) {
         MiniSightConfig.setQuickLine(text, for: action)
+        publish(MiniSightSettingKey.quickLines)
     }
 
     func moveQuick(from: Int, to: Int) {
@@ -296,6 +300,6 @@ final class MiniSightConfigStore: ObservableObject {
     func noteAdjustment(_ text: String) {
         adjustments.insert(text, at: 0)
         if adjustments.count > 12 { adjustments.removeLast(adjustments.count - 12) }
-        UserDefaults.standard.set(adjustments, forKey: MiniSightSettingKey.adjustments)
+        publish(MiniSightSettingKey.adjustments)
     }
 }

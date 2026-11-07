@@ -332,6 +332,48 @@ enum AttachmentImageCodec {
         guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions as CFDictionary) else { return nil }
         return jpeg(source, maxEdge: maxEdge, quality: quality)
     }
+
+    /// Async wrappers for call sites that live on MainActor. The work is
+    /// dispatched to a global queue; awaiting does not inherit MainActor.
+    static func resizedJPEG(_ data: Data, maxEdge: Int) async -> Data? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let output = autoreleasepool { resized(data, maxEdge: maxEdge) }
+                continuation.resume(returning: output)
+            }
+        }
+    }
+}
+
+/// Dimensions plus the resized inference copy, produced by one off-main pass.
+struct ReadImageAnalysis: Sendable {
+    let originalBytes: Int
+    let originalWidth: Int
+    let originalHeight: Int
+    let inference: Data
+    let width: Int
+    let height: Int
+}
+
+extension AttachmentImageCodec {
+    static func analyzeForRead(_ data: Data, maxEdge: Int = 2000) async -> ReadImageAnalysis? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result: ReadImageAnalysis? = autoreleasepool {
+                    guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions as CFDictionary),
+                          let (w, h) = pixelSize(source) else { return nil }
+                    let inference = jpeg(source, maxEdge: maxEdge, quality: 0.85)
+                        ?? encoded(data, maxEdge: maxEdge, quality: 0.85) ?? data
+                    let dims = (CGImageSourceCreateWithData(inference as CFData, sourceOptions as CFDictionary))
+                        .flatMap { pixelSize($0) } ?? (w, h)
+                    return ReadImageAnalysis(originalBytes: data.count,
+                                             originalWidth: w, originalHeight: h,
+                                             inference: inference, width: dims.0, height: dims.1)
+                }
+                continuation.resume(returning: result)
+            }
+        }
+    }
 }
 
 struct PreparedAttachmentBatch: Sendable {

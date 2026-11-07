@@ -130,6 +130,14 @@ struct MinisApp: App {
         //
         // `install` is idempotent, so the later onAppLaunch() call is a no-op.
         CrashSignalHandler.install()
+        // Basic MiniSight events must be available even when the plugin renderer
+        // is selected (the in-App overlay is then absent). Detailed free-form
+        // records still follow the explicit diagnostics switch.
+        let sightContainer = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .deletingLastPathComponent().path
+        MSDiagConfigure(UserDefaults.standard.bool(forKey: "minisight.diagnostics"), sightContainer)
+        MSDiagEvent("runtime", "begin", "ok", ["source": "app", "version": MiniSightModule.version])
+        Task { @MainActor in MiniSightVoiceBridge.shared.install() }
         // [T-auto-grouping-default-on] Auto-grouping ships ON. `bool(forKey:)`
         // returns false for an unregistered key, so the default has to be
         // registered here rather than expressed at the (multiple) read sites —
@@ -329,6 +337,10 @@ struct MinisApp: App {
                     guard !SessionLockStore.shared.appIsLocked else {
                         shareLog.info("[Share] onOpenURL deferred — app is locked")
                         pendingURLWhileLocked = url
+                        return
+                    }
+                    if url.scheme == "minis", url.host == "minisight", url.path == "/voice" {
+                        Task { @MainActor in MiniSightVoiceBridge.shared.resumeRequestedVoice() }
                         return
                     }
                     if BackupOpenRouter.handle(url) {

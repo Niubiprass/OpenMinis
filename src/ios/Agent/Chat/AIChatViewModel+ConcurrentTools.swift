@@ -799,7 +799,7 @@ extension AIChatViewModel {
             toolSuccess = browserResult.success
             toolPageURL = browserResult.pageURL
             if let b64 = browserResult.base64Image, let data = Data(base64Encoded: b64) {
-                toolImageData = Self.resizedImageData(data, maxLongEdge: 2000) ?? data
+                toolImageData = await AttachmentImageCodec.resizedJPEG(data, maxEdge: 2000) ?? data
                 toolImageMimeType = "image/jpeg"
 
                 let timestamp = Int(Date().timeIntervalSince1970)
@@ -860,32 +860,23 @@ extension AIChatViewModel {
             let pathArg = toolArgs["path"] as? String ?? ""
             let resolvedURL = await resolveMinisPath(pathArg)
             ctLogger.info("[read_image] pathArg=\(pathArg) resolvedURL=\(resolvedURL?.path ?? "nil") exists=\(resolvedURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false)")
-            if let resolvedURL {
-                let dataOK = (try? Data(contentsOf: resolvedURL)) != nil
-                let uiOK = (try? Data(contentsOf: resolvedURL)).flatMap { UIImage(data: $0) } != nil
-                ctLogger.info("[read_image] dataReadable=\(dataOK) uiImageDecodable=\(uiOK) fileSize=\((try? FileManager.default.attributesOfItem(atPath: resolvedURL.path)[.size]) ?? "?")")
-            }
-
-            if let fileURL = resolvedURL,
-               let fileData = try? Data(contentsOf: fileURL),
-               let uiImage = UIImage(data: fileData) {
-                let originalSize = fileData.count
-                let originalW = uiImage.cgImage.map { $0.width } ?? Int(uiImage.size.width)
-                let originalH = uiImage.cgImage.map { $0.height } ?? Int(uiImage.size.height)
-
-                let inferenceData: Data
-                let resizedW: Int
-                let resizedH: Int
-                if let resized = Self.resizedImageData(fileData, maxLongEdge: 2000),
-                   let resizedImage = UIImage(data: resized) {
-                    inferenceData = resized
-                    resizedW = resizedImage.cgImage.map { $0.width } ?? Int(resizedImage.size.width)
-                    resizedH = resizedImage.cgImage.map { $0.height } ?? Int(resizedImage.size.height)
-                } else {
-                    inferenceData = uiImage.jpegData(compressionQuality: 0.85) ?? fileData
-                    resizedW = originalW
-                    resizedH = originalH
+            // Data(contentsOf:) and ImageIO both stay off MainActor.
+            let loadedData: Data?
+            if let url = resolvedURL {
+                loadedData = try? await AttachmentIO.perform { check in
+                    try check()
+                    return try Data(contentsOf: url)
                 }
+            } else { loadedData = nil }
+            ctLogger.info("[read_image] resolved=\(resolvedURL?.path ?? "nil") bytes=\(loadedData?.count ?? -1)")
+            if let fileURL = resolvedURL, let fileData = loadedData,
+               let analysis = await AttachmentImageCodec.analyzeForRead(fileData) {
+                let originalSize = analysis.originalBytes
+                let originalW = analysis.originalWidth
+                let originalH = analysis.originalHeight
+                let inferenceData = analysis.inference
+                let resizedW = analysis.width
+                let resizedH = analysis.height
 
                 if pathArg.hasPrefix("/var/minis/") {
                     toolImageLinuxPath = pathArg

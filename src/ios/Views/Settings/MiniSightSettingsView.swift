@@ -112,6 +112,19 @@ enum MiniSightPetFile {
         return UIImage(data: data)
     }
 
+    /// One idle cell from the 9x8 atlas for the settings header. Rendering the
+    /// whole sheet made it look like dozens of tiny pets with a grid behind.
+    static func loadPreview() -> UIImage? {
+        guard let sheet = load()?.cgImage else { return nil }
+        let columns = 8, rows = 9
+        let cellW = sheet.width / columns, cellH = sheet.height / rows
+        guard cellW > 0, cellH > 0,
+              let cell = sheet.cropping(to: CGRect(x: 0, y: 0, width: cellW, height: cellH)) else {
+            return load()
+        }
+        return UIImage(cgImage: cell, scale: 1, orientation: .up)
+    }
+
     /// 9-row sheets are 1536 px wide on Petdex; 768 is plenty for a 96 pt pet.
     static func save(_ image: UIImage, onWrite: () -> Void) throws {
         let maxWidth: CGFloat = 768

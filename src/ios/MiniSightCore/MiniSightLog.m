@@ -49,6 +49,27 @@ static NSString *MSDiagRequest(id value) {
     return [NSString stringWithFormat:@"%@.%@", uuid.UUIDString, generation];
 }
 
+static BOOL MSDiagEnum(NSString *key, NSString *value) {
+    static NSDictionary<NSString *, NSSet<NSString *> *> *allowed; static dispatch_once_t once;
+    dispatch_once(&once, ^{ allowed = @{
+        @"action": [NSSet setWithArray:@[@"none", @"interact", @"input", @"voice", @"menu", @"record", @"conversation"]],
+        @"old": [NSSet setWithArray:@[@"none", @"interact", @"input", @"voice", @"menu", @"record", @"conversation", @"lively", @"quiet", @"off", @"natural", @"dark", @"light", @"above", @"below", @"system", @"send", @"return", @"0", @"1", @"2", @"3"]],
+        @"new": [NSSet setWithArray:@[@"none", @"interact", @"input", @"voice", @"menu", @"record", @"conversation", @"lively", @"quiet", @"off", @"natural", @"dark", @"light", @"above", @"below", @"system", @"send", @"return", @"0", @"1", @"2", @"3"]],
+        @"route": [NSSet setWithArray:@[@"idle", @"user", @"controller", @"approval", @"pet", @"bubble", @"chat", @"none", @"allow", @"deny", @"burst", @"reply"]],
+        @"setting": [NSSet setWithArray:@[@"ai_adjust", @"ai_connection", @"ai_persona", @"minisight.activity", @"minisight.activity.interval", @"minisight.ai.adjust", @"minisight.ai.adjustments", @"minisight.ai.nickname", @"minisight.ai.permissions", @"minisight.ai.persona", @"minisight.ai.supplier", @"minisight.asset.source", @"minisight.bottomGap", @"minisight.chat.height", @"minisight.chat.theme", @"minisight.chat.tintAlpha", @"minisight.chat.tintHex", @"minisight.darkMode", @"minisight.diagnostics", @"minisight.dialogue.dwell", @"minisight.dialogue.return", @"minisight.dialogue.scale", @"minisight.dialogue.textScale", @"minisight.dragResponse", @"minisight.frameLimit", @"minisight.gesture.double", @"minisight.gesture.long", @"minisight.gesture.single", @"minisight.gravity", @"minisight.gravity.shake", @"minisight.gravity.strength", @"minisight.interaction", @"minisight.longPress", @"minisight.mode", @"minisight.pet.costume", @"minisight.pet.tint", @"minisight.petSize", @"minisight.petSound", @"minisight.proactive", @"minisight.proactive.interval", @"minisight.quick.enabled", @"minisight.quick.lines", @"minisight.quick.order", @"minisight.quick.position", @"minisight.record", @"minisight.renderer", @"minisight.settings.revision", @"minisight.shown", @"minisight.style", @"minisight.voice.input", @"minisight.voice.reply", @"minisight.voice.snore", @"pet", @"shown"]],
+        @"source": [NSSet setWithArray:@[@"app", @"app_double_tap", @"app_local", @"bubble_tap", @"floating_bubbles", @"keyboard_dictation", @"menu_toggle", @"pet_second_tap", @"photos", @"plugin", @"plugin_double_tap", @"proactive", @"settings", @"user_drag"]],
+        @"reason": [NSSet setWithArray:@[@"accelerometer_error", @"accelerometer_fallback", @"already_recording", @"already_sending", @"app_burst", @"app_listening", @"approval_visible", @"asset_verification", @"atlas_decoded", @"attachment_missing", @"capture_callback", @"capture_error", @"capture_requested", @"catalog_changed", @"chat_already_visible", @"clear_conversation", @"controller_state", @"current_generation", @"darwin_notification", @"destination", @"destroy", @"device_motion", @"device_motion_error", @"disabled", @"empty_input", @"encoding_incomplete", @"engine", @"file_publish", @"first_responder", @"first_sample", @"first_sample_timeout", @"first_video_frame", @"hard_deadline", @"hidden", @"host_configured", @"host_teardown", @"invalid_response", @"long_press", @"long_press_disabled", @"manual_disabled", @"missing_anchor", @"missing_host_scene", @"missing_or_invalid_atlas", @"model_request", @"no_app_reply", @"not_burst", @"not_recording", @"not_visible_or_sending", @"open_destination", @"permission", @"pet_hidden", @"pet_host_configured", @"pet_unavailable_capsule_fallback", @"plugin_burst", @"quarantined", @"request_app", @"revision_retry", @"revision_visible", @"runtime_snapshot", @"scene_background", @"scene_mismatch", @"sources_exhausted", @"stale_generation", @"stop_or_encoding", @"system", @"system_unavailable", @"teardown", @"timer", @"transport_rejected", @"transport_started", @"unknown", @"user", @"user_menu", @"verified_file", @"write_request", @"writer_failed", @"writer_init", @"wrong_renderer"]],
+        @"renderer": [NSSet setWithArray:@[@"0", @"1", @"2"]], @"mode": [NSSet setWithArray:@[@"0", @"1", @"2"]],
+        @"style": [NSSet setWithArray:@[@"0", @"1", @"2", @"3"]],
+        @"field": [NSSet setWithArray:@[@"connection", @"endpoint"]],
+        @"domain": [NSSet setWithArray:@[@"chat", @"runtime", @"settings", @"voice"]],
+        @"issue": [NSSet setWithArray:@[@"0", @"1", @"2", @"3", @"4", @"5", @"6", @"7", @"8", @"9"]],
+        @"finish": [NSSet setWithArray:@[@"content_filter", @"error", @"function_call", @"length", @"none", @"other", @"stop", @"tool_calls", @"unknown"]],
+        @"version": [NSSet setWithArray:@[@"0.8.1"]]
+    }; });
+    return [allowed[key] containsObject:value];
+}
+
 static id MSDiagValue(NSString *key, id value) {
     if ([key isEqualToString:@"request"] && [value isKindOfClass:NSString.class]) return MSDiagRequest(value);
     if ([value isKindOfClass:NSNumber.class]) {
@@ -58,13 +79,9 @@ static id MSDiagValue(NSString *key, id value) {
     if (!MSDiagIdentifier(value)) return nil;
     // revision may be a monotonic number or an app-generated UUID.
     if ([key isEqualToString:@"revision"]) return [[NSUUID alloc] initWithUUIDString:value] ? value : nil;
-    if ([key isEqualToString:@"setting"] || [key isEqualToString:@"field"] ||
-        [key isEqualToString:@"domain"] || [key isEqualToString:@"source"] ||
-        [key isEqualToString:@"reason"] || [key isEqualToString:@"renderer"] ||
-        [key isEqualToString:@"mode"] || [key isEqualToString:@"style"] ||
-        [key isEqualToString:@"issue"] || [key isEqualToString:@"code"] ||
-        [key isEqualToString:@"finish"] || [key isEqualToString:@"version"]) return value;
-    return nil; // Counts, geometry, flags, saved/readback must be numbers/booleans.
+    return MSDiagEnum(key, value) ? value : nil;
+    // Counters, flags and values not explicitly enumerated above are numeric.
+
 }
 
 static void MSDiagSetup(void) {
@@ -85,9 +102,9 @@ static void MSDiagSetup(void) {
         MSDiagDate.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
         MSDiagDate.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
         MSDiagFeatures = [NSSet setWithArray:@[@"chat", @"settings", @"runtime", @"voice", @"ai", @"ai_test", @"assets", @"recording", @"gravity", @"drag", @"activity", @"screen", @"ownership", @"gesture", @"bubble", @"approval"]];
-        MSDiagStages = [NSSet setWithArray:@[@"save", @"receive", @"apply", @"show", @"layout", @"send", @"reply", @"display", @"close", @"skip", @"build", @"entry", @"editor", @"keyboard", @"composer", @"state", @"visibility", @"hide", @"begin", @"end", @"readback", @"publish", @"request", @"cancel", @"config", @"network", @"callback", @"parse", @"finish", @"ready", @"error", @"sample", @"stop", @"start", @"load", @"click", @"response", @"change", @"configure", @"deliver", @"interruption", @"rotate", @"reload", @"identity"]];
-        MSDiagResults = [NSSet setWithArray:@[@"ok", @"failed", @"skipped", @"cancelled", @"pending", @"unsupported"]];
-        MSDiagKeys = [NSSet setWithArray:@[@"setting", @"source", @"reason", @"request", @"revision", @"generation", @"issue", @"count", @"chars", @"duration_ms", @"renderer", @"visible", @"sending", @"keyboard", @"below", @"x", @"y", @"w", @"h", @"enabled", @"mode", @"style", @"field", @"code", @"domain", @"saved", @"readback", @"sequence", @"value", @"present", @"roll", @"samples", @"http", @"bytes", @"reasoning", @"finish", @"valid", @"executing", @"active", @"version"]];
+        MSDiagStages = [NSSet setWithArray:@[@"save", @"receive", @"apply", @"show", @"layout", @"send", @"reply", @"display", @"close", @"skip", @"build", @"entry", @"editor", @"keyboard", @"composer", @"state", @"visibility", @"hide", @"begin", @"end", @"readback", @"publish", @"request", @"cancel", @"config", @"network", @"callback", @"parse", @"finish", @"ready", @"error", @"sample", @"stop", @"start", @"load", @"click", @"response", @"change", @"configure", @"deliver", @"interruption", @"rotate", @"reload", @"identity", @"route", @"answer", @"single", @"double", @"long", @"install", @"picker", @"remove", @"local", @"source"]];
+        MSDiagResults = [NSSet setWithArray:@[@"ok", @"failed", @"skipped", @"cancelled", @"pending", @"unsupported", @"allow", @"deny", @"open", @"source"]];
+        MSDiagKeys = [NSSet setWithArray:@[@"setting", @"source", @"reason", @"request", @"revision", @"generation", @"issue", @"count", @"chars", @"duration_ms", @"renderer", @"visible", @"sending", @"keyboard", @"below", @"x", @"y", @"w", @"h", @"enabled", @"mode", @"style", @"field", @"code", @"domain", @"saved", @"readback", @"sequence", @"value", @"present", @"roll", @"samples", @"http", @"bytes", @"reasoning", @"finish", @"valid", @"executing", @"active", @"version", @"action", @"route", @"old", @"new"]];
     });
 }
 

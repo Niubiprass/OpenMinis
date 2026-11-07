@@ -182,6 +182,7 @@ struct AIChatView: View {
     // MARK: iOS 15 UIKit pickers (port strips .photosPicker)
 
     private func presentPhotoPicker() {
+        MSDiagEvent("attach", "picker", "open", ["kind": "photos"])
         var config = PHPickerConfiguration(photoLibrary: .shared())
         config.filter = .any(of: [.images, .videos])
         config.selectionLimit = 0
@@ -195,6 +196,7 @@ struct AIChatView: View {
     }
 
     private func presentDocumentPicker() {
+        MSDiagEvent("attach", "picker", "open", ["kind": "files"])
         let types: [UTType] = [.image, .pdf, .plainText, .json, .sourceCode, .presentation, .spreadsheet, .data]
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
         picker.allowsMultipleSelection = true

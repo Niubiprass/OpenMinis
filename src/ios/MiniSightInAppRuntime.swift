@@ -71,7 +71,11 @@ struct MiniSightInAppRuntime: View {
             preferencesLoaded = true
             setAppForeground(scenePhase == .active)
             motion.configureDiagnostics(diagnosticsEnabled)
-            if voiceInput { MiniSightVoiceBridge.shared.install() }
+            // Install unconditionally: the switch can be off while the pet mic is
+            // still the way the user starts dictation. Permission is requested on
+            // first use, never at launch.
+            MiniSightVoiceBridge.shared.install()
+            MSDiagEvent("voice", "install", "ok", ["source": "app", "enabled": voiceInput])
             MSDiagEvent("runtime", "identity", "ok", ["source": "app", "version": MiniSightModule.version])
             traceReceivedSettings()
             traceVisibility()
