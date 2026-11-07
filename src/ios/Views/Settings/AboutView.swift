@@ -1082,8 +1082,23 @@ private final class UpdateDownloadSessionDelegate: NSObject, URLSessionDownloadD
 
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                                 didFinishDownloadingTo location: URL) {
+        // `location` dies when this callback returns. Copy it on THIS thread,
+        // before hopping to a possibly busy MainActor (the old order let the
+        // system delete CFNetworkDownload_*.tmp and produced Cocoa 260).
+        guard let id = downloadTask.taskDescription else { return }
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("MinisUpdateStaging", isDirectory: true)
+        let staged = dir.appendingPathComponent(id + ".ipa")
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? fm.removeItem(at: staged)
+            do { try fm.moveItem(at: location, to: staged) }
+            catch { try fm.copyItem(at: location, to: staged) }
+        } catch {
+            NSLog("[UpdateDownload] staging failed id=%@ error=%@", id, String(describing: error))
+        }
         MainActor.assumeIsolated {
-            owner?.receivedFile(task: downloadTask, location: location)
+            owner?.receivedStagedFile(task: downloadTask, staged: staged)
         }
     }
 
@@ -1408,7 +1423,9 @@ final class UpdateDownloadCoordinator: ObservableObject {
         }
     }
 
-    fileprivate func receivedFile(task: URLSessionDownloadTask, location: URL) {
+    fileprivate func receivedStagedFile(task: URLSessionDownloadTask, staged: URL) {
+        let location = staged
+        defer { try? FileManager.default.removeItem(at: staged) }
         guard let id = task.taskDescription, id == currentTransferID,
               let record = UpdateDownloadPersistence.load(), record.transferID == id,
               record.isValid else { return }
