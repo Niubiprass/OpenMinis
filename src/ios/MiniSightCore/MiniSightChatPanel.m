@@ -3,6 +3,7 @@
 #import "MiniSightChatLayout.h"
 #import "MiniSightBridgeIO.h"
 #import "MiniSightBlip.h"
+#import "MiniSightPet.h"
 #import <QuartzCore/QuartzCore.h>
 #import <AVFoundation/AVFoundation.h>
 
@@ -18,6 +19,55 @@ static UIColor *MSChatColor(UIColor *light, UIColor *dark) {
     return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
         return traits.userInterfaceStyle == UIUserInterfaceStyleDark ? dark : light;
     }];
+}
+
+/// Very small local answers so time / arithmetic keep working even when the
+/// network or the API key is down. Anything else still goes to the model.
+static NSString *MSChatLocalAnswer(NSString *raw) {
+    NSString *text = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!text.length) return nil;
+    NSDate *now = NSDate.date;
+    if ([text containsString:@"几点"] || [text containsString:@"现在时间"] || [text containsString:@"时间"]) {
+        NSDateFormatter *f = [NSDateFormatter new];
+        f.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
+        f.dateFormat = @"HH:mm";
+        return [NSString stringWithFormat:@"现在是 %@。", [f stringFromDate:now]];
+    }
+    if ([text containsString:@"星期"]) {
+        NSDateFormatter *f = [NSDateFormatter new];
+        f.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
+        f.dateFormat = @"EEEE";
+        return [NSString stringWithFormat:@"今天是%@。", [f stringFromDate:now]];
+    }
+    if ([text containsString:@"几号"] || [text containsString:@"几月"] || [text containsString:@"日期"]) {
+        NSDateFormatter *f = [NSDateFormatter new];
+        f.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
+        f.dateFormat = @"M月d日";
+        return [NSString stringWithFormat:@"今天是 %@。", [f stringFromDate:now]];
+    }
+    NSString *expr = text;
+    for (NSString *word in @[@"等于几", @"等于多少", @"是多少", @"等于", @"？", @"?", @" "]) {
+        expr = [expr stringByReplacingOccurrencesOfString:word withString:@""];
+    }
+    expr = [expr stringByReplacingOccurrencesOfString:@"×" withString:@"*"];
+    expr = [expr stringByReplacingOccurrencesOfString:@"÷" withString:@"/"];
+    NSPredicate *math = [NSPredicate predicateWithFormat:@"SELF MATCHES %@", @"^[0-9+\\-*/().]+$"];
+    if ([math evaluateWithObject:expr] &&
+        [expr rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"+-*/"]].location != NSNotFound) {
+        @try {
+            NSExpression *value = [NSExpression expressionWithFormat:expr];
+            id result = [value expressionValueWithObject:nil context:nil];
+            if ([result isKindOfClass:NSNumber.class]) {
+                double d = [result doubleValue];
+                if (isfinite(d)) {
+                    NSString *shown = fabs(d - round(d)) < 0.0000001
+                        ? [NSString stringWithFormat:@"%.0f", d] : [NSString stringWithFormat:@"%.4g", d];
+                    return [NSString stringWithFormat:@"%@ = %@", expr, shown];
+                }
+            }
+        } @catch (__unused NSException *e) { }
+    }
+    return nil;
 }
 
 static CGRect MSChatScreenRect(UIWindowScene *scene) {
@@ -53,9 +103,23 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
     for (UIView *view in self.interactiveViews) {
         if (view.hidden || view.alpha < 0.01) continue;
         CGPoint local = [view convertPoint:point fromView:self];
-        // The docked bar gets 8pt horizontal slack so a near miss still hits.
-        CGRect generous = CGRectInset(view.bounds, -8, -4);
-        if (CGRectContainsPoint(generous, local) && ([view pointInside:local withEvent:event] || !view.clipsToBounds)) return YES;
+        if (!CGRectContainsPoint(view.bounds, local)) continue;
+        if ([view isKindOfClass:UIScrollView.class]) {
+            // Only actual bubble bodies catch touches: scroll padding, centered
+            // row margins and inter-row gaps remain transparent to the desktop.
+            for (UIView *stack in view.subviews) {
+                if (![stack isKindOfClass:UIStackView.class]) continue;
+                for (UIView *row in [(UIStackView *)stack arrangedSubviews]) {
+                    if (row.hidden || row.alpha < .01) continue;
+                    CGPoint p = [row convertPoint:point fromView:self];
+                    CGRect body = CGRectInset(row.bounds, .6, 7.5);
+                    if (body.size.width > 0 && body.size.height > 0 &&
+                        [[UIBezierPath bezierPathWithRoundedRect:body cornerRadius:MIN(16., body.size.height * .5)] containsPoint:p]) return YES;
+                }
+            }
+            continue;
+        }
+        if ([[UIBezierPath bezierPathWithRoundedRect:view.bounds cornerRadius:view.layer.cornerRadius] containsPoint:local]) return YES;
     }
     return NO;
 }
@@ -173,6 +237,11 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
 
 #pragma mark - Panel
 
+@interface MiniSightChatAnchorProxy : NSObject
+@property (nonatomic, weak) MiniSightChatPanel *owner;
+- (void)tick:(CADisplayLink *)link;
+@end
+
 @interface MiniSightChatPanel () <UITextFieldDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, strong, nullable) MiniSightChatWindow *window;
 @property (nonatomic, strong, nullable) UIView *cardView;
@@ -194,12 +263,24 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
 @property (nonatomic, assign) CGRect lastAnchorRect;
 @property (nonatomic, assign) CFTimeInterval lastAnchorTime;
 @property (nonatomic, assign) NSUInteger voiceGeneration;
+@property (nonatomic, assign) BOOL voicePending;
+@property (nonatomic, assign) BOOL voiceListening;
+@property (nonatomic, assign) BOOL voiceHeld;
+@property (nonatomic, copy, nullable) NSString *voiceDraft;
 @property (nonatomic, copy, nullable) dispatch_block_t voiceWaiter;
 @property (nonatomic, strong, nullable) UITapGestureRecognizer *editorTap;
 @property (nonatomic, strong, nullable) NSLayoutConstraint *messageWidthConstraint;
 @property (nonatomic, strong, nullable) MiniSightChatBubble *pendingBubble;
 @property (nonatomic, assign) BOOL layingOut;
 @property (nonatomic, assign) BOOL composerVisible;
+@property (nonatomic, strong, nullable) CADisplayLink *anchorLink;
+@property (nonatomic, strong, nullable) MiniSightChatAnchorProxy *anchorProxy;
+@property (nonatomic, weak, nullable) MiniSightPetView *lockedPet;
+@property (nonatomic, assign) BOOL editorDeactivating;
+@property (nonatomic, assign) BOOL keyboardHiding;
+@property (nonatomic, assign) BOOL keyboardObserved;
+@property (nonatomic, assign) NSUInteger editorGeneration;
+@property (nonatomic, assign) NSUInteger keyboardHideGeneration;
 @property (nonatomic, assign) BOOL messagesDirty;
 @property (nonatomic, assign) BOOL lastLayoutBelow;
 @property (nonatomic, assign) CGFloat measuredWidth;
@@ -219,6 +300,9 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
 @property (nonatomic, assign) NSUInteger lifecycleGeneration;
 @property (nonatomic, assign) NSUInteger requestGeneration;
 @property (nonatomic, assign) CGFloat keyboardOverlap;
+- (void)anchorTick:(CADisplayLink *)link;
+- (void)ensureAnchorLink;
+- (void)stopAnchorLink;
 - (void)performCloseForGeneration:(NSUInteger)generation;
 - (void)hideWithoutKey;
 - (void)activateEditor;
@@ -226,6 +310,11 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
 - (void)deactivateEditorWithoutKey;
 - (void)layoutEditorWindow;
 - (void)voiceResultArrived;
+- (void)finishVoiceWithReason:(nullable NSString *)reason;
+- (void)voiceTapped;
+- (void)voiceText:(NSString *)text final:(BOOL)final;
+- (void)toggleMenu;
+- (void)inputChanged;
 - (void)editorInputChanged;
 @end
 
@@ -240,6 +329,14 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     MiniSightChatPanel *panel = (__bridge MiniSightChatPanel *)observer;
     dispatch_async(dispatch_get_main_queue(), ^{ [panel voiceResultArrived]; });
 }
+
+@implementation MiniSightChatAnchorProxy
+- (void)tick:(CADisplayLink *)link {
+    MiniSightChatPanel *owner = self.owner;
+    if (owner) [owner anchorTick:link];
+    else [link invalidate];
+}
+@end
 
 @implementation MiniSightChatPanel
 
@@ -276,7 +373,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     if (![scanner scanHexInt:&rgb]) rgb = 0x8B5CF6;
     id alphaValue = self.appearancePreferences[@"minisight.chat.tintAlpha"];
     CGFloat alpha = [alphaValue respondsToSelector:@selector(doubleValue)] ? [alphaValue doubleValue] : 0.22;
-    alpha = MIN(0.14, MAX(0.02, alpha * 0.25));
+    alpha = MIN(0.18, MAX(0.04, MSFinite(alpha, .22) * .45));
     return [UIColor colorWithRed:((rgb >> 16) & 0xff) / 255.0
                            green:((rgb >> 8) & 0xff) / 255.0
                             blue:(rgb & 0xff) / 255.0 alpha:alpha];
@@ -292,11 +389,13 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     if (!self.cardBlurView || !self.cardTintView) return;
     NSInteger theme = [self.appearancePreferences[@"minisight.chat.theme"] respondsToSelector:@selector(integerValue)]
         ? [self.appearancePreferences[@"minisight.chat.theme"] integerValue] : 0;
-    UIBlurEffectStyle style = theme == 1 ? UIBlurEffectStyleRegular :
-        (theme == 2 ? UIBlurEffectStyleProminent : UIBlurEffectStyleSystemMaterial);
+    UIBlurEffectStyle style = theme == 1 ? UIBlurEffectStyleSystemUltraThinMaterial :
+        (theme == 2 ? UIBlurEffectStyleSystemMaterial : UIBlurEffectStyleSystemThinMaterial);
     self.cardBlurView.effect = [UIBlurEffect effectWithStyle:style];
     self.cardTintView.backgroundColor = self.configuredTint;
-    self.cardView.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.26].CGColor;
+    self.cardView.layer.borderColor = MSChatColor([UIColor colorWithWhite:1 alpha:0.55],
+                                                  [UIColor colorWithWhite:1 alpha:0.820]).CGColor;
+    self.cardView.layer.shadowColor = UIColor.blackColor.CGColor;
     NSString *mode = self.appearancePreferences[@"darkMode"];
     self.window.overrideUserInterfaceStyle = [mode isEqualToString:@"light"] ? UIUserInterfaceStyleLight
         : ([mode isEqualToString:@"dark"] ? UIUserInterfaceStyleDark : UIUserInterfaceStyleUnspecified);
@@ -313,7 +412,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     _appearancePreferences = [appearancePreferences copy] ?: @{};
     [self updateAppearance];
     [self rebuildQuickRow];
-    self.quickScroll.hidden = ![self.appearancePreferences[@"quick"] boolValue];
+    self.quickScroll.hidden = YES;
     self.messagesDirty = YES;
     if (self.built) [self layoutForCurrentScreen];
 }
@@ -383,17 +482,17 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     ]];
 
     UIView *composer = [UIView new];
-    composer.layer.cornerRadius = 15;
+    composer.layer.cornerRadius = 19;
     composer.layer.cornerCurve = kCACornerCurveContinuous;
-    composer.layer.borderWidth = 1.0 / UIScreen.mainScreen.scale;
+    composer.layer.borderWidth = 0.8;
     composer.layer.shadowColor = UIColor.blackColor.CGColor;
-    composer.layer.shadowOpacity = 0.12;
-    composer.layer.shadowRadius = 7;
-    composer.layer.shadowOffset = CGSizeMake(0, 2);
+    composer.layer.shadowOpacity = 0.22;
+    composer.layer.shadowRadius = 12;
+    composer.layer.shadowOffset = CGSizeMake(0, 4);
     [controller.view addSubview:composer];
     self.cardView = composer;
     UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:nil];
-    blur.layer.cornerRadius = 15;
+    blur.layer.cornerRadius = 19;
     blur.clipsToBounds = YES;
     blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [composer addSubview:blur];
@@ -415,10 +514,12 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     field.delegate = self;
     field.returnKeyType = UIReturnKeySend;
     field.borderStyle = UITextBorderStyleNone;
-    field.font = [UIFont systemFontOfSize:12.5];
+    field.font = [UIFont systemFontOfSize:13.5 weight:UIFontWeightRegular];
     field.textColor = MSChatColor(UIColor.labelColor, UIColor.labelColor);
     field.backgroundColor = UIColor.clearColor;
-    field.placeholder = @"和我说点什么…";
+    field.attributedPlaceholder = [[NSAttributedString alloc] initWithString:@"和我说点什么…" attributes:@{
+        NSForegroundColorAttributeName: [UIColor.secondaryLabelColor colorWithAlphaComponent:0.72]
+    }];
     field.autocapitalizationType = UITextAutocapitalizationTypeSentences;
     field.textContentType = nil;
     [field addTarget:self action:@selector(inputChanged) forControlEvents:UIControlEventEditingChanged];
@@ -430,7 +531,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     [send setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     send.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
     send.backgroundColor = [UIColor colorWithRed:0.26 green:0.25 blue:0.33 alpha:1];
-    send.layer.cornerRadius = 8;
+    send.layer.cornerRadius = 11;
     send.enabled = NO;
     send.alpha = 0.45;
     [send addTarget:self action:@selector(sendTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -464,8 +565,10 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     self.moreButton = more;
     UIStackView *actions = [[UIStackView alloc] init];
     actions.axis = UILayoutConstraintAxisHorizontal;
-    actions.spacing = 4;
+    actions.spacing = 2;
     actions.distribution = UIStackViewDistributionFillEqually;
+    actions.layoutMargins = UIEdgeInsetsMake(2, 3, 2, 3);
+    actions.layoutMarginsRelativeArrangement = YES;
     actions.hidden = YES;
     actions.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *t) {
         return t.userInterfaceStyle == UIUserInterfaceStyleDark
@@ -477,14 +580,15 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     actions.layer.borderColor = UIColor.separatorColor.CGColor;
     [controller.view addSubview:actions];
     self.actionBar = actions;
-    for (NSArray *item in @[@[@"mic", @"听写"], @[@"trash", @"清空"], @[@"eye.slash", @"隐藏"], @[@"xmark", @"收起"]]) {
+    // Icon-only: the mic already lives in the composer, so repeating "听写"
+    // here only made the row wide and text-heavy.
+    NSInteger actionTag = 0;
+    for (NSArray *item in @[@[@"trash", @"清空"], @[@"eye.slash", @"隐藏"], @[@"xmark", @"收起"]]) {
         UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
         [button setImage:[UIImage systemImageNamed:item[0]] forState:UIControlStateNormal];
-        [button setTitle:item[1] forState:UIControlStateNormal];
-        button.titleLabel.font = [UIFont systemFontOfSize:10];
-        [button setTitleColor:UIColor.secondaryLabelColor forState:UIControlStateNormal];
         button.tintColor = UIColor.secondaryLabelColor;
-        button.tag = [@[@"mic", @"trash", @"eye.slash", @"xmark"] indexOfObject:item[0]];
+        button.accessibilityLabel = item[1];
+        button.tag = actionTag++;
         [button addTarget:self action:@selector(actionTapped:) forControlEvents:UIControlEventTouchUpInside];
         [actions addArrangedSubview:button];
     }
@@ -516,7 +620,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     editor.backgroundColor = UIColor.clearColor; // the bar blur is the visible surface
     editor.adjustsFontSizeToFitWidth = NO;
     editor.minimumFontSize = 11;
-    editor.placeholder = field.placeholder;
+    editor.attributedPlaceholder = field.attributedPlaceholder;
     editor.returnKeyType = UIReturnKeySend;
     editor.delegate = self;
     [editor addTarget:self action:@selector(editorInputChanged) forControlEvents:UIControlEventEditingChanged];
@@ -530,6 +634,45 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 }
 
 #pragma mark Presentation
+
+- (void)anchorTick:(CADisplayLink *)link {
+    if (link != self.anchorLink) return;
+    if (!self.visible || self.window.hidden) { [self stopAnchorLink]; return; }
+    [self refreshAnchorLocation];
+}
+
+- (void)ensureAnchorLink {
+    if (self.anchorLink || !self.visible) return;
+    if (!self.anchorProxy) self.anchorProxy = [MiniSightChatAnchorProxy new];
+    self.anchorProxy.owner = self;
+    CADisplayLink *link = [CADisplayLink displayLinkWithTarget:self.anchorProxy selector:@selector(tick:)];
+    // 30 fps is enough for a following overlay and halves wakeups vs 60.
+    link.preferredFramesPerSecond = 30;
+    [link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    self.anchorLink = link;
+}
+
+- (void)stopAnchorLink {
+    [self.anchorLink invalidate];
+    self.anchorLink = nil;
+}
+
+- (void)animatePresentationIn {
+    if (!self.window || self.window.alpha > 0.9) return;
+    self.window.alpha = 0.0;
+    UIView *body = self.composerVisible ? self.cardView : self.messageStack;
+    body.alpha = 0.0;
+    body.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(0.94, 0.94),
+                                             CGAffineTransformMakeTranslation(0, 6));
+    [UIView animateWithDuration:0.30 delay:0
+         usingSpringWithDamping:0.82 initialSpringVelocity:0.15
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+        self.window.alpha = 1.0;
+        body.alpha = 1.0;
+        body.transform = CGAffineTransformIdentity;
+    } completion:nil];
+}
 
 + (BOOL)showInWindowScene:(UIWindowScene *)scene {
     return [[self sharedPanel] showInWindowScene:scene];
@@ -563,6 +706,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     [self layoutForCurrentScreen];
     if (!self.visible) return NO;
     self.window.hidden = NO;
+    [self ensureAnchorLink];
+    [self animatePresentationIn];
     self.editorWindow.hidden = !self.editorActive;
     [self observeKeyboard:YES];
     if (self.editorActive) {
@@ -601,7 +746,10 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 - (void)activateEditor {
     NSCAssert([NSThread isMainThread], @"chat editor is main-thread only");
     if (!self.visible || !self.editorWindow || !self.editorField || self.editorActive) return;
+    if (self.lockedPet != (MiniSightPetView *)self.anchorView) [self releaseEditorPetLock];
     self.editorField.text = self.inputField.text;
+    [self setEditorPetLock:YES];
+    self.editorGeneration++;
     [self layoutEditorWindow];
     self.editorActive = YES;
     self.inputField.alpha = 0.01;
@@ -612,25 +760,54 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     if (!accepted) { [self deactivateEditor]; [self appendNotice:@"键盘暂不可用，请重新点击输入条"]; }
 }
 
+- (void)setEditorPetLock:(BOOL)locked {
+    if (![self.anchorView isKindOfClass:MiniSightPetView.class]) return;
+    MiniSightPetView *pet = (MiniSightPetView *)self.anchorView;
+    if (locked) {
+        if (self.lockedPet && self.lockedPet != pet)
+            [self.lockedPet setMotionLocked:NO forReason:MiniSightPetMotionLockChatEditor];
+        self.lockedPet = pet;
+        [pet setMotionLocked:YES forReason:MiniSightPetMotionLockChatEditor];
+    } else {
+        [self releaseEditorPetLock];
+    }
+}
+
+- (void)releaseEditorPetLock {
+    MiniSightPetView *pet = self.lockedPet;
+    self.lockedPet = nil;
+    [pet setMotionLocked:NO forReason:MiniSightPetMotionLockChatEditor];
+}
+
 - (void)deactivateEditorWithoutKey {
-    if (!self.editorActive) return;
-    self.inputField.text = self.editorField.text;
-    self.inputField.alpha = 1.0;
-    // Drop first responder so a hidden editor cannot keep the keyboard alive;
-    // deliberately do not call resignKeyWindow on the teardown path.
-    [self.editorField resignFirstResponder];
-    self.editorActive = NO;
+    if (!self.editorActive && !self.lockedPet) return;
+    self.editorDeactivating = YES;
+    self.editorGeneration++;
+    if (self.editorActive) {
+        self.inputField.text = self.editorField.text;
+        self.inputField.alpha = 1.0;
+        self.editorActive = NO;
+        [self.editorField resignFirstResponder];
+    }
     self.editorWindow.hidden = YES;
+    [self setEditorPetLock:NO];
+    self.editorDeactivating = NO;
 }
 
 - (void)deactivateEditor {
-    if (!self.editorActive) return;
-    self.inputField.text = self.editorField.text;
-    self.inputField.alpha = 1.0;
-    self.editorActive = NO;
-    [self.editorField resignFirstResponder];
-    [self.editorWindow resignKeyWindow];
+    if (!self.editorActive && !self.lockedPet) return;
+    self.editorDeactivating = YES;
+    self.editorGeneration++;
+    if (self.editorActive) {
+        self.inputField.text = self.editorField.text;
+        self.inputField.alpha = 1.0;
+        self.editorActive = NO;
+        [self.editorField resignFirstResponder];
+        [self.editorWindow resignKeyWindow];
+    }
     self.editorWindow.hidden = YES;
+    [self setEditorPetLock:NO];
+    self.editorDeactivating = NO;
 }
 
 - (void)editorInputChanged {
@@ -642,17 +819,21 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 - (void)hideWithoutKey {
     NSCAssert([NSThread isMainThread], @"chat panel is main-thread only");
     if (!self.built) return;
+    [self cancelVoice];
     BOOL wasVisible = self.visible;
     ++self.lifecycleGeneration;
+    ++self.editorGeneration;
     ++self.requestGeneration;
     self.visible = NO;
     self.closing = NO;
+    [self stopAnchorLink];
     [self observeKeyboard:NO];
     [self deactivateEditorWithoutKey];
     [self.ai cancel];
     [self endSendingUI];
     self.window.hidden = YES;
     self.editorWindow.hidden = YES;
+    [self stopAnchorLink];
     self.keyboardOverlap = 0;
     self.keyboardTop = 0;
     if (wasVisible && self.visibilityHandler) self.visibilityHandler(NO);
@@ -664,8 +845,11 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     MSDiag(@"chat close visible=%d sending=%d generation=%lu", self.visible, self.sending,
            (unsigned long)self.requestGeneration);
     if (!self.visible || self.closing) return;
+    [self cancelVoice];
     self.visible = NO;
     self.closing = YES;
+    [self stopAnchorLink];
+    ++self.editorGeneration;
     ++self.requestGeneration;
     [self endSendingUI];
     NSUInteger generation = ++self.lifecycleGeneration;
@@ -680,6 +864,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     [self.ai cancel];
     [self observeKeyboard:NO];
     [self deactivateEditor];
+    [self stopAnchorLink];
     self.window.hidden = YES;
     self.editorWindow.hidden = YES;
     self.keyboardOverlap = 0;
@@ -693,48 +878,112 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     if (self.hidePetHandler) self.hidePetHandler();
 }
 
-/// Direct voice: ask the App to listen. The plug-in never opens the keyboard
-/// for this path; if the App cannot answer, fall back to keyboard dictation.
+/// All replies are fenced by this UI generation; neither a repeated Darwin
+/// note nor a previous attempt may append another error or replace a draft.
+- (void)beginVoiceInput { [self voiceTapped]; }
 - (void)voiceTapped {
-    if (self.sending) return;
-    self.voiceWaiter = dispatch_block_create((dispatch_block_flags_t)0, ^{
-        MSDiagEvent(@"voice", @"start", @"failed", @{ @"source": @"plugin", @"reason": @"no_app_reply" });
-        [self activateEditor];
-    });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), self.voiceWaiter);
-    MSDiagEvent(@"voice", @"start", @"pending", @{ @"source": @"plugin", @"reason": @"request_app" });
-    if (!MSBridgeWrite(self.containerPath, @"voice.json", @{@"action": @"start", @"generation": @(++self.voiceGeneration)}))
-        MSDiagEvent(@"voice", @"start", @"failed", @{ @"source": @"plugin", @"reason": @"write_request" });
+    if (!self.visible || self.sending) return;
+    if (self.voicePending || self.voiceListening) {
+        MSBridgeWrite(self.containerPath, @"voice.json", @{@"action": @"stop", @"generation": @(self.voiceGeneration)});
+        MSBridgePost(@"com.openminis.minisight.voice");
+        return;
+    }
+    [self deactivateEditor];
+    self.voiceGeneration = (NSUInteger)(NSDate.date.timeIntervalSince1970 * 1000.0);
+    self.voiceDraft = self.inputField.text ?: @"";
+    self.voicePending = YES;
+    self.voiceListening = NO;
+    self.inputField.placeholder = @"正在连接语音…";
+    self.micButton.tintColor = UIColor.systemBlueColor;
+    [self.micButton setImage:[UIImage systemImageNamed:@"stop.circle.fill"] forState:UIControlStateNormal];
+    if (!MSBridgeWrite(self.containerPath, @"voice.json", @{@"action": @"start", @"generation": @(self.voiceGeneration)})) {
+        [self finishVoiceWithReason:@"write_request"];
+        return;
+    }
+    MSDiagEvent(@"voice", @"request", @"pending", @{@"source": @"plugin", @"generation": @(self.voiceGeneration)});
     MSBridgePost(@"com.openminis.minisight.voice");
+    __weak typeof(self) weakSelf = self;
+    NSUInteger generation = self.voiceGeneration;
+    self.voiceWaiter = dispatch_block_create((dispatch_block_flags_t)0, ^{
+        MiniSightChatPanel *panel = weakSelf;
+        if (!panel || generation != panel.voiceGeneration || !panel.voicePending) return;
+        // Darwin notes cannot wake a suspended App. Open a narrowly scoped URL
+        // only after the user's mic gesture, retaining the same generation.
+        NSURL *wake = [NSURL URLWithString:@"minis://minisight/voice"];
+        [UIApplication.sharedApplication openURL:wake options:@{} completionHandler:nil];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            MiniSightChatPanel *current = weakSelf;
+            if (current && generation == current.voiceGeneration && current.voicePending)
+                MSBridgePost(@"com.openminis.minisight.voice");
+        });
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), self.voiceWaiter);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(50 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        MiniSightChatPanel *panel = weakSelf;
+        if (panel && generation == panel.voiceGeneration && (panel.voicePending || panel.voiceListening))
+            [panel finishVoiceWithReason:@"voice_timeout"];
+    });
+}
+
+- (void)finishVoiceWithReason:(NSString *)reason {
+    if (!self.voicePending && !self.voiceListening) return;
+    if (self.voiceWaiter) dispatch_block_cancel(self.voiceWaiter);
+    self.voiceWaiter = nil;
+    self.voicePending = NO;
+    self.voiceListening = NO;
+    self.micButton.tintColor = UIColor.secondaryLabelColor;
+    [self.micButton setImage:[UIImage systemImageNamed:@"mic.fill"] forState:UIControlStateNormal];
+    self.inputField.placeholder = @"和我说点什么…";
+    if (reason.length && ![reason isEqualToString:@"cancelled"]) {
+        MSDiagEvent(@"voice", @"finish", @"failed", @{@"source": @"plugin", @"reason": reason, @"generation": @(self.voiceGeneration)});
+        // One in-place state, not an ever-growing stack of failure bubbles.
+        self.inputField.placeholder = [reason isEqualToString:@"permission"] ? @"请在 App 允许麦克风和语音权限" : @"语音不可用，可点此键盘输入";
+    }
+    [self inputChanged];
+}
+
+- (void)cancelVoice {
+    if (!self.voicePending && !self.voiceListening) return;
+    MSBridgeWrite(self.containerPath, @"voice.json", @{@"action": @"cancel", @"generation": @(self.voiceGeneration)});
+    MSBridgePost(@"com.openminis.minisight.voice");
+    [self finishVoiceWithReason:@"cancelled"];
+    ++self.voiceGeneration;
 }
 
 - (void)voiceResultArrived {
-    NSDictionary *payload = MSBridgeRead(self.containerPath, @"voice-result.json", 8192);
+    if (!self.visible || (!self.voicePending && !self.voiceListening)) return;
+    NSDictionary *payload = MSBridgeRead(self.containerPath, @"voice-result.json", 16384);
+    if (![payload[@"generation"] respondsToSelector:@selector(unsignedIntegerValue)] ||
+        [payload[@"generation"] unsignedIntegerValue] != self.voiceGeneration) return;
+    if (self.voiceWaiter) dispatch_block_cancel(self.voiceWaiter);
+    self.voiceWaiter = nil;
+    NSString *state = [payload[@"state"] isKindOfClass:NSString.class] ? payload[@"state"] : @"";
+    if ([state isEqualToString:@"starting"] || [state isEqualToString:@"listening"]) {
+        self.voicePending = NO;
+        self.voiceListening = YES;
+        self.inputField.placeholder = [state isEqualToString:@"starting"] ? @"正在授权语音…" : @"正在听…再点麦克风结束";
+        MSDiagEvent(@"voice", @"receive", @"ok", @{@"source": @"app", @"generation": @(self.voiceGeneration), @"reason": state});
+        return;
+    }
     NSString *text = [payload[@"text"] isKindOfClass:NSString.class] ? payload[@"text"] : @"";
     BOOL final = [payload[@"final"] boolValue];
-    if (payload[@"reason"]) {
-        MSDiagEvent(@"voice", @"finish", @"failed", @{ @"source": @"app", @"reason": payload[@"reason"] });
-        if (!text.length) { [self appendNotice:@"语音没有结果，可改用键盘输入"]; }
-    }
-    [self voiceText:text final:final];
+    if (text.length) [self voiceText:text final:final];
+    if (final) [self finishVoiceWithReason:[payload[@"reason"] isKindOfClass:NSString.class] ? payload[@"reason"] : nil];
 }
 
-- (void)voiceTokenArrived {
-    if (self.voiceWaiter) { dispatch_block_cancel(self.voiceWaiter); self.voiceWaiter = nil; }
-    if (!self.visible || self.editorActive) return;
-}
-
-/// App pushes a partial or final transcript. Nothing auto-sends.
 - (void)voiceText:(NSString *)text final:(BOOL)final {
-    if (!self.visible || !text.length) return;
-    if (self.voiceWaiter) { dispatch_block_cancel(self.voiceWaiter); self.voiceWaiter = nil; }
-    self.inputField.text = text;
-    [self editorInputChanged];
-    if (final) {
-        MSDiagEvent(@"voice", @"finish", @"ok", @{ @"source": @"app", @"chars": @(text.length) });
-        [self inputChanged];
-    }
+    if (!self.visible || !text.length || (!self.voicePending && !self.voiceListening)) return;
+    self.voicePending = NO;
+    self.voiceListening = YES;
+    NSString *prefix = self.voiceDraft ?: @"";
+    self.inputField.text = [prefix stringByAppendingString:text];
+    if (self.editorActive) self.editorField.text = self.inputField.text;
+    [self inputChanged];
+    if (final) MSDiagEvent(@"voice", @"finish", @"ok", @{@"source": @"app", @"generation": @(self.voiceGeneration), @"chars": @(text.length)});
 }
+
+- (void)showInput { [self revealComposerIfNeeded]; [self activateEditor]; }
+- (void)showMenu { [self revealComposer]; if (!self.menuOpen) [self toggleMenu]; }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
     if (gesture == self.editorTap) {
@@ -749,6 +998,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     if (self.composerVisible) return;
     self.composerVisible = YES;
     [self layoutForCurrentScreen];
+    [self animatePresentationIn];
     [self activateEditor];
     MSDiagEvent(@"chat", @"composer", @"ok", @{ @"source": @"pet_second_tap" });
 }
@@ -756,6 +1006,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 - (void)revealComposer {
     self.composerVisible = YES;
     [self layoutForCurrentScreen];
+    [self animatePresentationIn];
     MSDiagEvent(@"chat", @"composer", @"ok", @{ @"source": @"bubble_tap", @"sending": @(self.sending) });
 }
 
@@ -815,12 +1066,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 - (void)actionTapped:(UIButton *)sender {
     [self menuDismiss];
     switch (sender.tag) {
-        case 0:
-            [self activateEditor];
-            MSDiagEvent(@"voice", @"entry", @"pending", @{ @"source": @"keyboard_dictation" });
-            break;
-        case 1: [self clearConversation]; break;
-        case 2: [self hidePetFromMenu]; break;
+        case 0: [self clearConversation]; break;
+        case 1: [self hidePetFromMenu]; break;
         default: [self close]; break;
     }
 }
@@ -833,9 +1080,9 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
             [self.appearancePreferences[@"minisight.chat.dy"] doubleValue]);
     }
     CGPoint delta = [pan translationInView:window];
-    self.chatOffset = CGPointMake(self.chatOffset.x + delta.x, self.chatOffset.y + delta.y);
+    self.chatOffset = CGPointMake(MSClamp(self.chatOffset.x + delta.x, -80., 80.),
+                                  MSClamp(self.chatOffset.y + delta.y, -80., 0.));
     [pan setTranslation:CGPointZero inView:window];
-    self.layingOut = NO;
     [self layoutForCurrentScreen];
     if (pan.state == UIGestureRecognizerStateEnded) {
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -866,21 +1113,33 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     return nil;
 }
 
+- (CGRect)currentAnchorRect {
+    UIView *anchor = self.anchorView;
+    if ([anchor isKindOfClass:MiniSightPetView.class]) {
+        MiniSightPetView *pet = (MiniSightPetView *)anchor;
+        CGPoint center = [pet.superview convertPoint:pet.speechAnchor toView:self.window];
+        CGSize envelope = pet.gravitySafeSize;
+        return CGRectMake(center.x - envelope.width * .5, center.y - envelope.height * .5,
+                          envelope.width, envelope.height);
+    }
+    return [anchor convertRect:anchor.bounds toView:self.window];
+}
+
 - (void)refreshAnchorLocation {
-    // Geometry callbacks must never instantiate an overlay or resurrect one.
+    // Never instantiate/reopen from geometry or a queued display-link callback.
     if (!self.visible || !self.built) return;
     UIView *anchor = self.anchorView;
-    if (!anchor) return;
-    CGRect now = [anchor convertRect:anchor.bounds toView:self.window];
-    CGFloat dx = fabs(CGRectGetMidX(now) - CGRectGetMidX(self.lastAnchorRect));
-    CGFloat dy = fabs(CGRectGetMidY(now) - CGRectGetMidY(self.lastAnchorRect));
-    CFTimeInterval t = CACurrentMediaTime();
-    // Gravity sway is continuous; 3pt / 120ms hysteresis keeps the bar still
-    // enough to tap while still following a real drag.
-    if (dy < 3 && dx < 3) return;
-    if (t - self.lastAnchorTime < 0.12) return;
-    self.lastAnchorRect = now;
-    self.lastAnchorTime = t;
+    if (!anchor || !anchor.window || anchor.hidden || anchor.alpha < .01 ||
+        anchor.window.hidden || anchor.window.windowScene != self.window.windowScene) {
+        [self hideWithoutKey];
+        return;
+    }
+    if (self.editorActive && self.lockedPet != (MiniSightPetView *)anchor) [self setEditorPetLock:YES];
+    CGRect now = [self currentAnchorRect];
+    if (CGRectEqualToRect(now, self.lastAnchorRect)) return;
+    CFTimeInterval stamp = CACurrentMediaTime();
+    if (stamp - self.lastAnchorTime < (1.0 / 30.0)) return;
+    self.lastAnchorTime = stamp;
     [self layoutForCurrentScreen];
 }
 
@@ -904,13 +1163,14 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     self.editorWindow.frame = screen;
     self.window.rootViewController.view.frame = self.window.bounds;
     self.editorWindow.rootViewController.view.frame = self.editorWindow.bounds;
-    CGRect pet = [anchor convertRect:anchor.bounds toView:self.window];
+    CGRect pet = [self currentAnchorRect];
     self.lastAnchorRect = pet;
     self.lastAnchorTime = CACurrentMediaTime();
     UIEdgeInsets insets = source.safeAreaInsets;
     CGRect safe = UIEdgeInsetsInsetRect(self.window.bounds, UIEdgeInsetsMake(MAX(8, insets.top + 6), MAX(10, insets.left + 8), MAX(8, insets.bottom + 6), MAX(10, insets.right + 8)));
-    BOOL messagesChanged = self.messagesDirty;
-    CGFloat maxWidth = MIN(210, MAX(1, safe.size.width));
+    safe.size.width = MAX(0., safe.size.width);
+    safe.size.height = MAX(0., safe.size.height);
+    CGFloat maxWidth = MIN(216., MAX(0., safe.size.width));
     if (fabs(self.measuredWidth - maxWidth) > 0.5 || self.messagesDirty) {
         self.measuredWidth = maxWidth;
         self.messagesDirty = NO;
@@ -925,69 +1185,54 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
         content += MAX(0, self.rows.count - 1) * 6 + 8;
         self.measuredMessageHeight = MIN(content, [self configuredHeight]);
     }
-    CGFloat barHeight = 30;
-    CGFloat barWidth = MIN(274 * [self scaleFor:@"bubbleScale" fallback:1], MAX(200, safe.size.width - 16));
-    CGFloat centerX = CGRectGetMidX(pet) + self.chatOffset.x;
-    CGFloat barX = MIN(MAX(CGRectGetMinX(safe), centerX - barWidth * .5), CGRectGetMaxX(safe) - barWidth);
-    CGFloat keyboardLimit = self.keyboardTop > 0 ? self.keyboardTop - 6 : CGRectGetMaxY(safe);
-    CGFloat barY = CGRectGetMinY(pet) - 8 - barHeight + self.chatOffset.y;
-    // Only flip under the feet when the head really has no 44pt; otherwise keep
-    // the bar on one side so the text never appears to hop between sides.
-    if (barY < CGRectGetMinY(safe) && CGRectGetMinY(pet) < CGRectGetMinY(safe) + 44)
-        barY = CGRectGetMaxY(pet) + 8;
-    barY = MIN(MAX(CGRectGetMinY(safe), barY),
-               MAX(CGRectGetMinY(safe), keyboardLimit - barHeight));
-    MSChatFloatingFrames frames;
-    memset(&frames, 0, sizeof frames);
-    frames.composer = (MSRect){barX, barY, barWidth, barHeight};
-
-    // Bubbles share the same anchor, directly above (or below when cramped).
-    CGFloat bubbleWidth = MIN(210 * [self scaleFor:@"bubbleScale" fallback:1], safe.size.width);
-    CGFloat bubbleX = MIN(MAX(CGRectGetMinX(safe), centerX - bubbleWidth * .5), CGRectGetMaxX(safe) - bubbleWidth);
-    CGFloat bubbleBottom = barY - 6;
-    BOOL below = bubbleBottom - self.measuredMessageHeight < CGRectGetMinY(safe);
-    CGFloat bubbleY = below ? CGRectGetMaxY(pet) + 8 : bubbleBottom - self.measuredMessageHeight;
-    bubbleY = MIN(MAX(CGRectGetMinY(safe), bubbleY), MAX(CGRectGetMinY(safe), keyboardLimit - self.measuredMessageHeight));
-    frames.messages = (MSRect){bubbleX, bubbleY, bubbleWidth, self.measuredMessageHeight};
-    frames.placedBelow = below ? 1 : 0;
-    self.actionBar.hidden = !self.menuOpen;
-    if (messagesChanged || self.lastLayoutBelow != (BOOL)frames.placedBelow) {
-        // Keep the newest reply nearest the pet even when the group is below it.
-        NSArray *ordered = frames.placedBelow ? self.rows.reverseObjectEnumerator.allObjects : self.rows;
-        for (UIView *row in [self.messageStack.arrangedSubviews copy]) [self.messageStack removeArrangedSubview:row];
-        for (UIView *row in ordered) [self.messageStack addArrangedSubview:row];
-    }
+    // A single production C strategy is also exercised by host randomized tests.
+    // Stored offsets may bias sideways/upwards only; no stale setting can put
+    // controls at the pet's feet. No host geometry is written from this pass.
+    MSRect chatPet = {pet.origin.x + MSClamp(self.chatOffset.x, -80., 80.),
+                      pet.origin.y + MSClamp(self.chatOffset.y, -80., 0.),
+                      pet.size.width, pet.size.height};
+    MSChatFloatingFrames frames = MSChatFloatingLayoutWithComposer(
+        (MSRect){safe.origin.x, safe.origin.y, safe.size.width, safe.size.height},
+        chatPet, (MSSize){maxWidth, self.rows.count ? self.measuredMessageHeight : 0.},
+        MIN(216., safe.size.width), self.keyboardTop, self.composerVisible);
+    self.actionBar.hidden = !self.menuOpen || !self.composerVisible;
     self.scrollView.frame = CGRectMake(frames.messages.x, frames.messages.y, frames.messages.w, frames.messages.h);
     self.scrollView.hidden = self.rows.count == 0 || frames.messages.h < 1;
-    self.scrollView.frame = CGRectInset(self.scrollView.frame, 0, 0);
+    self.scrollView.scrollEnabled = self.scrollView.contentSize.height > frames.messages.h + .5;
     self.cardView.hidden = !self.composerVisible;
     self.cardView.frame = CGRectMake(frames.composer.x, frames.composer.y, frames.composer.w, frames.composer.h);
     self.cardBlurView.frame = self.cardView.bounds;
     self.cardTintView.frame = self.cardBlurView.contentView.bounds;
     CGFloat width = self.cardView.bounds.size.width;
     CGFloat height = self.cardView.bounds.size.height;
-    self.moreButton.frame = CGRectMake(0, 0, 34, height);
-    self.micButton.frame = CGRectMake(MAX(0, width - 62), 0, 28, height);
-    self.micButton.hidden = self.sending || width < 170;
-    self.sendButton.frame = CGRectMake(MAX(0, width - 34), MAX(0, (height - 24) / 2), 30, MIN(24, height));
+    MSChatComposerFrames controls = MSChatComposerLayout(width, height, self.sending);
+    self.moreButton.frame = CGRectMake(controls.more.x, controls.more.y, controls.more.w, controls.more.h);
+    self.micButton.frame = CGRectMake(controls.mic.x, controls.mic.y, controls.mic.w, controls.mic.h);
+    self.sendButton.frame = CGRectMake(controls.send.x, controls.send.y, controls.send.w, controls.send.h);
     self.cancelButton.frame = self.sendButton.frame;
-    self.inputField.frame = CGRectMake(30, 3, MAX(1, width - 96), MAX(1, height - 6));
-    self.inputField.hidden = width < 100;
-    self.moreButton.hidden = width < 150;
-    CGFloat quickH = (self.quickScroll && !self.quickScroll.hidden) ? 28 : 0;
-    if (quickH > 0) {
-        self.quickScroll.frame = CGRectMake(CGRectGetMinX(self.cardView.frame), CGRectGetMinY(self.cardView.frame) - 34,
-                                            MIN(width, self.quickRow.intrinsicContentSize.width), 28);
-        self.quickRow.frame = CGRectMake(0, 0, self.quickRow.intrinsicContentSize.width, 28);
-    }
+    self.inputField.frame = CGRectMake(controls.field.x, controls.field.y, controls.field.w, controls.field.h);
+    self.inputField.hidden = controls.field.w < 1.;
+    self.moreButton.hidden = !controls.hasMore;
+    self.micButton.hidden = !controls.hasMic;
+    self.quickScroll.hidden = YES;
+    self.cardView.layer.cornerRadius = MIN(19., height * .5);
+    self.cardBlurView.layer.cornerRadius = self.cardView.layer.cornerRadius;
+    self.cardView.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:self.cardView.bounds cornerRadius:self.cardView.layer.cornerRadius].CGPath;
     if (self.menuOpen) {
-        self.actionBar.frame = CGRectMake(CGRectGetMinX(self.cardView.frame),
-                                          MAX(CGRectGetMinY(safe), CGRectGetMinY(self.cardView.frame) - 36),
-                                          width, 30);
+        CGFloat menuBottom = self.scrollView.hidden ? CGRectGetMinY(self.cardView.frame) - 6. : CGRectGetMinY(self.scrollView.frame) - 6.;
+        CGFloat menuHeight = MIN(28., MAX(0., menuBottom - CGRectGetMinY(safe)));
+        CGFloat menuWidth = MIN(104., width);
+        self.actionBar.hidden = menuHeight < 20.;
+        self.actionBar.frame = CGRectMake(CGRectGetMidX(self.cardView.frame) - menuWidth / 2.,
+                                          menuBottom - menuHeight, menuWidth, menuHeight);
     }
     [self.scrollView layoutIfNeeded];
     MiniSightChatBubble *latest = (MiniSightChatBubble *)self.rows.lastObject;
-    for (MiniSightChatBubble *row in self.rows) row.petTail = row == latest && !row.userMessage;
+    for (MiniSightChatBubble *row in self.rows) {
+        CGRect visibleRow = [row convertRect:row.bounds toView:self.scrollView];
+        BOOL visibleBottom = CGRectGetMaxY(visibleRow) <= CGRectGetMaxY(self.scrollView.bounds) + .5;
+        row.petTail = row == latest && !row.userMessage && !frames.petAvoidance && visibleBottom;
+    }
     if (latest.petTail) {
         CGPoint point = [self.window convertPoint:CGPointMake(CGRectGetMidX(pet), CGRectGetMinY(pet)) toView:latest];
         latest.tailX = point.x;
@@ -1047,13 +1292,18 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     self.keyboardTop = CGRectIsNull(intersection) || CGRectIsEmpty(intersection) ? 0 : CGRectGetMinY(intersection);
     MSDiagEvent(@"chat", @"keyboard", @"ok", @{ @"keyboard": @(self.keyboardTop > 0) });
     [self updateCardBottomAnimated:YES];
+    [self layoutEditorWindow];
 }
 
 - (void)keyboardWillHide:(NSNotification *)note {
     if (!self.visible) return;
+    // 完成/下滑收键盘后编辑窗必须一起收，否则它停在上一次键盘顶的位置，
+    // 看起来就是输入条卡在屏幕上方不再跟随宠物。
+    [self deactivateEditorWithoutKey];
     self.keyboardOverlap = 0;
     self.keyboardTop = 0;
     [self updateCardBottomAnimated:YES];
+    MSDiagEvent(@"chat", @"keyboard", @"ok", @{ @"keyboard": @NO, @"reason": @"hidden" });
 }
 
 - (void)orientationChanged {
@@ -1071,6 +1321,9 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     CGFloat textScale = [self scaleFor:@"textScale" fallback:1];
     if (fabs(textScale - 1) > 0.01) bubble.label.font = [UIFont systemFontOfSize:12.5 * textScale];
     if (role == MiniSightChatRoleNotice) bubble.label.textColor = UIColor.secondaryLabelColor;
+    bubble.alpha = 0.0;
+    bubble.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(0.96, 0.96),
+                                               CGAffineTransformMakeTranslation(0, 5));
     NSLayoutConstraint *width = [bubble.widthAnchor constraintLessThanOrEqualToAnchor:self.messageStack.widthAnchor];
     [self.messageStack addArrangedSubview:bubble];
     width.active = YES; // Activate only after a common ancestor exists.
@@ -1079,6 +1332,11 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     [self trimMessages];
     [self layoutForCurrentScreen];
     [self scrollToBottom];
+    [UIView animateWithDuration:0.22 delay:0
+         usingSpringWithDamping:0.86 initialSpringVelocity:0.1
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{ bubble.alpha = 1.0; bubble.transform = CGAffineTransformIdentity; }
+                     completion:nil];
 }
 
 - (void)appendNotice:(NSString *)text {
@@ -1160,6 +1418,18 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     self.editorField.text = @"";
     [self beginSendingUI];
     NSUInteger generation = ++self.requestGeneration;
+    NSString *local = MSChatLocalAnswer(text);
+    if (local.length) {
+        MSDiagEvent(@"chat", @"local", @"ok", @{ @"request": requestID });
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            MiniSightChatPanel *strongSelf = weakSelf;
+            if (!strongSelf || generation != strongSelf.requestGeneration) return;
+            [strongSelf appendMessage:local role:MiniSightChatRoleAssistant];
+            [strongSelf endSendingUI];
+        });
+        return;
+    }
     self.ai.containerPath = self.containerPath;
     __weak typeof(self) weakSelf = self;
     [self.ai sendUserText:text completion:^(MiniSightAIReply *reply) {
@@ -1177,19 +1447,28 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 
 - (void)beginSendingUI {
     self.sending = YES;
-    self.composerVisible = NO;
+    // Keep the bar on screen while waiting so it follows the pet and does not
+    // vanish between question and answer.
+    self.composerVisible = YES;
     self.sendButton.enabled = NO;
     self.sendButton.alpha = 0.45;
     self.cancelButton.hidden = NO;
     self.sendButton.hidden = YES;
     [self appendNotice:@"⋯"];
     self.pendingBubble = (MiniSightChatBubble *)self.rows.lastObject;
+    self.pendingBubble.alpha = 1.0;
+    [UIView animateWithDuration:0.62 delay:0.1
+                        options:UIViewAnimationOptionRepeat | UIViewAnimationOptionAutoreverse |
+                                UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{ self.pendingBubble.alpha = 0.35; }
+                     completion:nil];
 }
 
 - (void)endSendingUI {
     self.sending = NO;
     self.cancelButton.hidden = YES;
     if (self.pendingBubble) {
+        [self.pendingBubble.layer removeAllAnimations];
         [self.messageStack removeArrangedSubview:self.pendingBubble];
         [self.rows removeObject:self.pendingBubble];
         [self.pendingBubble removeFromSuperview];

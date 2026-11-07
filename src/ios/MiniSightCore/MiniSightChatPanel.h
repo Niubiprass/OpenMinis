@@ -48,6 +48,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Reveals the input row if it is hidden (second tap). Never builds the panel.
 - (void)revealComposerIfNeeded;
+/// Explicit gestures must execute their selected action, not all open a menu.
+- (void)showInput;
+- (void)showMenu;
+- (void)beginVoiceInput;
+- (void)cancelVoice;
 
 /// Cancels an in-flight request, resigns key, hides the window.
 - (void)close;

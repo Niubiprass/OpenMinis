@@ -14,7 +14,17 @@ NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT double MiniSightGravityRollForDevice(double x, double y, int orientation);
 FOUNDATION_EXPORT double MiniSightGravityFilterRoll(double previous, double sample, double deltaTime);
 
+typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
+    MiniSightPetMotionLockChatEditor = 1u << 0,
+    MiniSightPetMotionLockApproval = 1u << 1,
+    MiniSightPetMotionLockHost = 1u << 2,
+};
+
 @interface MiniSightPetView : UIImageView
+/// Current atlas or costume bitmap (tint is baked in).
+@property (nonatomic, strong, null_resettable) UIImage *image;
+/// 0..71: outer pet in an 8x9 pack. Each outer cell contains its own 8x9 frames.
+@property (nonatomic) NSInteger variantIndex;
 
 /// Main-thread API, like UIView. sprite is an already decoded/downsampled,
 /// upright 9-row / 8-column atlas; preparation belongs to the host, off-main.
@@ -25,6 +35,8 @@ FOUNDATION_EXPORT double MiniSightGravityFilterRoll(double previous, double samp
 /// Clear intent and invalidate every clock/motion; unsuspending cannot restart it.
 - (void)stopPlaying;
 - (void)setSuspended:(BOOL)suspended;
+/// Independent owner-scoped gates; clearing one never clears another owner.
+- (void)setMotionLocked:(BOOL)locked forReason:(MiniSightPetMotionLockReason)reason;
 
 /// Main-thread normalized roll input in the range -1...1 (-1 left, +1 right).
 /// The visual tilt is finite and clamped; this never changes center, bounds, or
@@ -54,6 +66,10 @@ FOUNDATION_EXPORT double MiniSightGravityFilterRoll(double previous, double samp
 
 /// Only changes the delay between roaming actions, not sprite/display-link FPS.
 @property (nonatomic) BOOL activityActive;
+/// 0.6 lively, 1.0 natural, 4.0 quiet, 0 = no roaming (breathing/idle stays).
+@property (nonatomic) double roamPace;
+/// 0 = auto, else 30/60/120. Applies to motion display links only.
+@property (nonatomic) NSInteger preferredFPS;
 /// Host-owned gesture configuration; this view creates NO gesture recognizers.
 @property (nonatomic) BOOL longPressEnabled;
 /// Both flags freeze/cancel roaming at its actual position, not playback intent.

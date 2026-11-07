@@ -245,7 +245,7 @@ enum MiniSightAssetCatalog {
               w > 0, h > 0, w <= 16384, h <= 16384, Int64(w) * Int64(h) <= 40_000_000 else { throw Failure.unreadable }
         let metaFile = file == MiniSightPetFile.url ? metadataURL : sidecar(file)
         var meta = FileManager.default.fileExists(atPath: metaFile.path) ? try metadata(at: metaFile) : nil
-        if let meta, meta.sourceKind == ImportKind.singleImage.rawValue, meta.layoutVersion == nil {
+        if let existing = meta, existing.sourceKind == ImportKind.singleImage.rawValue, existing.layoutVersion == nil {
             migrateLegacySingleImages()
             data = try boundedData(file, limit: maxStoredBytes)
             meta = FileManager.default.fileExists(atPath: metaFile.path) ? try metadata(at: metaFile) : nil
@@ -278,7 +278,7 @@ enum MiniSightAssetCatalog {
                   meta.sourceKind == ImportKind.singleImage.rawValue,
                   meta.layoutVersion == nil,
                   let data = try? boundedData(file, limit: maxStoredBytes),
-                  let source = CGImageSourceCreateWithData(data as CFData, sourceOptions as CFDictionary),
+                  let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
                   let outer = CGImageSourceCreateThumbnailAtIndex(source, 0,
                     [kCGImageSourceCreateThumbnailFromImageAlways: true,
                      kCGImageSourceCreateThumbnailWithTransform: true,
@@ -380,7 +380,7 @@ enum MiniSightAssetCatalog {
             try write(png, to: file)
             try write(json, to: sidecar(file))
             try verify(try boundedData(file, limit: maxStoredBytes), metadata: metadata(at: sidecar(file)))
-            return Item(name: file.lastPathComponent, title: meta.title, bytes: png.count, metadata: meta, preview: nil)
+            return Item(name: file.lastPathComponent, title: meta.title, bytes: png.count, variant: 0, metadata: meta, preview: nil)
         } catch {
             // Cleanup failures are surfaced; a partial record is never a usable atlas.
             do { try put(nil, at: file); try put(nil, at: sidecar(file)) }

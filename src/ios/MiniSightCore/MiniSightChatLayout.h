@@ -17,9 +17,12 @@
  * Convert frames to a wrapper's coordinates only at the UIKit boundary; never
  * subtract the safe origin twice or move the overlay window to follow the pet.
  *
- * Messages remain above the composer in both placements. Defaults: composer
- * width 230, height 40; message height <= min(200, usableHeight * .35), a 6pt
- * inter-view gap, and 10pt from the pet. Nonpositive/nonfinite widths use 230;
+ * Messages always remain ABOVE the composer and the pet; NEVER flip below.
+ * Defaults: composer width 216, height 38; message height <= min(200,
+ * usableHeight * .35), a 6pt inter-view gap and 10pt from the pet. Small/invalid
+ * input uses compact controls and a scroll viewport, never a new pet position.
+ * Host should reserve MSChatMinimumHeadroom() when deriving center bounds,
+ * independently of measured text. Nonpositive/nonfinite widths use 216;
  * nonpositive/nonfinite message height hides messages. Missing/invalid pet
  * coordinates fall back to bottom-center of usable safe. Invalid safe origins
  * become 0 and invalid/negative safe sizes collapse to 0. Finite magnitudes
@@ -42,6 +45,10 @@ typedef struct {
     int petAvoidance;
 } MSChatFloatingFrames;
 
+static inline double MSChatMinimumHeadroom(double composerHeight) {
+    return fmax(0., MSFinite(composerHeight, 38.)) + 16.;
+}
+
 static inline double MSChatLayoutCoordinate(double value, double fallback) {
     const double limit = DBL_MAX / 16.;
     return MSClamp(MSFinite(value, fallback), -limit, limit);
@@ -57,9 +64,9 @@ static inline int MSChatLayoutIntersects(MSRect a, MSRect b) {
            a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
-static inline MSChatFloatingFrames MSChatFloatingLayout(
+static inline MSChatFloatingFrames MSChatFloatingLayoutWithComposer(
     MSRect safe, MSRect pet, MSSize messagesWanted,
-    double composerWantedWidth, double keyboardTop) {
+    double composerWantedWidth, double keyboardTop, int composerVisible) {
     const double gap = 6., petGap = 10.;
     MSChatFloatingFrames f;
     safe.x = MSChatLayoutCoordinate(safe.x, 0.);
@@ -76,48 +83,60 @@ static inline MSChatFloatingFrames MSChatFloatingLayout(
     pet.y = MSChatLayoutCoordinate(pet.y, bottom - pet.h);
     const double centerX = pet.x + pet.w * .5;
     const double cw = fmin(safe.w, composerWantedWidth > 0. && isfinite(composerWantedWidth)
-                                      ? composerWantedWidth : 230.);
+                                      ? composerWantedWidth : 216.);
     const double mw = fmin(safe.w, messagesWanted.w > 0. && isfinite(messagesWanted.w)
-                                      ? messagesWanted.w : 230.);
-    const double ch = fmin(40., safe.h);
+                                      ? messagesWanted.w : 216.);
+    const double ch = composerVisible ? fmin(38., safe.h) : 0.;
     double mh = mw > 0. ? fmin(MSChatLayoutLength(messagesWanted.h, 0.),
                                fmin(200., safe.h * .35)) : 0.;
-    const double wantedHeight = ch + (mh > 0. ? gap + mh : 0.);
     const double aboveBottom = fmin(bottom, pet.y - petGap);
-    const double belowTop = fmax(safe.y, pet.y + pet.h + petGap);
     const double aboveRoom = fmax(0., fmin(safe.h, aboveBottom - safe.y));
-    const double belowRoom = fmax(0., fmin(safe.h, bottom - belowTop));
     double room;
 
     f.placedBelow = 0;
-    if (aboveRoom >= wantedHeight) {
-        room = aboveRoom;
-    } else if (belowRoom >= wantedHeight) {
-        f.placedBelow = 1;
-        room = belowRoom;
-    } else if (aboveRoom >= ch) {
-        room = aboveRoom;
-    } else if (belowRoom >= ch) {
-        f.placedBelow = 1;
-        room = belowRoom;
-    } else {
-        // Neither side fits even the input bar: keep input in safe and report
-        // actual pet overlap below. Messages may disappear; input wins.
-        room = safe.h;
-    }
-    mh = fmin(mh, fmax(0., room - ch - gap));
-    const double totalHeight = ch + (mh > 0. ? gap + mh : 0.);
-    const double y = MSClamp(f.placedBelow ? belowTop : aboveBottom - totalHeight,
-                            safe.y, bottom - totalHeight);
+    // Composer remains above the pet; only its message viewport can shrink or
+    // scroll. Never move/flip the pet in response to a layout measurement.
+    room = aboveRoom;
+    if (room < ch) room = ch; // impossible headroom: input wins, never flip below feet
+    const double interGap = composerVisible ? gap : 0.;
+    mh = fmin(mh, fmax(0., room - ch - interGap));
+    const double totalHeight = ch + (mh > 0. ? interGap + mh : 0.);
+    const double y = MSClamp(aboveBottom - totalHeight, safe.y, bottom - totalHeight);
     f.messages = (MSRect){MSClamp(centerX - mw * .5, safe.x, safe.x + safe.w - mw),
                           y, mw, mh};
     f.composer = (MSRect){MSClamp(centerX - cw * .5, safe.x, safe.x + safe.w - cw),
-                          y + (mh > 0. ? mh + gap : 0.), cw, ch};
-    const MSRect nearest = f.placedBelow && mh > 0. ? f.messages : f.composer;
+                          y + (mh > 0. ? mh + interGap : 0.), cw, ch};
+    const MSRect nearest = composerVisible ? f.composer : f.messages;
     const double inset = fmin(12., nearest.w * .5);
     f.tailX = MSClamp(centerX - nearest.x, inset, nearest.w - inset);
     f.petAvoidance = MSChatLayoutIntersects(f.messages, pet) ||
                      MSChatLayoutIntersects(f.composer, pet);
     return f;
+}
+/* All controls are in LOCAL composer coordinates, including zero-sized/tiny
+ * bounds. Accessories yield before text; no hit rect can exceed the capsule. */
+typedef struct { MSRect field, more, mic, send; int hasMore, hasMic; } MSChatComposerFrames;
+static inline MSChatComposerFrames MSChatComposerLayout(double width, double height, int sending) {
+    double w = fmax(0., MSFinite(width, 0.)), h = fmax(0., MSFinite(height, 0.));
+    MSChatComposerFrames f = {0};
+    double edge = fmin(5., w * .04), right = fmax(edge, w - edge);
+    double sendW = fmin(34., fmax(0., right - edge));
+    double sendH = fmin(26., h);
+    f.send = (MSRect){right - sendW, (h - sendH) * .5, sendW, sendH};
+    right -= sendW;
+    f.hasMic = !sending && w >= 176.;
+    f.hasMore = w >= 132.;
+    if (f.hasMic) { f.mic = (MSRect){right - 28., 0., 28., h}; right -= 28.; }
+    double left = edge;
+    if (f.hasMore) { f.more = (MSRect){edge, 0., 28., h}; left += 28.; }
+    double gap = fmin(3., fmax(0., right - left) * .1);
+    f.field = (MSRect){left, fmin(3., h * .1), fmax(0., right - gap - left), fmax(0., h - fmin(6., h * .2))};
+    return f;
+}
+static inline MSChatFloatingFrames MSChatFloatingLayout(
+    MSRect safe, MSRect pet, MSSize messagesWanted,
+    double composerWantedWidth, double keyboardTop) {
+    return MSChatFloatingLayoutWithComposer(safe, pet, messagesWanted,
+                                            composerWantedWidth, keyboardTop, 1);
 }
 #endif
