@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 INPUTBAR = (ROOT / 'src/ios/Views/Chat/ChatInputBar.swift').read_text()
 PREVIEW = (ROOT / 'src/ios/Views/Chat/Media/FileAttachmentPreview.swift').read_text()
+CHATBAR = (ROOT / 'src/ios/Views/Chat/ChatInputBar.swift').read_text()
 LIST = (ROOT / 'src/ios/Agent/MessageList/CollectionViewMessageListV3.swift').read_text()
 MEDIA = (ROOT / 'src/ios/Views/Chat/MinisMediaViews.swift').read_text()
 AUDIO = (ROOT / 'src/ios/Views/Chat/Media/AudioPreview.swift').read_text()
@@ -111,6 +112,12 @@ class AttachmentPreviewRegression(unittest.TestCase):
         # The tile must build its URL with the escaping encoder, not URL(string:).
         self.assertIn('FileAttachmentResourceURL.make(path: meta.path) { openURL(url) }', MEDIA)
         self.assertNotIn('URL(string: meta.minisURL) { openURL(url) }', MEDIA)
+        # The tile itself must route through the presenter; relying on the
+        # hosting cell's \.openURL left .mp4 as a generic share page.
+        self.assertIn('AsyncVideoTile(meta: meta, tileSize: tileSize) { openFile(meta) }', CHATBAR)
+        self.assertIn('if tapped.isVideo', PREVIEW)
+        self.assertIn('FileAttachmentResourceURL.make(path: tapped.path)', PREVIEW)
+        self.assertIn('case .video:', PREVIEW)
 
     def test_tool_sheet_wrapper_survives_the_file_sheet_insert(self):
         # The 153fb09 run failed at `swiftc -parse` because the new file

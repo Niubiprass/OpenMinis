@@ -690,7 +690,7 @@ struct UserAttachmentList: View {
                         openGallery(startingAt: meta)
                     }
                 } else if meta.isVideo {
-                    AsyncVideoTile(meta: meta, tileSize: tileSize)
+                    AsyncVideoTile(meta: meta, tileSize: tileSize) { openFile(meta) }
                 } else if meta.pastedId != nil {
                     pastedTile(meta)
                 } else {

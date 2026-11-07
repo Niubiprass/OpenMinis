@@ -47,7 +47,7 @@ enum FileAttachmentResourceURL {
 
 struct FileAttachmentPreviewItem: Identifiable, Sendable {
     enum Kind: Sendable {
-        case text, markdown, html, audio, document, share
+        case text, markdown, html, audio, video, document, share
     }
     let id: UUID
     let title: String
@@ -132,6 +132,16 @@ final class FileAttachmentPresenter: ObservableObject {
             return
         }
         reset()
+        // Videos have a dedicated player. Do not let the generic file pager
+        // classify .mp4 as an unknown document and open UIActivityViewController.
+        if tapped.isVideo {
+            if let url = FileAttachmentResourceURL.make(path: tapped.path) {
+                openVideo(url)
+            } else {
+                unavailableName = tapped.fileName
+            }
+            return
+        }
         let token = requestToken
         let candidates = tapped.pastedId != nil ? [tapped] : attachments.filter {
             !$0.isImage && !$0.isVideo && $0.pastedId == nil
@@ -159,6 +169,7 @@ final class FileAttachmentPresenter: ObservableObject {
                     else if minisHTMLExtensions.contains(ext) { kind = .html }
                     else if minisAudioExtensions.contains(ext) { kind = .audio }
                     else if minisDocumentExtensions.contains(ext) { kind = .document }
+                    else if minisVideoExtensions.contains(ext) { kind = .video }
                     else { kind = .share }
                     return FileAttachmentPreviewItem(id: ref.id, title: ref.title, localURL: local, kind: kind)
                 }
@@ -260,6 +271,8 @@ struct FileAttachmentGroupPreview: View {
             }, onClose: onClose, sourceSessionId: group.ownerSessionId)
         case .audio:
             MinisAudioPreviewView(fileURL: item.localURL, onClose: onClose)
+        case .video:
+            MinisVideoFullscreenPlayer(fileURL: item.localURL)
         case .document:
             FileAttachmentDocumentPage(item: item, onClose: onClose)
         case .share:

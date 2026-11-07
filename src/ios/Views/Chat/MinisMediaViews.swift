@@ -457,11 +457,15 @@ struct AsyncImageTile: View {
 struct AsyncVideoTile: View {
     let meta: AttachmentMeta
     let tileSize: CGFloat
+    /// Sent-message rows pass this so video bypasses \.openURL entirely and
+    /// reaches the dedicated player even in UIHostingConfiguration cells.
+    var onTap: (() -> Void)? = nil
     @Environment(\.openURL) private var openURL
     @State private var thumbnail: UIImage?
 
     var body: some View {
         Button {
+            if let onTap { onTap(); return }
             // Build the minis:// URL with the same encoder as the file pager:
             // URL(string:) rejects literal spaces and misreads # / %.
             if let url = FileAttachmentResourceURL.make(path: meta.path) { openURL(url) }
