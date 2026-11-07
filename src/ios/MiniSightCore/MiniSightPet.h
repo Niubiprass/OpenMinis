@@ -25,6 +25,8 @@ typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
 @property (nonatomic, strong, null_resettable) UIImage *image;
 /// 0..71: outer pet in an 8x9 pack. Each outer cell contains its own 8x9 frames.
 @property (nonatomic) NSInteger variantIndex;
+/// 0 = 64x81 pack, 1 = whole single image, 2 = v1 outer cell, 3 = v2 inner cell.
+@property (nonatomic) NSInteger spriteLayout;
 
 /// Main-thread API, like UIView. sprite is an already decoded/downsampled,
 /// upright 9-row / 8-column atlas; preparation belongs to the host, off-main.

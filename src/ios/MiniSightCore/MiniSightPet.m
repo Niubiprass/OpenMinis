@@ -87,6 +87,7 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
     MiniSightPetState _state;
     NSInteger _column;
     NSInteger _variantIndex;
+    NSInteger _spriteLayout;
     CGFloat _flingSpin;
     CGFloat _flingSpinVelocity;
     CGFloat _flingSquash;
@@ -457,20 +458,38 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     [self applySpriteFrame];
 }
 - (NSInteger)variantIndex { return _variantIndex; }
+- (void)setSpriteLayout:(NSInteger)spriteLayout {
+    _spriteLayout = MIN(3, MAX(0, spriteLayout));
+    [self applySpriteFrame];
+}
+- (NSInteger)spriteLayout { return _spriteLayout; }
 
 - (void)applySpriteFrame {
     if (!_sheet.CGImage || !_gravityLayer) return;
-    // The pack is 8x9 outer pets; EACH outer cell is a full 8x9 animation
-    // atlas. Slice 64x81, not 8x9, or the view paints the whole contact sheet.
+    // Pack: 8x9 outer pets, each a full 8x9 animation atlas (64x81 total).
+    // Single layouts must never be sliced into that grid.
     const NSInteger packCols = kMiniSightPetMaxCols, packRows = kMiniSightPetRows;
     const NSInteger innerCols = 8, innerRows = 9;
     NSInteger v = MIN(71, MAX(0, _variantIndex));
-    NSInteger maxCol = [self frameCountForRow:_state];
-    NSInteger col = MIN(MAX(0, _column), MAX(0, maxCol - 1));
-    NSInteger totalCols = packCols * innerCols, totalRows = packRows * innerRows;
-    CGRect rect = CGRectMake((CGFloat)((v % packCols) * innerCols + col) / totalCols,
-                             (CGFloat)((v / packCols) * innerRows + _state) / totalRows,
-                             1.0 / totalCols, 1.0 / totalRows);
+    CGRect rect;
+    if (_spriteLayout == 1) {
+        rect = CGRectMake(0, 0, 1, 1);
+    } else if (_spriteLayout == 2) {
+        rect = CGRectMake((CGFloat)(v % packCols) / packCols,
+                          (CGFloat)(v / packCols) / packRows,
+                          1.0 / packCols, 1.0 / packRows);
+    } else if (_spriteLayout == 3) {
+        rect = CGRectMake((CGFloat)((v % packCols) * innerCols) / (packCols * innerCols),
+                          (CGFloat)((v / packCols) * innerRows) / (packRows * innerRows),
+                          1.0 / (packCols * innerCols), 1.0 / (packRows * innerRows));
+    } else {
+        NSInteger maxCol = [self frameCountForRow:_state];
+        NSInteger col = MIN(MAX(0, _column), MAX(0, maxCol - 1));
+        NSInteger totalCols = packCols * innerCols, totalRows = packRows * innerRows;
+        rect = CGRectMake((CGFloat)((v % packCols) * innerCols + col) / totalCols,
+                          (CGFloat)((v / packCols) * innerRows + _state) / totalRows,
+                          1.0 / totalCols, 1.0 / totalRows);
+    }
     if (CGRectEqualToRect(_gravityLayer.contentsRect, rect)) return;
     [CATransaction begin];
     [CATransaction setDisableActions:YES];

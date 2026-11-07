@@ -16,6 +16,8 @@ struct MiniSightInAppRuntime: View {
     @AppStorage("minisight.voice.input") private var voiceInput = false
     @AppStorage("minisight.record") private var recordingEnabled = false
     @AppStorage("minisight.longPress") private var longPressEnabled = true
+    @AppStorage("minisight.dragResponse") private var dragResponse = true
+    @AppStorage("minisight.petSound") private var petSoundEnabled = false
     @AppStorage("minisight.chat.height") private var chatHeight = 160.0
     @AppStorage("minisight.chat.theme") private var chatTheme = 0
     @AppStorage("minisight.chat.tintHex") private var chatTintHex = "8B5CF6"
@@ -44,7 +46,10 @@ struct MiniSightInAppRuntime: View {
     var body: some View {
         Group {
             if visible, let petImage {
-                MiniSightPetHost(image: petImage, displaySize: CGFloat(petSize), variant: MiniSightAppFiles.variantIndex, roll: motion.roll,
+                MiniSightPetHost(image: petImage, displaySize: CGFloat(petSize), variant: MiniSightAppFiles.variantIndex,
+                                 spriteLayout: MiniSightAppFiles.spriteLayout,
+                                 dragGain: dragResponse ? 1.0 : 0.40, soundEnabled: petSoundEnabled,
+                                 roll: motion.roll,
                                  activityActive: activity.active, gravityEnabled: gravityEnabled,
                                  shakeGeneration: motion.shakeGeneration,
                                  shakeDirection: motion.shakeDirection, shakeStrength: motion.shakeStrength,
@@ -273,16 +278,28 @@ private enum MiniSightAppFiles {
         let path = directory.appendingPathComponent("pet.png").path
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else { return "missing" }
         let variant = (try? String(contentsOf: directory.appendingPathComponent("variant"), encoding: .utf8)) ?? "0"
-        return "\(attrs[.size] ?? 0)|\(attrs[.modificationDate] ?? Date.distantPast)|\(variant.trimmingCharacters(in: .whitespacesAndNewlines))"
+        return "\(attrs[.size] ?? 0)|\(attrs[.modificationDate] ?? Date.distantPast)|\(variant.trimmingCharacters(in: .whitespacesAndNewlines))|\(spriteLayout)"
+    }
+    /// 0 pack, 1 whole single image, 2 legacy outer cell, 3 old tiled inner cell.
+    static var spriteLayout: Int {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("pet.json")),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let meta = object as? [String: Any],
+              (meta["sourceKind"] as? String) == "singleImage" else { return 0 }
+        let layout = (meta["layoutVersion"] as? NSNumber)?.intValue ?? 1
+        if layout >= 3 { return 1 }
+        if layout == 2 { return 3 }
+        return 2
     }
     static var variantIndex: Int {
         let text = (try? String(contentsOf: directory.appendingPathComponent("variant"), encoding: .utf8)) ?? "0"
         return min(71, max(0, Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0))
     }
     static func loadPet() -> UIImage? {
-        guard let image = UIImage(contentsOfFile: directory.appendingPathComponent("pet.png").path),
-              let cg = image.cgImage,
-              let keyed = MiniSightPetFile.keyOutBlackBackground(cg) else { return UIImage(contentsOfFile: directory.appendingPathComponent("pet.png").path) }
+        guard let image = UIImage(contentsOfFile: directory.appendingPathComponent("pet.png").path) else { return nil }
+        // A single photo keeps its own colours; keying is only for atlas sheets.
+        guard spriteLayout == 0, let cg = image.cgImage,
+              let keyed = MiniSightPetFile.keyOutBlackBackground(cg) else { return image }
         return UIImage(cgImage: keyed, scale: 1, orientation: .up)
     }
     static var appearancePreferences: [String: Any] {
@@ -552,6 +569,9 @@ private struct MiniSightPetHost: UIViewRepresentable {
     let image: UIImage
     let displaySize: CGFloat
     let variant: Int
+    let spriteLayout: Int
+    let dragGain: CGFloat
+    let soundEnabled: Bool
     let roll: Double
     let activityActive: Bool
     let gravityEnabled: Bool
@@ -620,6 +640,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.gravityEnabled = parent.gravityEnabled
             pet.longPressEnabled = parent.longPressEnabled
             pet.variantIndex = parent.variant
+            pet.spriteLayout = parent.spriteLayout
             pet.activityActive = parent.activityActive
             root.pet = pet
             root.addSubview(pet)
@@ -649,6 +670,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.gravityEnabled = parent.gravityEnabled
             pet.longPressEnabled = parent.longPressEnabled
             pet.variantIndex = parent.variant
+            pet.spriteLayout = parent.spriteLayout
             pet.gravityRoll = roll
             pet.activityActive = active
             pet.reducedWork = ProcessInfo.processInfo.isLowPowerModeEnabled
@@ -677,6 +699,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
 
         @objc private func singleTap() {
             guard let pet else { return }
+            if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
             parent.onSingleTap(pet)
         }
         private func refreshChatAnchor() {
@@ -690,6 +713,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
         }
         @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
             guard gesture.state == .began, parent.longPressEnabled else { return }
+            if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
             pet?.interactionActive = true
             parent.onLongPress()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak pet] in pet?.interactionActive = false }
@@ -703,9 +727,10 @@ private struct MiniSightPetHost: UIViewRepresentable {
                 MSDiagEvent("drag", "begin", "ok", ["source": "app", "x": panStart.x, "y": panStart.y])
             case .changed:
                 let delta = gesture.translation(in: host)
+                let gain = parent.dragGain
                 let bounds = pet.centerBounds
-                let x = min(bounds.maxX, max(bounds.minX, panStart.x + delta.x))
-                let y = min(bounds.maxY, max(bounds.minY, panStart.y + delta.y))
+                let x = min(bounds.maxX, max(bounds.minX, panStart.x + delta.x * gain))
+                let y = min(bounds.maxY, max(bounds.minY, panStart.y + delta.y * gain))
                 pet.center = CGPoint(x: x, y: y)
             case .ended, .cancelled, .failed:
                 pet.interactionActive = false

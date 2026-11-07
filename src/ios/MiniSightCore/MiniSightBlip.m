@@ -4,17 +4,17 @@
 
 static AVAudioPlayer *gPlayer;
 static CFTimeInterval gLast;
-static BOOL gFailed;
 
 @implementation MiniSightBlip
 + (void)playIfEnabled:(BOOL)enabled {
-    if (!enabled || gFailed) return;
+    if (!enabled) return;
     CFTimeInterval now = CACurrentMediaTime();
-    if (now - gLast < 0.045) return; // 22 blips/s is plenty next to the sprite
+    if (now - gLast < 0.10) return; // one blip per gesture, not per frame
     gLast = now;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        const int rate = 22050, frames = 900;      // ~40 ms
+    if (!gPlayer) {
+        // Do not touch the shared session: a pet tap while the app is
+        // recording or speaking must not switch it to Ambient.
+        const int rate = 22050, frames = 1400;      // ~63 ms
         NSMutableData *wav = [NSMutableData data];
         uint32_t chunk = 36 + frames * 2, sub = frames * 2, sr = rate, br = rate * 2;
         uint16_t pcm = 1, ch = 1, align = 2, bits = 16;
@@ -26,13 +26,16 @@ static BOOL gFailed;
         [wav appendBytes:"data" length:4]; [wav appendBytes:&sub length:4];
         for (int i = 0; i < frames; i++) {
             double t = (double)i / rate;
-            int16_t v = (int16_t)(9000.0 * exp(-t * 90.0) * sin(2.0 * M_PI * 1400.0 * t));
+            double envelope = exp(-t * 42.0);
+            double tone = sin(2.0 * M_PI * 1180.0 * t) * 0.72
+                        + sin(2.0 * M_PI * 1760.0 * t) * 0.28;
+            int16_t v = (int16_t)(10500.0 * envelope * tone);
             [wav appendBytes:&v length:2];
         }
         gPlayer = [[AVAudioPlayer alloc] initWithData:wav error:NULL];
-        gPlayer.volume = 0.22f;
-        if (!gPlayer) gFailed = YES;
-    });
-    if (!gPlayer.playing) { gPlayer.currentTime = 0; [gPlayer play]; }
+        gPlayer.volume = 0.36f;
+        [gPlayer prepareToPlay];
+    }
+    if (gPlayer) { gPlayer.currentTime = 0; [gPlayer play]; }
 }
 @end

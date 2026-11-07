@@ -9,6 +9,7 @@
 #define MinisApp_Bridging_Header_h
 
 #import "MiniSightCore/MiniSightPet.h"
+#import "MiniSightCore/MiniSightBlip.h"
 #import "MiniSightCore/MiniSightAI.h"
 #import "MiniSightCore/MiniSightLog.h"
 #import "MiniSightCore/MiniSightChatPanel.h"

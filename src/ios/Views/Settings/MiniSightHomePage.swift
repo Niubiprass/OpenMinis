@@ -189,7 +189,7 @@ struct MiniSightActivityPage: View {
 struct MiniSightDownloadPage: View {
     @StateObject private var config = MiniSightConfigStore.shared
     @State private var link = ""
-    @State private var kind = MiniSightAssetCatalog.ImportKind.singleImage
+    @State private var kind = MiniSightAssetCatalog.ImportKind.auto
     @State private var items: [MiniSightAssetCatalog.Item] = []
     @State private var currentID: String?
     @State private var canRestore = false
@@ -218,7 +218,7 @@ struct MiniSightDownloadPage: View {
                 }
                 if !notice.isEmpty { Text(notice).font(.caption).foregroundStyle(failed ? Color.red : Color.secondary) }
             } header: { Text("添加素材") } footer: {
-                Text("支持图片直链、相册或文件；网页和 ZIP 不直接导入。图集必须是 Petdex 8 列 × 9 行 PNG。所有角色共用摇摆、抛摔和回弹；单图会重复铺帧，因而没有独立走路动作。添加不会替你打开桌宠。")
+                Text("支持图片直链、相册或文件；网页和 ZIP 不直接导入。自动识别会把 8 列 × 9 行的 Petdex PNG 展开成 72 只宠物，其他图片按单张静态角色保留原分辨率。所有角色共用摇摆、抛摔和回弹。添加不会替你打开桌宠。")
             }
             Section {
                 TextField("素材目录地址（可选记录）", text: $config.downloadSource)
