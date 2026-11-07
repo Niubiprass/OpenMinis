@@ -86,6 +86,10 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
     CALayer *_gravityLayer;
     MiniSightPetState _state;
     NSInteger _column;
+    NSInteger _variantIndex;
+    CGFloat _flingSpin;
+    CGFloat _flingSpinVelocity;
+    CGFloat _flingSquash;
     CFTimeInterval _lastSpriteTime;
     BOOL _wantsPlaying, _suspended, _hasCenterBounds;
     BOOL _geometryReady, _settingGeometry, _motionActive;
@@ -458,7 +462,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (!_sheet.CGImage || !_gravityLayer) return;
     // The pack is 8x9 outer pets; EACH outer cell is a full 8x9 animation
     // atlas. Slice 64x81, not 8x9, or the view paints the whole contact sheet.
-    const NSInteger packCols = 8, packRows = 9;
+    const NSInteger packCols = kMiniSightPetMaxCols, packRows = kMiniSightPetRows;
     const NSInteger innerCols = 8, innerRows = 9;
     NSInteger v = MIN(71, MAX(0, _variantIndex));
     NSInteger maxCol = [self frameCountForRow:_state];
