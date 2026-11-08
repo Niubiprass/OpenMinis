@@ -169,8 +169,8 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
     return self;
 }
 - (CGFloat)widthForMax:(CGFloat)maxWidth {
-    CGSize fit = [self.label sizeThatFits:CGSizeMake(MAX(1, maxWidth - 16), CGFLOAT_MAX)];
-    return MIN(maxWidth, MAX(36, ceil(fit.width) + 16));
+    CGSize fit = [self.label sizeThatFits:CGSizeMake(MAX(1, maxWidth - 24), CGFLOAT_MAX)];
+    return MIN(maxWidth, MAX(36, ceil(fit.width) + 24));
 }
 - (void)setPetTail:(BOOL)petTail { _petTail = petTail; [self setNeedsDisplay]; }
 - (void)setTailX:(CGFloat)tailX { _tailX = tailX; [self setNeedsDisplay]; }
@@ -1202,7 +1202,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
             widest = MAX(widest, w);
         }
         // The reply panel itself grows to the longest line, not a fixed sheet.
-        CGFloat panelW = self.rows.count ? MIN(maxWidth, MAX(200., widest + 16.)) : maxWidth;
+        CGFloat panelW = self.rows.count ? MIN(maxWidth, MAX(200., widest + 24.)) : maxWidth;
         self.messageWidthConstraint.constant = panelW;
         self.measuredWidth = panelW;
         [self.messageStack setNeedsLayout];
