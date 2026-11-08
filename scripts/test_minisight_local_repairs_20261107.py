@@ -102,6 +102,9 @@ need('bubbleScale' in panel and '300. * bubbleScale' in panel, 'bubble scale cha
 need('[self configuredHeight] * bubbleScale' in panel, 'bubble scale also changes the readable height')
 need('UIStackViewAlignmentLeading' in panel, 'each dialogue bubble keeps its own text width')
 need('widthForMax' in panel and 'bubbleWidths' in panel, 'each bubble has its own measured width constraint')
+need('roamInterval' in runtime and 'activityInterval' in runtime, 'activity interval drives roaming')
+need('gravityStrength' in runtime, 'gravity strength reaches the renderer')
+need('CGImageCreateWithImageInRect' in petm, 'the renderer crops the current frame instead of relying on contentsRect')
 
 # Connection page: shared client, custom URL, saves before test.
 ai = read(ROOT / 'Views/Settings/MiniSightAIPage.swift')

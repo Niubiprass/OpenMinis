@@ -12,6 +12,9 @@ struct MiniSightInAppRuntime: View {
     @AppStorage("minisight.mode") private var mode = 0
     @AppStorage("minisight.petSize") private var petSize = 96.0
     @AppStorage("minisight.gravity") private var gravityEnabled = false
+    @AppStorage("minisight.gravity.strength") private var gravityStrength = 1.0
+    @AppStorage("minisight.activity") private var activityMode = 0
+    @AppStorage("minisight.activity.interval") private var activityInterval = 7.0
     @AppStorage("minisight.diagnostics") private var diagnosticsEnabled = false
     @AppStorage("minisight.voice.input") private var voiceInput = false
     @AppStorage("minisight.record") private var recordingEnabled = false
@@ -54,7 +57,8 @@ struct MiniSightInAppRuntime: View {
                                  spriteLayout: MiniSightAppFiles.spriteLayout,
                                  dragGain: dragResponse ? 1.0 : 0.20, soundEnabled: petSoundEnabled,
                                  roll: motion.roll,
-                                 activityActive: activity.active, gravityEnabled: gravityEnabled,
+                                 activityActive: activity.active, gravityEnabled: gravityEnabled, gravityStrength: gravityStrength,
+                                 activityMode: activityMode, activityInterval: activityInterval,
                                  shakeGeneration: motion.shakeGeneration,
                                  shakeDirection: motion.shakeDirection, shakeStrength: motion.shakeStrength,
                                  longPressEnabled: longPressEnabled, interactionEnabled: interactionEnabled,
@@ -631,6 +635,9 @@ private struct MiniSightPetHost: UIViewRepresentable {
     let roll: Double
     let activityActive: Bool
     let gravityEnabled: Bool
+    let gravityStrength: Double
+    let activityMode: Int
+    let activityInterval: Double
     let shakeGeneration: Int
     let shakeDirection: Double
     let shakeStrength: Double
@@ -696,6 +703,9 @@ private struct MiniSightPetHost: UIViewRepresentable {
             handledShakeGeneration = parent.shakeGeneration
             pet.isUserInteractionEnabled = true
             pet.gravityEnabled = parent.gravityEnabled
+            pet.gravityStrength = CGFloat(parent.gravityStrength)
+            pet.roamPace = parent.activityMode == 0 ? 0.6 : (parent.activityMode == 1 ? 3.0 : 0.0)
+            pet.roamInterval = parent.activityMode == 2 ? 0 : parent.activityInterval
             pet.longPressEnabled = parent.longPressEnabled
             pet.variantIndex = parent.variant
             pet.spriteLayout = parent.spriteLayout
@@ -726,6 +736,9 @@ private struct MiniSightPetHost: UIViewRepresentable {
                 pet.bounds = CGRect(x: 0, y: 0, width: size, height: size)
             }
             pet.gravityEnabled = parent.gravityEnabled
+            pet.gravityStrength = CGFloat(parent.gravityStrength)
+            pet.roamPace = parent.activityMode == 0 ? 0.6 : (parent.activityMode == 1 ? 3.0 : 0.0)
+            pet.roamInterval = parent.activityMode == 2 ? 0 : parent.activityInterval
             pet.longPressEnabled = parent.longPressEnabled
             pet.variantIndex = parent.variant
             pet.spriteLayout = parent.spriteLayout

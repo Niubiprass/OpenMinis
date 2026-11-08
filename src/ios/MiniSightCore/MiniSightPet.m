@@ -93,6 +93,7 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
     CGFloat _flingSpinVelocity;
     CGFloat _flingSquash;
     CFTimeInterval _lastSpriteTime;
+    CGRect _lastSpriteRect;
     BOOL _wantsPlaying, _suspended, _hasCenterBounds;
     BOOL _geometryReady, _settingGeometry, _motionActive;
     CGPoint _lastNotifiedCenter;
@@ -188,6 +189,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 @synthesize roamingPaused = _roamingPaused, interactionActive = _interactionActive;
 @synthesize reducedWork = _reducedWork, onLongPress = _onLongPress;
 @synthesize roamPace = _roamPace, preferredFPS = _preferredFPS;
+@synthesize roamInterval = _roamInterval, gravityStrength = _gravityStrength;
 @synthesize soundEnabled = _soundEnabled;
 
 - (UIImage *)image { return _sheet; }
@@ -500,11 +502,20 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
                           (CGFloat)((v / packCols) * innerRows + _state) / totalRows,
                           1.0 / totalCols, 1.0 / totalRows);
     }
-    if (CGRectEqualToRect(_gravityLayer.contentsRect, rect)) return;
+    // Crop the frame out of the sheet instead of relying on contentsRect:
+    // a missed/zeroed contentsRect used to paint the whole atlas on respring.
+    CGFloat w = (CGFloat)CGImageGetWidth(_sheet.CGImage), h = (CGFloat)CGImageGetHeight(_sheet.CGImage);
+    CGRect pixels = CGRectMake(floor(rect.origin.x * w), floor(rect.origin.y * h),
+                               MAX(1., floor(rect.size.width * w)), MAX(1., floor(rect.size.height * h)));
+    if (CGRectEqualToRect(pixels, _lastSpriteRect)) return;
+    _lastSpriteRect = pixels;
+    CGImageRef cell = CGImageCreateWithImageInRect(_sheet.CGImage, pixels);
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    _gravityLayer.contentsRect = rect;
+    _gravityLayer.contentsRect = CGRectMake(0, 0, 1, 1);
+    _gravityLayer.contents = (__bridge id)cell;
     [CATransaction commit];
+    if (cell) CGImageRelease(cell);
 }
 
 #pragma mark - Gravity visual layer
@@ -559,7 +570,8 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 - (CGFloat)gravityAngleAtTime:(CFTimeInterval)now {
     if (!_gravityEnabled) return 0.;
     double progress = _gravityImpulseDuration > 0. ? (now - _gravityImpulseBegan) / _gravityImpulseDuration : 1.;
-    return MSGravityAngle(_gravityRoll, _gravityImpulseAngle, progress);
+    CGFloat strength = _gravityStrength > 0 ? _gravityStrength : 1.;
+    return MSGravityAngle(_gravityRoll * strength, _gravityImpulseAngle * strength, progress);
 }
 
 - (void)setGravityLayerAngle:(CGFloat)angle animated:(BOOL)animated {
@@ -783,7 +795,8 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     NSTimeInterval delay = _activityActive
         ? MSPetRandomRange(kMiniSightRoamActiveLo, kMiniSightRoamActiveHi)
         : MSPetRandomRange(kMiniSightRoamIdleLo, kMiniSightRoamIdleHi);
-    if (_roamPace > 0) delay *= _roamPace;
+    if (_roamInterval > 0) delay = _roamInterval * MSPetRandomRange(0.75, 1.25);
+    else if (_roamPace > 0) delay *= _roamPace;
     if (_reducedWork && !_activityActive) delay *= 1.5;
     if (_roamPace == 0) { [self invalidateRoamTimer]; return; }
     delay += _restAfterMotion;

@@ -76,6 +76,10 @@ typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
 @property (nonatomic) BOOL activityActive;
 /// 0.6 lively, 1.0 natural, 4.0 quiet, 0 = no roaming (breathing/idle stays).
 @property (nonatomic) double roamPace;
+/// Explicit gap between roams in seconds; 0 falls back to the pace table.
+@property (nonatomic) NSTimeInterval roamInterval;
+/// 0.4..1.6 multiplier for the visual tilt.
+@property (nonatomic) CGFloat gravityStrength;
 /// 0 = auto, else 30/60/120. Applies to motion display links only.
 @property (nonatomic) NSInteger preferredFPS;
 /// Host-owned gesture configuration; this view creates NO gesture recognizers.
