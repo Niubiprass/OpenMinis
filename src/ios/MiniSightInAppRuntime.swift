@@ -371,6 +371,7 @@ private enum MiniSightAppFiles {
             "minisight.chat.tintAlpha": defaults.object(forKey: "minisight.chat.tintAlpha") ?? 0.22,
             "minisight.settings.revision": defaults.string(forKey: "minisight.settings.revision") ?? "legacy",
             "bubbleScale": defaults.object(forKey: "minisight.dialogue.scale") ?? 1,
+            "panelScale": defaults.object(forKey: "minisight.chat.panelScale") ?? 1,
             "textScale": defaults.object(forKey: "minisight.dialogue.textScale") ?? 1,
             "dwell": defaults.object(forKey: "minisight.dialogue.dwell") ?? 1,
             "returnKey": defaults.string(forKey: "minisight.dialogue.return") ?? "send",

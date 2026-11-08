@@ -9,6 +9,7 @@
   "minisight.ai.supplier",
   "minisight.asset.source",
   "minisight.bottomGap",
+  "minisight.chat.panelScale",
   "minisight.darkMode",
   "minisight.diagnostics",
   "minisight.dialogue.dwell",

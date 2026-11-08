@@ -149,7 +149,7 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
     UILabel *label = [UILabel new];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.numberOfLines = 0;
-    label.font = [UIFont systemFontOfSize:13.5];
+    label.font = [UIFont systemFontOfSize:15.5];
     label.textColor = UIColor.labelColor;
     label.text = text;
     label.preferredMaxLayoutWidth = 232;
@@ -169,8 +169,8 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
     return self;
 }
 - (CGFloat)widthForMax:(CGFloat)maxWidth {
-    CGSize fit = [self.label sizeThatFits:CGSizeMake(MAX(1, maxWidth - 24), CGFLOAT_MAX)];
-    return MIN(maxWidth, MAX(36, ceil(fit.width) + 24));
+    CGSize fit = [self.label sizeThatFits:CGSizeMake(MAX(1, maxWidth - 16), CGFLOAT_MAX)];
+    return MIN(maxWidth, MAX(36, ceil(fit.width) + 16));
 }
 - (void)setPetTail:(BOOL)petTail { _petTail = petTail; [self setNeedsDisplay]; }
 - (void)setTailX:(CGFloat)tailX { _tailX = tailX; [self setNeedsDisplay]; }
@@ -1188,7 +1188,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     safe.size.width = MAX(0., safe.size.width);
     safe.size.height = MAX(0., safe.size.height);
     CGFloat bubbleScale = MSClamp([self scaleFor:@"bubbleScale" fallback:1], 0.8, 1.6);
-    CGFloat maxWidth = MIN(300. * bubbleScale, MAX(0., safe.size.width * 0.86));
+    CGFloat panelScale = MSClamp([self scaleFor:@"panelScale" fallback:1], 0.6, 1.6);
+    CGFloat maxWidth = MIN(280. * panelScale, MAX(0., safe.size.width * 0.80));
     if (fabs(self.measuredWidth - maxWidth) > 0.5 || self.messagesDirty) {
         self.messagesDirty = NO;
         CGFloat widest = 0;
@@ -1200,7 +1201,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
             widest = MAX(widest, w);
         }
         // The reply panel itself grows to the longest line, not a fixed sheet.
-        CGFloat panelW = self.rows.count ? MIN(maxWidth, MAX(220., widest + 24.)) : maxWidth;
+        CGFloat panelW = self.rows.count ? MIN(maxWidth, MAX(200., widest + 16.)) : maxWidth;
         self.messageWidthConstraint.constant = panelW;
         self.measuredWidth = panelW;
         [self.messageStack setNeedsLayout];
@@ -1212,7 +1213,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
             content += MAX(20, rowHeight);
         }
         content += MAX(0, self.rows.count - 1) * 6 + 8;
-        CGFloat maxMessageHeight = MIN(safe.size.height * 0.50, MAX(180., [self configuredHeight] * bubbleScale * 2.));
+        CGFloat maxMessageHeight = MIN(safe.size.height * 0.50, MAX(160., [self configuredHeight] * panelScale * 2.));
         self.measuredMessageHeight = MIN(content, maxMessageHeight);
     }
     CGFloat panelWForLayout = (self.rows.count && self.messageWidthConstraint) ? self.messageWidthConstraint.constant : maxWidth;
@@ -1350,7 +1351,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     if (!text.length || !self.messageStack) return;
     MiniSightChatBubble *bubble = [[MiniSightChatBubble alloc] initWithText:text user:role == MiniSightChatRoleUser];
     CGFloat textScale = [self scaleFor:@"textScale" fallback:1];
-    if (fabs(textScale - 1) > 0.01) bubble.label.font = [UIFont systemFontOfSize:13.5 * textScale];
+    if (fabs(textScale - 1) > 0.01) bubble.label.font = [UIFont systemFontOfSize:15.5 * textScale];
     if (role == MiniSightChatRoleNotice) bubble.label.textColor = UIColor.secondaryLabelColor;
     bubble.alpha = 0.0;
     bubble.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(0.96, 0.96),

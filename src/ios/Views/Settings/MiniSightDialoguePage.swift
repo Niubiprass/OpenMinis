@@ -12,6 +12,9 @@ struct MiniSightDialoguePage: View {
                 LabeledContent("气泡大小 \(String(format: "%.2f", config.bubbleScale))×") {
                     Slider(value: $config.bubbleScale, in: 0.8...1.35, step: 0.05)
                 }
+                LabeledContent("回复面板大小 \(String(format: "%.2f", config.panelScale))×") {
+                    Slider(value: $config.panelScale, in: 0.6...1.5, step: 0.05)
+                }
                 LabeledContent("文字大小 \(String(format: "%.2f", config.textScale))×") {
                     Slider(value: $config.textScale, in: 0.8...1.35, step: 0.05)
                 }

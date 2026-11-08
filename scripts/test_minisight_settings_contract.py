@@ -53,7 +53,7 @@ FIELD = {
     "minisight.longPress": "longPress", "minisight.shown": "shown",
     "minisight.settings.revision": "revision", "minisight.pet.tint": "tint",
     "minisight.pet.costume": "costume", "minisight.ai.supplier": "supplier",
-    "minisight.ai.nickname": "nickname", "minisight.dialogue.scale": "bubbleScale",
+    "minisight.ai.nickname": "nickname", "minisight.dialogue.scale": "bubbleScale", "minisight.chat.panelScale": "panelScale",
     "minisight.dialogue.textScale": "textScale", "minisight.dialogue.dwell": "dwell",
     "minisight.dialogue.return": "returnKey", "minisight.proactive.interval": "proactiveInterval",
     "minisight.active": "activity", "minisight.ai.adjust": "aiAdjust",

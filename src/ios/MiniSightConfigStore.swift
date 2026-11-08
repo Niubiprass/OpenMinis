@@ -44,6 +44,7 @@ final class MiniSightConfigStore: ObservableObject {
     @Published private(set) var adjustments: [String]
 
     @Published var bubbleScale: Double { didSet { publish(MiniSightSettingKey.bubbleScale) } }
+    @Published var panelScale: Double { didSet { publish(MiniSightSettingKey.panelScale) } }
     @Published var textScale: Double { didSet { publish(MiniSightSettingKey.textScale) } }
     @Published var dwell: Double { didSet { publish(MiniSightSettingKey.dwell) } }
     @Published var returnKey: String { didSet { publish(MiniSightSettingKey.returnKey) } }
@@ -99,6 +100,7 @@ final class MiniSightConfigStore: ObservableObject {
         permissions = MiniSightConfig.permissionSet()
         adjustments = d.stringArray(forKey: MiniSightSettingKey.adjustments) ?? []
         bubbleScale = MiniSightConfig.double(MiniSightSettingKey.bubbleScale, 1)
+        panelScale = MiniSightConfig.double(MiniSightSettingKey.panelScale, 1)
         textScale = MiniSightConfig.double(MiniSightSettingKey.textScale, 1)
         dwell = MiniSightConfig.double(MiniSightSettingKey.dwell, 1)
         returnKey = MiniSightConfig.string(MiniSightSettingKey.returnKey, "send")
@@ -160,6 +162,7 @@ final class MiniSightConfigStore: ObservableObject {
         case MiniSightSettingKey.proactive: return proactive
         case MiniSightSettingKey.proactiveInterval: return proactiveInterval
         case MiniSightSettingKey.bubbleScale: return bubbleScale
+        case MiniSightSettingKey.panelScale: return panelScale
         case MiniSightSettingKey.textScale: return textScale
         case MiniSightSettingKey.dwell: return dwell
         case MiniSightSettingKey.returnKey: return returnKey

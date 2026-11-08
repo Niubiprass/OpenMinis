@@ -39,6 +39,7 @@ enum MiniSightSettingKey {
     static let proactiveInterval = "minisight.proactive.interval"
 
     static let bubbleScale = "minisight.dialogue.scale"
+    static let panelScale = "minisight.chat.panelScale"
     static let textScale = "minisight.dialogue.textScale"
     static let dwell = "minisight.dialogue.dwell"
     static let returnKey = "minisight.dialogue.return"
@@ -176,7 +177,7 @@ enum MiniSightConfig {
         MiniSightSettingKey.persona: "persona", MiniSightSettingKey.nickname: "nickname",
         MiniSightSettingKey.aiAdjust: "aiAdjust", MiniSightSettingKey.aiPermissions: "aiPermissions",
         MiniSightSettingKey.adjustments: "adjustments", MiniSightSettingKey.proactive: "proactive",
-        MiniSightSettingKey.proactiveInterval: "proactiveInterval", MiniSightSettingKey.bubbleScale: "bubbleScale",
+        MiniSightSettingKey.proactiveInterval: "proactiveInterval", MiniSightSettingKey.bubbleScale: "bubbleScale", MiniSightSettingKey.panelScale: "panelScale",
         MiniSightSettingKey.textScale: "textScale", MiniSightSettingKey.dwell: "dwell",
         MiniSightSettingKey.returnKey: "returnKey", MiniSightSettingKey.voiceReply: "voiceReply",
         MiniSightSettingKey.voiceInput: "voiceInput", MiniSightSettingKey.snore: "snore",
@@ -219,7 +220,7 @@ enum MiniSightConfig {
             MiniSightSettingKey.aiPermissions: "",
             MiniSightSettingKey.proactive: false,
             MiniSightSettingKey.proactiveInterval: 30.0,
-            MiniSightSettingKey.bubbleScale: 1.0,
+            MiniSightSettingKey.bubbleScale: 1.0, MiniSightSettingKey.panelScale: 1.0,
             MiniSightSettingKey.textScale: 1.0,
             MiniSightSettingKey.dwell: 1.0,
             MiniSightSettingKey.returnKey: "send",
@@ -306,7 +307,7 @@ enum MiniSightRuntimeSnapshot {
 
     @discardableResult
     static func write(container: URL, rawValues: [String: Any]) -> Bool {
-        guard MiniSightConfig.runtimeFields.count == 45,
+        guard MiniSightConfig.runtimeFields.count == 46,
               MiniSightConfig.all.allSatisfy({ rawValues[$0] != nil }) else { return false }
         var canonical: [String: Any] = [:]
         var values: [String: Any] = ["version": 2]
