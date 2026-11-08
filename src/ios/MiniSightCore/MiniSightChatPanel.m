@@ -410,6 +410,13 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 
 - (void)setAppearancePreferences:(NSDictionary<NSString *,id> *)appearancePreferences {
     _appearancePreferences = [appearancePreferences copy] ?: @{};
+    if (self.visible) {
+        self.messagesDirty = YES;
+        [self setNeedsLayout];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.visible) [self layoutForCurrentScreen];
+        });
+    }
     [self updateAppearance];
     [self rebuildQuickRow];
     self.quickScroll.hidden = YES;
@@ -1170,7 +1177,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     CGRect safe = UIEdgeInsetsInsetRect(self.window.bounds, UIEdgeInsetsMake(MAX(8, insets.top + 6), MAX(10, insets.left + 8), MAX(8, insets.bottom + 6), MAX(10, insets.right + 8)));
     safe.size.width = MAX(0., safe.size.width);
     safe.size.height = MAX(0., safe.size.height);
-    CGFloat maxWidth = MIN(300., MAX(0., safe.size.width - 24.));
+    CGFloat bubbleScale = MSClamp([self scaleFor:@"bubbleScale" fallback:1], 0.8, 1.6);
+    CGFloat maxWidth = MIN(300. * bubbleScale, MAX(0., safe.size.width - 24.));
     if (fabs(self.measuredWidth - maxWidth) > 0.5 || self.messagesDirty) {
         self.measuredWidth = maxWidth;
         self.messagesDirty = NO;
@@ -1183,7 +1191,9 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
             content += MAX(20, rowHeight);
         }
         content += MAX(0, self.rows.count - 1) * 6 + 8;
-        self.measuredMessageHeight = MIN(content, [self configuredHeight]);
+        CGFloat maxMessageHeight = MIN(safe.size.height * 0.55,
+                                       MAX(160., [self configuredHeight] * bubbleScale));
+        self.measuredMessageHeight = MIN(content, maxMessageHeight);
     }
     // A single production C strategy is also exercised by host randomized tests.
     // Stored offsets may bias sideways/upwards only; no stale setting can put
@@ -1194,7 +1204,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     MSChatFloatingFrames frames = MSChatFloatingLayoutWithComposer(
         (MSRect){safe.origin.x, safe.origin.y, safe.size.width, safe.size.height},
         chatPet, (MSSize){maxWidth, self.rows.count ? self.measuredMessageHeight : 0.},
-        MIN(216., safe.size.width), self.keyboardTop, self.composerVisible);
+        MIN(216. * bubbleScale, safe.size.width), self.keyboardTop, self.composerVisible);
     self.actionBar.hidden = !self.menuOpen || !self.composerVisible;
     self.scrollView.frame = CGRectMake(frames.messages.x, frames.messages.y, frames.messages.w, frames.messages.h);
     self.scrollView.hidden = self.rows.count == 0 || frames.messages.h < 1;

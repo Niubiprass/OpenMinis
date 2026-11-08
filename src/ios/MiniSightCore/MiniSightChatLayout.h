@@ -88,7 +88,7 @@ static inline MSChatFloatingFrames MSChatFloatingLayoutWithComposer(
                                       ? messagesWanted.w : 216.);
     const double ch = composerVisible ? fmin(38., safe.h) : 0.;
     double mh = mw > 0. ? fmin(MSChatLayoutLength(messagesWanted.h, 0.),
-                               fmin(200., safe.h * .35)) : 0.;
+                               fmin(360., safe.h * .55)) : 0.;
     const double aboveBottom = fmin(bottom, pet.y - petGap);
     const double aboveRoom = fmax(0., fmin(safe.h, aboveBottom - safe.y));
     double room;

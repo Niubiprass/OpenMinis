@@ -126,6 +126,7 @@ class AttachmentPreviewRegression(unittest.TestCase):
         self.assertIn('guard let local, local.isFileURL', PREVIEW)
         self.assertIn('self.openVideo(local)', PREVIEW)
         self.assertIn('resolveMinisFileURLCached(url: fileURL)', VIDEO)
+        self.assertIn('MinisVideoFullscreenPlayer(fileURL: attachment.cacheURL)', INPUTBAR)
 
     def test_tool_sheet_wrapper_survives_the_file_sheet_insert(self):
         # The 153fb09 run failed at `swiftc -parse` because the new file

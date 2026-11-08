@@ -213,27 +213,35 @@ private struct AttachmentChip: View {
     /// A normal, loaded attachment (image / video thumbnail or file chip).
     @ViewBuilder
     private var readyChip: some View {
-        Group {
-            if attachment.kind == .image {
-                thumbnailChip(image: cachedImage)
-            } else if attachment.kind == .video {
-                thumbnailChip(image: cachedImage, isVideo: true)
-            } else {
-                fileChip
-            }
+        if attachment.kind == .video {
+            thumbnailChip(image: cachedImage, isVideo: true)
+                .onAppear { loadThumbnailIfNeeded() }
+                .fullScreenCover(isPresented: $showPreview) {
+                    MinisVideoFullscreenPlayer(fileURL: attachment.cacheURL)
+                }
+        } else if attachment.kind == .image {
+            thumbnailChip(image: cachedImage)
+                .onAppear { loadThumbnailIfNeeded() }
+                .sheet(isPresented: $showPreview) { previewSheet }
+        } else {
+            fileChip
+                .onAppear { loadThumbnailIfNeeded() }
+                .sheet(isPresented: $showPreview) { previewSheet }
         }
-        .onAppear { loadThumbnailIfNeeded() }
-        .sheet(isPresented: $showPreview) {
-            NavigationStack {
-                AttachmentPreviewView(url: attachment.cacheURL)
-                    .navigationTitle(attachment.fileName)
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("Done") { showPreview = false }
-                        }
+    }
+
+    /// QuickLook for images and documents. Videos take the dedicated player
+    /// above: QuickLook inside this chip's sheet stopped presenting the file.
+    private var previewSheet: some View {
+        NavigationStack {
+            AttachmentPreviewView(url: attachment.cacheURL)
+                .navigationTitle(attachment.fileName)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { showPreview = false }
                     }
-            }
+                }
         }
     }
 
