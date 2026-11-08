@@ -136,6 +136,7 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
 @property (nonatomic, assign) BOOL tailAbove;
 @property (nonatomic, assign) BOOL userMessage;
 - (instancetype)initWithText:(NSString *)text user:(BOOL)user;
+- (CGFloat)widthForMax:(CGFloat)maxWidth;
 @end
 
 @implementation MiniSightChatBubble
@@ -166,6 +167,10 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
     self.isAccessibilityElement = NO;
     label.isAccessibilityElement = YES;
     return self;
+}
+- (CGFloat)widthForMax:(CGFloat)maxWidth {
+    CGSize fit = [self.label sizeThatFits:CGSizeMake(MAX(1, maxWidth - 24), CGFLOAT_MAX)];
+    return MIN(maxWidth, MAX(36, ceil(fit.width) + 24));
 }
 - (void)setPetTail:(BOOL)petTail { _petTail = petTail; [self setNeedsDisplay]; }
 - (void)setTailX:(CGFloat)tailX { _tailX = tailX; [self setNeedsDisplay]; }
@@ -271,6 +276,7 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
 @property (nonatomic, copy, nullable) dispatch_block_t voiceWaiter;
 @property (nonatomic, strong, nullable) UITapGestureRecognizer *editorTap;
 @property (nonatomic, strong, nullable) NSLayoutConstraint *messageWidthConstraint;
+@property (nonatomic, strong) NSMutableArray<NSLayoutConstraint *> *bubbleWidths;
 @property (nonatomic, strong, nullable) MiniSightChatBubble *pendingBubble;
 @property (nonatomic, assign) BOOL layingOut;
 @property (nonatomic, assign) BOOL composerVisible;
@@ -482,6 +488,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     // Leading, not fill: every bubble keeps its own text width (short = small,
     // long = grows up to the stack width) instead of all sharing one column.
     stack.alignment = UIStackViewAlignmentLeading;
+    self.bubbleWidths = [NSMutableArray array];
     self.messageWidthConstraint = [stack.widthAnchor constraintEqualToConstant:272];
     self.messageWidthConstraint.active = YES;
     [NSLayoutConstraint activateConstraints:@[
@@ -1186,11 +1193,17 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
         self.measuredWidth = maxWidth;
         self.messagesDirty = NO;
         self.messageWidthConstraint.constant = maxWidth;
-        for (MiniSightChatBubble *row in self.rows) row.label.preferredMaxLayoutWidth = MAX(1, maxWidth - 24);
+        for (NSUInteger i = 0; i < self.rows.count && i < self.bubbleWidths.count; i++) {
+            MiniSightChatBubble *row = self.rows[i];
+            row.label.preferredMaxLayoutWidth = MAX(1, maxWidth - 24);
+            self.bubbleWidths[i].constant = [row widthForMax:maxWidth];
+        }
         [self.messageStack setNeedsLayout];
         CGFloat content = 0;
-        for (UIView *row in self.rows) {
-            CGFloat rowHeight = [(MiniSightChatBubble *)row systemLayoutSizeFittingSize:CGSizeMake(maxWidth, UILayoutFittingCompressedSize.height) withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel].height;
+        for (NSUInteger i = 0; i < self.rows.count; i++) {
+            MiniSightChatBubble *row = self.rows[i];
+            CGFloat w = i < self.bubbleWidths.count ? self.bubbleWidths[i].constant : maxWidth;
+            CGFloat rowHeight = [row systemLayoutSizeFittingSize:CGSizeMake(w, UILayoutFittingCompressedSize.height) withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel].height;
             content += MAX(20, rowHeight);
         }
         content += MAX(0, self.rows.count - 1) * 6 + 8;
@@ -1338,8 +1351,12 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     bubble.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(0.96, 0.96),
                                                CGAffineTransformMakeTranslation(0, 5));
     NSLayoutConstraint *width = [bubble.widthAnchor constraintLessThanOrEqualToAnchor:self.messageStack.widthAnchor];
+    NSLayoutConstraint *exact = [bubble.widthAnchor constraintEqualToConstant:MAX(36., MIN(self.measuredWidth, [bubble widthForMax:self.measuredWidth]))];
+    exact.priority = UILayoutPriorityRequired;
     [self.messageStack addArrangedSubview:bubble];
     width.active = YES; // Activate only after a common ancestor exists.
+    exact.active = YES;
+    [self.bubbleWidths addObject:exact];
     [self.rows addObject:bubble];
     self.messagesDirty = YES;
     [self trimMessages];
@@ -1363,6 +1380,10 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 - (void)trimMessages {
     while (self.rows.count > MIN((NSUInteger)kMSChatMaxMessages, (NSUInteger)4)) {
         UIView *oldest = self.rows.firstObject;
+        if (self.bubbleWidths.count) {
+            [self.bubbleWidths.firstObject setActive:NO];
+            [self.bubbleWidths removeObjectAtIndex:0];
+        }
         [self.rows removeObjectAtIndex:0];
         [self.messageStack removeArrangedSubview:oldest];
         [oldest removeFromSuperview];
@@ -1583,6 +1604,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 #pragma mark Clear
 
 - (void)clearConversation {
+    for (NSLayoutConstraint *c in self.bubbleWidths) [c setActive:NO];
+    [self.bubbleWidths removeAllObjects];
     if (self.sending) {
         ++self.requestGeneration;
         [self endSendingUI];
