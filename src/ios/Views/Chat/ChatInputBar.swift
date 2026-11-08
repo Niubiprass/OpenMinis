@@ -221,6 +221,7 @@ private struct AttachmentChip: View {
                 .onAppear { loadThumbnailIfNeeded() }
                 .fullScreenCover(isPresented: $showPreview) {
                     MinisVideoFullscreenPlayer(fileURL: attachment.cacheURL)
+                        .onAppear { minisLogger.info("[AttachmentChip] video player shown") }
                 }
         } else if image {
             thumbnailChip(image: cachedImage)
@@ -302,7 +303,10 @@ private struct AttachmentChip: View {
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
                         .shadow(color: .black.opacity(0.08), radius: 2, x: 0, y: 1)
                         .contentShape(RoundedRectangle(cornerRadius: 8))
-                        .onTapGesture { showPreview = true }
+                        .onTapGesture {
+                            minisLogger.info("[AttachmentChip] tap ext=\(attachment.cacheURL.pathExtension) kind=\(String(describing: attachment.kind)) file=\(attachment.cacheURL.lastPathComponent)")
+                            showPreview = true
+                        }
 
                     if isVideo {
                         Image(systemName: "play.fill")
