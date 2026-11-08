@@ -96,6 +96,7 @@ need('MiniSightBlip.h' in read(ROOT / 'MinisApp-Bridging-Header.h'), 'sound play
 need('@AppStorage("minisight.interaction")' in runtime and 'parent.interactionEnabled' in runtime, 'in-app gestures honour the interaction switch')
 need('@AppStorage("minisight.gesture.single")' in runtime and 'parent.onGesture(parent.singleAction' in runtime, 'in-app taps follow the configured action')
 need('pet.beginDragging(withDirection' in runtime and 'pet.endDragging()' in runtime, 'drag holds one run clip until release')
+need('flippedVertically' in runtime and 'loadPet' in runtime, 'loaded sprites are flipped upright for display')
 
 # Connection page: shared client, custom URL, saves before test.
 ai = read(ROOT / 'Views/Settings/MiniSightAIPage.swift')

@@ -335,12 +335,28 @@ private enum MiniSightAppFiles {
         let text = (try? String(contentsOf: directory.appendingPathComponent("variant"), encoding: .utf8)) ?? "0"
         return min(71, max(0, Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0))
     }
+    private static func flippedVertically(_ cg: CGImage) -> CGImage? {
+        let w = cg.width, h = cg.height
+        guard w > 0, h > 0,
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return nil }
+        ctx.translateBy(x: 0, y: CGFloat(h))
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return ctx.makeImage()
+    }
+
     static func loadPet() -> UIImage? {
         guard let image = UIImage(contentsOfFile: directory.appendingPathComponent("pet.png").path) else { return nil }
-        // A single photo keeps its own colours; keying is only for sheets.
-        guard spriteLayout != 1, let cg = image.cgImage,
-              let keyed = MiniSightPetFile.keyOutBlackBackground(cg) else { return image }
-        return UIImage(cgImage: keyed, scale: 1, orientation: .up)
+        // Import stores the sheet inverted; both photo and sheet are flipped
+        // back here, after any black-background keying.
+        var out = image.cgImage
+        if spriteLayout != 1, let cg = out, let keyed = MiniSightPetFile.keyOutBlackBackground(cg) {
+            out = keyed
+        }
+        guard let cg = out, let upright = flippedVertically(cg) else { return image }
+        return UIImage(cgImage: upright, scale: 1, orientation: .up)
     }
     static var appearancePreferences: [String: Any] {
         let defaults = UserDefaults.standard
