@@ -192,7 +192,6 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 @synthesize roamInterval = _roamInterval, gravityStrength = _gravityStrength;
 @synthesize soundEnabled = _soundEnabled;
 
-- (UIImage *)image { return _sheet; }
 - (void)setImage:(UIImage *)image {
     NSAssert([NSThread isMainThread], @"Pet UI must be used on the main thread");
     if (!image.CGImage) return;

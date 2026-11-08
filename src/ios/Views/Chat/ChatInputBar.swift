@@ -213,13 +213,16 @@ private struct AttachmentChip: View {
     /// A normal, loaded attachment (image / video thumbnail or file chip).
     @ViewBuilder
     private var readyChip: some View {
-        if attachment.kind == .video {
+        let ext = attachment.cacheURL.pathExtension.lowercased()
+        let video = attachment.kind == .video || ["mp4", "mov", "m4v"].contains(ext)
+        let image = attachment.kind == .image || ["png", "jpg", "jpeg", "heic", "heif", "webp", "gif"].contains(ext)
+        if video {
             thumbnailChip(image: cachedImage, isVideo: true)
                 .onAppear { loadThumbnailIfNeeded() }
                 .fullScreenCover(isPresented: $showPreview) {
                     MinisVideoFullscreenPlayer(fileURL: attachment.cacheURL)
                 }
-        } else if attachment.kind == .image {
+        } else if image {
             thumbnailChip(image: cachedImage)
                 .onAppear { loadThumbnailIfNeeded() }
                 .sheet(isPresented: $showPreview) { previewSheet }
