@@ -28,6 +28,8 @@ for path in SOURCES:
         fails.append(f'{where}: data length field not written from dataLen')
     if 'initWithData:wav error:&error' not in src:
         fails.append(f'{where}: AVAudioPlayer init error is ignored')
+    if 'AVAudioSessionCategoryAmbient' not in src or 'MixWithOthers' not in src:
+        fails.append(f'{where}: blip does not mix with other audio')
     if 'prepareToPlay]' not in src or '[gPlayer play]' not in src:
         fails.append(f'{where}: prepare/play results are not checked')
     match = re.search(r'frames = (\d+)', src)

@@ -4,6 +4,7 @@
 
 static AVAudioPlayer *gPlayer;
 static CFTimeInterval gLast;
+static BOOL gSessionReady;
 
 @implementation MiniSightBlip
 + (void)playIfEnabled:(BOOL)enabled {
@@ -11,9 +12,17 @@ static CFTimeInterval gLast;
     CFTimeInterval now = CACurrentMediaTime();
     if (now - gLast < 0.10) return; // one blip per gesture, not per frame
     gLast = now;
+    if (!gSessionReady) {
+        // Ambient + mix: a blip must not pause Douyin/video or duck them.
+        AVAudioSession *session = AVAudioSession.sharedInstance;
+        [session setCategory:AVAudioSessionCategoryAmbient
+                        mode:AVAudioSessionModeDefault
+                     options:AVAudioSessionCategoryOptionMixWithOthers
+                       error:NULL];
+        if (!session.isOtherAudioPlaying) [session setActive:YES error:NULL];
+        gSessionReady = YES;
+    }
     if (!gPlayer) {
-        // Do not touch the shared session: a pet tap while the app is
-        // recording or speaking must not switch it to Ambient.
         const int rate = 22050, frames = 900;       // ~41 ms
         NSMutableData *wav = [NSMutableData data];
         // WAV: fmt chunk is exactly 16 bytes; only the data chunk is frames*2.
