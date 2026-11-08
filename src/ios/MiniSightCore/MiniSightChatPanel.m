@@ -1231,6 +1231,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
         chatPet, (MSSize){panelWForLayout, self.rows.count ? self.measuredMessageHeight : 0.},
         MIN(MAX(216., panelWForLayout), safe.size.width), self.keyboardTop, self.composerVisible);
     self.actionBar.hidden = !self.menuOpen || !self.composerVisible;
+    MSDiag(@"chat panel w=%.0f h=%.0f rows=%lu scale=%.2f", panelWForLayout, self.measuredMessageHeight, (unsigned long)self.rows.count, bubbleScale);
     self.scrollView.frame = CGRectMake(frames.messages.x, frames.messages.y, frames.messages.w, frames.messages.h);
     self.scrollView.hidden = self.rows.count == 0 || frames.messages.h < 1;
     self.scrollView.scrollEnabled = self.scrollView.contentSize.height > frames.messages.h + .5;

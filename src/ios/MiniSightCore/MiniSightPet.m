@@ -481,14 +481,19 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     const NSInteger packCols = kMiniSightPetMaxCols, packRows = kMiniSightPetRows;
     const NSInteger innerCols = 8, innerRows = 9;
     NSInteger v = MIN(71, MAX(0, _variantIndex));
+    // Fallback: a 12:13 sheet is always one character's animation even if
+    // the startup path failed to read pet.json (layout 0/1).
+    NSInteger effectiveLayout = _spriteLayout;
+    CGFloat sw = (CGFloat)CGImageGetWidth(_sheet.CGImage), sh = (CGFloat)CGImageGetHeight(_sheet.CGImage);
+    if (effectiveLayout <= 1 && sw > 0 && sh > 0 && fabs(sw / sh - 768.0 / 936.0) < 0.03) effectiveLayout = 3;
     CGRect rect;
-    if (_spriteLayout == 1) {
+    if (effectiveLayout == 1) {
         rect = CGRectMake(0, 0, 1, 1);
-    } else if (_spriteLayout == 4 || _spriteLayout == 2) {
+    } else if (effectiveLayout == 4 || effectiveLayout == 2) {
         rect = CGRectMake((CGFloat)(v % packCols) / packCols,
                           (CGFloat)(v / packCols) / packRows,
                           1.0 / packCols, 1.0 / packRows);
-    } else if (_spriteLayout == 3) {
+    } else if (effectiveLayout == 3) {
         NSInteger maxCol = [self frameCountForRow:_state];
         NSInteger col = MIN(MAX(0, _column), MAX(0, maxCol - 1));
         rect = CGRectMake((CGFloat)col / packCols,

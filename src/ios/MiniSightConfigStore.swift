@@ -219,6 +219,7 @@ final class MiniSightConfigStore: ObservableObject {
         guard loaded else { return }
         let d = UserDefaults.standard
         d.set(raw(key), forKey: key)
+        print("[MiniSightSettings] set \(key)=\(raw(key))")
         let revision = UUID().uuidString
         d.set(revision, forKey: MiniSightSettingKey.shownRevision)
         publishGeneration &+= 1

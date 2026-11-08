@@ -67,7 +67,7 @@ need('gridLooksLikePets' in cat and 'packShaped' in cat, 'sheet shape is checked
 need('migrateSheet' in cat and 'fresh.sourceKind = ImportKind.singleImage.rawValue' in cat, '245 pack records migrate to one animated character')
 need('if lv == 3' in cat and 'let fw = cg.width / 8' in cat, 'header preview crops one frame, not the whole sheet')
 petm = read(ROOT / 'MiniSightCore/MiniSightPet.m')
-need('_spriteLayout == 3' in petm and '(CGFloat)col / packCols' in petm and '(CGFloat)_state / packRows' in petm, 'sheet plays row/column animation frames')
+need('effectiveLayout == 3' in petm and '(CGFloat)col / packCols' in petm and '(CGFloat)_state / packRows' in petm, 'sheet plays row/column animation frames')
 need('layout == 3 { return 3 }' in runtime, 'runtime maps layout 3 to animation')
 need('if layout == 2 { return 2 }' in runtime and 'return 1' in runtime, 'photo maps to the whole image')
 need('MiniSightTintPage()' not in home and '配色与服装' not in home, 'pet colour entry removed')
