@@ -16,6 +16,10 @@ struct MiniSightInAppRuntime: View {
     @AppStorage("minisight.voice.input") private var voiceInput = false
     @AppStorage("minisight.record") private var recordingEnabled = false
     @AppStorage("minisight.longPress") private var longPressEnabled = true
+    @AppStorage("minisight.interaction") private var interactionEnabled = true
+    @AppStorage("minisight.gesture.single") private var singleGesture = "interact"
+    @AppStorage("minisight.gesture.double") private var doubleGesture = "voice"
+    @AppStorage("minisight.gesture.long") private var longGesture = "menu"
     @AppStorage("minisight.dragResponse") private var dragResponse = true
     @AppStorage("minisight.petSound") private var petSoundEnabled = false
     @AppStorage("minisight.chat.height") private var chatHeight = 160.0
@@ -48,14 +52,14 @@ struct MiniSightInAppRuntime: View {
             if visible, let petImage {
                 MiniSightPetHost(image: petImage, displaySize: CGFloat(petSize), variant: MiniSightAppFiles.variantIndex,
                                  spriteLayout: MiniSightAppFiles.spriteLayout,
-                                 dragGain: dragResponse ? 1.0 : 0.40, soundEnabled: petSoundEnabled,
+                                 dragGain: dragResponse ? 1.0 : 0.20, soundEnabled: petSoundEnabled,
                                  roll: motion.roll,
                                  activityActive: activity.active, gravityEnabled: gravityEnabled,
                                  shakeGeneration: motion.shakeGeneration,
                                  shakeDirection: motion.shakeDirection, shakeStrength: motion.shakeStrength,
-                                 longPressEnabled: longPressEnabled, centerX: $petX, centerY: $petY,
-                                 onSingleTap: showLocalLine, onDoubleTap: openChat,
-                                 onLongPress: toggleRecording)
+                                 longPressEnabled: longPressEnabled, interactionEnabled: interactionEnabled,
+                                 singleAction: singleGesture, doubleAction: doubleGesture, longAction: longGesture,
+                                 centerX: $petX, centerY: $petY, onGesture: runGesture)
             .frame(width: 1, height: 1)
                     .opacity(0.001)
                     .allowsHitTesting(false)
@@ -237,7 +241,8 @@ struct MiniSightInAppRuntime: View {
         panel.showLocalText(line, in: anchor.window?.windowScene)
     }
 
-    private func openChat(_ anchor: UIView) {
+    @discardableResult
+    private func openChat(_ anchor: UIView) -> Bool {
         let panel = MiniSightChatPanel.shared()
         panel.containerPath = MiniSightAppFiles.containerPath
         panel.appearancePreferences = MiniSightAppFiles.appearancePreferences
@@ -261,10 +266,33 @@ struct MiniSightInAppRuntime: View {
         guard let scene = anchor.window?.windowScene else {
             MSDiagEvent("chat", "show", "failed", ["source": "app", "reason": "missing_host_scene"])
             toast = "聊天窗口暂不可用。"
-            return
+            return false
         }
-        MSDiagEvent("chat", "entry", "pending", ["source": "app_double_tap"])
-        if !panel.show(in: scene) { toast = "聊天窗口暂不可用。" }
+        MSDiagEvent("chat", "entry", "pending", ["source": "app_gesture"])
+        let ok = panel.show(in: scene)
+        if !ok { toast = "聊天窗口暂不可用。" }
+        guard ok, let visible = MiniSightChatPanel.existing(), visible.isVisible else { return false }
+        return true
+    }
+
+    private func runGesture(_ raw: String, anchor: UIView) {
+        guard let action = MiniSightGesture(rawValue: raw), action != .none else { return }
+        switch action {
+        case .none:
+            break
+        case .interact:
+            showLocalLine(anchor)
+        case .conversation:
+            _ = openChat(anchor)
+        case .input:
+            if openChat(anchor) { MiniSightChatPanel.existing()?.showInput() }
+        case .voice:
+            if openChat(anchor) { MiniSightChatPanel.existing()?.beginVoiceInput() }
+        case .menu:
+            if openChat(anchor) { MiniSightChatPanel.existing()?.showMenu() }
+        case .record:
+            toggleRecording()
+        }
     }
 
     private func toggleRecording() {
@@ -591,11 +619,13 @@ private struct MiniSightPetHost: UIViewRepresentable {
     let shakeDirection: Double
     let shakeStrength: Double
     let longPressEnabled: Bool
+    let interactionEnabled: Bool
+    let singleAction: String
+    let doubleAction: String
+    let longAction: String
     @Binding var centerX: Double
     @Binding var centerY: Double
-    let onSingleTap: (UIView) -> Void
-    let onDoubleTap: (UIView) -> Void
-    let onLongPress: () -> Void
+    let onGesture: (String, UIView) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -688,6 +718,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.reducedWork = ProcessInfo.processInfo.isLowPowerModeEnabled
             if parent.shakeGeneration != handledShakeGeneration {
                 handledShakeGeneration = parent.shakeGeneration
+                if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
                 pet.triggerGravityImpulse(withDirection: CGFloat(parent.shakeDirection),
                                           strength: CGFloat(parent.shakeStrength))
             }
@@ -710,9 +741,8 @@ private struct MiniSightPetHost: UIViewRepresentable {
         }
 
         @objc private func singleTap() {
-            guard let pet else { return }
-            if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
-            parent.onSingleTap(pet)
+            guard let pet, parent.interactionEnabled else { return }
+            parent.onGesture(parent.singleAction, pet)
         }
         private func refreshChatAnchor() {
             guard let panel = MiniSightChatPanel.existing(), panel.isVisible, let pet else { return }
@@ -720,32 +750,36 @@ private struct MiniSightPetHost: UIViewRepresentable {
             panel.refreshAnchorLocation()
         }
         @objc private func doubleTap() {
-            guard let pet else { return }
-            parent.onDoubleTap(pet)
+            guard let pet, parent.interactionEnabled else { return }
+            parent.onGesture(parent.doubleAction, pet)
         }
         @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
-            guard gesture.state == .began, parent.longPressEnabled else { return }
-            if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
-            pet?.interactionActive = true
-            parent.onLongPress()
+            guard gesture.state == .began, parent.longPressEnabled, parent.interactionEnabled else { return }
+            guard let pet else { return }
+            pet.interactionActive = true
+            parent.onGesture(parent.longAction, pet)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak pet] in pet?.interactionActive = false }
         }
         @objc private func pan(_ gesture: UIPanGestureRecognizer) {
-            guard let host, let pet else { return }
+            guard let host, let pet, parent.interactionEnabled else { return }
             switch gesture.state {
             case .began:
                 panStart = pet.center
-                pet.interactionActive = true
+                pet.beginDragging(withDirection: 1)
+                if parent.dragGain > 0.5 {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
                 MSDiagEvent("drag", "begin", "ok", ["source": "app", "x": panStart.x, "y": panStart.y])
             case .changed:
                 let delta = gesture.translation(in: host)
+                if abs(delta.x) > 4 { pet.beginDragging(withDirection: delta.x) }
                 let gain = parent.dragGain
                 let bounds = pet.centerBounds
                 let x = min(bounds.maxX, max(bounds.minX, panStart.x + delta.x * gain))
                 let y = min(bounds.maxY, max(bounds.minY, panStart.y + delta.y * gain))
                 pet.center = CGPoint(x: x, y: y)
             case .ended, .cancelled, .failed:
-                pet.interactionActive = false
+                pet.endDragging()
                 let width = max(host.bounds.width, 1), height = max(host.bounds.height, 1)
                 parent.centerX = Double(pet.center.x / width)
                 parent.centerY = Double(pet.center.y / height)

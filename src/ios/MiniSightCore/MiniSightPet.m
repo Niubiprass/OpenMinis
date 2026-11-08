@@ -17,6 +17,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 #import <stdlib.h>
+#import "MiniSightBlip.h"
 
 typedef NS_ENUM(NSInteger, MiniSightPetState) {
     MiniSightPetStateIdle = 0,
@@ -32,10 +33,10 @@ static const NSTimeInterval kMiniSightSpriteInterval = 1.0 / 15.0;
 static const NSTimeInterval kMiniSightIdleSpriteInterval = 1.0 / 4.0;
 
 // Roaming delays. Only the delay between actions changes; FPS never does.
-static const NSTimeInterval kMiniSightRoamActiveLo = 1.2;   // activityActive == YES
-static const NSTimeInterval kMiniSightRoamActiveHi = 3.5;
-static const NSTimeInterval kMiniSightRoamIdleLo = 4.0;     // activityActive == NO (resident idle)
-static const NSTimeInterval kMiniSightRoamIdleHi = 8.0;
+static const NSTimeInterval kMiniSightRoamActiveLo = 2.4;   // activityActive == YES
+static const NSTimeInterval kMiniSightRoamActiveHi = 5.0;
+static const NSTimeInterval kMiniSightRoamIdleLo = 6.0;     // activityActive == NO (resident idle)
+static const NSTimeInterval kMiniSightRoamIdleHi = 11.0;
 
 static const double kMiniSightWalkSpeed = 160.0;            // points per second
 static const double kMiniSightWalkMinDuration = 0.55;
@@ -114,7 +115,7 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
     NSUInteger _activeGravityGeneration;
     NSUInteger _motionGeneration, _activeMotionGeneration, _roamGeneration;
     CGRect _centerBounds;
-    BOOL _activityActive, _longPressEnabled, _roamingPaused, _interactionActive, _reducedWork;
+    BOOL _activityActive, _longPressEnabled, _roamingPaused, _interactionActive, _reducedWork, _soundEnabled;
     double _roamPace;
     NSInteger _preferredFPS;
     void (^_onGeometryChanged)(void);
@@ -187,6 +188,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 @synthesize roamingPaused = _roamingPaused, interactionActive = _interactionActive;
 @synthesize reducedWork = _reducedWork, onLongPress = _onLongPress;
 @synthesize roamPace = _roamPace, preferredFPS = _preferredFPS;
+@synthesize soundEnabled = _soundEnabled;
 
 - (UIImage *)image { return _sheet; }
 - (void)setImage:(UIImage *)image {
@@ -429,6 +431,9 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 - (void)setSpriteState:(MiniSightPetState)state {
     if (_state == state) return;
     _state = state;
+    if (_soundEnabled && (state == MiniSightPetStateWaving || state == MiniSightPetStateJumping)) {
+        [MiniSightBlip playIfEnabled:YES];
+    }
     _column = 0;
     _lastSpriteTime = CACurrentMediaTime();
     [self applySpriteFrame];
@@ -437,7 +442,12 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 - (NSTimeInterval)currentSpriteInterval {
     // Idle clip has only six poses; at 15 fps it blinked roughly once a second.
     // Walking/acting keeps the snappy 15 fps.
-    return _state == MiniSightPetStateIdle ? kMiniSightIdleSpriteInterval : kMiniSightSpriteInterval;
+    switch (_state) {
+        case MiniSightPetStateIdle: return kMiniSightIdleSpriteInterval;
+        case MiniSightPetStateWaving: return 1.0 / 7.0;
+        case MiniSightPetStateJumping: return 1.0 / 11.0;
+        default: return kMiniSightSpriteInterval;
+    }
 }
 
 - (void)advanceSpriteAtTime:(CFTimeInterval)now {
@@ -632,7 +642,8 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 
 - (void)triggerGravityFlingWithDirection:(CGFloat)direction strength:(CGFloat)strength {
     if (!_gravityEnabled || ![self mayRoam]) return;
-    [self cancelMotion];
+    BOOL alreadyFlying = _physicsMotion;
+    if (!alreadyFlying) [self cancelMotion];
     MSPoint velocity = MSGravityLaunchVelocity(direction, strength);
     MSGravityBodyLaunch(&_gravityBody, [self feasibleCenters], MSPetPoint(self.center), velocity);
     _physicsMotion = _gravityBody.active;
@@ -643,7 +654,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     _flingSpin = 0.;
     _flingSpinVelocity = (direction >= 0 ? 1. : -1.) * (2.0 + 3.4 * MAX(.2, strength));
     _flingSquash = 0.;
-    [self setSpriteState:MiniSightPetStateJumping];
+    if (!alreadyFlying) [self setSpriteState:MiniSightPetStateJumping];
     [self invalidateFrameTimer];
     [self invalidateRoamTimer];
     [self ensureMotionLink];
@@ -836,6 +847,22 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 }
 
 #pragma mark - Motion (one CADisplayLink; position and sprite for the same frame)
+
+- (void)beginDraggingWithDirection:(CGFloat)direction {
+    _interactionActive = YES;
+    _stateHoldUntil = DBL_MAX;
+    [self invalidateRoamTimer];
+    if (direction >= 0) [self setSpriteState:MiniSightPetStateRunRight];
+    else [self setSpriteState:MiniSightPetStateRunLeft];
+}
+
+- (void)endDragging {
+    _interactionActive = NO;
+    _stateHoldUntil = CACurrentMediaTime() + 0.35;
+    [self setSpriteState:MiniSightPetStateIdle];
+    _restAfterMotion = 0.35;
+    [self scheduleRoam];
+}
 
 - (void)startMotionTo:(CGPoint)target jump:(BOOL)jump rest:(NSTimeInterval)rest {
     NSAssert([NSThread isMainThread], @"Pet UI must be used on the main thread");

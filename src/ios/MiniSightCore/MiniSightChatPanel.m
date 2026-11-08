@@ -148,7 +148,7 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
     UILabel *label = [UILabel new];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.numberOfLines = 0;
-    label.font = [UIFont systemFontOfSize:12.5];
+    label.font = [UIFont systemFontOfSize:13.5];
     label.textColor = UIColor.labelColor;
     label.text = text;
     label.preferredMaxLayoutWidth = 232;
@@ -1170,7 +1170,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     CGRect safe = UIEdgeInsetsInsetRect(self.window.bounds, UIEdgeInsetsMake(MAX(8, insets.top + 6), MAX(10, insets.left + 8), MAX(8, insets.bottom + 6), MAX(10, insets.right + 8)));
     safe.size.width = MAX(0., safe.size.width);
     safe.size.height = MAX(0., safe.size.height);
-    CGFloat maxWidth = MIN(216., MAX(0., safe.size.width));
+    CGFloat maxWidth = MIN(300., MAX(0., safe.size.width - 24.));
     if (fabs(self.measuredWidth - maxWidth) > 0.5 || self.messagesDirty) {
         self.measuredWidth = maxWidth;
         self.messagesDirty = NO;
@@ -1319,7 +1319,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     if (!text.length || !self.messageStack) return;
     MiniSightChatBubble *bubble = [[MiniSightChatBubble alloc] initWithText:text user:role == MiniSightChatRoleUser];
     CGFloat textScale = [self scaleFor:@"textScale" fallback:1];
-    if (fabs(textScale - 1) > 0.01) bubble.label.font = [UIFont systemFontOfSize:12.5 * textScale];
+    if (fabs(textScale - 1) > 0.01) bubble.label.font = [UIFont systemFontOfSize:13.5 * textScale];
     if (role == MiniSightChatRoleNotice) bubble.label.textColor = UIColor.secondaryLabelColor;
     bubble.alpha = 0.0;
     bubble.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(0.96, 0.96),

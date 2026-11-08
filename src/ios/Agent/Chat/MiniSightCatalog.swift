@@ -89,6 +89,9 @@ enum MiniSightAssetCatalog {
         var sha256: String
         var revision: String
         var createdAt: TimeInterval
+        /// 1 once the stored pixels are known upright. Absent on records
+        /// written by the version that flipped the import canvas.
+        var upright: Int? = nil
         var valid: Bool {
             schema == 1 && format == "minisight-atlas-v1" && UUID(uuidString: id) != nil &&
             columns == 8 && rows == 9 && cellWidth == 96 && cellHeight == 104 &&
@@ -332,6 +335,8 @@ enum MiniSightAssetCatalog {
             throw Failure.unreadable
         }
         context.interpolationQuality = .high
+        // Stored sheets are vertically inverted relative to display; the pet
+        // renderer compensates when keying, and preview() flips thumbnails.
         context.translateBy(x: 0, y: CGFloat(canvasH))
         context.scaleBy(x: 1, y: -1)
         context.draw(decoded, in: CGRect(x: 0, y: 0, width: canvasW, height: canvasH))
@@ -386,14 +391,15 @@ enum MiniSightAssetCatalog {
 
     static func preview(at file: URL, variant: Int = 0) throws -> UIImage {
         let data = try boundedData(file, limit: maxStoredBytes)
-        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+        let metaFile = file == MiniSightPetFile.url ? metadataURL : sidecar(file)
+        let meta = FileManager.default.fileExists(atPath: metaFile.path) ? try metadata(at: metaFile) : nil
+        if let meta { try verify(data, metadata: meta) }
+        let display = flippedPNG(data) ?? data
+        guard let source = CGImageSourceCreateWithData(display as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
               let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
               w > 0, h > 0, w <= 16384, h <= 16384, Int64(w) * Int64(h) <= 40_000_000 else { throw Failure.unreadable }
-        let metaFile = file == MiniSightPetFile.url ? metadataURL : sidecar(file)
-        let meta = FileManager.default.fileExists(atPath: metaFile.path) ? try metadata(at: metaFile) : nil
-        if let meta { try verify(data, metadata: meta) }
         let maxPixel = 1536
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
                                       kCGImageSourceCreateThumbnailWithTransform: true,
@@ -440,11 +446,39 @@ enum MiniSightAssetCatalog {
         return UIImage(cgImage: cell, scale: 1, orientation: .up)
     }
 
+    /// Records imported by 1a2d47b..245 were stored upside down (the import
+    /// canvas was flipped, confirmed on the device 2026-11-08). Records from
+    /// before that commit are upright already.
+    private static let flippedImportEra: TimeInterval = 1794032456
+
+    private static func flippedPNG(_ data: Data) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        let w = cg.width, h = cg.height
+        guard w > 0, h > 0,
+              let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                      bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
+            return nil
+        }
+        context.interpolationQuality = .high
+        context.translateBy(x: 0, y: CGFloat(h))
+        context.scaleBy(x: 1, y: -1)
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let out = context.makeImage() else { return nil }
+        let encoded = NSMutableData()
+        guard let writer = CGImageDestinationCreateWithData(encoded, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(writer, out, nil)
+        guard CGImageDestinationFinalize(writer) else { return nil }
+        return encoded as Data
+    }
+
     /// One-time repair of a record stored under the wrong layout:
     ///  - a 245/518 tiled photo (v3 but not sheet-shaped) → whole image (1)
     ///  - a 12:13 sheet under any layout → animation (3, one item)
     ///  - an old 72-outer-pet pack → animation (3, one item)
-    /// Every outcome lands on a layout that the same guard rejects next time.
+    ///  - anything imported while the canvas was flipped → flip once upright
+    /// Every outcome lands on a state that the same guard rejects next time.
     @discardableResult
     private static func migrateSheet(file: URL, metaFile: URL, meta: Metadata) -> Metadata? {
         guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),
@@ -452,18 +486,21 @@ enum MiniSightAssetCatalog {
         let shaped = packShaped(props)
         let lv = meta.layoutVersion ?? 1
         var fresh = meta
+        var changed = false
         if meta.sourceKind == ImportKind.singleImage.rawValue {
             if !shaped {
                 // 245 wrote layout 3 for every single image, including photos.
-                guard lv >= 3 else { return nil }
-                fresh.layoutVersion = 1
-                fresh.variants = 1
-                fresh.selectedVariant = 0
-            } else {
-                guard lv != 3 else { return nil }
+                if lv >= 3 {
+                    fresh.layoutVersion = 1
+                    fresh.variants = 1
+                    fresh.selectedVariant = 0
+                    changed = true
+                }
+            } else if lv != 3 {
                 fresh.layoutVersion = 3
                 fresh.variants = 1
                 fresh.selectedVariant = 0
+                changed = true
             }
         } else if meta.sourceKind == ImportKind.petdex8x9.rawValue {
             // The old 72-outer-pet pack cut each 96x104 frame into 12x11
@@ -473,10 +510,11 @@ enum MiniSightAssetCatalog {
             fresh.layoutVersion = 3
             fresh.variants = 1
             fresh.selectedVariant = 0
+            changed = true
         } else {
             return nil
         }
-        guard let data = try? boundedData(file, limit: maxInputBytes) else { return nil }
+        guard changed, let data = try? boundedData(file, limit: maxInputBytes) else { return nil }
         return commitSheet(file, metaFile, image: data, meta: fresh)
     }
 

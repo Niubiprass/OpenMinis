@@ -28,6 +28,11 @@ typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
 /// 0 = 64x81 pack, 1 = whole static image, 2 = legacy outer cell,
 /// 3 = 8x9 single animation sheet, 4 = static 72-pose sheet (outer cell).
 @property (nonatomic) NSInteger spriteLayout;
+/// Play one short blip when an action clip starts.
+@property (nonatomic) BOOL soundEnabled;
+/// Hold a run-direction clip for the whole drag; end returns to idle.
+- (void)beginDraggingWithDirection:(CGFloat)direction;
+- (void)endDragging;
 
 /// Main-thread API, like UIView. sprite is an already decoded/downsampled,
 /// upright 9-row / 8-column atlas; preparation belongs to the host, off-main.
