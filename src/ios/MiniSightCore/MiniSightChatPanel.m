@@ -413,7 +413,6 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     _appearancePreferences = [appearancePreferences copy] ?: @{};
     if (self.visible) {
         self.messagesDirty = YES;
-        [self setNeedsLayout];
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.visible) [self layoutForCurrentScreen];
         });
