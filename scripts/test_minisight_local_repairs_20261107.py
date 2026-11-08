@@ -100,6 +100,7 @@ need('flippedVertically' in runtime and 'loadPet' in runtime, 'loaded sprites ar
 panel = read(ROOT / 'MiniSightCore/MiniSightChatPanel.m')
 need('bubbleScale' in panel and '300. * bubbleScale' in panel, 'bubble scale changes the panel width')
 need('[self configuredHeight] * bubbleScale' in panel, 'bubble scale also changes the readable height')
+need('UIStackViewAlignmentLeading' in panel, 'each dialogue bubble keeps its own text width')
 
 # Connection page: shared client, custom URL, saves before test.
 ai = read(ROOT / 'Views/Settings/MiniSightAIPage.swift')

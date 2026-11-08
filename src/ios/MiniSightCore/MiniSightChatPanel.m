@@ -153,6 +153,7 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
     label.text = text;
     label.preferredMaxLayoutWidth = 232;
     [label setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [label setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     [self addSubview:label];
     self.label = label;
     [NSLayoutConstraint activateConstraints:@[
@@ -479,6 +480,9 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     stack.alignment = UIStackViewAlignmentCenter;
     [scroll addSubview:stack];
     self.messageStack = stack;
+    // Leading, not fill: every bubble keeps its own text width (short = small,
+    // long = grows up to the stack width) instead of all sharing one column.
+    stack.alignment = UIStackViewAlignmentLeading;
     self.messageWidthConstraint = [stack.widthAnchor constraintEqualToConstant:272];
     self.messageWidthConstraint.active = YES;
     [NSLayoutConstraint activateConstraints:@[
