@@ -1190,7 +1190,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     CGFloat bubbleScale = MSClamp([self scaleFor:@"bubbleScale" fallback:1], 0.8, 1.6);
     CGFloat panelScale = MSClamp([self scaleFor:@"panelScale" fallback:1], 0.6, 1.6);
     CGFloat maxWidth = MIN(280. * panelScale, MAX(0., safe.size.width * 0.80));
-    CGFloat panelW = MIN(216., maxWidth);
+    CGFloat panelW = MIN(216. * panelScale, maxWidth);
     if (fabs(self.measuredWidth - maxWidth) > 0.5 || self.messagesDirty) {
         self.messagesDirty = NO;
         CGFloat widest = 0;
