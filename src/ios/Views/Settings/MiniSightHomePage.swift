@@ -69,12 +69,9 @@ struct MiniSightHomeView: View {
             } header: { Text("AI") }
 
             Section {
-                NavigationLink(MiniSightPetPalette(rawValue: config.tint)?.title ?? "原图") {
-                    MiniSightTintPage()
-                }
                 NavigationLink("素材与服装") { MiniSightCostumePage() }
-            } header: { Text("配色与服装") } footer: {
-                Text("素材和配色来自本机导入；单图会铺成通用 8×9 图集，全部角色共用同一套物理。")
+            } header: { Text("素材") } footer: {
+                Text("素材来自本机导入；8 列 × 9 行的动作图集按行播放动作，其他图片按单张静态角色保留原分辨率。桌宠直接使用素材原色。")
             }
 
             Section {
@@ -222,7 +219,7 @@ struct MiniSightDownloadPage: View {
                 }
                 if !notice.isEmpty { Text(notice).font(.caption).foregroundStyle(failed ? Color.red : Color.secondary) }
             } header: { Text("添加素材") } footer: {
-                Text("支持图片直链、相册或文件；网页和 ZIP 不直接导入。自动识别会把 8 列 × 9 行的 Petdex 图集（PNG 或相册转换件）展开成 72 只宠物，其他图片按单张静态角色保留原分辨率。所有角色共用摇摆、抛摔和回弹。添加不会替你打开桌宠。")
+                Text("支持图片直链、相册或文件；网页和 ZIP 不直接导入。8 列 × 9 行的动作图集按行播放动作（PNG 或相册转换件都行），其他图片按单张静态角色保留原分辨率。添加不会替你打开桌宠。")
             }
             Section {
                 TextField("素材目录地址（可选记录）", text: $config.downloadSource)

@@ -41,8 +41,8 @@ enum MiniSightAssetCatalog {
         var title: String {
             switch self {
             case .auto: return "自动识别（推荐）"
-            case .singleImage: return "单张图片（静态角色）"
-            case .petdex8x9: return "Petdex 8 列 × 9 行图集"
+            case .singleImage: return "单张静态图片"
+            case .petdex8x9: return "8 列 × 9 行动作图集"
             }
         }
     }
@@ -56,8 +56,8 @@ enum MiniSightAssetCatalog {
             case .contentType: return "下载类型不是受支持图片，网页、ZIP 和网站素材包不能直接导入。"
             case .tooLarge: return "素材超过 24 MiB 输入上限，或本地文件不是普通文件。"
             case .dimensions: return "图片尺寸无效：每边最多 16384 像素，总像素最多 4000 万。"
-            case .format: return "仅支持 ImageIO 可解码的静态 PNG、JPEG、HEIC/HEIF、WebP；图集必须为 PNG。"
-            case .atlasLayout: return "图集必须正向、无间隔，8 列 × 9 行；每格宽高 12:13（例如整图 768×936 或 2304×2808）。不会凭比例自动猜图集。"
+            case .format: return "仅支持 ImageIO 可解码的静态 PNG、JPEG、HEIC/HEIF、WebP。"
+            case .atlasLayout: return "8 列 × 9 行图集必须正向、无间隔，每格宽高 12:13（例如整图 768×936 或 2304×2808）。"
             case .unreadable: return "素材或元数据不可读，原素材未替换。请重新选择格式后导入。"
             case .verification: return "素材写入或本地回读校验失败，未确认切换。"
             case .cancelled: return "已取消。"
@@ -95,7 +95,7 @@ enum MiniSightAssetCatalog {
             frameCounts == [6, 8, 8, 4, 5, 8, 6, 6, 6] && previewRow == 0 && previewColumn == 0 &&
             (selectedVariant ?? 0) >= 0 && (selectedVariant ?? 0) < 72 &&
             (sourceKind == ImportKind.singleImage.rawValue
-                ? ((variants ?? 1) >= 1 && (variants ?? 1) <= 72 && (layoutVersion ?? 1) <= 3)
+                ? ((variants ?? 1) >= 1 && (variants ?? 1) <= 72 && (layoutVersion ?? 1) <= 4)
                 : ((variants ?? 72) == 72 && (layoutVersion ?? 1) <= 2)) &&
             ImportKind(rawValue: sourceKind) != nil && sourceKind != ImportKind.auto.rawValue &&
             bytes > 0 && bytes <= maxStoredBytes &&
@@ -219,9 +219,56 @@ enum MiniSightAssetCatalog {
         return components >= 6 && widest * 100 < w * 35
     }
 
+    /// True when each 1/8 x 1/9 cell is itself an animation atlas (adjacent
+    /// sub-frames of the same pet barely move). A "72 poses" sheet has visibly
+    /// different sub-frames inside every cell and must NOT be sliced 64x81.
+    private static func gridLooksAnimated(_ source: CGImageSource) -> Bool {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 480
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return false }
+        let w = cg.width, h = cg.height
+        guard w >= 64, h >= 72 else { return false }
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        guard let context = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8,
+                                      bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let cw = w / 8, ch = h / 9, fw = cw / 8, fh = ch / 9
+        guard fw >= 2, fh >= 2 else { return false }
+        var diffs: [Double] = []
+        for row in 0..<9 where diffs.count < 12 {
+            for col in 0..<8 where diffs.count < 12 {
+                let x0 = col * cw, y0 = row * ch + 4 * fh, y1 = y0 + fh
+                var total = 0.0
+                var n = 0
+                for fx in 0..<3 {
+                    let ax = x0 + fx * fw, bx = ax + fw
+                    for y in y0..<y1 {
+                        for dx in 0..<fw {
+                            let a = (y * w + ax + dx) * 4, b = (y * w + bx + dx) * 4
+                            let lumaA = Double(pixels[a]) + Double(pixels[a + 1]) + Double(pixels[a + 2])
+                            let lumaB = Double(pixels[b]) + Double(pixels[b + 1]) + Double(pixels[b + 2])
+                            total += abs(lumaA - lumaB) / 3.0
+                            n += 1
+                        }
+                    }
+                }
+                if n > 0 { diffs.append(total / Double(n)) }
+            }
+        }
+        guard diffs.count >= 6 else { return false }
+        diffs.sort()
+        return diffs[diffs.count / 2] < 15
+    }
+
     /// `auto` treats an upright image whose pixels match the 768:936 Petdex
-    /// sheet AND are laid out as a grid of separate figures as a pack.
-    /// Everything else stays a single static image.
+    /// sheet AND are laid out as a grid of separate figures as a sheet. A true
+    /// animation atlas becomes a pack; a "72 poses" sheet stays one image with
+    /// a cell per pose (layout 4). Everything else stays a single static image.
     static func prepare(_ data: Data, kind: ImportKind, title: String,
                         operation: MiniSightAssetOperation) throws -> (Data, Metadata) {
         try operation.check()
@@ -243,14 +290,27 @@ enum MiniSightAssetCatalog {
         // photo picker hands a JPEG conversion of a PNG asset to us, and
         // demanding public.png here is what silently downgraded a real
         // 8x9 sheet to "single image" on 2026-11-08.
-        let packDelta = abs(width * 936 - height * 768)
-        let packRatio = orientation == 1 && packDelta <= max(768 * 4, height * 8)
-        let looksLikePack = packRatio && (uti == "public.png" || gridLooksLikePets(source))
-        let resolved: ImportKind = kind == .auto ? (looksLikePack ? .petdex8x9 : .singleImage) : kind
-        if resolved == .petdex8x9 {
+        // The picker can hand us a side-rotated JPEG: compare upright
+        // dimensions so a 936x768 file with orientation 6 still reads as a
+        // 12:13 sheet instead of falling back to one static picture.
+        let sideways = orientation == 6 || orientation == 8
+        let uprightW = sideways ? height : width
+        let uprightH = sideways ? width : height
+        let packDelta = abs(uprightW * 936 - uprightH * 768)
+        let packRatio = packDelta <= max(768 * 4, uprightH * 8)
+        // A 12:13 sheet is the user's animation atlas: row = action,
+        // column = frame. The old 72-outer-pet model sliced each frame again
+        // into 64x81 confetti. Exact frame counts are `[6,8,8,4,5,8,6,6,6]`,
+        // i.e. 57 usable cells out of 72, which matches this sheet. Anything
+        // that is not sheet-shaped stays one whole static picture.
+        let resolved: ImportKind = .singleImage
+        if kind == .petdex8x9 {
             guard packRatio else { throw Failure.atlasLayout }
         }
-        let maxPixel = resolved == .singleImage ? 1536 : 936
+        // Every new record is stored losslessly at its own resolution; the
+        // renderer crops frames from it. Keeping the whole sheet is what the
+        // user's import produced, not a second downscaled copy.
+        let maxPixel = 1536
         let thumbnailOptions: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -261,10 +321,10 @@ enum MiniSightAssetCatalog {
             throw Failure.unreadable
         }
         try operation.check()
-        // Packs are normalised to 768x936. A single photo keeps its own aspect
-        // and resolution: tiling it into 12x11 frames is what made it blurry.
-        let canvasW = resolved == .petdex8x9 ? 768 : decoded.width
-        let canvasH = resolved == .petdex8x9 ? 936 : decoded.height
+        // Keep the decoded resolution for every kind. Tiling a sheet into
+        // 12x11 frames is what made the pet look like a static card.
+        let canvasW = decoded.width
+        let canvasH = decoded.height
         guard canvasW > 0, canvasH > 0,
               let context = CGContext(data: nil, width: canvasW, height: canvasH, bitsPerComponent: 8,
                                       bytesPerRow: canvasW * 4, space: CGColorSpaceCreateDeviceRGB(),
@@ -274,11 +334,7 @@ enum MiniSightAssetCatalog {
         context.interpolationQuality = .high
         context.translateBy(x: 0, y: CGFloat(canvasH))
         context.scaleBy(x: 1, y: -1)
-        if resolved == .petdex8x9 {
-            context.draw(decoded, in: CGRect(x: 0, y: 0, width: 768, height: 936))
-        } else {
-            context.draw(decoded, in: CGRect(x: 0, y: 0, width: canvasW, height: canvasH))
-        }
+        context.draw(decoded, in: CGRect(x: 0, y: 0, width: canvasW, height: canvasH))
         guard let cg = context.makeImage() else { throw Failure.unreadable }
         let encoded = NSMutableData()
         guard let writer = CGImageDestinationCreateWithData(encoded, UTType.png.identifier as CFString, 1, nil) else {
@@ -292,7 +348,9 @@ enum MiniSightAssetCatalog {
                                 sourceKind: resolved.rawValue, bytes: output.count, sha256: digest(output),
                                 revision: UUID().uuidString, createdAt: Date().timeIntervalSince1970)
         if resolved == .singleImage {
-            metadata.layoutVersion = 3
+            // 3 = one 8x9 animation sheet (row = action, column = frame).
+            // 1 = an ordinary static picture, shown whole.
+            metadata.layoutVersion = packRatio ? 3 : 1
             metadata.variants = 1
             metadata.selectedVariant = 0
         }
@@ -322,7 +380,8 @@ enum MiniSightAssetCatalog {
         guard let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
               let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
               w > 0, h > 0 else { return false }
-        return abs(w * 936 - h * 768) <= max(768 * 4, h * 8)
+        return abs(w * 936 - h * 768) <= max(768 * 4, h * 8) ||
+               abs(h * 936 - w * 768) <= max(768 * 4, w * 8)
     }
 
     static func preview(at file: URL, variant: Int = 0) throws -> UIImage {
@@ -335,7 +394,7 @@ enum MiniSightAssetCatalog {
         let metaFile = file == MiniSightPetFile.url ? metadataURL : sidecar(file)
         let meta = FileManager.default.fileExists(atPath: metaFile.path) ? try metadata(at: metaFile) : nil
         if let meta { try verify(data, metadata: meta) }
-        let maxPixel = meta?.sourceKind == ImportKind.singleImage.rawValue ? 1536 : 936
+        let maxPixel = 1536
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
                                       kCGImageSourceCreateThumbnailWithTransform: true,
                                       kCGImageSourceShouldCacheImmediately: true,
@@ -343,21 +402,33 @@ enum MiniSightAssetCatalog {
         guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw Failure.unreadable }
         guard let meta else { return UIImage(cgImage: cg, scale: 1, orientation: .up) }
         if meta.sourceKind == ImportKind.singleImage.rawValue {
-            // v3 keeps the original image. v1 had one copy per OUTER cell;
-            // v2 is the old destructive tiling, where one 12x11 inner frame
-            // is the only remaining whole-image copy.
             let lv = meta.layoutVersion ?? 1
-            if lv >= 3 { return UIImage(cgImage: cg, scale: 1, orientation: .up) }
-            let v = min(71, max(0, variant))
-            let rect: CGRect
-            if lv == 1 {
+            if lv >= 4 {
+                // Static pose sheet: one outer cell per pose.
+                let v = min(71, max(0, variant))
                 let cw = cg.width / 8, ch = cg.height / 9
-                rect = CGRect(x: (v % 8) * cw, y: (v / 8) * ch, width: cw, height: ch)
-            } else {
-                let fw = cg.width / 64, fh = cg.height / 81
-                rect = CGRect(x: (v % 8) * 8 * fw, y: (v / 8) * 9 * fh, width: fw, height: fh)
+                guard cw > 0, ch > 0,
+                      let cell = cg.cropping(to: CGRect(x: (v % 8) * cw, y: (v / 8) * ch, width: cw, height: ch)) else {
+                    throw Failure.verification
+                }
+                return UIImage(cgImage: cell, scale: 1, orientation: .up)
             }
-            guard rect.width > 0, rect.height > 0, let cell = cg.cropping(to: rect) else { throw Failure.verification }
+            if lv == 3 {
+                // Animation sheet: show the idle row's first frame.
+                let fw = cg.width / 8, fh = cg.height / 9
+                guard fw > 0, fh > 0, let cell = cg.cropping(to: CGRect(x: 0, y: 0, width: fw, height: fh)) else {
+                    throw Failure.verification
+                }
+                return UIImage(cgImage: cell, scale: 1, orientation: .up)
+            }
+            if lv == 1 { return UIImage(cgImage: cg, scale: 1, orientation: .up) }
+            // lv == 2: the old 64x81 tiling. One inner cell is all that is left.
+            let v = min(71, max(0, variant))
+            let fw = cg.width / 64, fh = cg.height / 81
+            guard fw > 0, fh > 0,
+                  let cell = cg.cropping(to: CGRect(x: (v % 8) * 8 * fw, y: (v / 8) * 9 * fh, width: fw, height: fh)) else {
+                throw Failure.verification
+            }
             return UIImage(cgImage: cell, scale: 1, orientation: .up)
         }
         let v = min(71, max(0, variant))
@@ -369,28 +440,56 @@ enum MiniSightAssetCatalog {
         return UIImage(cgImage: cell, scale: 1, orientation: .up)
     }
 
-    /// A single-image record that is really a pack sheet — the 2026-11-08
-    /// regression, where a JPEG conversion defeated the PNG-only detector —
-    /// is normalised back into a real pack in place. One-time: the rewritten
-    /// metadata says petdex8x9, so the guard stops matching afterwards.
+    /// One-time repair of a record stored under the wrong layout:
+    ///  - a 245/518 tiled photo (v3 but not sheet-shaped) → whole image (1)
+    ///  - a 12:13 sheet under any layout → animation (3, one item)
+    ///  - an old 72-outer-pet pack → animation (3, one item)
+    /// Every outcome lands on a layout that the same guard rejects next time.
     @discardableResult
-    private static func migrateSingleToPack(file: URL, metaFile: URL, meta: Metadata) -> Metadata? {
-        guard meta.sourceKind == ImportKind.singleImage.rawValue,
-              (meta.layoutVersion ?? 1) >= 3, (meta.variants ?? 1) == 1,
-              let source = CGImageSourceCreateWithURL(file as CFURL, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              packShaped(props), gridLooksLikePets(source),
-              let data = try? boundedData(file, limit: maxInputBytes),
-              let (png, fresh) = try? prepare(data, kind: .petdex8x9, title: meta.title,
-                                              operation: MiniSightAssetOperation()),
-              let json = try? JSONEncoder().encode(fresh) else { return nil }
-        if file == MiniSightPetFile.url {
-            guard (try? replaceCurrent(png, json: json, keepBackup: true)) != nil else { return nil }
-            try? Data("0".utf8).write(to: MiniSightPetFile.directory.appendingPathComponent("variant"), options: .atomic)
+    private static func migrateSheet(file: URL, metaFile: URL, meta: Metadata) -> Metadata? {
+        guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
+        let shaped = packShaped(props)
+        let lv = meta.layoutVersion ?? 1
+        var fresh = meta
+        if meta.sourceKind == ImportKind.singleImage.rawValue {
+            if !shaped {
+                // 245 wrote layout 3 for every single image, including photos.
+                guard lv >= 3 else { return nil }
+                fresh.layoutVersion = 1
+                fresh.variants = 1
+                fresh.selectedVariant = 0
+            } else {
+                guard lv != 3 else { return nil }
+                fresh.layoutVersion = 3
+                fresh.variants = 1
+                fresh.selectedVariant = 0
+            }
+        } else if meta.sourceKind == ImportKind.petdex8x9.rawValue {
+            // The old 72-outer-pet pack cut each 96x104 frame into 12x11
+            // pieces. A single character sheet is one animation instead.
+            guard shaped else { return nil }
+            fresh.sourceKind = ImportKind.singleImage.rawValue
+            fresh.layoutVersion = 3
+            fresh.variants = 1
+            fresh.selectedVariant = 0
         } else {
-            guard (try? write(png, to: file)) != nil, (try? write(json, to: metaFile)) != nil else { return nil }
+            return nil
         }
-        return fresh
+        guard let data = try? boundedData(file, limit: maxInputBytes) else { return nil }
+        return commitSheet(file, metaFile, image: data, meta: fresh)
+    }
+
+    private static func commitSheet(_ file: URL, _ metaFile: URL, image: Data, meta: Metadata) -> Metadata? {
+        guard let json = try? JSONEncoder().encode(meta) else { return nil }
+        if file == MiniSightPetFile.url {
+            guard (try? replaceCurrent(image, json: json, keepBackup: true)) != nil else { return nil }
+            try? Data("\(meta.selectedVariant ?? 0)".utf8)
+                .write(to: MiniSightPetFile.directory.appendingPathComponent("variant"), options: .atomic)
+        } else {
+            guard (try? write(image, to: file)) != nil, (try? write(json, to: metaFile)) != nil else { return nil }
+        }
+        return meta
     }
 
     static func snapshot() throws -> Snapshot {
@@ -404,12 +503,13 @@ enum MiniSightAssetCatalog {
         for file in imageFiles.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             var meta = try? metadata(at: sidecar(file))
             if let current = meta,
-               let fresh = migrateSingleToPack(file: file, metaFile: sidecar(file), meta: current) {
+               let fresh = migrateSheet(file: file, metaFile: sidecar(file), meta: current) {
                 meta = fresh
                 migrated = true
             }
             let bytes = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            if meta?.sourceKind == ImportKind.petdex8x9.rawValue {
+            let poseSheet = meta?.sourceKind == ImportKind.singleImage.rawValue && (meta?.variants ?? 1) == 72
+            if meta?.sourceKind == ImportKind.petdex8x9.rawValue || poseSheet {
                 for v in 0..<72 {
                     items.append(Item(name: file.lastPathComponent,
                                       title: "\(meta?.title ?? "图集") · \(v + 1)",
@@ -425,7 +525,7 @@ enum MiniSightAssetCatalog {
         }
         var currentMeta = try? metadata(at: metadataURL)
         if let current = currentMeta,
-           let fresh = migrateSingleToPack(file: MiniSightPetFile.url, metaFile: metadataURL, meta: current) {
+           let fresh = migrateSheet(file: MiniSightPetFile.url, metaFile: metadataURL, meta: current) {
             currentMeta = fresh
             migrated = true
         }

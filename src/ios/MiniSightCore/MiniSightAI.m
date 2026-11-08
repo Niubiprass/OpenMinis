@@ -483,7 +483,7 @@ static id MiniSightAIContentObject(id object) {
                        [clockFormatter stringFromDate:NSDate.date],
                        [NSTimeZone localTimeZone].abbreviation ?: @"本地"];
     systemPrompt = systemPrompt.length ? [systemPrompt stringByAppendingFormat:@"\n%@", clock] : clock;
-    NSString *adjustRule = @"若要调整桌宠外观，可在回答末尾追加一行 [[ms:{\"petSize\":108}]]，可用键：petSize(36-140)、bubbleScale、textScale、darkMode(system/light/dark)、sound(true/false)、tint(natural/warm/cool/mint/rose)、nickname。没有要改的就不要写。";
+    NSString *adjustRule = @"若要调整桌宠外观，可在回答末尾追加一行 [[ms:{\"petSize\":108}]]，可用键：petSize(36-140)、bubbleScale、textScale、darkMode(system/light/dark)、sound(true/false)、nickname。没有要改的就不要写。";
     systemPrompt = [systemPrompt stringByAppendingFormat:@"\n%@", adjustRule];
     if (systemPrompt.length > kMiniSightAIMaxPromptLength) {
         __block NSUInteger characters = 0;

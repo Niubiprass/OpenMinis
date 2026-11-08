@@ -135,10 +135,25 @@ final class FileAttachmentPresenter: ObservableObject {
         // Videos have a dedicated player. Do not let the generic file pager
         // classify .mp4 as an unknown document and open UIActivityViewController.
         if tapped.isVideo {
-            if let url = FileAttachmentResourceURL.make(path: tapped.path) {
-                openVideo(url)
-            } else {
+            guard let url = FileAttachmentResourceURL.make(path: tapped.path) else {
                 unavailableName = tapped.fileName
+                return
+            }
+            // The player needs a real file:// URL. AVPlayer given minis://
+            // opens its chrome and then sits at 0:00 on black (2026-11-08).
+            let token = requestToken
+            let name = tapped.fileName
+            Task { [weak self] in
+                let local = await Task.detached(priority: .userInitiated) {
+                    resolveMinisFileURL(url: url, sessionId: sessionId)
+                }.value
+                guard let self, self.requestToken == token, self.ownerSessionId == sessionId else { return }
+                guard let local, local.isFileURL,
+                      FileManager.default.fileExists(atPath: local.path) else {
+                    self.unavailableName = name
+                    return
+                }
+                self.openVideo(local)
             }
             return
         }

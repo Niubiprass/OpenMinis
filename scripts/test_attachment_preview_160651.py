@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 INPUTBAR = (ROOT / 'src/ios/Views/Chat/ChatInputBar.swift').read_text()
 PREVIEW = (ROOT / 'src/ios/Views/Chat/Media/FileAttachmentPreview.swift').read_text()
+VIDEO = (ROOT / 'src/ios/Views/Chat/Media/VideoPlayer.swift').read_text()
 CHATBAR = (ROOT / 'src/ios/Views/Chat/ChatInputBar.swift').read_text()
 LIST = (ROOT / 'src/ios/Agent/MessageList/CollectionViewMessageListV3.swift').read_text()
 MEDIA = (ROOT / 'src/ios/Views/Chat/MinisMediaViews.swift').read_text()
@@ -118,6 +119,13 @@ class AttachmentPreviewRegression(unittest.TestCase):
         self.assertIn('if tapped.isVideo', PREVIEW)
         self.assertIn('FileAttachmentResourceURL.make(path: tapped.path)', PREVIEW)
         self.assertIn('case .video:', PREVIEW)
+        # 2026-11-08: the player was handed minis://… and sat on black at 0:00.
+        # The tile must resolve a real file URL first, and the player keeps a
+        # defensive second resolution for any other caller.
+        self.assertIn('resolveMinisFileURL(url: url, sessionId: sessionId)', PREVIEW)
+        self.assertIn('guard let local, local.isFileURL', PREVIEW)
+        self.assertIn('self.openVideo(local)', PREVIEW)
+        self.assertIn('resolveMinisFileURLCached(url: fileURL)', VIDEO)
 
     def test_tool_sheet_wrapper_survives_the_file_sheet_insert(self):
         # The 153fb09 run failed at `swiftc -parse` because the new file

@@ -363,7 +363,13 @@ struct MinisVideoFullscreenPlayer: View {
             if let externalPlayer {
                 p = externalPlayer
             } else {
-                p = AVPlayer(url: fileURL)
+                // A defensive second layer: callers normally pass file://, but
+                // if a minis:// resource slips through, resolve it instead of
+                // handing AVPlayer a scheme it cannot open.
+                let playable = fileURL.scheme == "minis"
+                    ? (resolveMinisFileURLCached(url: fileURL) ?? fileURL)
+                    : fileURL
+                p = AVPlayer(url: playable)
             }
             player = p
             try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])

@@ -459,29 +459,32 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 }
 - (NSInteger)variantIndex { return _variantIndex; }
 - (void)setSpriteLayout:(NSInteger)spriteLayout {
-    _spriteLayout = MIN(3, MAX(0, spriteLayout));
+    _spriteLayout = MIN(4, MAX(0, spriteLayout));
     [self applySpriteFrame];
 }
 - (NSInteger)spriteLayout { return _spriteLayout; }
 
 - (void)applySpriteFrame {
     if (!_sheet.CGImage || !_gravityLayer) return;
-    // Pack: 8x9 outer pets, each a full 8x9 animation atlas (64x81 total).
-    // Single layouts must never be sliced into that grid.
+    // 0 is a 72-pet pack (each outer cell has its own 8x9 frames).
+    // 3 is ONE character's 8x9 sheet: row = action, column = frame.
+    // 4 is a static contact sheet, one outer cell per pose.
     const NSInteger packCols = kMiniSightPetMaxCols, packRows = kMiniSightPetRows;
     const NSInteger innerCols = 8, innerRows = 9;
     NSInteger v = MIN(71, MAX(0, _variantIndex));
     CGRect rect;
     if (_spriteLayout == 1) {
         rect = CGRectMake(0, 0, 1, 1);
-    } else if (_spriteLayout == 2) {
+    } else if (_spriteLayout == 4 || _spriteLayout == 2) {
         rect = CGRectMake((CGFloat)(v % packCols) / packCols,
                           (CGFloat)(v / packCols) / packRows,
                           1.0 / packCols, 1.0 / packRows);
     } else if (_spriteLayout == 3) {
-        rect = CGRectMake((CGFloat)((v % packCols) * innerCols) / (packCols * innerCols),
-                          (CGFloat)((v / packCols) * innerRows) / (packRows * innerRows),
-                          1.0 / (packCols * innerCols), 1.0 / (packRows * innerRows));
+        NSInteger maxCol = [self frameCountForRow:_state];
+        NSInteger col = MIN(MAX(0, _column), MAX(0, maxCol - 1));
+        rect = CGRectMake((CGFloat)col / packCols,
+                          (CGFloat)_state / packRows,
+                          1.0 / packCols, 1.0 / packRows);
     } else {
         NSInteger maxCol = [self frameCountForRow:_state];
         NSInteger col = MIN(MAX(0, _column), MAX(0, maxCol - 1));

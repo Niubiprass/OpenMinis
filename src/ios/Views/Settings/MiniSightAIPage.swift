@@ -43,11 +43,6 @@ struct MiniSightAIPage: View {
                 Text("只支持 OpenAI 兼容接口。Claude 请使用中转/兼容链接；切换预设会清空旧 Key 和模型，避免发错服务。")
             }
             Section {
-                TextField("人设（可选，自动保存）", text: $persona)
-                    .font(.footnote).textInputAutocapitalization(.never)
-                    .onChange(of: persona) { _ in schedulePersona() }
-            } header: { Text("人设") }
-            Section {
                 Button("保存连接") { _ = saveConnection() }.disabled(testing)
                 Button(testing ? "等待真实回答…" : "保存并测试真实回答") { Task { await runTest() } }
                     .disabled(testing || cooldownUntil > Date())

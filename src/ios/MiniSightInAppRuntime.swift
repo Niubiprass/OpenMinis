@@ -72,6 +72,9 @@ struct MiniSightInAppRuntime: View {
         .onAppear {
             petIdentity = MiniSightAppFiles.petIdentity
             petImage = MiniSightAppFiles.loadPet()
+            // Migrate records written by the tiled layouts without requiring
+            // the user to open Settings first.
+            MiniSightAssetCatalog.io.async { _ = try? MiniSightAssetCatalog.snapshot() }
             activity.refresh()
             preferencesLoaded = true
             setAppForeground(scenePhase == .active)
@@ -116,6 +119,13 @@ struct MiniSightInAppRuntime: View {
         .onChange(of: chatTintAlpha) { _ in refreshChatPanelAppearance() }
         .onChange(of: lockStore.appIsLocked) { locked in
             if locked { MiniSightChatPanel.existing()?.close() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: MiniSightAssetCatalog.didChange)) { _ in
+            // Migration/import rewrote pet.json; re-read instead of keeping the
+            // old slice layout for the rest of the process.
+            petIdentity = MiniSightAppFiles.petIdentity
+            petImage = MiniSightAppFiles.loadPet()
+            updateOwnershipMarker()
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             if scenePhase == .active {
@@ -280,16 +290,18 @@ private enum MiniSightAppFiles {
         let variant = (try? String(contentsOf: directory.appendingPathComponent("variant"), encoding: .utf8)) ?? "0"
         return "\(attrs[.size] ?? 0)|\(attrs[.modificationDate] ?? Date.distantPast)|\(variant.trimmingCharacters(in: .whitespacesAndNewlines))|\(spriteLayout)"
     }
-    /// 0 pack, 1 whole single image, 2 legacy outer cell, 3 old tiled inner cell.
+    /// 0 pack, 1 whole static image, 2 legacy outer cell,
+    /// 3 8x9 single animation sheet, 4 static 72-pose sheet.
     static var spriteLayout: Int {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent("pet.json")),
               let object = try? JSONSerialization.jsonObject(with: data),
               let meta = object as? [String: Any],
               (meta["sourceKind"] as? String) == "singleImage" else { return 0 }
         let layout = (meta["layoutVersion"] as? NSNumber)?.intValue ?? 1
-        if layout >= 3 { return 1 }
-        if layout == 2 { return 3 }
-        return 2
+        if layout >= 4 { return 4 }
+        if layout == 3 { return 3 }
+        if layout == 2 { return 2 }
+        return 1
     }
     static var variantIndex: Int {
         let text = (try? String(contentsOf: directory.appendingPathComponent("variant"), encoding: .utf8)) ?? "0"
@@ -297,8 +309,8 @@ private enum MiniSightAppFiles {
     }
     static func loadPet() -> UIImage? {
         guard let image = UIImage(contentsOfFile: directory.appendingPathComponent("pet.png").path) else { return nil }
-        // A single photo keeps its own colours; keying is only for atlas sheets.
-        guard spriteLayout == 0, let cg = image.cgImage,
+        // A single photo keeps its own colours; keying is only for sheets.
+        guard spriteLayout != 1, let cg = image.cgImage,
               let keyed = MiniSightPetFile.keyOutBlackBackground(cg) else { return image }
         return UIImage(cgImage: keyed, scale: 1, orientation: .up)
     }
