@@ -3061,6 +3061,48 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             return
         }
 
+        // [T-attachment-missing-bytes] A READY chip can still outlive its bytes:
+        // iOS purges Library/Caches, and a chip restored after the process died
+        // points at a file that no longer exists. Repair from the durable
+        // uploads copy (or the pre-upgrade Caches location), otherwise drop that
+        // chip and keep sending — instead of failing the whole message with
+        // "file not found" (2026-11-08 15:43).
+        var pendingAttachments = attachments
+        let readyMissing = pendingAttachments.filter {
+            $0.loadState == .ready && !FileManager.default.fileExists(atPath: $0.cacheURL.path)
+        }
+        if !readyMissing.isEmpty {
+            let uploads = Self.minisUploadsDir(for: sessionId ?? "draft")
+            let legacy = AttachmentIO.legacyCacheDirectory()
+            var kept: [InputAttachment] = []
+            var dropped = 0
+            for chip in pendingAttachments {
+                guard chip.loadState == .ready,
+                      !FileManager.default.fileExists(atPath: chip.cacheURL.path) else {
+                    kept.append(chip)
+                    continue
+                }
+                let name = chip.fileName.isEmpty ? chip.cacheURL.lastPathComponent : chip.fileName
+                let durable = uploads.appendingPathComponent(name)
+                let old = legacy.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: durable.path),
+                   (try? FileManager.default.copyItem(at: durable, to: chip.cacheURL)) != nil {
+                    kept.append(chip)
+                } else if FileManager.default.fileExists(atPath: old.path),
+                          (try? FileManager.default.copyItem(at: old, to: chip.cacheURL)) != nil {
+                    kept.append(chip)
+                } else {
+                    dropped += 1
+                    logger.warning("🔑DRAFT dropped attachment with missing bytes: \(name)")
+                }
+            }
+            pendingAttachments = kept
+            attachments = kept
+            if dropped > 0 {
+                errorMessage = AppLocalizedFormat("%lld 个附件的文件已失效，已移除；请重新添加后发送。", dropped)
+            }
+        }
+
         // [T-paste-mediaref] The draft's `[Pasted#N]` literals are NO LONGER
         // expanded here. They now survive into agentHistory and the stored
         // message; the full text is inlined only when a request is built
@@ -3073,7 +3115,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // and 1M-char paste-preview watchdog kills. The model still sees the
         // text inline at the same position; only the local storage differs.
         let text = (overrideText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
-        let pendingAttachments = attachments
+        pendingAttachments = attachments
         #if DEBUG
         logger.info("🔑DRAFT [vm=\(self.vmInstanceId)] send() text=\(text.count)ch attachments=\(pendingAttachments.count) isProcessing=\(self.isProcessing) sessionId=\(self.sessionId ?? "nil") draftId=\(self.draftId ?? "nil") inputText='\(String(self.inputText.prefix(30)))'")
         #else
@@ -3081,6 +3123,11 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         #endif
         guard !text.isEmpty || !pendingAttachments.isEmpty, !isProcessing else {
             logger.warning("🔑DRAFT [vm=\(self.vmInstanceId)] send() GUARD FAILED — text.isEmpty=\(text.isEmpty) attachments.isEmpty=\(pendingAttachments.isEmpty) isProcessing=\(self.isProcessing)")
+            return
+        }
+        // Everything that was queued turned out to have vanished bytes.
+        if text.isEmpty && pendingAttachments.isEmpty {
+            errorMessage = AppLocalized("附件文件已失效，请重新添加后再发送。")
             return
         }
 
@@ -4820,9 +4867,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 let fileName = (meta.path as NSString).lastPathComponent
                 let fileURL = uploadsDir.appendingPathComponent(fileName)
                 guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
-                // Copy to Caches so the normal send() flow works
-                let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("InputAttachments")
+                // Copy to the staging dir so the normal send() flow works
+                let cacheDir = (try? AttachmentIO.cacheDirectory())
+                    ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                        .appendingPathComponent("InputAttachments")
                 try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
                 let cacheURL = cacheDir.appendingPathComponent(fileName)
                 try? FileManager.default.removeItem(at: cacheURL)

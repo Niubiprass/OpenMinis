@@ -42,7 +42,7 @@ enum MiniSightAssetCatalog {
             switch self {
             case .auto: return "自动识别（推荐）"
             case .singleImage: return "单张图片（静态角色）"
-            case .petdex8x9: return "Petdex 8 列 × 9 行 PNG 图集"
+            case .petdex8x9: return "Petdex 8 列 × 9 行图集"
             }
         }
     }
@@ -169,8 +169,59 @@ enum MiniSightAssetCatalog {
         guard value.valid else { throw Failure.verification }
         return value
     }
-    /// `auto` only treats an upright PNG whose pixels match the 768:936
-    /// Petdex sheet as a pack. Everything else stays a single static image.
+    /// True when the pixels are a contact sheet of SEPARATE pets rather than
+    /// one pet drawn at the same overall ratio. Every figure sits inside its
+    /// own 1/8 x 1/9 cell, so the largest opaque blob is far narrower than the
+    /// sheet; one pet's body spans several cells. Measured on a small
+    /// thumbnail with alpha, so an opaque JPEG of a sheet still counts and a
+    /// transparent single pet does not.
+    private static func gridLooksLikePets(_ source: CGImageSource) -> Bool {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 480
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return false }
+        let w = cg.width, h = cg.height
+        guard w >= 32, h >= 36 else { return false }
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        guard let context = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8,
+                                      bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var seen = [Bool](repeating: false, count: w * h)
+        var stack: [Int] = []
+        stack.reserveCapacity(4096)
+        var components = 0
+        var widest = 0
+        for start in 0..<(w * h) where !seen[start] && pixels[start * 4 + 3] >= 8 {
+            var minX = start % w, maxX = minX
+            stack.removeAll(keepingCapacity: true)
+            stack.append(start)
+            seen[start] = true
+            var area = 0
+            while let p = stack.popLast() {
+                area += 1
+                let x = p % w, y = p / w
+                if x < minX { minX = x }
+                if x > maxX { maxX = x }
+                if x > 0, !seen[p - 1], pixels[(p - 1) * 4 + 3] >= 8 { seen[p - 1] = true; stack.append(p - 1) }
+                if x + 1 < w, !seen[p + 1], pixels[(p + 1) * 4 + 3] >= 8 { seen[p + 1] = true; stack.append(p + 1) }
+                if y > 0, !seen[p - w], pixels[(p - w) * 4 + 3] >= 8 { seen[p - w] = true; stack.append(p - w) }
+                if y + 1 < h, !seen[p + w], pixels[(p + w) * 4 + 3] >= 8 { seen[p + w] = true; stack.append(p + w) }
+            }
+            guard area >= 24 else { continue }
+            components += 1
+            widest = max(widest, maxX - minX + 1)
+            if components > 400 { break }
+        }
+        return components >= 6 && widest * 100 < w * 35
+    }
+
+    /// `auto` treats an upright image whose pixels match the 768:936 Petdex
+    /// sheet AND are laid out as a grid of separate figures as a pack.
+    /// Everything else stays a single static image.
     static func prepare(_ data: Data, kind: ImportKind, title: String,
                         operation: MiniSightAssetOperation) throws -> (Data, Metadata) {
         try operation.check()
@@ -186,13 +237,18 @@ enum MiniSightAssetCatalog {
         guard width > 0, height > 0, width <= 16384, height <= 16384,
               Int64(width) * Int64(height) <= 40_000_000 else { throw Failure.dimensions }
         let orientation = (props[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
-        let looksLikePack = uti == "public.png" && orientation == 1 &&
-            abs(width * 936 - height * 768) <= 768 * 4
+        // 8x9 outer cells, each cell a 8x9 animation atlas. Require the same
+        // 768:936 proportion (1% tolerance); support 768x936, 2304x2808 and
+        // any intermediate re-encode. The UTI is NOT required to be PNG: the
+        // photo picker hands a JPEG conversion of a PNG asset to us, and
+        // demanding public.png here is what silently downgraded a real
+        // 8x9 sheet to "single image" on 2026-11-08.
+        let packDelta = abs(width * 936 - height * 768)
+        let packRatio = orientation == 1 && packDelta <= max(768 * 4, height * 8)
+        let looksLikePack = packRatio && (uti == "public.png" || gridLooksLikePets(source))
         let resolved: ImportKind = kind == .auto ? (looksLikePack ? .petdex8x9 : .singleImage) : kind
         if resolved == .petdex8x9 {
-            // 8x9 outer cells, each cell a 8x9 animation atlas. Require the
-            // same 768:936 proportion; support the original 2304x2808 too.
-            guard looksLikePack else { throw Failure.atlasLayout }
+            guard packRatio else { throw Failure.atlasLayout }
         }
         let maxPixel = resolved == .singleImage ? 1536 : 936
         let thumbnailOptions: [CFString: Any] = [
@@ -252,11 +308,21 @@ enum MiniSightAssetCatalog {
               ((metadata.sourceKind == ImportKind.singleImage.rawValue)
                 ? ((props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0) > 0 &&
                   ((props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0) > 0
-                : (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue == 768 &&
-                  (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue == 936),
+                : packShaped(props)),
               CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) != nil else {
             throw Failure.verification
         }
+    }
+
+    /// A pack record must still be a single upright frame with the 12:13 sheet
+    /// proportion. New imports are normalised to 768x936; the checker stays
+    /// proportional so an older re-encoded sheet (e.g. 1260x1536) remains
+    /// valid without being rewritten just to satisfy an exact pixel count.
+    private static func packShaped(_ props: [CFString: Any]) -> Bool {
+        guard let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              w > 0, h > 0 else { return false }
+        return abs(w * 936 - h * 768) <= max(768 * 4, h * 8)
     }
 
     static func preview(at file: URL, variant: Int = 0) throws -> UIImage {
@@ -303,6 +369,30 @@ enum MiniSightAssetCatalog {
         return UIImage(cgImage: cell, scale: 1, orientation: .up)
     }
 
+    /// A single-image record that is really a pack sheet — the 2026-11-08
+    /// regression, where a JPEG conversion defeated the PNG-only detector —
+    /// is normalised back into a real pack in place. One-time: the rewritten
+    /// metadata says petdex8x9, so the guard stops matching afterwards.
+    @discardableResult
+    private static func migrateSingleToPack(file: URL, metaFile: URL, meta: Metadata) -> Metadata? {
+        guard meta.sourceKind == ImportKind.singleImage.rawValue,
+              (meta.layoutVersion ?? 1) >= 3, (meta.variants ?? 1) == 1,
+              let source = CGImageSourceCreateWithURL(file as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              packShaped(props), gridLooksLikePets(source),
+              let data = try? boundedData(file, limit: maxInputBytes),
+              let (png, fresh) = try? prepare(data, kind: .petdex8x9, title: meta.title,
+                                              operation: MiniSightAssetOperation()),
+              let json = try? JSONEncoder().encode(fresh) else { return nil }
+        if file == MiniSightPetFile.url {
+            guard (try? replaceCurrent(png, json: json, keepBackup: true)) != nil else { return nil }
+            try? Data("0".utf8).write(to: MiniSightPetFile.directory.appendingPathComponent("variant"), options: .atomic)
+        } else {
+            guard (try? write(png, to: file)) != nil, (try? write(json, to: metaFile)) != nil else { return nil }
+        }
+        return fresh
+    }
+
     static func snapshot() throws -> Snapshot {
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -310,8 +400,14 @@ enum MiniSightAssetCatalog {
         let imageFiles = files.filter { ["png", "jpg", "jpeg", "heic", "heif", "webp"].contains($0.pathExtension.lowercased()) }
         guard imageFiles.count <= 500 else { throw Failure.tooLarge }
         var items: [Item] = []
+        var migrated = false
         for file in imageFiles.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            let meta = try? metadata(at: sidecar(file))
+            var meta = try? metadata(at: sidecar(file))
+            if let current = meta,
+               let fresh = migrateSingleToPack(file: file, metaFile: sidecar(file), meta: current) {
+                meta = fresh
+                migrated = true
+            }
             let bytes = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             if meta?.sourceKind == ImportKind.petdex8x9.rawValue {
                 for v in 0..<72 {
@@ -327,7 +423,15 @@ enum MiniSightAssetCatalog {
                                   bytes: bytes, variant: 0, metadata: meta, preview: nil))
             }
         }
-        let currentMeta = try? metadata(at: metadataURL)
+        var currentMeta = try? metadata(at: metadataURL)
+        if let current = currentMeta,
+           let fresh = migrateSingleToPack(file: MiniSightPetFile.url, metaFile: metadataURL, meta: current) {
+            currentMeta = fresh
+            migrated = true
+        }
+        if migrated {
+            DispatchQueue.main.async { publishChange() }
+        }
         let currentID = currentMeta.map { "\($0.id)#\($0.selectedVariant ?? 0)" }
         let backup = MiniSightPetFile.directory.appendingPathComponent("pet.backup.png")
         return Snapshot(items: items, currentID: currentID, canRestore: fm.fileExists(atPath: backup.path))

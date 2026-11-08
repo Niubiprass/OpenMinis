@@ -250,11 +250,20 @@ enum AttachmentIO {
         return String(clean.prefix(180))
     }
 
+    /// Staging dir for not-yet-sent attachments. Deliberately Application
+    /// Support, not `Caches`: iOS purges Caches, and a draft chip that outlives
+    /// its bytes turned a normal send into "file not found" (2026-11-08 15:43).
     nonisolated static func cacheDirectory() throws -> URL {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let dir = caches.appendingPathComponent("InputAttachments", isDirectory: true)
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("InputAttachments", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// Pre-upgrade location, read-only fallback while repairing an old chip.
+    nonisolated static func legacyCacheDirectory() -> URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("InputAttachments", isDirectory: true)
     }
 }
 
@@ -404,10 +413,19 @@ enum AttachmentBatchProcessor {
             try check()
             try fm.createDirectory(at: uploadsDir, withIntermediateDirectories: true)
             var cumulativeBase64 = 0
+            var missingFiles = 0
             for attachment in attachments {
                 try check()
                 guard attachment.loadState == .ready else {
-                    throw AttachmentProcessingError.invalidFile(attachment.fileName)
+                    batch.parts.append(.text("[attachment not ready yet: \(attachment.fileName)]"))
+                    continue
+                }
+                // The chip and its bytes can be torn apart by a purge between
+                // send() and here; skip that one instead of failing the batch.
+                guard fm.fileExists(atPath: attachment.cacheURL.path) else {
+                    missingFiles += 1
+                    log.warning("[UploadProbe] stage=prepare.missing phase=\(phase) file=\(attachment.fileName)")
+                    continue
                 }
                 let started = Date()
                 do {
@@ -509,6 +527,9 @@ enum AttachmentBatchProcessor {
                     + " To stay within the context image limit (\(inlineLimit)),"
                     + " process images in batches: read a batch, analyze, then summarize your findings"
                     + " before reading the next batch.</system-reminder>"))
+            }
+            if missingFiles > 0 {
+                batch.parts.append(.text("<system-reminder>\(missingFiles) attachment file(s) vanished before upload; the chat already shows a notice — ask the user to re-attach if the content matters.</system-reminder>"))
             }
             committed = true
             log.info("[UploadProbe] stage=prepare.done phase=\(phase) files=\(batch.metas.count) images=\(batch.inlinedImages) main=\(Thread.isMainThread)")

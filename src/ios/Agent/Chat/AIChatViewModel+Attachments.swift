@@ -357,11 +357,12 @@ extension AIChatViewModel {
     }
 
     private var attachmentCacheDir: URL {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return caches.appendingPathComponent("InputAttachments")
+        if let dir = try? AttachmentIO.cacheDirectory() { return dir }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("InputAttachments")
     }
 
-    /// Save an image (from camera, drag-drop, or paste) to Caches and add as attachment.
+    /// Save an image (from camera, drag-drop, or paste) to Application Support and add as attachment.
     /// Encodes losslessly as PNG to preserve transparency and pixel fidelity for downstream
     /// tasks. Falls back to JPEG only if PNG encoding fails (extremely rare).
     /// When you have the original file bytes (e.g. from PhotosPicker `loadTransferable`),

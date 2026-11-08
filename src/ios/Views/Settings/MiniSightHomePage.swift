@@ -131,6 +131,10 @@ struct MiniSightHomeView: View {
     }
     private func refreshPreview() {
         MiniSightAssetCatalog.io.async {
+            // Also migrates a sheet that the old PNG-only detector stored as a
+            // single image; that path publishes didChange, which re-enters here
+            // and lands on a real pack preview.
+            _ = try? MiniSightAssetCatalog.snapshot()
             let image = try? MiniSightAssetCatalog.preview(at: MiniSightPetFile.url, variant: MiniSightAssetCatalog.currentVariant)
             DispatchQueue.main.async { petImage = image }
         }
@@ -208,7 +212,7 @@ struct MiniSightDownloadPage: View {
                 Picker("素材格式", selection: $kind) {
                     ForEach(MiniSightAssetCatalog.ImportKind.allCases) { Text($0.title).tag($0) }
                 }.disabled(importing)
-                TextField("图片或 PNG 图集直链", text: $link)
+                TextField("图片或 8×9 图集直链", text: $link)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                 Button("从链接添加") { importLink() }.disabled(importing || link.isEmpty)
                 Button("从相册添加") { showPhotos = true }.disabled(importing)
@@ -218,7 +222,7 @@ struct MiniSightDownloadPage: View {
                 }
                 if !notice.isEmpty { Text(notice).font(.caption).foregroundStyle(failed ? Color.red : Color.secondary) }
             } header: { Text("添加素材") } footer: {
-                Text("支持图片直链、相册或文件；网页和 ZIP 不直接导入。自动识别会把 8 列 × 9 行的 Petdex PNG 展开成 72 只宠物，其他图片按单张静态角色保留原分辨率。所有角色共用摇摆、抛摔和回弹。添加不会替你打开桌宠。")
+                Text("支持图片直链、相册或文件；网页和 ZIP 不直接导入。自动识别会把 8 列 × 9 行的 Petdex 图集（PNG 或相册转换件）展开成 72 只宠物，其他图片按单张静态角色保留原分辨率。所有角色共用摇摆、抛摔和回弹。添加不会替你打开桌宠。")
             }
             Section {
                 TextField("素材目录地址（可选记录）", text: $config.downloadSource)

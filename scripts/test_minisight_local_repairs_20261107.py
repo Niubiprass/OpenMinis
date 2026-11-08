@@ -65,6 +65,26 @@ need('.petdex8x9' in cat and 'case auto' in cat, 'explicit pack and auto detecti
 need('migrateLegacySingleImages()' not in cat, 'no destructive single-image migration')
 need('decoded.width' in cat and 'canvasW' in cat, 'single image keeps its own resolution')
 need('ImportKind.auto' in home, 'asset format defaults to auto detection')
+need('gridLooksLikePets' in cat and 'packShaped' in cat, 'pack detection reads pixel layout, not the file extension')
+need('uti == "public.png" || gridLooksLikePets(source)' in cat, 'a JPEG conversion of a real 8x9 sheet still auto-detects as pack')
+need('migrateSingleToPack' in cat, 'a sheet already stored as single image is migrated back in place')
+_w, _h = 1260, 1536
+need(abs(_w * 936 - _h * 768) <= max(768 * 4, _h * 8), '1260x1536 re-encode stays inside the 12:13 tolerance')
+
+# DSML tool calls: a relay that ships DeepSeek's text syntax must still run tools.
+prov = read(ROOT / 'Providers/OpenAI/OpenAIAgentProvider.swift')
+need('struct DSMLStreamFilter' in prov and 'flushDSML()' in prov, 'DSML calls are converted to real tool events')
+need('<｜｜DSML｜｜ calls>' in prov and '</｜｜DSML｜｜ invoke>' in prov and '</｜｜DSML｜｜ parameter>' in prov, 'DSML grammar matches the observed wire format')
+need('dsml.consume(text)' in prov, 'content deltas are filtered before display')
+
+# Attachment chips must not live in purgeable Caches (2026-11-08 15:43).
+proc = read(ROOT / 'Agent/Chat/AttachmentProcessing.swift')
+vm = read(ROOT / 'Agent/Chat/AIChatViewModel.swift')
+att = read(ROOT / 'Agent/Chat/AIChatViewModel+Attachments.swift')
+need('applicationSupportDirectory' in proc and 'legacyCacheDirectory' in proc, 'staging survives a Caches purge')
+need('applicationSupportDirectory' in att, 'new picks land in the durable staging dir')
+need('legacyCacheDirectory' in vm and '个附件的文件已失效' in vm, 'send repairs or drops a chip whose bytes vanished')
+need('stage=prepare.missing' in proc, 'processor skips one vanished file instead of failing the batch')
 runtime = read(ROOT / 'MiniSightInAppRuntime.swift')
 need('@AppStorage("minisight.dragResponse")' in runtime and 'dragGain' in runtime, 'in-app drag honours the response switch')
 need('@AppStorage("minisight.petSound")' in runtime and 'MiniSightBlip.playIfEnabled' in runtime, 'in-app gestures honour the sound switch')

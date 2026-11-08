@@ -230,6 +230,28 @@ final class OpenAIAgentProvider: AgentProvider {
                 // <think> prefixes (MiniMax M-series, Qwen, …): streams the
                 // reasoning live and trims the post-</think> body.
                 var thinkParser = ThinkPrefixStreamParser()
+                // [T-dsml-tool-calls] Some relays (observed 2026-11-08 with
+                // DeepSeek V4.1 Flash) put native tool calls in `content` as
+                // DSML text instead of the OpenAI `tool_calls` array. Hold
+                // that block back, stream the prose before it, and convert
+                // the block into real tool events when the turn ends.
+                var dsml = DSMLStreamFilter()
+
+                /// Flush the DSML tail and emit any finished calls. Returns
+                /// true when calls were emitted (the turn is a tool turn).
+                func flushDSML() -> Bool {
+                    let tail = dsml.finish()
+                    if !tail.visible.isEmpty { emitParsed(thinkParser.consume(tail.visible)) }
+                    guard !hasToolCalls, !tail.calls.isEmpty else { return false }
+                    for (i, call) in tail.calls.enumerated() {
+                        let id = "dsml-\(UUID().uuidString.prefix(8))-\(i)"
+                        continuation.yield(.contentBlockStart(.toolUse(id: id, name: call.0)))
+                        continuation.yield(.toolCallComplete(id: id, name: call.0, args: call.1, metadata: nil))
+                    }
+                    hasToolCalls = true
+                    diagYieldedAnyContent = true
+                    return true
+                }
 
                 // Diagnostic state: capture the first few raw SSE lines and a
                 // count of chunks parsed so we can attribute "empty response"
@@ -278,6 +300,7 @@ final class OpenAIAgentProvider: AgentProvider {
                             // Flush the think parser's tail (cross-chunk tag
                             // fragment / withheld trailing whitespace).
                             emitParsed(thinkParser.finishTurn())
+                            _ = flushDSML()
                             if sawReasoningFieldEver || !reasoningContent.isEmpty {
                                 continuation.yield(.reasoningContent(reasoningContent))
                             }
@@ -431,7 +454,8 @@ final class OpenAIAgentProvider: AgentProvider {
                         // M-series, Qwen, DeepSeek via OpenRouter, etc.) stream
                         // their thinking live and get a trimmed body.
                         if let text = delta["content"] as? String, !text.isEmpty {
-                            emitParsed(thinkParser.consume(text))
+                            let visible = dsml.consume(text)
+                            if !visible.isEmpty { emitParsed(thinkParser.consume(visible)) }
                         }
 
                         // Tool call deltas
@@ -486,6 +510,7 @@ final class OpenAIAgentProvider: AgentProvider {
                             // Flush the think parser's tail (idempotent — the
                             // [DONE] handler may flush again harmlessly).
                             emitParsed(thinkParser.finishTurn())
+                            _ = flushDSML()
                             logger.info("SSE finish_reason=\(fr) hasToolCalls=\(hasToolCalls) emittedTextStart=\(emittedTextStart) reasoningLen=\(reasoningContent.count) encryptedReasoningChunks=\(encryptedReasoningChunks)")
                             // Emit completed tool calls
                             for (_, entry) in toolCallAccum.sorted(by: { $0.key < $1.key }) {
@@ -522,6 +547,7 @@ final class OpenAIAgentProvider: AgentProvider {
                             }
                         }
                     }
+                    _ = flushDSML()
                     // Empty-stream diagnostic. The "no content, no stop reason"
                     // detector higher up will throw transientError on this
                     // outcome; before that fires, dump what actually came over
@@ -2467,5 +2493,142 @@ final class OpenAIAgentProvider: AgentProvider {
     /// Cap a tool ID to the Responses API limit (64 chars).
     private static func capResponsesId(_ id: String) -> String {
         id.count <= maxResponsesAPIIdLength ? id : String(id.prefix(maxResponsesAPIIdLength))
+    }
+}
+
+/// Converts DeepSeek's DSML pseudo-XML tool calls into real tool calls.
+///
+/// Observed 2026-11-08 on a relay in front of DeepSeek V4.1 Flash: the model
+/// streamed its native tool syntax as plain `content` instead of filling the
+/// OpenAI `tool_calls` array, so the agent parsed nothing, the message just
+/// stopped, and the raw tags were rendered to the user:
+///
+///     <｜｜DSML｜｜ calls>
+///       <｜｜DSML｜｜ invoke name="shell_execute">
+///         <｜｜DSML｜｜ parameter name="command" string="true">ls</｜｜DSML｜｜ parameter>
+///       </｜｜DSML｜｜ invoke>
+///     </｜｜DSML｜｜ calls>
+///
+/// The filter streams prose through, holds back the block (and a possible
+/// partial opening tag), and hands the parsed calls to the provider at the end
+/// of the turn. It never invents calls: a malformed block is re-emitted as
+/// text so nothing is lost. Only the first block of a turn is treated as a
+/// call; prose after it passes through untouched.
+struct DSMLStreamFilter {
+    static let open = "<｜｜DSML｜｜ calls>"
+    static let close = "</｜｜DSML｜｜ calls>"
+
+    private var head = ""
+    private var block = ""
+    private var capturing = false
+    private var finished = false
+
+    /// Feed a content delta. Returns the prose that is safe to display now.
+    mutating func consume(_ text: String) -> String {
+        if finished { return text }
+        if capturing {
+            block += text
+            if let end = block.range(of: Self.close) {
+                block = String(block[..<end.upperBound])
+                capturing = false
+                finished = true
+            }
+            return ""
+        }
+        head += text
+        if let start = head.range(of: Self.open) {
+            let before = String(head[..<start.lowerBound])
+            let rest = String(head[start.upperBound...])
+            head = ""
+            block = rest
+            capturing = true
+            if let end = block.range(of: Self.close) {
+                block = String(block[..<end.upperBound])
+                capturing = false
+                finished = true
+            }
+            return before
+        }
+        // Hold back a suffix that may be the beginning of the open tag, so a
+        // marker split across two deltas is never shown as text.
+        let maxKeep = min(Self.open.count - 1, head.count)
+        var keep = 0
+        if maxKeep > 0 {
+            for k in stride(from: maxKeep, through: 1, by: -1) {
+                if head.hasSuffix(String(Self.open.prefix(k))) { keep = k; break }
+            }
+        }
+        if keep == 0 {
+            let out = head
+            head = ""
+            return out
+        }
+        let cut = head.index(head.endIndex, offsetBy: -keep)
+        let out = String(head[..<cut])
+        head = String(head[cut...])
+        return out
+    }
+
+    /// End of turn. Returns prose still held back (including an unterminated
+    /// block, verbatim) and any complete calls. Idempotent.
+    mutating func finish() -> (visible: String, calls: [(String, [String: Any])]) {
+        var visible = head
+        head = ""
+        if capturing {
+            visible += Self.open + block
+            capturing = false
+            block = ""
+            return (visible, [])
+        }
+        guard !block.isEmpty else { return (visible, []) }
+        let calls = Self.parse(block)
+        block = ""
+        return (visible, calls)
+    }
+
+    /// Extract `invoke`/`parameter` pairs. Tolerant: unknown junk between
+    /// parameters is skipped, an unterminated pair ends the scan.
+    static func parse(_ text: String) -> [(String, [String: Any])] {
+        var calls: [(String, [String: Any])] = []
+        var cursor = text.startIndex
+        while let invoke = text.range(of: "<｜｜DSML｜｜ invoke name=\"", range: cursor..<text.endIndex),
+              let nameEnd = text[invoke.upperBound...].firstIndex(of: "\""),
+              let bodyOpen = text.range(of: ">", range: nameEnd..<text.endIndex),
+              let invokeEnd = text.range(of: "</｜｜DSML｜｜ invoke>", range: bodyOpen.upperBound..<text.endIndex) {
+            let name = String(text[invoke.upperBound..<nameEnd])
+            var args: [String: Any] = [:]
+            var p = bodyOpen.upperBound
+            while let param = text.range(of: "<｜｜DSML｜｜ parameter name=\"", range: p..<invokeEnd.lowerBound),
+                  let paramEnd = text[param.upperBound...].firstIndex(of: "\""),
+                  let valueOpen = text.range(of: ">", range: paramEnd..<invokeEnd.lowerBound),
+                  let valueEnd = text.range(of: "</｜｜DSML｜｜ parameter>", range: valueOpen.upperBound..<invokeEnd.lowerBound) {
+                let key = String(text[param.upperBound..<paramEnd])
+                args[key] = Self.decode(String(text[valueOpen.upperBound..<valueEnd.lowerBound]))
+                p = valueEnd.upperBound
+            }
+            if !name.isEmpty { calls.append((name, args)) }
+            cursor = invokeEnd.upperBound
+        }
+        return calls
+    }
+
+    /// `string="true"` values stay literal; anything else is tried as JSON so
+    /// numbers, booleans, arrays and objects reach the tool as their real type.
+    /// HTML entities are undone because some relays escape the payload.
+    private static func decode(_ raw: String) -> Any {
+        let text = raw
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&amp;", with: "&")
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return text }
+        if "{[tfn-0123456789".contains(first),
+           let data = trimmed.data(using: .utf8),
+           let value = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
+            return value
+        }
+        return text
     }
 }
