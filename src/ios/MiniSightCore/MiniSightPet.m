@@ -431,9 +431,6 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 - (void)setSpriteState:(MiniSightPetState)state {
     if (_state == state) return;
     _state = state;
-    if (_soundEnabled && (state == MiniSightPetStateWaving || state == MiniSightPetStateJumping)) {
-        [MiniSightBlip playIfEnabled:YES];
-    }
     _column = 0;
     _lastSpriteTime = CACurrentMediaTime();
     [self applySpriteFrame];

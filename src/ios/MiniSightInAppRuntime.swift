@@ -758,6 +758,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
 
         @objc private func singleTap() {
             guard let pet, parent.interactionEnabled else { return }
+            if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
             parent.onGesture(parent.singleAction, pet)
         }
         private func refreshChatAnchor() {
@@ -767,11 +768,13 @@ private struct MiniSightPetHost: UIViewRepresentable {
         }
         @objc private func doubleTap() {
             guard let pet, parent.interactionEnabled else { return }
+            if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
             parent.onGesture(parent.doubleAction, pet)
         }
         @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
             guard gesture.state == .began, parent.longPressEnabled, parent.interactionEnabled else { return }
             guard let pet else { return }
+            if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
             pet.interactionActive = true
             parent.onGesture(parent.longAction, pet)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak pet] in pet?.interactionActive = false }
@@ -781,6 +784,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             switch gesture.state {
             case .began:
                 panStart = pet.center
+                if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
                 pet.beginDragging(withDirection: 1)
                 if parent.dragGain > 0.5 {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
