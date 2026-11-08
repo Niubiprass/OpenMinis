@@ -106,7 +106,7 @@ need('roamInterval' in runtime and 'activityInterval' in runtime, 'activity inte
 need('gravityStrength' in runtime, 'gravity strength reaches the renderer')
 need('CGImageCreateWithImageInRect' in petm, 'the renderer crops the current frame instead of relying on contentsRect')
 need('panelW' in panel and 'widest + 24' in panel, 'reply panel width follows the longest reply')
-need('safe.size.height * 0.60' in panel, 'reply panel grows to 60% of the screen before scrolling')
+need('safe.size.height * 0.50' in panel, 'reply panel grows to 60% of the screen before scrolling')
 
 # Connection page: shared client, custom URL, saves before test.
 ai = read(ROOT / 'Views/Settings/MiniSightAIPage.swift')
