@@ -1190,6 +1190,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     CGFloat bubbleScale = MSClamp([self scaleFor:@"bubbleScale" fallback:1], 0.8, 1.6);
     CGFloat panelScale = MSClamp([self scaleFor:@"panelScale" fallback:1], 0.6, 1.6);
     CGFloat maxWidth = MIN(280. * panelScale, MAX(0., safe.size.width * 0.80));
+    CGFloat panelW = MIN(216., maxWidth);
     if (fabs(self.measuredWidth - maxWidth) > 0.5 || self.messagesDirty) {
         self.messagesDirty = NO;
         CGFloat widest = 0;
@@ -1216,7 +1217,9 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
         CGFloat maxMessageHeight = MIN(safe.size.height * 0.50, MAX(160., [self configuredHeight] * panelScale * 2.));
         self.measuredMessageHeight = MIN(content, maxMessageHeight);
     }
-    CGFloat panelWForLayout = (self.rows.count && self.messageWidthConstraint) ? self.messageWidthConstraint.constant : maxWidth;
+    self.messageWidthConstraint.constant = panelW;
+    self.measuredWidth = panelW;
+    CGFloat panelWForLayout = panelW;
     // A single production C strategy is also exercised by host randomized tests.
     // Stored offsets may bias sideways/upwards only; no stale setting can put
     // controls at the pet's feet. No host geometry is written from this pass.
