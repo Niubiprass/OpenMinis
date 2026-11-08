@@ -1190,27 +1190,32 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     CGFloat bubbleScale = MSClamp([self scaleFor:@"bubbleScale" fallback:1], 0.8, 1.6);
     CGFloat maxWidth = MIN(300. * bubbleScale, MAX(0., safe.size.width - 24.));
     if (fabs(self.measuredWidth - maxWidth) > 0.5 || self.messagesDirty) {
-        self.measuredWidth = maxWidth;
         self.messagesDirty = NO;
-        self.messageWidthConstraint.constant = maxWidth;
+        CGFloat widest = 0;
         for (NSUInteger i = 0; i < self.rows.count && i < self.bubbleWidths.count; i++) {
             MiniSightChatBubble *row = self.rows[i];
             row.label.preferredMaxLayoutWidth = MAX(1, maxWidth - 24);
-            self.bubbleWidths[i].constant = [row widthForMax:maxWidth];
+            CGFloat w = [row widthForMax:maxWidth];
+            self.bubbleWidths[i].constant = w;
+            widest = MAX(widest, w);
         }
+        // The reply panel itself grows to the longest line, not a fixed sheet.
+        CGFloat panelW = self.rows.count ? MIN(maxWidth, MAX(220., widest + 24.)) : maxWidth;
+        self.messageWidthConstraint.constant = panelW;
+        self.measuredWidth = panelW;
         [self.messageStack setNeedsLayout];
         CGFloat content = 0;
         for (NSUInteger i = 0; i < self.rows.count; i++) {
             MiniSightChatBubble *row = self.rows[i];
-            CGFloat w = i < self.bubbleWidths.count ? self.bubbleWidths[i].constant : maxWidth;
+            CGFloat w = i < self.bubbleWidths.count ? self.bubbleWidths[i].constant : panelW;
             CGFloat rowHeight = [row systemLayoutSizeFittingSize:CGSizeMake(w, UILayoutFittingCompressedSize.height) withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel].height;
             content += MAX(20, rowHeight);
         }
         content += MAX(0, self.rows.count - 1) * 6 + 8;
-        CGFloat maxMessageHeight = MIN(safe.size.height * 0.55,
-                                       MAX(160., [self configuredHeight] * bubbleScale));
+        CGFloat maxMessageHeight = MIN(safe.size.height * 0.60, MAX(220., [self configuredHeight] * bubbleScale * 2.));
         self.measuredMessageHeight = MIN(content, maxMessageHeight);
     }
+    CGFloat panelWForLayout = (self.rows.count && self.messageWidthConstraint) ? self.messageWidthConstraint.constant : maxWidth;
     // A single production C strategy is also exercised by host randomized tests.
     // Stored offsets may bias sideways/upwards only; no stale setting can put
     // controls at the pet's feet. No host geometry is written from this pass.
@@ -1219,8 +1224,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
                       pet.size.width, pet.size.height};
     MSChatFloatingFrames frames = MSChatFloatingLayoutWithComposer(
         (MSRect){safe.origin.x, safe.origin.y, safe.size.width, safe.size.height},
-        chatPet, (MSSize){maxWidth, self.rows.count ? self.measuredMessageHeight : 0.},
-        MIN(216. * bubbleScale, safe.size.width), self.keyboardTop, self.composerVisible);
+        chatPet, (MSSize){panelWForLayout, self.rows.count ? self.measuredMessageHeight : 0.},
+        MIN(MAX(216., panelWForLayout), safe.size.width), self.keyboardTop, self.composerVisible);
     self.actionBar.hidden = !self.menuOpen || !self.composerVisible;
     self.scrollView.frame = CGRectMake(frames.messages.x, frames.messages.y, frames.messages.w, frames.messages.h);
     self.scrollView.hidden = self.rows.count == 0 || frames.messages.h < 1;
