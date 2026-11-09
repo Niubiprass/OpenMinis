@@ -42,66 +42,53 @@ extension AIChatViewModel {
         backgroundSuspended = false
         backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "AgentLoop") { [weak self] in
             guard let self else { return }
-            let expRemaining = UIApplication.shared.backgroundTimeRemaining
-            let expRemainingStr = expRemaining > 99999 ? "unlimited" : String(format: "%.1fs", expRemaining)
-            logger.warning("[BKA][BGTask] Expiry handler fired — id=\(self.backgroundTaskID.rawValue) remaining=\(expRemainingStr) sessions=\(SessionActivityTracker.shared.activeSessions.count) silentAudio=\(BackgroundKeepAliveManager.shared.silentAudioIsPlaying) keepAliveEffective=\(BackgroundKeepAliveManager.shared.enhancedBackgroundEffective)")
-            // The FINITE UIApplication background task is expiring. This is a
-            // separate mechanism from the silent-audio (`audio` background mode)
-            // keep-alive: when keep-alive is active the process stays alive
-            // regardless of this task's clock, so expiring it must NOT kill the
-            // running shell / delay countdown — doing so was severing long
-            // `delay:` tool waits (and any in-flight command) even though the
-            // app was in no danger of termination. Instead, just re-arm a fresh
-            // finite task to reset the clock and let the agent loop continue.
-            if BackgroundKeepAliveManager.shared.enhancedBackgroundEffective {
-                logger.info("[Background] Finite task expiring but silent-audio keep-alive is active — re-arming, NOT cancelling")
-                // End only the expiring task id (no completion notification),
-                // then immediately request a new one. Order matters: capture the
-                // old id, invalidate, re-begin.
-                let expiringId = self.backgroundTaskID
-                self.backgroundTaskID = .invalid
-                if expiringId != .invalid {
-                    UIApplication.shared.endBackgroundTask(expiringId)
-                    AIChatViewModel.noteBackgroundTaskEnded()
-                }
-                self.beginBackgroundProcessing()
+            let expiringId = self.backgroundTaskID
+            // The expiration callback is allowed to arrive more than once while
+            // teardown is racing. Invalidate first, then end exactly this grant;
+            // no newly-issued ID can be mistaken for the expiring one.
+            guard expiringId != .invalid else {
+                logger.warning("[BKA][BGTask] duplicate expiry callback ignored")
                 return
             }
-            // No keep-alive backing us — the system really will terminate the
-            // app. Suspend instead of cancelling: kill the running shell command
-            // so the OS doesn't terminate us, but keep the Task alive so we can
-            // resume when foregrounded.
-            logger.warning("[Background] Task expiring (no keep-alive) — suspending agent loop")
+            self.backgroundTaskID = .invalid
+            self.stopBackgroundStatusTimer()
+            UIApplication.shared.endBackgroundTask(expiringId)
+            AIChatViewModel.noteBackgroundTaskEnded()
+
+            let expRemaining = UIApplication.shared.backgroundTimeRemaining
+            let expRemainingStr = expRemaining > 99999 ? "unlimited" : String(format: "%.1fs", expRemaining)
+            let backed = BackgroundKeepAliveManager.shared.backgroundExecutionIsBacked
+            logger.warning("[BKA][BGTask] Expiry handler fired — id=\(expiringId.rawValue) endedOnce=true remaining=\(expRemainingStr) sessions=\(SessionActivityTracker.shared.activeSessions.count) audioBacked=\(backed)")
+            // UIApplication background tasks have a finite budget. Never renew
+            // the ID to pretend that budget reset. A current, successful audio
+            // owner is a separate survival leg, so leave the agent's shell,
+            // delay, and continuation alone when that leg is genuinely live.
+            if backed {
+                logger.info("[BKA][BGTask] finite grant ended; verified audio backing remains — agent continues")
+                return
+            }
+
+            // No audio backing remains. Suspend instead of cancelling the whole
+            // agent: stop the currently running command so the OS can reclaim us,
+            // retain persisted/in-memory state, and let the existing foreground
+            // continuation resume the loop later.
+            logger.warning("[BKA][BGTask] finite grant ended without audio backing — suspending agent loop")
             self.backgroundSuspended = true
-            if !BackgroundKeepAliveManager.shared.enhancedBackgroundEffective {
-                BackgroundInterruptionTracker.shared.recordInterruption()
-                // [T-session-paused-badge-active-false-positive] The PAUSED badge
-                // is now driven solely by `canResume` (see AIChatViewModel's
-                // canResume didSet) — the authoritative interrupted flag — so it
-                // tracks genuine interruption + resolution uniformly. No explicit
-                // push here: a background-suspended in-flight loop sets canResume
-                // on the next session load / cleanup, which raises the badge.
-                // [T-tool-bg-suspended-hint] Stamp the tool blocks that are
-                // in-flight RIGHT NOW — these are the ones the OS is about to
-                // suspend. They'll be force-finalized to .cancelled (here via
-                // stopCurrentCommand / later via the safety net or session
-                // reload); the flag lets the chat capsule show the yellow ⓘ
-                // hint only for genuine background suspensions. Follows the same
-                // gate as the BackgroundInterruptionTracker banner.
-                for msg in self.messages where msg.role == .assistant {
-                    for block in msg.blocks {
-                        switch block.toolStatus {
-                        case .streaming, .running:
-                            block.wasBackgroundSuspended = true
-                        default:
-                            break
-                        }
+            BackgroundInterruptionTracker.shared.recordInterruption()
+            // [T-session-paused-badge-active-false-positive] The PAUSED badge
+            // is driven by canResume, not by this callback directly.
+            // [T-tool-bg-suspended-hint] Mark only tools in flight at expiry.
+            for msg in self.messages where msg.role == .assistant {
+                for block in msg.blocks {
+                    switch block.toolStatus {
+                    case .streaming, .running:
+                        block.wasBackgroundSuspended = true
+                    default:
+                        break
                     }
                 }
             }
             self.stopCurrentCommand()
-            // Must end the background task to avoid termination.
-            self.endBackgroundProcessing()
         }
         // [T-ios-bgkeepalive-diag] Only count a grant the OS actually gave
         // us: beginBackgroundTask returns .invalid when the request is refused,

@@ -12,6 +12,26 @@ import Photos
 import SwiftUI
 import UIKit
 
+/// Shared by input preview and playback; messages intentionally omit private paths.
+enum MinisVideoFileValidation {
+    static func error(for url: URL) -> String? {
+        guard url.isFileURL else { return "附件地址不是本地文件，请重新选择附件。" }
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: url.path) else {
+            return "附件文件已不存在，请重新选择附件。"
+        }
+        guard manager.isReadableFile(atPath: url.path) else {
+            return "附件文件不可读取，请重新选择附件。"
+        }
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true, let size = values.fileSize else {
+            return "附件不是可读取的普通文件，请重新选择附件。"
+        }
+        guard size > 0 else { return "附件文件为空，请重新选择附件。" }
+        return nil
+    }
+}
+
 // MARK: - Inline Video Player
 
 struct MinisVideoPlayerView: View {
@@ -186,6 +206,18 @@ struct MinisVideoFullscreenPlayer: View {
     @State private var timeObserver: Any?
     @State private var hideTask: DispatchWorkItem?
     @State private var rateObservation: NSKeyValueObservation?
+    @State private var currentItemObservation: NSKeyValueObservation?
+    @State private var itemStatusObservation: NSKeyValueObservation?
+    @State private var playbackFailureObserver: NSObjectProtocol?
+    @State private var playbackError: String?
+    @State private var isLoading = true
+    @State private var isVisible = false
+    @State private var playbackGeneration = UUID()
+    @State private var itemGeneration = UUID()
+    @State private var resolvedFileURL: URL?
+    @State private var durationTask: Task<Void, Never>?
+    @State private var loadingTimeoutTask: DispatchWorkItem?
+    private let loadingTimeout: TimeInterval = 20
 
     // Pull-to-dismiss state
     @State private var dragOffset: CGFloat = 0
@@ -204,7 +236,6 @@ struct MinisVideoFullscreenPlayer: View {
                     .ignoresSafeArea()
                     .offset(y: dragOffset)
             }
-
             // Tap target to toggle controls + drag to dismiss
             Color.clear
                 .contentShape(Rectangle())
@@ -218,8 +249,7 @@ struct MinisVideoFullscreenPlayer: View {
                         }
                         .onEnded { value in
                             if dragOffset > dismissThreshold * 0.5 {
-                                player?.pause()
-                                dismiss()
+                                closePlayer()
                             } else {
                                 withAnimation(.spring(response: 0.3)) {
                                     dragOffset = 0
@@ -234,8 +264,7 @@ struct MinisVideoFullscreenPlayer: View {
                 VStack {
                     HStack {
                         Button {
-                            player?.pause()
-                            dismiss()
+                            closePlayer()
                         } label: {
                             Image(systemName: "xmark")
                                 .font(.body.weight(.semibold))
@@ -271,7 +300,7 @@ struct MinisVideoFullscreenPlayer: View {
                             .contentShape(Circle())
                             .background(Color(UIColor.tertiarySystemFill), in: Circle())
                         }
-                        .disabled(saveStatus == .saving || saveStatus == .saved)
+                        .disabled(saveStatus == .saving || saveStatus == .saved || resolvedFileURL == nil)
 
                         Button {
                             showShareSheet = true
@@ -284,6 +313,7 @@ struct MinisVideoFullscreenPlayer: View {
                                 .contentShape(Circle())
                                 .background(Color(UIColor.tertiarySystemFill), in: Circle())
                         }
+                        .disabled(resolvedFileURL == nil)
                     }
                     .padding(.horizontal)
                     .padding(.top, 7)
@@ -345,6 +375,7 @@ struct MinisVideoFullscreenPlayer: View {
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.white.opacity(0.8))
                     }
+                    .disabled(isLoading || playbackError != nil)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)
                     .background(
@@ -356,82 +387,244 @@ struct MinisVideoFullscreenPlayer: View {
                 }
                 .transition(.opacity)
             }
+
+            if isLoading && playbackError == nil {
+                ProgressView("正在加载视频…")
+                    .tint(.white)
+                    .foregroundStyle(.white)
+                    .padding(20)
+                    .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
+                    .allowsHitTesting(false)
+            }
+
+            // Above BOTH the gesture surface and the normal controls.
+            if let playbackError {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.title2)
+                    Text("无法播放此视频").font(.headline)
+                    Text(playbackError)
+                        .font(.callout)
+                        .multilineTextAlignment(.center)
+                    HStack(spacing: 28) {
+                        Button("关闭") { closePlayer() }
+                        Button("重试") { startPlayback() }
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .foregroundStyle(.white)
+                .padding(24)
+                .frame(maxWidth: 360)
+                .background(.black.opacity(0.9), in: RoundedRectangle(cornerRadius: 14))
+                .padding(24)
+                .zIndex(20)
+            }
         }
         .animation(.easeInOut(duration: 0.25), value: showControls)
         .onAppear {
-            let p: AVPlayer
-            if let externalPlayer {
-                p = externalPlayer
-            } else {
-                // A defensive second layer: callers normally pass file://, but
-                // if a minis:// resource slips through, resolve it instead of
-                // handing AVPlayer a scheme it cannot open.
-                let playable = fileURL.scheme == "minis"
-                    ? (resolveMinisFileURLCached(url: fileURL) ?? fileURL)
-                    : fileURL
-                p = AVPlayer(url: playable)
-            }
-            player = p
-            try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
-            try? AVAudioSession.sharedInstance().setActive(true)
-            if externalPlayer == nil {
-                p.play()
-            }
-            isPlaying = p.rate > 0
-
-            // Observe duration
-            if let item = p.currentItem {
-                Task { @MainActor in
-                    // Wait for duration to become available
-                    let dur = try? await item.asset.load(.duration)
-                    if let dur, dur.isNumeric {
-                        duration = dur.seconds
-                    }
-                }
-            }
-
-            // Periodic time observer
-            let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
-            timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
-                guard !isScrubbing else { return }
-                currentTime = time.seconds
-                // Update duration if not yet set
-                if duration == 0, let item = p.currentItem, item.duration.isNumeric {
-                    duration = item.duration.seconds
-                }
-                // Detect playback ended
-                if let item = p.currentItem, item.duration.isNumeric,
-                   time.seconds >= item.duration.seconds - 0.1 {
-                    isPlaying = false
-                }
-            }
-
-            // Observe rate changes (e.g. system pause on background)
-            rateObservation = p.observe(\.rate, options: [.new]) { _, change in
-                Task { @MainActor in
-                    if let newRate = change.newValue {
-                        isPlaying = newRate > 0
-                    }
-                }
-            }
-
-            scheduleHide()
+            isVisible = true
+            startPlayback()
         }
         .onDisappear {
-            if let observer = timeObserver {
-                player?.removeTimeObserver(observer)
-                timeObserver = nil
-            }
-            rateObservation?.invalidate()
-            rateObservation = nil
-            hideTask?.cancel()
-            player?.pause()
-            player = nil
+            isVisible = false
+            stopPlayback()
         }
         .sheet(isPresented: $showShareSheet) {
-            MinisShareSheet(url: fileURL)
+            if let resolvedFileURL { MinisShareSheet(url: resolvedFileURL) }
         }
         .statusBar(hidden: true)
+    }
+
+    private func startPlayback() {
+        guard isVisible else { return }
+        stopPlayback()
+        let generation = playbackGeneration
+        playbackError = nil
+        isLoading = true
+        showControls = true
+        isScrubbing = false
+        dragOffset = 0
+        currentTime = 0
+        duration = 0
+        if saveStatus == .saving { saveStatus = .idle }
+        resolvedFileURL = nil
+
+        let playable: URL?
+        if fileURL.scheme?.lowercased() == "minis" {
+            // Keep the existing resolver's session scope and decoding rules.
+            playable = resolveMinisFileURLCached(url: fileURL)
+        } else {
+            playable = fileURL
+        }
+        let p: AVPlayer
+        if let externalPlayer {
+            // The bridge owns the player, current item, position and play state.
+            // Retry re-attaches observers; it must never replace its item or play.
+            p = externalPlayer
+            if let playable, playable.isFileURL { resolvedFileURL = playable }
+        } else {
+            guard let playable else {
+                failPlayback("找不到此会话中的视频文件，请重新选择视频。", stage: "resolve", generation: generation)
+                return
+            }
+            if let error = MinisVideoFileValidation.error(for: playable) {
+                failPlayback(error, stage: "invalid_file", generation: generation)
+                return
+            }
+            resolvedFileURL = playable
+            p = AVPlayer(url: playable)
+        }
+        player = p
+        try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+
+        // An external owner may replace its item while this view is visible.
+        currentItemObservation = p.observe(\.currentItem, options: [.new]) { _, _ in
+            DispatchQueue.main.async {
+                guard acceptsCallback(generation, player: p) else { return }
+                observeItem(p.currentItem, player: p, generation: generation)
+            }
+        }
+        rateObservation = p.observe(\.rate, options: [.new]) { _, _ in
+            DispatchQueue.main.async {
+                guard acceptsCallback(generation, player: p), playbackError == nil else { return }
+                isPlaying = p.rate > 0
+                if isPlaying { scheduleHide() } else { hideTask?.cancel() }
+            }
+        }
+        let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
+        timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+            guard acceptsCallback(generation, player: p), playbackError == nil, !isScrubbing else { return }
+            if time.isNumeric, time.seconds.isFinite { currentTime = max(0, time.seconds) }
+            if let item = p.currentItem, item.duration.isNumeric, item.duration.seconds.isFinite {
+                duration = max(0, item.duration.seconds)
+                if duration > 0, currentTime >= duration - 0.1 { isPlaying = false }
+            }
+        }
+        observeItem(p.currentItem, player: p, generation: generation)
+        if externalPlayer == nil { p.play() }
+        isPlaying = p.rate > 0
+        InputVideoDiagnostics.trace("stage=player.start external=\(externalPlayer != nil)")
+    }
+
+    private func observeItem(_ item: AVPlayerItem?, player p: AVPlayer, generation: UUID) {
+        guard acceptsCallback(generation, player: p) else { return }
+        itemStatusObservation?.invalidate()
+        if let observer = playbackFailureObserver { NotificationCenter.default.removeObserver(observer) }
+        playbackFailureObserver = nil
+        durationTask?.cancel()
+        durationTask = nil
+        loadingTimeoutTask?.cancel()
+        hideTask?.cancel()
+        let itemToken = UUID()
+        itemGeneration = itemToken
+        playbackError = nil
+        isLoading = true
+        showControls = true
+        currentTime = 0
+        duration = 0
+        let timeout = DispatchWorkItem {
+            guard acceptsCallback(generation, player: p), itemGeneration == itemToken, isLoading else { return }
+            failPlayback("视频加载超时，请重试；如果仍无法播放，请重新选择视频或检查文件格式。",
+                         stage: "timeout", generation: generation)
+        }
+        loadingTimeoutTask = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + loadingTimeout, execute: timeout)
+        guard let item else { return } // An external owner can supply an item later.
+
+        itemStatusObservation = item.observe(\.status, options: [.initial, .new]) { _, _ in
+            DispatchQueue.main.async {
+                guard acceptsCallback(generation, player: p), itemGeneration == itemToken,
+                      p.currentItem === item, playbackError == nil else { return }
+                switch item.status {
+                case .readyToPlay:
+                    isLoading = false
+                    loadingTimeoutTask?.cancel()
+                    loadingTimeoutTask = nil
+                    if item.duration.isNumeric, item.duration.seconds.isFinite {
+                        duration = max(0, item.duration.seconds)
+                    }
+                    isPlaying = p.rate > 0
+                    scheduleHide()
+                    InputVideoDiagnostics.trace("stage=player.ready")
+                case .failed:
+                    let code = (item.error as NSError?)?.code ?? 0
+                    InputVideoDiagnostics.error("stage=player.item_failed code=\(code)")
+                    failPlayback("视频文件可能已损坏，或系统不支持它的编码格式。请重试或重新选择视频。",
+                                 stage: "item_failed", generation: generation)
+                case .unknown:
+                    break // Bounded by the item-scoped loading timeout.
+                @unknown default:
+                    break
+                }
+            }
+        }
+        playbackFailureObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main
+        ) { _ in
+            guard acceptsCallback(generation, player: p), itemGeneration == itemToken,
+                  p.currentItem === item else { return }
+            failPlayback("视频播放中断，文件可能已损坏或不可读取。请重试。",
+                         stage: "failed_to_end", generation: generation)
+        }
+        durationTask = Task { @MainActor in
+            let value = try? await item.asset.load(.duration)
+            guard !Task.isCancelled, acceptsCallback(generation, player: p), itemGeneration == itemToken,
+                  p.currentItem === item, playbackError == nil else { return }
+            if let value, value.isNumeric, value.seconds.isFinite { duration = max(0, value.seconds) }
+        }
+    }
+
+    private func failPlayback(_ message: String, stage: String, generation: UUID) {
+        guard isVisible, playbackGeneration == generation, playbackError == nil else { return }
+        hideTask?.cancel()
+        hideTask = nil
+        loadingTimeoutTask?.cancel()
+        loadingTimeoutTask = nil
+        durationTask?.cancel()
+        durationTask = nil
+        player?.pause()
+        isLoading = false
+        isPlaying = false
+        isScrubbing = false
+        showControls = true
+        playbackError = message
+        InputVideoDiagnostics.error("stage=player.\(stage)")
+    }
+
+    private func acceptsCallback(_ generation: UUID, player p: AVPlayer) -> Bool {
+        isVisible && playbackGeneration == generation && player === p
+    }
+
+    private func stopPlayback() {
+        // Invalidate FIRST: even callbacks already enqueued on main become inert.
+        playbackGeneration = UUID()
+        itemGeneration = UUID()
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = nil
+        currentItemObservation?.invalidate()
+        currentItemObservation = nil
+        rateObservation?.invalidate()
+        rateObservation = nil
+        if let observer = playbackFailureObserver { NotificationCenter.default.removeObserver(observer) }
+        playbackFailureObserver = nil
+        durationTask?.cancel()
+        durationTask = nil
+        loadingTimeoutTask?.cancel()
+        loadingTimeoutTask = nil
+        hideTask?.cancel()
+        hideTask = nil
+        if let observer = timeObserver { player?.removeTimeObserver(observer) }
+        timeObserver = nil
+        player?.pause()
+        player = nil
+        isPlaying = false
+        isLoading = false
+    }
+
+    private func closePlayer() {
+        isVisible = false
+        stopPlayback()
+        dismiss()
     }
 
     private func toggleControls() {
@@ -441,7 +634,13 @@ struct MinisVideoFullscreenPlayer: View {
 
     private func scheduleHide() {
         hideTask?.cancel()
-        let task = DispatchWorkItem { showControls = false }
+        guard isVisible, !isLoading, playbackError == nil, isPlaying, !isScrubbing else { return }
+        let generation = playbackGeneration
+        let task = DispatchWorkItem {
+            guard isVisible, playbackGeneration == generation, !isLoading,
+                  playbackError == nil, isPlaying, !isScrubbing else { return }
+            showControls = false
+        }
         hideTask = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: task)
     }
@@ -455,20 +654,27 @@ struct MinisVideoFullscreenPlayer: View {
     }
 
     private func saveVideoToPhotos() {
+        guard isVisible, let localURL = resolvedFileURL else { return }
+        let generation = playbackGeneration
         saveStatus = .saving
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-            guard status == .authorized || status == .limited else {
-                DispatchQueue.main.async { saveStatus = .failed }
-                return
-            }
-            PHPhotoLibrary.shared().performChanges {
-                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: fileURL)
-            } completionHandler: { success, _ in
-                DispatchQueue.main.async {
-                    saveStatus = success ? .saved : .failed
-                    if success {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                            saveStatus = .idle
+            DispatchQueue.main.async {
+                guard isVisible, playbackGeneration == generation else { return }
+                guard status == .authorized || status == .limited else {
+                    saveStatus = .failed
+                    return
+                }
+                PHPhotoLibrary.shared().performChanges {
+                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: localURL)
+                } completionHandler: { success, _ in
+                    DispatchQueue.main.async {
+                        guard isVisible, playbackGeneration == generation else { return }
+                        saveStatus = success ? .saved : .failed
+                        if success {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                guard isVisible, playbackGeneration == generation else { return }
+                                saveStatus = .idle
+                            }
                         }
                     }
                 }

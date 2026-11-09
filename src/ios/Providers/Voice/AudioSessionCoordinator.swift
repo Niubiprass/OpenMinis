@@ -80,15 +80,18 @@ final class AudioSessionCoordinator {
     @discardableResult
     func beginAndWait(_ intent: Intent, timeout: TimeInterval = 1.0) -> Bool {
         beginInternal(intent)
-        // Nothing was queued (already in this profile and active) → already live.
-        guard Self.pendingLock.withLock({ Self.pendingApplies }) > 0 else { return true }
+        // This legacy capture-only bounded wait is unchanged; background audio
+        // uses beginBackgroundKeepAlive's fully asynchronous acknowledgement.
+        guard Self.pendingLock.withLock({ Self.pendingApplies }) > 0 else {
+            return appliedIntent == intent
+        }
         let sem = DispatchSemaphore(value: 0)
         Self.sessionQueue.async { sem.signal() }   // FIFO: runs after pending applies
         let hit = sem.wait(timeout: .now() + timeout) == .success
         if !hit {
             logger.error("[AudioSession] beginAndWait(\(intent)) timed out after \(timeout)s — proceeding")
         }
-        return hit
+        return hit && appliedIntent == intent
     }
 
     private func beginInternal(_ intent: Intent) {
@@ -99,11 +102,8 @@ final class AudioSessionCoordinator {
             VoiceOutputPlayer.shared.stopAll()
             NotificationCenter.default.post(name: Self.replyTTSPreemptedNotification, object: nil)
         }
-        let was = highest
         active.insert(intent)
-        if highest != was || !sessionActive {
-            apply(reason: "begin(\(intent))")
-        }
+        apply(reason: "begin(\(intent))")
     }
 
     /// Declare that `intent` no longer needs the session.
@@ -113,16 +113,69 @@ final class AudioSessionCoordinator {
         apply(reason: "end(\(intent))")
     }
 
-    /// Re-assert the correct session on foreground return (the stale-category fix)
-    /// and stop the background keep-alive track (not needed in foreground).
+    /// Re-assert the current owners' profile. Only the keep-alive engine owner
+    /// may end its intent, after its 1.5s foreground stop debounce actually fires.
     func reassertForForeground() {
-        active.remove(.backgroundKeepAlive)
         apply(reason: "foreground")
     }
 
     // MARK: - Core (the ONLY setCategory/setActive site)
 
-    private var sessionActive = false
+    /// Desired owners live on the actor; only a successful, CURRENT queue
+    /// result establishes applied state. A stale failure must not invalidate a
+    /// newer success (or a stale success resurrect an ended owner).
+    nonisolated private static let applyStateLock = NSLock()
+    nonisolated(unsafe) private static var applyRevision: UInt64 = 0
+    nonisolated(unsafe) private static var completedRevision: UInt64 = 0
+    nonisolated(unsafe) private static var completedIntent: Intent?
+    nonisolated(unsafe) private static var applySucceeded = false
+    private var pendingRevision: UInt64?
+    private var pendingIntent: Intent?
+    private var interrupted = false
+
+    static let stateChangedNotification = Notification.Name("AudioSession.appliedStateChanged")
+
+    func hasIntent(_ intent: Intent) -> Bool { active.contains(intent) }
+
+    /// Nil while applying, failed, interrupted, idle, or no longer owned. This
+    /// is an acknowledgement of our API calls, not an OS background-time grant.
+    var appliedIntent: Intent? {
+        guard !interrupted, let top = highest else { return nil }
+        let applied = Self.applyStateLock.withLock {
+            Self.applySucceeded && Self.completedRevision == Self.applyRevision
+                && Self.completedIntent == top
+        }
+        guard applied else { return nil }
+        let (cat, mode, opts) = profile(for: top)
+        let session = AVAudioSession.sharedInstance()
+        guard session.category == cat, session.mode == mode,
+              session.categoryOptions == opts else { return nil }
+        return top
+    }
+
+    var keepAlivePlaybackBlocked: Bool { interrupted || isCapturing }
+
+    var keepAlivePlaybackApplied: Bool {
+        guard hasIntent(.backgroundKeepAlive), let top = appliedIntent else { return false }
+        return top != .capture
+    }
+
+    /// Async FIFO acknowledgement, with no wait/IPC on the main actor. The
+    /// caller must also validate its own engine-lifetime token on completion.
+    func beginBackgroundKeepAlive(completion: @escaping (Bool) -> Void) {
+        beginInternal(.backgroundKeepAlive)
+        if keepAlivePlaybackApplied {
+            completion(true)
+            return
+        }
+        let revision = Self.applyStateLock.withLock { Self.applyRevision }
+        Self.sessionQueue.async {
+            Task { @MainActor in
+                let current = Self.applyStateLock.withLock { Self.applyRevision == revision }
+                completion(current && self.keepAlivePlaybackApplied)
+            }
+        }
+    }
 
     /// [T-voice-mic-preempted] Error from the most recent `apply()`, or nil if it
     /// succeeded. Lets a caller that just ran `beginAndWait` tell "the session
@@ -187,64 +240,70 @@ final class AudioSessionCoordinator {
     nonisolated private static let pendingLock = NSLock()
 
     private func apply(reason: String) {
-        // Decide WHAT to do on the actor (reads `active` / `sessionActive`), then
-        // perform the blocking AVAudioSession work off the main thread. State is
-        // updated optimistically here so concurrent begin()/end() calls see the
-        // intended session state without waiting on the daemon round-trip.
-        guard let top = highest else {
-            if sessionActive {
-                sessionActive = false
-                logger.info("[AudioSession] \(reason) → idle, deactivating (async)")
-                Self.sessionQueue.async {
-                    try? AVAudioSession.sharedInstance()
-                        .setActive(false, options: .notifyOthersOnDeactivation)
-                }
-            }
-            return
+        let top = highest
+        let current = Self.applyStateLock.withLock { Self.applyRevision }
+        // Coalesce identical in-flight requests, but never mistake a pending
+        // request for an applied one. Foreground reassert retains ALL owners.
+        let stillPending = Self.applyStateLock.withLock { Self.completedRevision != current }
+        if pendingRevision == current, pendingIntent == top, stillPending { return }
+        if top != nil, appliedIntent == top { return }
+        let idleApplied = Self.applyStateLock.withLock {
+            Self.applySucceeded && Self.completedRevision == current
+                && Self.completedIntent == nil
         }
-        let (cat, mode, opts) = profile(for: top)
-        let session = AVAudioSession.sharedInstance()
-        // FULL compare (category + mode + options), not just category — a partial
-        // guard let BKA's `.mixWithOthers` profile poison reply TTS before.
-        // These are plain property reads (no IPC), so they stay on the actor.
-        let needsReconfig = session.category != cat
-            || session.mode != mode
-            || session.categoryOptions != opts
-        let needsActivate = !sessionActive || needsReconfig
-        guard needsReconfig || needsActivate else { return }
-        if needsActivate { sessionActive = true }
-
+        if top == nil, idleApplied { return }
+        let revision = Self.applyStateLock.withLock {
+            Self.applyRevision &+= 1
+            Self.applySucceeded = false
+            return Self.applyRevision
+        }
+        pendingRevision = revision
+        pendingIntent = top
+        // Snapshot the desired profile, but compare against the REAL category
+        // on the queue after older requests drain. An old queued deactivate may
+        // still be ahead of this activation even if main-thread reads look live.
+        let desired = top.map { profile(for: $0) }
         let log = logger
-        // Tracks queued-but-unapplied profile switches so `beginAndWait` knows
-        // whether there is anything to wait for. Incremented here on the main
-        // actor and decremented ON THE SESSION QUEUE (not via a hop back to the
-        // actor, which could land after the waiter's barrier and read stale).
         Self.pendingLock.withLock { Self.pendingApplies += 1 }
         let t0 = CFAbsoluteTimeGetCurrent()
         Self.sessionQueue.async {
-            // [T-voice-mic-preempted] Clear before attempting, so a success
-            // wipes any earlier failure and a reader can never see a stale one.
-            Self.lastApplyLock.withLock { Self._lastApplyError = nil }
+            var succeeded = false
             do {
-                if needsReconfig {
-                    try session.setCategory(cat, mode: mode, options: opts)
-                }
-                if needsActivate {
+                let session = AVAudioSession.sharedInstance()
+                if let (cat, mode, opts) = desired {
+                    if session.category != cat || session.mode != mode || session.categoryOptions != opts {
+                        try session.setCategory(cat, mode: mode, options: opts)
+                    }
                     try session.setActive(true)
+                } else {
+                    try session.setActive(false, options: .notifyOthersOnDeactivation)
                 }
+                succeeded = true
+                Self.lastApplyLock.withLock { Self._lastApplyError = nil }
                 let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-                log.info("[VoiceInputDebug][AudioSession] \(reason) → \(top) (\(cat.rawValue)/\(mode.rawValue)) applied in \(String(format: "%.0f", ms))ms")
+                log.info("[AudioSession] \(reason) applied revision=\(revision) intent=\(top.map { String(describing: $0) } ?? "idle") in \(String(format: "%.0f", ms))ms")
             } catch {
-                let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-                log.error("[VoiceInputDebug][AudioSession] \(reason) apply FAILED after \(String(format: "%.0f", ms))ms: \(error.localizedDescription)")
-                // [T-voice-mic-preempted] Publish the reason so the capture path
-                // can report "mic busy" instead of a generic parse failure.
                 Self.lastApplyLock.withLock { Self._lastApplyError = error }
-                // Roll back the optimistic flag so the next begin() retries the
-                // activation instead of assuming the session is already live.
-                Task { @MainActor in self.sessionActive = false }
+                log.error("[AudioSession] \(reason) apply FAILED revision=\(revision): \(error.localizedDescription)")
+            }
+            // Written before the FIFO barrier used by capture and BKA. A late
+            // completion from an invalidated request cannot publish health.
+            Self.applyStateLock.withLock {
+                if Self.applyRevision == revision {
+                    Self.completedRevision = revision
+                    Self.completedIntent = top
+                    Self.applySucceeded = succeeded
+                }
             }
             Self.pendingLock.withLock { Self.pendingApplies -= 1 }
+            Task { @MainActor in
+                guard Self.applyStateLock.withLock({ Self.applyRevision == revision }) else { return }
+                if self.pendingRevision == revision {
+                    self.pendingRevision = nil
+                    self.pendingIntent = nil
+                }
+                NotificationCenter.default.post(name: Self.stateChangedNotification, object: nil)
+            }
         }
     }
 
@@ -332,13 +391,21 @@ final class AudioSessionCoordinator {
         switch type {
         case .began:
             logger.info("[AudioSession] interruption began")
-            sessionActive = false   // system deactivated us
+            interrupted = true
+            Self.applyStateLock.withLock {
+                Self.applyRevision &+= 1
+                Self.applySucceeded = false
+            }
+            pendingRevision = nil
+            pendingIntent = nil
+            NotificationCenter.default.post(name: Self.stateChangedNotification, object: nil)
             // Previously we only flagged the session inactive; the TTS queue
             // kept "playing" into a dead session. Pause it so the queue
             // survives and can resume when the interruption ends.
             pauseTTSForExternalAudio(reason: "interruption-began")
         case .ended:
             logger.info("[AudioSession] interruption ended → re-asserting")
+            interrupted = false
             apply(reason: "interruption-ended")
             resumeTTSAfterExternalAudio(reason: "interruption-ended")
             onInterruptionEnded?()

@@ -21,45 +21,78 @@ extension AIChatViewModel {
         return mcpMarkers.contains { lower.contains($0) }
     }
 
-    /// 把命令翻译成"它到底要干什么"。顺序敏感：先匹配更具体的工具名。
-    /// nonisolated：桌宠确认桥在非主线程上下文里也要能调用。
+    /// Extract the shell command inside `run_command command='…'` so the
+    /// approval describes the real effect rather than the MCP relay syntax.
+    nonisolated private static func effectiveMCPCommand(_ command: String) -> String {
+        let lower = command.lowercased()
+        guard let marker = lower.range(of: "command=") else { return command }
+        var value = String(command[marker.upperBound...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let first = value.first, first == "'" || first == "\"" {
+            let body = value.dropFirst()
+            if let end = body.lastIndex(of: first) {
+                value = String(body[..<end])
+            }
+        }
+        return value
+    }
+
+    /// Translate a tool call into its concrete device effect. Raw shell text
+    /// is deliberately not shown in the approval card.
     nonisolated static func describeMCPCommand(_ command: String) -> MCPCommandUsage {
         let lower = command.lowercased()
-        func has(_ s: String) -> Bool { lower.contains(s) }
+        let inner = effectiveMCPCommand(command).lowercased()
+        let text = lower + "\n" + inner
+        func has(_ s: String) -> Bool { text.contains(s) }
         let read = { (title: String, purpose: String) in
             MCPCommandUsage(title: title, purpose: purpose,
                             risk: "只读 · 不会改动任何数据或设置", isWrite: false)
         }
         let write = { (title: String, purpose: String) in
             MCPCommandUsage(title: title, purpose: purpose,
-                            risk: "写入 · 会改动设备上的文件", isWrite: true)
+                            risk: "写入 · 会改动设备上的文件或系统状态", isWrite: true)
         }
 
-        if has("uninstall_app") { return write("允许卸载 App？", "卸载手机上的一个 App。") }
-        if has("install_app")   { return write("允许安装 App？", "在手机上安装一个 App 安装包。") }
-        if has("write_file")    { return write("允许写入文件？", "往设备上的某个文件写入内容，会覆盖原有内容。") }
-        if has("run_command")   { return write("允许执行终端命令？", "执行一条 shell 命令，可能读写设备文件。") }
-        if has("screenshot")    { return read("允许截取屏幕？", "抓取当前屏幕画面，作为截图保存。") }
-        if has("tap_screen") || has("tap_element") {
-            return write("允许点击屏幕？", "在你手机上模拟一次点击，可能会操作到别的 App。")
+        if has("reboot userspace") || has("launchctl reboot") {
+            return write("允许重启用户空间？", "重启 SpringBoard/用户空间，当前界面和插件会暂时中断。")
         }
-        if has("swipe_screen")  { return write("允许滑动屏幕？", "在你手机上模拟一次滑动。") }
-        if has("launch_app")    { return write("允许打开 App？", "把另一个 App 切到前台。") }
-        if has("press_")        { return write("允许按硬件键？", "模拟按下音量/电源/Home 等实体键。") }
+        if has("cn.zgbb.inject.system.plist") && has("pkdx") {
+            return write("允许修改 RootHide 注入配置？", "备份并修改注入配置中的 /pkdx 标记，可能改变对应插件的加载行为。")
+        }
+        if has("uninstall_app") { return write("允许卸载 App？", "从手机中移除指定应用。") }
+        if has("install_app") { return write("允许安装 App？", "在手机上安装指定应用包。") }
+        if has("screenshot") { return read("允许截屏？", "读取当前屏幕画面并返回截图。") }
+        if has("tap_screen") || has("tap_element") {
+            return write("允许点击屏幕？", "模拟点击，可能触发当前界面上的按钮。")
+        }
+        if has("swipe_screen") { return write("允许滑动屏幕？", "模拟一次屏幕滑动。") }
+        if has("record_screen") || has("start_recording") || has("record") {
+            return write("允许录屏？", "录制设备屏幕画面。")
+        }
+        if has("launch_app") { return write("允许打开 App？", "把指定应用切到前台。") }
+        if has("press_") { return write("允许模拟按键？", "触发指定的系统按键操作。") }
         if has("set_brightness") || has("set_volume") {
             return write("允许修改系统设置？", "调整屏幕亮度或音量。")
         }
-        if has("read_file")     { return read("允许读取文件？", "读取设备上的一个文件内容。") }
-        if has("list_dir")      { return read("允许列出目录？", "查看某个文件夹里有哪些文件。") }
-        if has("get_syslog")    { return read("允许读取系统日志？", "抓取一段实时系统日志。") }
-        if has("crash_log")     { return read("允许读取崩溃日志？", "读取 App 的崩溃报告。") }
+        if has("get_syslog") { return read("允许读取系统日志？", "读取设备系统日志内容。") }
+        if has("crash_log") { return read("允许读取崩溃日志？", "读取 App 的崩溃报告。") }
         if has("get_app_info") || has("list_apps") {
             return read("允许读取 App 信息？", "查看已安装 App 的列表或详情。")
         }
-        return MCPCommandUsage(title: "允许调用越狱 MCP？",
-                               purpose: "执行一条越狱环境下的操作。",
-                               risk: "可能改动设备，请确认命令内容",
-                               isWrite: true)
+        if has("list_dir") { return read("允许查看目录？", "列出指定文件夹中的项目。") }
+        if has("read_file") || has("grep ") || has("tail ") || has("cat ") {
+            return read("允许读取文件或日志？", "读取指定文件内容，不会修改文件。")
+        }
+        if has("write_file") || has("edit_file") || has("sed -i") || has("plutil") {
+            return write("允许写入或修改文件？", "在设备文件系统中创建或更改文件。")
+        }
+        if has("cp ") { return write("允许复制文件？", "把文件复制到另一条路径。") }
+        if has("mv ") { return write("允许移动或重命名文件？", "更改文件路径或名称。") }
+        if has("rm ") { return write("允许删除文件？", "移除指定文件或目录。") }
+        if has("curl ") || has("wget ") {
+            return read("允许发起网络请求？", "连接网络读取或下载数据。")
+        }
+        return write("允许执行设备命令？", "这条命令的具体作用无法自动归类，请确认后再执行。")
     }
 
     /// 命令执行前的闸门。返回 false = 用户拒绝，调用方必须中止。

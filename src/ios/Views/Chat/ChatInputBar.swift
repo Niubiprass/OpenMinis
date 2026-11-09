@@ -13,6 +13,48 @@ private let pasteLog = AppLogger(category: "PastableTV")
 private let hintLog = AppLogger(category: "ContextUsageHint")
 
 private let minisLogger = AppLogger(category: "MinisURL")
+
+private func isVideoAttachment(_ attachment: InputAttachment) -> Bool {
+    attachment.kind == .video || minisVideoExtensions.contains(attachment.cacheURL.pathExtension.lowercased())
+}
+
+private func isImageAttachment(_ attachment: InputAttachment) -> Bool {
+    let ext = attachment.cacheURL.pathExtension.lowercased()
+    return attachment.kind == .image || minisImageExtensions.contains(ext) || ["heic", "heif"].contains(ext)
+}
+
+/// Process-wide limits apply to both input previews and the shared video player.
+/// Callers log fixed stages / numeric codes only, never file paths or AV errors.
+enum InputVideoDiagnostics {
+    private static let logger = AppLogger(category: "InputVideo")
+    private static let lock = NSLock()
+    private static let maxErrors = 16
+    private static let maxTraces = 80
+    nonisolated(unsafe) private static var errorCount = 0
+    nonisolated(unsafe) private static var traceCount = 0
+
+    static func error(_ message: @autoclosure () -> String) {
+        lock.lock()
+        let shouldLog = errorCount < maxErrors
+        if shouldLog { errorCount += 1 }
+        lock.unlock()
+        guard shouldLog else { return }
+        logger.error(String(message().prefix(240)))
+    }
+
+    static func trace(_ message: @autoclosure () -> String) {
+        let diagnostics = UserDefaults.standard.bool(forKey: "minisight.diagnostics")
+        guard diagnostics || AppLogger.isVerboseEnabled else { return }
+        lock.lock()
+        let shouldLog = traceCount < maxTraces
+        if shouldLog { traceCount += 1 }
+        lock.unlock()
+        guard shouldLog else { return }
+        let bounded = String(message().prefix(240))
+        if diagnostics { logger.info(bounded) } else { logger.verbose(bounded) }
+    }
+}
+
 struct SwipeToSendHint: View {
     let progress: CGFloat
     let armFraction: CGFloat
@@ -117,6 +159,7 @@ struct InputAttachmentGridView: View {
     var onRetry: ((InputAttachment) -> Void)?
 
     @State private var draggingID: UUID?
+    @State private var videoPreview: InputAttachment?
 
     var body: some View {
         FlowLayout(hSpacing: 8, vSpacing: 8) {
@@ -124,7 +167,8 @@ struct InputAttachmentGridView: View {
                 AttachmentChip(attachment: attachment,
                                onRetry: onRetry.map { retry in
                                    { retry(attachment) }
-                               }) {
+                               },
+                               onOpenVideo: { videoPreview = $0 }) {
                     onRemove(attachment)
                 }
                 .opacity(draggingID == attachment.id ? 0.4 : 1)
@@ -144,6 +188,9 @@ struct InputAttachmentGridView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 6)  // room for × button overhang (offset y: -4)
+        .fullScreenCover(item: $videoPreview) { attachment in
+            MinisVideoFullscreenPlayer(fileURL: attachment.cacheURL)
+        }
     }
 }
 
@@ -193,9 +240,11 @@ private struct VideoLoadingChip: View {
 private struct AttachmentChip: View {
     let attachment: InputAttachment
     var onRetry: (() -> Void)?
+    var onOpenVideo: (InputAttachment) -> Void
     let onRemove: () -> Void
     @State private var showPreview = false
     @State private var cachedImage: UIImage? = nil
+    @State private var previewError: String? = nil
 
     var body: some View {
         Group {
@@ -208,28 +257,44 @@ private struct AttachmentChip: View {
                 readyChip
             }
         }
+        .alert("无法打开附件", isPresented: Binding(
+            get: { previewError != nil },
+            set: { if !$0 { previewError = nil } }
+        )) {
+            Button("好", role: .cancel) { previewError = nil }
+        } message: {
+            Text(previewError ?? "附件文件不存在或不可读取。")
+        }
+    }
+
+    private func openPreview() {
+        if let error = MinisVideoFileValidation.error(for: attachment.cacheURL) {
+            previewError = error
+            InputVideoDiagnostics.error("stage=input.preview.invalid_file")
+            return
+        }
+        if isVideoAttachment(attachment) {
+            InputVideoDiagnostics.trace("stage=input.preview.video")
+            onOpenVideo(attachment)
+        } else {
+            showPreview = true
+        }
     }
 
     /// A normal, loaded attachment (image / video thumbnail or file chip).
     @ViewBuilder
     private var readyChip: some View {
-        let ext = attachment.cacheURL.pathExtension.lowercased()
-        let video = attachment.kind == .video || ["mp4", "mov", "m4v"].contains(ext)
-        let image = attachment.kind == .image || ["png", "jpg", "jpeg", "heic", "heif", "webp", "gif"].contains(ext)
+        let video = isVideoAttachment(attachment)
+        let image = isImageAttachment(attachment)
         if video {
-            thumbnailChip(image: cachedImage, isVideo: true)
-                .onAppear { loadThumbnailIfNeeded() }
-                .fullScreenCover(isPresented: $showPreview) {
-                    MinisVideoFullscreenPlayer(fileURL: attachment.cacheURL)
-                        .onAppear { minisLogger.info("[AttachmentChip] video player shown") }
-                }
+            thumbnailChip(image: cachedImage, isVideo: true, accessibilityLabel: "Play video")
+                .task(id: attachment.cacheURL) { await loadThumbnailIfNeeded() }
         } else if image {
-            thumbnailChip(image: cachedImage)
-                .onAppear { loadThumbnailIfNeeded() }
+            thumbnailChip(image: cachedImage, accessibilityLabel: "Preview image")
+                .task(id: attachment.cacheURL) { await loadThumbnailIfNeeded() }
                 .sheet(isPresented: $showPreview) { previewSheet }
         } else {
             fileChip
-                .onAppear { loadThumbnailIfNeeded() }
                 .sheet(isPresented: $showPreview) { previewSheet }
         }
     }
@@ -289,42 +354,46 @@ private struct AttachmentChip: View {
         .fixedSize()
     }
 
-    /// Thumbnail chip for images and videos.
+    /// Thumbnail chip for images and videos. The whole media tile is tappable.
     @ViewBuilder
-    private func thumbnailChip(image: UIImage?, isVideo: Bool = false) -> some View {
-        if let uiImage = image {
-            ZStack(alignment: .topTrailing) {
+    private func thumbnailChip(image: UIImage?, isVideo: Bool = false,
+                               accessibilityLabel: String = "Open attachment") -> some View {
+        ZStack(alignment: .topTrailing) {
+            Button(action: openPreview) {
                 ZStack(alignment: .bottomLeading) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 64, height: 64)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
-                        .shadow(color: .black.opacity(0.08), radius: 2, x: 0, y: 1)
-                        .contentShape(RoundedRectangle(cornerRadius: 8))
-                        .onTapGesture {
-                            minisLogger.info("[AttachmentChip] tap ext=\(attachment.cacheURL.pathExtension) kind=\(String(describing: attachment.kind)) file=\(attachment.cacheURL.lastPathComponent)")
-                            showPreview = true
-                        }
+                    if let uiImage = image {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        Image(systemName: isVideo ? "film" : "photo")
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundStyle(ChatColors.secondaryText)
+                    }
 
                     if isVideo {
                         Image(systemName: "play.fill")
                             .font(.system(size: 10))
                             .foregroundStyle(.white)
                             .padding(4)
-                            .background(.black.opacity(0.5))
+                            .background(.black.opacity(0.55))
                             .clipShape(Circle())
                             .padding(4)
                     }
                 }
-
-                removeBadge
+                .frame(width: 64, height: 64)
+                .background(ChatColors.secondaryBg)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.08), radius: 2, x: 0, y: 1)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
             }
-            .fixedSize()
-        } else {
-            fileChip
+            .buttonStyle(.plain)
+            .accessibilityLabel(accessibilityLabel)
+
+            removeBadge
         }
+        .fixedSize()
     }
 
     /// 26pt clear hit target, kept INSIDE the 64pt chip. The old 18pt icon was
@@ -384,23 +453,39 @@ private struct AttachmentChip: View {
         return nil
     }
 
-    private func loadThumbnailIfNeeded() {
-        let key = attachment.cacheURL.path
+    @MainActor
+    private func loadThumbnailIfNeeded() async {
+        let url = attachment.cacheURL
+        let key = url.path
+        let isVideo = isVideoAttachment(attachment)
+        cachedImage = nil
+        guard MinisVideoFileValidation.error(for: url) == nil else {
+            InputVideoDiagnostics.error("stage=input.thumbnail.invalid_file")
+            return
+        }
         if let cached = MinisMediaCache.shared.thumbnail(for: key) {
+            guard !Task.isCancelled else { return }
             cachedImage = cached
             return
         }
-        Task.detached(priority: .userInitiated) {
-            let image: UIImage?
-            if attachment.kind == .video {
-                image = Self.generateVideoThumbnail(from: attachment.cacheURL)
-            } else {
-                image = Self.downsampleImage(fileURL: attachment.cacheURL, maxPixelSize: 256)
-            }
-            if let image {
-                MinisMediaCache.shared.setThumbnail(image, for: key)
-                await MainActor.run { cachedImage = image }
-            }
+        let work = Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard !Task.isCancelled else { return nil }
+            return isVideo
+                ? Self.generateVideoThumbnail(from: url)
+                : Self.downsampleImage(fileURL: url, maxPixelSize: 256)
+        }
+        let image = await withTaskCancellationHandler(operation: {
+            await work.value
+        }, onCancel: {
+            work.cancel()
+        })
+        guard !Task.isCancelled else { return }
+        if let image {
+            MinisMediaCache.shared.setThumbnail(image, for: key)
+            cachedImage = image
+        } else {
+            // A missing thumbnail never blocks the same fullscreen video route.
+            InputVideoDiagnostics.trace("stage=input.thumbnail.unavailable")
         }
     }
 
@@ -428,7 +513,7 @@ private struct AttachmentChip: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.4), lineWidth: 0.5))
             .contentShape(RoundedRectangle(cornerRadius: 8))
-            .onTapGesture { showPreview = true }
+            .onTapGesture { openPreview() }
 
             removeBadge
         }

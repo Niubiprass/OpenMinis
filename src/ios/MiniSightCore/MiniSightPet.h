@@ -2,8 +2,8 @@
 //  MiniSightPet.h
 //  MiniSight
 //
-//  Petdex-style animated pet. A 9-row sprite sheet: row 0 idle, 1 run-right,
-//  2 run-left, 3 waving, 4 jumping, 5 failed, 6 waiting, 7 running, 8 review.
+//  Petdex-style animated pet. Post-loader 8x9 atlas: row 0 idle (6),
+//  1/2 walk (8 each), 3 wave (4), 4 jump (5), 5 seated/closed-eye sleep (8).
 //  Frame counts/timings follow crafter-station/petdex (MIT).
 //
 
@@ -45,6 +45,15 @@ typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
 - (void)setSuspended:(BOOL)suspended;
 /// Independent owner-scoped gates; clearing one never clears another owner.
 - (void)setMotionLocked:(BOOL)locked forReason:(MiniSightPetMotionLockReason)reason;
+/// Reset resident inactivity and wake without acquiring drag/jump/fling ownership.
+/// These APIs never start stopped, suspended, or hidden playback.
+- (void)wakeForInteraction;
+/// Queue one short row-3 wave; expires after 3 seconds while another pose owns it.
+- (void)requestAttentionResponse;
+/// Request bounded idle sleep; ignored while hidden/stopped/active/locked or a
+/// gesture/motion/held action owns the pose. NO wakes, never starts playback.
+- (void)setResidentSleeping:(BOOL)sleeping;
+@property (nonatomic, readonly, getter=isResidentSleeping) BOOL residentSleeping;
 
 /// Main-thread normalized roll input in the range -1...1 (-1 left, +1 right).
 /// The visual tilt is finite and clamped; this never changes center, bounds, or
@@ -72,7 +81,8 @@ typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
 /// Main-thread, changed geometry only (including the final motion point/clamps).
 @property (nonatomic, copy, nullable) void (^onGeometryChanged)(void);
 
-/// Only changes the delay between roaming actions, not sprite/display-link FPS.
+/// Authoritative assistant activity (chat/voice/tool work). YES wakes and blocks
+/// resident sleep; changes the roam delay, never sprite/display-link FPS.
 @property (nonatomic) BOOL activityActive;
 /// 0.6 lively, 1.0 natural, 4.0 quiet, 0 = no roaming (breathing/idle stays).
 @property (nonatomic) double roamPace;

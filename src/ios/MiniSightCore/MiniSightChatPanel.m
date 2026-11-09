@@ -1202,7 +1202,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
             widest = MAX(widest, w);
         }
         // The reply panel itself grows to the longest line, not a fixed sheet.
-        CGFloat panelW = self.rows.count ? MIN(maxWidth, MAX(200., widest + 24.)) : maxWidth;
+        panelW = self.rows.count ? MIN(maxWidth, MAX(200., widest + 24.)) : maxWidth;
         self.messageWidthConstraint.constant = panelW;
         self.measuredWidth = panelW;
         [self.messageStack setNeedsLayout];

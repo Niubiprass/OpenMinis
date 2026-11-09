@@ -18,19 +18,24 @@
 #import <math.h>
 #import <stdlib.h>
 #import "MiniSightBlip.h"
+#import "MiniSightPetBehavior.h"
 
 typedef NS_ENUM(NSInteger, MiniSightPetState) {
     MiniSightPetStateIdle = 0,
     MiniSightPetStateRunRight = 1,
     MiniSightPetStateRunLeft = 2,
+    // The asset is already vertically flipped by its loader: row 3 is the
+    // raised-hand response and row 5 is the seated/closed-eye sleep clip.
     MiniSightPetStateWaving = 3,
     MiniSightPetStateJumping = 4,
+    MiniSightPetStateSleeping = 5,
 };
 
 static const NSInteger kMiniSightPetRows = 9;
 static const NSInteger kMiniSightPetMaxCols = 8;
 static const NSTimeInterval kMiniSightSpriteInterval = 1.0 / 15.0;
-static const NSTimeInterval kMiniSightIdleSpriteInterval = 1.0 / 4.0;
+static const NSTimeInterval kMiniSightIdleSpriteInterval = MS_PET_IDLE_FRAME_INTERVAL;
+static const NSTimeInterval kMiniSightSleepSpriteInterval = MS_PET_SLEEP_FRAME_INTERVAL;
 
 // Roaming delays. Only the delay between actions changes; FPS never does.
 static const NSTimeInterval kMiniSightRoamActiveLo = 2.4;   // activityActive == YES
@@ -117,6 +122,11 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
     NSUInteger _motionGeneration, _activeMotionGeneration, _roamGeneration;
     CGRect _centerBounds;
     BOOL _activityActive, _longPressEnabled, _roamingPaused, _interactionActive, _reducedWork, _soundEnabled;
+    MSPetResident _resident;
+    BOOL _dragging;
+    UILabel *_sleepBadge;
+    BOOL _reconcilingPlayback;
+    BOOL _reconcileAgain;
     double _roamPace;
     NSInteger _preferredFPS;
     void (^_onGeometryChanged)(void);
@@ -127,6 +137,12 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
 - (BOOL)shouldAnimate;
 - (BOOL)mayRoam;
 - (void)reconcilePlayback;
+- (MSPetResidentContext)residentContext;
+- (void)updateResidentAtTime:(CFTimeInterval)now;
+- (void)applyResidentTransition:(MSPetResidentTransition)transition atTime:(CFTimeInterval)now;
+- (void)clearResidentForPlayback;
+- (void)updateSleepBadge;
+- (BOOL)consumeAttentionAtTime:(CFTimeInterval)now;
 - (void)invalidateFrameTimer;
 - (void)invalidateRoamTimer;
 - (void)ensureFrameTimer;
@@ -182,6 +198,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 }
 
 @implementation MiniSightPetView
+@dynamic image;
 // UIImageView's normal image paints the WHOLE atlas behind the sprite child.
 // Treat image as the atlas source and keep the host backing layer empty.
 @synthesize centerBounds = _centerBounds, onGeometryChanged = _onGeometryChanged;
@@ -240,8 +257,28 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
                    name:UIWindowDidBecomeHiddenNotification object:nil];
         [nc addObserver:self selector:@selector(windowVisibilityChanged:)
                    name:UIWindowDidBecomeVisibleNotification object:nil];
+        _sleepBadge = [[UILabel alloc] initWithFrame:CGRectZero];
+        _sleepBadge.text = @"Z";
+        _sleepBadge.textAlignment = NSTextAlignmentCenter;
+        _sleepBadge.textColor = [UIColor systemBlueColor];
+        _sleepBadge.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightBold];
+        _sleepBadge.userInteractionEnabled = NO;
+        _sleepBadge.isAccessibilityElement = NO;
+        _sleepBadge.accessibilityElementsHidden = YES;
+        _sleepBadge.hidden = YES;
+        _sleepBadge.alpha = 0.0;
+        [self addSubview:_sleepBadge];
     }
     return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    if (!_sleepBadge) return;
+    CGFloat size = MIN(20.0, MAX(13.0, self.bounds.size.width * 0.30));
+    _sleepBadge.font = [UIFont systemFontOfSize:size weight:UIFontWeightBold];
+    _sleepBadge.frame = CGRectMake(self.bounds.size.width - size * 0.72,
+                                   -size * 0.40, size * 0.9, size * 1.15);
 }
 
 - (void)dealloc {
@@ -265,6 +302,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 - (void)stopPlaying {
     NSAssert([NSThread isMainThread], @"Pet UI must be used on the main thread");
     _wantsPlaying = NO;
+    [self clearResidentForPlayback];
     [self invalidateFrameTimer];
     [self invalidateRoamTimer];
     [self cancelMotion];
@@ -285,6 +323,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     NSUInteger next = locked ? (_motionLockReasons | mask) : (_motionLockReasons & ~mask);
     if (!mask || next == _motionLockReasons) return;
     _motionLockReasons = next;
+    if (locked) [self wakeForInteraction];
     [self reconcilePlayback];
 }
 
@@ -300,8 +339,10 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     NSAssert([NSThread isMainThread], @"Pet UI must be used on the main thread");
     if (_activityActive == active) return;
     _activityActive = active;
+    // Activity boundaries reset inactivity; repeated frame/settings refreshes do not.
+    [self wakeForInteraction];
     [self invalidateRoamTimer];
-    [self scheduleRoam]; // Only the roaming delay changes; no FPS change.
+    [self reconcilePlayback];
 }
 
 - (void)setRoamingPaused:(BOOL)paused {
@@ -315,8 +356,119 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     NSAssert([NSThread isMainThread], @"Pet UI must be used on the main thread");
     if (_interactionActive == active) return;
     _interactionActive = active;
+    if (active) [self wakeForInteraction];
     if (active) [self cancelGravityImpulse];
     [self reconcilePlayback];
+}
+
+- (MSPetResidentContext)residentContext {
+    return (MSPetResidentContext){
+        .running = [self shouldAnimate], .activity = _activityActive,
+        .interaction = _interactionActive, .paused = _roamingPaused,
+        .moving = _motionActive, .holding = _stateHoldUntil > 0.,
+        .locks = (unsigned)_motionLockReasons
+    };
+}
+
+- (BOOL)isResidentSleeping {
+    return _resident.sleeping;
+}
+
+- (void)updateSleepBadge {
+    BOOL visible = _resident.sleeping && [self shouldAnimate];
+    // Static decoration only: no animation, gesture recognizer or accessibility
+    // element is added for the resident nap indicator.
+    [_sleepBadge.layer removeAllAnimations];
+    _sleepBadge.hidden = !visible;
+    _sleepBadge.alpha = visible ? 1.0 : 0.0;
+}
+
+- (void)clearResidentForPlayback {
+    BOOL hadSleepPose = _resident.sleeping || _resident.waking;
+    MSPetResidentReset(&_resident);
+    _dragging = NO;
+    [self updateSleepBadge];
+    if (hadSleepPose) [self setSpriteState:MiniSightPetStateIdle];
+}
+
+- (void)applyResidentTransition:(MSPetResidentTransition)transition
+                        atTime:(CFTimeInterval)now {
+    (void)now;
+    switch (transition) {
+        case MSPetResidentFellAsleep:
+            if (_roamTimer) {
+                MSPetResidentSaveRoam(&_resident, CACurrentMediaTime(),
+                                      [_roamTimer.fireDate timeIntervalSinceNow]);
+            }
+            [self invalidateRoamTimer];
+            [self cancelGravityImpulse];
+            [self setSpriteState:MiniSightPetStateSleeping];
+            break;
+        case MSPetResidentWoke:
+            // A wake transition never replaces a drag, held pose or motion
+            // owner. Those owners cancel only the visual wake pose.
+            if (_dragging || _motionActive || _stateHoldUntil > 0.) {
+                MSPetResidentCancelWakePose(&_resident);
+            }
+            if (!_resident.waking && _state == MiniSightPetStateSleeping) {
+                [self setSpriteState:MiniSightPetStateIdle];
+            }
+            break;
+        case MSPetResidentFinishedWaking:
+            if (_state == MiniSightPetStateSleeping) {
+                [self setSpriteState:MiniSightPetStateIdle];
+            }
+            break;
+        case MSPetResidentUnchanged:
+            break;
+    }
+    [self updateSleepBadge];
+}
+
+- (void)updateResidentAtTime:(CFTimeInterval)now {
+    MSPetResidentTransition transition =
+        MSPetResidentAdvance(&_resident, now, [self residentContext]);
+    [self applyResidentTransition:transition atTime:now];
+}
+
+- (void)setResidentSleeping:(BOOL)sleeping {
+    NSAssert([NSThread isMainThread], @"Pet UI must be used on the main thread");
+    if (!sleeping) {
+        [self wakeForInteraction];
+        return;
+    }
+    CFTimeInterval now = CACurrentMediaTime();
+    if (MSPetResidentTrySleep(&_resident, now, [self residentContext])) {
+        [self applyResidentTransition:MSPetResidentFellAsleep atTime:now];
+        [self reconcilePlayback];
+    }
+}
+
+- (void)wakeForInteraction {
+    NSAssert([NSThread isMainThread], @"Pet UI must be used on the main thread");
+    if (![self shouldAnimate]) return;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (MSPetResidentTouch(&_resident, now)) {
+        [self applyResidentTransition:MSPetResidentWoke atTime:now];
+    }
+    [self reconcilePlayback];
+}
+
+- (BOOL)consumeAttentionAtTime:(CFTimeInterval)now {
+    BOOL poseAvailable = !_motionActive && !_dragging && !_interactionActive &&
+                         _stateHoldUntil <= 0. && _state == MiniSightPetStateIdle;
+    if (!MSPetResidentTakeAttention(&_resident, now, poseAvailable)) return NO;
+    [self holdState:MiniSightPetStateWaving forDuration:0.75];
+    return YES;
+}
+
+- (void)requestAttentionResponse {
+    NSAssert([NSThread isMainThread], @"Pet UI must be used on the main thread");
+    if (![self shouldAnimate]) return;
+    [self wakeForInteraction];
+    CFTimeInterval now = CACurrentMediaTime();
+    MSPetResidentRequestAttention(&_resident, now);
+    [self consumeAttentionAtTime:now];
 }
 
 - (void)setReducedWork:(BOOL)reduced {

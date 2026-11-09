@@ -89,15 +89,32 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
         didSet { UserDefaults.standard.set(backgroundSpeakEnabled, forKey: "backgroundSpeakEnabled") }
     }
 
-    /// True only when the configuration can actually keep the app alive in the
-    /// background. The master switch alone is not enough: silent-audio
-    /// keep-alive (the mechanism that prevents background-task expiry) only
-    /// plays when Background Speak is also on (see `evaluateSilentAudio`).
-    /// So "master on but Background Speak off" still gets interrupted — and
-    /// must be treated as "enhanced background NOT effective" everywhere we
-    /// decide whether to count interruptions / surface the reminder banner.
+    /// Configuration expresses permission to try; runtime support additionally
+    /// requires a current successful audio-session apply AND a running source.
+    /// Never infer survival from switches or an optimistic engine-owner flag.
     var enhancedBackgroundEffective: Bool {
-        enhancedBackgroundEnabled && backgroundSpeakEnabled
+        enhancedBackgroundEnabled && backgroundSpeakEnabled && backgroundExecutionIsBacked
+    }
+
+    /// Synchronous readback used at finite-task expiry. In-flight applies,
+    /// interruptions, paused playback and bare intents do not provide backing.
+    /// Actual media/TTS/capture may back work while silent audio yields to it.
+    var backgroundExecutionIsBacked: Bool {
+        let coordinator = AudioSessionCoordinator.shared
+        guard let applied = coordinator.appliedIntent else { return false }
+        switch applied {
+        case .capture:
+            return VoiceModePreference.shared.isCapturing
+        case .mediaAttachment:
+            return GlobalAudioPlayer.shared.isPlaying
+        case .replyTTS:
+            let voice = VoiceOutputState.shared
+            return (voice.isReadingAloud && !voice.speechPaused)
+                || (VoiceOutputPlayer.shared.isPlaying && !VoiceOutputPlayer.shared.isPaused)
+                || silentAudioIsPlaying
+        case .backgroundKeepAlive:
+            return coordinator.hasIntent(.backgroundKeepAlive) && silentAudioIsPlaying
+        }
     }
 
     /// When enabled, posts local notifications when agent tasks start and complete.
@@ -216,6 +233,16 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     private var audioEngine: AVAudioEngine?
     private var silentPlayerNode: AVAudioPlayerNode?
     private var silentAudioActive = false
+    /// Owner token covers asynchronous session apply, engine start and retry.
+    /// Stops/media/cancellation invalidate it before releasing the intent.
+    private var silentAudioStartToken: UUID?
+    private var silentAudioRetry: DispatchWorkItem?
+
+    private var silentAudioWanted: Bool {
+        isActive && enhancedBackgroundEnabled && backgroundSpeakEnabled
+            && appIsInBackground && silentAudioSuspendCount == 0
+            && !AudioSessionCoordinator.shared.keepAlivePlaybackBlocked
+    }
 
     /// [T-bg-keepalive-debounce] Pending debounced stop of silent audio. When
     /// the app receives a transient `foreground` signal (e.g. a call ending →
@@ -267,9 +294,11 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     private(set) var lastAudioInterruptionAt: Date?
 
     /// True if the keep-alive engine is genuinely running right now.
-    var silentAudioIsPlaying: Bool { audioEngine?.isRunning ?? false }
-    /// True if the shared audio session currently holds an active route.
-    var audioSessionIsActive: Bool { silentAudioActive }
+    var silentAudioIsPlaying: Bool {
+        (audioEngine?.isRunning ?? false) && (silentPlayerNode?.isPlaying ?? false)
+    }
+    /// Last current successful session application, independent of engine intent.
+    var audioSessionIsActive: Bool { AudioSessionCoordinator.shared.appliedIntent != nil }
     /// True if a debounced stop is queued.
     var stopDebouncePending: Bool { pendingSilentAudioStop != nil }
 
@@ -312,8 +341,8 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
         let before = silentAudioSuspendCount
         silentAudioSuspendCount += 1
         logger.info("[BackgroundKeepAlive] suspendSilentAudioForMedia: count \(before) → \(self.silentAudioSuspendCount) caller=\(caller)")
-        if silentAudioSuspendCount == 1 && silentAudioActive {
-            stopSilentAudio()
+        if silentAudioSuspendCount == 1 {
+            stopSilentAudio(reason: "media_suspend")
         }
     }
 
@@ -544,6 +573,19 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
             self?.audioPlaybackStateChanged(source: "voiceOut(reading=\(reading),paused=\(paused))")
         }
         .store(in: &cancellables)
+
+        // Successful CURRENT profile changes may unblock silent playback after
+        // capture/TTS/media. Failed applies are retried only by the bounded start
+        // attempt; do not form an unbounded notification → apply failure loop.
+        NotificationCenter.default.publisher(for: AudioSessionCoordinator.stateChangedNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, self.silentAudioWanted,
+                      self.silentAudioStartToken == nil, self.silentAudioRetry == nil,
+                      AudioSessionCoordinator.shared.keepAlivePlaybackApplied else { return }
+                self.evaluateSilentAudio(caller: "sessionApplied")
+            }
+            .store(in: &cancellables)
 
         // Restart silent audio when an external app's audio interruption ends.
         // External media (Spotify, Apple Music, etc.) starting playback will
@@ -1139,47 +1181,39 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     // MARK: - Silent Audio Keep-Alive
 
     private func evaluateSilentAudio(caller: String = #function) {
-        // Self-heal a leaked suspendCount. suspend/resume should pair, but
-        // task cancellation, network timeouts mid-playback, etc. occasionally
-        // skip the resume call. If keepalive should be active and silent
-        // audio is NOT running yet the count is stuck > 2, treat it as leaked
-        // and reset so we can re-engage keepalive.
-        if isActive && appIsInBackground && backgroundSpeakEnabled
-            && !silentAudioActive && silentAudioSuspendCount > 2 {
-            logger.warning("[BackgroundKeepAlive] silentAudioSuspendCount=\(self.silentAudioSuspendCount) looks leaked — resetting to 0")
-            silentAudioSuspendCount = 0
-        }
-
-        let shouldPlay = isActive && backgroundSpeakEnabled && appIsInBackground && silentAudioSuspendCount == 0
+        // A nested media/capture suspension is owned by its callers. Never
+        // clear it heuristically while asynchronous activation is in flight.
+        let shouldPlay = silentAudioWanted
+        let hasAudioWork = silentAudioActive || silentAudioStartToken != nil
+            || silentAudioRetry != nil || AudioSessionCoordinator.shared.hasIntent(.backgroundKeepAlive)
         let sessions = SessionActivityTracker.shared.activeSessions.count
         let reason: String = {
-            if !isActive { return "isActive=false" }
+            if !isActive || !enhancedBackgroundEnabled { return "inactive/disabled" }
             if !backgroundSpeakEnabled { return "bgSpeak=false" }
             if !appIsInBackground { return "bg=false" }
             if silentAudioSuspendCount > 0 { return "suspended=\(silentAudioSuspendCount)" }
+            if AudioSessionCoordinator.shared.keepAlivePlaybackBlocked { return "capture/interruption" }
             return "ok"
         }()
         // [BKA][Evaluate] decision chain — caller, all inputs, and the resolved
         // PLAY / STOP / NOOP decision so the crash-time timeline shows exactly
         // who triggered each evaluation and why it stopped or started audio.
         let decision: String = {
-            if shouldPlay { return silentAudioActive ? "NOOP(already playing)" : "PLAY" }
-            return silentAudioActive ? "STOP" : "NOOP(already stopped)"
+            if shouldPlay {
+                return silentAudioIsPlaying && AudioSessionCoordinator.shared.keepAlivePlaybackApplied
+                    ? "PLAY(verified)" : "ENSURE(intent/session/engine)"
+            }
+            return hasAudioWork ? "STOP" : "NOOP(already stopped)"
         }()
         logger.info("[BKA][Evaluate] caller=\(caller) isActive=\(self.isActive) bgSpeak=\(self.backgroundSpeakEnabled) bg=\(self.appIsInBackground) sessions=\(sessions) suspended=\(self.silentAudioSuspendCount) playing=\(self.silentAudioActive) stopDebounce=\(self.stopDebouncePending ? "pending" : "nil") → decision=\(decision) reason=\(reason)")
 
-        if shouldPlay && !silentAudioActive {
-            // A fresh background signal (or any condition that re-enables play)
-            // cancels any debounced stop in flight — the transient foreground
-            // blip is over and we want to keep the audio running.
+        if shouldPlay {
             cancelPendingSilentAudioStop(reason: "shouldPlay=true")
+            cancelIdleGrace(reason: "shouldPlay=true")
+            // Idempotent ensure: even a retained engine needs a current owner
+            // and a successful session apply after rapid foreground/background.
             startSilentAudio()
-        } else if shouldPlay && silentAudioActive {
-            // Already playing AND should keep playing — a transient foreground
-            // blip that flipped back before its debounce fired. Make sure no
-            // stale stop is still queued.
-            cancelPendingSilentAudioStop(reason: "still shouldPlay")
-        } else if !shouldPlay && silentAudioActive {
+        } else if hasAudioWork {
             // [T-ios-bg-idle-grace] Split the single "should stop" branch by WHY.
             // Only the pure-idle transition (isActive went false while every other
             // condition still says "keep playing") gets the 60s grace window.
@@ -1189,22 +1223,22 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
             // pre-existing path unchanged (which includes the 1.5s transient-
             // foreground debounce; the two windows never overlap because this
             // branch requires appIsInBackground && backgroundSpeakEnabled).
-            let idleOnly = !isActive
+            let idleOnly = !isActive && enhancedBackgroundEnabled
                 && backgroundSpeakEnabled
                 && appIsInBackground
                 && silentAudioSuspendCount == 0
+                && !AudioSessionCoordinator.shared.keepAlivePlaybackBlocked
+                && silentAudioIsPlaying
             if idleOnly {
                 beginIdleGraceIfNeeded()
             } else {
                 // An explicit stop supersedes a grace window already in flight.
                 cancelIdleGrace(reason: "explicit stop (\(reason))")
-                requestStopSilentAudio(transientForeground: !appIsInBackground)
+                requestStopSilentAudio(transientForeground: !appIsInBackground
+                    && isActive && enhancedBackgroundEnabled && backgroundSpeakEnabled
+                    && silentAudioSuspendCount == 0
+                    && !AudioSessionCoordinator.shared.keepAlivePlaybackBlocked)
             }
-        } else if shouldPlay {
-            // Work is back (or never left) — a queued idle grace is now moot.
-            // Covers both shouldPlay branches above; cancelIdleGrace is a no-op
-            // when nothing is pending.
-            cancelIdleGrace(reason: "shouldPlay=true")
         }
     }
 
@@ -1335,52 +1369,63 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     }
 
     private func startSilentAudio(reason: String = "evaluate") {
-        guard !silentAudioActive else { return }
-        // Starting up means we definitely don't want any queued stop to fire.
+        guard silentAudioWanted else { return }
         cancelPendingSilentAudioStop(reason: "startSilentAudio")
         cancelIdleGrace(reason: "startSilentAudio")
+        let coordinator = AudioSessionCoordinator.shared
+        if silentAudioIsPlaying && coordinator.keepAlivePlaybackApplied { return }
+        guard silentAudioStartToken == nil, silentAudioRetry == nil else { return }
+        let token = UUID()
+        silentAudioStartToken = token
         let attempt = silentAudioActivationRetries + 1
-        let sessions = SessionActivityTracker.shared.activeSessions.count
-        logger.info("[BKA][Start] reason=\(reason) sessions=\(sessions) attempt=\(attempt)/\(Self.maxActivationRetries)")
+        logger.info("[BKA][Start] reason=\(reason) attempt=\(attempt)/\(Self.maxActivationRetries) — awaiting session apply")
         recordBKAEvent("Start(reason=\(reason),attempt=\(attempt))")
-
-        // [T-bg-keepalive-debounce] Activate the session, retrying on failure.
-        // After a stopSilentAudio() the session was deactivated with
-        // notifyOthersOnDeactivation; the system may briefly reject a
-        // re-activation while another app is still re-acquiring focus, or while
-        // a call/media session is releasing. A single sync attempt here closes
-        // the common case; on failure we schedule an async retry (0.5s apart,
-        // up to 3 total attempts) by re-invoking startSilentAudio, so we never
-        // block the main thread yet still recover from the transient rejection.
-        // The session category/active is owned by AudioSessionCoordinator. Declare
-        // the keep-alive intent (lowest priority) — the coordinator applies the
-        // .mixWithOthers profile ONLY when nothing higher (reply TTS / media /
-        // capture) is active, so the silent track no longer clobbers TTS's profile.
-        // The silent AVAudioEngine below plays regardless to keep the process alive.
-        MainActor.assumeIsolated {
-            AudioSessionCoordinator.shared.begin(.backgroundKeepAlive)
+        // Declaring the lowest-priority owner never replaces capture/media/TTS.
+        // No semaphore, queue.sync or AVAudioSession IPC on the main thread.
+        coordinator.beginBackgroundKeepAlive { [weak self] applied in
+            guard let self, self.silentAudioStartToken == token else { return }
+            self.silentAudioStartToken = nil
+            let withinForegroundDebounce = self.pendingSilentAudioStop != nil
+                && self.isActive && self.enhancedBackgroundEnabled && self.backgroundSpeakEnabled
+                && self.silentAudioSuspendCount == 0 && !coordinator.keepAlivePlaybackBlocked
+            guard self.silentAudioWanted || withinForegroundDebounce else {
+                self.stopSilentAudio(reason: "start_no_longer_wanted")
+                return
+            }
+            guard applied, coordinator.keepAlivePlaybackApplied else {
+                self.scheduleSilentAudioActivationRetry()
+                return
+            }
+            if self.silentAudioIsPlaying {
+                self.silentAudioActivationRetries = 0
+                return
+            }
+            // The session has acknowledged the current owner, but a route
+            // change may have stopped the old engine/player behind our flag.
+            self.silentPlayerNode?.stop()
+            self.audioEngine?.stop()
+            self.silentPlayerNode = nil
+            self.audioEngine = nil
+            self.silentAudioActive = false
+            self.startSilentAudioEngine()
         }
-        logger.info("[BKA][Start] begin(.backgroundKeepAlive) — acquiring engine")
-        silentAudioActivationRetries = 0
+    }
 
+    private func startSilentAudioEngine() {
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         engine.attach(player)
-
-        // Create a silent audio buffer (1 second of silence, looping)
         let sampleRate: Double = 44100
-        let frameCount = AVAudioFrameCount(sampleRate) // 1 second
+        let frameCount = AVAudioFrameCount(sampleRate)
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-            logger.error("[BackgroundKeepAlive] Failed to create silent audio buffer")
+            logger.error("[BKA][Start] Failed to create silent audio buffer")
+            scheduleSilentAudioActivationRetry()
             return
         }
         buffer.frameLength = frameCount
-        // Buffer is already zero-filled (silent)
-
         engine.connect(player, to: engine.mainMixerNode, format: format)
         engine.mainMixerNode.outputVolume = 0.001
-
         do {
             try engine.start()
             player.scheduleBuffer(buffer, at: nil, options: .loops)
@@ -1388,10 +1433,14 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
             audioEngine = engine
             silentPlayerNode = player
             silentAudioActive = true
+            silentAudioActivationRetries = 0
             startAudioUpdateTimer()
-            logger.info("[BKA][Start] engine running — silent audio keep-alive ACTIVE")
+            logger.info("[BKA][Start] session applied + engine/player running")
         } catch {
+            player.stop()
+            engine.stop()
             logger.error("[BKA][Start] engine.start() FAILED: \(error.localizedDescription)")
+            scheduleSilentAudioActivationRetry()
         }
     }
 
@@ -1403,25 +1452,23 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     private func scheduleSilentAudioActivationRetry() {
         silentAudioActivationRetries += 1
         guard silentAudioActivationRetries < Self.maxActivationRetries else {
-            logger.error("[BKA][Start] exhausted \(Self.maxActivationRetries) activation attempts — giving up")
+            logger.error("[BKA][Start] exhausted \(Self.maxActivationRetries) activation attempts")
             recordBKAEvent("Start FAILED (exhausted retries)")
-            silentAudioActivationRetries = 0
+            stopSilentAudio(reason: "activation_failed")
             return
         }
         let attempt = silentAudioActivationRetries
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.activationRetryDelay) { [weak self] in
+        let retry = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let stillWanted = self.isActive && self.backgroundSpeakEnabled
-                && self.appIsInBackground && self.silentAudioSuspendCount == 0
-                && !self.silentAudioActive
-            guard stillWanted else {
-                logger.info("[BKA][Start] activation retry #\(attempt) skipped — keep-alive no longer wanted")
-                self.silentAudioActivationRetries = 0
+            self.silentAudioRetry = nil
+            guard self.silentAudioWanted else {
+                self.stopSilentAudio(reason: "retry_no_longer_wanted")
                 return
             }
-            logger.info("[BKA][Start] activation retry #\(attempt) — re-attempting")
             self.startSilentAudio(reason: "activationRetry#\(attempt)")
         }
+        silentAudioRetry = retry
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.activationRetryDelay, execute: retry)
     }
 
     /// Called by SpeechFinishedDelegate when TTS completes, to restart silent audio if needed.
@@ -1477,8 +1524,13 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
         // the grace timer's own handler calls in here — clearing it first there
         // makes this a no-op rather than re-entrancy.
         cancelIdleGrace(reason: "stopSilentAudio called")
+        silentAudioStartToken = nil
+        silentAudioRetry?.cancel()
+        silentAudioRetry = nil
         silentAudioActivationRetries = 0
-        guard silentAudioActive else { return }
+        let coordinator = AudioSessionCoordinator.shared
+        let hadAudioWork = silentAudioActive || audioEngine != nil || coordinator.hasIntent(.backgroundKeepAlive)
+        guard hadAudioWork else { return }
         let sessions = SessionActivityTracker.shared.activeSessions.count
         logger.info("[BKA][Stop] reason=\(reason) sessions=\(sessions)")
         recordBKAEvent("Stop(reason=\(reason))")
@@ -1491,9 +1543,7 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
         // End the keep-alive intent — the coordinator re-applies the next-highest
         // intent's profile (reply TTS / capture) or deactivates the session,
         // letting other apps resume. (No direct setActive here anymore.)
-        MainActor.assumeIsolated {
-            AudioSessionCoordinator.shared.end(.backgroundKeepAlive)
-        }
+        coordinator.end(.backgroundKeepAlive)
         logger.info("[BKA][Stop] engine.stop() + end(.backgroundKeepAlive)")
     }
 
