@@ -60,7 +60,7 @@ check(!unauthorized.contains("invalid_request_error"), "provider JSON type is no
 
 let rateLimited = FriendlyErrorText.sanitize(#"SSE Stream error: data: {"error":{"message":"Rate limit exceeded","code":"rate_limit_exceeded"}}"#) ?? ""
 check(rateLimited.contains("短时请求过多"), "429/rate limit is classified as short throttling")
-check(rateLimited.contains("代码 rate_limit_exceeded"), "safe provider code is retained")
+check(!rateLimited.contains("rate_limit_exceeded"), "provider symbolic code is not displayed")
 
 let quota = FriendlyErrorText.sanitize(#"HTTP 402: {"error":{"message":"insufficient_quota"}}"#) ?? ""
 check(quota.contains("余额或额度"), "quota is distinct from throttling")

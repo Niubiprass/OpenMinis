@@ -56,4 +56,5 @@
 - App 错误展示对聊天横幅、历史错误、模型获取和登录失败接入中文摘要。明确分类/清理 HTTP、JSON/SSE、取消、HTML；未知英文使用中文兜底。未改 `LLMError.swift`、`ProviderMultiKeys.swift` 策略逻辑。
 - 本机静态/主机测试：live settings、MiniSight local repairs、PBX 集成、审批门禁、FriendlyErrorText 10、provider digest 7、error copy 6 均通过；C11 宠物 27433、聊天布局 110336、layout-follow 5732、screen geometry 1600001、gravity 40015、chat core 233 通过。Foundation 行为测试由实际 Swift 源码提取，但因 iSH 无 `swiftc`，编译执行待 CI 验证。
 - App CI 成功后会删除并重建公开 `beta-latest` release。用户已明确允许这次替换；这不改手机已安装 App 或手头的旧包，只替换测试更新入口。安装、卸载、注销、重启均未授权。
-- 未完成：App 尚未提交/推送/CI；App 与插件尚未 Apple 工具链构建或验包；桌宠动作、键盘跟随与面板稳定性尚未真机验证。
+- App 已推送至 `ios15-160652-four-features`：首提交 `4799aa96b6726cdf542fd339eaded5d294e48435`，补桥接提交 `089f0121a55e1fc5484f5ef483c29a71c141f549`。首轮 CI run `42985110218` 因验证脚本沿用旧绝对路径失败；补桥接后的 run `42987278213` 因错误测试误要求显示服务商符号码而失败，已将行为断言改为验证该符号码不泄露。**仍需再推送一个仅修正测试的提交并重跑 CI**，不得称 App 构建成功。
+- 插件 0.8.42 分支 `minisight-0.8.42-20261111` 提交 `1e816aa16e972b63718ed01e798ac3bba78b7c3f`，roothide 与 rootless CI 均成功；尚未下载 DEB/验包。App 与插件仍未 Apple 工具链同时验收；桌宠动作、键盘跟随与面板稳定性未真机验证。
