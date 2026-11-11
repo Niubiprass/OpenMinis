@@ -22,7 +22,7 @@ import unittest
 
 from pathlib import Path
 
-ROOT = Path('/var/minis/shared/OpenMinis-160649')
+ROOT = Path(__file__).resolve().parent.parent
 ERROR = (ROOT / 'src/ios/Providers/LLMError.swift').read_text()
 CATALOG = json.loads((ROOT / 'src/ios/Localizable.xcstrings').read_text())
 
