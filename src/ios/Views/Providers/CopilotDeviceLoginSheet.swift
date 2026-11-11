@@ -266,7 +266,7 @@ struct CopilotDeviceLoginSheet: View {
                 // User cancelled — nothing to report.
             } catch {
                 if Task.isCancelled { return }
-                phase = .failed(error.localizedDescription)
+                phase = .failed(FriendlyErrorText.sanitize(error) ?? AppLocalized("供应商返回了无法识别的错误"))
             }
         }
     }

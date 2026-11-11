@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <math.h>
 #include <string.h>
+#include "MiniSightGeometry.h"
 
 #define MS_PET_SLEEP_AFTER 18.0
 #define MS_PET_SLEEP_DURATION 12.0
@@ -174,6 +175,64 @@ static inline int MSPetResidentWakeColumn(double elapsed) {
     static const int sequence[] = {5, 6, 7};
     double step = floor(fmax(0.0, MSPetResidentTime(elapsed)) / (MS_PET_WAKE_DURATION / 3.0));
     return sequence[step < 3.0 ? (int)step : 2];
+}
+
+// Explicit delay policy: lively mode may shorten a user's configured interval;
+// quiet mode lengthens it, while disabled mode schedules no roaming at all.
+static inline double MSPetRoamDelay(double base, double pace, double interval,
+                                    bool reducedWork, bool activity, double jitter) {
+    if (!isfinite(pace) || pace <= 0.0) return 0.0;
+    double unit = isfinite(jitter) ? fmin(1.0, fmax(0.0, jitter)) : 0.5;
+    double delay = interval > 0.0 && isfinite(interval)
+        ? interval * (0.75 + 0.5 * unit) : fmax(0.0, MSPetResidentTime(base));
+    delay *= pace;
+    if (reducedWork && !activity) delay *= 1.5;
+    return fmax(0.05, fmin(delay, 300.0));
+}
+
+// Walk/jump between neighboring screen-space "perches" instead of choosing a
+// random point anywhere on screen. The view still clamps every sample against
+// its live safe bounds; the helper only proposes the next small destination.
+static inline MSPoint MSPetNearbyTarget(MSRect bounds, MSPoint current,
+                                        double horizontalChoice, double verticalChoice,
+                                        bool jumping) {
+    bounds.x = MSClamp(MSFinite(bounds.x, 0.0), -1000000.0, 1000000.0);
+    bounds.y = MSClamp(MSFinite(bounds.y, 0.0), -1000000.0, 1000000.0);
+    bounds.w = MSClamp(MSFinite(bounds.w, 0.0), 0.0, 1000000.0);
+    bounds.h = MSClamp(MSFinite(bounds.h, 0.0), 0.0, 1000000.0);
+    current = MSClampCenter(bounds, current);
+    double hx = isfinite(horizontalChoice) ? fmin(1.0, fmax(0.0, horizontalChoice)) : 0.5;
+    double vy = isfinite(verticalChoice) ? fmin(1.0, fmax(0.0, verticalChoice)) : 0.5;
+    double direction = hx < 0.5 ? -1.0 : 1.0;
+    if (current.x <= bounds.x + 8.0) direction = 1.0;
+    if (current.x >= bounds.x + bounds.w - 8.0) direction = -1.0;
+    double span = bounds.w * (0.18 + 0.24 * fabs(hx - 0.5) * 2.0);
+    double x = MSClamp(current.x + direction * span,
+                       bounds.x, bounds.x + bounds.w);
+    if (bounds.h <= 1.0) return (MSPoint){x, current.y};
+    int lanes = (int)floor(bounds.h / 56.0) + 1;
+    if (lanes < 2) lanes = 2;
+    if (lanes > 9) lanes = 9;
+    int lane = (int)floor(((current.y - bounds.y) / bounds.h) * (lanes - 1) + 0.5);
+    int step = (jumping || vy < 0.32 || vy > 0.68) ? 1 : 0;
+    if (step && vy < 0.5) lane--;
+    else if (step) lane++;
+    if (lane < 0) lane = 1;
+    if (lane >= lanes) lane = lanes - 2;
+    double y = bounds.y + bounds.h * (double)lane / (double)(lanes - 1);
+    return (MSPoint){x, MSClamp(y, bounds.y, bounds.y + bounds.h)};
+}
+
+static inline double MSPetSafeJumpHeight(MSRect bounds, MSPoint start,
+                                         MSPoint end, double desired) {
+    bounds.x = MSClamp(MSFinite(bounds.x, 0.0), -1000000.0, 1000000.0);
+    bounds.y = MSClamp(MSFinite(bounds.y, 0.0), -1000000.0, 1000000.0);
+    bounds.w = MSClamp(MSFinite(bounds.w, 0.0), 0.0, 1000000.0);
+    bounds.h = MSClamp(MSFinite(bounds.h, 0.0), 0.0, 1000000.0);
+    start = MSClampCenter(bounds, start);
+    end = MSClampCenter(bounds, end);
+    double clearance = fmin(start.y - bounds.y, end.y - bounds.y);
+    return fmax(0.0, fmin(fmax(0.0, MSPetResidentTime(desired)), clearance));
 }
 
 #endif

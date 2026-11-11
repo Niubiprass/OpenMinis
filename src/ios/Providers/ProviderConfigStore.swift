@@ -2770,7 +2770,7 @@ final class ProviderConfigStore: ObservableObject {
         } catch {
             logger.error("[ModelList] refreshModels (MANUAL): instance=\(instance.label) FAILED — \(error)")
             return ModelRefreshOutcome(label: instance.label, succeeded: false, count: 0,
-                                       degraded: false, message: error.localizedDescription)
+                                       degraded: false, message: FriendlyErrorText.sanitize(error))
         }
     }
 

@@ -21,78 +21,14 @@ extension AIChatViewModel {
         return mcpMarkers.contains { lower.contains($0) }
     }
 
-    /// Extract the shell command inside `run_command command='…'` so the
-    /// approval describes the real effect rather than the MCP relay syntax.
-    nonisolated private static func effectiveMCPCommand(_ command: String) -> String {
-        let lower = command.lowercased()
-        guard let marker = lower.range(of: "command=") else { return command }
-        var value = String(command[marker.upperBound...])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let first = value.first, first == "'" || first == "\"" {
-            let body = value.dropFirst()
-            if let end = body.lastIndex(of: first) {
-                value = String(body[..<end])
-            }
-        }
-        return value
-    }
-
-    /// Translate a tool call into its concrete device effect. Raw shell text
-    /// is deliberately not shown in the approval card.
+    /// App 与桌宠共用同一个有界解析器。解析器只生成中文摘要，绝不执行输入。
     nonisolated static func describeMCPCommand(_ command: String) -> MCPCommandUsage {
-        let lower = command.lowercased()
-        let inner = effectiveMCPCommand(command).lowercased()
-        let text = lower + "\n" + inner
-        func has(_ s: String) -> Bool { text.contains(s) }
-        let read = { (title: String, purpose: String) in
-            MCPCommandUsage(title: title, purpose: purpose,
-                            risk: "只读 · 不会改动任何数据或设置", isWrite: false)
-        }
-        let write = { (title: String, purpose: String) in
-            MCPCommandUsage(title: title, purpose: purpose,
-                            risk: "写入 · 会改动设备上的文件或系统状态", isWrite: true)
-        }
-
-        if has("reboot userspace") || has("launchctl reboot") {
-            return write("允许重启用户空间？", "重启 SpringBoard/用户空间，当前界面和插件会暂时中断。")
-        }
-        if has("cn.zgbb.inject.system.plist") && has("pkdx") {
-            return write("允许修改 RootHide 注入配置？", "备份并修改注入配置中的 /pkdx 标记，可能改变对应插件的加载行为。")
-        }
-        if has("uninstall_app") { return write("允许卸载 App？", "从手机中移除指定应用。") }
-        if has("install_app") { return write("允许安装 App？", "在手机上安装指定应用包。") }
-        if has("screenshot") { return read("允许截屏？", "读取当前屏幕画面并返回截图。") }
-        if has("tap_screen") || has("tap_element") {
-            return write("允许点击屏幕？", "模拟点击，可能触发当前界面上的按钮。")
-        }
-        if has("swipe_screen") { return write("允许滑动屏幕？", "模拟一次屏幕滑动。") }
-        if has("record_screen") || has("start_recording") || has("record") {
-            return write("允许录屏？", "录制设备屏幕画面。")
-        }
-        if has("launch_app") { return write("允许打开 App？", "把指定应用切到前台。") }
-        if has("press_") { return write("允许模拟按键？", "触发指定的系统按键操作。") }
-        if has("set_brightness") || has("set_volume") {
-            return write("允许修改系统设置？", "调整屏幕亮度或音量。")
-        }
-        if has("get_syslog") { return read("允许读取系统日志？", "读取设备系统日志内容。") }
-        if has("crash_log") { return read("允许读取崩溃日志？", "读取 App 的崩溃报告。") }
-        if has("get_app_info") || has("list_apps") {
-            return read("允许读取 App 信息？", "查看已安装 App 的列表或详情。")
-        }
-        if has("list_dir") { return read("允许查看目录？", "列出指定文件夹中的项目。") }
-        if has("read_file") || has("grep ") || has("tail ") || has("cat ") {
-            return read("允许读取文件或日志？", "读取指定文件内容，不会修改文件。")
-        }
-        if has("write_file") || has("edit_file") || has("sed -i") || has("plutil") {
-            return write("允许写入或修改文件？", "在设备文件系统中创建或更改文件。")
-        }
-        if has("cp ") { return write("允许复制文件？", "把文件复制到另一条路径。") }
-        if has("mv ") { return write("允许移动或重命名文件？", "更改文件路径或名称。") }
-        if has("rm ") { return write("允许删除文件？", "移除指定文件或目录。") }
-        if has("curl ") || has("wget ") {
-            return read("允许发起网络请求？", "连接网络读取或下载数据。")
-        }
-        return write("允许执行设备命令？", "这条命令的具体作用无法自动归类，请确认后再执行。")
+        let summary = MSApprovalSummaryBridge.summary(command: command)
+        let title = (summary["title"] as? String) ?? "允许执行设备操作？"
+        let purpose = (summary["purpose"] as? String) ?? "无法确认这项操作的全部影响，请先核对后再决定。"
+        let risk = (summary["risk"] as? String) ?? "有未确认的操作 · 请仔细核对后决定"
+        let isWrite = (summary["isWrite"] as? NSNumber)?.boolValue ?? true
+        return MCPCommandUsage(title: title, purpose: purpose, risk: risk, isWrite: isWrite)
     }
 
     /// 命令执行前的闸门。返回 false = 用户拒绝，调用方必须中止。
@@ -101,14 +37,14 @@ extension AIChatViewModel {
         // 由「允许 AI 操作手机」总开关控制；打开后每条危险命令都要确认。
         guard HostAccessPermission.isEnabled else { return false }
         let usage = Self.describeMCPCommand(command)
-        return await MCPApprovalDialog.present(usage: usage, command: command)
+        return await MCPApprovalDialog.present(usage: usage)
     }
 }
 
 // MARK: - 弹窗
 
-/// [T-mcp-approval-gate] 自绘确认弹窗：标题居中，正文与命令块左边缘对齐，
-/// 只有「拒绝 / 允许」，不记忆任何选择。
+/// [T-mcp-approval-gate] 自绘确认弹窗：只显示中文用途、风险和按钮，
+/// 不显示原始命令文本，不记忆任何选择。
 final class MCPApprovalDialog: UIViewController {
     /// [T-mcp-approval-safety] 同一时间只允许一个审批弹窗，避免多个叠在一起
     /// 关不干净、留下挡住整屏的暗色遮罩。
@@ -117,15 +53,13 @@ final class MCPApprovalDialog: UIViewController {
     private var timeoutWork: DispatchWorkItem?
 
     private let usage: MCPCommandUsage
-    private let commandText: String
     private var finish: ((Bool) -> Void)?
     /// Dedicated alert window. The dialog is never presented on an arbitrary
     /// view controller, so it cannot land on an off-screen presenter.
     private var hostWindow: UIWindow?
 
-    init(usage: MCPCommandUsage, command: String) {
+    init(usage: MCPCommandUsage) {
         self.usage = usage
-        self.commandText = command
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .overFullScreen
         modalTransitionStyle = .crossDissolve
@@ -152,7 +86,7 @@ final class MCPApprovalDialog: UIViewController {
     }
 
     @MainActor
-    static func present(usage: MCPCommandUsage, command: String) async -> Bool {
+    static func present(usage: MCPCommandUsage) async -> Bool {
         installForegroundCleanup()
         return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
@@ -165,7 +99,7 @@ final class MCPApprovalDialog: UIViewController {
                 cont.resume(returning: false)
                 return
             }
-            let dialog = MCPApprovalDialog(usage: usage, command: command)
+            let dialog = MCPApprovalDialog(usage: usage)
             MCPApprovalDialog.current = dialog
             // Dedicated window: its root IS the dialog, so there is no
             // presentation chain to fail on. Hiding it removes the dim view
@@ -189,7 +123,7 @@ final class MCPApprovalDialog: UIViewController {
     /// Confirm a dangerous MCP command from the tool loop.
     @MainActor
     static func confirm(_ command: String) async -> Bool {
-        await present(usage: AIChatViewModel.describeMCPCommand(command), command: command)
+        await present(usage: AIChatViewModel.describeMCPCommand(command))
     }
 
     private let dim = UIView()
@@ -251,44 +185,10 @@ final class MCPApprovalDialog: UIViewController {
         stack.addArrangedSubview(title)
         stack.setCustomSpacing(12, after: title)
 
-        let tool = label(toolLine(), size: 11, color: UIColor(white: 0.68, alpha: 1), lines: 1)
-        stack.addArrangedSubview(tool)
-
         stack.addArrangedSubview(label(usage.purpose, size: 12, color: .white))
         stack.addArrangedSubview(label(usage.risk, size: 11,
                                        color: usage.isWrite ? UIColor.systemOrange : UIColor(white: 0.62, alpha: 1)))
 
-        // 命令块：左侧 3pt 竖条 + 等宽文字，左边缘与上面文字对齐
-        let cmdRow = UIView()
-        let bar = UIView()
-        bar.backgroundColor = UIColor(red: 0.35, green: 0.47, blue: 0.63, alpha: 1)
-        bar.layer.cornerRadius = 1.5
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        cmdRow.addSubview(bar)
-
-        let cmd = label(truncatedCommand(), size: 10, color: UIColor(red: 0.75, green: 0.86, blue: 1, alpha: 1))
-        cmd.font = UIFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-        cmd.translatesAutoresizingMaskIntoConstraints = false
-        cmdRow.addSubview(cmd)
-
-        let hint = label("将在你的设备上执行", size: 10, color: UIColor(white: 0.55, alpha: 1))
-        hint.translatesAutoresizingMaskIntoConstraints = false
-        cmdRow.addSubview(hint)
-
-        NSLayoutConstraint.activate([
-            bar.leadingAnchor.constraint(equalTo: cmdRow.leadingAnchor),
-            bar.topAnchor.constraint(equalTo: cmdRow.topAnchor),
-            bar.bottomAnchor.constraint(equalTo: cmdRow.bottomAnchor),
-            bar.widthAnchor.constraint(equalToConstant: 3),
-            cmd.leadingAnchor.constraint(equalTo: bar.trailingAnchor, constant: 12),
-            cmd.trailingAnchor.constraint(equalTo: cmdRow.trailingAnchor),
-            cmd.topAnchor.constraint(equalTo: cmdRow.topAnchor),
-            hint.leadingAnchor.constraint(equalTo: cmd.leadingAnchor),
-            hint.topAnchor.constraint(equalTo: cmd.bottomAnchor, constant: 6),
-            hint.bottomAnchor.constraint(equalTo: cmdRow.bottomAnchor)
-        ])
-        stack.setCustomSpacing(10, after: stack.arrangedSubviews.last!)
-        stack.addArrangedSubview(cmdRow)
 
         card.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -350,19 +250,6 @@ final class MCPApprovalDialog: UIViewController {
         return b
     }
 
-    private func toolLine() -> String {
-        let parts = commandText.split(separator: " ")
-        if let idx = parts.firstIndex(where: { $0.lowercased().contains("minis-mcp-cli") }) {
-            let rest = parts.dropFirst(idx + 1).prefix(3).joined(separator: " ")
-            return "越狱 mcp · " + rest
-        }
-        return "越狱 mcp"
-    }
-
-    private func truncatedCommand() -> String {
-        let one = commandText.replacingOccurrences(of: "\n", with: " ")
-        return one.count > 90 ? String(one.prefix(90)) + "…" : one
-    }
 
     @objc private func dimTapped() { close(false) }
 

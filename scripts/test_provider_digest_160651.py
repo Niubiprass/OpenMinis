@@ -14,7 +14,7 @@ import unittest
 
 from pathlib import Path
 
-ROOT = Path('/var/minis/shared/OpenMinis-160649')
+ROOT = Path(__file__).resolve().parents[1]
 LOC = (ROOT / 'src/ios/Shared/AppLocalization.swift').read_text()
 CHAT = (ROOT / 'src/ios/Views/Chat/AIChatView.swift').read_text()
 BUBBLE = (ROOT / 'src/ios/Views/Chat/ChatMessageViews.swift').read_text()

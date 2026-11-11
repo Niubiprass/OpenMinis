@@ -77,6 +77,10 @@ jobs:
           python3 scripts/test_minisight_settings_diagnostics.py
           python3 scripts/test_minisight_shown_toggle_20261106.py
           python3 scripts/test_minisight_live_settings_20261106.py
+          python3 scripts/test_friendly_error_text_160651.py
+          python3 scripts/test_provider_digest_160651.py
+          python3 scripts/test_error_copy_l10n_160651.py
+          python3 scripts/test_friendly_error_text_behavior_160651.py
           python3 scripts/test_minisight_local_repairs_20261107.py
           python3 scripts/test_multikey_160651.py
           python3 scripts/test_multikey_persistence_160651.py

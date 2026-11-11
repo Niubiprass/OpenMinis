@@ -291,6 +291,8 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
 @property (nonatomic, assign) BOOL messagesDirty;
 @property (nonatomic, assign) BOOL lastLayoutBelow;
 @property (nonatomic, assign) CGFloat measuredWidth;
+@property (nonatomic, assign) CGFloat measuredWidthLimit;
+@property (nonatomic, assign) CGFloat measuredHeightLimit;
 @property (nonatomic, assign) CGFloat measuredMessageHeight;
 @property (nonatomic, assign) CGFloat keyboardTop;
 @property (nonatomic, assign) CGFloat lastKeyboardTop;
@@ -663,8 +665,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     if (!self.anchorProxy) self.anchorProxy = [MiniSightChatAnchorProxy new];
     self.anchorProxy.owner = self;
     CADisplayLink *link = [CADisplayLink displayLinkWithTarget:self.anchorProxy selector:@selector(tick:)];
-    // 30 fps is enough for a following overlay and halves wakeups vs 60.
-    link.preferredFramesPerSecond = 30;
+    // Follow the pet's display-link cadence so movement and bubble stay in phase.
+    link.preferredFramesPerSecond = 60;
     [link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     self.anchorLink = link;
 }
@@ -757,15 +759,17 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 - (void)layoutEditorWindow {
     if (!self.window || !self.editorWindow || !self.inputField || !self.editorField) return;
     CGRect rect = [self.inputField convertRect:self.inputField.bounds toView:self.editorWindow];
-    self.editorField.frame = rect;
+    // The passive field and the key-window editor share one WORLD rectangle.
+    // Do not repeatedly reset UIKit's caret/placeholder layout for equal frames.
+    if (!CGRectEqualToRect(self.editorField.frame, rect)) self.editorField.frame = rect;
 }
 
 - (void)activateEditor {
     NSCAssert([NSThread isMainThread], @"chat editor is main-thread only");
     if (!self.visible || !self.editorWindow || !self.editorField || self.editorActive) return;
-    if (self.lockedPet != (MiniSightPetView *)self.anchorView) [self releaseEditorPetLock];
     self.editorField.text = self.inputField.text;
-    [self setEditorPetLock:YES];
+    // Editing follows the moving pet; the editor window tracks its world frame.
+    // Do not acquire a pet motion lock here.
     self.editorGeneration++;
     [self layoutEditorWindow];
     self.editorActive = YES;
@@ -778,26 +782,16 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 }
 
 - (void)setEditorPetLock:(BOOL)locked {
-    if (![self.anchorView isKindOfClass:MiniSightPetView.class]) return;
-    MiniSightPetView *pet = (MiniSightPetView *)self.anchorView;
-    if (locked) {
-        if (self.lockedPet && self.lockedPet != pet)
-            [self.lockedPet setMotionLocked:NO forReason:MiniSightPetMotionLockChatEditor];
-        self.lockedPet = pet;
-        [pet setMotionLocked:YES forReason:MiniSightPetMotionLockChatEditor];
-    } else {
-        [self releaseEditorPetLock];
-    }
+    (void)locked;
 }
 
 - (void)releaseEditorPetLock {
-    MiniSightPetView *pet = self.lockedPet;
     self.lockedPet = nil;
-    [pet setMotionLocked:NO forReason:MiniSightPetMotionLockChatEditor];
 }
 
+
 - (void)deactivateEditorWithoutKey {
-    if (!self.editorActive && !self.lockedPet) return;
+    if (!self.editorActive) return;
     self.editorDeactivating = YES;
     self.editorGeneration++;
     if (self.editorActive) {
@@ -812,7 +806,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 }
 
 - (void)deactivateEditor {
-    if (!self.editorActive && !self.lockedPet) return;
+    if (!self.editorActive) return;
     self.editorDeactivating = YES;
     self.editorGeneration++;
     if (self.editorActive) {
@@ -1134,7 +1128,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     UIView *anchor = self.anchorView;
     if ([anchor isKindOfClass:MiniSightPetView.class]) {
         MiniSightPetView *pet = (MiniSightPetView *)anchor;
-        CGPoint center = [pet.superview convertPoint:pet.speechAnchor toView:self.window];
+        CGPoint center = [pet.superview convertPoint:pet.center toView:self.window];
         CGSize envelope = pet.gravitySafeSize;
         return CGRectMake(center.x - envelope.width * .5, center.y - envelope.height * .5,
                           envelope.width, envelope.height);
@@ -1151,11 +1145,10 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
         [self hideWithoutKey];
         return;
     }
-    if (self.editorActive && self.lockedPet != (MiniSightPetView *)anchor) [self setEditorPetLock:YES];
     CGRect now = [self currentAnchorRect];
     if (CGRectEqualToRect(now, self.lastAnchorRect)) return;
     CFTimeInterval stamp = CACurrentMediaTime();
-    if (stamp - self.lastAnchorTime < (1.0 / 30.0)) return;
+    if (stamp - self.lastAnchorTime < (1.0 / 120.0)) return;
     self.lastAnchorTime = stamp;
     [self layoutForCurrentScreen];
 }
@@ -1190,9 +1183,16 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     CGFloat bubbleScale = MSClamp([self scaleFor:@"bubbleScale" fallback:1], 0.8, 1.6);
     CGFloat panelScale = MSClamp([self scaleFor:@"panelScale" fallback:1], 0.6, 1.6);
     CGFloat maxWidth = MIN(280. * panelScale, MAX(0., safe.size.width * 0.80));
-    CGFloat panelW = MIN(216. * panelScale, maxWidth);
-    if (fabs(self.measuredWidth - maxWidth) > 0.5 || self.messagesDirty) {
+    // Keep the measured result distinct from the input limits. A position-only
+    // follow pass must reuse that result, not alternate with the idle width.
+    CGFloat heightLimit = safe.size.height;
+    CGFloat panelW = self.measuredWidth > 0. ? MIN(self.measuredWidth, maxWidth)
+                                               : MIN(216. * panelScale, maxWidth);
+    if (self.measuredWidth <= 0. || fabs(self.measuredWidthLimit - maxWidth) > 0.5 ||
+        fabs(self.measuredHeightLimit - heightLimit) > 0.5 || self.messagesDirty) {
         self.messagesDirty = NO;
+        self.measuredWidthLimit = maxWidth;
+        self.measuredHeightLimit = heightLimit;
         CGFloat widest = 0;
         for (NSUInteger i = 0; i < self.rows.count && i < self.bubbleWidths.count; i++) {
             MiniSightChatBubble *row = self.rows[i];
@@ -1201,8 +1201,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
             self.bubbleWidths[i].constant = w;
             widest = MAX(widest, w);
         }
-        // The reply panel itself grows to the longest line, not a fixed sheet.
-        panelW = self.rows.count ? MIN(maxWidth, MAX(200., widest + 24.)) : maxWidth;
+        panelW = self.rows.count ? MIN(maxWidth, MAX(200., widest + 24.))
+                                 : MIN(216. * panelScale, maxWidth);
         self.messageWidthConstraint.constant = panelW;
         self.measuredWidth = panelW;
         [self.messageStack setNeedsLayout];
@@ -1246,7 +1246,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     self.micButton.frame = CGRectMake(controls.mic.x, controls.mic.y, controls.mic.w, controls.mic.h);
     self.sendButton.frame = CGRectMake(controls.send.x, controls.send.y, controls.send.w, controls.send.h);
     self.cancelButton.frame = self.sendButton.frame;
-    self.inputField.frame = CGRectMake(controls.field.x, controls.field.y, controls.field.w, controls.field.h);
+    CGRect inputRect = CGRectMake(controls.field.x, controls.field.y, controls.field.w, controls.field.h);
+    if (!CGRectEqualToRect(self.inputField.frame, inputRect)) self.inputField.frame = inputRect;
     self.inputField.hidden = controls.field.w < 1.;
     self.moreButton.hidden = !controls.hasMore;
     self.micButton.hidden = !controls.hasMic;
@@ -1270,7 +1271,13 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
         row.petTail = row == latest && !row.userMessage && !frames.petAvoidance && visibleBottom;
     }
     if (latest.petTail) {
-        CGPoint point = [self.window convertPoint:CGPointMake(CGRectGetMidX(pet), CGRectGetMinY(pet)) toView:latest];
+        CGPoint tailPoint = CGPointMake(CGRectGetMidX(pet), CGRectGetMinY(pet));
+        if ([anchor isKindOfClass:MiniSightPetView.class]) {
+            MiniSightPetView *petView = (MiniSightPetView *)anchor;
+            CGPoint speech = [petView.superview convertPoint:petView.speechAnchor toView:self.window];
+            tailPoint.x = speech.x;
+        }
+        CGPoint point = [self.window convertPoint:tailPoint toView:latest];
         latest.tailX = point.x;
         latest.tailAbove = frames.placedBelow != 0;
     }
@@ -1470,6 +1477,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
             MiniSightChatPanel *strongSelf = weakSelf;
             if (!strongSelf || generation != strongSelf.requestGeneration) return;
             [strongSelf appendMessage:local role:MiniSightChatRoleAssistant];
+            if ([strongSelf.anchorView isKindOfClass:MiniSightPetView.class])
+                [(MiniSightPetView *)strongSelf.anchorView requestAttentionResponse];
             [strongSelf endSendingUI];
         });
         return;
@@ -1591,6 +1600,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     if (reply.isSuccess) {
         NSString *visible = [self applyAdjustmentsFrom:reply.text];
         [self appendMessage:visible role:MiniSightChatRoleAssistant];
+        if ([self.anchorView isKindOfClass:MiniSightPetView.class])
+            [(MiniSightPetView *)self.anchorView requestAttentionResponse];
         [self speakIfEnabled:visible];
         MSDiag(@"chat display request=%@ kind=answer chars=%lu rows=%lu", reply.requestID,
                (unsigned long)reply.text.length, (unsigned long)self.rows.count);

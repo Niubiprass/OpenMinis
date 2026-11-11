@@ -74,6 +74,7 @@ static double MSPetRandomRange(double lo, double hi) {
 static MSPoint MSPetPoint(CGPoint p) { return (MSPoint){(double)p.x, (double)p.y}; }
 static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFloat)p.y); }
 
+
 // CADisplayLink retains its target: the target must not retain the view.
 @interface MiniSightPetDisplayLinkProxy : NSObject
 @property (nonatomic, weak) MiniSightPetView *owner;
@@ -323,6 +324,8 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     NSUInteger next = locked ? (_motionLockReasons | mask) : (_motionLockReasons & ~mask);
     if (!mask || next == _motionLockReasons) return;
     _motionLockReasons = next;
+    // Approval/editor ownership wakes the visual pose but never cancels a user
+    // drag or active trajectory; owner locks remain independently scoped.
     if (locked) [self wakeForInteraction];
     [self reconcilePlayback];
 }
@@ -516,7 +519,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 
 - (BOOL)mayRoam {
     MSRect area = [self feasibleCenters];
-    return [self shouldAnimate] && _hasCenterBounds &&
+    return [self shouldAnimate] && _hasCenterBounds && !_resident.sleeping && !_resident.waking &&
            MSGravityMotionAllowed(_wantsPlaying, _suspended, [self isActuallyVisible],
                                   _roamingPaused, _interactionActive, (unsigned)_motionLockReasons) &&
            (area.w > 0. || area.h > 0.);
@@ -524,18 +527,23 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 
 - (void)reconcilePlayback {
     if (![self shouldAnimate]) {
+        [self clearResidentForPlayback];
         [self invalidateFrameTimer];
         [self invalidateRoamTimer];
         [self cancelMotion];
         [self cancelGravityImpulse];
         return;
     }
+    CFTimeInterval now = CACurrentMediaTime();
+    [self updateResidentAtTime:now];
     if (![self mayRoam]) {
         [self invalidateRoamTimer];
-        [self cancelMotion];
-        [self cancelGravityImpulse];
+        // Do not rewrite a drag or active motion to idle while an owner holds it.
+        if (_motionActive || _motionLink || _physicsMotion) [self cancelMotion];
+        if (_gravityImpulseDuration > 0. || _gravityLink) [self cancelGravityImpulse];
     }
     if (!_motionActive) [self ensureFrameTimer];
+    [self consumeAttentionAtTime:now];
     if (!_motionActive && !_roamTimer && _stateHoldUntil <= 0.) [self scheduleRoam];
 }
 
@@ -571,8 +579,10 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (_stateHoldUntil > 0. && now >= _stateHoldUntil) {
         _stateHoldUntil = 0.;
         [self setSpriteState:MiniSightPetStateIdle];
-        if (!_roamTimer && !_motionActive) [self scheduleRoam];
     }
+    [self updateResidentAtTime:now];
+    [self consumeAttentionAtTime:now];
+    if (!_roamTimer && !_motionActive && _stateHoldUntil <= 0.) [self scheduleRoam];
     [self advanceSpriteAtTime:now];
 }
 
@@ -585,6 +595,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (_state == state) return;
     _state = state;
     _column = 0;
+    MSPetResidentResetBlink(&_resident);
     _lastSpriteTime = CACurrentMediaTime();
     [self applySpriteFrame];
 }
@@ -594,6 +605,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     // Walking/acting keeps the snappy 15 fps.
     switch (_state) {
         case MiniSightPetStateIdle: return kMiniSightIdleSpriteInterval;
+        case MiniSightPetStateSleeping: return kMiniSightSleepSpriteInterval;
         case MiniSightPetStateWaving: return 1.0 / 7.0;
         case MiniSightPetStateJumping: return 1.0 / 11.0;
         default: return kMiniSightSpriteInterval;
@@ -601,6 +613,19 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 }
 
 - (void)advanceSpriteAtTime:(CFTimeInterval)now {
+    if (_state == MiniSightPetStateSleeping || _state == MiniSightPetStateIdle) {
+        NSInteger next;
+        if (_state == MiniSightPetStateSleeping) {
+            next = _resident.waking ? MSPetResidentWakeColumn(now - _resident.wakeBegan)
+                                    : MSPetResidentSleepColumn(now - _resident.sleepBegan);
+        } else {
+            BOOL needsDelay = _resident.nextBlinkAt <= 0. ||
+                (_resident.blinking && now - _resident.blinkBegan >= 6. * kMiniSightIdleSpriteInterval);
+            next = MSPetResidentIdleColumn(&_resident, now, needsDelay ? MSPetRandomUnit() : 0.5);
+        }
+        if (next != _column) { _column = next; [self applySpriteFrame]; }
+        return;
+    }
     NSTimeInterval interval = [self currentSpriteInterval];
     double elapsed = fmax(0., now - _lastSpriteTime);
     if (elapsed < interval) return;
@@ -948,12 +973,12 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     }
     // activityActive replaces the old tweak global: YES while the assistant is
     // acting (lively), NO for the resident idle pet (a move every 9-15 s).
-    NSTimeInterval delay = _activityActive
+    NSTimeInterval base = _activityActive
         ? MSPetRandomRange(kMiniSightRoamActiveLo, kMiniSightRoamActiveHi)
         : MSPetRandomRange(kMiniSightRoamIdleLo, kMiniSightRoamIdleHi);
-    if (_roamInterval > 0) delay = _roamInterval * MSPetRandomRange(0.75, 1.25);
-    else if (_roamPace > 0) delay *= _roamPace;
-    if (_reducedWork && !_activityActive) delay *= 1.5;
+    NSTimeInterval delay = MSPetRoamDelay(base, _roamPace, _roamInterval,
+                                          _reducedWork, _activityActive,
+                                          MSPetRandomUnit());
     if (_roamPace == 0) { [self invalidateRoamTimer]; return; }
     delay += _restAfterMotion;
     _restAfterMotion = 0.;
@@ -980,21 +1005,22 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     MSRect area = [self feasibleCenters];
     uint32_t roll = arc4random_uniform(100);
     if (roll < 52) {
-        // Wander to a random feasible CENTER; y is never taken from the row above.
-        MSPoint target = {MSPetRandomRange(area.x, area.x + area.w),
-                          MSPetRandomRange(area.y, area.y + area.h)};
-        [self startMotionTo:MSPetCGPoint(target) jump:NO rest:MSPetRandomRange(0.6, 2.2)];
+        // Move to a nearby perch so the pet reads as walking across the
+        // desktop, not teleporting to an arbitrary screen point.
+        MSPoint target = MSPetNearbyTarget(area, MSPetPoint(self.center),
+                                           MSPetRandomUnit(), MSPetRandomUnit(), false);
+        [self startMotionTo:MSPetCGPoint(target) jump:NO rest:MSPetRandomRange(0.35, 1.1)];
     } else if (roll < 80) {
-        // Hop in place. The height is capped by MSJumpHeight(), so the apex can
-        // never rise above the top of the feasible range; if there is no room
-        // left overhead, walk instead of "jumping" zero pixels.
+        // Hop to the next nearby lane, with the arc capped by the safe range.
         CGPoint origin = self.center;
-        double height = MSJumpHeight(area, MSPetPoint(origin), kMiniSightJumpDesiredHeight);
+        MSPoint target = MSPetNearbyTarget(area, MSPetPoint(origin),
+                                           MSPetRandomUnit(), MSPetRandomUnit(), true);
+        double height = MSPetSafeJumpHeight(area, MSPetPoint(origin), target,
+                                            kMiniSightJumpDesiredHeight);
         if (height < kMiniSightJumpMinHeight) {
-            MSPoint target = {MSPetRandomRange(area.x, area.x + area.w), origin.y};
-            [self startMotionTo:MSPetCGPoint(target) jump:NO rest:MSPetRandomRange(0.6, 2.2)];
+            [self startMotionTo:MSPetCGPoint(target) jump:NO rest:MSPetRandomRange(0.35, 1.1)];
         } else {
-            [self startMotionTo:origin jump:YES rest:MSPetRandomRange(1.0, 2.4)];
+            [self startMotionTo:MSPetCGPoint(target) jump:YES rest:MSPetRandomRange(0.65, 1.5)];
         }
     } else if (roll < 90) {
         [self holdState:MiniSightPetStateWaving forDuration:kMiniSightWaveHold];
@@ -1043,9 +1069,8 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     CGPoint end = [self clampedCenter:target];
     double height = 0.;
     if (jump) {
-        height = MSJumpHeight([self feasibleCenters], MSPetPoint(start), kMiniSightJumpDesiredHeight);
+        height = MSPetSafeJumpHeight([self feasibleCenters], MSPetPoint(start), MSPetPoint(end), kMiniSightJumpDesiredHeight);
         if (height < kMiniSightJumpMinHeight) height = 0.;
-        else end = start; // A hop stays in place: no horizontal drift under the apex.
     }
     double distance = hypot((double)end.x - start.x, (double)end.y - start.y);
     if (distance < 1. && height <= 0.) {
@@ -1170,8 +1195,12 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     MSGravityBodyCancel(&_gravityBody);
     [_motionLink invalidate];
     _motionLink = nil;
-    [self setSpriteState:MiniSightPetStateIdle];
-    [self applyGravityTransformAtTime:CACurrentMediaTime()];
+    if (_state == MiniSightPetStateSleeping || _state == MiniSightPetStateWaving) {
+        _state = MiniSightPetStateIdle;
+        _column = 0;
+        _lastSpriteTime = CACurrentMediaTime();
+        [self applySpriteFrame];
+    }
     [self reconcilePlayback]; // Restarts sprite clock; never invents a rebound target.
 }
 

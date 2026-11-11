@@ -50,7 +50,6 @@ enum HostAccessPermission {
         guard let data = literal.data(using: .utf8),
               let inner = try? JSONSerialization.jsonObject(with: data) as? String else { return false }
         if inner.isEmpty || inner.contains("`") { return false }
-        // Any real output redirection writes a file.
         if inner.range(of: #"(?<![0-9&])>>?(?!\s*/dev/null)(?!&1)"#, options: .regularExpression) != nil { return false }
         var scan = ""
         var quote: Character?

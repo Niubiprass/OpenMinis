@@ -114,75 +114,309 @@ func AppLocalizedFormat(_ key: String, _ args: CVarArg...) -> String {
 /// underlying error is untouched for logs and fallback decisions.
 enum FriendlyErrorText {
 
-    /// Nil means "do not show this at all" — cancellations.
+    /// The only display boundary for transport/provider failures.  The error
+    /// object and the diagnostic copy are never changed; this returns a safe,
+    /// short Chinese sentence for the UI only.  A nil result means a real
+    /// cancellation and keeps the existing "don't show a banner" contract.
     static func sanitize(_ raw: String) -> String? {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty { return nil }
-
-        if isCancellation(text) { return nil }
+        guard !text.isEmpty else { return nil }
+        guard !isCancellation(text) else { return nil }
 
         if let cleaned = rewriteRawNSError(text) { return cleaned }
+        if containsMarkup(text) { return collapseHTMLDump(text) }
 
-        return collapseHTMLDump(text)
+        let normalized = stripKnownWrapper(text)
+        let payload = jsonPayload(in: normalized)
+        let candidate = [payload.message, payload.type, payload.code]
+            .compactMap { $0 }.joined(separator: " ")
+        let status = httpStatusCode(in: normalized) ?? (payload.status.flatMap(Int.init))
+        return classify(candidate.isEmpty ? normalized : candidate, status: status,
+                        code: payload.code, domain: nil)
     }
 
-    /// `-999` / "已取消" / "cancelled" arriving as prose rather than a type.
+    /// Use this overload at future Error-to-UI boundaries.  It inspects the
+    /// NSError domain/code before localizedDescription, so a raw NSError's
+    /// English wrapper never reaches the user.  LLMError's description and
+    /// fallback decisions are intentionally not modified here.
+    static func sanitize(_ error: Error) -> String? {
+        if error is CancellationError { return nil }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return nil }
+        let description = (error as? LocalizedError)?.errorDescription ?? ns.localizedDescription
+        return classify(description, status: httpStatusCode(in: description), code: nil,
+                        domain: ns.domain, systemCode: ns.code)
+    }
+
+    /// Match only an actual cancellation shape.  In particular, a random
+    /// provider payload containing Code=-9999 is not silently discarded.
     private static func isCancellation(_ text: String) -> Bool {
-        if text.contains("Code=-999") { return true }
-        let lowered = text.lowercased()
-        if lowered == "cancelled" || lowered == "canceled" { return true }
-        if lowered.hasSuffix("已取消") && lowered.count <= 40 { return true }
-        return false
+        let lowered = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lowered == "cancelled" || lowered == "canceled"
+            || lowered == "request was cancelled" || lowered == "request was canceled"
+            || lowered == "请求已取消" { return true }
+        guard text.hasPrefix("Error Domain=NSURLErrorDomain") else { return false }
+        return capture(#"\bCode=(-999)(?:\D|$)"#, in: text) != nil
     }
 
-    /// `Error Domain=NSURLErrorDomain Code=-1001 "请求超时。" UserInfo=…`
-    /// → `网络错误：请求超时。`
+    /// `Error Domain=NSURLErrorDomain Code=-1001 "The request timed out." …`
+    /// becomes a category sentence, not Foundation's English scaffolding.
     private static func rewriteRawNSError(_ text: String) -> String? {
         guard text.hasPrefix("Error Domain=") else { return nil }
-        // The quoted segment is the system's own localized reason — keep it.
-        var reason: String?
-        if let firstQuote = text.firstIndex(of: "\""),
-           let secondQuote = text[text.index(after: firstQuote)...].firstIndex(of: "\"") {
-            reason = String(text[text.index(after: firstQuote)..<secondQuote])
+        let domain = capture(#"Error Domain=([^ ]+)"#, in: text)
+        let code = capture(#"Code=(-?\d+)"#, in: text).flatMap(Int.init)
+        if domain == NSURLErrorDomain && code == NSURLErrorCancelled { return nil }
+        let reason: String
+        if let first = text.firstIndex(of: "\""),
+           let second = text[text.index(after: first)...].firstIndex(of: "\"") {
+            reason = String(text[text.index(after: first)..<second])
+        } else {
+            reason = ""
         }
-        let domain = text.contains("NSURLErrorDomain") ? "network"
-                   : (text.contains("NSCocoaErrorDomain") ? "file" : "other")
-        let fallback = reason ?? AppLocalized("未知错误")
-        switch domain {
-        case "network": return String(format: AppLocalized("网络错误：%@"), fallback)
-        case "file":    return String(format: AppLocalized("文件错误：%@"), fallback)
-        default:        return fallback
-        }
+        return classify(reason, status: nil, code: nil, domain: domain, systemCode: code)
     }
 
-    /// `HTTP 524: <!DOCTYPE html>…` → `HTTP 524：对方服务器没有及时响应`
+    /// HTML/Cloudflare bodies are never displayed.  Keep only a status and a
+    /// Chinese meaning; no HTML, stack trace, URL or provider body leaks out.
     private static func collapseHTMLDump(_ text: String) -> String {
-        let lowered = text.lowercased()
-        let looksLikeMarkup = lowered.contains("<!doctype") || lowered.contains("<html")
-            || lowered.contains("<head") || lowered.contains("<body")
-        guard looksLikeMarkup else {
-            return text.count > 300 ? String(text.prefix(300)) + "…" : text
-        }
-
-        // Keep whatever readable prefix precedes the markup — usually
-        // "HTTP 524: " or the provider's own one-line reason.
-        let markerIndex = lowered.range(of: "<!doctype").map { $0.lowerBound }
-            ?? lowered.range(of: "<html").map { $0.lowerBound }
-        let prefix = markerIndex.map { String(text[..<$0]) } ?? ""
-        let head = prefix.trimmingCharacters(in: CharacterSet(charactersIn: " :：,，;；"))
-
-        if head.isEmpty { return AppLocalized("服务商返回了一个错误页面（不是接口响应）") }
-        // "HTTP 524" → add the human meaning when the code is known.
-        if let code = httpStatusCode(head), let meaning = httpMeaning(code) {
-            return String(format: AppLocalized("%@：%@"), head, meaning)
-        }
-        return head
+        let status = httpStatusCode(in: text)
+        let code = providerCode(in: text)
+        return classify("", status: status, code: code, domain: nil)
     }
 
-    private static func httpStatusCode(_ text: String) -> Int? {
-        guard let range = text.range(of: "HTTP ") else { return nil }
-        let digits = text[range.upperBound...].prefix(3)
-        return Int(digits)
+    private static func containsMarkup(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("<!doctype") || lower.contains("<html")
+            || lower.contains("<head") || lower.contains("<body")
+            || lower.contains("<script")
+    }
+
+    /// Remove only the presentation wrappers emitted by the app/provider
+    /// layer.  Keep the inner protocol text for classification, never for UI.
+    private static func stripKnownWrapper(_ text: String) -> String {
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["Provider error:", "服务商报错：", "服务商报错:", "SSE Stream error:", "Stream error:"] {
+            if value.lowercased().hasPrefix(prefix.lowercased()) {
+                value = String(value.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return value
+    }
+
+    private struct JSONPayload {
+        var message: String?
+        var type: String?
+        var code: String?
+        var status: String?
+        var isJSON: Bool
+
+        init(isJSON: Bool = false) {
+            self.message = nil
+            self.type = nil
+            self.code = nil
+            self.status = nil
+            self.isJSON = isJSON
+        }
+    }
+
+    /// Extract only known error fields. Supports an HTTP prefix before JSON,
+    /// but never walks arbitrary response values as though they were errors.
+    private static func jsonPayload(in text: String) -> JSONPayload {
+        let candidates = [text] + text.split(separator: "\n").map(String.init)
+        for line in candidates {
+            var body = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if body.lowercased().hasPrefix("data:") { body = String(body.dropFirst(5)).trimmingCharacters(in: .whitespacesAndNewlines) }
+            var object = decodeJSON(body)
+            if object == nil, let open = body.firstIndex(of: "{"), let close = body.lastIndex(of: "}"), open < close {
+                object = decodeJSON(String(body[open...close]))
+            }
+            guard let dictionary = object as? [String: Any] else { continue }
+            let typeHint = (dictionary["type"] as? String ?? "").lowercased()
+            let codeHint = (dictionary["code"] as? String ?? "").lowercased()
+            let explicitError = dictionary["error"] != nil || dictionary["errors"] != nil
+                || dictionary["error_code"] != nil || httpStatusCode(in: text) != nil
+                || [typeHint, codeHint].contains(where: { hint in
+                    ["error", "invalid", "rate", "quota", "model", "forbidden", "auth", "timeout", "limit", "denied"]
+                        .contains(where: hint.contains)
+                })
+            guard explicitError else { continue }
+            var result = JSONPayload(isJSON: true)
+            collectJSON(dictionary, into: &result, depth: 0, errorContext: true)
+            if result.message != nil || result.type != nil || result.code != nil || result.status != nil { return result }
+        }
+        return JSONPayload()
+    }
+
+    private static func decodeJSON(_ text: String) -> Any? {
+        guard let data = text.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data)
+    }
+
+    private static func collectJSON(_ object: Any, into result: inout JSONPayload,
+                                    depth: Int, errorContext: Bool) {
+        guard depth <= 4, let dictionary = object as? [String: Any] else { return }
+        if errorContext {
+            for key in ["message", "detail", "reason", "error_description"] {
+                if result.message == nil, let value = dictionary[key] as? String,
+                   !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.message = value }
+            }
+            if result.type == nil, let value = dictionary["type"] as? String { result.type = value }
+            for key in ["code", "error_code"] {
+                if result.code == nil, let value = dictionary[key] as? String { result.code = safeCode(value) }
+                if result.code == nil, let value = dictionary[key] as? NSNumber { result.code = value.stringValue }
+            }
+            if let value = dictionary["error"] as? String,
+               result.message == nil, !value.isEmpty { result.message = value }
+        }
+        for key in ["status", "statusCode", "status_code"] {
+            if result.status == nil, let value = dictionary[key] as? String { result.status = value }
+            if result.status == nil, let value = dictionary[key] as? NSNumber { result.status = value.stringValue }
+        }
+        for key in ["error", "errors"] {
+            if let nested = dictionary[key] { collectJSON(nested, into: &result, depth: depth + 1, errorContext: true) }
+        }
+    }
+
+    private static func classify(_ raw: String, status: Int?, code: String?,
+                                 domain: String?, systemCode: Int? = nil) -> String {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = text.lowercased()
+        // Provider symbolic codes can contain credentials or opaque internals;
+        // classification may use them, but presentation never appends them.
+        let numericCodeSuffix = code.flatMap(Int.init).map {
+            "（" + AppLocalized("错误码") + " \($0)）"
+        } ?? ""
+        let systemSuffix = systemCode.map { "（" + AppLocalized("错误码") + " \($0)）" } ?? ""
+        func withHTTP(_ message: String) -> String {
+            if let status { return "HTTP \(status)：" + message + numericCodeSuffix + systemSuffix }
+            return message + numericCodeSuffix + systemSuffix
+        }
+        let hints = (lower + " " + (code?.lowercased() ?? ""))
+        let isQuota = hints.contains("insufficient_quota")
+            || ((hints.contains("insufficient") || hints.contains("exhausted"))
+                && (hints.contains("quota") || hints.contains("balance")))
+            || hints.contains("billing_hard_limit") || hints.contains("余额不足")
+            || hints.contains("额度耗尽") || hints.contains("欠费") || status == 402
+
+        if hints.contains("context length") || hints.contains("context_length_exceeded")
+            || hints.contains("too many tokens") || hints.contains("maximum context")
+            || hints.contains("上下文") || hints.contains("token limit") {
+            return withHTTP(AppLocalized("上下文超出供应商限制"))
+        }
+        if hints.contains("content filter") || hints.contains("content_policy")
+            || hints.contains("moderation") || hints.contains("safety system")
+            || hints.contains("内容审核") || hints.contains("安全策略") {
+            return withHTTP(AppLocalized("内容被供应商审核拦截"))
+        }
+        if isQuota { return withHTTP(AppLocalized("供应商账户余额或额度不足")) }
+        if hints.contains("file permission") || hints.contains("permission denied for file")
+            || hints.contains("cannot write file") || hints.contains("cannot read file")
+            || hints.contains("文件权限") || hints.contains("文件访问被拒绝") {
+            return withHTTP(AppLocalized("文件读写失败"))
+        }
+        if hints.contains("permission denied") || hints.contains("forbidden")
+            || hints.contains("not authorized") || hints.contains("无权限") || status == 403 {
+            return withHTTP(AppLocalized("没有权限访问供应商"))
+        }
+        if hints.contains("invalid api key") || hints.contains("incorrect api key")
+            || hints.contains("invalid_api_key") || hints.contains("unauthorized")
+            || hints.contains("api key 无效") || hints.contains("key 无效") || status == 401 {
+            return withHTTP(AppLocalized("API Key 无效或已失效"))
+        }
+        if hints.contains("model_not_found") || hints.contains("model not found")
+            || hints.contains("model does not exist") || hints.contains("unknown model")
+            || hints.contains("no such model") || hints.contains("模型不存在")
+            || hints.contains("模型或路由") {
+            return withHTTP(AppLocalized("模型或路由不存在"))
+        }
+        if status == 404 {
+            return withHTTP(AppLocalized("接口地址或路由不存在"))
+        }
+        if status == 429 || hints.contains("rate limit") || hints.contains("rate_limit")
+            || hints.contains("too many requests") || hints.contains("ratelimit") || hints.contains("限流") {
+            return withHTTP(AppLocalized("短时请求过多，供应商正在限流"))
+        }
+        if lower.contains("certificate") || lower.contains("ssl") || lower.contains("tls")
+            || lower.contains("证书") || (domain == NSURLErrorDomain && (systemCode == -1200 || systemCode == -1201)) {
+            return withHTTP(AppLocalized("安全证书或 TLS 连接失败"))
+        }
+        if domain == NSURLErrorDomain && systemCode == NSURLErrorTimedOut {
+            return withHTTP(AppLocalized("网络请求超时，连接没有及时响应"))
+        }
+        if domain == NSURLErrorDomain && (lower.contains("timed out") || lower.contains("timeout")) {
+            return withHTTP(AppLocalized("网络请求超时，连接没有及时响应"))
+        }
+        if status == 524 {
+            return withHTTP(AppLocalized("供应商网关等待上游超时"))
+        }
+        if status == 408 || status == 504 || status == 522 || status == 524 || lower.contains("timeout") || lower.contains("timed out")
+            || lower.contains("请求超时") {
+            return withHTTP(AppLocalized("请求超时，供应商没有及时响应"))
+        }
+        if domain == NSCocoaErrorDomain || lower.contains("file read") || lower.contains("file write")
+            || lower.contains("file access") || lower.contains("no such file")
+            || lower.contains("permission denied for file") || lower.contains("文件") || lower.contains("读写") {
+            return withHTTP(AppLocalized("文件读写失败"))
+        }
+        if domain == NSURLErrorDomain || lower.contains("network") || lower.contains("not connected")
+            || lower.contains("offline") || lower.contains("网络") || lower.contains("connection failed") {
+            return withHTTP(AppLocalized("网络连接失败"))
+        }
+        if lower.contains("overloaded") || lower.contains("overload") || lower.contains("service unavailable")
+            || status == 500 || status == 502 || status == 503 {
+            return withHTTP(AppLocalized("供应商服务暂时过载或不可用"))
+        }
+        if let chinese = safeChineseReason(text) {
+            if let status { return "HTTP \(status)：" + chinese + systemSuffix }
+            return chinese + systemSuffix
+        }
+        if let status {
+            return withHTTP(httpMeaning(status) ?? AppLocalized("供应商返回了无法识别的错误"))
+        }
+        // Unknown Errors are not implicitly attributed to a provider.
+        return AppLocalized("无法识别的错误") + systemSuffix
+    }
+
+    private static func safeChineseReason(_ text: String) -> String? {
+        guard text.count <= 160, text.range(of: #"[\u4e00-\u9fff]"#, options: .regularExpression) != nil else { return nil }
+        let lower = text.lowercased()
+        if lower.contains("api key") || lower.contains("authorization") || lower.contains("bearer")
+            || lower.contains("sk-") || lower.contains("token=") || text.contains("http://") || text.contains("https://") {
+            return nil
+        }
+        let stripped = text.replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func capture(_ pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else { return nil }
+        return String(text[range])
+    }
+
+    private static func httpStatusCode(in text: String) -> Int? {
+        let patterns = [#"(?i)\bhttp\s*:?[ "]*([45]\d{2})\b"#,
+                        #"(?i)\bstatus(?:code)?[ "]*[:=][ "]*([45]\d{2})\b"#,
+                        #"\[[ "]*([45]\d{2})[ "]*\]"#]
+        for pattern in patterns {
+            if let value = capture(pattern, in: text), let code = Int(value) { return code }
+        }
+        return nil
+    }
+
+    private static func providerCode(in text: String) -> String? {
+        let value = capture(#"(?i)[\"'](?:code|error_code)[\"']\s*:\s*[\"']?([A-Za-z0-9._-]{2,64})"#, in: text)
+            ?? capture(#"(?i)\bcode\s*[=:]\s*([A-Za-z0-9._-]{2,64})"#, in: text)
+        return value.flatMap(safeCode)
+    }
+
+    private static func safeCode(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 64,
+              trimmed.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil else { return nil }
+        return trimmed
     }
 
     private static func httpMeaning(_ code: Int) -> String? {

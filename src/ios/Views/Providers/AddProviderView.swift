@@ -1086,7 +1086,7 @@ struct AddProviderView: View {
             oauthMaskedToken = loadMaskedToken(type: type)
             pendingOAuthDone = true
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = FriendlyErrorText.sanitize(error) ?? AppLocalized("供应商返回了无法识别的错误")
         }
     }
 

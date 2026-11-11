@@ -1479,7 +1479,7 @@ struct ProviderInstanceDetailView: View {
                 fetchWarnings = result.warnings
                 fetchSource = result.source
             } catch {
-                fetchError = error.localizedDescription
+                fetchError = FriendlyErrorText.sanitize(error) ?? AppLocalized("供应商返回了无法识别的错误")
             }
         }
     }
@@ -1619,7 +1619,7 @@ struct ProviderInstanceDetailView: View {
             }
         } catch {
             await MainActor.run {
-                fetchError = error.localizedDescription
+                fetchError = FriendlyErrorText.sanitize(error) ?? AppLocalized("供应商返回了无法识别的错误")
             }
         }
     }

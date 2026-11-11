@@ -602,6 +602,7 @@
 		E0DA0E4E0EC597E37519FDBF /* MiniSightAIPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98EA448072951D8177A4F8BD /* MiniSightAIPage.swift */; };
 		E8172243CE0FF08A8D15E41F /* MiniSightDialoguePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */; };
 		4747D26C804CC6201A3E41DD /* MiniSightBlip.m in Sources */ = {isa = PBXBuildFile; fileRef = 2027A85A60830ED6F755AABD /* MiniSightBlip.m */; };
+		A15E9A180000000000000001 /* MSApprovalSummaryBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A15E9A180000000000000002 /* MSApprovalSummaryBridge.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1363,6 +1364,9 @@
 		C0FFEE600000000000000002 /* ReplayKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ReplayKit.framework; path = System/Library/Frameworks/ReplayKit.framework; sourceTree = SDKROOT; };
 		C0FFEE700000000000000002 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		C0FFEE900000000000000003 /* MiniSightAppRecorder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightAppRecorder.m; sourceTree = "<group>"; };
+		A15E9A180000000000000002 /* MSApprovalSummaryBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MSApprovalSummaryBridge.m; sourceTree = "<group>"; };
+		A15E9A180000000000000003 /* MSApprovalSummaryBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MSApprovalSummaryBridge.h; sourceTree = "<group>"; };
+		A15E9A180000000000000004 /* MiniSightApprovalSummaryCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightApprovalSummaryCore.h; sourceTree = "<group>"; };
 		C0FFEE900000000000000006 /* MiniSightInAppRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightInAppRuntime.swift; sourceTree = "<group>"; };
 		C0FFEE900000000000000011 /* MiniSightRecorderModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightRecorderModel.swift; sourceTree = "<group>"; };
 		A15E9A170000000000000002 /* MiniSightSignal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightSignal.swift; sourceTree = "<group>"; };
@@ -1629,6 +1633,9 @@
 				C0FFEE400000000000000002 /* MiniSightChatPanel.m */,
 				2027A85A60830ED6F755AABD /* MiniSightBlip.m */,
 				C0FFEE900000000000000003 /* MiniSightAppRecorder.m */,
+				A15E9A180000000000000002 /* MSApprovalSummaryBridge.m */,
+				A15E9A180000000000000003 /* MSApprovalSummaryBridge.h */,
+				A15E9A180000000000000004 /* MiniSightApprovalSummaryCore.h */,
 			);
 			path = MiniSightCore;
 			sourceTree = "<group>";
@@ -3097,6 +3104,7 @@
 				C0FFEE400000000000000001 /* MiniSightChatPanel.m in Sources */,
 				4747D26C804CC6201A3E41DD /* MiniSightBlip.m in Sources */,
 				C0FFEE900000000000000004 /* MiniSightAppRecorder.m in Sources */,
+				A15E9A180000000000000001 /* MSApprovalSummaryBridge.m in Sources */,
 				C0FFEE900000000000000005 /* MiniSightInAppRuntime.swift in Sources */,
 				20176A14369C3E928DDE3B4C /* MiniSightVoiceBridge.swift in Sources */,
 				FCA41672E4F16454494A6D8B /* MiniSightConfigStore.swift in Sources */,

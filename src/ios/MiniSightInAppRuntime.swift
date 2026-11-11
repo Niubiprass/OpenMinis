@@ -30,7 +30,7 @@ struct MiniSightInAppRuntime: View {
     @AppStorage("minisight.chat.tintHex") private var chatTintHex = "8B5CF6"
     @AppStorage("minisight.chat.tintAlpha") private var chatTintAlpha = 0.22
     @AppStorage("minisight.pet.x") private var petX = 0.5
-    @AppStorage("minisight.pet.y") private var petY = 0.52
+    @AppStorage("minisight.pet.y") private var petY = 0.86
 
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var lockStore = MiniSightHostState()
@@ -281,6 +281,7 @@ struct MiniSightInAppRuntime: View {
 
     private func runGesture(_ raw: String, anchor: UIView) {
         guard let action = MiniSightGesture(rawValue: raw), action != .none else { return }
+        (anchor as? MiniSightPetView)?.requestAttentionResponse()
         switch action {
         case .none:
             break
@@ -789,6 +790,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             guard gesture.state == .began, parent.longPressEnabled, parent.interactionEnabled else { return }
             guard let pet else { return }
             if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
+            pet.requestAttentionResponse()
             pet.interactionActive = true
             parent.onGesture(parent.longAction, pet)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak pet] in pet?.interactionActive = false }
@@ -846,7 +848,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
 
 private final class MiniSightPassthroughView: UIView {
     weak var pet: MiniSightPetView?
-    var normalizedCenter = CGPoint(x: 0.5, y: 0.52)
+    var normalizedCenter = CGPoint(x: 0.5, y: 0.86)
     private var didPlaceInitialCenter = false
     override func layoutSubviews() {
         super.layoutSubviews()
