@@ -54,6 +54,12 @@ struct SubscriptionLoginSheet: View {
         .navigationViewStyle(.stack)
         .interactiveDismissDisabled(running)
         .onDisappear {
+            // The system browser is presented above this sheet, and being
+            // covered makes SwiftUI report a disappearance. Treating that as
+            // the user leaving cancelled every sign-in as soon as the page
+            // opened. While running, the login owns its own lifetime (the
+            // cancel button and the five-minute timeout both end it).
+            guard !running else { return }
             task?.cancel()
             SubscriptionOAuthManager.shared.cancelLogin(instanceId: instanceId)
             if !finished { finished = true; onComplete(false) }

@@ -203,17 +203,31 @@ final class SubscriptionOAuthManager {
         return nil
     }
 
+    /// The sign-in page must be the domestic vendor's own site, and it is not
+    /// always the API host: WorkBuddy answers with pages on
+    /// www.workbuddy.cn (it was CodeBuddy before the rename, so
+    /// codebuddy.cn still appears), and Trae opens www.trae.cn. Whole
+    /// registrable domains are allowed rather than single hostnames — pinning
+    /// one host is what blocked a real sign-in.
+    private static func isDomesticLoginHost(_ host: String, type: ProviderType) -> Bool {
+        let allowed: [String] = type == .workBuddy
+            ? ["workbuddy.cn", "workbuddy.ai", "codebuddy.cn", "tencent.com"]
+            : ["trae.cn"]
+        return allowed.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+
     fileprivate func present<T: Sendable>(instanceId: String, loginID: UUID, type: ProviderType,
         cancellation: CancellationHandle, url: URL,
         work: @escaping @Sendable () async throws -> T) async throws -> T {
         try Task.checkCancellation()
         try cancellation.throwIfCancelled()
         guard logins[instanceId]?.id == loginID else { throw CancellationError() }
-        let hosts = type == .workBuddy ? ["login.codebuddy.cn", "www.codebuddy.cn"] : ["www.trae.cn"]
         guard url.scheme == "https", let host = url.host?.lowercased(),
-              hosts.contains(host),
-              url.user == nil, url.password == nil, url.port == nil || url.port == 443 else {
-            throw SubscriptionProviderError.invalidResponse("登录页不属于所选国内服务商，已阻止打开")
+              url.user == nil, url.password == nil, url.port == nil || url.port == 443,
+              Self.isDomesticLoginHost(host, type: type) else {
+            // Name the host, never the whole URL: it carries a login state.
+            throw SubscriptionProviderError.invalidResponse(
+                "登录页域名 \(url.host ?? "（无）") 不在允许范围，已阻止打开")
         }
         let p = SubscriptionSafariPresentation(cancellation: cancellation)
         presentations[instanceId] = p
