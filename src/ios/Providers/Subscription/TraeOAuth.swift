@@ -876,10 +876,10 @@ final class TraeLoopback: OAuthLoopbackListener, @unchecked Sendable {
     }
 
     private func resolveListening(port: UInt16?, error: Error?) {
-        let continuation: CheckedContinuation<Void, Error>? = lock.subscriptionWithLock {
-            guard let continuation = listeningContinuation else { return nil }
-            listeningContinuation = nil
-            if let port { boundPort = port }
+        let continuation: CheckedContinuation<Void, Error>? = self.lock.subscriptionWithLock {
+            guard let continuation = self.listeningContinuation else { return nil }
+            self.listeningContinuation = nil
+            if let port { self.boundPort = port }
             return continuation
         }
         guard let continuation else { return }
@@ -951,7 +951,7 @@ final class TraeLoopback: OAuthLoopbackListener, @unchecked Sendable {
     }
 
     private func close(_ connection: NWConnection) {
-        _ = lock.subscriptionWithLock { connections.removeValue(forKey: ObjectIdentifier(connection)) }
+        _ = self.lock.subscriptionWithLock { self.connections.removeValue(forKey: ObjectIdentifier(connection)) }
         connection.cancel()
     }
 
@@ -961,7 +961,7 @@ final class TraeLoopback: OAuthLoopbackListener, @unchecked Sendable {
                 connection.cancel()
                 return
             }
-            guard !lock.subscriptionWithLock({ state.stopped }) else { close(connection); return }
+            guard !self.lock.subscriptionWithLock({ self.state.stopped }) else { self.close(connection); return }
             var collected = collected
             if let data { collected.append(data) }
             guard collected.count <= 65536 else { close(connection); return }
