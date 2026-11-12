@@ -63,7 +63,7 @@ enum VoiceProviderFactory {
             return true
         case .anthropic:
             return normalizedBase.contains("minimax")
-        case .antigravity, .kimiCode, .githubCopilot, .unsupported:
+        case .antigravity, .kimiCode, .githubCopilot, .workBuddy, .traeCN, .unsupported:
             return false
         }
     }
@@ -77,6 +77,8 @@ enum VoiceProviderFactory {
             return SystemVoiceProvider.shared
         }
 
+        // Domestic subscriptions expose text chat only, with no speech endpoints or API keys.
+        guard !instance.providerType.isDomesticSubscription else { return nil }
         let apiKey = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id, caller: "VoiceFactory")
         let custom = instance.effectiveCustomBaseURL
         let normalizedBase = (custom ?? "").lowercased()
@@ -180,7 +182,7 @@ enum VoiceProviderFactory {
         // from a newer build this version can't service.
         // [T-copilot-provider] Copilot serves chat only — there is no speech
         // endpoint under api.githubcopilot.com to route to.
-        case .antigravity, .kimiCode, .githubCopilot, .unsupported:
+        case .antigravity, .kimiCode, .githubCopilot, .workBuddy, .traeCN, .unsupported:
             return nil
         }
     }

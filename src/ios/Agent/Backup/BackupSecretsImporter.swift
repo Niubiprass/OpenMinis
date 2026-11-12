@@ -46,6 +46,31 @@ enum BackupSecretsImporter {
         var result = Result()
 
         for p in secrets.providers {
+            let instance = ProviderConfigStore.shared.instance(for: p.instanceId)
+            let secretType = p.providerType.flatMap { ProviderType(rawValue: $0) }
+            if instance?.providerType.isDomesticSubscription == true || secretType?.isDomesticSubscription == true {
+                // Never restore a subscription blob into another provider, or accept a
+                // legacy API-key/manual bearer as a domestic account credential.
+                guard let instance, instance.providerType.isDomesticSubscription,
+                      instance.credentialType == .oauth,
+                      p.providerType == instance.providerType.rawValue,
+                      let b64 = p.oauthToken, let raw = Data(base64Encoded: b64),
+                      let token = try? JSONDecoder().decode(SubscriptionTokenStorage.self, from: raw),
+                      token.provider == instance.providerType.rawValue, !token.accessToken.isEmpty else { continue }
+                if ProviderKeychainHelper.loadRawOAuthToken(instanceId: p.instanceId) == nil {
+                    // A failed/locked Keychain is not a successful restore.
+                    // Keep the old item intact; do not log the provider blob or raw error.
+                    do {
+                        try ProviderKeychainHelper.saveSubscriptionOAuthTokenChecked(token, instanceId: p.instanceId)
+                        result.providersRestored += 1
+                    } catch {
+                        logger.error("[Restore] subscription credential could not be saved; account was not marked restored")
+                    }
+                } else {
+                    result.providersSkippedExisting += 1
+                }
+                continue
+            }
             var wrote = false
             // Each field is independent: an instance may carry an apiKey, an
             // OAuth blob, or both, and a missing one must not block the others.

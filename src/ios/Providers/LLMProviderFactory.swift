@@ -74,6 +74,11 @@ enum LLMProviderFactory {
             return openCode(makeKimiProvider(instance: instance, model: entry.model))
         case .githubCopilot:
             return openCode(makeCopilotProvider(instance: instance, model: entry.model))
+        case .workBuddy, .traeCN:
+            // Fixed-host, OAuth-only text subscriptions; never wrap as OpenAI/Azure/OpenCode.
+            guard instance.credentialType == .oauth else { throw FactoryError.noCredentials }
+            return SubscriptionLLMProvider(instance: instance, model: entry.model,
+                                           resolveSessionId: resolveSessionId, overrides: entry.overrides)
         case .unsupported:
             throw FactoryError.voiceOnlyProvider
         }

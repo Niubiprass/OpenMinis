@@ -179,6 +179,8 @@ struct AddProviderView: View {
     @State private var showKimiLogin = false
     /// [T-copilot-provider] Same device-code shape as Kimi's.
     @State private var showCopilotLogin = false
+    @State private var showSubscriptionLogin = false
+    @State private var savedSubscriptionInstance = false
     @State private var oauthAuthTime: Date?
     @State private var showDataSharingConsent = false
     @State private var showImportFile = false
@@ -252,6 +254,7 @@ struct AddProviderView: View {
     }
 
     private var canSaveCurrentInput: Bool {
+        if selectedType?.isDomesticSubscription == true { return pendingOAuthDone }
         if pendingOAuthDone { return true }
         if selectedCredential == .apiKey,
            !apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || emptyKeyAllowedForCurrentInput { return true }
@@ -362,6 +365,31 @@ struct AddProviderView: View {
                     pendingOAuthDone = true
                 }
             } }
+        }
+        // Available on iOS 15.5 too; the sheet owns the only actual login call.
+        .sheet(isPresented: $showSubscriptionLogin, onDismiss: {
+            SubscriptionOAuthManager.shared.cancelLogin(instanceId: pendingInstanceId)
+            if !pendingOAuthDone, !savedSubscriptionInstance {
+                SubscriptionOAuthManager.shared.logout(instanceId: pendingInstanceId)
+            }
+        }) {
+            if let type = selectedType, type.isDomesticSubscription {
+                let loginId = pendingInstanceId
+                SubscriptionLoginSheet(instanceId: loginId, providerType: type) { success in
+                    guard pendingInstanceId == loginId, selectedType == type,
+                          !savedSubscriptionInstance else { return }
+                    guard success, SubscriptionOAuthManager.shared.isAuthenticated(instanceId: loginId, type: type) else { return }
+                    oauthAuthTime = Date()
+                    oauthMaskedToken = loadMaskedToken(type: type)
+                    pendingOAuthDone = true
+                }
+            }
+        }
+        .onDisappear {
+            // A dismissed, unsaved add flow must never leave an OAuth account behind.
+            if selectedType?.isDomesticSubscription == true, !savedSubscriptionInstance {
+                discardSubscriptionLogin()
+            }
         }
         .fileImporter(isPresented: $showImportFile, allowedContentTypes: [.json]) { result in
             handleImport(result)
@@ -843,6 +871,13 @@ struct AddProviderView: View {
                         .font(.body.weight(.medium))
                 }
 
+                if let type = selectedType, type.isDomesticSubscription,
+                   let account = SubscriptionOAuthManager.shared.accountLabel(instanceId: pendingInstanceId, type: type) {
+                    Text(account)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if let masked = oauthMaskedToken {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Token")
@@ -876,6 +911,8 @@ struct AddProviderView: View {
                         showKimiLogin = true
                     } else if selectedType == .githubCopilot {
                         showCopilotLogin = true
+                    } else if selectedType?.isDomesticSubscription == true {
+                        showSubscriptionLogin = true
                     } else {
                         Task { await startOAuth() }
                     }
@@ -890,6 +927,10 @@ struct AddProviderView: View {
             }
         } header: {
             Text("OAuth")
+        } footer: {
+            if selectedType?.isDomesticSubscription == true {
+                Text("仅支持国内账号 OAuth 登录与文字对话。非官方接入，账号或服务可能受限；不支持手动令牌、自定义地址、语音或图片生成。")
+            }
         }
 
         // Manual OAuth entry — available for all providers (supports proxy services, Coding Plan tokens, etc.)
@@ -902,7 +943,8 @@ struct AddProviderView: View {
         // stored, shown as a configured credential, and then ignored on every
         // request. There is also no token a user could paste: the credential is
         // minted from a GitHub OAuth token and lives ~25 minutes.
-        if selectedType != .antigravity && selectedType != .githubCopilot && !pendingOAuthDone {
+        if selectedType != .antigravity && selectedType != .githubCopilot
+            && selectedType?.isDomesticSubscription != true && !pendingOAuthDone {
             Section {
                 TextField(defaultBaseURL, text: $customBaseURLInput)
                     .font(.system(.body, design: .monospaced))
@@ -992,6 +1034,7 @@ struct AddProviderView: View {
         case .xAI: return "https://api.x.ai/v1"
         case .kimiCode: return "https://api.kimi.com/coding"
         case .githubCopilot: return CopilotConstants.apiBaseURL
+        case .workBuddy, .traeCN: return "" // fixed subscription endpoints, no editable base
         default: return "https://api.example.com"
         }
     }
@@ -999,7 +1042,7 @@ struct AddProviderView: View {
     // MARK: - Actions
 
     private func saveApiKeyInstance() {
-        guard let type = selectedType else { return }
+        guard let type = selectedType, !type.isDomesticSubscription else { return }
         let trimmedKey = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedLabel = labelInput.trimmingCharacters(in: .whitespaces)
         let trimmedBase = customBaseURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1031,6 +1074,10 @@ struct AddProviderView: View {
 
     private func saveOAuthInstance() {
         guard let type = selectedType else { return }
+        if type.isDomesticSubscription {
+            guard pendingOAuthDone, SubscriptionOAuthManager.shared.isAuthenticated(instanceId: pendingInstanceId, type: type) else { return }
+            savedSubscriptionInstance = true
+        }
         let trimmedLabel = labelInput.trimmingCharacters(in: .whitespaces)
 
         let instance = ProviderInstance(
@@ -1044,7 +1091,7 @@ struct AddProviderView: View {
     }
 
     private func saveManualOAuthInstance() {
-        guard let type = selectedType else { return }
+        guard let type = selectedType, !type.isDomesticSubscription else { return }
         let trimmedToken = manualOAuthTokenInput.components(separatedBy: .whitespacesAndNewlines).joined()
         let trimmedLabel = labelInput.trimmingCharacters(in: .whitespaces)
         let trimmedBase = customBaseURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1080,6 +1127,7 @@ struct AddProviderView: View {
             // [T-copilot-provider] Same shape — the device flow lives in
             // CopilotDeviceLoginSheet so the risk notice is shown before it starts.
             case .githubCopilot: break
+            case .workBuddy, .traeCN: return // SubscriptionLoginSheet owns login and success state
             case .unsupported: break // free / unsupported — no OAuth
             }
             oauthAuthTime = Date()
@@ -1115,6 +1163,8 @@ struct AddProviderView: View {
             // The GitHub token is the credential worth showing; the session
             // token is derived and rotates every ~25 minutes.
             token = ProviderKeychainHelper.loadOAuthToken(instanceId: pendingInstanceId, as: CopilotTokenStorage.self)?.githubToken
+        case .workBuddy, .traeCN:
+            return nil // subscription account summary only, never display/copy tokens
         case .unsupported:
             token = nil // free / unsupported — no token
         }
@@ -1123,6 +1173,7 @@ struct AddProviderView: View {
     }
 
     private func goBack() {
+        if selectedType?.isDomesticSubscription == true { discardSubscriptionLogin() }
         // Voice-template entry skipped the credential step, so Back returns
         // all the way to the type list (and clears the prefilled fields) rather
         // than dropping the user onto a credential picker they never saw.
@@ -1167,7 +1218,17 @@ struct AddProviderView: View {
         }
     }
 
+    private func discardSubscriptionLogin() {
+        SubscriptionOAuthManager.shared.cancelLogin(instanceId: pendingInstanceId)
+        SubscriptionOAuthManager.shared.logout(instanceId: pendingInstanceId)
+        pendingOAuthDone = false
+        oauthMaskedToken = nil
+        oauthAuthTime = nil
+        pendingInstanceId = UUID().uuidString // invalidates a late sheet completion
+    }
+
     private func cleanupAndDismiss() {
+        if selectedType?.isDomesticSubscription == true { discardSubscriptionLogin() }
         // If we started OAuth but never saved, clean up
         if pendingOAuthDone {
             ProviderKeychainHelper.deleteOAuthToken(instanceId: pendingInstanceId)
@@ -1195,6 +1256,8 @@ struct AddProviderView: View {
         case .xAI: return AppLocalized("Sign in with xAI")
         case .kimiCode: return AppLocalized("Sign in with Kimi Code")
         case .githubCopilot: return AppLocalized("Sign in with GitHub")
+        case .workBuddy: return AppLocalized("使用 WorkBuddy 国内账号登录")
+        case .traeCN: return AppLocalized("使用 Trae 国内版账号登录")
         case .unsupported: return AppLocalized("Sign In")
         }
     }
@@ -1211,6 +1274,7 @@ struct AddProviderView: View {
         case .xAI: return "xai-..."
         case .kimiCode: return "" // OAuth only
         case .githubCopilot: return "" // OAuth only
+        case .workBuddy, .traeCN: return "" // browser OAuth only; never accept keys
         case .unsupported: return ""
         }
     }
@@ -1226,6 +1290,7 @@ struct AddProviderView: View {
         case .xAI: return "xAI (Grok)"
         case .kimiCode: return "Kimi Code"
         case .githubCopilot: return "GitHub Copilot"
+        case .workBuddy, .traeCN: return type.displayName
         case .unsupported: return AppLocalized("Unsupported")
         }
     }
@@ -1254,7 +1319,7 @@ struct AddProviderView: View {
         // there was ignored by the factory. Offering a credential the provider
         // cannot use is worse than offering none: it looks like the supported
         // path and fails with no explanation.
-        case .githubCopilot:
+        case .githubCopilot, .workBuddy, .traeCN:
             return [.oauth]
         case .openAIResponses, .gemini:
             return [.apiKey]
@@ -1269,6 +1334,8 @@ struct AddProviderView: View {
             return AppLocalized("Supports OpenAI official API and third-party services like OpenRouter, MiniMax, etc.")
         case (.openAIResponses, .apiKey):
             return AppLocalized("Use an API key for a Responses API endpoint")
+        case (.workBuddy, _), (.traeCN, _):
+            return type.pickerSubtitle // China-only, unofficial and OAuth-only
         case (_, .apiKey):
             return AppLocalized("Use an API key from your \(type.displayName) account")
         case (.anthropic, .oauth):
@@ -1328,6 +1395,12 @@ struct AddProviderView: View {
         case .githubCopilot:
             Image(systemName: "chevron.left.forwardslash.chevron.right")
                 .foregroundStyle(.primary)
+        case .workBuddy:
+            Image(systemName: "person.2.fill")
+                .foregroundStyle(.blue)
+        case .traeCN:
+            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                .foregroundStyle(.green)
         case .unsupported:
             Image(systemName: "questionmark.circle")
                 .foregroundStyle(.gray)
@@ -1345,6 +1418,8 @@ struct AddProviderView: View {
         case .xAI: return .gray
         case .kimiCode: return .indigo
         case .githubCopilot: return .primary
+        case .workBuddy: return .blue
+        case .traeCN: return .green
         case .unsupported: return .gray
         }
     }

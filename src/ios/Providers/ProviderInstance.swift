@@ -66,15 +66,15 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         self.id = id
         self.label = label
         self.providerType = providerType
-        self.credentialType = credentialType
+        self.credentialType = providerType.isDomesticSubscription ? .oauth : credentialType
         self.isEnabled = isEnabled
         self.createdAt = createdAt
-        self.customBaseURL = customBaseURL
+        self.customBaseURL = providerType.isDomesticSubscription ? nil : customBaseURL
         self.appendV1Suffix = appendV1Suffix
         self.imageEndpointMode = imageEndpointMode
         self.imageEndpointResolved = imageEndpointResolved
-        self.customUserAgent = customUserAgent
-        self.azureMode = azureMode
+        self.customUserAgent = providerType.isDomesticSubscription ? nil : customUserAgent
+        self.azureMode = providerType.isDomesticSubscription ? false : azureMode
         self.unknownProviderTypeRaw = unknownProviderTypeRaw
     }
 
@@ -95,19 +95,24 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         let typeRaw = try c.decode(String.self, forKey: .providerType)
         providerType = ProviderType.decoded(typeRaw)
         unknownProviderTypeRaw = (providerType == .unsupported) ? typeRaw : nil
-        credentialType = try c.decode(ProviderCredential.self, forKey: .credentialType)
+        let decodedCredential = try c.decode(ProviderCredential.self, forKey: .credentialType)
+        credentialType = providerType.isDomesticSubscription ? .oauth : decodedCredential
         isEnabled = try c.decode(Bool.self, forKey: .isEnabled)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
-        customBaseURL = try c.decodeIfPresent(String.self, forKey: .customBaseURL)
+        // Decode the old fields for compatibility, but never apply relay / Azure settings to subscriptions.
+        let decodedBaseURL = try c.decodeIfPresent(String.self, forKey: .customBaseURL)
+        customBaseURL = providerType.isDomesticSubscription ? nil : decodedBaseURL
         appendV1Suffix = try c.decodeIfPresent(Bool.self, forKey: .appendV1Suffix) ?? true
         // Both new fields tolerate absence (old data) and unknown values (forward compat).
         imageEndpointMode = (try? c.decodeIfPresent(ImageEndpointMode.self, forKey: .imageEndpointMode)) ?? .auto
         imageEndpointResolved = try? c.decodeIfPresent(ImageEndpointMode.self, forKey: .imageEndpointResolved)
         // Additive + optional: old data without this key decodes to nil (default UA).
-        customUserAgent = try c.decodeIfPresent(String.self, forKey: .customUserAgent)
+        let decodedUserAgent = try c.decodeIfPresent(String.self, forKey: .customUserAgent)
+        customUserAgent = providerType.isDomesticSubscription ? nil : decodedUserAgent
         // [T-ios-azure-openai] Additive + optional: old data → false (off), so
         // existing OpenAI/Responses instances keep their exact prior behavior.
-        azureMode = (try? c.decodeIfPresent(Bool.self, forKey: .azureMode)) ?? false
+        let decodedAzureMode = (try? c.decodeIfPresent(Bool.self, forKey: .azureMode)) ?? false
+        azureMode = providerType.isDomesticSubscription ? false : decodedAzureMode
     }
 
     func encode(to encoder: Encoder) throws {
@@ -133,6 +138,7 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
     /// Returns customUserAgent if non-nil and non-empty (trimmed), otherwise nil.
     /// Use this everywhere the effective UA is needed — empty string means "default UA".
     var effectiveCustomUserAgent: String? {
+        guard !providerType.isDomesticSubscription else { return nil }
         guard let ua = customUserAgent?.trimmingCharacters(in: .whitespacesAndNewlines), !ua.isEmpty else { return nil }
         return ua
     }
@@ -149,7 +155,7 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         // [T-copilot-provider] Copilot's User-Agent is part of the protocol —
         // the API rejects requests that do not look like the editor plugin — so
         // it must not be user-overridable the way a proxy's UA is.
-        case .gemini, .antigravity, .githubCopilot, .unsupported:
+        case .gemini, .antigravity, .githubCopilot, .workBuddy, .traeCN, .unsupported:
             return false
         }
     }
@@ -186,7 +192,7 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         switch providerType {
         case .openAI, .openAIResponses, .openRouter, .xAI, .kimiCode, .githubCopilot:
             return OpenCodeChannel.looksLikeOpenCodeBaseURL(effectiveCustomBaseURL)
-        case .anthropic, .gemini, .antigravity, .unsupported:
+        case .anthropic, .gemini, .antigravity, .workBuddy, .traeCN, .unsupported:
             return false
         }
     }
@@ -201,6 +207,7 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
     /// Returns customBaseURL if non-nil and non-empty, otherwise nil.
     /// Use this to check whether a custom base is configured; for building request URLs use resolvedBaseURL(default:).
     var effectiveCustomBaseURL: String? {
+        guard !providerType.isDomesticSubscription else { return nil }
         guard let url = customBaseURL, !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return url.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -306,6 +313,15 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
     /// The uncached credential probe. Kept separate so the cache wraps it and
     /// tests / diagnostics can force a fresh read.
     func computeHasAnyCredential() -> Bool {
+        if providerType.isDomesticSubscription {
+            // Do not let an imported API key or pasted bearer satisfy OAuth.
+            // Expiry is refreshable; the reauth marker, type and nonempty token are authoritative.
+            guard credentialType == .oauth,
+                  !ProviderKeychainHelper.oauthNeedsReauth(instanceId: id),
+                  let token = ProviderKeychainHelper.loadOAuthToken(
+                    instanceId: id, as: SubscriptionTokenStorage.self, caller: "hasAnyCredential") else { return false }
+            return token.provider == providerType.rawValue && !token.accessToken.isEmpty
+        }
         // [T-empty-key-compat-endpoints] Third-party compatible endpoint in
         // API-key mode: configured-by-definition, no Keychain probe needed
         // (also the cheapest possible path — zero XPC round-trips).
@@ -355,6 +371,8 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
             return ProviderKeychainHelper.loadOAuthToken(
                 instanceId: id, as: CopilotTokenStorage.self, caller: "hasAnyCredential"
             )?.githubToken.isEmpty == false
+        case .workBuddy, .traeCN:
+            return false // handled before generic API-key/manual-bearer probes
         case .antigravity, .openRouter, .unsupported:
             // unsupported = synced from a newer build; no usable credential here.
             // antigravity stores its token via AntigravityOAuthManager (no

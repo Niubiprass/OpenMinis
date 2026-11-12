@@ -1588,7 +1588,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         // [T-copilot-provider] Copilot's /models reports `supports.thinking`
         // per model, so an explicit false there is authoritative — it belongs
         // with the strict group, not the permissive one.
-        case .anthropic, .gemini, .antigravity, .githubCopilot, .unsupported:
+        case .anthropic, .gemini, .antigravity, .githubCopilot, .workBuddy, .traeCN, .unsupported:
             return false
         }
     }
@@ -1669,6 +1669,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 level = thinkLvl.displayName
             case .openAI, .openAIResponses, .openRouter, .xAI, .kimiCode, .githubCopilot:
                 level = OpenAIAgentProvider.reasoningEffort(for: model, level: thinkLvl) ?? "—"
+            case .workBuddy, .traeCN:
+                level = thinkLvl.displayName // subscription adapter owns the vendor thinking wire
             case .unsupported:
                 level = "—"
             case .antigravity:

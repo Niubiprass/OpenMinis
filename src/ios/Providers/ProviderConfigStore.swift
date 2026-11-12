@@ -201,6 +201,8 @@ final class ProviderConfigStore: ObservableObject {
     /// against the current `config` for per-record v3 markDirty emission.
     /// `nil` until the first save() runs after init.
     private var lastSavedSnapshot: ProviderConfig?
+    /// Late model responses must not recreate rows for an explicitly deleted subscription instance.
+    private var removedSubscriptionInstanceIds: Set<String> = []
 
     /// [T-provider-entry-composite-key] legacyUuid → compositeKey map.
     /// Populated by migration (every old entry's uuid → its composite key) and
@@ -1027,6 +1029,12 @@ final class ProviderConfigStore: ObservableObject {
     }
 
     func removeInstance(_ instanceId: String) {
+        if instance(for: instanceId)?.providerType.isDomesticSubscription == true {
+            removedSubscriptionInstanceIds.insert(instanceId)
+            // Invalidate pending login/refresh before deleting the instance or Keychain item.
+            SubscriptionOAuthManager.shared.cancelLogin(instanceId: instanceId)
+            SubscriptionOAuthManager.shared.logout(instanceId: instanceId)
+        }
         // Collect entry UUIDs to remove from groups before deleting entries
         let removedEntryIds = Set(config.modelEntries.filter { $0.providerInstanceId == instanceId }.map(\.id))
         // Capture groups that go empty as a side effect of this removal so we
@@ -1185,10 +1193,12 @@ final class ProviderConfigStore: ObservableObject {
                 return m
             },
         ]
-        if let key = ProviderKeychainHelper.loadAPIKey(instanceId: instanceId) {
+        if !instance.providerType.isDomesticSubscription,
+           let key = ProviderKeychainHelper.loadAPIKey(instanceId: instanceId) {
             dict["apiKey"] = Data(key.utf8).base64EncodedString()
         }
-        if let manualToken = ProviderKeychainHelper.loadOAuthString(instanceId: instanceId, account: "manual-oauth-token") {
+        if !instance.providerType.isDomesticSubscription,
+           let manualToken = ProviderKeychainHelper.loadOAuthString(instanceId: instanceId, account: "manual-oauth-token") {
             dict["manualOAuthToken"] = Data(manualToken.utf8).base64EncodedString()
         }
         // [T-ios-provider-export-oauth-token] Export the structured OAuth-login
@@ -1211,6 +1221,12 @@ final class ProviderConfigStore: ObservableObject {
                 return ProviderKeychainHelper.loadOAuthToken(instanceId: instanceId, as: XAITokenStorage.self).flatMap { try? JSONEncoder().encode($0) }
             case .kimiCode:
                 return ProviderKeychainHelper.loadOAuthToken(instanceId: instanceId, as: KimiTokenStorage.self).flatMap { try? JSONEncoder().encode($0) }
+            case .workBuddy, .traeCN:
+                // The blob is portable: the destination Keychain id, not the JSON, owns the instance.
+                guard instance.credentialType == .oauth,
+                      let token = ProviderKeychainHelper.loadOAuthToken(instanceId: instanceId, as: SubscriptionTokenStorage.self),
+                      token.provider == instance.providerType.rawValue, !token.accessToken.isEmpty else { return nil }
+                return try? JSONEncoder().encode(token)
             default:
                 return nil
             }
@@ -1228,16 +1244,16 @@ final class ProviderConfigStore: ObservableObject {
                 dict["oauthGcpProject"] = Data(project.utf8).base64EncodedString()
             }
         }
-        if let url = instance.customBaseURL {
+        if !instance.providerType.isDomesticSubscription, let url = instance.customBaseURL {
             dict["customBaseURL"] = url
         }
-        if !instance.appendV1Suffix {
+        if !instance.providerType.isDomesticSubscription, !instance.appendV1Suffix {
             dict["appendV1Suffix"] = false
         }
         // [T-provider-custom-user-agent] Additive + optional: only emitted when set.
         // Old builds ignore the key; a new build reading an old export leaves it nil
         // (default UA). No credential exposure — UA is not secret.
-        if let ua = instance.effectiveCustomUserAgent {
+        if !instance.providerType.isDomesticSubscription, let ua = instance.effectiveCustomUserAgent {
             dict["customUserAgent"] = ua
         }
         guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]),
@@ -1264,6 +1280,18 @@ final class ProviderConfigStore: ObservableObject {
             credentialType = ct
         } else {
             credentialType = .apiKey
+        }
+
+        if providerType.isDomesticSubscription {
+            // No API-key/manual-bearer shortcut, even for a hand-edited share file.
+            guard credentialType == .oauth,
+                  dict["apiKey"] == nil, dict["manualOAuthToken"] == nil,
+                  dict["customBaseURL"] == nil, dict["customUserAgent"] == nil,
+                  dict["azureMode"] == nil, dict["imageEndpointMode"] == nil,
+                  let encoded = dict["oauthToken"] as? String,
+                  let blob = Data(base64Encoded: encoded),
+                  let token = try? JSONDecoder().decode(SubscriptionTokenStorage.self, from: blob),
+                  token.provider == providerType.rawValue, !token.accessToken.isEmpty else { return nil }
         }
 
         // Resolve label conflict
@@ -1345,6 +1373,19 @@ final class ProviderConfigStore: ObservableObject {
             case .kimiCode:
                 if let t = try? JSONDecoder().decode(KimiTokenStorage.self, from: blob) {
                     ProviderKeychainHelper.saveOAuthToken(t, instanceId: instance.id)
+                }
+            case .workBuddy, .traeCN:
+                if let token = try? JSONDecoder().decode(SubscriptionTokenStorage.self, from: blob),
+                   token.provider == providerType.rawValue, !token.accessToken.isEmpty {
+                    // A destination instance is published only after checked Keychain read-back.
+                    do {
+                        try ProviderKeychainHelper.saveSubscriptionOAuthTokenChecked(token, instanceId: instance.id)
+                    } catch {
+                        // This id was newly generated for this import, so cleanup cannot
+                        // remove a previously configured account.
+                        SubscriptionOAuthManager.shared.logout(instanceId: instance.id)
+                        return nil
+                    }
                 }
             default:
                 break
@@ -1721,6 +1762,9 @@ final class ProviderConfigStore: ObservableObject {
     /// overrides are preserved and the entry is converted to non-custom (so the user's
     /// selected model keeps working after refresh).
     func replaceEntries(for instanceId: String, models rawModels: [LLMModel], caller: String = #function) {
+        guard !removedSubscriptionInstanceIds.contains(instanceId) else { return }
+        if let instance = instance(for: instanceId), instance.providerType.isDomesticSubscription,
+           !instance.computeHasAnyCredential() { return } // sign-out / reauth during a fetch
         // [T-icloud-provider-sync-consistency] Deduplicate the incoming model
         // list by id BEFORE building entries. Some provider /v1/models
         // endpoints (notably the OpenAI-compatible OAuth path) can return the
@@ -3124,6 +3168,12 @@ final class ProviderConfigStore: ObservableObject {
             // refresh right after sign-in works without any extra priming.
             let token = try await CopilotOAuthManager.shared.validSessionToken(instanceId: instance.id)
             return try await CopilotModelsAPI.fetchModels(sessionToken: token)
+        case (.workBuddy, .oauth), (.traeCN, .oauth):
+            // Unofficial China-only subscriptions: real account model discovery only.
+            // Throwing preserves the current list; no guessed/built-in fallback.
+            return try await SubscriptionModelsAPI.fetchModels(instance: instance)
+        case (.workBuddy, .apiKey), (.traeCN, .apiKey):
+            throw ModelRefreshError.noCredential // no API-key or manual-bearer form
         case (.unsupported, _):
             // Synced from a newer build — can't fetch; keep whatever's stored.
             return []
@@ -3256,6 +3306,7 @@ final class ProviderConfigStore: ObservableObject {
 
     /// Resolve the effective API base URL for an instance (for models.dev matching).
     private static func modelsDevBaseURL(for instance: ProviderInstance) -> String? {
+        if instance.providerType.isDomesticSubscription { return nil }
         if let custom = instance.effectiveCustomBaseURL {
             return custom
         }
@@ -3269,6 +3320,7 @@ final class ProviderConfigStore: ObservableObject {
         case .gemini: return "https://generativelanguage.googleapis.com"
         case .openRouter: return "https://openrouter.ai/api"
         case .antigravity: return nil // No public base URL
+        case .workBuddy, .traeCN: return nil // subscription-only protocol, not a public API base
         case .unsupported: return nil // synced from newer build
         }
     }
@@ -3744,6 +3796,40 @@ enum ProviderKeychainHelper {
         addQuery[kSecAttrSynchronizable as String] = true
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         AppLogger(category: "Keychain").info("write oauthToken instanceId=\(instanceId.prefix(8)) blobLen=\(data.count) addStatus=\(addStatus) caller=\(caller)")
+        clearOAuthNeedsReauth(instanceId: instanceId)
+        notifyAuthChanged(instanceId: instanceId)
+    }
+
+    /// [T-subscription-oauth-checked-save] Atomic update for subscription credentials.
+    /// Preserve the old blob when encoding/Keychain update fails. Never log data.
+    static func saveSubscriptionOAuthTokenChecked(_ token: SubscriptionTokenStorage,
+                                                   instanceId: String) throws {
+        let data = try JSONEncoder().encode(token)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.openminis.app.provider.\(instanceId)",
+            kSecAttrAccount as String: "oauth-token",
+            kSecAttrSynchronizable as String: true,
+        ]
+        var status = SecItemUpdate(query as CFDictionary,
+                                  [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = query
+            add[kSecValueData as String] = data
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            status = SecItemAdd(add as CFDictionary, nil)
+            if status == errSecDuplicateItem {
+                status = SecItemUpdate(query as CFDictionary,
+                                       [kSecValueData as String: data] as CFDictionary)
+            }
+        }
+        guard status == errSecSuccess else {
+            throw SubscriptionProviderError.persistence("登录信息未能保存，请解锁手机后重试", status)
+        }
+        let saved = loadOAuthToken(instanceId: instanceId, as: SubscriptionTokenStorage.self)
+        guard saved == token else {
+            throw SubscriptionProviderError.persistence("登录信息读回不一致，请重试", nil)
+        }
         clearOAuthNeedsReauth(instanceId: instanceId)
         notifyAuthChanged(instanceId: instanceId)
     }

@@ -90,10 +90,12 @@ enum BackupSecretsCollector {
                 label: instance.label,
                 providerType: instance.providerType.rawValue)
 
-            if let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) {
+            if !instance.providerType.isDomesticSubscription,
+               let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) {
                 secret.apiKey = b64(key)
             }
-            if let manual = ProviderKeychainHelper.loadOAuthString(
+            if !instance.providerType.isDomesticSubscription,
+               let manual = ProviderKeychainHelper.loadOAuthString(
                 instanceId: instance.id, account: "manual-oauth-token") {
                 secret.manualOAuthToken = b64(manual)
             }
@@ -176,6 +178,12 @@ enum BackupSecretsCollector {
             // hand, the same way.
             return ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: CopilotTokenStorage.self)
                 .flatMap { try? JSONEncoder().encode($0) }
+        case .workBuddy, .traeCN:
+            guard instance.credentialType == .oauth,
+                  let token = ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: SubscriptionTokenStorage.self),
+                  token.provider == instance.providerType.rawValue, !token.accessToken.isEmpty else { return nil }
+            // Instance ownership is the Keychain key, never a field in the portable JSON blob.
+            return try? JSONEncoder().encode(token)
         case .antigravity, .openAIResponses, .openRouter, .unsupported:
             return nil
         }

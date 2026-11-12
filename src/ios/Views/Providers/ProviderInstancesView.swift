@@ -400,7 +400,8 @@ private struct InstanceRow: View {
                 }
             case .oauth:
                 let authed = Self.probeOAuthAuthenticated(instance)
-                needsReauth = authed && ProviderKeychainHelper.oauthNeedsReauth(instanceId: instance.id)
+                needsReauth = (authed || instance.providerType.isDomesticSubscription)
+                    && ProviderKeychainHelper.oauthNeedsReauth(instanceId: instance.id)
                 configured = authed && !needsReauth
                 summary = needsReauth ? AppLocalized("Sign-in expired")
                     : authed ? AppLocalized("Authenticated")
@@ -417,6 +418,9 @@ private struct InstanceRow: View {
     /// The uncached OAuth probe. `static` so the cache closure can call it without
     /// capturing `self` (the row is a short-lived struct; the cache outlives it).
     private static func probeOAuthAuthenticated(_ instance: ProviderInstance) -> Bool {
+        if instance.providerType.isDomesticSubscription {
+            return SubscriptionOAuthManager.shared.isAuthenticated(instanceId: instance.id, type: instance.providerType)
+        }
         // Manual OAuth token is always considered authenticated
         if ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") != nil {
             return true
@@ -431,6 +435,8 @@ private struct InstanceRow: View {
         case .xAI: return XAIOAuthManager.shared.isAuthenticated(instanceId: instance.id)
         case .kimiCode: return KimiOAuthManager.shared.isAuthenticated(instanceId: instance.id)
         case .githubCopilot: return CopilotOAuthManager.shared.isAuthenticated(instanceId: instance.id)
+        case .workBuddy, .traeCN:
+            return SubscriptionOAuthManager.shared.isAuthenticated(instanceId: instance.id, type: instance.providerType)
         case .unsupported: return false // synced from newer build
         }
     }

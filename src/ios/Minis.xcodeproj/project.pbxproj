@@ -603,6 +603,16 @@
 		E8172243CE0FF08A8D15E41F /* MiniSightDialoguePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */; };
 		4747D26C804CC6201A3E41DD /* MiniSightBlip.m in Sources */ = {isa = PBXBuildFile; fileRef = 2027A85A60830ED6F755AABD /* MiniSightBlip.m */; };
 		A15E9A180000000000000001 /* MSApprovalSummaryBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A15E9A180000000000000002 /* MSApprovalSummaryBridge.m */; };
+		D12AB000000000000000001 /* KWWKAI in Frameworks */ = {isa = PBXBuildFile; productRef = D12AB000000000000000003 /* KWWKAI */; };
+		D12AB000000000000000004 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = D12AB000000000000000006 /* NIOCore */; };
+		D13AB000000000000000200 /* SubscriptionHTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000100 /* SubscriptionHTTPClient.swift */; };
+		D13AB000000000000000201 /* SubscriptionLLMProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000101 /* SubscriptionLLMProvider.swift */; };
+		D13AB000000000000000202 /* SubscriptionModelsAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000102 /* SubscriptionModelsAPI.swift */; };
+		D13AB000000000000000203 /* SubscriptionOAuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000103 /* SubscriptionOAuthManager.swift */; };
+		D13AB000000000000000204 /* SubscriptionOAuthTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000104 /* SubscriptionOAuthTypes.swift */; };
+		D13AB000000000000000205 /* TraeOAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000105 /* TraeOAuth.swift */; };
+		D13AB000000000000000206 /* TraeProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000106 /* TraeProvider.swift */; };
+		D13AB000000000000000207 /* SubscriptionLoginSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000107 /* SubscriptionLoginSheet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1378,6 +1388,14 @@
 		98EA448072951D8177A4F8BD /* MiniSightAIPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightAIPage.swift; sourceTree = "<group>"; };
 		24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightDialoguePage.swift; sourceTree = "<group>"; };
 		2027A85A60830ED6F755AABD /* MiniSightBlip.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightBlip.m; sourceTree = "<group>"; };
+		D13AB000000000000000100 /* SubscriptionHTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SubscriptionHTTPClient.swift; path = Providers/Subscription/SubscriptionHTTPClient.swift; sourceTree = SOURCE_ROOT; };
+		D13AB000000000000000101 /* SubscriptionLLMProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SubscriptionLLMProvider.swift; path = Providers/Subscription/SubscriptionLLMProvider.swift; sourceTree = SOURCE_ROOT; };
+		D13AB000000000000000102 /* SubscriptionModelsAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SubscriptionModelsAPI.swift; path = Providers/Subscription/SubscriptionModelsAPI.swift; sourceTree = SOURCE_ROOT; };
+		D13AB000000000000000103 /* SubscriptionOAuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SubscriptionOAuthManager.swift; path = Providers/Subscription/SubscriptionOAuthManager.swift; sourceTree = SOURCE_ROOT; };
+		D13AB000000000000000104 /* SubscriptionOAuthTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SubscriptionOAuthTypes.swift; path = Providers/Subscription/SubscriptionOAuthTypes.swift; sourceTree = SOURCE_ROOT; };
+		D13AB000000000000000105 /* TraeOAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TraeOAuth.swift; path = Providers/Subscription/TraeOAuth.swift; sourceTree = SOURCE_ROOT; };
+		D13AB000000000000000106 /* TraeProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TraeProvider.swift; path = Providers/Subscription/TraeProvider.swift; sourceTree = SOURCE_ROOT; };
+		D13AB000000000000000107 /* SubscriptionLoginSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SubscriptionLoginSheet.swift; path = Views/Providers/SubscriptionLoginSheet.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1449,6 +1467,8 @@
 				E5M000002 /* cmark-gfm-extensions in Frameworks */,
 				E5S000005 /* CloudKit.framework in Frameworks */,
 				891443CAA4679D09A6D32AE4 /* RealTimeCutVADLibrary in Frameworks */,
+				D12AB000000000000000001 /* KWWKAI in Frameworks */,
+				D12AB000000000000000004 /* NIOCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1730,6 +1750,13 @@
 				E5F00002 /* LLMProviderFactory.swift */,
 				E59000011 /* AgentProvider.swift */,
 				E5D00011 /* ProviderTypes.swift */,
+				D13AB000000000000000100 /* SubscriptionHTTPClient.swift */,
+				D13AB000000000000000101 /* SubscriptionLLMProvider.swift */,
+				D13AB000000000000000102 /* SubscriptionModelsAPI.swift */,
+				D13AB000000000000000103 /* SubscriptionOAuthManager.swift */,
+				D13AB000000000000000104 /* SubscriptionOAuthTypes.swift */,
+				D13AB000000000000000105 /* TraeOAuth.swift */,
+				D13AB000000000000000106 /* TraeProvider.swift */,
 				E5D00012 /* ProviderInstance.swift */,
 				E5D00013 /* ModelEntry.swift */,
 				E5D00014 /* ModelGroup.swift */,
@@ -2527,6 +2554,7 @@
 			isa = PBXGroup;
 			children = (
 				E5D00032 /* AddProviderView.swift */,
+				D13AB000000000000000107 /* SubscriptionLoginSheet.swift */,
 				E5KIMIUI2 /* KimiDeviceLoginSheet.swift */,
 				E5D00038 /* AgentLoopModelsView.swift */,
 				E5D00034 /* ModelGroupDetailView.swift */,
@@ -2673,6 +2701,8 @@
 				E5M000022 /* cmark-gfm-extensions */,
 				E5X000021 /* SwiftMath */,
 				C42120806C66A2C804F89620 /* RealTimeCutVADLibrary */,
+				D12AB000000000000000003 /* KWWKAI */,
+				D12AB000000000000000006 /* NIOCore */,
 			);
 			productName = Minis;
 			productReference = E51000010 /* Minis.app */;
@@ -2785,6 +2815,8 @@
 				E5M000020 /* XCRemoteSwiftPackageReference "swift-cmark" */,
 				E5X000020 /* XCRemoteSwiftPackageReference "SwiftMath" */,
 				B318C2F47DB3F301A17E49BE /* XCRemoteSwiftPackageReference "RealTimeCutVADLibrary" */,
+				D12AB000000000000000002 /* XCRemoteSwiftPackageReference "kwwk" */,
+				D12AB000000000000000005 /* XCRemoteSwiftPackageReference "swift-nio" */,
 			);
 			productRefGroup = E51000032 /* Products */;
 			projectDirPath = "";
@@ -3256,6 +3288,14 @@
 				E7A000001 /* OpenRouterModelsAPI.swift in Sources */,
 				E7A000002 /* OpenRouterOAuthManager.swift in Sources */,
 				E5D00001 /* ProviderTypes.swift in Sources */,
+				D13AB000000000000000200 /* SubscriptionHTTPClient.swift in Sources */,
+				D13AB000000000000000201 /* SubscriptionLLMProvider.swift in Sources */,
+				D13AB000000000000000202 /* SubscriptionModelsAPI.swift in Sources */,
+				D13AB000000000000000203 /* SubscriptionOAuthManager.swift in Sources */,
+				D13AB000000000000000204 /* SubscriptionOAuthTypes.swift in Sources */,
+				D13AB000000000000000205 /* TraeOAuth.swift in Sources */,
+				D13AB000000000000000206 /* TraeProvider.swift in Sources */,
+				D13AB000000000000000207 /* SubscriptionLoginSheet.swift in Sources */,
 				E5D00002 /* ProviderInstance.swift in Sources */,
 				E5D00003 /* ModelEntry.swift in Sources */,
 				E5D00004 /* ModelGroup.swift in Sources */,
@@ -4188,6 +4228,16 @@
 				minimumVersion = 1.7.3;
 			};
 		};
+		D12AB000000000000000002 /* XCRemoteSwiftPackageReference "kwwk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/EYHN/kwwk.git";
+			requirement = { kind = revision; revision = a7fe8390d8ef82686c67dadd4f250c82a44a0ee9; };
+		};
+		D12AB000000000000000005 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio.git";
+			requirement = { kind = exactVersion; version = 2.103.0; };
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -4215,6 +4265,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = E5X000020 /* XCRemoteSwiftPackageReference "SwiftMath" */;
 			productName = SwiftMath;
+		};
+		D12AB000000000000000003 /* KWWKAI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D12AB000000000000000002 /* XCRemoteSwiftPackageReference "kwwk" */;
+			productName = KWWKAI;
+		};
+		D12AB000000000000000006 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D12AB000000000000000005 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

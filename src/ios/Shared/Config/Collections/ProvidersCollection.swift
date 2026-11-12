@@ -29,8 +29,20 @@ struct ProvidersCollection: ConfigCollection {
     }
 
     func fields(for id: String) -> [ConfigField] {
-        guard ProviderConfigStore.shared.config.instances.contains(where: { $0.id == id }) else {
+        guard let instance = ProviderConfigStore.shared.config.instances.first(where: { $0.id == id }) else {
             return []
+        }
+        if instance.providerType.isDomesticSubscription {
+            // Only browser OAuth can create/change this fixed-host text account's credential.
+            return [
+                providerType(for: id), credentialType(for: id), label(for: id), enabled(for: id),
+                HiddenField(path: "providers.\(id).apiKey", displayName: "API Key",
+                            description: "Not supported for domestic subscriptions.",
+                            reason: "Use the in-app China-account OAuth login; API keys are not supported"),
+                HiddenField(path: "providers.\(id).oauthToken", displayName: "OAuth Token",
+                            description: "Managed by the in-app OAuth login flow.",
+                            reason: "OAuth tokens are never exposed to minis-config"),
+            ]
         }
         return [
             // Read-only summary fields (helpful for `get`).
@@ -84,6 +96,9 @@ struct ProvidersCollection: ConfigCollection {
         guard let providerType = ProviderType(rawValue: typeRaw) else {
             let valid = ProviderType.allCases.map(\.rawValue).joined(separator: ", ")
             throw ConfigError.invalidValue("Unknown providerType \"\(typeRaw)\". Valid: \(valid)")
+        }
+        guard !providerType.isDomesticSubscription else {
+            throw ConfigError.invalidValue("WorkBuddy / Trae CN require domestic-account OAuth login in Settings → Providers → Add Provider; minis-config cannot create an API-key/manual-token subscription instance.")
         }
         guard case .string(let label)? = dict["label"], !label.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw ConfigError.invalidValue("`label` is required")

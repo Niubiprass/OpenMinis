@@ -295,6 +295,8 @@ private let logger = AppLogger(category: "ModelUseOffload")
               {"messages":[{"role":"user","content":"<prompt>"}],
                "generation_config":{"aspect_ratio":"16:9","image_size":"2K"}}
             """
+        case .workBuddy, .traeCN:
+            return "" // domestic subscriptions are text-only, never suggest an image endpoint
         case .unsupported:
             return ""
         case .openAI, .openAIResponses, .openRouter, .xAI, .kimiCode, .githubCopilot:

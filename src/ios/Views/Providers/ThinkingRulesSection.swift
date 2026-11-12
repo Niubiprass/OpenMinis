@@ -56,8 +56,8 @@ struct ThinkingRulesSection: View {
     private var supportsCustomRules: Bool {
         guard let instance = store.instance(for: instanceId) else { return false }
         switch instance.providerType {
-        case .anthropic, .gemini, .antigravity, .openAIResponses:
-            return false
+        case .anthropic, .gemini, .antigravity, .openAIResponses, .workBuddy, .traeCN:
+            return false // subscription thinking is owned by its fixed vendor protocol
         default:
             // A Codex-style OAuth instance with no custom base URL also resolves to the
             // Responses path, even though its type is plain `.openAI`.

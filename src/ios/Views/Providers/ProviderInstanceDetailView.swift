@@ -15,6 +15,7 @@ struct ProviderInstanceDetailView: View {
     @State private var showKimiLogin = false
     /// [T-copilot-provider] Same device-code shape as Kimi's.
     @State private var showCopilotLogin = false
+    @State private var showSubscriptionLogin = false
     @State private var keyInputText = ""
     @State private var isFetchingModels = false
     /// [T-thinking-rules-ui-fix] Owned HERE, not inside ThinkingRulesSection: a .sheet on a
@@ -165,6 +166,19 @@ struct ProviderInstanceDetailView: View {
                         Task { await store.refreshModels(for: instance) }
                     }
                 } }
+            }
+        }
+        // The subscription sheet supports iOS 15.5 and is the only login owner.
+        .sheet(isPresented: $showSubscriptionLogin, onDismiss: {
+            SubscriptionOAuthManager.shared.cancelLogin(instanceId: instanceId)
+        }) {
+            if let instance = instance, instance.providerType.isDomesticSubscription {
+                SubscriptionLoginSheet(instanceId: instance.id, providerType: instance.providerType) { success in
+                    guard success, store.instance(for: instance.id)?.providerType == instance.providerType,
+                          SubscriptionOAuthManager.shared.isAuthenticated(instanceId: instance.id, type: instance.providerType) else { return }
+                    oauthRefreshTrigger.toggle()
+                    Task { await store.refreshModels(for: instance) }
+                }
             }
         }
         .sheet(isPresented: $showQuotaLogin) {
@@ -405,8 +419,18 @@ struct ProviderInstanceDetailView: View {
                 }
             }
 
-            // MARK: Custom Base URL
-            customBaseURLSection(instance)
+            // Fixed subscription hosts / UA cannot be edited or redirected.
+            if instance.providerType.isDomesticSubscription {
+                Section {
+                    Text(instance.providerType.pickerSubtitle)
+                    Text("仅支持国内账号 OAuth 与文字对话；不支持手动令牌、自定义地址、Azure、OpenCode、语音或图片生成。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                // MARK: Custom Base URL
+                customBaseURLSection(instance)
+            }
 
             // [T-mimo-shadow-voice] These LLM-config fields are gated by their own
             // providerType/capability checks (supportsCustomUserAgent, API-format
@@ -483,7 +507,8 @@ struct ProviderInstanceDetailView: View {
             // second entry point, which that fix missed.
             if instance.credentialType == .oauth
                 && instance.providerType != .antigravity
-                && instance.providerType != .githubCopilot {
+                && instance.providerType != .githubCopilot
+                && !instance.providerType.isDomesticSubscription {
                 manualOAuthTokenSection(instance)
             }
 
@@ -1035,7 +1060,8 @@ struct ProviderInstanceDetailView: View {
         let isAuth = oauthIsAuthenticated(instance)
         // [T-oauth-keep-credentials] Refresh was rejected: the credential is kept
         // (never auto-deleted) but unusable until the user signs in again.
-        let needsReauth = isAuth && ProviderKeychainHelper.oauthNeedsReauth(instanceId: instance.id)
+        let needsReauth = (isAuth || instance.providerType.isDomesticSubscription)
+            && ProviderKeychainHelper.oauthNeedsReauth(instanceId: instance.id)
         let detail = oauthDetail(instance)
         // Subscribe to auth state changes (Keychain token save/delete)
         let _ = oauthRefreshTrigger
@@ -1070,8 +1096,8 @@ struct ProviderInstanceDetailView: View {
                     }
                     .font(.caption.weight(.medium))
                 }
-                if isAuth {
-                    if !needsReauth {
+                if isAuth || needsReauth {
+                    if !needsReauth && !instance.providerType.isDomesticSubscription {
                         Button(AppLocalized("Copy Token")) {
                             Task { await oauthCopyToken(instance) }
                         }
@@ -1101,6 +1127,8 @@ struct ProviderInstanceDetailView: View {
             showKimiLogin = true
         } else if instance.providerType == .githubCopilot {
             showCopilotLogin = true
+        } else if instance.providerType.isDomesticSubscription {
+            showSubscriptionLogin = true
         } else {
             Task {
                 await oauthLogin(instance)
@@ -1124,6 +1152,7 @@ struct ProviderInstanceDetailView: View {
         case .xAI: return "https://api.x.ai/v1"
         case .kimiCode: return "https://api.kimi.com/coding"
         case .githubCopilot: return CopilotConstants.apiBaseURL
+        case .workBuddy, .traeCN: return "—" // fixed subscription host
         case .unsupported: return "—"
         }
     }
@@ -1488,6 +1517,9 @@ struct ProviderInstanceDetailView: View {
     // MARK: - OAuth Helpers
 
     private func oauthIsAuthenticated(_ instance: ProviderInstance) -> Bool {
+        if instance.providerType.isDomesticSubscription {
+            return SubscriptionOAuthManager.shared.isAuthenticated(instanceId: instance.id, type: instance.providerType)
+        }
         if ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") != nil {
             return true
         }
@@ -1501,11 +1533,21 @@ struct ProviderInstanceDetailView: View {
         case .xAI: return XAIOAuthManager.shared.isAuthenticated(instanceId: instance.id)
         case .kimiCode: return KimiOAuthManager.shared.isAuthenticated(instanceId: instance.id)
         case .githubCopilot: return CopilotOAuthManager.shared.isAuthenticated(instanceId: instance.id)
+        case .workBuddy, .traeCN:
+            return SubscriptionOAuthManager.shared.isAuthenticated(instanceId: instance.id, type: instance.providerType)
         case .unsupported: return false // synced from newer build
         }
     }
 
     private func oauthDetail(_ instance: ProviderInstance) -> String {
+        if instance.providerType.isDomesticSubscription {
+            guard SubscriptionOAuthManager.shared.isAuthenticated(instanceId: instance.id, type: instance.providerType) else {
+                return ProviderKeychainHelper.oauthNeedsReauth(instanceId: instance.id)
+                    ? AppLocalized("Sign-in expired") : AppLocalized("Not authenticated")
+            }
+            return SubscriptionOAuthManager.shared.accountLabel(instanceId: instance.id, type: instance.providerType)
+                ?? AppLocalized("Authenticated")
+        }
         // Manual OAuth token — show masked token
         if ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") != nil {
             return AppLocalized("Authenticated (manual token)")
@@ -1565,6 +1607,9 @@ struct ProviderInstanceDetailView: View {
         case .githubCopilot:
             return CopilotOAuthManager.shared.isAuthenticated(instanceId: instance.id)
                 ? AppLocalized("Authenticated") : AppLocalized("Not authenticated")
+        case .workBuddy, .traeCN:
+            return SubscriptionOAuthManager.shared.accountLabel(instanceId: instance.id, type: instance.providerType)
+                ?? AppLocalized("Authenticated")
         case .unsupported:
             return AppLocalized("Unsupported in this app version")
         }
@@ -1581,6 +1626,8 @@ struct ProviderInstanceDetailView: View {
         case .xAI: return AppLocalized("Sign in with xAI")
         case .kimiCode: return AppLocalized("Sign in with Kimi Code")
         case .githubCopilot: return AppLocalized("Sign in with GitHub")
+        case .workBuddy: return AppLocalized("使用 WorkBuddy 国内账号登录")
+        case .traeCN: return AppLocalized("使用 Trae 国内版账号登录")
         case .unsupported: return AppLocalized("Sign In")
         }
     }
@@ -1597,6 +1644,7 @@ struct ProviderInstanceDetailView: View {
             case .xAI: try await XAIOAuthManager.shared.login(instanceId: instance.id)
             case .kimiCode: break // device-code flow runs in KimiDeviceLoginSheet
             case .githubCopilot: break // device-code flow runs in CopilotDeviceLoginSheet
+            case .workBuddy, .traeCN: return // SubscriptionLoginSheet owns login and successful refresh
             case .unsupported: break
             }
             // [T-provider-oauth-model-discovery] Reconcile models on a
@@ -1635,6 +1683,9 @@ struct ProviderInstanceDetailView: View {
         case .xAI: XAIOAuthManager.shared.logout(instanceId: instance.id)
         case .kimiCode: KimiOAuthManager.shared.logout(instanceId: instance.id)
         case .githubCopilot: CopilotOAuthManager.shared.logout(instanceId: instance.id)
+        case .workBuddy, .traeCN:
+            SubscriptionOAuthManager.shared.cancelLogin(instanceId: instance.id)
+            SubscriptionOAuthManager.shared.logout(instanceId: instance.id)
         case .unsupported: break
         }
     }
@@ -1660,6 +1711,8 @@ struct ProviderInstanceDetailView: View {
             token = try? await KimiOAuthManager.shared.validAccessToken(instanceId: instance.id)
         case .githubCopilot:
             token = try? await CopilotOAuthManager.shared.validSessionToken(instanceId: instance.id)
+        case .workBuddy, .traeCN:
+            token = nil // never refresh/read/copy a subscription bearer into the pasteboard
         case .unsupported:
             token = nil
         }
@@ -1677,6 +1730,7 @@ struct ProviderInstanceDetailView: View {
         case .xAI: return "xai-..."
         case .kimiCode: return "" // OAuth only
         case .githubCopilot: return "" // OAuth only
+        case .workBuddy, .traeCN: return "" // browser OAuth only
         case .antigravity: return "API Key..."
         case .openRouter: return "sk-or-..."
         case .openAIResponses: return "sk-..."
@@ -1693,6 +1747,7 @@ struct ProviderInstanceDetailView: View {
     }
 
     private func saveCustomBaseURL(_ instance: ProviderInstance) {
+        guard !instance.providerType.isDomesticSubscription else { return }
         let current = instance.customBaseURL ?? ""
         let trimmed = editingCustomBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed != current else { return }

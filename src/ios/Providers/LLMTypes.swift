@@ -705,7 +705,17 @@ struct LLMModel: Equatable, Hashable, Identifiable, Sendable, Codable {
         return copy
     }
 
+    /// Domestic subscriptions use only their reported text/image-input chat surface.
+    /// Never infer speech or media generation from a generic model name.
+    var isDomesticSubscriptionModel: Bool {
+        provider == ProviderType.workBuddy.displayName || provider == ProviderType.traeCN.displayName
+    }
+
     func withInferredModality() -> LLMModel {
+        if isDomesticSubscriptionModel {
+            let allowed: ModelModality = [.textInput, .textOutput, .imageInput]
+            return withModalityOverride((modalityOverride ?? .textOnly).intersection(allowed).union(.textOnly))
+        }
         // First: enrich from models.dev (fills modality, contextWindow, maxOutputTokens if available)
         var enriched = ModelsDevAPI.enrichModel(self)
 
@@ -783,6 +793,14 @@ struct LLMModel: Equatable, Hashable, Identifiable, Sendable, Codable {
         ),
         "GitHub Copilot": ModelCapabilities(
             supportedModalities: ProviderType.githubCopilot.defaultModality,
+            supportedAuth: [.oauth]
+        ),
+        "WorkBuddy": ModelCapabilities(
+            supportedModalities: ProviderType.workBuddy.defaultModality,
+            supportedAuth: [.oauth]
+        ),
+        "Trae CN": ModelCapabilities(
+            supportedModalities: ProviderType.traeCN.defaultModality,
             supportedAuth: [.oauth]
         ),
     ]
@@ -875,6 +893,12 @@ struct LLMModel: Equatable, Hashable, Identifiable, Sendable, Codable {
     var isVoiceCandidate: Bool { isVoiceInputCandidate || isVoiceOutputCandidate }
 
     var capabilities: ModelCapabilities {
+        if isDomesticSubscriptionModel {
+            let allowed: ModelModality = [.textInput, .textOutput, .imageInput]
+            return ModelCapabilities(
+                supportedModalities: (modalityOverride ?? .textOnly).intersection(allowed).union(.textOnly),
+                supportedAuth: [.oauth])
+        }
         if let override = modalityOverride {
             return ModelCapabilities(
                 supportedModalities: override,

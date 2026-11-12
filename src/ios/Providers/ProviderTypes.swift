@@ -25,6 +25,10 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
     /// flows through OpenAIProvider like xAI/Kimi. Opt-in, warned about in the
     /// sign-in UI, and hideable via CopilotConstants.isEnabled.
     case githubCopilot
+    /// Tencent WorkBuddy China subscription (browser OAuth; unofficial client wire).
+    case workBuddy
+    /// Trae China subscription (browser OAuth; unofficial client wire).
+    case traeCN
     /// Sentinel for a provider type this app build doesn't recognize — e.g. a
     /// NEWER build synced an instance whose `provider_type` string isn't a known
     /// case here. We DECODE to this instead of throwing/dropping, so the instance
@@ -50,6 +54,8 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
         case .xAI: return "xAI (Grok)"
         case .kimiCode: return "Kimi Code"
         case .githubCopilot: return "GitHub Copilot"
+        case .workBuddy: return "WorkBuddy"
+        case .traeCN: return "Trae CN"
         case .unsupported: return "Unsupported"
         }
     }
@@ -75,7 +81,7 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
     /// back at the catalog already seeded.
     var oauthSupportsModelDiscovery: Bool {
         switch self {
-        case .anthropic, .gemini, .antigravity, .openRouter, .xAI, .kimiCode, .githubCopilot:
+        case .anthropic, .gemini, .antigravity, .openRouter, .xAI, .kimiCode, .githubCopilot, .workBuddy, .traeCN:
             // These OAuth branches all reach a real /models endpoint.
             return true
         case .openAI:
@@ -116,6 +122,7 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
         // (`model_picker_enabled`), never a compiled-in guess that would go
         // stale and offer models the account cannot use.
         case .githubCopilot: return []
+        case .workBuddy, .traeCN: return [] // OAuth models are account-specific and discovered online.
         case .unsupported: return []
         }
     }
@@ -140,6 +147,10 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
             return AppLocalized("Sign in with your Kimi Code / Coding Plan subscription")
         case .githubCopilot:
             return AppLocalized("Sign in with GitHub — unofficial, use at your own risk")
+        case .workBuddy:
+            return AppLocalized("使用 WorkBuddy 国内账号登录；非官方接入，账号或服务可能受限")
+        case .traeCN:
+            return AppLocalized("使用 Trae 国内版账号登录；非官方接入，账号或服务可能受限")
         case .antigravity:
             return AppLocalized("\(builtInModels.count) built-in models")
         case .unsupported:
@@ -159,9 +170,15 @@ enum ProviderType: String, Codable, CaseIterable, Hashable, Sendable {
         case .xAI: return .vision
         case .kimiCode: return .vision
         case .githubCopilot: return .vision
+        case .workBuddy, .traeCN: return .textOnly
         case .unsupported: return .vision
         }
     }
+
+    /// China subscription accounts use only the in-app browser OAuth flow.
+    /// Their unofficial, fixed-host text protocol does not accept API keys,
+    /// pasted bearer tokens, custom endpoints / UA, Azure, OpenCode or media generation.
+    var isDomesticSubscription: Bool { self == .workBuddy || self == .traeCN }
 
     /// True when this build can't actually use the provider (synced from a newer app).
     var isUnsupported: Bool { self == .unsupported }

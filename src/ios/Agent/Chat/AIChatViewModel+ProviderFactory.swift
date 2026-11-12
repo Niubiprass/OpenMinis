@@ -162,6 +162,10 @@ extension AIChatViewModel {
             // warning in the one place they cannot do anything about it.
             return OpenAIAgentProvider(
                 provider: LLMProviderFactory.makeCopilotProvider(instance: instance, model: entry.model))
+        case .workBuddy, .traeCN:
+            // The subscription adapter enforces OAuth and text-only requests itself.
+            return SubscriptionAgentProvider(instance: instance, model: entry.model,
+                                             resolveSessionId: resolveSessionId, overrides: entry.overrides)
         case .unsupported:
             logger.error("\(instance.providerType) has no agent provider; returning placeholder")
             return AnthropicAgentProvider(provider: AnthropicProvider(apiKey: "", model: entry.model))
@@ -181,7 +185,8 @@ extension AIChatViewModel {
 
 
     /// Construct a lightweight LLMProvider from a ModelEntry (for sub-tasks like title generation).
-    static func makeLLMProvider(for entry: ModelEntry) async throws -> any LLMProvider {
+    static func makeLLMProvider(for entry: ModelEntry,
+                                resolveSessionId: @escaping @Sendable () -> String? = { nil }) async throws -> any LLMProvider {
         let store = ProviderConfigStore.shared
         guard let instance = store.instance(for: entry.providerInstanceId) else {
             throw LLMProviderError.noCredentials
@@ -373,6 +378,10 @@ extension AIChatViewModel {
                 provider.appendV1Suffix = kimiAppendV1
                 return provider
             }
+        case .workBuddy, .traeCN:
+            guard instance.credentialType == .oauth else { throw LLMProviderError.noCredentials }
+            return SubscriptionLLMProvider(instance: instance, model: entry.model,
+                                           resolveSessionId: resolveSessionId, overrides: entry.overrides)
         case .unsupported:
             throw LLMProviderError.noCredentials
         }
