@@ -3171,7 +3171,21 @@ final class ProviderConfigStore: ObservableObject {
         case (.workBuddy, .oauth), (.traeCN, .oauth):
             // Unofficial China-only subscriptions: real account model discovery only.
             // Throwing preserves the current list; no guessed/built-in fallback.
-            return try await SubscriptionModelsAPI.fetchModels(instance: instance)
+            let discovery = try await SubscriptionModelsAPI.fetchModels(instance: instance)
+            // The directory just answered for the account this fetch started
+            // with. If a re-login replaced it while the request was in flight,
+            // these rows belong to the old account: drop them instead of
+            // letting the caller replace/persist the new account's list. This
+            // check is synchronous with the return, so no other fetch can run
+            // between it and `replaceEntries`.
+            if let current = ProviderKeychainHelper.loadOAuthToken(
+                    instanceId: instance.id, as: SubscriptionTokenStorage.self),
+               current.provider == instance.providerType.rawValue,
+               current.accessToken != discovery.accessToken {
+                logger.info("[ModelList] discarded a directory fetched for a replaced account: instance=\(instance.label)")
+                throw LLMError.cancelled
+            }
+            return discovery.models
         case (.workBuddy, .apiKey), (.traeCN, .apiKey):
             throw ModelRefreshError.noCredential // no API-key or manual-bearer form
         case (.unsupported, _):

@@ -48,6 +48,16 @@ final class SubscriptionOAuthManager {
         ProviderKeychainHelper.deleteOAuthToken(instanceId: instanceId)
     }
 
+    /// A credential written from outside (a restored backup) becomes this
+    /// instance's account. It must win over a sign-in that is still waiting in
+    /// the browser: bump the epoch so a late login result is fenced out, and
+    /// stop the sheet/listener so nothing keeps waiting on it.
+    func adoptExternalCredential(instanceId: String) {
+        epochs[instanceId] = UUID()
+        cancelLogin(instanceId: instanceId)
+        refreshes.removeValue(forKey: instanceId)?.task.cancel()
+    }
+
     func login(instanceId: String, type: ProviderType) async throws {
         guard type == .workBuddy || type == .traeCN else {
             throw SubscriptionProviderError.unsupported("不支持的登录方式")
@@ -245,6 +255,7 @@ private final class SubscriptionSafariPresentation: NSObject, SFSafariViewContro
     private var controller: SFSafariViewController?
     private var cancelWork: (() -> Void)?
     private var cancelled = false
+    private var finished = false
     private let cancellation: CancellationHandle
 
     init(cancellation: CancellationHandle) {
@@ -252,11 +263,21 @@ private final class SubscriptionSafariPresentation: NSObject, SFSafariViewContro
         super.init()
     }
 
+    /// Finishing (or failing) once is final: a later dismissal must not turn a
+    /// delivered result into a second, contradictory outcome.
     func cancel() {
+        guard !finished else { return }
+        finished = true
         cancelled = true
         cancellation.cancel()
         cancelWork?()
         controller?.dismiss(animated: true)
+    }
+
+    /// The user tapping Done is leaving the sign-in. Without this the flow
+    /// stayed "waiting" until the five-minute timeout with the sheet gone.
+    func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+        cancel()
     }
 
     func run<T: Sendable>(_ url: URL,
@@ -299,14 +320,12 @@ private final class SubscriptionSafariPresentation: NSObject, SFSafariViewContro
                     cancellation.cancel()
                     producer?.cancel()
                     gate.finish(.failure(OAuthLoginError.timedOut))
-                }
-            }
+                }            }
         } onCancel: { [cancellation] in
             cancellation.cancel()
             Task { @MainActor [weak self] in self?.cancel() }
         }
     }
-    func safariViewControllerDidFinish(_ controller: SFSafariViewController) { cancel() }
 }
 
 private enum SubscriptionTraeRefresh {

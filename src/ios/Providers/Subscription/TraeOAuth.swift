@@ -690,6 +690,105 @@ struct TraeOAuthError: Error, LocalizedError {
     var errorDescription: String? { message }
 }
 
+// BEGIN SUBSCRIPTION_CALLBACK_PURE
+/// The reference callback uses loginTraceID; the authorize URL uses
+/// login_trace_id. Accept either spelling, never contradictory aliases.
+/// Invalid/foreign callbacks must NOT consume the active login.
+enum TraeCallbackRequest {
+    struct Rejected: Error {
+        let status: String
+        let message: String
+    }
+    enum Action {
+        case preflight
+        case callback([String: String])
+    }
+    static func traceID(_ parameters: [String: String]) throws -> String? {
+        let values = ["loginTraceID", "login_trace_id"].compactMap { parameters[$0] }
+        guard values.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 }),
+              Set(values).count <= 1 else {
+            throw Rejected(status: "400 Bad Request", message: "Invalid login correlation")
+        }
+        return values.first
+    }
+    static func parse(_ head: String, port: UInt16, expectedTrace: String) throws -> Action {
+        func reject(_ status: String = "400 Bad Request", _ message: String = "Invalid callback") -> Rejected {
+            Rejected(status: status, message: message)
+        }
+        guard !expectedTrace.isEmpty, port > 0, head.utf8.count <= 65536 else { throw reject() }
+        let lines = head.components(separatedBy: "\r\n")
+        let request = (lines.first ?? "").components(separatedBy: " ")
+        guard request.count == 3, ["HTTP/1.0", "HTTP/1.1"].contains(request[2]) else { throw reject() }
+        let method = request[0], target = request[1]
+        guard method == "GET" || method == "OPTIONS" else { throw reject("405 Method Not Allowed") }
+        guard target.hasPrefix("/"), !target.hasPrefix("//"), !target.contains("#"),
+              target.utf8.allSatisfy({ $0 > 32 && $0 < 127 }), target.removingPercentEncoding != nil,
+              let url = URLComponents(string: "http://127.0.0.1" + target) else { throw reject() }
+        guard url.path == "/authorize" else { throw reject("404 Not Found") }
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { throw reject() }
+            let name = String(line[..<colon]).lowercased()
+            let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty, name.utf8.allSatisfy({ (33...126).contains(Int($0)) }),
+                  headers[name] == nil,
+                  !value.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else { throw reject() }
+            headers[name] = value
+        }
+        // Reject DNS rebinding and cross-site fetches, but allow a whole-page
+        // redirect (normally no Origin). Never echo an arbitrary origin.
+        guard headers["host"] == "127.0.0.1:\(port)",
+              headers["origin"] == nil || headers["origin"] == "https://www.trae.cn",
+              headers["transfer-encoding"] == nil,
+              headers["content-length"] == nil || headers["content-length"] == "0" else { throw reject() }
+        if method == "OPTIONS" { return .preflight }
+        var parameters: [String: String] = [:]
+        for item in url.queryItems ?? [] {
+            guard parameters[item.name] == nil else { throw reject() }
+            parameters[item.name] = item.value ?? ""
+        }
+        guard try traceID(parameters) == expectedTrace else { throw reject() }
+        let errors = ["error", "error_code", "errorCode"].compactMap { parameters[$0] }.filter { !$0.isEmpty }
+        if errors.isEmpty {
+            guard let raw = parameters["authCodeInfo"], let data = raw.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw reject() }
+            let codes = ["AuthCode", "authCode"].compactMap { object[$0] as? String }
+            guard !codes.isEmpty, codes.allSatisfy({ !$0.isEmpty }), Set(codes).count == 1 else { throw reject() }
+        } else {
+            guard Set(errors).count == 1 else { throw reject() }
+        }
+        let hosts = ["loginHost", "login_host", "LoginHost"].compactMap { parameters[$0] }.filter { !$0.isEmpty }
+        guard hosts.allSatisfy({ $0 == "https://api.trae.cn" }) else { throw reject() }
+        return .callback(parameters)
+    }
+}
+
+/// stop is terminal, including a callback delivered before waitForCallback.
+/// Only the first answer wins; a listener cannot be reused for another login.
+struct TraeCallbackState {
+    private(set) var expectedTrace: String?
+    private(set) var started = false
+    private(set) var stopped = false
+    private var answer: Result<[String: String], Error>?
+    mutating func expectTrace(_ trace: String) {
+        guard !started, !stopped, !trace.isEmpty else { return }
+        expectedTrace = trace
+    }
+    mutating func begin() -> Bool {
+        guard !started, !stopped, expectedTrace != nil else { return false }
+        started = true
+        return true
+    }
+    mutating func finish(_ result: Result<[String: String], Error>) -> Bool {
+        guard started, !stopped, answer == nil else { return false }
+        answer = result
+        return true
+    }
+    mutating func stop() { stopped = true; answer = .failure(CancellationError()) }
+    var result: Result<[String: String], Error>? { answer }
+}
+// END SUBSCRIPTION_CALLBACK_PURE
+
 /// The loopback the Trae page calls back to.
 ///
 /// kwwk's own `OAuthCallbackServer` only resolves a redirect that carries
@@ -708,54 +807,72 @@ final class TraeLoopback: OAuthLoopbackListener, @unchecked Sendable {
     private var boundPort: UInt16?
     private var listeningContinuation: CheckedContinuation<Void, Error>?
     private var waiter: CheckedContinuation<[String: String], Error>?
-    private var answered: Result<[String: String], Error>?
-    private var stopped = false
+    private var state = TraeCallbackState()
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
+
+    func expectTrace(_ trace: String) {
+        lock.subscriptionWithLock { state.expectTrace(trace) }
+    }
 
     var redirectURI: String {
         "http://127.0.0.1:\(lock.subscriptionWithLock { boundPort ?? 0 })\(TraeOAuth.callbackPath)"
     }
 
     func listen() async throws {
+        try Task.checkCancellation()
+        guard lock.subscriptionWithLock({ state.begin() }) else {
+            throw TraeOAuthError("登录监听未准备好或已结束，请重新开始。")
+        }
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-        let listener: NWListener
+        let local: NWListener
         do {
-            listener = try NWListener(using: parameters)
+            local = try NWListener(using: parameters)
         } catch {
-            throw TraeOAuthError("The Trae sign-in could not open its local address.")
+            stop()
+            throw TraeOAuthError("登录无法建立本机回调地址，请重新开始。")
         }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let refused: Bool = lock.subscriptionWithLock {
-                if stopped { return true }
-                listeningContinuation = continuation
-                self.listener = listener
-                return false
-            }
-            if refused {
-                continuation.resume(throwing: CancellationError())
-                return
-            }
-            listener.stateUpdateHandler = { [weak self] state in
-                guard let self else { return }
-                switch state {
-                case .ready:
-                    self.resolveListening(port: listener.port?.rawValue, error: nil)
-                case .failed:
-                    self.resolveListening(
-                        port: nil,
-                        error: TraeOAuthError("The Trae sign-in could not open its local address."),
-                    )
-                case .cancelled:
-                    self.resolveListening(port: nil, error: CancellationError())
-                default:
-                    break
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let refused = lock.subscriptionWithLock { () -> Bool in
+                    guard !state.stopped, !Task.isCancelled else { return true }
+                    listeningContinuation = continuation
+                    listener = local
+                    return false
                 }
+                guard !refused else {
+                    local.cancel()
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                local.stateUpdateHandler = { [weak self, weak local] status in
+                    guard let self else { return }
+                    switch status {
+                    case .ready:
+                        if let port = local?.port?.rawValue, port > 0 {
+                            self.resolveListening(port: port, error: nil)
+                        } else {
+                            self.resolveListening(port: nil, error: TraeOAuthError("登录未获得有效本机端口。"))
+                            self.stop()
+                        }
+                    case .failed:
+                        let error = TraeOAuthError("本机登录回调连接失败，请重新开始。")
+                        self.resolveListening(port: nil, error: error)
+                        _ = self.resolve(.failure(error))
+                        self.stop()
+                    case .cancelled:
+                        self.stop()
+                    default: break
+                    }
+                }
+                local.newConnectionHandler = { [weak self] connection in
+                    guard let self else { connection.cancel(); return }
+                    self.accept(connection)
+                }
+                local.start(queue: DispatchQueue(label: "com.openminis.subscription.trae-loopback"))
             }
-            listener.newConnectionHandler = { [weak self] connection in
-                self?.accept(connection)
-            }
-            listener.start(queue: DispatchQueue(label: "com.openminis.subscription.trae-loopback"))
-        }
+            try Task.checkCancellation()
+        } onCancel: { self.stop() }
     }
 
     private func resolveListening(port: UInt16?, error: Error?) {
@@ -777,8 +894,11 @@ final class TraeLoopback: OAuthLoopbackListener, @unchecked Sendable {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[String: String], Error>) in
                 let early: Result<[String: String], Error>? = lock.subscriptionWithLock {
-                    if let answered { return answered }
-                    if stopped || Task.isCancelled { return .failure(CancellationError()) }
+                    if state.stopped || Task.isCancelled { return .failure(CancellationError()) }
+                    if let result = state.result { return result }
+                    guard state.started, waiter == nil else {
+                        return .failure(TraeOAuthError("登录回调不能重复等待。"))
+                    }
                     waiter = continuation
                     return nil
                 }
@@ -792,30 +912,47 @@ final class TraeLoopback: OAuthLoopbackListener, @unchecked Sendable {
     }
 
     func stop() {
-        let (continuation, listening, listener): (
+        let resources = lock.subscriptionWithLock { () -> (
             CheckedContinuation<[String: String], Error>?,
-            CheckedContinuation<Void, Error>?,
-            NWListener?,
-        ) = lock.subscriptionWithLock {
-            stopped = true
-            let continuation = waiter
-            let listening = listeningContinuation
-            let listener = self.listener
-            waiter = nil
-            listeningContinuation = nil
-            self.listener = nil
-            return (continuation, listening, listener)
+            CheckedContinuation<Void, Error>?, NWListener?, [NWConnection]) in
+            state.stop()
+            let resources = (waiter, listeningContinuation, listener, Array(connections.values))
+            waiter = nil; listeningContinuation = nil; listener = nil; boundPort = nil
+            connections.removeAll()
+            return resources
         }
-        listener?.cancel()
-        listening?.resume(throwing: CancellationError())
-        continuation?.resume(throwing: CancellationError())
+        resources.2?.cancel()
+        for connection in resources.3 { connection.cancel() }
+        resources.1?.resume(throwing: CancellationError())
+        resources.0?.resume(throwing: CancellationError())
     }
 
     // MARK: - Requests
 
     private func accept(_ connection: NWConnection) {
-        connection.start(queue: DispatchQueue(label: "com.openminis.subscription.trae-connection"))
+        let accepted = lock.subscriptionWithLock { () -> Bool in
+            guard !state.stopped, state.result == nil, connections.count < 16 else { return false }
+            connections[ObjectIdentifier(connection)] = connection
+            return true
+        }
+        guard accepted else { connection.cancel(); return }
+        connection.stateUpdateHandler = { [weak self, weak connection] status in
+            guard let self, let connection else { return }
+            if case .cancelled = status { self.close(connection) }
+            if case .failed = status { self.close(connection) }
+        }
+        let queue = DispatchQueue(label: "com.openminis.subscription.trae-connection")
+        connection.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 10) { [weak self, weak connection] in
+            guard let connection else { return }
+            self?.close(connection)
+        }
         receive(connection, collected: Data())
+    }
+
+    private func close(_ connection: NWConnection) {
+        _ = lock.subscriptionWithLock { connections.removeValue(forKey: ObjectIdentifier(connection)) }
+        connection.cancel()
     }
 
     private func receive(_ connection: NWConnection, collected: Data) {
@@ -824,8 +961,10 @@ final class TraeLoopback: OAuthLoopbackListener, @unchecked Sendable {
                 connection.cancel()
                 return
             }
+            guard !lock.subscriptionWithLock({ state.stopped }) else { close(connection); return }
             var collected = collected
             if let data { collected.append(data) }
+            guard collected.count <= 65536 else { close(connection); return }
             // The head ends the request: a redirect carries no body.
             if let separator = collected.range(of: Data("\r\n\r\n".utf8)) {
                 let head = String(decoding: collected[..<separator.lowerBound], as: UTF8.self)
@@ -841,50 +980,32 @@ final class TraeLoopback: OAuthLoopbackListener, @unchecked Sendable {
     }
 
     private func respond(_ connection: NWConnection, to head: String) {
-        let requestLine = head.components(separatedBy: "\r\n").first ?? ""
-        let parts = requestLine.components(separatedBy: " ")
-        let method = parts.first ?? ""
-        let target = parts.count > 1 ? parts[1] : "/"
-        guard method == "GET" || method == "OPTIONS" else {
-            write(connection, status: "405 Method Not Allowed", body: "Method not allowed")
+        let active = lock.subscriptionWithLock { () -> (UInt16, String)? in
+            guard !state.stopped, state.result == nil,
+                  let port = boundPort, let trace = state.expectedTrace else { return nil }
+            return (port, trace)
+        }
+        guard let active else {
+            write(connection, status: "409 Conflict", body: "Login is no longer active")
             return
         }
-        guard target.hasPrefix("/"), !target.hasPrefix("//"), target.utf8.count < 65536 else {
-            write(connection, status: "400 Bad Request", body: "Invalid callback")
-            return
-        }
-        let components = URLComponents(string: "http://127.0.0.1" + target)
-        let path = components?.path ?? ""
-        var parameters: [String: String] = [:]
-        for item in components?.queryItems ?? [] {
-            guard parameters[item.name] == nil else {
-                write(connection, status: "400 Bad Request", body: "Duplicate callback field")
-                return
+        do {
+            switch try TraeCallbackRequest.parse(head, port: active.0, expectedTrace: active.1) {
+            case .preflight:
+                write(connection, status: "204 No Content", body: "")
+            case .callback(let parameters):
+                guard resolve(.success(parameters)) else {
+                    write(connection, status: "409 Conflict", body: "Login is no longer active")
+                    return
+                }
+                // Receipt is not token exchange or Keychain success.
+                write(connection, status: "200 OK", body: "<html><body>已收到登录结果，请返回 Minis 查看。</body></html>")
             }
-            parameters[item.name] = item.value ?? ""
+        } catch let error as TraeCallbackRequest.Rejected {
+            write(connection, status: error.status, body: error.message)
+        } catch {
+            write(connection, status: "400 Bad Request", body: "Invalid callback")
         }
-
-        // A preflight is answered before the path is judged: it is the same
-        // address, and a 404 there reads as "not reachable" to the browser.
-        if method == "OPTIONS" {
-            write(connection, status: "204 No Content", body: "")
-            return
-        }
-        guard path == TraeOAuth.callbackPath else {
-            write(connection, status: "404 Not Found", body: "Not found")
-            return
-        }
-        // Only a request that carries what this page sends ends the sign-in.
-        // Anything else (a probe, a stray tab) is answered and the flow goes
-        // on waiting, rather than stranding the user mid-sign-in.
-        guard parameters["authCodeInfo"] != nil || parameters["refreshToken"] != nil
-            || parameters["code"] != nil || parameters["error"] != nil
-        else {
-            write(connection, status: "400 Bad Request", body: "No sign-in payload")
-            return
-        }
-        write(connection, status: "200 OK", body: "<html><body>登录完成，请返回 Minis。</body></html>")
-        resolve(.success(parameters))
     }
 
     private func write(_ connection: NWConnection, status: String, body: String) {
@@ -892,8 +1013,9 @@ final class TraeLoopback: OAuthLoopbackListener, @unchecked Sendable {
         let head = "HTTP/1.1 \(status)\r\n"
             + "Content-Type: text/html; charset=utf-8\r\n"
             + "Content-Length: \(bytes.count)\r\n"
-            + "Access-Control-Allow-Origin: *\r\n"
-            + "Access-Control-Allow-Methods: GET,POST,OPTIONS\r\n"
+            + "Cache-Control: no-store\r\n"
+            + "Access-Control-Allow-Origin: https://www.trae.cn\r\n"
+            + "Access-Control-Allow-Methods: GET,OPTIONS\r\n"
             + "Access-Control-Allow-Headers: content-type\r\n"
             + "Connection: close\r\n\r\n"
         var response = Data(head.utf8)
@@ -903,14 +1025,15 @@ final class TraeLoopback: OAuthLoopbackListener, @unchecked Sendable {
         })
     }
 
-    private func resolve(_ result: Result<[String: String], Error>) {
-        let continuation: CheckedContinuation<[String: String], Error>? = lock.subscriptionWithLock {
-            guard answered == nil else { return nil }
-            answered = result
+    @discardableResult
+    private func resolve(_ result: Result<[String: String], Error>) -> Bool {
+        let delivery = lock.subscriptionWithLock { () -> (Bool, CheckedContinuation<[String: String], Error>?) in
+            guard state.finish(result) else { return (false, nil) }
             let continuation = waiter
             waiter = nil
-            return continuation
+            return (true, continuation)
         }
-        continuation?.resume(with: result)
+        delivery.1?.resume(with: result)
+        return delivery.0
     }
 }

@@ -123,5 +123,29 @@ class FeatureCompileTests(unittest.TestCase):
             self.assertIn('ask-user-state-ok', result.stdout)
 
 
+    def test_trae_callback_contract(self):
+        """The Trae sign-in callback parser and its one-shot state, compiled
+        from the real source region: only a callback carrying THIS login's
+        trace id, on the bound loopback port, may end a sign-in."""
+        compiler = self.compiler()
+        source = (ROOT / 'src/ios/Providers/Subscription/TraeOAuth.swift').read_text()
+        begin = '// BEGIN SUBSCRIPTION_CALLBACK_PURE'
+        end = '// END SUBSCRIPTION_CALLBACK_PURE'
+        self.assertEqual(source.count(begin), 1)
+        self.assertEqual(source.count(end), 1)
+        region = source[source.index(begin):source.index(end) + len(end)]
+        harness = (ROOT / 'scripts/fixtures/trae_callback_harness.swift').read_text()
+        with tempfile.TemporaryDirectory(prefix='trae-callback-') as tmp:
+            path = Path(tmp) / 'TraeCallback.swift'
+            binary = Path(tmp) / 'trae-callback'
+            path.write_text('import Foundation\n\n' + region + '\n\n' + harness)
+            result = subprocess.run([compiler, '-swift-version', '5', str(path), '-o', str(binary)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('trae-callback-ok', result.stdout)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

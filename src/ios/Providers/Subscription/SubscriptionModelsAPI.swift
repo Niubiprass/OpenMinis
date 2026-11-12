@@ -30,9 +30,16 @@ enum SubscriptionEndpoints {
 }
 
 enum SubscriptionModelsAPI {
+    /// The credential the returned models belong to, so a caller that
+    /// awaited a slow directory cannot write them over a newer account.
+    struct AccountModels: Sendable {
+        let accessToken: String
+        let models: [LLMModel]
+    }
+
     /// An invalid/partial directory throws: callers must retain the previous list.
     /// An explicitly empty authoritative directory is different and returns [].
-    static func fetchModels(instance: ProviderInstance) async throws -> [LLMModel] {
+    static func fetchModels(instance: ProviderInstance) async throws -> AccountModels {
         try SubscriptionEndpoints.validate(instance)
         var rejectedAccess: String?
         for attempt in 0...1 {
@@ -43,7 +50,7 @@ enum SubscriptionModelsAPI {
                 rejectedAccess = credentials.access
                 let catalog = try await SubscriptionCatalogCache.shared.catalog(
                     instance: instance, credentials: credentials, refresh: true)
-                return catalog.models.map { model in
+                let models = catalog.models.map { model in
                     var result = LLMModel(
                         id: model.id, displayName: model.name,
                         provider: instance.providerType == .workBuddy ? "WorkBuddy" : "Trae CN",
@@ -57,6 +64,7 @@ enum SubscriptionModelsAPI {
                     result.effortDeclarationIsAuthoritative = true
                     return result
                 }
+                return AccountModels(accessToken: credentials.access, models: models)
             } catch {
                 if error is CancellationError || Task.isCancelled { throw LLMError.cancelled }
                 let failure = SubscriptionFailure.capture(error)

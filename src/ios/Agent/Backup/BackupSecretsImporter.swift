@@ -61,6 +61,10 @@ enum BackupSecretsImporter {
                     // A failed/locked Keychain is not a successful restore.
                     // Keep the old item intact; do not log the provider blob or raw error.
                     do {
+                        // The restored account is the newer intent: a sign-in
+                        // still in flight for the old one must not land on top
+                        // of it afterwards.
+                        SubscriptionOAuthManager.shared.adoptExternalCredential(instanceId: p.instanceId)
                         try ProviderKeychainHelper.saveSubscriptionOAuthTokenChecked(token, instanceId: p.instanceId)
                         result.providersRestored += 1
                     } catch {
