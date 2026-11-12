@@ -613,6 +613,7 @@
 		D13AB000000000000000205 /* TraeOAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000105 /* TraeOAuth.swift */; };
 		D13AB000000000000000206 /* TraeProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000106 /* TraeProvider.swift */; };
 		D13AB000000000000000207 /* SubscriptionLoginSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000107 /* SubscriptionLoginSheet.swift */; };
+		D13AB000000000000000208 /* SubscriptionCredit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13AB000000000000000108 /* SubscriptionCredit.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1396,6 +1397,7 @@
 		D13AB000000000000000105 /* TraeOAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TraeOAuth.swift; path = Providers/Subscription/TraeOAuth.swift; sourceTree = SOURCE_ROOT; };
 		D13AB000000000000000106 /* TraeProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TraeProvider.swift; path = Providers/Subscription/TraeProvider.swift; sourceTree = SOURCE_ROOT; };
 		D13AB000000000000000107 /* SubscriptionLoginSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SubscriptionLoginSheet.swift; path = Views/Providers/SubscriptionLoginSheet.swift; sourceTree = SOURCE_ROOT; };
+		D13AB000000000000000108 /* SubscriptionCredit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SubscriptionCredit.swift; path = Providers/Subscription/SubscriptionCredit.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -1756,6 +1758,7 @@
 				D13AB000000000000000103 /* SubscriptionOAuthManager.swift */,
 				D13AB000000000000000104 /* SubscriptionOAuthTypes.swift */,
 				D13AB000000000000000105 /* TraeOAuth.swift */,
+				D13AB000000000000000108 /* SubscriptionCredit.swift */,
 				D13AB000000000000000106 /* TraeProvider.swift */,
 				E5D00012 /* ProviderInstance.swift */,
 				E5D00013 /* ModelEntry.swift */,
@@ -3296,6 +3299,7 @@
 				D13AB000000000000000205 /* TraeOAuth.swift in Sources */,
 				D13AB000000000000000206 /* TraeProvider.swift in Sources */,
 				D13AB000000000000000207 /* SubscriptionLoginSheet.swift in Sources */,
+				D13AB000000000000000208 /* SubscriptionCredit.swift in Sources */,
 				E5D00002 /* ProviderInstance.swift in Sources */,
 				E5D00003 /* ModelEntry.swift in Sources */,
 				E5D00004 /* ModelGroup.swift in Sources */,
