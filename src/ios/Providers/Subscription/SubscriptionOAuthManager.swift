@@ -34,6 +34,14 @@ final class SubscriptionOAuthManager {
         guard let s = load(instanceId, type) else { return nil }
         return s.loginAccount ?? Self.label(s.credentials)
     }
+    /// Local generation for account-bound billing results; never persisted.
+    func accountEpoch(instanceId: String) -> UUID {
+        if let epoch = epochs[instanceId] { return epoch }
+        let epoch = UUID()
+        epochs[instanceId] = epoch
+        return epoch
+    }
+
     func cancelLogin(instanceId: String) {
         let login = logins.removeValue(forKey: instanceId)
         login?.cancellation.cancel()

@@ -387,13 +387,22 @@ struct SubscriptionEventState {
         return emit ? [.contentBlockStart(.toolUse(id: call.id, name: call.name))] : []
     }
     func arguments(_ call: KWWKAI.ToolCall) throws -> [String: Any] {
+        // The App preflight owns missing top-level fields: tool_title is
+        // display-only, while a missing command/path is returned as a tool
+        // error to the model. Keep type/enum/nested-schema validation for
+        // supplied values here; never weaken raw JSON or identity checks.
         guard call.unparsedArguments == nil, case .object = call.arguments,
               !call.id.isEmpty, !call.name.isEmpty,
               let tool = tools.first(where: { $0.name == call.name }) else {
             throw LLMError.providerError(message: "拒绝执行无效工具参数或未知工具：\(call.name)")
         }
-        do { _ = try KWWKAI.validateToolArguments(tool: tool, toolCall: call) }
-        catch { throw LLMError.providerError(message: "工具参数不符合 schema：\(call.name)：\(error)") }
+        var validationTool = tool
+        if case .object(var schema) = validationTool.parameters {
+            schema.removeValue(forKey: "required")
+            validationTool.parameters = .object(schema)
+        }
+        do { _ = try KWWKAI.validateToolArguments(tool: validationTool, toolCall: call) }
+        catch { throw LLMError.providerError(message: "工具参数类型不正确：\(call.name)：\(error)") }
         guard let object = try SubscriptionJSON.object(call.arguments) as? [String: Any] else {
             throw LLMError.providerError(message: "工具参数必须是 JSON 对象")
         }

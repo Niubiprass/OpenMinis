@@ -419,7 +419,7 @@ struct ProviderInstanceDetailView: View {
                 }
             }
 
-            // 积分：只有 WorkBuddy 会报，Trae 那边没有可查的接口。
+            // Both domestic account detail pages share this credit/check-in card.
             SubscriptionCreditSection(instance: instance)
 
             // Fixed subscription hosts / UA cannot be edited or redirected.

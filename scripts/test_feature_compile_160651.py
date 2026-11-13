@@ -123,6 +123,15 @@ class FeatureCompileTests(unittest.TestCase):
             self.assertIn('ask-user-state-ok', result.stdout)
 
 
+    def test_subscription_billing_regressions(self):
+        import sys
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/test_subscription_billing_20261113.py')],
+            cwd=ROOT, env=dict(os.environ), capture_output=True, text=True, timeout=300,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        print(result.stdout + result.stderr)
+
     def test_trae_callback_contract(self):
         """The Trae sign-in callback parser and its one-shot state, compiled
         from the real source region: only a callback carrying THIS login's
