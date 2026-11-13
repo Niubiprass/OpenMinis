@@ -1028,12 +1028,150 @@ final class ProviderConfigStore: ObservableObject {
         save()
     }
 
+    // MARK: - [T-subscription-multi-account] Accounts
+    //
+    // Each account is stored in its own Keychain slot, and the slot id is the
+    // account id, so sign-in / refresh / billing keep using the existing
+    // per-instance code with the slot passed as `instanceId`. These methods only
+    // maintain the ordered list and the active selection.
+
+    /// Publish only after both durable stores accepted the account settings.
+    /// The JSON mirror is restored if SQLite cannot commit; no credentials are
+    /// removed on that path. This is also used for new credential-bearing shares.
+    private func commitSubscriptionConfiguration(_ instance: ProviderInstance) -> Bool {
+        guard loadDegradation == .none else { return false }
+        var next = config
+        let index = next.instances.firstIndex { $0.id == instance.id } ?? next.instances.count
+        if index == next.instances.count { next.instances.append(instance) }
+        else { next.instances[index] = instance }
+        let previousMirror = try? Data(contentsOf: fileURL)
+        var mirrorWritten = false
+        do {
+            try SubscriptionConfigurationStorage.validate(instance)
+            let data = try JSONEncoder().encode(next)
+            let writeMirror = {
+                try data.write(to: self.fileURL, options: .atomic)
+                mirrorWritten = true
+            }
+            if let db { try db.persistSubscription(instance, sortOrder: index, mirrorURL: fileURL, writeMirror: writeMirror) }
+            else { try writeMirror() }
+        } catch {
+            if mirrorWritten {
+                if let previousMirror { try? previousMirror.write(to: fileURL, options: .atomic) }
+                else { try? FileManager.default.removeItem(at: fileURL) }
+            }
+            logger.error("Subscription settings could not be saved; account list unchanged")
+            return false
+        }
+        config = next
+        lastSavedSnapshot = next
+        configRevision &+= 1
+        authRevision &+= 1
+        ProviderCredentialCache.shared.invalidate(instance.id)
+        Task { await ChatStore.shared.markDirty(recordType: "ProviderInstanceV3", recordId: instance.id, operation: "upsert") }
+        return true
+    }
+
+    /// Append a signed-in slot, or fold a repeated vendor identity into its
+    /// original slot. Never infer identity from a display name or access token.
+    @discardableResult
+    func addSubscriptionAccount(instanceId: String, slot: String, makeActive: Bool = false) -> Bool {
+        guard loadDegradation == .none,
+              let parent = instance(for: instanceId), parent.providerType.isDomesticSubscription,
+              parent.ownsSubscriptionSlot(slot),
+              !config.instances.contains(where: { $0.id != instanceId && ($0.id == slot || $0.subscriptionAccountSlots.contains(slot)) }),
+              let token = ProviderKeychainHelper.loadOAuthToken(instanceId: slot, as: SubscriptionTokenStorage.self),
+              token.provider == parent.providerType.rawValue, !token.accessToken.isEmpty else { return false }
+        var slots = parent.subscriptionAccountSlots
+        // A new provider's implicit legacy slot is a compatibility placeholder,
+        // not an account. Do not retain it when the first real sign-in is added.
+        if parent.subscriptionAccountIds == nil, slot != parent.id,
+           !ProviderKeychainHelper.hasOAuthTokenItemOrReadFailure(instanceId: parent.id) {
+            slots.removeAll { $0 == parent.id }
+        }
+        let duplicate = SubscriptionAccounts.identity(token).flatMap { identity in
+            slots.first { candidate in
+                guard candidate != slot,
+                      let saved = ProviderKeychainHelper.loadOAuthToken(instanceId: candidate, as: SubscriptionTokenStorage.self),
+                      saved.provider == parent.providerType.rawValue else { return false }
+                return SubscriptionAccounts.identity(saved) == identity
+            }
+        }
+        let target = duplicate ?? slot
+        var previous: SubscriptionTokenStorage?
+        if let duplicate {
+            previous = ProviderKeychainHelper.loadOAuthToken(instanceId: duplicate, as: SubscriptionTokenStorage.self)
+            do {
+                SubscriptionOAuthManager.shared.adoptExternalCredential(instanceId: duplicate)
+                try ProviderKeychainHelper.saveSubscriptionOAuthTokenChecked(token, instanceId: duplicate)
+            } catch { return false }
+            slots.removeAll { $0 == slot }
+        }
+        if !slots.contains(target) { slots.append(target) }
+        var updated = parent
+        updated.subscriptionAccountIds = slots
+        let priorActive = parent.subscriptionActiveSlot
+        updated.subscriptionActiveAccountId = makeActive || priorActive == slot || !slots.contains(priorActive ?? "")
+            ? target : priorActive
+        guard commitSubscriptionConfiguration(updated) else {
+            if let duplicate, let previous {
+                // The checked writer leaves the previous item intact on a
+                // failed write. Undo the earlier successful replacement here.
+                try? ProviderKeychainHelper.saveSubscriptionOAuthTokenChecked(previous, instanceId: duplicate)
+            }
+            return false
+        }
+        if duplicate != nil { SubscriptionOAuthManager.shared.logout(instanceId: slot) }
+        return true
+    }
+
+    /// Remove one account and its credential. The instance itself survives — a
+    /// user who removes the last account usually wants to add another one, not
+    /// to lose the provider, its model entries and any group membership.
+    func removeSubscriptionAccount(instanceId: String, slot: String) {
+        guard var parent = instance(for: instanceId),
+              BackupSubscriptionAccounts.owns(slot, parent: parent, instances: config.instances) else { return }
+        let active = parent.subscriptionActiveSlot
+        let remaining = parent.subscriptionAccountSlots.filter { $0 != slot }
+        parent.subscriptionAccountIds = remaining // [] must not resurrect legacy auth
+        parent.subscriptionActiveAccountId = remaining.contains(active ?? "") ? active : remaining.first
+        // Persist removal before deleting anything; a failed transaction keeps
+        // the old selection and the credential usable. MainActor has no await.
+        guard commitSubscriptionConfiguration(parent) else { return }
+        SubscriptionOAuthManager.shared.logout(instanceId: slot)
+    }
+
+    func setActiveSubscriptionAccount(instanceId: String, slot: String) {
+        guard var parent = instance(for: instanceId),
+              BackupSubscriptionAccounts.owns(slot, parent: parent, instances: config.instances) else { return }
+        parent.subscriptionActiveAccountId = slot
+        _ = commitSubscriptionConfiguration(parent)
+    }
+
+    func setSubscriptionAutoFailover(instanceId: String, enabled: Bool) {
+        guard var parent = instance(for: instanceId), parent.providerType.isDomesticSubscription else { return }
+        parent.subscriptionActiveAccountId = parent.subscriptionActiveSlot
+        parent.subscriptionAutoFailover = enabled
+        _ = commitSubscriptionConfiguration(parent)
+    }
+
+    func setSubscriptionAutoCheckin(instanceId: String, enabled: Bool) {
+        guard var parent = instance(for: instanceId), parent.providerType.isDomesticSubscription else { return }
+        parent.subscriptionActiveAccountId = parent.subscriptionActiveSlot
+        parent.subscriptionAutoCheckin = enabled
+        _ = commitSubscriptionConfiguration(parent)
+    }
+
     func removeInstance(_ instanceId: String) {
-        if instance(for: instanceId)?.providerType.isDomesticSubscription == true {
+        if let subscription = instance(for: instanceId), subscription.providerType.isDomesticSubscription {
             removedSubscriptionInstanceIds.insert(instanceId)
             // Invalidate pending login/refresh before deleting the instance or Keychain item.
-            SubscriptionOAuthManager.shared.cancelLogin(instanceId: instanceId)
-            SubscriptionOAuthManager.shared.logout(instanceId: instanceId)
+            // [T-subscription-multi-account] Every account slot holds its own
+            // credential, so all of them must be fenced and deleted.
+            for slot in subscription.subscriptionAccountSlots {
+                SubscriptionOAuthManager.shared.cancelLogin(instanceId: slot)
+                SubscriptionOAuthManager.shared.logout(instanceId: slot)
+            }
         }
         // Collect entry UUIDs to remove from groups before deleting entries
         let removedEntryIds = Set(config.modelEntries.filter { $0.providerInstanceId == instanceId }.map(\.id))
@@ -1222,17 +1360,28 @@ final class ProviderConfigStore: ObservableObject {
             case .kimiCode:
                 return ProviderKeychainHelper.loadOAuthToken(instanceId: instanceId, as: KimiTokenStorage.self).flatMap { try? JSONEncoder().encode($0) }
             case .workBuddy, .traeCN:
-                // The blob is portable: the destination Keychain id, not the JSON, owns the instance.
-                guard instance.credentialType == .oauth,
-                      let token = ProviderKeychainHelper.loadOAuthToken(instanceId: instanceId, as: SubscriptionTokenStorage.self),
-                      token.provider == instance.providerType.rawValue, !token.accessToken.isEmpty else { return nil }
-                return try? JSONEncoder().encode(token)
+                return nil // exported slot-by-slot below; never substitute the active slot
             default:
                 return nil
             }
         }()
         if let blob = oauthTokenBlob {
             dict["oauthToken"] = blob.base64EncodedString()
+        }
+        if instance.providerType.isDomesticSubscription {
+            guard (try? SubscriptionConfigurationStorage.validate(instance)) != nil else { return nil }
+            dict["instanceId"] = instance.id
+            dict["subscriptionAccountIds"] = instance.subscriptionAccountIds
+            dict["subscriptionActiveAccountId"] = instance.subscriptionActiveAccountId
+            dict["subscriptionAutoFailover"] = instance.subscriptionAutoFailover
+            dict["subscriptionAutoCheckin"] = instance.subscriptionAutoCheckin
+            if let secret = BackupSecretsCollector.collectSubscription(instance: instance, instances: config.instances,
+                loadToken: { ProviderKeychainHelper.loadOAuthToken(instanceId: $0, as: SubscriptionTokenStorage.self) }),
+               let data = try? JSONEncoder().encode(secret),
+               let fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                dict["oauthToken"] = fields["oauthToken"]
+                dict["subscriptionAccounts"] = fields["subscriptionAccounts"]
+            }
         }
         // Gemini also stores the resolved account email + GCP project as separate
         // OAuth strings; carry them so the imported instance can call the API.
@@ -1283,15 +1432,9 @@ final class ProviderConfigStore: ObservableObject {
         }
 
         if providerType.isDomesticSubscription {
-            // No API-key/manual-bearer shortcut, even for a hand-edited share file.
-            guard credentialType == .oauth,
-                  dict["apiKey"] == nil, dict["manualOAuthToken"] == nil,
-                  dict["customBaseURL"] == nil, dict["customUserAgent"] == nil,
-                  dict["azureMode"] == nil, dict["imageEndpointMode"] == nil,
-                  let encoded = dict["oauthToken"] as? String,
-                  let blob = Data(base64Encoded: encoded),
-                  let token = try? JSONDecoder().decode(SubscriptionTokenStorage.self, from: blob),
-                  token.provider == providerType.rawValue, !token.accessToken.isEmpty else { return nil }
+            guard loadDegradation == .none, credentialType == .oauth else { return nil }
+        } else if dict["subscriptionAccounts"] != nil || dict["subscriptionAccountIds"] != nil {
+            return nil // never feed subscription blobs to an untyped provider writer
         }
 
         // Resolve label conflict
@@ -1308,7 +1451,7 @@ final class ProviderConfigStore: ObservableObject {
         let appendV1 = dict["appendV1Suffix"] as? Bool ?? true
         // [T-provider-custom-user-agent] Optional; absent in old exports → nil (default UA).
         let customUserAgent = dict["customUserAgent"] as? String
-        let instance = ProviderInstance(
+        var instance = ProviderInstance(
             label: resolvedLabel,
             providerType: providerType,
             credentialType: credentialType,
@@ -1316,6 +1459,30 @@ final class ProviderConfigStore: ObservableObject {
             appendV1Suffix: appendV1,
             customUserAgent: customUserAgent
         )
+        var importedSubscriptionSlots: [String] = []
+        var subscriptionPublished = false
+        defer {
+            if providerType.isDomesticSubscription && !subscriptionPublished {
+                // Only slots allocated and attempted by this import are cleaned.
+                for slot in importedSubscriptionSlots { SubscriptionOAuthManager.shared.logout(instanceId: slot) }
+            }
+        }
+        if providerType.isDomesticSubscription {
+            guard let transfer = try? BackupSubscriptionAccounts.remapShare(dict, destination: instance) else { return nil }
+            instance = transfer.instance
+            guard !config.instances.contains(where: { $0.id == instance.id }),
+                  instance.subscriptionAccountSlots.allSatisfy({ slot in
+                      !config.instances.contains(where: { $0.id == slot || $0.subscriptionAccountSlots.contains(slot) })
+                        && !ProviderKeychainHelper.hasOAuthTokenItemOrReadFailure(instanceId: slot)
+                  }) else { return nil }
+            do {
+                for account in transfer.accounts {
+                    importedSubscriptionSlots.append(account.slot)
+                    SubscriptionOAuthManager.shared.adoptExternalCredential(instanceId: account.slot)
+                    try ProviderKeychainHelper.saveSubscriptionOAuthTokenChecked(account.token, instanceId: account.slot)
+                }
+            } catch { return nil }
+        }
 
         // Save credentials to Keychain BEFORE addInstance(), so that
         // addInstance() can detect hasManualToken and skip built-in model population.
@@ -1375,18 +1542,7 @@ final class ProviderConfigStore: ObservableObject {
                     ProviderKeychainHelper.saveOAuthToken(t, instanceId: instance.id)
                 }
             case .workBuddy, .traeCN:
-                if let token = try? JSONDecoder().decode(SubscriptionTokenStorage.self, from: blob),
-                   token.provider == providerType.rawValue, !token.accessToken.isEmpty {
-                    // A destination instance is published only after checked Keychain read-back.
-                    do {
-                        try ProviderKeychainHelper.saveSubscriptionOAuthTokenChecked(token, instanceId: instance.id)
-                    } catch {
-                        // This id was newly generated for this import, so cleanup cannot
-                        // remove a previously configured account.
-                        SubscriptionOAuthManager.shared.logout(instanceId: instance.id)
-                        return nil
-                    }
-                }
+                break // validated, remapped and saved slot-by-slot above
             default:
                 break
             }
@@ -1403,10 +1559,15 @@ final class ProviderConfigStore: ObservableObject {
             }
         }
 
-        // Append instance directly (skip addInstance to avoid built-in model
-        // population and async refreshModels — we already have models from the JSON).
-        config.instances.append(instance)
-        save()
+        // Append directly: a credential-bearing import must not start login,
+        // model discovery or check-in as a side effect.
+        if providerType.isDomesticSubscription {
+            guard commitSubscriptionConfiguration(instance) else { return nil }
+            subscriptionPublished = true
+        } else {
+            config.instances.append(instance)
+            save()
+        }
 
         // Import models
         if let models = dict["models"] as? [[String: Any]] {
@@ -1493,7 +1654,7 @@ final class ProviderConfigStore: ObservableObject {
         // empty model list — exactly the "empty list" symptom the user
         // reported. Kick off the same refreshModels path addInstance()
         // uses so the new provider ends up with a populated picker.
-        if importedModelCount == 0 {
+        if importedModelCount == 0 && !providerType.isDomesticSubscription {
             Task { await refreshModels(for: instance) }
         }
         return resolvedLabel
@@ -3169,22 +3330,17 @@ final class ProviderConfigStore: ObservableObject {
             let token = try await CopilotOAuthManager.shared.validSessionToken(instanceId: instance.id)
             return try await CopilotModelsAPI.fetchModels(sessionToken: token)
         case (.workBuddy, .oauth), (.traeCN, .oauth):
-            // Unofficial China-only subscriptions: real account model discovery only.
-            // Throwing preserves the current list; no guessed/built-in fallback.
-            let discovery = try await SubscriptionModelsAPI.fetchModels(instance: instance)
-            // The directory just answered for the account this fetch started
-            // with. If a re-login replaced it while the request was in flight,
-            // these rows belong to the old account: drop them instead of
-            // letting the caller replace/persist the new account's list. This
-            // check is synchronous with the return, so no other fetch can run
-            // between it and `replaceEntries`.
-            if let current = ProviderKeychainHelper.loadOAuthToken(
-                    instanceId: instance.id, as: SubscriptionTokenStorage.self),
-               current.provider == instance.providerType.rawValue,
-               current.accessToken != discovery.accessToken {
-                logger.info("[ModelList] discarded a directory fetched for a replaced account: instance=\(instance.label)")
-                throw LLMError.cancelled
-            }
+            // One instance owns one model list, refreshed with its LIVE active
+            // slot. A stale view/provider must never choose yesterday's account.
+            guard let current = shared.instance(for: instance.id),
+                  current.providerType == instance.providerType,
+                  current.credentialType == .oauth else { throw LLMError.cancelled }
+            guard let slot = current.subscriptionActiveSlot else { throw ModelRefreshError.noCredential }
+            let discovery = try await SubscriptionModelsAPI.fetchModels(instance: current, accountSlot: slot)
+            // MainActor, synchronous through return -> replaceEntries: validate
+            // parent, membership, active slot, full credential and login epoch.
+            // Logout/deletion (nil token) must reject, just like replacement.
+            try SubscriptionOAuthManager.shared.requireCurrent(discovery.account, requireActive: true)
             return discovery.models
         case (.workBuddy, .apiKey), (.traeCN, .apiKey):
             throw ModelRefreshError.noCredential // no API-key or manual-bearer form
@@ -3739,7 +3895,57 @@ enum ProviderKeychainHelper {
     /// [T-new-session-hang-credential-cache]
     private static func notifyAuthChanged(instanceId: String) {
         ProviderCredentialCache.shared.invalidate(instanceId)
-        Task { @MainActor in ProviderConfigStore.shared.authRevision &+= 1 }
+        // Drop the parent's negative/positive result synchronously, before a
+        // caller can re-probe it on this run loop. No Keychain reads are needed.
+        if let range = instanceId.range(of: ".subscription.", options: .backwards),
+           UUID(uuidString: String(instanceId[range.upperBound...])) != nil {
+            ProviderCredentialCache.shared.invalidate(String(instanceId[..<range.lowerBound]))
+        }
+        Task { @MainActor in
+            let store = ProviderConfigStore.shared
+            for parent in store.instances where parent.subscriptionAccountSlots.contains(instanceId) {
+                ProviderCredentialCache.shared.invalidate(parent.id)
+            }
+            store.authRevision &+= 1
+        }
+    }
+
+    /// Fail closed: a locked/unavailable Keychain is not proof a slot is empty.
+    /// Query attributes instead of decoding so an unknown/newer token is kept.
+    static func hasOAuthTokenItemOrReadFailure(instanceId: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.openminis.app.provider.\(instanceId)",
+            kSecAttrAccount as String: "oauth-token",
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        return SecItemCopyMatching(query as CFDictionary, nil) != errSecItemNotFound
+    }
+
+    /// Restore is insert-only, including a credential that arrives between the
+    /// presence check and SecItemAdd. A duplicate never falls through to update.
+    static func restoreSubscriptionOAuthTokenIfAbsent(_ token: SubscriptionTokenStorage,
+                                                       instanceId: String) throws -> Bool {
+        guard !hasOAuthTokenItemOrReadFailure(instanceId: instanceId) else { return false }
+        let data = try JSONEncoder().encode(token)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.openminis.app.provider.\(instanceId)",
+            kSecAttrAccount as String: "oauth-token",
+            kSecAttrSynchronizable as String: true,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecValueData as String: data,
+        ]
+        let status = SecItemAdd(query as CFDictionary, nil)
+        if status == errSecDuplicateItem { return false }
+        guard status == errSecSuccess,
+              loadOAuthToken(instanceId: instanceId, as: SubscriptionTokenStorage.self) == token else {
+            throw SubscriptionProviderError.persistence("登录信息未能保存，请解锁手机后重试", status)
+        }
+        clearOAuthNeedsReauth(instanceId: instanceId)
+        notifyAuthChanged(instanceId: instanceId)
+        return true
     }
 
     /// [T-ios-backup-credential-restore] Raw-bytes accessors for the structured

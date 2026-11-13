@@ -15,6 +15,9 @@
 		E5SCHED01 /* ScheduledTasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5SCHED01R /* ScheduledTasksView.swift */; };
 		E5QCARD01 /* QuestionCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5QCARD01R /* QuestionCardView.swift */; };
 		E5QEXPT01 /* ChatExportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5QEXPT01R /* ChatExportView.swift */; };
+		E5QREL01 /* RelayQuotaProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5QREL01R /* RelayQuotaProtocol.swift */; };
+		E5SACC01 /* SubscriptionAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5SACC01R /* SubscriptionAccounts.swift */; };
+		E5SCHK01 /* SubscriptionCheckinCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5SCHK01R /* SubscriptionCheckinCoordinator.swift */; };
 		E5QQUOT01 /* ProviderQuotaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5QQUOT01R /* ProviderQuotaService.swift */; };
 
 		21FED4B7BB6F6D9476C9992E /* VoiceProvider+System.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88993FC8E3F0199C6638F664 /* VoiceProvider+System.swift */; };
@@ -704,6 +707,9 @@
 		E5SCHED01R /* ScheduledTasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ScheduledTasksView.swift; path = Views/Settings/ScheduledTasksView.swift; sourceTree = SOURCE_ROOT; };
 		E5QCARD01R /* QuestionCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = QuestionCardView.swift; path = Views/Chat/QuestionCardView.swift; sourceTree = SOURCE_ROOT; };
 		E5QEXPT01R /* ChatExportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChatExportView.swift; path = Views/Chat/ChatExportView.swift; sourceTree = SOURCE_ROOT; };
+		E5QREL01R /* RelayQuotaProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RelayQuotaProtocol.swift; path = Providers/RelayQuotaProtocol.swift; sourceTree = SOURCE_ROOT; };
+		E5SACC01R /* SubscriptionAccounts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SubscriptionAccounts.swift; path = Providers/Subscription/SubscriptionAccounts.swift; sourceTree = SOURCE_ROOT; };
+		E5SCHK01R /* SubscriptionCheckinCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SubscriptionCheckinCoordinator.swift; path = Providers/Subscription/SubscriptionCheckinCoordinator.swift; sourceTree = SOURCE_ROOT; };
 		E5QQUOT01R /* ProviderQuotaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProviderQuotaService.swift; path = Providers/ProviderQuotaService.swift; sourceTree = SOURCE_ROOT; };
 		160649A00000000000000004 /* ScopedMemoryLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScopedMemoryLibraryView.swift; sourceTree = "<group>"; };
 		IOS15COMPAT0000000000000A /* iOS15Compat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "iOS15Compat.swift"; sourceTree = "<group>"; };
@@ -1759,6 +1765,9 @@
 				D13AB000000000000000104 /* SubscriptionOAuthTypes.swift */,
 				D13AB000000000000000105 /* TraeOAuth.swift */,
 				D13AB000000000000000108 /* SubscriptionCredit.swift */,
+				E5QREL01R /* RelayQuotaProtocol.swift */,
+				E5SACC01R /* SubscriptionAccounts.swift */,
+				E5SCHK01R /* SubscriptionCheckinCoordinator.swift */,
 				D13AB000000000000000106 /* TraeProvider.swift */,
 				E5D00012 /* ProviderInstance.swift */,
 				E5D00013 /* ModelEntry.swift */,
@@ -3002,6 +3011,9 @@
 				E5SCHED01 /* ScheduledTasksView.swift in Sources */,
 				E5QCARD01 /* QuestionCardView.swift in Sources */,
 				E5QEXPT01 /* ChatExportView.swift in Sources */,
+				E5QREL01 /* RelayQuotaProtocol.swift in Sources */,
+				E5SACC01 /* SubscriptionAccounts.swift in Sources */,
+				E5SCHK01 /* SubscriptionCheckinCoordinator.swift in Sources */,
 				E5QQUOT01 /* ProviderQuotaService.swift in Sources */,
 				AC0000202 /* ProviderCustomizationGenerated.swift in Sources */,
 				E54000AC1 /* DebugSkillGenerated.swift in Sources */,

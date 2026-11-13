@@ -395,27 +395,11 @@ struct UnifiedModelPicker: View {
         }
         let grouped = Dictionary(grouping: regularEntries, by: { $0.providerInstanceId })
         var seen = Set<String>()
-        // [T-ios-model-picker-provider-order] Walk providerType-major, exactly
-        // like ProviderInstancesView's section list, then `store.instances`
-        // order WITHIN each type.
-        //
-        // Both screens already read the same `store.instances` array in the
-        // same order — the bug was never a different sort key. The management
-        // page renders `ForEach(ProviderType.allCases) { type in
-        // store.instances.filter { $0.providerType == type } }`, i.e. it is
-        // grouped by protocol ("OpenAI", "Responses API (v3)", …), so the
-        // global array's type-interleaving is invisible there. This picker
-        // walked the same array FLAT, which exposed that interleaving and made
-        // the two orders disagree (user report: management shows
-        // RelayA → RelayA-Image → RelayA-Grok …, picker shows DeepSeek → RelayA → Codex CPA
-        // → RelayA-Image …).
-        //
-        // Reordering cannot fix this from the data side: `moveInstances`
-        // deliberately permutes only WITHIN a type section and pins every other
-        // instance to its existing global slot, so an OpenAI provider can never
-        // be dragged past a Responses-API one. Type-major iteration here is
-        // what makes the picker reproduce what the user actually arranged.
-        for type in ProviderType.allCases {
+        // [T-ios-model-picker-provider-order] Same section order as the
+        // management page: first occurrence of each provider type in the
+        // persisted instance array, then instance order within that type.
+        // Both screens read one array, so they cannot drift apart.
+        for type in ProviderGroupOrder.types(in: store.instances) {
             for instance in store.instances
             where instance.isEnabled && instance.providerType == type {
                 guard !seen.contains(instance.id) else { continue }

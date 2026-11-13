@@ -37,6 +37,14 @@ actor ProviderConfigDB {
 
     private let dbURL: URL
     private var db: OpaquePointer?
+    // Serializes the synchronous account writer with delayed actor bulk saves.
+    // Once an account transaction runs, local bulk writes read the newest mirror
+    // instead of an older Task.detached capture. Inbound sync keeps its snapshot.
+    private final class SubscriptionWriteGate: @unchecked Sendable {
+        let lock = NSLock()
+        var mirrorURL: URL?
+    }
+    nonisolated private let subscriptionWriteGate = SubscriptionWriteGate()
 
     /// [T-icloud-agentloop-wipe] Set by the most recent `dumpProviderConfig()`
     /// when the local-only agent-loop table could not be READ. The dumped
@@ -531,6 +539,62 @@ actor ProviderConfigDB {
 
     // MARK: - Write API (used by migration + S3 mutate-path redirects)
 
+    /// Account mutators are synchronous (login completion consumes a Bool).
+    /// Use a short independent SQLite transaction, never block waiting for this
+    /// actor. A failed write must not publish membership or delete credentials.
+    nonisolated func persistSubscription(_ instance: ProviderInstance, sortOrder: Int, mirrorURL: URL,
+                                         writeMirror: () throws -> Void) throws {
+        subscriptionWriteGate.lock.lock()
+        defer { subscriptionWriteGate.lock.unlock() }
+        var handle: OpaquePointer?
+        let rc = sqlite3_open_v2(dbURL.path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil)
+        defer { if let handle { sqlite3_close(handle) } }
+        guard rc == SQLITE_OK, let handle else { throw SubscriptionConfigurationStorage.Invalid.object }
+        sqlite3_busy_timeout(handle, 1000)
+        guard Self.exec(db: handle, "BEGIN IMMEDIATE") == SQLITE_OK else {
+            throw SubscriptionConfigurationStorage.Invalid.object
+        }
+        var committed = false
+        defer { if !committed { Self.exec(db: handle, "ROLLBACK") } }
+        var read: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "SELECT extras_json FROM provider_instances WHERE id = ?", -1, &read, nil) == SQLITE_OK else {
+            throw SubscriptionConfigurationStorage.Invalid.object
+        }
+        sqlite3_bind_text(read, 1, instance.id, -1, Self.SQLITE_TRANSIENT)
+        let step = sqlite3_step(read)
+        let oldExtras = step == SQLITE_ROW ? Self.optText(read, 0) : nil
+        sqlite3_finalize(read)
+        guard step == SQLITE_ROW || step == SQLITE_DONE else { throw SubscriptionConfigurationStorage.Invalid.object }
+        let extras = try SubscriptionConfigurationStorage.merging(instance, into: oldExtras)
+        // UPDATE on conflict (not REPLACE): preserve secrets, unknown columns and
+        // model foreign-key children. Only the four subscription fields change.
+        let sql = """
+            INSERT INTO provider_instances
+            (id, label, provider_type, credential_type, is_enabled, sort_order, created_at, updated_at, extras_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET extras_json = excluded.extras_json, updated_at = excluded.updated_at
+            """
+        var write: OpaquePointer?
+        defer { sqlite3_finalize(write) }
+        guard sqlite3_prepare_v2(handle, sql, -1, &write, nil) == SQLITE_OK else {
+            throw SubscriptionConfigurationStorage.Invalid.object
+        }
+        sqlite3_bind_text(write, 1, instance.id, -1, Self.SQLITE_TRANSIENT)
+        sqlite3_bind_text(write, 2, instance.label, -1, Self.SQLITE_TRANSIENT)
+        sqlite3_bind_text(write, 3, instance.providerType.rawValue, -1, Self.SQLITE_TRANSIENT)
+        sqlite3_bind_text(write, 4, instance.credentialType.rawValue, -1, Self.SQLITE_TRANSIENT)
+        sqlite3_bind_int(write, 5, instance.isEnabled ? 1 : 0)
+        sqlite3_bind_int(write, 6, Int32(sortOrder))
+        sqlite3_bind_double(write, 7, instance.createdAt.timeIntervalSince1970)
+        sqlite3_bind_double(write, 8, Date().timeIntervalSince1970)
+        Self.bindOpt(write, 9, extras)
+        guard sqlite3_step(write) == SQLITE_DONE else { throw SubscriptionConfigurationStorage.Invalid.object }
+        try writeMirror()
+        guard Self.exec(db: handle, "COMMIT") == SQLITE_OK else { throw SubscriptionConfigurationStorage.Invalid.object }
+        committed = true
+        subscriptionWriteGate.mirrorURL = mirrorURL
+    }
+
     /// Bulk-replace the entire sync-domain content of the DB from a
     /// `ProviderConfig` value. Used during one-shot migration from
     /// `provider-config.json` (Stage S2) and from
@@ -544,11 +608,22 @@ actor ProviderConfigDB {
     ///   caller only. See the agent-loop block below — the guard must NOT be on
     ///   for a user-initiated save, because clearing every agent-loop model is a
     ///   legitimate action that also funnels through here via `save()`.
-    func bulkReplace(from config: ProviderConfig, preserveLocalOnlyStateIfEmpty: Bool = false) {
+    func bulkReplace(from snapshot: ProviderConfig, preserveLocalOnlyStateIfEmpty: Bool = false) {
+        subscriptionWriteGate.lock.lock()
+        defer { subscriptionWriteGate.lock.unlock() }
+        var config = snapshot
+        if !preserveLocalOnlyStateIfEmpty, let mirror = subscriptionWriteGate.mirrorURL {
+            guard let data = try? Data(contentsOf: mirror),
+                  let latest = try? JSONDecoder().decode(ProviderConfig.self, from: data) else {
+                logger.error("[v3] delayed save suppressed: newest subscription snapshot unavailable")
+                return
+            }
+            config = latest
+        }
         guard let db else { return }
         let now = Date().timeIntervalSince1970
 
-        Self.exec(db: db, "BEGIN IMMEDIATE")
+        guard Self.exec(db: db, "BEGIN IMMEDIATE") == SQLITE_OK else { return }
         // [T-icloud-sync-tier3-row-level] Synced tables (instances, entries,
         // groups) are no longer wiped and rewritten. The old shape —
         // `DELETE FROM` all three, then INSERT OR REPLACE every row with
@@ -583,7 +658,16 @@ actor ProviderConfigDB {
         // Instances
         for (idx, inst) in config.instances.enumerated() {
             let providerType = inst.unknownProviderTypeRaw ?? inst.providerType.rawValue
+            let oldExtras = storedInst[inst.id]?["extras_json"] as? String
+            let subscriptionExtras: String?
+            do {
+                subscriptionExtras = try SubscriptionConfigurationStorage.merging(inst, into: oldExtras)
+            } catch {
+                logger.error("[v3] subscription settings not saved: malformed extras for \(inst.id.prefix(8))")
+                continue // preserve the existing record, including unknown fields
+            }
             if let r = storedInst[inst.id],
+               (r["extras_json"] as? String) == subscriptionExtras,
                (r["label"] as? String) == inst.label,
                (r["provider_type"] as? String) == providerType,
                (r["credential_type"] as? String) == inst.credentialType.rawValue,
@@ -614,7 +698,7 @@ actor ProviderConfigDB {
                 secretUpdatedAt: storedInst[inst.id]?["secret_updated_at"] as? Double,
                 createdAt: inst.createdAt.timeIntervalSince1970,
                 updatedAt: now,
-                extrasJson: storedInst[inst.id]?["extras_json"] as? String,
+                extrasJson: subscriptionExtras,
                 customUserAgent: inst.customUserAgent,
                 azureMode: inst.azureMode
             )
@@ -807,7 +891,19 @@ actor ProviderConfigDB {
                 azureMode: (row["azure_mode"] as? Bool) ?? false,
                 unknownProviderTypeRaw: unknownTypeRaw
             )
-            instances.append(inst)
+            do {
+                instances.append(try SubscriptionConfigurationStorage.applying(row["extras_json"] as? String, to: inst))
+            } catch {
+                // Keep the parent visible, but never fall back to its legacy
+                // credential when a malformed explicit account list was stored.
+                var disabledAccounts = inst
+                disabledAccounts.subscriptionAccountIds = []
+                disabledAccounts.subscriptionActiveAccountId = nil
+                disabledAccounts.subscriptionAutoFailover = false
+                disabledAccounts.subscriptionAutoCheckin = false
+                instances.append(disabledAccounts)
+                logger.error("[v3] invalid subscription settings; accounts disabled for \(id.prefix(8))")
+            }
         }
 
         var entries: [ModelEntry] = []
@@ -1267,12 +1363,21 @@ actor ProviderConfigDB {
     ) {
         guard let db else { return }
         let sql = """
-            INSERT OR REPLACE INTO provider_instances
+            INSERT INTO provider_instances
             (id, label, provider_type, credential_type, custom_base_url,
              append_v1_suffix, image_endpoint_mode, image_endpoint_resolved,
              is_enabled, sort_order, secret_blob, secret_kind, secret_updated_at,
              created_at, updated_at, extras_json, custom_user_agent, azure_mode)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                label=excluded.label, provider_type=excluded.provider_type,
+                credential_type=excluded.credential_type, custom_base_url=excluded.custom_base_url,
+                append_v1_suffix=excluded.append_v1_suffix, image_endpoint_mode=excluded.image_endpoint_mode,
+                image_endpoint_resolved=excluded.image_endpoint_resolved, is_enabled=excluded.is_enabled,
+                sort_order=excluded.sort_order, secret_blob=excluded.secret_blob, secret_kind=excluded.secret_kind,
+                secret_updated_at=excluded.secret_updated_at, created_at=excluded.created_at,
+                updated_at=excluded.updated_at, extras_json=excluded.extras_json,
+                custom_user_agent=excluded.custom_user_agent, azure_mode=excluded.azure_mode
         """
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }

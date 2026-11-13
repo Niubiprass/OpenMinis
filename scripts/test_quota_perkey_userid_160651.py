@@ -22,7 +22,8 @@ class PerKeyUserID(unittest.TestCase):
         self.assertIn("static func setUserID(_ value: String, instanceId: String, keyId: String? = nil)", QUOTA)
 
     def test_balance_request_uses_the_keys_own_id(self):
-        self.assertIn("userID(instanceId: instanceId, keyId: rowId)", QUOTA)
+        self.assertIn("userID(instanceId: instance.id, keyId: rowId)", QUOTA)
+        self.assertIn("resolvedQuotaAccessToken(instanceId: instance.id, keyId: rowId)", QUOTA)
 
     def test_no_duplicate_instance_fields(self):
         # [T-quota-one-entry] The user rejected "outside and inside" fields.
@@ -40,7 +41,7 @@ class PerKeyUserID(unittest.TestCase):
         self.assertIn("数字、字母或中文", sheet)
 
     def test_warning_points_at_the_entry(self):
-        self.assertIn("点这把 Key 填上", QUOTA)
+        self.assertIn("点上面的 Key 填访问令牌和用户 ID", DETAIL)
 
 
 class MainThreadFreeze(unittest.TestCase):

@@ -246,7 +246,27 @@ private struct SubscriptionStreamEngine {
                 plain: Bool) -> AsyncThrowingStream<AgentStreamEvent, Error> {
         let lifetime = SubscriptionPumpLifetime()
         return AsyncThrowingStream { continuation in
-            let pump = Task {
+            let pump = Task { @MainActor in
+                let manager = SubscriptionOAuthManager.shared
+                let request: SubscriptionOAuthManager.RequestSnapshot
+                do { request = try manager.requestSnapshot(instance: self.instance) }
+                catch { continuation.finish(throwing: SubscriptionFailure.map(error)); return }
+                let instance = request.instance
+                let accounts = request.accounts
+                var lastFailure: Error?
+                for (accountIndex, snapshot) in accounts.enumerated() {
+                // Each original slot is visited at most once. New logins/slots
+                // appearing during this request never join its replay roster.
+                if accountIndex > 0 {
+                    guard let current = ProviderConfigStore.shared.instance(for: instance.id),
+                          current.subscriptionAutoFailover else { break }
+                    do { try manager.requireCurrent(snapshot) }
+                    catch {
+                        if Task.isCancelled { continuation.finish(throwing: LLMError.cancelled); return }
+                        continue // removed, logged-out or replaced candidate
+                    }
+                }
+                var account = snapshot
                 var rejectedAccess: String?
                 var yieldedContent = false
                 for attempt in 0...1 {
@@ -256,13 +276,15 @@ private struct SubscriptionStreamEngine {
                         try Task.checkCancellation()
                         try signal.throwIfCancelled()
                         try SubscriptionEndpoints.validate(instance)
-                        let credentials = try await SubscriptionOAuthManager.shared.validCredentials(
-                            instanceId: instance.id, type: instance.providerType,
+                        account = try await manager.requestCredentials(account,
                             forceRefresh: attempt == 1, rejectedAccess: rejectedAccess)
+                        let credentials = account.credentials
                         rejectedAccess = credentials.access
                         try SubscriptionEndpoints.validate(credentials)
                         let catalog = try await SubscriptionCatalogCache.shared.catalog(
                             instance: instance, credentials: credentials, cancellation: signal)
+                        try manager.requireCurrent(account)
+                        try signal.throwIfCancelled()
                         guard var wireModel = catalog.models.first(where: { $0.id == model.id }) else {
                             throw LLMError.providerError(message: "该账号的在线模型目录不包含 \(model.id)，请刷新模型列表")
                         }
@@ -291,7 +313,7 @@ private struct SubscriptionStreamEngine {
                             // below uses only public OpenAI encoding/streaming.
                             provider = SubscriptionWorkBuddyProvider(client: SubscriptionRequestHTTPClient(
                                 inner: SubscriptionHTTPClient(allowedHosts: SubscriptionEndpoints.workBuddyHosts),
-                                settings: settings, kind: .workBuddy))
+                                settings: settings, kind: .workBuddy, account: account))
                         } else {
                             let trae = TraeCredential(credentials)
                             auth = KWWKAI.ResolvedProviderAuth(scheme: .none,
@@ -301,7 +323,7 @@ private struct SubscriptionStreamEngine {
                                 functions: catalog.functions,
                                 client: SubscriptionRequestHTTPClient(
                                     inner: SubscriptionHTTPClient(allowedHosts: SubscriptionEndpoints.traeHosts),
-                                    settings: settings, kind: .traeCN))
+                                    settings: settings, kind: .traeCN, account: account))
                         }
                         var options = KWWKAI.StreamOptions(temperature: settings.temperature,
                             maxTokens: instance.providerType == .workBuddy ? outputLimit : nil,
@@ -314,6 +336,10 @@ private struct SubscriptionStreamEngine {
                         for await event in upstream {
                             try Task.checkCancellation()
                             try signal.throwIfCancelled()
+                            try manager.requireCurrent(account)
+                            // Inspect raw events BEFORE mapping: tool identity or
+                            // arguments may be buffered without visible output.
+                            yieldedContent = yieldedContent || SubscriptionEventState.hasOutput(event)
                             for mapped in try state.accept(event) {
                                 yieldedContent = true
                                 continuation.yield(mapped)
@@ -324,7 +350,10 @@ private struct SubscriptionStreamEngine {
                         let result = await upstream.result()
                         try Task.checkCancellation()
                         try signal.throwIfCancelled()
+                        try manager.requireCurrent(account)
+                        yieldedContent = yieldedContent || SubscriptionEventState.hasOutput(result)
                         try state.validateFinal(result)
+                        try manager.promoteSuccessfulAccount(account, request: request)
                         if let responseModel = result.responseModel, !responseModel.isEmpty {
                             continuation.yield(.responseModel(responseModel))
                         }
@@ -350,13 +379,31 @@ private struct SubscriptionStreamEngine {
                             continuation.finish(throwing: LLMError.cancelled); return
                         }
                         let failure = SubscriptionFailure.capture(error)
-                        if attempt == 0, !yieldedContent, rejectedAccess != nil, failure.isCredentialRejection {
+                        let explicitQuota = SubscriptionFailure.isExplicitQuota(error)
+                        let mapped = SubscriptionFailure.map(error)
+                        // [T-subscription-multi-account] This account is out of
+                        // credits and nothing was emitted yet: move to the next
+                        // account instead of failing the turn. Content already on
+                        // screen never falls back (no duplicated/double-charged
+                        // retry), and no other error kind is treated as "try
+                        // another account" — an expired login still asks the user.
+                        if !yieldedContent, accountIndex + 1 < accounts.count,
+                           explicitQuota,
+                           SubscriptionAccounts.isQuotaExhausted(mapped) {
+                            do { try manager.requireCurrent(account) }
+                            catch { continuation.finish(throwing: LLMError.cancelled); return }
+                            lastFailure = mapped
+                            break
+                        }
+                        if !explicitQuota, attempt == 0, !yieldedContent,
+                           rejectedAccess != nil, failure.isCredentialRejection {
                             continue // one refresh, with the rejected access snapshot
                         }
-                        continuation.finish(throwing: SubscriptionFailure.map(error)); return
+                        continuation.finish(throwing: mapped); return
                     }
                 }
-                continuation.finish(throwing: LLMError.invalidAPIKey())
+                }
+                continuation.finish(throwing: lastFailure ?? LLMError.invalidAPIKey())
             }
             lifetime.install(pump)
             continuation.onTermination = { _ in lifetime.cancel() }
@@ -373,6 +420,33 @@ struct SubscriptionEventState {
     var hasText = false
     var hasThinking = false
     var finalSeen = false
+
+    /// Output can be present in a partial/final even before a mapped event is
+    /// delivered. Any tool fragment locks replay, including an incomplete id.
+    static func hasOutput(_ message: KWWKAI.AssistantMessage) -> Bool {
+        message.content.contains { block in
+            switch block {
+            case .text(let text): return !text.text.isEmpty
+            case .thinking(let thinking): return !thinking.thinking.isEmpty
+            case .toolCall: return true
+            // An Anthropic fallback block is the alternative form of a text or
+            // thinking fragment. Treat anything it carries as output: replaying
+            // after visible content would duplicate the turn.
+            case .fallback: return true
+            }
+        }
+    }
+    static func hasOutput(_ event: KWWKAI.AssistantMessageEvent) -> Bool {
+        switch event {
+        case .toolCallStart, .toolCallDelta, .toolCallEnd: return true
+        case .textDelta(_, let text, let partial), .thinkingDelta(_, let text, let partial),
+             .textEnd(_, let text, let partial), .thinkingEnd(_, let text, let partial):
+            return !text.isEmpty || hasOutput(partial)
+        case .start(let partial), .textStart(_, let partial), .thinkingStart(_, let partial),
+             .done(_, let partial), .error(_, let partial):
+            return hasOutput(partial)
+        }
+    }
 
     private func call(at index: Int, in partial: KWWKAI.AssistantMessage) throws -> KWWKAI.ToolCall {
         guard partial.content.indices.contains(index), case .toolCall(let call) = partial.content[index] else {
@@ -489,6 +563,52 @@ struct SubscriptionEventState {
     }
 }
 
+// BEGIN SUBSCRIPTION_QUOTA_PURE
+/// Retry evidence is machine-readable only. KWWK's broad display category
+/// also reads prose; that category alone must never spend a second account.
+enum SubscriptionQuotaEvidence {
+    static func isExplicit(code: String?, status: Int?, transport: Bool) -> Bool {
+        guard !transport else { return false }
+        if let status, status >= 500 || status == 408 { return false }
+        guard let code = code?.lowercased() else { return false }
+        return ["14018", "insufficient_quota", "quota_exhausted"].contains(code)
+    }
+
+    /// WorkBuddy's observed error.data.code may be an integer. Read only its
+    /// documented envelope positions, never a number/phrase in message text.
+    static func code(in root: [String: Any]) -> String? {
+        let error = root["error"] as? [String: Any] ?? root
+        let data = error["data"] as? [String: Any] ?? [:]
+        let rootData = root["data"] as? [String: Any] ?? [:]
+        for value in [data["code"], error["code"], root["code"], rootData["code"], error["type"]] {
+            if let string = value as? String, !string.isEmpty { return string }
+            if let n = value as? NSNumber, String(cString: n.objCType) != "c",
+               n.doubleValue.isFinite, n.doubleValue.rounded() == n.doubleValue,
+               n.doubleValue > Double(Int.min), n.doubleValue < Double(Int.max) {
+                return String(n.intValue)
+            }
+        }
+        return nil
+    }
+
+    static func preservingErrorCode(_ payload: String) throws -> String {
+        guard var root = (try? JSONSerialization.jsonObject(with: Data(payload.utf8))) as? [String: Any],
+              let code = code(in: root), code != "0",
+              root["error"] != nil || root["choices"] == nil else { return payload }
+        var error = root["error"] as? [String: Any] ?? [:]
+        // Keep all original data and error fields; only expose the existing
+        // machine code to the generic parser. No inferred code from prose.
+        error["code"] = code
+        if error["message"] == nil {
+            error["message"] = (error["data"] as? [String: Any])?["msg"]
+                ?? root["msg"] ?? root["message"] ?? root["error"] as? String
+        }
+        root["error"] = error
+        return String(decoding: try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]), as: UTF8.self)
+    }
+}
+// END SUBSCRIPTION_QUOTA_PURE
+
 enum SubscriptionFailure {
     static func capture(_ error: Error) -> KWWKAI.ProviderFailure {
         if let directory = error as? SubscriptionDirectoryProtocol.InvalidDirectory {
@@ -498,17 +618,39 @@ enum SubscriptionFailure {
         }
         return KWWKAI.ProviderFailure.capture(error)
     }
+    static func isExplicitQuota(_ error: Error) -> Bool {
+        // A mapped/local error has already lost provenance. Never recover
+        // replay permission by scanning its user-visible description.
+        guard error is KWWKAI.ProviderFailure || error is SubscriptionDirectoryProtocol.InvalidDirectory else { return false }
+        let failure = capture(error)
+        return SubscriptionQuotaEvidence.isExplicit(code: failure.providerCode, status: failure.httpStatus,
+            transport: failure.transportDomain != nil || failure.transportCode != nil)
+    }
+    static func wireFailure(_ data: Data, status: Int) throws -> KWWKAI.ProviderFailure {
+        let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        var failure = KWWKAI.ProviderFailure.payload(try SubscriptionJSON.value(root),
+            fallback: String(decoding: data.prefix(4096), as: UTF8.self))
+        failure.httpStatus = status
+        failure.providerCode = SubscriptionQuotaEvidence.code(in: root) ?? failure.providerCode
+        return failure
+    }
     static func map(_ error: Error) -> LLMError {
         if let error = error as? LLMError { return error }
         if error is CancellationError { return .cancelled }
         let failure = capture(error)
-        // These WorkBuddy wire codes are public evidence from the pinned
-        // WorkBuddyWire.explained source, not invented HTTP status numbers.
-        let text = [failure.message, failure.providerCode].compactMap { $0 }.joined(separator: " ")
-        if failure.providerCode == "14018" || text.range(of: #"(?:code[\"':= ]+)?\b14018\b|credits exhausted|额度已用尽"#,
-                                                       options: [.regularExpression, .caseInsensitive]) != nil {
-            return .providerError(message: "quota_exhausted / insufficient_quota：\(failure.message)")
+        if isExplicitQuota(error) {
+            return .providerError(message: "insufficient_quota：\(failure.message)")
         }
+        // Transport and server status win over any quota wording carried in
+        // a diagnostic. A bare 402/429 is not evidence of spent credit here.
+        if failure.transportDomain != nil || failure.transportCode != nil {
+            if failure.transportDomain == NSURLErrorDomain, failure.transportCode == NSURLErrorCancelled { return .cancelled }
+            return .networkError(underlying: failure)
+        }
+        if let status = failure.httpStatus, status >= 500 || status == 408 {
+            return .transientError(message: failure.message, statusCode: status)
+        }
+        if failure.httpStatus == 429 { return .rateLimited }
         if failure.providerCode == "11140" { return .providerError(message: "账号限制 11140：\(failure.message)") }
         // KWWK preserves category rather than losing quota to a generic 429.
         // LLMError has no contextOverflow/quota cases in this App version;
@@ -516,7 +658,7 @@ enum SubscriptionFailure {
         switch failure.category {
         case .authentication: return .invalidAPIKey(detail: failure.message)
         case .rateLimit: return .rateLimited
-        case .quota: return .providerError(message: "insufficient_quota：\(failure.message)")
+        case .quota: return .providerError(message: failure.message) // prose-only; no canonical marker
         case .contextOverflow: return .providerError(message: "context_length_exceeded / context overflow：\(failure.message)")
         case .cancelled: return .cancelled
         case .server, .timeout:
@@ -582,6 +724,7 @@ struct SubscriptionRequestHTTPClient: KWWKAI.HTTPClient {
     let inner: any KWWKAI.HTTPClient
     let settings: SubscriptionRequestSettings
     let kind: ProviderType
+    let account: SubscriptionOAuthManager.AccountSnapshot
 
     func stream(url: URL, method: String, headers: [String: String], body: Data?,
                 cancellation: KWWKAI.CancellationHandle?) async throws -> (HTTPURLResponse, AsyncThrowingStream<Data, Error>) {
@@ -604,8 +747,39 @@ struct SubscriptionRequestHTTPClient: KWWKAI.HTTPClient {
             }
             body = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
         }
-        return try await inner.stream(url: url, method: method, headers: headers, body: body,
-                                      cancellation: cancellation, timeoutSeconds: timeoutSeconds)
+        try await SubscriptionOAuthManager.shared.requireCurrent(account)
+        try Task.checkCancellation()
+        try cancellation?.throwIfCancelled()
+        let (response, bytes) = try await inner.stream(url: url, method: method, headers: headers, body: body,
+            cancellation: cancellation, timeoutSeconds: timeoutSeconds)
+        try await SubscriptionOAuthManager.shared.requireCurrent(account)
+        try cancellation?.throwIfCancelled()
+        if response.statusCode >= 400 {
+            let data = try await SubscriptionJSON.collect(bytes, limit: 1_048_576, cancellation: cancellation)
+            try await SubscriptionOAuthManager.shared.requireCurrent(account)
+            throw try SubscriptionFailure.wireFailure(data, status: response.statusCode)
+        }
+        guard kind == .workBuddy else { return (response, bytes) }
+        // KWWK's generic payload reader drops numeric error.data.code. Preserve
+        // it as the same string code; message/tool encoding remains untouched.
+        let framed = AsyncThrowingStream<Data, Error> { continuation in
+            let pump = Task {
+                do {
+                    for try await event in KWWKAI.parseSSE(bytes: bytes) {
+                        try Task.checkCancellation()
+                        try cancellation?.throwIfCancelled()
+                        try await SubscriptionOAuthManager.shared.requireCurrent(account)
+                        let data = try SubscriptionQuotaEvidence.preservingErrorCode(event.data)
+                        var frame = "event: \(event.event)\n"
+                        for line in data.components(separatedBy: "\n") { frame += "data: \(line)\n" }
+                        continuation.yield(Data((frame + "\n").utf8))
+                    }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { _ in pump.cancel() }
+        }
+        return (response, framed)
     }
 }
 

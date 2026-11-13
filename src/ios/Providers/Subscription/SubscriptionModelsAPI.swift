@@ -33,23 +33,29 @@ enum SubscriptionModelsAPI {
     /// The credential the returned models belong to, so a caller that
     /// awaited a slow directory cannot write them over a newer account.
     struct AccountModels: Sendable {
-        let accessToken: String
+        let account: SubscriptionOAuthManager.AccountSnapshot
         let models: [LLMModel]
     }
 
     /// An invalid/partial directory throws: callers must retain the previous list.
     /// An explicitly empty authoritative directory is different and returns [].
-    static func fetchModels(instance: ProviderInstance) async throws -> AccountModels {
+    @MainActor
+    static func fetchModels(instance: ProviderInstance, accountSlot: String) async throws -> AccountModels {
         try SubscriptionEndpoints.validate(instance)
+        let manager = SubscriptionOAuthManager.shared
+        var account = try manager.accountSnapshot(instance: instance, slot: accountSlot)
+        try manager.requireCurrent(account, requireActive: true)
         var rejectedAccess: String?
         for attempt in 0...1 {
             do {
-                let credentials = try await SubscriptionOAuthManager.shared.validCredentials(
-                    instanceId: instance.id, type: instance.providerType,
+                account = try await manager.requestCredentials(account,
                     forceRefresh: attempt == 1, rejectedAccess: rejectedAccess)
+                try manager.requireCurrent(account, requireActive: true)
+                let credentials = account.credentials
                 rejectedAccess = credentials.access
                 let catalog = try await SubscriptionCatalogCache.shared.catalog(
                     instance: instance, credentials: credentials, refresh: true)
+                try manager.requireCurrent(account, requireActive: true)
                 let models = catalog.models.map { model in
                     var result = LLMModel(
                         id: model.id, displayName: model.name,
@@ -64,11 +70,12 @@ enum SubscriptionModelsAPI {
                     result.effortDeclarationIsAuthoritative = true
                     return result
                 }
-                return AccountModels(accessToken: credentials.access, models: models)
+                return AccountModels(account: account, models: models)
             } catch {
                 if error is CancellationError || Task.isCancelled { throw LLMError.cancelled }
                 let failure = SubscriptionFailure.capture(error)
-                if attempt == 0, rejectedAccess != nil, failure.isCredentialRejection { continue }
+                if !SubscriptionFailure.isExplicitQuota(error), attempt == 0,
+                   rejectedAccess != nil, failure.isCredentialRejection { continue }
                 throw SubscriptionFailure.map(error)
             }
         }

@@ -46,33 +46,19 @@ enum BackupSecretsImporter {
         var result = Result()
 
         for p in secrets.providers {
-            let instance = ProviderConfigStore.shared.instance(for: p.instanceId)
+            // An orphan secret (including a slot disguised as an instance) can
+            // never fall through to the generic untyped Keychain writer.
+            guard let instance = ProviderConfigStore.shared.instance(for: p.instanceId) else { continue }
             let secretType = p.providerType.flatMap { ProviderType(rawValue: $0) }
-            if instance?.providerType.isDomesticSubscription == true || secretType?.isDomesticSubscription == true {
-                // Never restore a subscription blob into another provider, or accept a
-                // legacy API-key/manual bearer as a domestic account credential.
-                guard let instance, instance.providerType.isDomesticSubscription,
-                      instance.credentialType == .oauth,
-                      p.providerType == instance.providerType.rawValue,
-                      let b64 = p.oauthToken, let raw = Data(base64Encoded: b64),
-                      let token = try? JSONDecoder().decode(SubscriptionTokenStorage.self, from: raw),
-                      token.provider == instance.providerType.rawValue, !token.accessToken.isEmpty else { continue }
-                if ProviderKeychainHelper.loadRawOAuthToken(instanceId: p.instanceId) == nil {
-                    // A failed/locked Keychain is not a successful restore.
-                    // Keep the old item intact; do not log the provider blob or raw error.
-                    do {
-                        // The restored account is the newer intent: a sign-in
-                        // still in flight for the old one must not land on top
-                        // of it afterwards.
-                        SubscriptionOAuthManager.shared.adoptExternalCredential(instanceId: p.instanceId)
-                        try ProviderKeychainHelper.saveSubscriptionOAuthTokenChecked(token, instanceId: p.instanceId)
-                        result.providersRestored += 1
-                    } catch {
-                        logger.error("[Restore] subscription credential could not be saved; account was not marked restored")
-                    }
-                } else {
-                    result.providersSkippedExisting += 1
-                }
+            if instance.providerType.isDomesticSubscription || secretType?.isDomesticSubscription == true
+                || p.subscriptionAccounts != nil {
+                guard secrets.providers.filter({ $0.instanceId == p.instanceId }).count == 1 else { continue }
+                let restored = restoreSubscription(p, parent: instance, instances: ProviderConfigStore.shared.instances,
+                    hasExisting: { ProviderKeychainHelper.hasOAuthTokenItemOrReadFailure(instanceId: $0) },
+                    adopt: { SubscriptionOAuthManager.shared.adoptExternalCredential(instanceId: $0) },
+                    save: { try ProviderKeychainHelper.restoreSubscriptionOAuthTokenIfAbsent($1, instanceId: $0) })
+                result.providersRestored += restored.restored
+                result.providersSkippedExisting += restored.skipped
                 continue
             }
             var wrote = false
@@ -148,6 +134,31 @@ enum BackupSecretsImporter {
 
         logger.info("[Restore] credentials: providers=\(result.providersRestored) (kept \(result.providersSkippedExisting)) envVars=\(result.envVarsRestored) mcpOAuth=\(result.mcpOAuthRestored)")
         return result
+    }
+
+    /// Production restore seam with injected Keychain effects for offline tests.
+    /// Counts subscription accounts (one write per slot), not just parent rows.
+    @MainActor
+    static func restoreSubscription(_ secret: BackupSecrets.ProviderSecret, parent: ProviderInstance,
+                                    instances: [ProviderInstance], hasExisting: (String) -> Bool,
+                                    adopt: (String) -> Void,
+                                    save: (String, SubscriptionTokenStorage) throws -> Bool) -> (restored: Int, skipped: Int) {
+        guard let accounts = try? BackupSubscriptionAccounts.decoded(secret, parent: parent, instances: instances)
+        else { return (0, 0) }
+        var restored = 0, skipped = 0
+        for account in accounts {
+            guard !hasExisting(account.slot) else { skipped += 1; continue }
+            do {
+                // Fence only the slot actually being restored. No login,
+                // refresh, model discovery or check-in is started by restore.
+                adopt(account.slot)
+                if try save(account.slot, account.token) { restored += 1 }
+                else { skipped += 1 }
+            } catch {
+                logger.error("[Restore] subscription credential could not be saved; account was not marked restored")
+            }
+        }
+        return (restored, skipped)
     }
 
     private static func decode(_ b64: String) -> String? {

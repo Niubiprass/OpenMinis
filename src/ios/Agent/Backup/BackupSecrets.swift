@@ -43,11 +43,22 @@ struct BackupSecrets: Codable {
         var oauthToken: String?
         var oauthEmail: String?
         var oauthGcpProject: String?
+        /// Additional subscription slots belonging to `instanceId`. The legacy
+        /// slot (`instanceId` itself) stays in `oauthToken` for old backups.
+        /// These blobs live ONLY in the credential section, never provider_config.
+        var subscriptionAccounts: [SubscriptionAccountSecret]?
 
         var isEmpty: Bool {
             apiKey == nil && manualOAuthToken == nil && oauthToken == nil
                 && oauthEmail == nil && oauthGcpProject == nil
+                && (subscriptionAccounts?.isEmpty ?? true)
         }
+    }
+
+    struct SubscriptionAccountSecret: Codable {
+        let accountId: String
+        /// base64 of SubscriptionTokenStorage JSON; includes its provider tag.
+        let oauthToken: String
     }
 
     struct EnvVarSecret: Codable {
@@ -64,6 +75,92 @@ struct BackupSecrets: Codable {
         let token: String
         /// base64 of the client secret, when one was issued.
         var clientSecret: String?
+    }
+}
+
+/// Shared export/restore ownership check. A slot is never a provider instance:
+/// models and configuration remain on its parent. Refuse ambiguous/colliding
+/// ownership before touching Keychain, even for a hand-edited backup.
+enum BackupSubscriptionAccounts {
+    static func owns(_ accountId: String, parent: ProviderInstance,
+                     instances: [ProviderInstance]) -> Bool {
+        guard parent.providerType.isDomesticSubscription,
+              parent.credentialType == .oauth,
+              !parent.id.isEmpty,
+              instances.filter({ $0.id == parent.id }).count == 1,
+              parent.subscriptionAccountSlots.contains(accountId) else { return false }
+        guard (try? SubscriptionConfigurationStorage.validate(parent)) != nil,
+              parent.ownsSubscriptionSlot(accountId) else { return false }
+        return !instances.contains { other in
+            other.id != parent.id
+                && (other.id == accountId || other.subscriptionAccountSlots.contains(accountId))
+        }
+    }
+
+    /// Validate the whole credential set before touching Keychain. Duplicate or
+    /// cross-parent entries are ambiguous, so none of that provider is adopted.
+    static func decoded(_ secret: BackupSecrets.ProviderSecret, parent: ProviderInstance,
+                        instances: [ProviderInstance]) throws -> [(slot: String, token: SubscriptionTokenStorage)] {
+        guard secret.instanceId == parent.id, secret.providerType == parent.providerType.rawValue,
+              parent.providerType.isDomesticSubscription, parent.credentialType == .oauth,
+              secret.apiKey == nil, secret.manualOAuthToken == nil,
+              secret.oauthEmail == nil, secret.oauthGcpProject == nil else {
+            throw SubscriptionConfigurationStorage.Invalid.accounts
+        }
+        var blobs = secret.subscriptionAccounts ?? []
+        if let legacy = secret.oauthToken { blobs.insert(.init(accountId: parent.id, oauthToken: legacy), at: 0) }
+        var seen = Set<String>()
+        return try blobs.map { item in
+            guard seen.insert(item.accountId).inserted,
+                  owns(item.accountId, parent: parent, instances: instances),
+                  let data = Data(base64Encoded: item.oauthToken),
+                  let token = try? JSONDecoder().decode(SubscriptionTokenStorage.self, from: data),
+                  token.provider == parent.providerType.rawValue, !token.accessToken.isEmpty else {
+                throw SubscriptionConfigurationStorage.Invalid.accounts
+            }
+            return (slot: item.accountId, token: token)
+        }
+    }
+
+    /// Decode the credential-bearing provider share using the same wire fields
+    /// as backup. Every destination is freshly allocated; source ids are never
+    /// used as local Keychain addresses. Old single-account shares had no id.
+    static func remapShare(_ object: [String: Any], destination: ProviderInstance) throws
+        -> (instance: ProviderInstance, accounts: [(slot: String, token: SubscriptionTokenStorage)]) {
+        guard destination.providerType.isDomesticSubscription,
+              destination.credentialType == .oauth,
+              object["apiKey"] == nil, object["manualOAuthToken"] == nil,
+              object["customBaseURL"] == nil, object["customUserAgent"] == nil,
+              object["azureMode"] == nil, object["imageEndpointMode"] == nil else {
+            throw SubscriptionConfigurationStorage.Invalid.accounts
+        }
+        let hasAccounts = object["subscriptionAccountIds"] != nil || object["subscriptionAccounts"] != nil
+        let sourceId: String
+        if let id = object["instanceId"] as? String, !id.isEmpty { sourceId = id }
+        else {
+            guard !hasAccounts, object["instanceId"] == nil else { throw SubscriptionConfigurationStorage.Invalid.accounts }
+            sourceId = "legacy-share"
+        }
+        var source = ProviderInstance(id: sourceId, label: destination.label,
+                                      providerType: destination.providerType, credentialType: .oauth)
+        let json = try JSONSerialization.data(withJSONObject: object)
+        source = try SubscriptionConfigurationStorage.applying(String(data: json, encoding: .utf8), to: source)
+        var secretObject = object
+        secretObject["instanceId"] = sourceId
+        let secret = try JSONDecoder().decode(BackupSecrets.ProviderSecret.self,
+            from: JSONSerialization.data(withJSONObject: secretObject))
+        let accounts = try decoded(secret, parent: source, instances: [source])
+        var mapping: [String: String] = [:]
+        for slot in source.subscriptionAccountSlots {
+            mapping[slot] = slot == sourceId ? destination.id : destination.id + ".subscription." + UUID().uuidString
+        }
+        var result = destination
+        result.subscriptionAccountIds = source.subscriptionAccountIds == nil ? nil
+            : source.subscriptionAccountSlots.compactMap { mapping[$0] }
+        result.subscriptionActiveAccountId = source.subscriptionActiveAccountId.flatMap { mapping[$0] }
+        result.subscriptionAutoFailover = source.subscriptionAutoFailover
+        result.subscriptionAutoCheckin = source.subscriptionAutoCheckin
+        return (result, accounts.map { (slot: mapping[$0.slot]!, token: $0.token) })
     }
 }
 
@@ -85,6 +182,14 @@ enum BackupSecretsCollector {
         var out = BackupSecrets()
 
         for instance in instances {
+            if instance.providerType.isDomesticSubscription {
+                if let secret = collectSubscription(instance: instance, instances: instances, loadToken: { slot in
+                    ProviderKeychainHelper.loadOAuthToken(instanceId: slot, as: SubscriptionTokenStorage.self)
+                }) {
+                    out.providers.append(secret)
+                }
+                continue
+            }
             var secret = BackupSecrets.ProviderSecret(
                 instanceId: instance.id,
                 label: instance.label,
@@ -145,6 +250,33 @@ enum BackupSecretsCollector {
         return out
     }
 
+    /// Injectable read seam: tests exercise the real collector with synthetic
+    /// credentials, without querying Keychain or contacting account APIs.
+    @MainActor
+    static func collectSubscription(instance: ProviderInstance, instances: [ProviderInstance],
+                                    loadToken: (String) -> SubscriptionTokenStorage?) -> BackupSecrets.ProviderSecret? {
+        var secret = BackupSecrets.ProviderSecret(
+            instanceId: instance.id, label: instance.label, providerType: instance.providerType.rawValue)
+        var accounts: [BackupSecrets.SubscriptionAccountSecret] = []
+        var seen = Set<String>()
+        for slot in instance.subscriptionAccountSlots {
+            guard seen.insert(slot).inserted,
+                  BackupSubscriptionAccounts.owns(slot, parent: instance, instances: instances),
+                  let token = loadToken(slot),
+                  token.provider == instance.providerType.rawValue, !token.accessToken.isEmpty,
+                  let data = try? JSONEncoder().encode(token) else { continue }
+            if slot == instance.id {
+                // Preserve the legacy wire shape, but never copy the ACTIVE
+                // secondary account into the parent's unrelated Keychain service.
+                secret.oauthToken = data.base64EncodedString()
+            } else {
+                accounts.append(.init(accountId: slot, oauthToken: data.base64EncodedString()))
+            }
+        }
+        if !accounts.isEmpty { secret.subscriptionAccounts = accounts }
+        return secret.isEmpty ? nil : secret
+    }
+
     @MainActor
     private static func oauthTokenBlob(for instance: ProviderInstance) -> Data? {
         let id = instance.id
@@ -179,11 +311,8 @@ enum BackupSecretsCollector {
             return ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: CopilotTokenStorage.self)
                 .flatMap { try? JSONEncoder().encode($0) }
         case .workBuddy, .traeCN:
-            guard instance.credentialType == .oauth,
-                  let token = ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: SubscriptionTokenStorage.self),
-                  token.provider == instance.providerType.rawValue, !token.accessToken.isEmpty else { return nil }
-            // Instance ownership is the Keychain key, never a field in the portable JSON blob.
-            return try? JSONEncoder().encode(token)
+            // Collected slot-by-slot above, together with explicit ownership.
+            return nil
         case .antigravity, .openAIResponses, .openRouter, .unsupported:
             return nil
         }

@@ -16,6 +16,12 @@ struct ProviderInstanceDetailView: View {
     /// [T-copilot-provider] Same device-code shape as Kimi's.
     @State private var showCopilotLogin = false
     @State private var showSubscriptionLogin = false
+    /// [T-subscription-multi-account] Slot-based sign-in. A nil request means
+    /// "add a new account"; an existing slot means "sign that account in
+    /// again". The legacy single-account flow above is kept for providers that
+    /// are not domestic subscriptions.
+    @State private var accountLoginRequest: SubscriptionAccountLoginRequest?
+    @State private var pendingAccountRemoval: String?
     @State private var keyInputText = ""
     @State private var isFetchingModels = false
     /// [T-thinking-rules-ui-fix] Owned HERE, not inside ThinkingRulesSection: a .sheet on a
@@ -180,6 +186,32 @@ struct ProviderInstanceDetailView: View {
                     Task { await store.refreshModels(for: instance) }
                 }
             }
+        }
+        // [T-subscription-multi-account] Slot-scoped sign-in for adding a second
+        // account or repairing one expired account. The legacy sheet above stays
+        // for the implicit first slot of an older instance.
+        .sheet(item: $accountLoginRequest) { request in
+            if let instance = instance, instance.providerType.isDomesticSubscription {
+                SubscriptionLoginSheet(instanceId: request.slot, providerType: instance.providerType) { success in
+                    accountLoginRequest = nil
+                    guard success, let current = store.instance(for: instanceId),
+                          current.providerType == instance.providerType else { return }
+                    registerAccount(slot: request.slot, instance: current)
+                }
+            }
+        }
+        .alert("移除这个账号？", isPresented: Binding(
+            get: { pendingAccountRemoval != nil },
+            set: { if !$0 { pendingAccountRemoval = nil } }
+        ), presenting: pendingAccountRemoval) { slot in
+            Button("移除", role: .destructive) {
+                store.removeSubscriptionAccount(instanceId: instanceId, slot: slot)
+                pendingAccountRemoval = nil
+                oauthRefreshTrigger.toggle()
+            }
+            Button("取消", role: .cancel) { pendingAccountRemoval = nil }
+        } message: { _ in
+            Text("会删除这个账号保存在本机的登录凭据；服务商那边的数据不受影响。")
         }
         .sheet(isPresented: $showQuotaLogin) {
             if let instance = instance {
@@ -347,14 +379,22 @@ struct ProviderInstanceDetailView: View {
             }
 
             // MARK: Credential
-            Section {
-                credentialSection(instance)
-            } header: {
-                Text("Credential")
-            } footer: {
-                Text(instance.credentialType == .apiKey
-                     ? "API key is stored securely in the iOS Keychain."
-                     : "OAuth tokens are stored per-instance in the iOS Keychain.")
+            if instance.providerType.isDomesticSubscription {
+                SubscriptionAccountsSection(
+                    instance: instance,
+                    onAdd: { beginAccountLogin(nil) },
+                    onReauthenticate: { beginAccountLogin($0) },
+                    onRemove: { slot in pendingAccountRemoval = slot })
+            } else {
+                Section {
+                    credentialSection(instance)
+                } header: {
+                    Text("Credential")
+                } footer: {
+                    Text(instance.credentialType == .apiKey
+                         ? "API key is stored securely in the iOS Keychain."
+                         : "OAuth tokens are stored per-instance in the iOS Keychain.")
+                }
             }
 
             // MARK: Multi-key [T-multikey]
@@ -419,8 +459,8 @@ struct ProviderInstanceDetailView: View {
                 }
             }
 
-            // Both domestic account detail pages share this credit/check-in card.
-            SubscriptionCreditSection(instance: instance)
+            // [T-subscription-multi-account] Credit and check-in moved into the
+            // account list above: one card per account, not one per provider.
 
             // Fixed subscription hosts / UA cannot be edited or redirected.
             if instance.providerType.isDomesticSubscription {
@@ -667,6 +707,7 @@ struct ProviderInstanceDetailView: View {
         let low = row.info?.highlighted == true
         let tint: Color = row.isMain ? .accentColor : (low ? .orange : .green)
 
+        VStack(alignment: .leading, spacing: 3) {
         // [T-quota-row-single-line] 原来是两行：左边「主 Key / sk-…」，
         // 金额被 Spacer 顶到最右，中间空出一大条。改成单行：
         // 徽标 · 名字 · 密钥连着排，金额和说明右对齐。
@@ -726,6 +767,24 @@ struct ProviderInstanceDetailView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+        }
+        // [T-quota-combined] Pools that are NOT the primary number are listed
+        // separately: a wallet balance, a Key limit and a plan remainder must
+        // never be added into one figure.
+        if let info = row.info, let extra = info.secondaryText, !extra.isEmpty {
+            Text(extra)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .padding(.leading, 39)
+        }
+        if let info = row.info, let failure = info.failureText, !failure.isEmpty {
+            Text(failure)
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+                .lineLimit(2)
+                .padding(.leading, 39)
+        }
         }
         .padding(.vertical, 2)
     }
@@ -1131,7 +1190,7 @@ struct ProviderInstanceDetailView: View {
         } else if instance.providerType == .githubCopilot {
             showCopilotLogin = true
         } else if instance.providerType.isDomesticSubscription {
-            showSubscriptionLogin = true
+            beginAccountLogin(instance.subscriptionActiveSlot ?? instance.id)
         } else {
             Task {
                 await oauthLogin(instance)
@@ -1140,6 +1199,36 @@ struct ProviderInstanceDetailView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Subscription accounts [T-subscription-multi-account]
+
+    /// nil slot = add a new account; an existing slot = sign that account in
+    /// again. A new slot id is namespaced under the parent instance so it can
+    /// never collide with another provider's credential.
+    private func beginAccountLogin(_ slot: String?) {
+        guard let instance, instance.providerType.isDomesticSubscription else { return }
+        accountLoginRequest = SubscriptionAccountLoginRequest(
+            slot: slot ?? "\(instance.id).subscription.\(UUID().uuidString)")
+    }
+
+    /// Runs after a successful browser login. The credential is already in the
+    /// Keychain under `slot`; this only decides whether the account list has to
+    /// learn about it. A failed registration signs the orphaned slot out so an
+    /// unlisted credential cannot keep being used.
+    private func registerAccount(slot: String, instance: ProviderInstance) {
+        if instance.subscriptionAccountSlots.contains(slot) {
+            oauthRefreshTrigger.toggle()
+            Task { await store.refreshModels(for: instance) }
+            return
+        }
+        guard store.addSubscriptionAccount(instanceId: instance.id, slot: slot, makeActive: true) else {
+            SubscriptionOAuthManager.shared.logout(instanceId: slot)
+            fetchError = "账号没有登记成功，请重新登录"
+            return
+        }
+        oauthRefreshTrigger.toggle()
+        Task { await store.refreshModels(for: instance) }
     }
 
     // MARK: - Custom Base URL

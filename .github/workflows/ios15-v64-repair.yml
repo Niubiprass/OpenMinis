@@ -44,6 +44,12 @@ jobs:
           python3 scripts/test_ask_card_160651.py
           python3 scripts/test_export_160651.py
           python3 scripts/test_quota_160651.py
+          python3 scripts/test_quota_balance_priority_160651.py
+          python3 scripts/test_quota_perkey_userid_160651.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_relay_quota_protocol_20261113.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_billing_20261113.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_checkin_20261113.py
+          python3 scripts/test_provider_group_order_20261113.py
           python3 scripts/test_v64r_text_layout.py
           python3 scripts/test_model_refresh_authoritative_160652.py
           python3 scripts/test_inapp_update_160652.py

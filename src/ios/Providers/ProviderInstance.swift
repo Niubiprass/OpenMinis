@@ -48,6 +48,26 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
     /// rewrite to a wrong type). nil for normal instances.
     var unknownProviderTypeRaw: String?
 
+    // MARK: - [T-subscription-multi-account] Domestic subscription accounts
+    //
+    // One WorkBuddy/Trae instance can hold several accounts. Each account is its
+    // own Keychain slot, and the slot id IS the account id, so the existing
+    // single-account OAuth code (login, refresh, epoch fencing) is reused
+    // unchanged by simply passing that id where it used to pass `instance.id`.
+    //
+    // nil is the legacy single account (instance.id). [] means explicitly no
+    // accounts; removing the last account must never resurrect a legacy slot.
+    var subscriptionAccountIds: [String]?
+    /// Which account new requests use. nil / not in the list = the first account.
+    var subscriptionActiveAccountId: String?
+    /// Fail over to the next account when the active one is out of credits.
+    /// Defaults ON: a spent account would otherwise fail the whole turn.
+    var subscriptionAutoFailover: Bool
+    /// Claim the daily check-in reward on app launch. Defaults ON; the claim
+    /// itself is guarded by a per-account daily marker, so repeated launches
+    /// cost at most one status read per account per day.
+    var subscriptionAutoCheckin: Bool
+
     init(
         id: String = UUID().uuidString,
         label: String,
@@ -61,7 +81,11 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         imageEndpointResolved: ImageEndpointMode? = nil,
         customUserAgent: String? = nil,
         azureMode: Bool = false,
-        unknownProviderTypeRaw: String? = nil
+        unknownProviderTypeRaw: String? = nil,
+        subscriptionAccountIds: [String]? = nil,
+        subscriptionActiveAccountId: String? = nil,
+        subscriptionAutoFailover: Bool = true,
+        subscriptionAutoCheckin: Bool = true
     ) {
         self.id = id
         self.label = label
@@ -76,6 +100,10 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         self.customUserAgent = providerType.isDomesticSubscription ? nil : customUserAgent
         self.azureMode = providerType.isDomesticSubscription ? false : azureMode
         self.unknownProviderTypeRaw = unknownProviderTypeRaw
+        self.subscriptionAccountIds = providerType.isDomesticSubscription ? subscriptionAccountIds : nil
+        self.subscriptionActiveAccountId = providerType.isDomesticSubscription ? subscriptionActiveAccountId : nil
+        self.subscriptionAutoFailover = subscriptionAutoFailover
+        self.subscriptionAutoCheckin = subscriptionAutoCheckin
     }
 
     // MARK: - Codable (manual, for backwards compatibility)
@@ -83,6 +111,8 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id, label, providerType, credentialType, isEnabled, createdAt, customBaseURL, appendV1Suffix
         case imageEndpointMode, imageEndpointResolved, customUserAgent, azureMode
+        case subscriptionAccountIds, subscriptionActiveAccountId, subscriptionAutoFailover
+        case subscriptionAutoCheckin
     }
 
     init(from decoder: Decoder) throws {
@@ -113,6 +143,15 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         // existing OpenAI/Responses instances keep their exact prior behavior.
         let decodedAzureMode = (try? c.decodeIfPresent(Bool.self, forKey: .azureMode)) ?? false
         azureMode = providerType.isDomesticSubscription ? false : decodedAzureMode
+        // Missing key = legacy slot; explicit [] = zero accounts. Malformed
+        // lists must fail decoding, never silently bind the wrong account.
+        let decodedAccounts = try c.decodeIfPresent([String].self, forKey: .subscriptionAccountIds)
+        subscriptionAccountIds = providerType.isDomesticSubscription ? decodedAccounts : nil
+        subscriptionActiveAccountId = providerType.isDomesticSubscription
+            ? (try? c.decodeIfPresent(String.self, forKey: .subscriptionActiveAccountId)) : nil
+        subscriptionAutoFailover = (try? c.decodeIfPresent(Bool.self, forKey: .subscriptionAutoFailover)) ?? true
+        // User-approved default: automatic check-in is on for domestic accounts.
+        subscriptionAutoCheckin = try c.decodeIfPresent(Bool.self, forKey: .subscriptionAutoCheckin) ?? true
     }
 
     func encode(to encoder: Encoder) throws {
@@ -133,6 +172,19 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         // [T-ios-azure-openai] Only encode when on, so off-instances serialize
         // byte-identically to before this field existed (no diff/churn, no LWW noise).
         if azureMode { try c.encode(azureMode, forKey: .azureMode) }
+        // [T-subscription-multi-account] Only serialize for subscriptions that
+        // actually use the list, so existing single-account blobs keep their
+        // exact previous shape (no sync churn, no last-writer-wins noise).
+        if providerType.isDomesticSubscription {
+            try c.encodeIfPresent(subscriptionAccountIds, forKey: .subscriptionAccountIds)
+            try c.encodeIfPresent(subscriptionActiveAccountId, forKey: .subscriptionActiveAccountId)
+            if !subscriptionAutoFailover {
+                try c.encode(false, forKey: .subscriptionAutoFailover)
+            }
+            if !subscriptionAutoCheckin {
+                try c.encode(false, forKey: .subscriptionAutoCheckin)
+            }
+        }
     }
 
     /// Returns customUserAgent if non-nil and non-empty (trimmed), otherwise nil.
@@ -306,6 +358,44 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
     /// `notifyAuthChanged`), on OAuth refresh, on Keychain iCloud-sync
     /// notifications, and wholesale on foreground; a 15s TTL is only a
     /// defensive backstop, never the primary mechanism.
+    // MARK: - [T-subscription-multi-account] Account slots
+
+    /// Missing list preserves the legacy slot. An explicit empty list stays
+    /// empty. Namespaced slots cannot reference another provider's credential.
+    var subscriptionAccountSlots: [String] {
+        guard providerType.isDomesticSubscription else { return [] }
+        var seen = Set<String>()
+        return (subscriptionAccountIds ?? [id]).filter {
+            ownsSubscriptionSlot($0) && seen.insert($0).inserted
+        }
+    }
+
+    func ownsSubscriptionSlot(_ slot: String) -> Bool {
+        guard providerType.isDomesticSubscription, !id.isEmpty else { return false }
+        if slot == id { return true }
+        let prefix = id + ".subscription."
+        guard slot.hasPrefix(prefix) else { return false }
+        return UUID(uuidString: String(slot.dropFirst(prefix.count))) != nil
+    }
+
+    /// Slot new requests use; falls back to the first account when the stored
+    /// selection is stale (removed account, or never set).
+    var subscriptionActiveSlot: String? {
+        let slots = subscriptionAccountSlots
+        guard let first = slots.first else { return nil }
+        if let active = subscriptionActiveAccountId, slots.contains(active) { return active }
+        return first
+    }
+
+    /// Order accounts are tried in: the active one first, then the rest — but
+    /// only when automatic failover is on. Explicit user choice always wins.
+    var subscriptionRequestSlots: [String] {
+        let slots = subscriptionAccountSlots
+        guard let active = subscriptionActiveSlot else { return [] }
+        guard subscriptionAutoFailover else { return [active] }
+        return [active] + slots.filter { $0 != active }
+    }
+
     var hasAnyCredential: Bool {
         ProviderCredentialCache.shared.value(for: id) { self.computeHasAnyCredential() }
     }
@@ -316,11 +406,16 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         if providerType.isDomesticSubscription {
             // Do not let an imported API key or pasted bearer satisfy OAuth.
             // Expiry is refreshable; the reauth marker, type and nonempty token are authoritative.
-            guard credentialType == .oauth,
-                  !ProviderKeychainHelper.oauthNeedsReauth(instanceId: id),
-                  let token = ProviderKeychainHelper.loadOAuthToken(
-                    instanceId: id, as: SubscriptionTokenStorage.self, caller: "hasAnyCredential") else { return false }
-            return token.provider == providerType.rawValue && !token.accessToken.isEmpty
+            // [T-subscription-multi-account] ANY account counts: the instance is
+            // usable while at least one of its accounts still holds a token.
+            guard credentialType == .oauth else { return false }
+            return subscriptionAccountSlots.contains { slot in
+                guard !ProviderKeychainHelper.oauthNeedsReauth(instanceId: slot),
+                      let token = ProviderKeychainHelper.loadOAuthToken(
+                        instanceId: slot, as: SubscriptionTokenStorage.self, caller: "hasAnyCredential")
+                else { return false }
+                return token.provider == providerType.rawValue && !token.accessToken.isEmpty
+            }
         }
         // [T-empty-key-compat-endpoints] Third-party compatible endpoint in
         // API-key mode: configured-by-definition, no Keychain probe needed
@@ -446,3 +541,64 @@ final class ProviderCredentialCache: @unchecked Sendable {
         lock.unlock()
     }
 }
+
+// BEGIN SUBSCRIPTION_CONFIGURATION_STORAGE
+/// The four subscription settings travel in V3's existing extras_json envelope.
+/// Unknown keys belong to other builds and must survive local edits verbatim in
+/// value. No credentials are stored here. Absence and [] have different meanings.
+enum SubscriptionConfigurationStorage {
+    enum Invalid: Error { case object, accounts, activeAccount }
+
+    private struct Fields: Codable {
+        var subscriptionAccountIds: [String]?
+        var subscriptionActiveAccountId: String?
+        var subscriptionAutoFailover: Bool?
+        var subscriptionAutoCheckin: Bool?
+    }
+
+    static func validate(_ instance: ProviderInstance) throws {
+        guard instance.providerType.isDomesticSubscription else { return }
+        let slots = instance.subscriptionAccountIds ?? [instance.id]
+        guard !instance.id.isEmpty, Set(slots).count == slots.count,
+              slots.allSatisfy({ instance.ownsSubscriptionSlot($0) }) else { throw Invalid.accounts }
+        if let active = instance.subscriptionActiveAccountId, !slots.contains(active) {
+            throw Invalid.activeAccount
+        }
+    }
+
+    static func applying(_ extras: String?, to instance: ProviderInstance) throws -> ProviderInstance {
+        guard instance.providerType.isDomesticSubscription else { return instance }
+        guard let extras else { return instance }
+        let data = Data(extras.utf8)
+        guard (try JSONSerialization.jsonObject(with: data)) is [String: Any] else { throw Invalid.object }
+        let fields = try JSONDecoder().decode(Fields.self, from: data)
+        var result = instance
+        result.subscriptionAccountIds = fields.subscriptionAccountIds
+        result.subscriptionActiveAccountId = fields.subscriptionActiveAccountId
+        result.subscriptionAutoFailover = fields.subscriptionAutoFailover ?? true
+        result.subscriptionAutoCheckin = fields.subscriptionAutoCheckin ?? true
+        try validate(result)
+        return result
+    }
+
+    static func merging(_ instance: ProviderInstance, into extras: String?) throws -> String? {
+        guard instance.providerType.isDomesticSubscription else { return extras }
+        try validate(instance)
+        var object: [String: Any] = [:]
+        if let extras {
+            guard let parsed = try JSONSerialization.jsonObject(with: Data(extras.utf8)) as? [String: Any]
+            else { throw Invalid.object }
+            object = parsed
+        }
+        let previous = object
+        // Removing an optional key is intentional: nil restores legacy semantics.
+        object["subscriptionAccountIds"] = instance.subscriptionAccountIds
+        object["subscriptionActiveAccountId"] = instance.subscriptionActiveAccountId
+        object["subscriptionAutoFailover"] = instance.subscriptionAutoFailover
+        object["subscriptionAutoCheckin"] = instance.subscriptionAutoCheckin
+        // Keep the original byte representation for no-op writes (LWW stability).
+        if NSDictionary(dictionary: previous).isEqual(to: object), let extras { return extras }
+        return String(data: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), encoding: .utf8)
+    }
+}
+// END SUBSCRIPTION_CONFIGURATION_STORAGE

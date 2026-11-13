@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""[T-quota-balance-priority] Saved access-token balances precede usage.
+"""[T-quota-balance-priority] A real balance outranks usage; a failed probe
+never discards a reading that already succeeded.
 
-A successful /api/usage/token/ response may contain only spent usage. It must
-not short-circuit /api/user/self or a real billing balance. Source contracts
-run everywhere, including negative/mutation checks. When swiftc is available,
-the ACTUAL routing function and QuotaInfo declaration are extracted unchanged
-and exercised with async fixture fetchers (no network, keys, or iOS access).
-Without swiftc the native part is explicitly SKIPPED, not reported as compiled.
+The old single routing function was replaced by `collect()` (query order) and
+`Snapshot.primary` (display priority). This suite keeps the original intents
+and the mutation checks that prove each rule is enforced:
+
+  1. the saved-token balance is queried first,
+  2. only a real remaining balance outranks usage,
+  3. a later failed probe must not replace earlier successful readings,
+  4. billing parsing stays pure and only trusts explicit USD evidence,
+  5. per-key balances keep using that key's own token and user id.
+
+Source contracts run everywhere. With swiftc the production protocol and
+projection are extracted unchanged and run against fixtures. No network, no
+keys, no iOS services.
 """
 import os
 import re
@@ -18,104 +26,113 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = (ROOT / 'src/ios/Providers/ProviderQuotaService.swift').read_text()
-ROUTE = 'private static func fetchOpenAIQuota('
-BILLING = 'private static func fetchOpenAIBillingQuota('
+QUOTA = (ROOT / 'src/ios/Providers/ProviderQuotaService.swift').read_text()
+PROTOCOL = (ROOT / 'src/ios/Providers/RelayQuotaProtocol.swift').read_text()
+COLLECT = 'private static func collect('
+PRIMARY = 'static func primary(in values: [Reading]) -> Reading?'
 
 
 def declaration(source, marker):
-    """Extract a class member through its four-space-indented closing brace."""
     start = source.index(marker)
     end = source.index('\n    }', start) + len('\n    }')
     return source[start:end]
 
 
-def routing_contract_errors(source):
-    body = re.sub(r'//[^\n]*', '', declaration(source, ROUTE))
+def without_comments(text):
+    return re.sub(r'//[^\n]*', '', text)
+
+
+def routing_errors(body):
+    body = without_comments(body)
     errors = []
-    calls = re.findall(r'await\s+(fetch\w+)\(', body)
-    if calls != ['fetchNewAPIBalance', 'fetchKeyUsage', 'fetchOpenAIBillingQuota']:
+    calls = re.findall(r'await\s+(fetch\w+|query)\(', body)
+    if not calls or calls[0] != 'fetchNewAPIBalance':
         errors.append('saved access-token balance must be fetched first')
-    account = r'if let balance = await fetchNewAPIBalance\([\s\S]*?rowId: rowId\)\s*\{\s*return balance\s*\}'
-    if not re.search(account, body):
-        errors.append('preserve the row id and return account balance, including zero')
-    for name in ('keyQuota', 'billingQuota'):
-        branch = rf'if let {name}, {name}\.kind == \.balance\s*\{{\s*return {name}\s*\}}'
-        if not re.search(branch, body):
-            errors.append(f'{name} may short-circuit only for .balance')
-    returns = re.findall(r'\breturn\s+([^\n}]+)', body)
-    if [r.strip() for r in returns] != ['balance', 'keyQuota', 'billingQuota', 'keyQuota ?? billingQuota']:
-        errors.append('only fall back to usage after exhausting real balances')
-    if not re.search(r'return keyQuota \?\? billingQuota\s*\}$', body):
-        errors.append('billing failure must not discard successful key usage')
+    if 'readings += values' not in body:
+        errors.append('a successful balance must be kept alongside probe readings')
+    if re.search(r'readings\s*=\s*values', body):
+        errors.append('a later probe must not replace earlier readings')
+    if 'return balance' in body:
+        errors.append('account balance must not short-circuit the chat-key probe')
+    if body.count('attempts.append') < 2:
+        errors.append('failures must be recorded separately from readings')
+    return errors
+
+
+def priority_errors(body):
+    body = without_comments(body)
+    errors = []
+    ranks = {name: int(rank) for name, rank in re.findall(r'case \.(\w+): return (\d+)', body)}
+    for scope in ('accountBalance', 'keyQuota', 'subscription'):
+        if scope not in ranks:
+            errors.append(f'{scope} must rank as a real remaining balance')
+    if 'usage' in ranks:
+        errors.append('usage must not compete with a real balance')
+    if 'if r.used != nil { return 10 }' not in body:
+        errors.append('usage-only readings must rank below every real balance')
+    ordered = [ranks[k] for k in ('accountBalance', 'keyQuota', 'subscription') if k in ranks]
+    if len(ordered) == 3 and ordered != sorted(ordered):
+        errors.append('account balance must outrank key quota and plan remainder')
     return errors
 
 
 class BalancePrioritySource(unittest.TestCase):
     def test_routing_order_and_balance_only_early_returns(self):
-        self.assertEqual(routing_contract_errors(SOURCE), [])
+        self.assertEqual(routing_errors(declaration(QUOTA, COLLECT)), [])
 
-    def test_billing_isolated_with_existing_safety_guards(self):
-        body = declaration(SOURCE, BILLING)
-        self.assertIn('key: String, baseURL: String', body)
-        self.assertIn('let session = URLSession.shared', body)
-        self.assertIn('guard let totalUsed else { return nil }', body)
-        self.assertIn('hardLimit > 0, hardLimit < Self.relayPlaceholderLimitUSD', body)
-        self.assertIn('totalUsed = cents.doubleValue / 100.0', body)
-        self.assertIn('highlighted: low', body)
-        self.assertIn('kind: .balance', body)
-        self.assertIn('kind: .used', body)
-        self.assertNotIn('fetchKeyUsage(', body)
-        self.assertNotIn('fetchNewAPIBalance(', body)
-
-    def test_original_per_key_token_resolver_still_used(self):
-        body = declaration(SOURCE, 'private static func fetchNewAPIBalance(')
-        self.assertIn('resolvedQuotaAccessToken(instanceId: instanceId, keyId: rowId)', body)
-        self.assertIn('req.setValue("Bearer \\(token)", forHTTPHeaderField: "Authorization")', body)
-        self.assertIn('balanceRoot(instanceId: instanceId, apiBase: baseURL)', body)
-        self.assertIn('Self.fetchQuota(for: instance, key: secret, rowId: row.id)', SOURCE)
-        route = declaration(SOURCE, ROUTE)
-        for write in ('saveQuotaAccessToken(', 'deleteQuotaAccessToken(', 'UserDefaults', 'SecItem'):
-            self.assertNotIn(write, route)
-
-    def test_results_keep_their_original_amount_kind_and_threshold(self):
-        route = declaration(SOURCE, ROUTE)
-        self.assertNotIn('QuotaInfo(', route)
-        self.assertNotIn('amountUSD', route)
-        self.assertNotIn('balanceUSD', route)
-        self.assertNotIn('lowThresholdUSD', route)
-        body = declaration(SOURCE, BILLING)
-        self.assertIn('let low = remaining < Self.lowThresholdUSD', body)
-        self.assertIn('balanceUSD: max(remaining, 0)', body)
-
-    def test_unlimited_keys_remain_usage_only_fallback(self):
-        body = declaration(SOURCE, 'private static func fetchKeyUsage(')
-        unlimited = body[body.index('if unlimited {'):body.index('let quotaPoints:')]
-        self.assertIn('kind: .used', unlimited)
-        self.assertIn('highlighted: false', unlimited)
-        self.assertNotIn('kind: .balance', unlimited)
+    def test_display_priority_prefers_real_balances(self):
+        self.assertEqual(priority_errors(declaration(PROTOCOL, PRIMARY)), [])
 
     def test_reject_usage_query_before_access_token_query(self):
-        route = declaration(SOURCE, ROUTE)
-        match = re.search(r'        if let balance = await fetchNewAPIBalance[\s\S]*?\n        }\n', route)
-        self.assertIsNotNone(match)
-        block = match.group(0)
-        mutant = route.replace(block, '', 1)
-        position = mutant.index('        let billingQuota')
-        mutant = mutant[:position] + block + mutant[position:]
-        self.assertIn('saved access-token balance must be fetched first', routing_contract_errors(mutant))
+        body = declaration(QUOTA, COLLECT)
+        block = body[body.index('if ctx.token?.isEmpty == false'):
+                     body.index('metadataLock.lock(); let hint')]
+        # Move the whole balance query after the probe loop.
+        mutant = body.replace(block, '', 1)
+        loop_end = mutant.index('        }\n', mutant.index('for source in order'))
+        mutant = mutant[:loop_end] + block + mutant[loop_end:]
+        self.assertIn('saved access-token balance must be fetched first', routing_errors(mutant))
 
-    def test_reject_unconditional_usage_return(self):
-        route = declaration(SOURCE, ROUTE)
-        self.assertIn('if let keyQuota, keyQuota.kind == .balance', route)
-        mutant = route.replace('if let keyQuota, keyQuota.kind == .balance', 'if let keyQuota', 1)
-        self.assertIn('keyQuota may short-circuit only for .balance', routing_contract_errors(mutant))
+    def test_reject_unconditional_usage_dominance(self):
+        body = declaration(PROTOCOL, PRIMARY)
+        mutant = body.replace('if r.used != nil { return 10 }', 'if r.used != nil { return -1 }', 1)
+        # Either rule firing means the mutant was caught; assert on the union so
+        # the test proves detection rather than one exact message.
+        errors = priority_errors(mutant)
+        self.assertTrue(
+            'usage must not compete with a real balance' in errors
+            or 'usage-only readings must rank below every real balance' in errors,
+            errors)
 
-    def test_reject_dropping_usage_when_billing_fails(self):
-        route = declaration(SOURCE, ROUTE)
-        self.assertIn('return keyQuota ?? billingQuota', route)
-        mutant = route.replace('return keyQuota ?? billingQuota', 'return billingQuota', 1)
-        self.assertIn('billing failure must not discard successful key usage', routing_contract_errors(mutant))
+    def test_reject_dropping_readings_when_a_probe_fails(self):
+        body = declaration(QUOTA, COLLECT)
+        mutant = body.replace('readings += values', 'readings = values', 1)
+        self.assertIn('a later probe must not replace earlier readings', routing_errors(mutant))
+
+    def test_billing_parser_is_pure_and_needs_usd_evidence(self):
+        body = declaration(PROTOCOL, 'static func parseBilling(')
+        for forbidden in ('Keychain', 'UIApplication', 'UserDefaults', 'URLSession'):
+            self.assertNotIn(forbidden, body)
+        self.assertIn('hard_limit_usd', body)
+        self.assertIn('total_usage', body)
+        # A bare "balance" field is not USD money until tagged or named _usd.
+        self.assertIn('balance_usd', body)
+        self.assertIn('uppercased() == "USD"', body)
+
+    def test_per_key_credentials_and_cache_identity_stay_separate(self):
+        body = declaration(QUOTA, 'private static func context(')
+        self.assertIn('resolvedQuotaAccessToken(instanceId: instance.id, keyId: rowId)', body)
+        self.assertIn('userID(instanceId: instance.id, keyId: rowId)', body)
+        self.assertIn('instance.id, rowId', QUOTA)
+
+
+def harness():
+    projection = ('\nenum Projection {\n'
+                  + declaration(QUOTA, 'struct QuotaInfo {') + '\n'
+                  + 'static var lowThresholdUSD: Double { 3 }\n'
+                  + declaration(QUOTA, 'static func project(') + '\n}\n')
+    fixture = (ROOT / 'scripts/fixtures/quota_priority_fixtures.swift').read_text()
+    return PROTOCOL + projection + fixture
 
 
 class NativeRoutingFixtures(unittest.TestCase):
@@ -128,129 +145,13 @@ class NativeRoutingFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='quota-priority-') as folder:
             path = Path(folder) / 'QuotaPriority.swift'
             binary = Path(folder) / 'quota-priority'
-            path.write_text(native_harness(), encoding='utf-8')
-            compiled = subprocess.run([swiftc, '-swift-version', '5', '-parse-as-library', str(path), '-o', str(binary)],
-                                      capture_output=True, text=True, timeout=120)
-            self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
-            ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
-            self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
-            self.assertIn('16 routing fixtures PASS', ran.stdout)
-
-
-def native_harness():
-    import json
-    cases = [
-        ('saved_token_beats_usage', 'account', 'keyUsed', 'billingBalance', 'account', ['account'], 'main'),
-        ('saved_token_zero_is_balance', 'accountZero', 'keyUsed', 'billingBalance', 'accountZero', ['account'], 'main'),
-        ('saved_token_keeps_low_warning', 'accountLow', 'nil', 'nil', 'accountLow', ['account'], 'main'),
-        ('saved_token_beats_key_balance', 'account', 'keyBalance', 'billingBalance', 'account', ['account'], 'main'),
-        ('key_balance_after_token_failure', 'nil', 'keyBalance', 'billingBalance', 'keyBalance', ['account', 'key'], 'main'),
-        ('key_zero_is_balance', 'nil', 'keyZero', 'billingBalance', 'keyZero', ['account', 'key'], 'main'),
-        ('billing_balance_beats_key_usage', 'nil', 'keyUsed', 'billingBalance', 'billingBalance', ['account', 'key', 'billing'], 'main'),
-        ('billing_zero_beats_key_usage', 'nil', 'keyUsed', 'billingZero', 'billingZero', ['account', 'key', 'billing'], 'main'),
-        ('billing_balance_without_key_endpoint', 'nil', 'nil', 'billingBalance', 'billingBalance', ['account', 'key', 'billing'], 'main'),
-        ('billing_failure_keeps_key_usage', 'nil', 'keyUsed', 'nil', 'keyUsed', ['account', 'key', 'billing'], 'main'),
-        ('keep_key_usage_over_monthly_usage', 'nil', 'keyUsed', 'billingUsed', 'keyUsed', ['account', 'key', 'billing'], 'main'),
-        ('monthly_usage_is_last_resort', 'nil', 'nil', 'billingUsed', 'billingUsed', ['account', 'key', 'billing'], 'main'),
-        ('all_failed_is_unavailable_not_zero', 'nil', 'nil', 'nil', 'nil', ['account', 'key', 'billing'], 'main'),
-        ('known_zero_usage_survives_failure', 'nil', 'keyUsedZero', 'nil', 'keyUsedZero', ['account', 'key', 'billing'], 'main'),
-        ('ring_a_keeps_own_row_id', 'accountLow', 'keyUsed', 'nil', 'accountLow', ['account'], 'ring-A'),
-        ('ring_b_keeps_own_row_id', 'account', 'keyUsed', 'nil', 'account', ['account'], 'ring-B'),
-    ]
-    runs = []
-    for name, account, key, billing, expected, steps, row in cases:
-        runs.append(f'        await runCase({json.dumps(name)}, account: {account}, key: {key}, billing: {billing}, expected: {expected}, steps: {json.dumps(steps)}, row: {json.dumps(row)})')
-    template = r'''
-import Foundation
-
-enum FixtureService {
-    __INFO__
-
-    __ROUTE__
-
-    private static var accountResult: QuotaInfo?
-    private static var keyResult: QuotaInfo?
-    private static var billingResult: QuotaInfo?
-    private static var trace: [String] = []
-    private static var expectedRow = "main"
-    private static var count = 0
-
-    private static func fetchNewAPIBalance(instanceId: String, baseURL: String,
-                                            rowId: String) async -> QuotaInfo? {
-        precondition(instanceId == "fixture-provider" && rowId == expectedRow)
-        precondition(baseURL == "https://example.invalid/v1")
-        trace.append("account")
-        return accountResult
-    }
-
-    private static func fetchKeyUsage(key: String, baseURL: String) async -> QuotaInfo? {
-        precondition(key == "fixture-api-key" && baseURL == "https://example.invalid/v1")
-        trace.append("key")
-        return keyResult
-    }
-
-    private static func fetchOpenAIBillingQuota(key: String, baseURL: String) async -> QuotaInfo? {
-        precondition(key == "fixture-api-key" && baseURL == "https://example.invalid/v1")
-        trace.append("billing")
-        return billingResult
-    }
-
-    private static func balance(_ label: String, _ amount: Double, _ low: Bool = false) -> QuotaInfo {
-        QuotaInfo(displayText: label, highlighted: low, kind: .balance,
-                  balanceUSD: amount, amountUSD: amount)
-    }
-
-    private static func used(_ label: String, _ amount: Double) -> QuotaInfo {
-        QuotaInfo(displayText: label, highlighted: false, kind: .used, amountUSD: amount)
-    }
-
-    private static func runCase(_ name: String, account: QuotaInfo?, key: QuotaInfo?,
-                                billing: QuotaInfo?, expected: QuotaInfo?,
-                                steps: [String], row: String) async {
-        accountResult = account
-        keyResult = key
-        billingResult = billing
-        expectedRow = row
-        trace = []
-        let actual = await fetchOpenAIQuota(instanceId: "fixture-provider", key: "fixture-api-key",
-                                          baseURL: "https://example.invalid/v1", rowId: row)
-        precondition(trace == steps, "\(name): wrong fetch order \(trace)")
-        switch (actual, expected) {
-        case (nil, nil): break
-        case let (.some(a), .some(e)):
-            precondition(a.displayText == e.displayText && a.kind == e.kind &&
-                         a.amountUSD == e.amountUSD && a.balanceUSD == e.balanceUSD &&
-                         a.highlighted == e.highlighted, "\(name): wrong balance/usage result")
-        default: fatalError("\(name): unexpected missing/present result")
-        }
-        count += 1
-    }
-
-    static func run() async {
-        let account = balance("account", 8.75)
-        let accountZero = balance("account-zero", 0, true)
-        let accountLow = balance("account-low", 0.25, true)
-        let keyBalance = balance("key-balance", 40)
-        let keyZero = balance("key-zero", 0, true)
-        let billingBalance = balance("billing-balance", 99)
-        let billingZero = balance("billing-zero", 0, true)
-        let keyUsed = used("key-used", 25.5)
-        let keyUsedZero = used("key-used-zero", 0)
-        let billingUsed = used("billing-used", 16)
-__RUNS__
-        print("\(count) routing fixtures PASS")
-    }
-}
-
-@main struct QuotaPriorityMain {
-    static func main() async {
-        await FixtureService.run()
-    }
-}
-'''
-    return (template.replace('__INFO__', declaration(SOURCE, 'struct QuotaInfo {'))
-            .replace('__ROUTE__', declaration(SOURCE, ROUTE))
-            .replace('__RUNS__', '\n'.join(runs)))
+            path.write_text(harness())
+            compiled = subprocess.run([swiftc, '-swift-version', '5', str(path), '-o', str(binary)],
+                                      text=True, capture_output=True, timeout=120)
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+            run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn('quota-priority-ok', run.stdout)
 
 
 if __name__ == '__main__':

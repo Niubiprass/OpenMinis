@@ -34,6 +34,7 @@ print("== [T-115-quota] contract tests ==")
 q_path = ROOT / "src/ios/Providers/ProviderQuotaService.swift"
 check("ProviderQuotaService.swift exists", q_path.exists())
 q = q_path.read_text(encoding="utf-8", errors="replace") if q_path.exists() else ""
+q += "\n" + read("src/ios/Providers/RelayQuotaProtocol.swift")
 
 # 1) Service shape
 check("ObservableObject + revision", "@Published private(set) var revision" in q)
@@ -44,15 +45,16 @@ check("5-minute TTL", "let ttl: TimeInterval = 300" in q)
 check("API-key instances only", "case .apiKey:" in q and "keychain" in q.lower() or "loadAPIKey" in q)
 
 # 2) Data source = OpenAI billing endpoints
-check("subscription endpoint", '"/dashboard/billing/subscription"' in q)
-check("usage endpoint", '"/dashboard/billing/usage"' in q)
+check("subscription endpoint", '"/v1/dashboard/billing/subscription"' in q)
+check("usage endpoint", '"/v1/dashboard/billing/usage"' in q)
 check("usage is in cents (/100)", "/ 100.0" in q)
-check("hard/soft limit parsing", 'obj["hard_limit_usd"]' in q)
-check("usage failure does not become zero usage", "guard let totalUsed else { return nil }" in q)
-check("numeric usage accepts NSNumber", 'obj["total_usage"] as? NSNumber' in q)
+check("hard/soft limit parsing", 'sub["hard_limit_usd"]' in q and 'sub["soft_limit_usd"]' in q)
+check("usage failure does not become zero usage",
+      'number(use["total_usage"]).map { $0 / 100.0 } ?? number(use["used_usd"])' in q)
+check("numeric usage accepts NSNumber", "CFGetTypeID(n) != CFBooleanGetTypeID()" in q)
 check("low-quota rule (user threshold only)", "lowThresholdUSD" in q and "* 0.15" not in q)
-check("Anthropic starts at current month", "monthComponents.day = 1" in q)
-check("Anthropic month spend path", '"/organizations/usage/costs"' in q)
+check("Anthropic starts at current month", "dateComponents([.year, .month]" in q)
+check("Anthropic month spend path", '"/v1/organizations/usage/costs"' in q)
 check("unsupported hosts return nil", "default: return nil" in q)
 
 # 3) UI site 1: model picker rows

@@ -42,6 +42,99 @@ final class SubscriptionOAuthManager {
         return epoch
     }
 
+    /// In-memory request ownership. A slot is meaningful only with its parent,
+    /// provider and login epoch; the credential never enters logs or config.
+    struct AccountSnapshot: Sendable {
+        let parentId: String
+        let slot: String
+        let type: ProviderType
+        let epoch: UUID
+        let credentials: OAuthCredentials
+    }
+    struct RequestSnapshot {
+        let instance: ProviderInstance
+        let activeSlot: String
+        let configRevision: UInt
+        let accounts: [AccountSnapshot]
+    }
+
+    func accountSnapshot(instance: ProviderInstance, slot: String) throws -> AccountSnapshot {
+        try Task.checkCancellation()
+        guard let current = ProviderConfigStore.shared.instance(for: instance.id),
+              current.providerType == instance.providerType, current.credentialType == .oauth,
+              current.providerType.isDomesticSubscription,
+              current.subscriptionAccountSlots.contains(slot), logins[slot] == nil else {
+            throw CancellationError()
+        }
+        guard !ProviderKeychainHelper.oauthNeedsReauth(instanceId: slot),
+              let token = load(slot, current.providerType), !token.accessToken.isEmpty else {
+            throw LLMError.invalidAPIKey(detail: "该账号尚未登录或登录已失效")
+        }
+        return AccountSnapshot(parentId: current.id, slot: slot, type: current.providerType,
+            epoch: accountEpoch(instanceId: slot), credentials: token.credentials)
+    }
+
+    /// Resolve at request time, never from a retained provider's old instance.
+    /// An unauthenticated active account is an error, not permission to replay.
+    func requestSnapshot(instance: ProviderInstance) throws -> RequestSnapshot {
+        let current = try SubscriptionAccounts.requestInstance(instance.id)
+        guard current.providerType == instance.providerType, current.credentialType == .oauth else {
+            throw CancellationError()
+        }
+        try SubscriptionEndpoints.validate(current)
+        guard let active = current.subscriptionActiveSlot else { throw LLMError.invalidAPIKey() }
+        var accounts = [try accountSnapshot(instance: current, slot: active)]
+        for slot in current.subscriptionRequestSlots where slot != active {
+            if let account = try? accountSnapshot(instance: current, slot: slot) { accounts.append(account) }
+        }
+        return RequestSnapshot(instance: current, activeSlot: active,
+            configRevision: ProviderConfigStore.shared.configRevision, accounts: accounts)
+    }
+
+    /// Deliberately ignores active selection: a running request keeps the
+    /// account it started with when the user selects the NEXT request's account.
+    /// Credential equality also fences external replacements without an epoch.
+    func requireCurrent(_ account: AccountSnapshot, requireActive: Bool = false) throws {
+        try Task.checkCancellation()
+        guard let current = ProviderConfigStore.shared.instance(for: account.parentId),
+              current.providerType == account.type, current.credentialType == .oauth,
+              current.subscriptionAccountSlots.contains(account.slot),
+              !requireActive || current.subscriptionActiveSlot == account.slot,
+              accountEpoch(instanceId: account.slot) == account.epoch,
+              logins[account.slot] == nil,
+              !ProviderKeychainHelper.oauthNeedsReauth(instanceId: account.slot),
+              let token = load(account.slot, account.type), !token.accessToken.isEmpty,
+              token.credentials == account.credentials else { throw CancellationError() }
+    }
+
+    /// Retain the existing per-slot refresh coalescing and rejection retry, but
+    /// bind both sides of its await to the same login generation and parent.
+    func requestCredentials(_ account: AccountSnapshot, forceRefresh: Bool = false,
+                            rejectedAccess: String? = nil) async throws -> AccountSnapshot {
+        try requireCurrent(account)
+        let credentials = try await validCredentials(instanceId: account.slot, type: account.type,
+            forceRefresh: forceRefresh, rejectedAccess: rejectedAccess)
+        let resolved = AccountSnapshot(parentId: account.parentId, slot: account.slot, type: account.type,
+            epoch: account.epoch, credentials: credentials)
+        try requireCurrent(resolved)
+        return resolved
+    }
+
+    /// A successful failover becomes the default only if the user's selection
+    /// has not changed (including A -> B -> A) since this request started.
+    /// The config revision is conservative: unrelated edits also win over this
+    /// automatic preference update. Check and save are one MainActor operation.
+    func promoteSuccessfulAccount(_ account: AccountSnapshot, request: RequestSnapshot) throws {
+        try requireCurrent(account)
+        let store = ProviderConfigStore.shared
+        guard account.slot != request.activeSlot,
+              let current = store.instance(for: account.parentId),
+              current.subscriptionAutoFailover,
+              current.subscriptionActiveSlot == request.activeSlot,
+              store.configRevision == request.configRevision else { return }
+        store.setActiveSubscriptionAccount(instanceId: account.parentId, slot: account.slot)
+    }
+
     func cancelLogin(instanceId: String) {
         let login = logins.removeValue(forKey: instanceId)
         login?.cancellation.cancel()
@@ -171,7 +264,7 @@ final class SubscriptionOAuthManager {
                 try Task.checkCancellation()
                 if error is CancellationError { throw error }
                 guard epochs[instanceId] == epoch, let current = load(instanceId, type) else { throw CancellationError() }
-                if current != initial { return current.credentials }
+                if current != initial { throw CancellationError() }
                 if let e = error as? OAuthRefreshError, e.kind == .rejected {
                     ProviderKeychainHelper.markOAuthNeedsReauth(instanceId: instanceId)
                     throw LLMError.invalidAPIKey(detail: "登录已失效，请重新登录")
@@ -183,7 +276,7 @@ final class SubscriptionOAuthManager {
             try Task.checkCancellation()
             guard epochs[instanceId] == epoch, let current = load(instanceId, type) else { throw CancellationError() }
             // Another device/re-login owns any blob that moved since this request.
-            if current != initial { return current.credentials }
+            if current != initial { throw CancellationError() }
             guard !next.access.isEmpty else { throw SubscriptionProviderError.invalidResponse("账号续期未返回有效凭据") }
             // Keep persistence outside the network catch: Keychain failures must reach the caller.
             try ProviderKeychainHelper.saveSubscriptionOAuthTokenChecked(

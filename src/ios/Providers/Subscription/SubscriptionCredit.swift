@@ -171,7 +171,11 @@ enum SubscriptionBillingProtocol {
 @MainActor
 enum SubscriptionCreditAPI {
     struct Context: Sendable {
+        /// Keychain slot of the account this result belongs to — the account id.
         let instanceId: String
+        /// Owning provider instance, used for existence/ownership checks. A slot
+        /// is not itself an instance, so the parent has to travel with it.
+        let parentId: String
         let type: ProviderType
         let epoch: UUID
         let credentials: KWWKAI.OAuthCredentials
@@ -179,21 +183,33 @@ enum SubscriptionCreditAPI {
     // Shared across open views, so a double tap cannot dispatch two claims.
     private static var claiming: Set<String> = []
 
+    /// Billing for the instance's ACTIVE account. Used where no account was
+    /// picked explicitly; the account list passes one instead.
     static func context(_ instance: ProviderInstance) async throws -> Context {
-        guard instance.providerType.isDomesticSubscription, instance.credentialType == .oauth else {
+        guard let slot = instance.subscriptionActiveSlot else {
             throw SubscriptionBillingProtocol.fail("请先登录账号")
         }
-        let epoch = SubscriptionOAuthManager.shared.accountEpoch(instanceId: instance.id)
+        return try await context(instance, accountSlot: slot)
+    }
+
+    static func context(_ instance: ProviderInstance, accountSlot: String) async throws -> Context {
+        guard instance.providerType.isDomesticSubscription, instance.credentialType == .oauth,
+              instance.subscriptionAccountSlots.contains(accountSlot) else {
+            throw SubscriptionBillingProtocol.fail("请先登录账号")
+        }
+        let epoch = SubscriptionOAuthManager.shared.accountEpoch(instanceId: accountSlot)
         let credentials = try await SubscriptionOAuthManager.shared.validCredentials(
-            instanceId: instance.id, type: instance.providerType)
-        let context = Context(instanceId: instance.id, type: instance.providerType, epoch: epoch, credentials: credentials)
+            instanceId: accountSlot, type: instance.providerType)
+        let context = Context(instanceId: accountSlot, parentId: instance.id,
+                              type: instance.providerType, epoch: epoch, credentials: credentials)
         try requireCurrent(context)
         return context
     }
     static func requireCurrent(_ context: Context) throws {
         try Task.checkCancellation()
-        guard let instance = ProviderConfigStore.shared.instance(for: context.instanceId),
+        guard let instance = ProviderConfigStore.shared.instance(for: context.parentId),
               instance.providerType == context.type, instance.credentialType == .oauth,
+              instance.subscriptionAccountSlots.contains(context.instanceId),
               SubscriptionOAuthManager.shared.accountEpoch(instanceId: context.instanceId) == context.epoch,
               !ProviderKeychainHelper.oauthNeedsReauth(instanceId: context.instanceId),
               let current = ProviderKeychainHelper.loadOAuthToken(instanceId: context.instanceId, as: SubscriptionTokenStorage.self),
@@ -217,7 +233,31 @@ enum SubscriptionCreditAPI {
         }
     }
 
+    private static var statusTasks: [String: (id: UUID, task: Task<SubscriptionCheckin, Error>)] = [:]
+
     static func checkin(_ context: Context) async throws -> SubscriptionCheckin {
+        try requireCurrent(context)
+        let key = SubscriptionCheckinLedger.key(context)
+        if SubscriptionCheckinLedger.completed(key) {
+            return SubscriptionCheckin(checkedIn: true, canClaim: false, reward: nil)
+        }
+        if let running = statusTasks[key] {
+            let value = try await running.task.value
+            try requireCurrent(context)
+            return value
+        }
+        let id = UUID()
+        let requestDay = SubscriptionCheckinPolicy.day(Date())
+        let task = Task { @MainActor in try await queryCheckin(context) }
+        statusTasks[key] = (id, task)
+        defer { if statusTasks[key]?.id == id { statusTasks[key] = nil } }
+        let value = try await task.value
+        try requireCurrent(context)
+        if value.checkedIn { SubscriptionCheckinLedger.confirmed(key, requestDay: requestDay) }
+        return value
+    }
+
+    private static func queryCheckin(_ context: Context) async throws -> SubscriptionCheckin {
         switch context.type {
         case .workBuddy:
             let root = try await post(context, host: "www.codebuddy.cn",
@@ -235,24 +275,36 @@ enum SubscriptionCreditAPI {
         case alreadyCheckedIn
         case accepted(SubscriptionCheckinReceipt)
     }
-    static func claim(_ context: Context) async throws -> ClaimResult {
+    static func claim(_ context: Context, automatic: Bool = false) async throws -> ClaimResult {
         try requireCurrent(context)
-        guard claiming.insert(context.instanceId).inserted else {
+        let key = SubscriptionCheckinLedger.key(context)
+        if SubscriptionCheckinLedger.completed(key) { return .alreadyCheckedIn }
+        guard claiming.insert(key).inserted else {
             throw SubscriptionBillingProtocol.fail("正在签到，请稍等")
         }
-        defer { claiming.remove(context.instanceId) }
-        // A fresh status read is mandatory even when the displayed row is old.
+        defer { claiming.remove(key) }
+        let requestDay = SubscriptionCheckinPolicy.day(Date())
+        SubscriptionCheckinLedger.beginAttempt(key)
+        // One fresh status query under the same lock for manual and automatic
+        // paths. Cached completion above never dispatches another server request.
         let current = try await checkin(context)
         if current.checkedIn { return .alreadyCheckedIn }
         guard current.canClaim else {
             throw SubscriptionBillingProtocol.fail(current.note ?? "当前账号暂不能签到")
         }
         try requireCurrent(context)
+        guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
+        if automatic {
+            guard UIApplication.shared.applicationState == .active,
+                  let parent = ProviderConfigStore.shared.instance(for: context.parentId),
+                  parent.isEnabled, parent.subscriptionAutoCheckin else { throw CancellationError() }
+        }
+        let receipt: SubscriptionCheckinReceipt
         switch context.type {
         case .workBuddy:
             let root = try await post(context, host: "www.codebuddy.cn",
                 path: "/v2/billing/meter/daily-checkin", body: [:], mutation: true)
-            return .accepted(try SubscriptionBillingProtocol.workBuddyClaim(root))
+            receipt = try SubscriptionBillingProtocol.workBuddyClaim(root)
         case .traeCN:
             // Only use the identity recorded by this account's successful login.
             // A new/random id would misrepresent a device and bypass status.
@@ -261,9 +313,12 @@ enum SubscriptionCreditAPI {
             }
             let root = try await post(context, host: "api.trae.cn",
                 path: "/trae/api/v2/ug/checkin_credits/claim", body: [:], mutation: true)
-            return .accepted(try SubscriptionBillingProtocol.traeClaim(root))
+            receipt = try SubscriptionBillingProtocol.traeClaim(root)
         default: throw SubscriptionBillingProtocol.fail("这个服务商不支持签到")
         }
+        try requireCurrent(context)
+        SubscriptionCheckinLedger.confirmed(key, requestDay: requestDay)
+        return .accepted(receipt)
     }
 
     private static func post(_ context: Context, host: String, path: String,
@@ -318,210 +373,5 @@ enum SubscriptionCreditAPI {
                 ? "签到回复无法识别，请先刷新状态确认" : "查询回复无法识别，请稍后刷新")
         }
         return root
-    }
-}
-
-/// Reuses the existing provider detail page's native Section and credit card.
-/// Read-only refresh never claims; only the visible sign-in button can claim.
-struct SubscriptionCreditSection: View {
-    let instance: ProviderInstance
-    @ObservedObject private var store = ProviderConfigStore.shared
-    @State private var credit: SubscriptionCredit?
-    @State private var checkin: SubscriptionCheckin?
-    @State private var creditNote: String?
-    @State private var checkinNote: String?
-    @State private var claimNote: String?
-    @State private var loading = false
-    @State private var claiming = false
-    @State private var loaded = false
-    @State private var authenticated = false
-    @State private var generation = UUID()
-    @State private var context: SubscriptionCreditAPI.Context?
-    @State private var task: Task<Void, Never>?
-
-    private var tint: Color { credit?.isLow == true ? .orange : .green }
-    private var busy: Bool { loading || claiming }
-    private var statusText: String {
-        guard authenticated else { return "登录后可签到" }
-        guard let checkin else { return checkinNote ?? (loading ? "正在查询签到状态…" : "未查询签到状态") }
-        if checkin.checkedIn { return "今日已签到" }
-        return checkin.note ?? "今日未签到"
-    }
-
-    var body: some View {
-        Group {
-            if instance.providerType.isDomesticSubscription {
-                Section {
-                    creditContent
-                    Button(loading ? "刷新中…" : "刷新积分与签到状态") { startRefresh() }
-                        .disabled(busy || !authenticated)
-                    HStack {
-                        Text(statusText).foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
-                        if claiming {
-                            ProgressView().controlSize(.small)
-                        } else if let checkin, authenticated, !checkin.checkedIn {
-                            Button("签到领积分") { startClaim() }
-                                .disabled(busy || !checkin.canClaim)
-                        }
-                    }
-                    if let checkin, !checkin.checkedIn, let reward = checkin.reward, reward > 0 {
-                        Text("今日可领 \(SubscriptionCredit.text(reward)) 积分")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    if let checkinNote, checkin != nil {
-                        Text(checkinNote).font(.caption).foregroundStyle(.secondary)
-                    }
-                    if let claimNote {
-                        Text(claimNote).font(.footnote).foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("积分与签到")
-                } footer: {
-                    Text("只在点击签到时领取；领取后刷新积分。积分不足时，模型是否可用以服务商实际返回为准。")
-                }
-                .onAppear { if !loaded && !busy { startRefresh() } }
-                .onDisappear { reset() }
-                .onChange(of: store.authRevision) { _ in authenticationChanged() }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var creditContent: some View {
-        if let credit {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(SubscriptionCredit.text(credit.remaining))
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
-                        .minimumScaleFactor(0.6).lineLimit(1)
-                    Text("/ \(SubscriptionCredit.text(credit.total))")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                    Text("剩 \(credit.percent)%")
-                        .font(.caption).fontWeight(.semibold).foregroundStyle(tint)
-                }
-                ProgressView(value: credit.remainingFraction).tint(tint)
-                HStack {
-                    Text("已用 \(SubscriptionCredit.text(credit.used))")
-                    Spacer(minLength: 0)
-                    if credit.isLow { Text("积分快用完了").foregroundStyle(.orange) }
-                }.font(.caption).foregroundStyle(.secondary)
-                if let general = credit.generalRemaining, let work = credit.workRemaining {
-                    Text("通用积分 \(SubscriptionCredit.text(general)) · Work 专用 \(SubscriptionCredit.text(work))")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }.padding(.vertical, 4)
-            if let creditNote { Text(creditNote).font(.caption).foregroundStyle(.secondary) }
-        } else if loading {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("正在查询积分…").foregroundStyle(.secondary)
-            }
-        } else {
-            Text(authenticated ? (creditNote ?? "积分尚未查询") : "登录后显示积分")
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    @MainActor private func reset() {
-        generation = UUID()
-        task?.cancel(); task = nil
-        credit = nil; checkin = nil; context = nil
-        creditNote = nil; checkinNote = nil; claimNote = nil
-        loading = false; claiming = false; loaded = false; authenticated = false
-    }
-    @MainActor private func authenticationChanged() {
-        // Most auth notifications concern other providers. Do not query again
-        // unless this card's account/credential actually moved.
-        if let context, (try? SubscriptionCreditAPI.requireCurrent(context)) != nil { return }
-        reset()
-        startRefresh()
-    }
-    @MainActor private func startRefresh() {
-        guard !busy else { return }
-        authenticated = SubscriptionOAuthManager.shared.isAuthenticated(instanceId: instance.id, type: instance.providerType)
-        guard authenticated else { loaded = true; return }
-        loading = true
-        claimNote = nil
-        let request = generation
-        task = Task { @MainActor in
-            defer { if generation == request { loading = false; loaded = true } }
-            do {
-                let account = try await SubscriptionCreditAPI.context(instance)
-                guard generation == request else { return }
-                context = account
-                await read(account, generation: request)
-            } catch {
-                guard generation == request else { return }
-                credit = nil; checkin = nil
-                creditNote = safeMessage(error); checkinNote = "签到状态未获取，请刷新后再试"
-            }
-        }
-    }
-    @MainActor private func read(_ account: SubscriptionCreditAPI.Context, generation request: UUID) async {
-        // Independent outcomes: a broken check-in endpoint must not erase a
-        // successfully fetched credit balance (or vice versa).
-        do {
-            let value = try await SubscriptionCreditAPI.credit(account)
-            try SubscriptionCreditAPI.requireCurrent(account)
-            guard generation == request else { return }
-            credit = value; creditNote = nil
-        } catch {
-            guard generation == request else { return }
-            credit = nil; creditNote = safeMessage(error)
-        }
-        do {
-            let value = try await SubscriptionCreditAPI.checkin(account)
-            try SubscriptionCreditAPI.requireCurrent(account)
-            guard generation == request else { return }
-            checkin = value; checkinNote = nil
-        } catch {
-            guard generation == request else { return }
-            checkin = nil; checkinNote = safeMessage(error)
-        }
-    }
-    @MainActor private func startClaim() {
-        guard !busy, authenticated, checkin?.canClaim == true else { return }
-        claiming = true
-        claimNote = nil
-        let request = generation
-        task = Task { @MainActor in
-            defer { if generation == request { claiming = false } }
-            do {
-                let account = try await SubscriptionCreditAPI.context(instance)
-                context = account
-                let outcome = try await SubscriptionCreditAPI.claim(account)
-                try SubscriptionCreditAPI.requireCurrent(account)
-                guard generation == request else { return }
-                switch outcome {
-                case .alreadyCheckedIn: claimNote = "今日已经签到，不会重复领取"
-                case .accepted(let receipt):
-                    if let granted = receipt.granted, granted > 0 {
-                        claimNote = "签到成功，领取 \(SubscriptionCredit.text(granted)) 积分"
-                    } else {
-                        claimNote = "服务已接受签到，正在核对状态和积分"
-                    }
-                }
-                checkin = nil
-                await read(account, generation: request)
-                if generation == request, case .accepted(let receipt) = outcome, receipt.granted == nil {
-                    claimNote = checkin?.checkedIn == true
-                        ? "签到成功，今日已签到"
-                        : "服务已接受签到，到账结果还没查到，请稍后刷新确认"
-                }
-            } catch {
-                guard generation == request else { return }
-                claimNote = safeMessage(error)
-                checkin = nil
-                checkinNote = "请刷新签到状态后再试"
-            }
-        }
-    }
-    private func safeMessage(_ error: Error) -> String {
-        if error is CancellationError { return "账号或页面已变化，请刷新后重试" }
-        if let e = error as? SubscriptionBillingError { return e.message }
-        if let e = error as? SubscriptionProviderError { return e.localizedDescription }
-        return "请求未完成，请刷新状态后重试"
     }
 }

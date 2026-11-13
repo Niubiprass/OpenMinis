@@ -2,10 +2,31 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 
+/// [T-provider-group-order] The first occurrence of each type in the persisted
+/// instance array defines its section position on both provider screens.
+/// Keep disabled and voice-only instances here so filtering cannot move a group.
+enum ProviderGroupOrder {
+    static func types(in instances: [ProviderInstance]) -> [ProviderType] {
+        var seen = Set<ProviderType>()
+        return instances.compactMap { instance in
+            seen.insert(instance.providerType).inserted ? instance.providerType : nil
+        }
+    }
+
+    /// Move whole groups while preserving the existing order within each group.
+    static func instanceIDs(in instances: [ProviderInstance], orderedTypes: [ProviderType]) -> [String] {
+        orderedTypes.flatMap { type in
+            instances.filter { $0.providerType == type }.map(\.id)
+        }
+    }
+}
+
 /// Lists all configured provider instances grouped by provider type.
 /// Replaces the old ProvidersView for the new multi-instance model.
 struct ProviderInstancesView: View {
     @ObservedObject private var store = ProviderConfigStore.shared
+    @State private var editMode: EditMode = .inactive
+    @State private var showGroupOrder = false
     @State private var showAddProvider = false
     @State private var showImportFile = false
     @State private var importMessage: String?
@@ -40,7 +61,17 @@ struct ProviderInstancesView: View {
             // shows its text models here AND a shadow voice row below ("dual
             // visibility"). Pure-voice vendors (ElevenLabs etc.) still appear here
             // too; they just have no usable text models, which is expected.
-            ForEach(ProviderType.allCases, id: \.self) { type in
+            if editMode.isEditing {
+                Section {
+                    Button {
+                        showGroupOrder = true
+                    } label: {
+                        Label("Reorder Provider Groups", systemImage: "arrow.up.arrow.down")
+                    }
+                    .disabled(ProviderGroupOrder.types(in: store.instances).count < 2)
+                }
+            }
+            ForEach(ProviderGroupOrder.types(in: store.instances), id: \.self) { type in
                 let instancesOfType = store.instances.filter { $0.providerType == type }
                 if !instancesOfType.isEmpty {
                     Section(type.displayName) {
@@ -148,6 +179,12 @@ struct ProviderInstancesView: View {
                     } label: {
                         Label(AppLocalized("Import Provider"), systemImage: "square.and.arrow.down")
                     }
+                    Button {
+                        showGroupOrder = true
+                    } label: {
+                        Label(AppLocalized("Reorder Provider Groups"), systemImage: "arrow.up.arrow.down")
+                    }
+                    .disabled(ProviderGroupOrder.types(in: store.instances).count < 2)
                     if #available(iOS 17.0, *), iCloudSyncEnabled {
                         Divider()
                         Button {
@@ -161,6 +198,10 @@ struct ProviderInstancesView: View {
                     Image(systemName: "plus")
                 }
             }
+        }
+        .environment(\.editMode, $editMode)
+        .sheet(isPresented: $showGroupOrder) {
+            ProviderGroupOrderSheet()
         }
         .sheet(isPresented: $showAddProvider) {
             NavigationStack {
@@ -293,6 +334,46 @@ struct ProviderInstancesView: View {
             isSectionMember(inst) ? (sectionIter.next() ?? inst.id) : inst.id
         }
         store.reorderInstances(newGlobalIds)
+    }
+}
+
+/// [T-provider-group-order] Reorders whole type sections through the existing
+/// instance persistence path (JSON mirror + SQLite sort_order + v3 sync).
+private struct ProviderGroupOrderSheet: View {
+    @ObservedObject private var store = ProviderConfigStore.shared
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    ForEach(ProviderGroupOrder.types(in: store.instances), id: \.self) { type in
+                        Text(type.displayName)
+                    }
+                    .onMove(perform: moveGroups)
+                } footer: {
+                    Text("Drag to reorder provider groups. Models follow this order. Changes are saved automatically.")
+                }
+            }
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("Reorder Provider Groups")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+
+    private func moveGroups(from source: IndexSet, to destination: Int) {
+        let instances = store.instances
+        var types = ProviderGroupOrder.types(in: instances)
+        types.move(fromOffsets: source, toOffset: destination)
+        let orderedIds = ProviderGroupOrder.instanceIDs(in: instances, orderedTypes: types)
+        guard orderedIds != instances.map(\.id) else { return }
+        store.reorderInstances(orderedIds)
     }
 }
 

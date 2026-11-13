@@ -596,6 +596,10 @@ struct MinisApp: App {
                 ResourceDiagnostics.start()
                 // [T-perf-cpu-probe] Periodic flush of the CPU buckets.
                 PerfProbe.start()
+                // [T-subscription-auto-checkin] Foreground-only daily check-in.
+                // Runs after the yield so Keychain reads and provider state
+                // never block the scenePhase transition itself.
+                SubscriptionAutoCheckin.activate()
                 CrashReporter.shared.updateMarkerPhase(phase: "active")
 
                 _ = SessionBadgeStore.shared
@@ -743,6 +747,9 @@ struct MinisApp: App {
             let remaining = UIApplication.shared.backgroundTimeRemaining
             lifecycleLog.info("[Lifecycle] → Background (remaining: \(Self.formatTimeRemaining(remaining)))")
             CrashReporter.shared.updateMarkerPhase(phase: "background")
+            // [T-subscription-auto-checkin] Stop the tick and drop any pending
+            // attempt. A write whose reply was lost is never replayed here.
+            SubscriptionAutoCheckin.deactivate()
             shareCoordinator.clearBufferIfStale()
             // Sync the app-icon badge to the current running-task count
             // on the way out — covers the case where the publisher in

@@ -1,82 +1,534 @@
 import Foundation
 import WebKit
+import Combine
+import CryptoKit
 
-// MARK: - [T-115-quota] 额度与余额一目了然 (App Store 1.15)
-
-/// Provider quota / balance display support.
-///
-/// Data source — the same one the official Android 1.15 port uses:
-///   * OpenAI-compatible instances (API-key creds): the OpenAI billing pair
-///     `GET {base}/v1/dashboard/billing/subscription` (hard/soft limit USD)
-///     + `GET {base}/v1/dashboard/billing/usage?start_date&end_date`
-///     (month-to-date usage in cents). Works for official OpenAI keys and for
-///     relays that implement these endpoints; relays that 404/401/403 simply
-///     show nothing.
-///   * Anthropic instances: month-to-date spend via
-///     `GET {base}/v1/organizations/usage/costs` (no public limit endpoint →
-///     spend only, never highlighted).
-///
-/// Everything else (OAuth-only hosts, non-OpenAI/Anthropic providers, missing
-/// credentials) displays nothing. Results are cached per instance for 5
-/// minutes; a failed fetch caches as "unsupported" so the UI doesn't retry on
-/// every body pass.
+/// Account ledgers and chat-key quotas remain independent readings. The old
+/// QuotaInfo projection is retained for existing titles, pickers and badges.
 final class ProviderQuotaService: ObservableObject {
     static let shared = ProviderQuotaService()
-
-    /// Bumped after every background refresh lands so SwiftUI views observing
-    /// the service re-read `cachedQuota`.
     @Published private(set) var revision = 0
 
     struct QuotaInfo {
         let displayText: String
-        /// True when remaining credit is low (official rule: below ~15 % of
-        /// the limit, or under $3) — the model dot turns yellow.
         let highlighted: Bool
-        /// [T-quota-newapi-balance] How this figure was obtained. Drives the
-        /// badge tint and whether Settings offers the access-token hint.
         var kind: Kind = .used
-        /// Real remaining balance in USD when known (`kind == .balance`).
+        /// Set only when the primary reading has proven USD units.
         var balanceUSD: Double? = nil
-        /// [T-quota-multikey-perkey] The figure itself in USD, for whichever
-        /// kind this is — remaining for `.balance`, month-to-date spend for
-        /// `.used`. Added so the per-key rows can print a right-aligned number
-        /// (`$0.86`) instead of re-parsing `displayText`, which carries the
-        /// localized prefix and cannot be turned back into a value reliably.
         var amountUSD: Double? = nil
+        var readings: [RelayQuotaProtocol.Reading] = []
+        var attempts: [RelayQuotaProtocol.Attempt] = []
+        var primaryReadingID: String? = nil
+        var lastAttemptAt: Date? = nil
+        var observedAt: Date? = nil
+        var isStale = false
+        var isPartial = false
+        /// Internal process-local credential digest. Never log or persist it.
+        fileprivate var owner: String = ""
+        /// Other pools kept separate from the primary amount, already labelled.
+        var secondaryText: String? = nil
+        /// Why a source did not answer; sanitized, never a raw body.
+        var failureText: String? = nil
+        enum Kind { case used, balance }
+    }
 
-        enum Kind {
-            /// Provider-reported month-to-date spend (no trustworthy limit).
-            case used
-            /// Trustworthy remaining balance from New API `/api/user/self`.
-            case balance
+    static let lowThresholdDefaultsKey = "quota.lowThresholdUSD"
+    private struct CacheEntry {
+        let info: QuotaInfo?
+        let fetchedAt: Date // attempt time, NOT the successful observation time
+        let owner: String
+    }
+    private var cache: [String: CacheEntry] = [:]
+    private var keyCache: [String: [String: CacheEntry]] = [:]
+    private var failureNotes: [String: String] = [:]
+    private var inFlight: [String: UUID] = [:]
+    private var epochs: [String: UUID] = [:]
+    private let lock = NSLock()
+    private let ttl: TimeInterval = 300
+    private var observers: [AnyCancellable] = []
+    private var cookieObserver: ProviderQuotaCookieObserver?
+    private static let salt = UUID().uuidString
+    private static let transport: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.urlCredentialStorage = nil
+        config.urlCache = nil
+        config.timeoutIntervalForResource = 15
+        return URLSession(configuration: config, delegate: RelayQuotaRedirectGuard(), delegateQueue: nil)
+    }()
+    private static let metadataLock = NSLock()
+    private static var scales: [String: (RelayQuotaProtocol.Scale?, Date)] = [:]
+    private static var scaleTasks: [String: Task<RelayQuotaProtocol.Scale?, Never>] = [:]
+    private static var relayHints: [String: RelayQuotaProtocol.Source] = [:]
+
+    private init() {
+        // Existing writers already publish these changes; no edits to the
+        // credential/config stores are needed. Stale in-flight results are fenced.
+        Task { @MainActor in
+            let store = ProviderConfigStore.shared
+            self.observers = [
+                store.$authRevision.dropFirst().sink { [weak self] _ in self?.invalidateAll() },
+                store.$config.dropFirst().sink { [weak self] _ in self?.invalidateAll() },
+                NotificationCenter.default.publisher(for: ProviderMultiKeyManager.didChange)
+                    .sink { [weak self] _ in self?.invalidateAll() }
+            ]
+            let observer = ProviderQuotaCookieObserver { [weak self] in self?.invalidateAll() }
+            self.cookieObserver = observer
+            WKWebsiteDataStore.default().httpCookieStore.add(observer)
         }
     }
 
-    /// [T-quota-newapi-balance] Per-site `quota_per_unit`, read from the
-    /// public `/api/status` endpoint and cached for the process lifetime.
-    /// 500,000 is the New API default and the value every relay we probed
-    /// reports; a site that omits the field keeps that default.
-    private static var quotaPerUnitCache: [String: Double] = [:]
-    private static let quotaPerUnitLock = NSLock()
-    private static let defaultQuotaPerUnit: Double = 500_000
+    struct KeyQuota: Identifiable {
+        let id: String
+        let title: String
+        let badge: String
+        let masked: String
+        let isMain: Bool
+        var info: QuotaInfo? = nil
+        var queriedAt: Date? = nil
+        var failureNote: String? = nil
+        var isUnavailable: Bool { info == nil && queriedAt != nil }
+    }
 
-    /// [T-quota-threshold] USD amount under which a real balance is flagged.
-    /// User-adjustable in Settings (default $3). Only ever applied to
-    /// `kind == .balance` — a usage-only figure has no scale to compare with,
-    /// so flagging it low would be a guess.
-    static let lowThresholdDefaultsKey = "quota.lowThresholdUSD"
+    private func failureKey(_ instanceId: String, _ rowId: String) -> String { "\(instanceId)|\(rowId)" }
+    func failureNote(instanceId: String, rowId: String = "main") -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return failureNotes[failureKey(instanceId, rowId)]
+    }
+    func noteFailure(_ text: String, instanceId: String, rowId: String = "main") {
+        lock.lock(); defer { lock.unlock() }
+        failureNotes[failureKey(instanceId, rowId)] = text
+    }
+    func clearFailure(instanceId: String, rowId: String = "main") {
+        lock.lock(); defer { lock.unlock() }
+        failureNotes.removeValue(forKey: failureKey(instanceId, rowId))
+    }
+    func cachedQuota(instanceId: String) -> QuotaInfo? {
+        lock.lock(); defer { lock.unlock() }
+        return cache[instanceId]?.info.map { Self.reproject($0) }
+    }
+    func isMissing(instanceId: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let e = cache[instanceId] else { return true }
+        return Date().timeIntervalSince(e.fetchedAt) >= ttl
+    }
+    private func invalidateAll() {
+        lock.lock()
+        cache.removeAll(); keyCache.removeAll(); failureNotes.removeAll()
+        epochs.removeAll(); inFlight.removeAll()
+        lock.unlock()
+        Self.metadataLock.lock(); Self.relayHints.removeAll(); Self.metadataLock.unlock()
+        Task { @MainActor in self.revision += 1 }
+    }
+    func invalidate(instanceId: String) {
+        lock.lock()
+        cache.removeValue(forKey: instanceId)
+        keyCache.removeValue(forKey: instanceId)
+        failureNotes = failureNotes.filter { !$0.key.hasPrefix(instanceId + "|") }
+        inFlight = inFlight.filter { !$0.key.hasPrefix(instanceId + "|") }
+        epochs[instanceId] = UUID()
+        lock.unlock()
+        Self.metadataLock.lock(); Self.relayHints.removeAll(); Self.metadataLock.unlock()
+        Task { @MainActor in self.revision += 1 }
+    }
 
-    /// [T-quota-panel-host] Where the BALANCE lives, when that is not the API
-    /// host.
-    ///
-    /// Relays routinely split them: one user's site answers chat completions at
-    /// `wapi.wintoken.ai` and its panel at `cun.ai` — `/api/user/self` on the
-    /// API host is 403 while the same path on the panel host is the real
-    /// endpoint. Without this field the query can only ever fall back to the
-    /// OpenAI billing pair, which reports month-to-date SPEND (「已用 $7.42」)
-    /// even though the dashboard shows a remaining balance (「$0.8808」).
-    ///
-    /// Stored per instance in UserDefaults: it is a URL, not a secret.
+    private static func snapshot(_ info: QuotaInfo) -> RelayQuotaProtocol.Snapshot {
+        .init(owner: info.owner, readings: info.readings, attempts: info.attempts)
+    }
+    private static func reproject(_ info: QuotaInfo) -> QuotaInfo {
+        project(snapshot(info)) ?? info
+    }
+    static func project(_ snapshot: RelayQuotaProtocol.Snapshot) -> QuotaInfo? {
+        guard let primary = snapshot.primary else { return nil }
+        let hasRemaining = primary.remaining != nil && !primary.rejected && !primary.unlimited
+        let value = hasRemaining ? primary.remaining : primary.used
+        let kind: QuotaInfo.Kind = hasRemaining ? .balance : .used
+        let text: String
+        if primary.rejected { text = "Key 已失效" }
+        else if let value {
+            let number = primary.unit.isUSD ? String(format: "$%.2f", value)
+                : String(format: "%.2f %@", value, primary.unit.label)
+            text = (hasRemaining ? primary.label : "已用") + " " + number
+        } else if primary.unlimited { text = primary.label + " · 不限量" }
+        else if let total = primary.total {
+            let number = primary.unit.isUSD ? String(format: "$%.2f", total)
+                : String(format: "%.2f %@", total, primary.unit.label)
+            text = "总额 " + number + " · 余量未知"
+        } else { text = "余量未知" }
+        return QuotaInfo(displayText: text, highlighted: snapshot.isLow(thresholdUSD: lowThresholdUSD),
+                         kind: kind, balanceUSD: hasRemaining && primary.unit.isUSD ? value : nil,
+                         amountUSD: primary.unit.isUSD && !primary.rejected ? value : nil,
+                         readings: snapshot.readings, attempts: snapshot.attempts,
+                         primaryReadingID: primary.id, lastAttemptAt: snapshot.lastAttemptAt,
+                         observedAt: primary.observedAt, isStale: primary.isStale(),
+                         isPartial: snapshot.attempts.contains { !$0.probeMiss && (!$0.succeeded || $0.failureNote != nil) }
+                            || snapshot.readings.contains { $0.isStale() }, owner: snapshot.owner,
+                         secondaryText: RelayQuotaProtocol.secondaryLine(snapshot.readings, primary: primary),
+                         failureText: RelayQuotaProtocol.failureLine(snapshot.attempts))
+    }
+
+    // MARK: - [T-quota-multikey-perkey] Per-key rows
+    func quotaRows(for instance: ProviderInstance) -> [KeyQuota] {
+        var rows: [KeyQuota] = []
+        if let main = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id),
+           !main.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            var row = KeyQuota(id: "main", title: AppLocalized("主 Key"),
+                               badge: AppLocalized("主"), masked: Self.mask(main), isMain: true)
+            attach(&row, instanceId: instance.id)
+            rows.append(row)
+        }
+        guard ProviderMultiKeyManager.shared.isEnabled(for: instance.id) else { return rows }
+        let ring = ProviderMultiKeyManager.shared.keys(for: instance.id)
+        guard !ring.isEmpty else { return rows }
+        for (index, key) in ring.enumerated() {
+            var row = KeyQuota(id: key.id, title: String(format: AppLocalized("轮询 %lld"), Int64(index + 1)),
+                               badge: "\(index + 1)", masked: key.masked, isMain: false)
+            attach(&row, instanceId: instance.id)
+            rows.append(row)
+        }
+        return rows
+    }
+    private func attach(_ row: inout KeyQuota, instanceId: String) {
+        let multiKeyOn = ProviderMultiKeyManager.shared.isEnabled(for: instanceId)
+        lock.lock(); defer { lock.unlock() }
+        let entry = keyCache[instanceId]?[row.id] ?? (row.isMain && !multiKeyOn ? cache[instanceId] : nil)
+        row.info = entry?.info.map { Self.reproject($0) }
+        row.queriedAt = entry?.fetchedAt
+        row.failureNote = failureNotes[failureKey(instanceId, row.id)]
+    }
+    static func mask(_ key: String) -> String {
+        guard key.count > 14 else { return String(repeating: "•", count: 10) }
+        return key.prefix(6) + "…" + key.suffix(4)
+    }
+
+    // MARK: Refresh scheduling
+    func refreshQuota(for instance: ProviderInstance) async {
+        let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+        await refreshRow(for: instance, key: key, rowId: "main", publishSingle: true)
+    }
+    func refreshAllIfNeeded(instances: [ProviderInstance]) {
+        let missing = instances
+            .filter { $0.isEnabled && !ProviderMultiKeyManager.shared.isEnabled(for: $0.id) }
+            .filter { isMissing(instanceId: $0.id) }
+        guard !missing.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            for instance in missing { await self.refreshQuota(for: instance) }
+        }
+    }
+    func refreshAllKeys(for instance: ProviderInstance) async {
+        let rows = quotaRows(for: instance)
+        guard !rows.isEmpty else { return }
+        var secrets: [String: String] = [:]
+        if let main = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) { secrets["main"] = main }
+        for key in ProviderMultiKeyManager.shared.keys(for: instance.id) { secrets[key.id] = key.key }
+        let active = Set(rows.map(\.id))
+        lock.lock()
+        keyCache[instance.id] = (keyCache[instance.id] ?? [:]).filter { active.contains($0.key) }
+        lock.unlock()
+        // At most four keys in flight; each key probes a finite list once.
+        await withTaskGroup(of: Void.self) { group in
+            var count = 0
+            for row in rows {
+                guard let secret = secrets[row.id] else { continue }
+                if count >= 4 { await group.next() }
+                count += 1
+                group.addTask {
+                    await self.refreshRow(for: instance, key: secret, rowId: row.id, publishSingle: false)
+                }
+            }
+        }
+        publishAggregate(for: instance.id)
+        await MainActor.run { self.revision += 1 }
+    }
+    private func refreshRow(for instance: ProviderInstance, key: String, rowId: String,
+                            publishSingle: Bool) async {
+        let slot = failureKey(instance.id, rowId), ticket = UUID()
+        lock.lock()
+        guard inFlight[slot] == nil else { lock.unlock(); return }
+        let epoch = epochs[instance.id] ?? UUID()
+        epochs[instance.id] = epoch
+        inFlight[slot] = ticket
+        lock.unlock()
+        let context = await Self.context(for: instance, key: key, rowId: rowId)
+        let result: RelayQuotaProtocol.Snapshot?
+        if let context { result = await Self.collect(context) } else { result = nil }
+        // Verify current stored credentials as well as the generation fence.
+        // This catches Keychain replacement before its published event lands.
+        let currentKey = rowId == "main" ? ProviderKeychainHelper.loadAPIKey(instanceId: instance.id)
+            : ProviderMultiKeyManager.shared.keys(for: instance.id).first(where: { $0.id == rowId })?.key
+        let currentContext = await Self.context(for: instance, key: currentKey ?? "", rowId: rowId)
+        if context?.owner != currentContext?.owner {
+            invalidate(instanceId: instance.id)
+            return
+        }
+        lock.lock()
+        guard epochs[instance.id] == epoch, inFlight[slot] == ticket else { lock.unlock(); return }
+        inFlight.removeValue(forKey: slot)
+        let previous = keyCache[instance.id]?[rowId]?.info ?? (publishSingle ? cache[instance.id]?.info : nil)
+        let merged = result?.merging(previous: previous.map { Self.snapshot($0) })
+        let info = merged.flatMap { Self.project($0) }
+        let entry = CacheEntry(info: info, fetchedAt: Date(), owner: context?.owner ?? "")
+        keyCache[instance.id, default: [:]][rowId] = entry
+        if publishSingle { cache[instance.id] = entry }
+        let notes = result?.attempts.filter { !$0.probeMiss }.compactMap(\.failureNote) ?? []
+        if !notes.isEmpty { failureNotes[slot] = Array(Set(notes)).sorted().joined(separator: "；") }
+        else if info == nil { failureNotes[slot] = AppLocalized("站点没有返回可用余额（可能不支持余额查询）") }
+        else if info?.kind == .used && info?.readings.allSatisfy({ !$0.unlimited && !$0.rejected && $0.total == nil }) == true {
+            failureNotes[slot] = AppLocalized("站点只返回了用量，没有返回剩余余额")
+        } else { failureNotes.removeValue(forKey: slot) }
+        lock.unlock()
+        await MainActor.run { self.revision += 1 }
+    }
+    /// Select a representative; never sum balances or compare money to quota
+    /// points. Comparisons require the same scope, source, unit and host.
+    private func publishAggregate(for instanceId: String) {
+        lock.lock(); defer { lock.unlock() }
+        let entries = keyCache[instanceId] ?? [:]
+        let ordered = entries.keys.sorted { a, b in a == "main" ? b != "main" : (b == "main" ? false : a < b) }
+        let infos = ordered.compactMap { entries[$0]?.info }.map { Self.reproject($0) }
+        guard let first = infos.first else {
+            cache[instanceId] = CacheEntry(info: nil, fetchedAt: Date(), owner: "")
+            return
+        }
+        var selected = first
+        if let primary = first.readings.first(where: { $0.id == first.primaryReadingID }) {
+            let comparable = infos.filter { info in
+                guard let r = info.readings.first(where: { $0.id == info.primaryReadingID }) else { return false }
+                return !r.rejected && !r.unlimited && r.remaining != nil && r.scope == primary.scope
+                    && r.source == primary.source && r.unit == primary.unit && r.relayHost == primary.relayHost
+            }
+            selected = comparable.min { a, b in
+                let av = a.readings.first { $0.id == a.primaryReadingID }?.remaining ?? .infinity
+                let bv = b.readings.first { $0.id == b.primaryReadingID }?.remaining ?? .infinity
+                return av < bv
+            } ?? first
+        }
+        cache[instanceId] = CacheEntry(info: selected, fetchedAt: Date(), owner: selected.owner)
+    }
+
+    private struct Context {
+        let root: String
+        let accountRoot: String
+        let key: String
+        let token: String?
+        let uid: String?
+        let cookie: String?
+        let owner: String
+        let isRelay: Bool
+        let anthropic: Bool
+    }
+    private static func context(for instance: ProviderInstance, key: String, rowId: String) async -> Context? {
+        guard instance.isEnabled, instance.credentialType == .apiKey, !key.isEmpty else { return nil }
+        let fallback: String
+        switch instance.providerType {
+        case .openAI, .openAIResponses: fallback = "https://api.openai.com"
+        case .anthropic: fallback = "https://api.anthropic.com"
+        default: return nil
+        }
+        guard let root = RelayQuotaProtocol.root(instance.effectiveCustomBaseURL ?? fallback),
+              let accountRoot = RelayQuotaProtocol.root(balanceRoot(instanceId: instance.id, apiBase: root)) else { return nil }
+        let rawToken = ProviderKeychainHelper.resolvedQuotaAccessToken(instanceId: instance.id, keyId: rowId)
+        let token = rawToken?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let uid = userID(instanceId: instance.id, keyId: rowId)
+        let cookie = token?.isEmpty == false ? nil : await sessionCookieHeader(for: accountRoot)
+        // Length-prefix parts: no delimiter ambiguity. Salt limits correlation.
+        let parts = [salt, instance.id, rowId, instance.providerType.rawValue, root, accountRoot,
+                     key, token ?? "", uid ?? "", cookie ?? ""]
+        let input = parts.map { "\($0.utf8.count):" + $0 }.joined()
+        let owner = SHA256.hash(data: Data(input.utf8)).map { String(format: "%02x", $0) }.joined()
+        let host = URL(string: root)?.host?.lowercased() ?? ""
+        return Context(root: root, accountRoot: accountRoot, key: key, token: token, uid: uid,
+                       cookie: cookie, owner: owner, isRelay: host != "api.openai.com" && host != "api.anthropic.com",
+                       anthropic: instance.providerType == .anthropic)
+    }
+    static func fetchQuota(for instance: ProviderInstance) async -> QuotaInfo? {
+        let key: String?
+        switch instance.credentialType {
+        case .apiKey: key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id)
+        default: key = nil
+        }
+        guard let key else { return nil }
+        return await fetchQuota(for: instance, key: key)
+    }
+    static func fetchQuota(for instance: ProviderInstance, key: String,
+                           rowId: String = "main") async -> QuotaInfo? {
+        guard let ctx = await context(for: instance, key: key, rowId: rowId) else { return nil }
+        return project(await collect(ctx))
+    }
+
+    private static func get(_ request: URLRequest) async throws -> Data {
+        let result: (Data, URLResponse)
+        do { result = try await transport.data(for: request) }
+        catch { throw RelayQuotaProtocol.Failure.transport }
+        guard let http = result.1 as? HTTPURLResponse else { throw RelayQuotaProtocol.Failure.transport }
+        guard http.statusCode == 200 else { throw RelayQuotaProtocol.Failure.http(http.statusCode) }
+        return result.0
+    }
+    private static func failure(_ error: Error) -> String {
+        (error as? RelayQuotaProtocol.Failure)?.note ?? RelayQuotaProtocol.Failure.transport.note
+    }
+    private static func collect(_ ctx: Context) async -> RelayQuotaProtocol.Snapshot {
+        var readings: [RelayQuotaProtocol.Reading] = []
+        var attempts: [RelayQuotaProtocol.Attempt] = []
+        // User-saved management token + user ID always get their own query.
+        // Account success does NOT short-circuit the independent chat-key probe.
+        if ctx.token?.isEmpty == false || ctx.cookie != nil {
+            do {
+                let values = try await fetchNewAPIBalance(ctx)
+                readings += values
+                attempts.append(.init(source: .newAPIAccount, endpoint: ctx.accountRoot + "/api/user/self",
+                                      attemptedAt: Date(), succeeded: true, failureNote: nil))
+            } catch {
+                attempts.append(.init(source: .newAPIAccount, endpoint: ctx.accountRoot + "/api/user/self",
+                                      attemptedAt: Date(), succeeded: false, failureNote: failure(error)))
+            }
+        }
+        metadataLock.lock(); let hint = relayHints[ctx.owner]; metadataLock.unlock()
+        let order: [RelayQuotaProtocol.Source] = ctx.isRelay
+            ? (hint.map { [$0] } ?? RelayQuotaProtocol.Source.probeOrder)
+            : [ctx.anthropic ? .anthropic : .openAIBilling]
+        for source in order {
+            do {
+                let values = try await query(source, ctx: ctx)
+                readings += values
+                let incomplete = values.contains { $0.refreshFailed }
+                attempts.append(.init(source: source, endpoint: ctx.root + source.path,
+                                      attemptedAt: Date(), succeeded: !incomplete,
+                                      failureNote: incomplete ? "用量查询失败或字段缺失；余量未知或保留上次读数" : nil))
+                if ctx.isRelay {
+                    metadataLock.lock(); relayHints[ctx.owner] = source; metadataLock.unlock()
+                }
+                break
+            } catch {
+                attempts.append(.init(source: source, endpoint: ctx.root + source.path,
+                                      attemptedAt: Date(), succeeded: false, failureNote: failure(error), probeMiss: hint == nil))
+                // A remembered family never triggers a fallback storm on auth,
+                // rate or transport failures. 404 permits re-detection NEXT refresh.
+                if case RelayQuotaProtocol.Failure.http(404) = error {
+                    metadataLock.lock(); relayHints.removeValue(forKey: ctx.owner); metadataLock.unlock()
+                }
+            }
+        }
+        if !attempts.contains(where: { $0.succeeded && $0.source != .newAPIAccount }) {
+            for index in attempts.indices { attempts[index].probeMiss = false }
+        }
+        return .init(owner: ctx.owner, readings: readings, attempts: attempts)
+    }
+    private static func fetchNewAPIBalance(_ ctx: Context) async throws -> [RelayQuotaProtocol.Reading] {
+        let req = try RelayQuotaProtocol.request(root: ctx.accountRoot, source: .newAPIAccount,
+                                                chatKey: nil, accountToken: ctx.token, userID: ctx.uid, cookie: ctx.cookie)
+        let data = try await get(req), observedAt = Date()
+        _ = try RelayQuotaProtocol.parseAccount(data, root: ctx.accountRoot, now: observedAt, scale: nil)
+        let scale = await siteScale(root: ctx.accountRoot)
+        return try RelayQuotaProtocol.parseAccount(data, root: ctx.accountRoot, now: observedAt, scale: scale)
+    }
+    private static func query(_ source: RelayQuotaProtocol.Source, ctx: Context) async throws -> [RelayQuotaProtocol.Reading] {
+        var req = try RelayQuotaProtocol.request(root: ctx.root, source: source,
+                                                chatKey: ctx.key, accountToken: nil, userID: nil)
+        if source == .anthropic {
+            req.url = monthURL(req.url!, anthropic: true)
+        }
+        let data = try await get(req), observedAt = Date()
+        switch source {
+        case .sub2api:
+            return try RelayQuotaProtocol.parseSub2API(data, root: ctx.root, now: observedAt)
+        case .newAPIKey:
+            _ = try RelayQuotaProtocol.parseNewAPI(data, root: ctx.root, now: observedAt, scale: nil)
+            let scale = await siteScale(root: ctx.root)
+            return try RelayQuotaProtocol.parseNewAPI(data, root: ctx.root, now: observedAt, scale: scale)
+        case .openAIBilling:
+            return try await fetchOpenAIBillingQuota(data, request: req, root: ctx.root, observedAt: observedAt)
+        case .anthropic:
+            return try RelayQuotaProtocol.parseAnthropic(data, root: ctx.root, now: observedAt)
+        case .newAPIAccount: throw RelayQuotaProtocol.Failure.unsupported
+        }
+    }
+    private static func fetchOpenAIBillingQuota(_ subscription: Data, request: URLRequest, root: String,
+                                               observedAt: Date) async throws -> [RelayQuotaProtocol.Reading] {
+        var req = request
+        guard let url = RelayQuotaProtocol.endpoint(root: root, path: "/v1/dashboard/billing/usage") else {
+            throw RelayQuotaProtocol.Failure.invalidURL
+        }
+        req.url = monthURL(url, anthropic: false)
+        let usage = try? await get(req)
+        var readings = try RelayQuotaProtocol.parseBilling(subscription, usage: usage, root: root, now: observedAt)
+        if readings.first?.used != nil { readings[0].usedObservedAt = Date() }
+        // A failed usage half cannot replace a previous full remainder with an
+        // invented zero usage. Explicit USD balance is independently usable.
+        if readings.first?.used == nil { readings[0].refreshFailed = true }
+        return readings
+    }
+    private static func monthURL(_ url: URL, anthropic: Bool) -> URL {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date()
+        let start = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? now
+        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        if anthropic {
+            comps.queryItems = [URLQueryItem(name: "starting_at", value: ISO8601DateFormatter().string(from: start)),
+                                URLQueryItem(name: "ending_at", value: ISO8601DateFormatter().string(from: now)),
+                                URLQueryItem(name: "limit", value: "1")]
+        } else {
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "en_US_POSIX"); df.timeZone = calendar.timeZone; df.dateFormat = "yyyy-MM-dd"
+            comps.queryItems = [URLQueryItem(name: "start_date", value: df.string(from: start)),
+                                URLQueryItem(name: "end_date", value: df.string(from: now))]
+        }
+        return comps.url ?? url
+    }
+    static let relayPlaceholderLimitUSD: Double = RelayQuotaProtocol.placeholderLimitUSD
+    static func apiRoot(_ baseURL: String) -> String { RelayQuotaProtocol.root(baseURL) ?? "" }
+
+    /// Public site metadata: no Authorization/Cookie, per-root in-flight
+    /// coalescing and 5-minute positive AND negative cache. No default USD rate.
+    private static func siteScale(root: String) async -> RelayQuotaProtocol.Scale? {
+        metadataLock.lock()
+        if let cached = scales[root], Date().timeIntervalSince(cached.1) < 300 {
+            metadataLock.unlock(); return cached.0
+        }
+        if let pending = scaleTasks[root] { metadataLock.unlock(); return await pending.value }
+        let task = Task<RelayQuotaProtocol.Scale?, Never> {
+            guard let url = RelayQuotaProtocol.endpoint(root: root, path: "/api/status") else { return nil }
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 8; req.httpShouldHandleCookies = false
+            guard let data = try? await get(req) else { return nil }
+            return RelayQuotaProtocol.scale(data, root: root, now: Date())
+        }
+        scaleTasks[root] = task
+        metadataLock.unlock()
+        let result = await task.value
+        metadataLock.lock()
+        scales[root] = (result, Date()); scaleTasks.removeValue(forKey: root)
+        metadataLock.unlock()
+        return result
+    }
+    static func quotaPerUnit(root: String) async -> Double? {
+        await siteScale(root: root)?.quotaPerUnit
+    }
+
+    static func sessionCookieHeader(for root: String) async -> String? {
+        guard let url = RelayQuotaProtocol.endpoint(root: root, path: "/api/user/self"), let host = url.host else { return nil }
+        let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                WKWebsiteDataStore.default().httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
+            }
+        }
+        let now = Date()
+        let relevant = cookies.filter { cookie in
+            let domain = cookie.domain.hasPrefix(".") ? String(cookie.domain.dropFirst()) : cookie.domain
+            let path = cookie.path
+            let pathMatches = url.path == path || (url.path.hasPrefix(path) && (path.hasSuffix("/") || url.path.dropFirst(path.count).hasPrefix("/")))
+            return (host == domain || host.hasSuffix("." + domain)) && pathMatches
+                && (!cookie.isSecure || url.scheme == "https") && (cookie.expiresDate.map { $0 > now } ?? true)
+        }.sorted { $0.name < $1.name }
+        guard !relevant.isEmpty else { return nil }
+        return relevant.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+    }
+    static func hasBalanceCredential(instanceId: String) async -> Bool {
+        ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instanceId)?.isEmpty == false
+    }
+
     static func panelBaseURL(instanceId: String) -> String? {
         let raw = UserDefaults.standard.string(forKey: "quota.panelBaseURL.\(instanceId)") ?? ""
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -158,776 +610,16 @@ final class ProviderQuotaService: ObservableObject {
 
     static var lowThresholdUSD: Double {
         let stored = UserDefaults.standard.object(forKey: lowThresholdDefaultsKey) as? Double
-        guard let stored, stored >= 0 else { return 3.0 }
+        guard let stored, stored.isFinite, stored >= 0 else { return 3.0 }
         return stored
     }
 
-    private struct CacheEntry {
-        let info: QuotaInfo?
-        let fetchedAt: Date
-    }
+}
 
-    private var cache: [String: CacheEntry] = [:]
-    private let lock = NSLock()
-    private let ttl: TimeInterval = 300
-
-    // MARK: - [T-quota-multikey-perkey] One row per key
-
-    /// One line in the detail page's 余额 section: the credential key, or one
-    /// key out of the rotation ring.
-    ///
-    /// The app has TWO key stores and they are not the same thing: `凭证`'s
-    /// single Keychain key (the "主 Key", the fallback when every ring key is
-    /// parked) and the multi-key ring. Balance used to be fetched for the
-    /// credential only, so with 多 Key 模式 on, the number on screen belonged to
-    /// a key that was not serving the requests. These rows make the ownership
-    /// explicit instead of picking a winner.
-    struct KeyQuota: Identifiable {
-        /// `main`, or the ring key's own UUID. Stable across refreshes.
-        let id: String
-        /// "主 Key" / "轮询 1".
-        let title: String
-        /// Short glyph inside the leading badge: "主" for the credential key,
-        /// the rotation index for a ring key.
-        let badge: String
-        /// Head…tail only — a key never reaches the UI whole.
-        let masked: String
-        let isMain: Bool
-        /// `nil` means "not answered": never queried, or queried and the site
-        /// has no balance endpoint.
-        var info: QuotaInfo? = nil
-        /// When this row was last queried. nil = never (the row then reads
-        /// 未查询 rather than pretending the key has no balance).
-        var queriedAt: Date? = nil
-        /// Why the last attempt could not produce a real balance. Kept per
-        /// key so one bad token cannot hide behind a sibling's success. nil
-        /// after a successful balance query.
-        var failureNote: String? = nil
-
-        var isUnavailable: Bool { info == nil && queriedAt != nil }
-    }
-
-    /// Per-instance per-row results, keyed by `KeyQuota.id`.
-    private var keyCache: [String: [String: CacheEntry]] = [:]
-
-    /// [T-quota-failure-reason] WHY the last attempt produced nothing.
-    ///
-    /// "未获取" was the whole answer the UI could give, which is useless for
-    /// deciding whether the site does not support balances, the credential is
-    /// missing, or the endpoint answered 404 — the three cases look identical
-    /// on screen and need completely different actions from the user.
-    private var failureNotes: [String: String] = [:]
-
-    private func failureKey(_ instanceId: String, _ rowId: String) -> String {
-        "\(instanceId)|\(rowId)"
-    }
-
-    /// Recorded explanation for the last failed attempt of one key, if any.
-    func failureNote(instanceId: String, rowId: String = "main") -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return failureNotes[failureKey(instanceId, rowId)]
-    }
-
-    func noteFailure(_ text: String, instanceId: String, rowId: String = "main") {
-        lock.lock()
-        failureNotes[failureKey(instanceId, rowId)] = text
-        lock.unlock()
-    }
-
-    func clearFailure(instanceId: String, rowId: String = "main") {
-        lock.lock()
-        failureNotes.removeValue(forKey: failureKey(instanceId, rowId))
-        lock.unlock()
-    }
-
-    // MARK: Sync read for UI
-
-    /// [T-quota-stale-ok] Returns the last known figure even after `ttl`
-    /// expires.
-    ///
-    /// Dropping it on expiry made the balance blink out of the title bar every
-    /// five minutes and reappear a second later once the background refresh
-    /// landed — indistinguishable from "the setting broke". A stale number is
-    /// far less confusing than no number; `isMissing` is what decides whether a
-    /// request should go out.
-    func cachedQuota(instanceId: String) -> QuotaInfo? {
-        lock.lock(); defer { lock.unlock() }
-        return cache[instanceId]?.info
-    }
-
-    func isMissing(instanceId: String) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard let e = cache[instanceId] else { return true }
-        return Date().timeIntervalSince(e.fetchedAt) >= ttl
-    }
-
-    /// Drops one instance's cached quota so the next read refetches. Called
-    /// after the balance access token or the site login changes.
-    func invalidate(instanceId: String) {
-        lock.lock()
-        cache.removeValue(forKey: instanceId)
-        lock.unlock()
-        Task { @MainActor in self.revision += 1 }
-    }
-
-    // MARK: Async fetch + cache
-
-    func refreshQuota(for instance: ProviderInstance) async {
-        clearFailure(instanceId: instance.id)
-        let info = await Self.fetchQuota(for: instance)
-        if info?.kind == .balance {
-            clearFailure(instanceId: instance.id)
-        } else if info == nil, failureNote(instanceId: instance.id) == nil {
-            noteFailure(AppLocalized("站点没有返回可用余额（可能不支持余额查询）"), instanceId: instance.id)
-        } else if info?.kind == .used, failureNote(instanceId: instance.id) == nil {
-            noteFailure(AppLocalized("站点只返回了用量，没有返回剩余余额"), instanceId: instance.id)
-        }
-        lock.lock()
-        cache[instance.id] = CacheEntry(info: info, fetchedAt: Date())
-        lock.unlock()
-    }
-
-    func refreshAllIfNeeded(instances: [ProviderInstance]) {
-        // [T-quota-multikey-perkey] A provider in 多 Key 模式 is left ALONE
-        // here. Its request-serving key is whichever ring key the rotation
-        // picks, so an automatic single-key fetch would paint the credential
-        // key's number next to a provider that is being billed elsewhere — a
-        // wrong answer is worse than a blank one. Those providers are refreshed
-        // only when the user asks, from the detail page.
-        let missing = instances
-            .filter { !ProviderMultiKeyManager.shared.isEnabled(for: $0.id) }
-            .filter { isMissing(instanceId: $0.id) }
-        guard !missing.isEmpty else { return }
-        Task.detached(priority: .utility) {
-            for instance in missing {
-                await ProviderQuotaService.shared.refreshQuota(for: instance)
-            }
-            await MainActor.run { self.revision += 1 }
-        }
-    }
-
-    // MARK: - [T-quota-multikey-perkey] Per-key rows
-
-    /// The rows to draw for `instance`, in display order: the credential key
-    /// first, then the ring (numbered by ring order). Values come from the last
-    /// query; nothing is fetched here — a list body must never start network
-    /// work, and the user explicitly asked for manual refresh only.
-    func quotaRows(for instance: ProviderInstance) -> [KeyQuota] {
-        var rows: [KeyQuota] = []
-
-        if let main = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id),
-           !main.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            var row = KeyQuota(id: "main", title: AppLocalized("主 Key"),
-                               badge: AppLocalized("主"),
-                               masked: Self.mask(main), isMain: true)
-            attach(&row, instanceId: instance.id)
-            rows.append(row)
-        }
-
-        // [T-multikey-empty-ring] No ring means single-key mode: show the
-        // credential row only, even if the stored switch is still latched on.
-        guard ProviderMultiKeyManager.shared.isEnabled(for: instance.id) else { return rows }
-        let ring = ProviderMultiKeyManager.shared.keys(for: instance.id)
-        guard !ring.isEmpty else { return rows }
-        for (index, key) in ring.enumerated() {
-            var row = KeyQuota(id: key.id,
-                               title: String(format: AppLocalized("轮询 %lld"), Int64(index + 1)),
-                               badge: "\(index + 1)",
-                               masked: key.masked,
-                               isMain: false)
-            attach(&row, instanceId: instance.id)
-            rows.append(row)
-        }
-        return rows
-    }
-
-    private func attach(_ row: inout KeyQuota, instanceId: String) {
-        let multiKeyOn = ProviderMultiKeyManager.shared.isEnabled(for: instanceId)
-        lock.lock()
-        let entry = keyCache[instanceId]?[row.id]
-        row.info = entry?.info
-        row.queriedAt = entry?.fetchedAt
-        row.failureNote = failureNotes[failureKey(instanceId, row.id)]
-        // [T-quota-single-key-row] 单 Key 模式下点「测试并刷新余额」走的是
-        // refreshQuota（写站点缓存），不会写 keyCache —— 于是站点余额已经显示、
-        // Key 行却一直写「未查询」。这里给主 Key 行回退到站点缓存。
-        if row.info == nil, row.isMain,
-           !multiKeyOn,
-           let site = cache[instanceId] {
-            row.info = site.info
-            row.queriedAt = site.fetchedAt
-        }
-        lock.unlock()
-    }
-
-    /// `sk-abc…7f2a` — same head/tail rule the ring uses, so the two kinds of
-    /// key read identically in the list.
-    static func mask(_ key: String) -> String {
-        guard key.count > 14 else { return String(repeating: "•", count: 10) }
-        return key.prefix(6) + "…" + key.suffix(4)
-    }
-
-    /// Query EVERY key of this provider — credential key and every ring key —
-    /// concurrently, publishing each result as it lands.
-    ///
-    /// Manual on purpose: this is the only place N requests are spent, and it
-    /// runs because the user tapped 测试并刷新余额. Concurrency matters here:
-    /// serially, four slow relays would stall the button for a minute.
-    func refreshAllKeys(for instance: ProviderInstance) async {
-        let rows = quotaRows(for: instance)
-        guard !rows.isEmpty else { return }
-
-        // Resolve each row id to the secret it stands for. The ring is read
-        // again (not carried from `rows`) because `KeyQuota` deliberately holds
-        // the masked form only.
-        var secrets: [String: String] = [:]
-        if let main = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) {
-            secrets["main"] = main
-        }
-        for key in ProviderMultiKeyManager.shared.keys(for: instance.id) {
-            secrets[key.id] = key.key
-        }
-
-        await withTaskGroup(of: (String, QuotaInfo?).self) { group in
-            for row in rows {
-                guard let secret = secrets[row.id] else { continue }
-                group.addTask {
-                    ProviderQuotaService.shared.clearFailure(instanceId: instance.id, rowId: row.id)
-                    let info = await Self.fetchQuota(for: instance, key: secret, rowId: row.id)
-                    if info?.kind == .balance {
-                        ProviderQuotaService.shared.clearFailure(instanceId: instance.id, rowId: row.id)
-                    } else if info == nil,
-                       ProviderQuotaService.shared.failureNote(instanceId: instance.id, rowId: row.id) == nil {
-                        ProviderQuotaService.shared.noteFailure(
-                            AppLocalized("站点没有返回可用余额（可能不支持余额查询）"),
-                            instanceId: instance.id, rowId: row.id)
-                    } else if info?.kind == .used,
-                              ProviderQuotaService.shared.failureNote(instanceId: instance.id, rowId: row.id) == nil {
-                        ProviderQuotaService.shared.noteFailure(
-                            AppLocalized("站点只返回了用量，没有返回剩余余额"),
-                            instanceId: instance.id, rowId: row.id)
-                    }
-                    return (row.id, info)
-                }
-            }
-            for await (rowId, info) in group {
-                let entry = CacheEntry(info: info, fetchedAt: Date())
-                lock.lock()
-                keyCache[instance.id, default: [:]][rowId] = entry
-                lock.unlock()
-                if let info {
-                    AppLogger(category: "Quota").info(
-                        "[Quota][perKey] instance=\(instance.id.prefix(8)) row=\(rowId.prefix(8)) "
-                        + "kind=\(info.kind) text=\(info.displayText)")
-                } else {
-                    AppLogger(category: "Quota").info(
-                        "[Quota][perKey] instance=\(instance.id.prefix(8)) row=\(rowId.prefix(8)) unavailable")
-                }
-                await MainActor.run { self.revision += 1 }
-            }
-        }
-
-        publishAggregate(for: instance.id)
-        await MainActor.run { self.revision += 1 }
-    }
-
-    /// Roll the per-key answers into the ONE figure the rest of the app reads
-    /// (list row, picker, composer capsule): the LOWEST real balance, so a
-    /// nearly-spent key cannot hide behind a healthy sibling. Falls back to the
-    /// credential key's usage-only figure when no site gives a real balance.
-    private func publishAggregate(for instanceId: String) {
-        lock.lock()
-        let entries = keyCache[instanceId] ?? [:]
-        lock.unlock()
-        guard !entries.isEmpty else { return }
-
-        let balances: [Double] = entries.values.compactMap { entry in
-            guard let info = entry.info, info.kind == .balance else { return nil }
-            return info.balanceUSD
-        }
-        let aggregate: QuotaInfo?
-        if let lowest = balances.min() {
-            aggregate = QuotaInfo(
-                displayText: String(format: "余额 $%.2f", lowest),
-                highlighted: lowest < Self.lowThresholdUSD,
-                kind: .balance,
-                balanceUSD: lowest,
-                amountUSD: lowest)
-        } else {
-            aggregate = entries["main"]?.info
-        }
-        guard let aggregate else { return }
-        lock.lock()
-        cache[instanceId] = CacheEntry(info: aggregate, fetchedAt: Date())
-        lock.unlock()
-    }
-
-    // MARK: Fetch
-
-    static func fetchQuota(for instance: ProviderInstance) async -> QuotaInfo? {
-        // Only API-key instances: the billing endpoints are key-authenticated
-        // (OAuth/manual-token flows have no stable way to reach them).
-        let key: String?
-        switch instance.credentialType {
-        case .apiKey:
-            key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id)
-        default:
-            key = nil
-        }
-        guard let key, !key.isEmpty else { return nil }
-        return await fetchQuota(for: instance, key: key)
-    }
-
-    /// [T-quota-multikey-perkey] Same query, but for ONE explicit key.
-    ///
-    /// The per-key rows are the reason this exists: each line in the detail
-    /// page asks about its own key, so the answer can no longer be implied by
-    /// the instance id. Everything below — endpoint choice, placeholder
-    /// handling, threshold — is shared with the single-key path on purpose;
-    /// two implementations would drift.
-    /// - Parameter rowId: which key of the provider this query is for —
-    ///   `main`, or a ring key's UUID. Selects that key's own access token
-    ///   ([T-quota-perkey-token]) and falls back to the instance-wide one.
-    static func fetchQuota(for instance: ProviderInstance, key: String,
-                           rowId: String = "main") async -> QuotaInfo? {
-        guard instance.isEnabled else { return nil }
-        guard !key.isEmpty else { return nil }
-
-        var base = instance.effectiveCustomBaseURL
-        if base == nil {
-            switch instance.providerType {
-            case .openAI, .openAIResponses: base = "https://api.openai.com"
-            case .anthropic: base = "https://api.anthropic.com"
-            default: return nil
-            }
-        }
-        guard var base else { return nil }
-        base = base.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if instance.appendV1Suffix && !base.hasSuffix("/v1") { base += "/v1" }
-
-        switch instance.providerType {
-        case .openAI, .openAIResponses:
-            return await fetchOpenAIQuota(
-                instanceId: instance.id,
-                key: key,
-                baseURL: base,
-                rowId: rowId
-            )
-        case .anthropic:
-            return await fetchAnthropicSpend(key: key, baseURL: base)
-        default:
-            return nil
-        }
-    }
-
-    private static func fetchOpenAIQuota(instanceId: String, key: String, baseURL: String,
-                                        rowId: String) async -> QuotaInfo? {
-        // [T-quota-balance-priority] Restore the saved access-token path FIRST.
-        // /api/usage/token/ can succeed with usage only (an unlimited API key).
-        // Returning that early skipped the user's configured balance token.
-        // Keep rowId: each ring key may belong to a different account.
-        if let balance = await fetchNewAPIBalance(instanceId: instanceId, baseURL: baseURL,
-                                                 rowId: rowId) {
-            return balance
-        }
-
-        // A real key balance is useful when the account query is unavailable.
-        // Usage is only a fallback: it must not hide a real billing balance.
-        let keyQuota = await fetchKeyUsage(key: key, baseURL: baseURL)
-        if let keyQuota, keyQuota.kind == .balance {
-            return keyQuota
-        }
-
-        let billingQuota = await fetchOpenAIBillingQuota(key: key, baseURL: baseURL)
-        if let billingQuota, billingQuota.kind == .balance {
-            return billingQuota
-        }
-
-        // Every supported balance path was tried. Preserve successful key
-        // usage even if billing is unsupported or fails, then month-to-date
-        // billing usage as the last resort. Both nil means unavailable.
-        return keyQuota ?? billingQuota
-    }
-
-    /// Existing OpenAI billing pair, isolated so its failure cannot discard
-    /// usage already obtained by the caller. Parsing and thresholds unchanged.
-    private static func fetchOpenAIBillingQuota(key: String, baseURL: String) async -> QuotaInfo? {
-        let session = URLSession.shared
-
-        // 1) Subscription -> hard/soft limit.
-        guard let subURL = URL(string: baseURL + "/dashboard/billing/subscription") else { return nil }
-        var subReq = URLRequest(url: subURL)
-        subReq.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        subReq.timeoutInterval = 12
-        var hardLimit: Double?
-        do {
-            let (data, resp) = try await session.data(for: subReq)
-            guard let http = resp as? HTTPURLResponse, http.statusCode == 200,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return nil // relay without the billing endpoint
-            }
-            hardLimit = (obj["hard_limit_usd"] as? NSNumber)?.doubleValue
-                ?? (obj["soft_limit_usd"] as? NSNumber)?.doubleValue
-        } catch {
-            return nil
-        }
-
-        // 2) Usage since the 1st of the month (cents).
-        let now = Date()
-        let cal = Calendar.current
-        var comps = cal.dateComponents([.year, .month], from: now)
-        comps.day = 1
-        let start = cal.date(from: comps) ?? now.addingTimeInterval(-30 * 86400)
-        let df = DateFormatter()
-        df.dateFormat = "yyyy-MM-dd"
-        guard var usageComps = URLComponents(string: baseURL + "/dashboard/billing/usage") else { return nil }
-        usageComps.queryItems = [
-            URLQueryItem(name: "start_date", value: df.string(from: start)),
-            URLQueryItem(name: "end_date", value: df.string(from: now)),
-        ]
-        guard let usageURL = usageComps.url else { return nil }
-        var useReq = URLRequest(url: usageURL)
-        useReq.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        useReq.timeoutInterval = 12
-        var totalUsed: Double?
-        if let (data, resp) = try? await session.data(for: useReq),
-           let http = resp as? HTTPURLResponse, http.statusCode == 200,
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let cents = obj["total_usage"] as? NSNumber {
-            totalUsed = cents.doubleValue / 100.0
-        }
-
-        // A successful subscription response alone is not enough to claim a
-        // full balance: a missing/failed usage endpoint means the balance is
-        // unknown, especially for relays that only implement one endpoint.
-        guard let totalUsed else { return nil }
-        // [T-quota-relay-placeholder] Relays fake the OpenAI billing endpoint by
-        // returning a huge `hard_limit_usd` (commonly 100000000) meaning
-        // "unlimited". Subtracting real usage from that placeholder produced
-        // "剩 $99999977.88" on every relay — a number with no meaning, since a
-        // real OpenAI cap is tens/hundreds/thousands, never millions. Above the
-        // ceiling we report the only truthful figure the endpoint gives us
-        // (month-to-date usage) instead of a fabricated remainder, and never
-        // flag it low (we cannot know).
-        if let hardLimit, hardLimit > 0, hardLimit < Self.relayPlaceholderLimitUSD {
-            let remaining = hardLimit - totalUsed
-            // [T-quota-threshold-only] The user sets the cut-off; a second
-            // automatic "below 15 % of the limit" rule fought it. If you set
-            // $1, you mean $1 — a $200 cap quietly turning $30 yellow is the
-            // app second-guessing a number the user already chose.
-            let low = remaining < Self.lowThresholdUSD
-            // [T-quota-remaining-is-balance] This is a real remainder (a real
-            // cap minus real usage), so treat it like one: say 余额 like the
-            // New API path and carry `.balance` so it gets the green/yellow
-            // treatment. Leaving `kind` at its `.used` default made it the odd
-            // one out in the UI — grey text saying 剩 while every other
-            // readable site said 余额 in green.
-            return QuotaInfo(displayText: String(format: "余额 $%.2f", max(remaining, 0)),
-                             highlighted: low,
-                             kind: .balance,
-                             balanceUSD: max(remaining, 0),
-                             amountUSD: max(remaining, 0))
-        }
-        if totalUsed > 0.001 {
-            return QuotaInfo(
-                displayText: String(format: "已用 $%.2f", totalUsed),
-                highlighted: false,
-                kind: .used,
-                amountUSD: totalUsed
-            )
-        }
-        return nil
-    }
-
-    /// Above this `hard_limit_usd` the value cannot be a real OpenAI spending
-    /// cap, so it is treated as a relay's "unlimited" placeholder. $1,000,000
-    /// sits far above any genuine per-account cap and far below the 1e8 values
-    /// relays actually send.
-    static let relayPlaceholderLimitUSD: Double = 1_000_000
-
-    // MARK: - [T-quota-newapi-balance] New API real balance
-
-    /// Strips the OpenAI-compatible `/v1` suffix so the New API management
-    /// endpoints (`/api/status`, `/api/user/self`) sit on the site root.
-    static func apiRoot(_ baseURL: String) -> String {
-        var root = baseURL
-        if root.hasSuffix("/v1") { root = String(root.dropLast(3)) }
-        while root.hasSuffix("/") { root = String(root.dropLast()) }
-        return root
-    }
-
-    /// `GET {root}/api/user/self` — the only source of a trustworthy remaining
-    /// balance on New API / One API relays. Authenticated by the user's access
-    /// token when one is saved; otherwise by the site's login cookies if the
-    /// user signed in through the in-app browser. Returns nil for non-New-API
-    /// sites or when neither credential exists, and the caller falls back to
-    /// the usage-only display.
-    private static func fetchNewAPIBalance(instanceId: String, baseURL: String,
-                                           rowId: String) async -> QuotaInfo? {
-        // [T-quota-panel-host] Panel host wins when the user set one — see
-        // `panelBaseURL` for the split-host case this exists for.
-        let root = balanceRoot(instanceId: instanceId, apiBase: baseURL)
-        guard let url = URL(string: root + "/api/user/self") else { return nil }
-
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 12
-
-        // [T-quota-perkey-token] This key's own token first; the instance-wide
-        // token is the fallback for a single-account setup.
-        if let token = ProviderKeychainHelper.resolvedQuotaAccessToken(instanceId: instanceId, keyId: rowId),
-           !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            // [T-quota-newapi-user] Required by New API alongside the token.
-            if let uid = userID(instanceId: instanceId, keyId: rowId) {
-                req.setValue(uid, forHTTPHeaderField: "New-Api-User")
-            }
-        } else if let cookie = await sessionCookieHeader(for: root) {
-            req.setValue(cookie, forHTTPHeaderField: "Cookie")
-        } else {
-            ProviderQuotaService.shared.noteFailure(
-                AppLocalized("没有凭据：没填访问令牌，也没在这个站点登录过"), instanceId: instanceId, rowId: rowId)
-            return nil
-        }
-
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              let http = resp as? HTTPURLResponse else {
-            ProviderQuotaService.shared.noteFailure(
-                AppLocalized("连不上这个站点（网络或证书问题，也可能被代理拦了）"), instanceId: instanceId, rowId: rowId)
-            return nil
-        }
-        guard http.statusCode == 200 else {
-            // [T-quota-diag] Log the status AND the body prefix: New API forks
-            // answer 401 with a message that names the missing piece (e.g.
-            // 「New-Api-User header not provided」), which is the only way to
-            // tell a wrong token from a missing header without a debugger.
-            AppLogger(category: "Quota").error(
-                "[Quota][newapi] \(root)/api/user/self → HTTP \(http.statusCode) body=\(String(data: data.prefix(240), encoding: .utf8) ?? "<binary>")")
-            let bodyText = String(data: data.prefix(240), encoding: .utf8) ?? ""
-            if bodyText.lowercased().contains("new-api-user") {
-                ProviderQuotaService.shared.noteFailure(
-                    AppLocalized("这个站还要求填「用户 ID」；点这把 Key 填上（在站点后台个人设置里）"),
-                    instanceId: instanceId, rowId: rowId)
-            } else if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let message = (obj["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !message.isEmpty {
-                ProviderQuotaService.shared.noteFailure(
-                    String(format: AppLocalized("余额接口拒绝：%@"), message),
-                    instanceId: instanceId, rowId: rowId)
-            } else if http.statusCode == 404 {
-                // Many relays simply do not implement /api/user/self. That is
-                // not a token problem and not a reason to keep showing a raw
-                // HTTP error; the usage-only fallback is the correct answer.
-                ProviderQuotaService.shared.noteFailure(
-                    AppLocalized("站点没有余额查询接口（不影响对话）"),
-                    instanceId: instanceId, rowId: rowId)
-            } else {
-                ProviderQuotaService.shared.noteFailure(
-                    String(format: AppLocalized("站点返回 HTTP %lld（这个路径可能不存在）"), Int64(http.statusCode)),
-                    instanceId: instanceId, rowId: rowId)
-            }
-            return nil
-        }
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            ProviderQuotaService.shared.noteFailure(
-                AppLocalized("返回的不是 JSON（可能不是一个 API 站）"), instanceId: instanceId, rowId: rowId)
-            return nil
-        }
-        // New API often answers HTTP 200 with success:false when the token is
-        // invalid or the user id header is missing. Treat it as a failure, not
-        // as an empty balance — otherwise the UI quietly falls back to 已用 and
-        // hides the actual reason.
-        if (obj["success"] as? Bool) == false {
-            let raw = (obj["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let reason = (raw?.isEmpty == false ? raw : nil)
-                ?? AppLocalized("访问令牌无效或权限不足")
-            ProviderQuotaService.shared.noteFailure(
-                String(format: AppLocalized("余额接口拒绝：%@"), reason),
-                instanceId: instanceId, rowId: rowId)
-            return nil
-        }
-        // New API wraps payloads in "data"; some forks answer flat.
-        let body = (obj["data"] as? [String: Any]) ?? obj
-        guard let quota = body["quota"] as? NSNumber else {
-            AppLogger(category: "Quota").error(
-                "[Quota][newapi] \(root)/api/user/self → 200 but no quota field; keys=\(body.keys.sorted().prefix(12)) body=\(String(data: data.prefix(240), encoding: .utf8) ?? "")")
-            ProviderQuotaService.shared.noteFailure(
-                AppLocalized("返回里没有 quota 字段（这站可能不是 New API 面板）"), instanceId: instanceId, rowId: rowId)
-            return nil
-        }
-        ProviderQuotaService.shared.clearFailure(instanceId: instanceId, rowId: rowId)
-
-        let perUnit = await quotaPerUnit(root: root)
-        let balance = quota.doubleValue / perUnit
-        AppLogger(category: "Quota").info(
-            "[Quota][newapi] \(root)/api/user/self OK quota=\(quota.doubleValue) perUnit=\(perUnit) balance=\(balance)")
-        return QuotaInfo(
-            displayText: String(format: "余额 $%.2f", balance),
-            highlighted: balance < lowThresholdUSD,
-            kind: .balance,
-            balanceUSD: balance,
-            amountUSD: balance
-        )
-    }
-
-    /// `GET {root}/api/usage/token/` — the balance of ONE API key.
-    ///
-    /// Response shape (New API / One API): `{ "data": { "total_granted": …,
-    /// "total_used": …, "total_available": … } }` in quota points. Anything
-    /// else — 401, HTML, a different panel — returns nil so the caller can try
-    /// the next strategy, and the UI simply shows no balance.
-    private static func fetchKeyUsage(key: String, baseURL: String) async -> QuotaInfo? {
-        let root = apiRoot(baseURL)
-        guard let url = URL(string: root + "/api/usage/token/") else { return nil }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 12
-        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              let http = resp as? HTTPURLResponse, http.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let body = obj["data"] as? [String: Any] else {
-            return nil
-        }
-
-        let available = (body["total_available"] as? NSNumber)?.doubleValue
-        let granted = (body["total_granted"] as? NSNumber)?.doubleValue
-        let used = (body["total_used"] as? NSNumber)?.doubleValue
-        let unlimited = (body["unlimited_quota"] as? Bool) ?? false
-        let perUnit = await quotaPerUnit(root: root)
-
-        // [T-quota-key-usage] An UNLIMITED key has no remaining balance to
-        // report — `total_available` is negative by design. The honest figure
-        // is the usage, and saying so is better than drawing "余额 -$7.42" or
-        // showing nothing at all: this path needs the key the user already
-        // pasted, which is the whole point.
-        if unlimited {
-            let spent = (used ?? 0) / perUnit
-            AppLogger(category: "Quota").info(
-                "[Quota][keyusage] \(root) unlimited quota used=\(used ?? 0) spent=\(spent)")
-            // [T-quota-key-usage] No 「不限量」 wording: the user asked for it
-            // gone. An unlimited key simply reports what it has spent — the
-            // same 「已用 $X」 the billing fallback produces, so both paths read
-            // identically and the per-key rows inherit it for free.
-            return QuotaInfo(
-                displayText: String(format: "已用 $%.2f", spent),
-                highlighted: false,
-                kind: .used,
-                amountUSD: spent)
-        }
-
-        let quotaPoints: Double? = available ?? {
-            guard let granted, let used else { return nil }
-            return max(0, granted - used)
-        }()
-        guard let quotaPoints else { return nil }
-
-        let balance = quotaPoints / perUnit
-        AppLogger(category: "Quota").info(
-            "[Quota][keyusage] \(root)/api/usage/token/ OK available=\(quotaPoints) perUnit=\(perUnit) balance=\(balance)")
-        return QuotaInfo(
-            displayText: String(format: "余额 $%.2f", balance),
-            highlighted: balance < lowThresholdUSD,
-            kind: .balance,
-            balanceUSD: balance,
-            amountUSD: balance)
-    }
-
-    /// `1 USD = quota_per_unit` points, published by every New API site at
-    /// `/api/status`. Cached per root; 500,000 is the upstream default.
-    static func quotaPerUnit(root: String) async -> Double {
-        quotaPerUnitLock.lock()
-        if let cached = quotaPerUnitCache[root] {
-            quotaPerUnitLock.unlock()
-            return cached
-        }
-        quotaPerUnitLock.unlock()
-
-        var unit = defaultQuotaPerUnit
-        if let url = URL(string: root + "/api/status"),
-           let (data, resp) = try? await URLSession.shared.data(from: url),
-           let http = resp as? HTTPURLResponse, http.statusCode == 200,
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let payload = obj["data"] as? [String: Any],
-           let qpu = payload["quota_per_unit"] as? NSNumber,
-           qpu.doubleValue > 0 {
-            unit = qpu.doubleValue
-        }
-
-        quotaPerUnitLock.lock()
-        quotaPerUnitCache[root] = unit
-        quotaPerUnitLock.unlock()
-        return unit
-    }
-
-    /// Cookies for `root`'s host from the app's own WKWebView store. This is
-    /// the SAME store the in-app browser uses, so signing in through
-    /// `ProviderQuotaLoginView` makes the balances readable without the user
-    /// ever copying a token. Safari's cookies are unreachable by design.
-    static func sessionCookieHeader(for root: String) async -> String? {
-        guard let host = URL(string: root)?.host else { return nil }
-        // WKWebsiteDataStore is main-thread-bound; hop explicitly.
-        let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
-            DispatchQueue.main.async {
-                WKWebsiteDataStore.default().httpCookieStore.getAllCookies { all in
-                    continuation.resume(returning: all)
-                }
-            }
-        }
-        let relevant = cookies.filter { cookie in
-            var domain = cookie.domain
-            if domain.hasPrefix(".") { domain = String(domain.dropFirst()) }
-            return host == domain || host.hasSuffix("." + domain)
-        }
-        guard !relevant.isEmpty else { return nil }
-        return relevant.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-    }
-
-    /// Whether this site currently has a usable balance credential (token or
-    /// login cookies). Drives the "未登录/未填写" state in Settings.
-    static func hasBalanceCredential(instanceId: String) async -> Bool {
-        if let token = ProviderKeychainHelper.loadQuotaAccessToken(instanceId: instanceId),
-           !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return true
-        }
-        return false
-    }
-
-    private static func fetchAnthropicSpend(key: String, baseURL: String) async -> QuotaInfo? {
-        // Anthropic has no public billing-limit endpoint; report month-to-date
-        // spend from the org usage/costs API when available.
-        let calendar = Calendar.current
-        let now = Date()
-        var monthComponents = calendar.dateComponents([.year, .month], from: now)
-        monthComponents.day = 1
-        guard let start = calendar.date(from: monthComponents),
-              var comps = URLComponents(string: baseURL + "/organizations/usage/costs") else { return nil }
-        comps.queryItems = [
-            URLQueryItem(name: "starting_at", value: ISO8601DateFormatter().string(from: start)),
-            URLQueryItem(name: "ending_at", value: ISO8601DateFormatter().string(from: now)),
-            URLQueryItem(name: "limit", value: "1"),
-        ]
-        guard let url = comps.url else { return nil }
-        var req = URLRequest(url: url)
-        req.setValue(key, forHTTPHeaderField: "x-api-key")
-        req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        req.timeoutInterval = 12
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              let http = resp as? HTTPURLResponse, http.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let breakdown = obj["cost_breakdown"] as? [String: Any],
-              let samples = breakdown["samples"] as? [[String: Any]],
-              let first = samples.first,
-              let cost = first["cost"] as? [String: Any] else {
-            return nil
-        }
-        let usd = cost["usd"] as? Double ?? 0
-        if usd > 0.001 {
-            return QuotaInfo(displayText: String(format: "本月 $%.2f", usd),
-                             highlighted: false,
-                             amountUSD: usd)
-        }
-        return nil
-    }
+private final class ProviderQuotaCookieObserver: NSObject, WKHTTPCookieStoreObserver {
+    private let changed: () -> Void
+    init(changed: @escaping () -> Void) { self.changed = changed }
+    func cookiesDidChange(in cookieStore: WKHTTPCookieStore) { changed() }
 }
 
 // MARK: - [T-turn-cost-site-pricing] Auto-read New API / One API pricing
@@ -1155,7 +847,10 @@ final class ProviderPricingService: ObservableObject {
         let groupRatios = (obj["group_ratio"] as? [String: Any]) ?? [:]
         let group = groupRatios["default"] != nil ? "default" : (groupRatios.keys.sorted().first ?? "default")
         let groupRatio = (groupRatios[group] as? NSNumber)?.doubleValue ?? 1.0
-        let qpu = await ProviderQuotaService.quotaPerUnit(root: root)
+        guard let qpu = await ProviderQuotaService.quotaPerUnit(root: root) else {
+            throw NSError(domain: "ProviderPricing", code: 5,
+                          userInfo: [NSLocalizedDescriptionKey: AppLocalized("站点未返回额度换算率，不能推算美元价格")])
+        }
         let siteRate = await Self.siteExchangeRate(root: root)
 
         var prices: [String: ModelPrice] = [:]

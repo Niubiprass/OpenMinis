@@ -42,14 +42,22 @@ class BillingSourceContracts(unittest.TestCase):
             self.assertIn(endpoint, claim)
         self.assertLess(claim.index('try await checkin(context)'), claim.index('if current.checkedIn'))
         self.assertLess(claim.index('if current.checkedIn'), claim.index('daily-checkin'))
-        self.assertIn('claiming.insert(context.instanceId).inserted', claim)
-        self.assertIn('defer { claiming.remove', claim)
+        # One claim per ACCOUNT, not per provider: two accounts of the same
+        # instance must never share a lock, and one account must never run two.
+        self.assertIn('let key = SubscriptionCheckinLedger.key(context)', claim)
+        self.assertIn('claiming.insert(key).inserted', claim)
+        self.assertIn('defer { claiming.remove(key) }', claim)
+        # A cached "already signed today" must stop before any status request.
+        self.assertLess(claim.index('SubscriptionCheckinLedger.completed(key)'),
+                        claim.index('try await checkin(context)'))
+        # Completion is written only after the service accepted the claim.
+        self.assertLess(claim.index('daily-checkin'), claim.index('SubscriptionCheckinLedger.confirmed(key'))
         self.assertIn('TraeCredential(context.credentials).deviceID', claim)
         self.assertNotIn('UUID()', claim)
 
     def test_transport_and_account_guards_survive(self):
         text = CREDIT.read_text()
-        post = section(text, '    private static func post(', '\n/// Reuses')
+        post = section(text, '    private static func post(', '\n}')
         self.assertGreaterEqual(post.count('try requireCurrent(context)'), 3)
         self.assertIn('allowedHosts: [host]', post)
         self.assertNotIn('refreshToken', post)
@@ -62,19 +70,35 @@ class BillingSourceContracts(unittest.TestCase):
         self.assertIn('completionHandler(nil)', http)
 
     def test_native_detail_location_and_independent_failures(self):
-        text = CREDIT.read_text()
-        view = text[text.index('struct SubscriptionCreditSection: View'):]
+        accounts = (ROOT / 'src/ios/Providers/Subscription/SubscriptionAccounts.swift').read_text()
         detail = (ROOT / 'src/ios/Views/Providers/ProviderInstanceDetailView.swift').read_text()
-        self.assertEqual(detail.count('SubscriptionCreditSection(instance: instance)'), 1)
-        self.assertIn('if instance.providerType.isDomesticSubscription', view)
-        self.assertIn('Button("签到领积分") { startClaim() }', view)
-        self.assertIn('今日已签到', view)
-        self.assertIn('await read(account, generation: request)', view)
-        self.assertIn('.onChange(of: store.authRevision)', view)
-        self.assertIn('.onDisappear { reset() }', view)
-        read = section(text, '    @MainActor private func read(', '    @MainActor private func startClaim(')
+        # Exactly one account list, hosted where the old single-credential row
+        # used to be, with all three account actions wired to the host view.
+        self.assertEqual(detail.count('SubscriptionAccountsSection('), 1)
+        for wired in ['onAdd: { beginAccountLogin(nil) }',
+                      'onReauthenticate: { beginAccountLogin($0) }',
+                      'onRemove: { slot in pendingAccountRemoval = slot }']:
+            self.assertIn(wired, detail)
+        self.assertNotIn('SubscriptionCreditSection', detail)
+        self.assertNotIn('struct SubscriptionCreditSection: View',
+                         (ROOT / 'src/ios/Providers/Subscription/SubscriptionCredit.swift').read_text())
+        # The list must be able to sign in, re-sign-in and remove one account.
+        self.assertIn('SubscriptionLoginSheet(instanceId: request.slot', detail)
+        self.assertIn('store.addSubscriptionAccount(instanceId: instance.id, slot: slot, makeActive: true)', detail)
+        self.assertIn('store.removeSubscriptionAccount(instanceId: instanceId, slot: slot)', detail)
+        self.assertIn('store.setActiveSubscriptionAccount(instanceId: instance.id, slot: account.id)', accounts)
+        # Independent per-account outcomes: one failed endpoint must not erase
+        # the other's result, and nothing may write back for a replaced account.
+        read = section(accounts, '    private func read(', '    private func claim()')
         self.assertEqual(read.count('catch {'), 2)
-        self.assertIn('签到', view)
+        self.assertEqual(read.count('try SubscriptionCreditAPI.requireCurrent(ctx)'), 2)
+        self.assertIn('guard generation == request else { return }', read)
+        # Claim is only enabled when the account truly can claim today.
+        self.assertIn('checkin?.canClaim == false', accounts)
+        self.assertIn('await read(ctx, generation: request)', accounts)
+        self.assertIn('.onChange(of: store.authRevision)', accounts)
+        self.assertIn('.onDisappear { reset() }', accounts)
+        self.assertIn('签到', accounts)
 
     def test_tool_title_missing_uses_existing_preflight(self):
         text = TOOLS.read_text()
