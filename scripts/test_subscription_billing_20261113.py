@@ -21,7 +21,11 @@ def section(text, begin, end):
 
 class BillingSourceContracts(unittest.TestCase):
     def test_frozen_sources_and_license_exist(self):
-        text = (ROOT / 'docs/SUBSCRIPTION-BILLING-SOURCES.md').read_text()
+        relative = 'docs/SUBSCRIPTION-BILLING-SOURCES.md'
+        tracked = subprocess.run(['git', 'ls-files', '--error-unmatch', relative], cwd=ROOT,
+                                 capture_output=True, text=True)
+        self.assertEqual(tracked.returncode, 0, 'Source/license file must be tracked, not only present locally')
+        text = (ROOT / relative).read_text()
         for required in ['MIT License', 'Copyright (c) 2026 LaoDing',
                          'b04d865fa2da7f78f5a1d98d376306a65580fa11',
                          '531efd3578eca867acfe1bc0e882bbfedbcef175']:
