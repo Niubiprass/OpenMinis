@@ -45,9 +45,9 @@ let projectedRejected = Projection.project(.init(owner: "a", readings: rejected,
 check(projectedRejected.kind == .used && projectedRejected.balanceUSD == nil && !projectedRejected.highlighted, "invalid key not healthy balance")
 let projectedStale = Projection.project(retained)!
 check(projectedStale.isStale && projectedStale.observedAt == now && projectedStale.lastAttemptAt == failedAt, "legacy projection exposes accurate staleness")
-let combined = RelayQuotaProtocol.secondaryLine([currentAccount, currentKey], primary: currentKey)
-check(combined?.contains("账户余额") == true, "secondary pool keeps its own label")
-check(combined?.contains("Key 额度") == false, "primary pool is not repeated")
+let secondaryLine = RelayQuotaProtocol.secondaryLine([currentAccount, currentKey], primary: currentKey)
+check(secondaryLine?.contains("账户余额") == true, "secondary pool keeps its own label")
+check(secondaryLine?.contains("Key 额度") == false, "primary pool is not repeated")
 let failedAttempt = RelayQuotaProtocol.Attempt(source: .sub2api, endpoint: "/v1/usage",
     attemptedAt: now, succeeded: false, failureNote: "额度接口返回 HTTP 500")
 check(RelayQuotaProtocol.failureLine([failedAttempt])?.contains("HTTP 500") == true, "failure note surfaced once")

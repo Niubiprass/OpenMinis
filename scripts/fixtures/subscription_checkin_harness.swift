@@ -3,7 +3,7 @@ import Foundation
 // Async-free harness for SubscriptionCheckinPolicy (the PURE region is
 // concatenated above this file). No network, no Keychain, no device state.
 
-func day(_ iso: String) -> Date {
+func parseDay(_ iso: String) -> Date {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime]
     return f.date(from: iso)!
@@ -17,10 +17,10 @@ func expect(_ condition: Bool, _ message: String) {
 }
 
 // Day boundary is Asia/Shanghai, not UTC: 16:00Z is already next day there.
-expect(SubscriptionCheckinPolicy.day(day("2026-01-01T15:59:59Z")) == "2026-01-01", "day before 16:00Z")
-expect(SubscriptionCheckinPolicy.day(day("2026-01-01T16:00:00Z")) == "2026-01-02", "day at 16:00Z")
+expect(SubscriptionCheckinPolicy.day(parseDay("2026-01-01T15:59:59Z")) == "2026-01-01", "day before 16:00Z")
+expect(SubscriptionCheckinPolicy.day(parseDay("2026-01-01T16:00:00Z")) == "2026-01-02", "day at 16:00Z")
 
-let noon = day("2026-01-02T04:00:00Z")
+let noon = parseDay("2026-01-02T04:00:00Z")
 expect(SubscriptionCheckinPolicy.day(noon) == "2026-01-02", "noon same day")
 
 // Fresh record: eligible.
@@ -47,7 +47,7 @@ record.notifiedDay = "2026-01-02"
 expect(!SubscriptionCheckinPolicy.needsSuccessNotice(record, now: noon), "success notice only once")
 
 // Next day: a completed yesterday must not block today.
-let tomorrow = day("2026-01-03T04:00:00Z")
+let tomorrow = parseDay("2026-01-03T04:00:00Z")
 expect(SubscriptionCheckinPolicy.canAttempt(record, now: tomorrow), "new day may attempt")
 expect(SubscriptionCheckinPolicy.needsReminder(record, now: tomorrow), "new day reminder due")
 expect(!SubscriptionCheckinPolicy.needsSuccessNotice(record, now: tomorrow), "yesterday is not today's success")
