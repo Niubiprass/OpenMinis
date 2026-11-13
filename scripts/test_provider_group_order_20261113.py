@@ -50,16 +50,18 @@ class ProviderGroupOrderTests(unittest.TestCase):
         self.assertIn("ProviderGroupOrder.instanceIDs(in: instances, orderedTypes: types)", move)
         self.assertIn("store.reorderInstances(orderedIds)", move)
 
-    def test_sheet_has_two_entry_points_and_active_drag_handles(self):
-        self.assertEqual(VIEW.count("showGroupOrder = true"), 2)
-        editing = block(VIEW, "if editMode.isEditing")
-        self.assertIn("showGroupOrder = true", editing)
-        self.assertIn(".sheet(isPresented: $showGroupOrder)", VIEW)
+    def test_groups_are_dragged_inline_in_edit_mode(self):
+        # Groups drag in the same list as providers: no sheet, no second screen.
+        self.assertNotIn("showGroupOrder", VIEW)
+        self.assertNotIn("ProviderGroupOrderSheet", VIEW)
         self.assertIn(".environment(\\.editMode, $editMode)", VIEW)
-        sheet = block(VIEW, "private struct ProviderGroupOrderSheet")
-        for fragment in ("NavigationView {", "List {", ".onMove(perform: moveGroups)",
-                         ".environment(\\.editMode, .constant(.active))", "Button(\"Done\")"):
-            self.assertIn(fragment, sheet)
+        editing = block(VIEW, "if editMode.isEditing, ProviderGroupOrder.types")
+        self.assertIn("ForEach(ProviderGroupOrder.types(in: store.instances)", editing)
+        self.assertIn(".onMove(perform: moveGroups)", editing)
+        self.assertIn("分组顺序", editing)
+        # Both drag surfaces share one persistence path.
+        self.assertIn("moveGroups", VIEW)
+        self.assertIn("moveInstances(in: type, from: source, to: destination)", VIEW)
 
     def test_instance_drag_and_shadow_voice_are_retained(self):
         self.assertIn("moveInstances(in: type, from: source, to: destination)", VIEW)
