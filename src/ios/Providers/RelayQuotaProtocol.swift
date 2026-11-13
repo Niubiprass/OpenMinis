@@ -82,14 +82,23 @@ enum RelayQuotaProtocol {
     /// Amounts from different scopes are never added together: a wallet
     /// balance, a Key limit and a plan remainder are three different things.
     static func secondaryLine(_ readings: [Reading], primary: Reading?) -> String? {
+        var seen = Set<String>()
         let others = readings.filter { reading in
             guard let primary else { return true }
-            return reading.id != primary.id && !reading.rejected && reading.remaining != nil
+            guard reading.id != primary.id, !reading.rejected, seen.insert(reading.id).inserted else { return false }
+            // A Key that only reports spend is still a distinct pool: show
+            // "已用", never drop the row and never present it as a balance.
+            return reading.remaining != nil || reading.used != nil || reading.unlimited
         }
         guard !others.isEmpty else { return nil }
         return others.map { reading in
-            let amount = self.amount(reading.remaining, unit: reading.unit)
-            return "\(reading.label) \(amount)"
+            if let remaining = reading.remaining {
+                return "\(reading.label) \(amount(remaining, unit: reading.unit))"
+            }
+            if let used = reading.used {
+                return "\(reading.label) 已用 \(amount(used, unit: reading.unit))"
+            }
+            return "\(reading.label) · 不限量"
         }.joined(separator: " · ")
     }
 
