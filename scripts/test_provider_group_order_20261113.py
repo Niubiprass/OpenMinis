@@ -3,7 +3,10 @@
 Run: python3 scripts/test_provider_group_order_20261113.py
 """
 from pathlib import Path
+import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -57,25 +60,45 @@ class ProviderGroupOrderTests(unittest.TestCase):
                      'listRowBackground', 'ProviderGroupOrderSheet', '分组顺序'):
             self.assertNotIn(gone, VIEW)
 
-    def test_header_is_the_grip_and_adds_no_new_icon(self):
+    def test_header_grip_preserves_native_layout_and_row_sort(self):
         section = block(VIEW, 'private func groupSection(')
         self.assertNotIn('line.3.horizontal', section)
-        self.assertIn('GroupHeaderDrag(enabled: editMode == .active', section)
-        self.assertIn('.contentShape(Rectangle())', section)
-        modifier = block(VIEW, 'struct GroupHeaderDrag')
-        self.assertIn('content.onDrag {', modifier)
-        self.assertIn('NSItemProvider(object: type.rawValue as NSString)', modifier)
-        delegate = block(VIEW, 'struct GroupDropDelegate')
-        self.assertIn('func performDrop(info: DropInfo) -> Bool', delegate)
-        self.assertIn('perform(source, target)', delegate)
+        self.assertNotIn('.onDrag', section)
+        self.assertNotIn('.onDrop', section)
+        self.assertIn('ProviderGroupDragAnchor(type: type, bridge: groupDrag)', section)
+        self.assertIn('enabled: editMode == .active', VIEW)
+        bridge = block(VIEW, 'private final class ProviderGroupDragBridge:')
+        self.assertIn('UILongPressGestureRecognizer(target: self', bridge)
+        self.assertIn('case .ended: update(); finish(commit: true)', bridge)
+        self.assertIn('case .cancelled, .failed: finish(commit: false)', bridge)
+        self.assertIn('group(at: touch.location(in: scroll)) != nil', bridge)
+        self.assertIn('rect(forSection:', bridge)
+        self.assertIn('CADisplayLink(', bridge)
+        self.assertNotIn('.delegate = self', bridge.replace('recognizer.delegate = self', ''))
+        self.assertNotIn('.dataSource =', bridge)
+        self.assertIn('willResignActiveNotification', bridge)
+        self.assertIn('displayLink?.invalidate()', bridge)
+        snapshot = block(VIEW, 'private func snapshotSection(')
+        self.assertNotIn('setContentOffset', snapshot)
+        self.assertNotIn('refreshQuota', snapshot)
+        self.assertIn('size: complete.size', snapshot)
+        update = block(VIEW, 'private func update()')
+        self.assertIn('measureSections(base: base)', update)
+        self.assertIn('scroll.layoutIfNeeded()', update)
+        self.assertIn('resetPress()', update)
+        begin = block(VIEW, 'func gestureRecognizerShouldBegin(')
+        self.assertIn('measureSections(base: section - index)', begin)
 
-    def test_group_drop_only_reorders_groups(self):
-        move = block(VIEW, 'private func moveGroup(from source: ProviderType')
-        self.assertIn('ProviderGroupOrder.types(in: instances)', move)
-        self.assertIn('types.remove(at: fromIndex)', move)
-        self.assertIn('types.insert(source, at: insertAt)', move)
-        self.assertIn('ProviderGroupOrder.instanceIDs(in: instances, orderedTypes: types)', move)
-        self.assertIn('store.reorderInstances(ids)', move)
+    def test_released_group_uses_existing_save_and_rejects_changed_members(self):
+        commit = block(VIEW, 'private func configureGroupDrag(')
+        self.assertIn('current == expected, currentMembers == expectedMembers', commit)
+        self.assertIn('ProviderGroupDragPolicy.reordered(current, moving: source, to: destination)', commit)
+        self.assertIn('ProviderGroupOrder.instanceIDs(in: instances, orderedTypes: ordered)', commit)
+        self.assertIn('store.reorderInstances(ids)', commit)
+        bridge = block(VIEW, 'private final class ProviderGroupDragBridge:')
+        self.assertIn('expected == order, expectedMembers == members', bridge)
+        self.assertIn('move?(expected, expectedMembers, type, next)', bridge)
+        self.assertIn('no order saved', bridge)
 
     def test_instance_and_shadow_voice_behaviour_is_kept(self):
         self.assertIn('allowsFullSwipe: false', VIEW)
@@ -107,6 +130,66 @@ class ProviderGroupOrderTests(unittest.TestCase):
         self.assertIn('await db.bulkReplace(from: snapshot)', save)
         bulk = block(DB, 'func bulkReplace(from')
         self.assertIn('sortOrder: idx', bulk)
+
+class ProviderGroupDragActualSwift(unittest.TestCase):
+    def region(self, name):
+        begin, end = f'// BEGIN {name}', f'// END {name}'
+        self.assertEqual(VIEW.count(begin), 1)
+        self.assertEqual(VIEW.count(end), 1)
+        return VIEW.split(begin, 1)[1].split(end, 1)[0]
+
+    def test_actual_production_destination_and_reorder(self):
+        compiler = shutil.which('swiftc')
+        if not compiler:
+            if os.getenv('V64R_REQUIRE_SWIFT') == '1':
+                self.fail('Swift required; production group drag policy NOT executed')
+            self.skipTest('No swiftc here; real production policy NOT executed')
+        with tempfile.TemporaryDirectory(prefix='group-drag-policy-') as tmp:
+            main, binary = Path(tmp)/'main.swift', Path(tmp)/'policy'
+            fixture = (ROOT/'scripts/fixtures/provider_group_drag_policy.swift').read_text()
+            models = '''
+enum ProviderType: String, Hashable { case a, b, c }
+struct ProviderInstance { let id: String; let providerType: ProviderType }
+'''
+            group_order = 'enum ProviderGroupOrder {' + block(VIEW, 'enum ProviderGroupOrder') + '}\n'
+            main.write_text('import Foundation\n' + models + group_order
+                            + self.region('PROVIDER_GROUP_DRAG_POLICY_PURE') + fixture)
+            run = subprocess.run([compiler, '-swift-version', '5', str(main), '-o', str(binary)],
+                                 capture_output=True, text=True, timeout=120)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn('production group-drag policy checks', run.stdout)
+            print(run.stdout.strip())
+
+    def test_actual_uikit_bridge_typechecks_for_ios15(self):
+        xcrun = shutil.which('xcrun')
+        if sys.platform != 'darwin' or not xcrun:
+            if os.getenv('V64R_REQUIRE_SWIFT') == '1':
+                self.fail('Apple SDK required; production UIKit drag bridge NOT typechecked')
+            self.skipTest('No Apple SDK here; UIKit bridge NOT typechecked')
+        sdk = subprocess.check_output([xcrun, '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
+        stubs = '''
+enum ProviderType: String, Hashable { case a, b, c
+    var displayName: String { rawValue }
+}
+struct AppLogger {
+    init(category: String) {}
+    func info(_ message: String) {}
+    func warning(_ message: String) {}
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='group-drag-uikit-') as tmp:
+            swift = Path(tmp)/'Bridge.swift'
+            swift.write_text('import Foundation\nimport UIKit\nimport SwiftUI\n' + stubs
+                             + self.region('PROVIDER_GROUP_DRAG_POLICY_PURE')
+                             + self.region('PROVIDER_GROUP_DRAG_UIKIT'))
+            run = subprocess.run([xcrun, '--sdk', 'iphoneos', 'swiftc', '-swift-version', '5',
+                                  '-typecheck', '-sdk', sdk, '-target', 'arm64-apple-ios15.5', str(swift)],
+                                 capture_output=True, text=True, timeout=180)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            print('Actual UIKit group-drag bridge iOS 15.5 typecheck PASS; no UI gestures executed')
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
