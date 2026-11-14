@@ -13,86 +13,10 @@ enum ProviderGroupOrder {
         }
     }
 
-    static func rows(in instances: [ProviderInstance]) -> [ProviderListRow] {
-        types(in: instances).flatMap { type in
-            [.group(type)] + instances.filter { $0.providerType == type }.map(ProviderListRow.instance)
-        }
-    }
-
-    /// The destination is a gap in the original flat rows, as in SwiftUI onMove.
-    /// Reject mixed selections; an instance drag may only reorder its own type.
-    /// nil means invalid input or no change, so callers must not persist it.
-    static func reorderedIDs(in instances: [ProviderInstance], from source: IndexSet,
-                             to destination: Int) -> [String]? {
-        let originalIDs = instances.map(\.id)
-        var rows = Self.rows(in: instances)
-        guard !source.isEmpty, source.allSatisfy({ rows.indices.contains($0) }),
-              (0...rows.count).contains(destination),
-              Set(originalIDs).count == originalIDs.count else { return nil }
-        let selected = source.map { rows[$0] }
-        let movedType: ProviderType?
-        switch selected[0] {
-        case .group:
-            guard selected.allSatisfy({ if case .group = $0 { return true }; return false })
-            else { return nil }
-            movedType = nil
-        case .instance(let instance):
-            guard selected.allSatisfy({
-                if case .instance(let member) = $0 { return member.providerType == instance.providerType }
-                return false
-            }) else { return nil }
-            movedType = instance.providerType
-        }
-        // Foundation-only implementation of move(fromOffsets:toOffset:), so
-        // the production algorithm can also run in standalone Swift tests.
-        let insertion = destination - source.filter { $0 < destination }.count
-        for index in source.reversed() { rows.remove(at: index) }
-        rows.insert(contentsOf: selected, at: insertion)
-
-        let orderedIDs: [String]
-        if let type = movedType {
-            var members = rows.compactMap { row -> String? in
-                if case .instance(let instance) = row, instance.providerType == type {
-                    return instance.id
-                }
-                return nil
-            }.makeIterator()
-            // Keep every other type in its original slot, including an
-            // interleaved persisted array. This cannot change group order.
-            orderedIDs = instances.map { instance in
-                instance.providerType == type ? (members.next() ?? instance.id) : instance.id
-            }
-        } else {
-            let orderedTypes = rows.compactMap { row -> ProviderType? in
-                if case .group(let type) = row { return type }
-                return nil
-            }
-            orderedIDs = instanceIDs(in: instances, orderedTypes: orderedTypes)
-        }
-        guard orderedIDs.count == originalIDs.count,
-              Set(orderedIDs) == Set(originalIDs), orderedIDs != originalIDs else { return nil }
-        return orderedIDs
-    }
-
     /// Move whole groups while preserving the existing order within each group.
     static func instanceIDs(in instances: [ProviderInstance], orderedTypes: [ProviderType]) -> [String] {
         orderedTypes.flatMap { type in
             instances.filter { $0.providerType == type }.map(\.id)
-        }
-    }
-}
-
-/// [T-provider-group-drag] One row per group title plus one per provider, in a
-/// single list section. A group title has to be a row to get a reorder handle,
-/// because SwiftUI never gives one to a section header.
-enum ProviderListRow: Identifiable {
-    case group(ProviderType)
-    case instance(ProviderInstance)
-
-    var id: String {
-        switch self {
-        case .group(let type): return "group." + type.rawValue
-        case .instance(let instance): return instance.id
         }
     }
 }
@@ -116,6 +40,10 @@ struct ProviderInstancesView: View {
     /// alert — a provider carries API keys and every model entry under it, so
     /// it must never be a one-swipe irreversible act.
     @State private var pendingDeleteInstance: ProviderInstance?
+    /// [T-provider-group-drag-v2] Live header positions of every group, so a
+    /// dropped header handle knows which slot it landed in.
+    @State private var groupFrames: [ProviderType: CGRect] = [:]
+    @State private var groupDrag = GroupDragState()
 
     var body: some View {
         List {
@@ -136,51 +64,13 @@ struct ProviderInstancesView: View {
             // shows its text models here AND a shadow voice row below ("dual
             // visibility"). Pure-voice vendors (ElevenLabs etc.) still appear here
             // too; they just have no usable text models, which is expected.
-            // [T-provider-group-drag] One flat section: the group title is a real
-            // row, so it carries the same reorder handle as a provider row.
-            // SwiftUI only offers drag handles to rows, never to section
-            // headers, so a separate "group order" block would be the only way
-            // to keep native headers — and that extra block is exactly what this
-            // replaces. Dragging a title row moves its whole group; dragging a
-            // provider row moves it inside its own group.
-            Section {
-                ForEach(listRows) { row in
-                    switch row {
-                    case .group(let type):
-                        groupHeaderRow(type)
-                    case .instance(let instance):
-                        NavigationLink {
-                            ProviderInstanceDetailView(instanceId: instance.id)
-                        } label: {
-                            InstanceRow(instance: instance)
-                        }
-                        // [T-provider-group-swipe-actions] Swipe actions and
-                        // `.onMove` coexist without extra work: UIKit routes a
-                        // horizontal drag to the row's swipe actions and a
-                        // vertical one to the reorder engine, and in edit mode
-                        // the drag handles take over entirely. No custom
-                        // gesture is introduced here precisely so that
-                        // arbitration stays UIKit's.
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            // Destructive first = rightmost, the platform's
-                            // position for Delete. `allowsFullSwipe: false`
-                            // so a long swipe cannot delete a provider (and
-                            // its keys) without the confirmation below.
-                            Button(role: .destructive) {
-                                pendingDeleteInstance = instance
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                            Button {
-                                editingInstanceId = instance.id
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            .tint(.blue)
-                        }
-                    }
-                }
-                .onMove(perform: moveRows)
+            // [T-provider-group-drag-v2] Each provider type is its own Section
+            // again (independent card, native header, group spacing). Moving a
+            // whole group is done by dragging that section's header, which the
+            // list shows as a reorder handle in edit mode; dragging a provider
+            // only reorders it inside its own section.
+            ForEach(ProviderGroupOrder.types(in: store.instances), id: \.self) { type in
+                groupSection(type)
             }
             // [T-mimo-shadow-voice] Voice Services = a read-only SHADOW view of any
             // instance that has audio-modality models, FOLDED by base URL so two
@@ -368,36 +258,162 @@ struct ProviderInstancesView: View {
         }
     }
 
-    // MARK: - [T-provider-group-drag] Reordering
+    // MARK: - [T-provider-group-drag-v2] Reordering
 
-    /// One group title row, then that group's providers, in persisted order.
-    private var listRows: [ProviderListRow] {
-        ProviderGroupOrder.rows(in: store.instances)
-    }
-
-    private func groupHeaderRow(_ type: ProviderType) -> some View {
-        HStack(spacing: 8) {
-            Text(type.displayName)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text("\(store.instances.filter { $0.providerType == type }.count)")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+    /// One provider type per Section: independent card, native header, spacing.
+    /// The header carries its own ☰ reorder handle in edit mode and moving it
+    /// shifts the whole group; rows inside keep their own handle and only
+    /// reorder within this section.
+    @ViewBuilder
+    private func groupSection(_ type: ProviderType) -> some View {
+        let members = store.instances.filter { $0.providerType == type }
+        if !members.isEmpty {
+            Section {
+                ForEach(members) { instance in
+                    NavigationLink {
+                        ProviderInstanceDetailView(instanceId: instance.id)
+                    } label: {
+                        InstanceRow(instance: instance)
+                    }
+                    // [T-provider-group-swipe-actions] Swipe actions and
+                    // `.onMove` coexist: UIKit routes a horizontal drag to the
+                    // row's swipe actions and a vertical one to the reorder
+                    // engine, and in edit mode the handles take over entirely.
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            pendingDeleteInstance = instance
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        Button {
+                            editingInstanceId = instance.id
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        .tint(.blue)
+                    }
+                }
+                .onMove { source, destination in
+                    moveInstances(in: type, from: source, to: destination)
+                }
+                .onPreferenceChange(GroupFramesKey.self) { frames in
+                    groupFrames = frames
+                }
+                // While its header handle is held, the whole group follows the
+                // finger and lifts off the list — otherwise the drag looks dead.
+                .offset(y: groupDrag.dragging == type ? groupDrag.translation : 0)
+                .zIndex(groupDrag.dragging == type ? 1 : 0)
+                .shadow(color: groupDrag.dragging == type ? .black.opacity(0.35) : .clear,
+                        radius: groupDrag.dragging == type ? 12 : 0, y: 6)
+            } header: {
+                HStack(spacing: 8) {
+                    Text(type.displayName)
+                    Spacer(minLength: 0)
+                    Text("\(members.count)")
+                        .foregroundStyle(.tertiary)
+                    if editMode == .active {
+                        // Same ☰ the rows get, but on the header: dragging it
+                        // moves the whole section. A header cannot hold the
+                        // list's own reorder handle, so it gets one here.
+                        GroupDragHandle(type: type, drag: $groupDrag) { dropY in
+                            moveGroup(type, toFrameY: dropY)
+                        }
+                    }
+                }
+                .background(GeometryReader { proxy in
+                    Color.clear.preference(key: GroupFramesKey.self,
+                                           value: [type: proxy.frame(in: .global)])
+                })
+            }
         }
-        .accessibilityAddTraits(.isHeader)
     }
 
-    /// Persist only accepted changes; mixed selections and no-op drops do not save.
-    private func moveRows(from source: IndexSet, to destination: Int) {
-        guard let orderedIds = ProviderGroupOrder.reorderedIDs(
-            in: store.instances, from: source, to: destination
-        ) else { return }
-        store.reorderInstances(orderedIds)
+    /// Moving a header handle reorders the whole group: find which slot the
+    /// finger was released in, then republish the array with every member of
+    /// that group still adjacent and in its own order. A drop that lands in the
+    /// slot it already occupies changes nothing.
+    private func moveGroup(_ type: ProviderType, toFrameY y: CGFloat) {
+        let types = ProviderGroupOrder.types(in: store.instances)
+        guard let from = types.firstIndex(of: type) else { return }
+        let others = types.filter { $0 != type }
+        // Slot index among the *other* groups: 0 = above the first, count = last.
+        var target = others.count
+        for (index, other) in others.enumerated() {
+            guard let frame = groupFrames[other] else { continue }
+            if y < frame.midY { target = index; break }
+        }
+        // Dropping where it already is: the group sits above `others[from-1]`
+        // and below `others[from]`, which is the same slot index.
+        guard target != from else { return }
+        var order = others
+        order.insert(type, at: min(max(target, 0), order.count))
+        let ids = ProviderGroupOrder.instanceIDs(in: store.instances, orderedTypes: order)
+        guard ids != store.instances.map(\.id) else { return }
+        store.reorderInstances(ids)
+    }
+
+    /// Providers inside one group only ever move among themselves.
+    private func moveInstances(in type: ProviderType, from source: IndexSet, to destination: Int) {
+        let all = store.instances
+        let members = all.filter { $0.providerType == type }
+        var ordered = members
+        ordered.move(fromOffsets: source, toOffset: destination)
+        var iterator = ordered.makeIterator()
+        let ids = all.map { instance -> String in
+            guard instance.providerType == type else { return instance.id }
+            return iterator.next()?.id ?? instance.id
+        }
+        guard ids != all.map(\.id) else { return }
+        store.reorderInstances(ids)
     }
 }
 
-// MARK: - Instance Row
+// MARK: - [T-provider-group-drag-v2] Group header handle
+
+/// Live drag bookkeeping for the one header handle being held down.
+final class GroupDragState: ObservableObject {
+    @Published var dragging: ProviderType?
+    @Published var translation: CGFloat = 0
+}
+
+struct GroupFramesKey: PreferenceKey {
+    static var defaultValue: [ProviderType: CGRect] = [:]
+    static func reduce(value: inout [ProviderType: CGRect], nextValue: () -> [ProviderType: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
+/// The ☰ shown on a group header in edit mode. It looks and behaves like the
+/// list's own row handle, but reports the drop position itself instead of the
+/// list engine: a Section header is not a row, so the list never offers one.
+struct GroupDragHandle: View {
+    let type: ProviderType
+    @Binding var drag: GroupDragState
+    var onDrop: (CGFloat) -> Void
+
+    var body: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(drag.dragging == type ? Color.accentColor : Color.secondary)
+            .frame(width: 34, height: 30)
+            .contentShape(Rectangle())
+            .accessibilityLabel(Text("拖动整个分组"))
+            .accessibilityAddTraits(.isButton)
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 4, coordinateSpace: .global)
+                    .onChanged { value in
+                        drag.dragging = type
+                        drag.translation = value.translation.height
+                    }
+                    .onEnded { value in
+                        drag.dragging = nil
+                        drag.translation = 0
+                        onDrop(value.location.y)
+                    }
+            )
+    }
+}
+
 
 /// [T-ios-provider-row-keychain-in-body] Per-row credential display state, resolved
 /// ONCE per (instance, authRevision) instead of on every SwiftUI body evaluation.

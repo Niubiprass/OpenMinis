@@ -33,6 +33,60 @@ final class ProviderQuotaService: ObservableObject {
     }
 
     static let lowThresholdDefaultsKey = "quota.lowThresholdUSD"
+    /// [T-quota-disk-cache] Only the numbers that were already on screen, so a
+    /// relaunch shows the last known balance at once instead of an empty row
+    /// while every relay is probed again. No credential, digest or endpoint.
+    private struct StoredQuota: Codable {
+        let displayText: String
+        let amountUSD: Double?
+        let balanceUSD: Double?
+        let kindIsBalance: Bool
+        let highlighted: Bool
+        let fetchedAt: Date
+    }
+    private static let storedPrefix = "quota.lastKnown."
+
+    private static let logger = AppLogger(category: "Quota")
+
+    /// [T-quota-timing] One line per balance query: how long it took and what
+    /// came back. This module had no logging at all, so "the balance is slow"
+    /// could not be traced to a step; now a slow relay is visible by name.
+    static func logRefresh(instanceId: String, rowId: String, info: QuotaInfo?, note: String?) {
+        let amount: String
+        if let usd = info?.amountUSD ?? info?.balanceUSD { amount = String(format: "%.2f USD", usd) }
+        else if let text = info?.displayText { amount = text }
+        else { amount = "none" }
+        let kind = info?.kind == .balance ? "balance" : (info == nil ? "missing" : "used")
+        logger.info("balance query instance=\(instanceId.prefix(8)) row=\(rowId) kind=\(kind) value=\(amount) note=\(note ?? "-")")
+    }
+
+    private static func store(_ info: QuotaInfo?, instanceId: String, at date: Date) {
+        let key = storedPrefix + instanceId
+        guard let info else {
+            UserDefaults.standard.removeObject(forKey: key)
+            return
+        }
+        let value = StoredQuota(displayText: info.displayText,
+                                amountUSD: info.amountUSD,
+                                balanceUSD: info.balanceUSD,
+                                kindIsBalance: info.kind == .balance,
+                                highlighted: info.highlighted,
+                                fetchedAt: date)
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    private static func storedInfo(instanceId: String) -> (info: QuotaInfo, fetchedAt: Date)? {
+        guard let data = UserDefaults.standard.data(forKey: storedPrefix + instanceId),
+              let value = try? JSONDecoder().decode(StoredQuota.self, from: data) else { return nil }
+        let info = QuotaInfo(displayText: value.displayText,
+                             highlighted: value.highlighted,
+                             kind: value.kindIsBalance ? .balance : .used,
+                             balanceUSD: value.balanceUSD,
+                             amountUSD: value.amountUSD)
+        return (info, value.fetchedAt)
+    }
+
     private struct CacheEntry {
         let info: QuotaInfo?
         let fetchedAt: Date // attempt time, NOT the successful observation time
@@ -105,13 +159,20 @@ final class ProviderQuotaService: ObservableObject {
         failureNotes.removeValue(forKey: failureKey(instanceId, rowId))
     }
     func cachedQuota(instanceId: String) -> QuotaInfo? {
-        lock.lock(); defer { lock.unlock() }
-        return cache[instanceId]?.info.map { Self.reproject($0) }
+        lock.lock()
+        let live = cache[instanceId]?.info.map { Self.reproject($0) }
+        lock.unlock()
+        if let live { return live }
+        // [T-quota-disk-cache] Nothing in memory (fresh launch): show the last
+        // number this account already had instead of an empty row.
+        return Self.storedInfo(instanceId: instanceId)?.info
     }
     func isMissing(instanceId: String) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard let e = cache[instanceId] else { return true }
-        return Date().timeIntervalSince(e.fetchedAt) >= ttl
+        lock.lock()
+        defer { lock.unlock() }
+        if let e = cache[instanceId] { return Date().timeIntervalSince(e.fetchedAt) >= ttl }
+        // A stored number existed, but nothing was queried in this process yet.
+        return true
     }
     private func invalidateAll() {
         lock.lock()
@@ -238,7 +299,10 @@ final class ProviderQuotaService: ObservableObject {
                 }
             }
         }
-        publishAggregate(for: instance.id)
+        if let aggregate = publishAggregate(for: instance.id) {
+            // [T-quota-disk-cache] Persist the multi-Key aggregate the row shows.
+            Self.store(aggregate, instanceId: instance.id, at: Date())
+        }
         await MainActor.run { self.revision += 1 }
     }
     private func refreshRow(for instance: ProviderInstance, key: String, rowId: String,
@@ -251,6 +315,10 @@ final class ProviderQuotaService: ObservableObject {
         inFlight[slot] = ticket
         lock.unlock()
         let context = await Self.context(for: instance, key: key, rowId: rowId)
+        let started = Date()
+        if context == nil {
+            Self.logger.info("balance query instance=\(instance.id.prefix(8)) row=\(rowId) skipped: no usable credential/root")
+        }
         let result: RelayQuotaProtocol.Snapshot?
         if let context { result = await Self.collect(context) } else { result = nil }
         // Verify current stored credentials as well as the generation fence.
@@ -278,18 +346,27 @@ final class ProviderQuotaService: ObservableObject {
             failureNotes[slot] = AppLocalized("站点只返回了用量，没有返回剩余余额")
         } else { failureNotes.removeValue(forKey: slot) }
         lock.unlock()
+        if publishSingle {
+            // [T-quota-disk-cache] Persist what the row shows, so the next
+            // launch draws it before any request is sent.
+            let persisted = entry.info.map { Self.reproject($0) }
+            Self.store(persisted, instanceId: instance.id, at: entry.fetchedAt)
+            Self.logRefresh(instanceId: instance.id, rowId: rowId, info: persisted,
+                            note: notes.first)
+            Self.logger.info("balance query instance=\(instance.id.prefix(8)) row=\(rowId) took \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
+        }
         await MainActor.run { self.revision += 1 }
     }
     /// Select a representative; never sum balances or compare money to quota
     /// points. Comparisons require the same scope, source, unit and host.
-    private func publishAggregate(for instanceId: String) {
+    private func publishAggregate(for instanceId: String) -> QuotaInfo? {
         lock.lock(); defer { lock.unlock() }
         let entries = keyCache[instanceId] ?? [:]
         let ordered = entries.keys.sorted { a, b in a == "main" ? b != "main" : (b == "main" ? false : a < b) }
         let infos = ordered.compactMap { entries[$0]?.info }.map { Self.reproject($0) }
         guard let first = infos.first else {
             cache[instanceId] = CacheEntry(info: nil, fetchedAt: Date(), owner: "")
-            return
+            return nil
         }
         var selected = first
         if let primary = first.readings.first(where: { $0.id == first.primaryReadingID }) {
@@ -305,6 +382,9 @@ final class ProviderQuotaService: ObservableObject {
             } ?? first
         }
         cache[instanceId] = CacheEntry(info: selected, fetchedAt: Date(), owner: selected.owner)
+        // [T-quota-disk-cache] The caller persists this representative (the
+        // same number the row shows) once the lock is released.
+        return Self.reproject(selected)
     }
 
     private struct Context {

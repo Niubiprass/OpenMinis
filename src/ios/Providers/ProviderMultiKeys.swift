@@ -348,6 +348,8 @@ enum MultiKeyStrategy: String, Codable, CaseIterable, Sendable {
 final class ProviderMultiKeyManager: @unchecked Sendable {
 
     static let shared = ProviderMultiKeyManager()
+    /// [T-multikey-log] Rotation and parking decisions reach the log file.
+    static let logger = AppLogger(category: "MultiKey")
     private init() {}
 
     /// After this long, an `error` key is retried once on its own.
@@ -914,6 +916,9 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
         // failure/cooldown counters or rotate it. The retry wrapper owns the
         // same-lease retry after a path change.
         guard kind != .network, kind.mayTryAnotherKey else { return }
+        // [T-multikey-log] Key rotation/parking was silent, so "some Key stopped
+        // working" and "every request rotated" left nothing to read afterwards.
+        Self.logger.info("key failure instance=\(instanceId.prefix(8)) row=\(lease.id) kind=\(kind) cooldown=\(kind == .credential || kind == .quota ? "5m" : "-")")
         if Thread.isMainThread {
             DispatchQueue.global(qos: .utility).async { self.recordFailure(lease: lease, kind: kind, for: instanceId) }
             return

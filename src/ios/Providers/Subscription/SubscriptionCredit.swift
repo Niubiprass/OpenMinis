@@ -180,6 +180,13 @@ enum SubscriptionBillingProtocol {
 
 @MainActor
 enum SubscriptionCreditAPI {
+    /// [T-subscription-log] Credits and check-in had no logging at all.
+    static let logger = AppLogger(category: "Subscription")
+
+    static func elapsed(since start: Date) -> String {
+        String(format: "%.2f", Date().timeIntervalSince(start))
+    }
+
     struct Context: Sendable {
         /// Keychain slot of the account this result belongs to — the account id.
         let instanceId: String
@@ -313,11 +320,15 @@ enum SubscriptionCreditAPI {
         let current = try await checkin(context)
         try requireCurrent(context)
         guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
-        if current.checkedIn { return .alreadyCheckedIn }
+        if current.checkedIn {
+            logger.info("check-in \(context.type.rawValue) already done today")
+            return .alreadyCheckedIn
+        }
         guard current.canClaim else {
             // "Device already used today" / "not eligible" is a definite answer
             // for today: remember it so the automatic pass stays quiet.
             let note = current.note ?? "当前账号暂不能签到"
+            logger.info("check-in \(context.type.rawValue) not allowed today: \(note)")
             SubscriptionCheckinLedger.blocked(key, requestDay: requestDay, note: note)
             throw SubscriptionBillingError(message: note, terminal: true)
         }
@@ -362,6 +373,7 @@ enum SubscriptionCreditAPI {
         try requireCurrent(context)
         guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
         SubscriptionCheckinLedger.confirmed(key, requestDay: requestDay, notify: true)
+        logger.info("check-in \(context.type.rawValue) accepted granted=\(receipt.granted.map { String(format: "%.2f", $0) } ?? "-")")
         return .accepted(receipt)
     }
 
@@ -398,16 +410,21 @@ enum SubscriptionCreditAPI {
         }
         let client = SubscriptionHTTPClient(allowedHosts: [host], timeout: 15, maxResponseBytes: 1_048_576)
         let response: HTTPURLResponse, data: Data
+        let started = Date()
         do {
             (response, data) = try await client.request(url: url, method: "POST", headers: headers,
                 body: JSONSerialization.data(withJSONObject: body))
         } catch {
             try requireCurrent(context)
+            // [T-subscription-log] Nothing in this module was ever logged, so a
+            // failed check-in or credit read left no trace at all.
+            Self.logger.warning("\(context.type.rawValue) \(path) failed after \(Self.elapsed(since: started))s: \(error.localizedDescription)")
             // Never replay a write whose reply was lost: it may have succeeded.
             throw SubscriptionBillingProtocol.fail(mutation
                 ? "没收到签到结果，请先刷新状态确认，避免重复领取"
                 : "查询失败，请检查网络后刷新")
         }
+        Self.logger.info("\(context.type.rawValue) \(path) status=\(response.statusCode) took \(Self.elapsed(since: started))s")
         try requireCurrent(context)
         guard (200..<300).contains(response.statusCode) else {
             throw SubscriptionBillingError(message: "请求未完成（HTTP \(response.statusCode)），请刷新状态", code: response.statusCode)

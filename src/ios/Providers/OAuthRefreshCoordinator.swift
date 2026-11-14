@@ -216,6 +216,9 @@ enum OAuthRefreshCoordinator {
             // new credential is stored (re-login, or a Keychain sync from a
             // peer), and only an explicit Sign Out removes the blob.
             log?("Refresh token invalid, marking instance for re-login (credentials kept): \(llmError)")
+            // [T-oauth-log] Token renewal failures were only handed to an
+            // optional caller closure, so many never reached the log file.
+            AppLogger(category: "OAuth").warning("\(providerName) refresh token rejected: \(llmError)")
             markNeedsReauth()
             throw LLMError.invalidAPIKey(detail: "\(providerName): refresh token invalid — \(llmError)")
         }
@@ -224,6 +227,7 @@ enum OAuthRefreshCoordinator {
         // concurrent winner may have refreshed); else keep the caller's copy.
         let fallback = current ?? existingStorage
         log?("Refresh failed, keeping existing token: \(error)")
+        AppLogger(category: "OAuth").warning("\(providerName) refresh failed (kept credentials): \(error)")
         if fallback.isExpired {
             log?("Existing token is also expired — re-auth required")
             throw LLMError.invalidAPIKey(detail: "\(providerName): token expired and refresh failed — \(error)")
