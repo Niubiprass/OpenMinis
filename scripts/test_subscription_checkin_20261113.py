@@ -146,6 +146,12 @@ class CheckinSwiftContract(unittest.TestCase):
     }
 '''
         fixture = (ROOT / 'scripts/fixtures/subscription_checkin_runtime_harness.swift').read_text()
+        # [T-subscription-log] The API logs through the production AppLogger, which is
+        # outside this harness's compile unit; fail here with a clear message instead of
+        # letting swiftc report "cannot find 'AppLogger' in scope".
+        if 'AppLogger(' in api:
+            self.assertIn('struct AppLogger', fixture,
+                          'SubscriptionCreditAPI now logs; its AppLogger stub must stay in the harness fixture')
         with tempfile.TemporaryDirectory(prefix='checkin-runtime-') as tmp:
             path, binary = Path(tmp) / 'Harness.swift', Path(tmp) / 'checkin'
             path.write_text('import Foundation\nimport CoreFoundation\n' + billing + policy + ledger + api + fixture)

@@ -1,4 +1,15 @@
 // App dependencies only are mocked; ledger, policy, checkin and claim are production code.
+// The production AppLogger needs CrashReporter/NSLog plumbing that the harness does not compile;
+// the check-in code only ever needs the sink, so the same minimal stub used by the other
+// Swift harnesses stands in for it (see scripts/test_compact_orphan_toolcall.swift).
+struct AppLogger {
+    let category: String
+    init(subsystem: String = "com.openminis.app", category: String) { self.category = category }
+    func info(_ message: @autoclosure () -> String) { }
+    func notice(_ message: @autoclosure () -> String) { }
+    func warning(_ message: @autoclosure () -> String) { }
+    func error(_ message: @autoclosure () -> String) { }
+}
 enum ProviderType: String, Sendable { case workBuddy, traeCN; var isDomesticSubscription: Bool { true } }
 enum KWWKAI { struct OAuthCredentials: Equatable, Sendable { let access: String } }
 struct SubscriptionTokenStorage { let provider: String; let credentials: KWWKAI.OAuthCredentials; let loginAccount: String?; var accessToken: String { credentials.access } }
