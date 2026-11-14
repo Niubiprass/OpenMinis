@@ -63,6 +63,10 @@ class CheckinSourceContracts(unittest.TestCase):
         self.assertIn('SubscriptionCreditAPI.claim(context, automatic: true)', auto)
         # Once per day: one combined toast, never stacked alerts.
         self.assertIn('MinisToast.show', auto)
+        # [T-checkin-exclude-blocked] An account that cannot check in today is
+        # skipped before the report, so it is never counted or mentioned.
+        self.assertIn('if SubscriptionCheckinPolicy.isBlocked(record, now: Date()) { continue }', auto)
+        self.assertIn('个账号已签到', auto)
         self.assertNotIn('UIAlertController', auto)
         self.assertIn('markNotified', auto)
         # Leaving the foreground stops the tick and drops the pending attempt.

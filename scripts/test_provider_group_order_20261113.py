@@ -34,50 +34,48 @@ class ProviderGroupOrderTests(unittest.TestCase):
         self.assertIn("seen.insert(instance.providerType).inserted", types)
         self.assertNotIn("isEnabled", types)
         self.assertNotIn("isVoiceOnly", types)
-        rows = block(VIEW, "private var listRows")
-        self.assertIn("ProviderGroupOrder.types(in: instances)", rows)
-        self.assertNotIn("isEnabled", rows)
+        section = block(VIEW, "private func groupSection(")
+        self.assertIn("store.instances.filter { $0.providerType == type }", section)
+        self.assertNotIn("isEnabled", section)
         build = block(PICKER, "private func buildSections()")
         self.assertIn("for type in ProviderGroupOrder.types(in: store.instances)", build)
         self.assertLess(build.index("ProviderGroupOrder.types"), build.index("instance.isEnabled"))
         self.assertNotIn("ProviderType.allCases", VIEW + build)
 
-    def test_group_title_is_a_row_with_the_native_handle(self):
-        # [T-provider-group-drag-v3] The title has to be a LIST ROW: the list
-        # engine only gives reorder handles to rows, and a header can carry
-        # neither the handle nor the drag. This also forbids the custom
-        # gesture that never reacted on device.
-        self.assertNotIn('GroupDragHandle', VIEW)
-        self.assertNotIn('GroupFramesKey', VIEW)
-        self.assertNotIn('highPriorityGesture', VIEW)
-        self.assertNotIn('ProviderGroupOrderSheet', VIEW)
-        self.assertNotIn('分组顺序', VIEW)
-        self.assertIn('ForEach(listRows) { entry in', VIEW)
-        self.assertIn('.onMove(perform: moveRows)', VIEW)
-        entry = block(VIEW, 'struct ProviderListEntry')
-        self.assertIn('case group(ProviderType)', entry)
-        self.assertIn('case instance(ProviderInstance)', entry)
+    def test_groups_keep_their_original_section_card_layout(self):
+        # The UI must stay the original grouped list: one Section per provider
+        # type, native header outside, one card of rows inside. The flattened
+        # single-section rewrite and per-row card backgrounds were rejected.
+        self.assertIn("ForEach(ProviderGroupOrder.types(in: store.instances), id: \\.self) { type in", VIEW)
+        self.assertIn('groupSection(type)', VIEW)
+        section = block(VIEW, 'private func groupSection(')
+        self.assertIn('Section {', section)
+        self.assertIn('} header: {', section)
+        self.assertIn('.onMove { source, destination in', section)
+        self.assertIn('moveInstances(in: type, from: source, to: destination)', section)
+        for gone in ('ProviderListEntry', 'rowBackground', 'CardCornerShape',
+                     'listRowBackground', 'ProviderGroupOrderSheet', '分组顺序'):
+            self.assertNotIn(gone, VIEW)
 
-    def test_each_group_still_looks_like_its_own_card(self):
-        bg = block(VIEW, 'private func rowBackground(')
-        self.assertIn('RoundedRectangle(cornerRadius: 12', bg)
-        self.assertIn('.padding(.top, entry.isFirst ? 8 : 0)', bg)
-        self.assertIn('.padding(.bottom, entry.isLast ? 8 : 0)', bg)
-        rows = block(VIEW, 'private var listRows')
-        self.assertIn('isFirst: true, isLast: false', rows)
-        self.assertIn('isLast: index == members.count - 1', rows)
-        self.assertIn('.listRowSeparator(.hidden)', VIEW)
-        self.assertIn('secondarySystemGroupedBackground', VIEW)
+    def test_header_is_the_grip_and_adds_no_new_icon(self):
+        section = block(VIEW, 'private func groupSection(')
+        self.assertNotIn('line.3.horizontal', section)
+        self.assertIn('GroupHeaderDrag(enabled: editMode == .active', section)
+        self.assertIn('.contentShape(Rectangle())', section)
+        modifier = block(VIEW, 'struct GroupHeaderDrag')
+        self.assertIn('content.onDrag {', modifier)
+        self.assertIn('NSItemProvider(object: type.rawValue as NSString)', modifier)
+        delegate = block(VIEW, 'struct GroupDropDelegate')
+        self.assertIn('func performDrop(info: DropInfo) -> Bool', delegate)
+        self.assertIn('perform(source, target)', delegate)
 
-    def test_group_order_comes_from_title_rows_only(self):
-        move = block(VIEW, 'private func moveRows(')
-        self.assertIn('case .group(let type):', move)
-        self.assertIn('if !types.contains(type) { types.append(type) }', move)
-        self.assertIn('members[instance.providerType, default: []].append(instance.id)', move)
-        self.assertIn('Set(ids) == Set(instances.map(\\.id))', move)
+    def test_group_drop_only_reorders_groups(self):
+        move = block(VIEW, 'private func moveGroup(from source: ProviderType')
+        self.assertIn('ProviderGroupOrder.types(in: instances)', move)
+        self.assertIn('types.remove(at: fromIndex)', move)
+        self.assertIn('types.insert(source, at: insertAt)', move)
+        self.assertIn('ProviderGroupOrder.instanceIDs(in: instances, orderedTypes: types)', move)
         self.assertIn('store.reorderInstances(ids)', move)
-        # A provider row must never decide where a group sits.
-        self.assertNotIn('types.append(instance.providerType)', move.split('for instance in instances')[0])
 
     def test_instance_and_shadow_voice_behaviour_is_kept(self):
         self.assertIn('allowsFullSwipe: false', VIEW)

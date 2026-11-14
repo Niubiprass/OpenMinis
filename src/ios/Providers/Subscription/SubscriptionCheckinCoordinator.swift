@@ -241,6 +241,10 @@ enum SubscriptionAutoCheckin {
                     }
                     record = SubscriptionCheckinLedger.record(key)
                 }
+                // [T-checkin-exclude-blocked] An account the server says cannot
+                // check in today is OUT of the report entirely: it is not a
+                // success, not a failure, and never counted or mentioned.
+                if SubscriptionCheckinPolicy.isBlocked(record, now: Date()) { continue }
                 if SubscriptionCheckinPolicy.needsSuccessNotice(record, now: Date()) {
                     noticeKeys.append(key)
                 } else if SubscriptionCheckinPolicy.needsReminder(record, now: Date()) {
@@ -261,10 +265,21 @@ enum SubscriptionAutoCheckin {
         if !noticeKeys.isEmpty {
             noticeKeys.forEach { SubscriptionCheckinLedger.markNotified($0) }
             reminderKeys.forEach { SubscriptionCheckinLedger.markReminded($0) }
-            MinisToast.show(reminderKeys.isEmpty ? "今日已签到" : "\(noticeKeys.count) 个账号今日已签到，\(reminderKeys.count) 个还未完成")
+            // Only accounts that can check in appear here; blocked ones were
+            // skipped above and are never counted.
+            // Colour + 3s: a white one-second pill could not be told apart from
+            // a failure. Green = all good, red = anything failed.
+            if reminderKeys.isEmpty {
+                MinisToast.show("\(noticeKeys.count) 个账号已签到", duration: 3.0,
+                                systemImage: "checkmark.circle.fill", tint: .systemGreen)
+            } else {
+                MinisToast.show("\(noticeKeys.count) 个账号已签到，\(reminderKeys.count) 个签到失败",
+                                duration: 3.6, systemImage: "exclamationmark.circle.fill", tint: .systemRed)
+            }
         } else if !reminderKeys.isEmpty {
             reminderKeys.forEach { SubscriptionCheckinLedger.markReminded($0) }
-            MinisToast.show("\(reminderKeys.count) 个账号今天还没签到成功，稍后再试")
+            MinisToast.show("\(reminderKeys.count) 个账号签到失败", duration: 3.6,
+                            systemImage: "exclamationmark.circle.fill", tint: .systemRed)
         }
     }
 }

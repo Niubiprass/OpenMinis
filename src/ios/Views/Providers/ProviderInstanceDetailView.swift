@@ -622,7 +622,8 @@ struct ProviderInstanceDetailView: View {
                     // the applied counts describe the same refresh, and a second
                     // grey row read as unrelated noise.
                     if let source = fetchSource {
-                        Label(fetchSummary.map { "Loaded from \(source) · \($0)" } ?? "Loaded from \(source)",
+                        let sourceText = AppLocalizedFormat("Loaded from %@", source)
+                        Label(fetchSummary.map { "\(sourceText) · \($0)" } ?? sourceText,
                               systemImage: "checkmark.circle")
                             .font(.caption)
                             .foregroundStyle(.green)

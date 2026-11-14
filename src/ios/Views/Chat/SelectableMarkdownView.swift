@@ -76,17 +76,21 @@ enum MinisToast {
     /// Show a toast with an already-localized message. Safe from any thread.
     /// `systemImage` sets the leading icon (default: success checkmark); pass an
     /// error glyph like "exclamationmark.triangle.fill" for failures.
+    /// `tint` colours the capsule so success and failure are distinguishable at
+    /// a glance — a one-second white pill could not be read either way.
     static func show(_ message: String, duration: TimeInterval = 1.6,
-                     systemImage: String = "checkmark.circle.fill") {
+                     systemImage: String = "checkmark.circle.fill",
+                     tint: UIColor? = nil) {
         if Thread.isMainThread {
-            present(message, duration: duration, systemImage: systemImage)
+            present(message, duration: duration, systemImage: systemImage, tint: tint)
         } else {
-            DispatchQueue.main.async { present(message, duration: duration, systemImage: systemImage) }
+            DispatchQueue.main.async { present(message, duration: duration, systemImage: systemImage, tint: tint) }
         }
     }
 
     private static func present(_ message: String, duration: TimeInterval,
-                                systemImage: String = "checkmark.circle.fill") {
+                                systemImage: String = "checkmark.circle.fill",
+                                tint: UIColor? = nil) {
         guard let window = keyWindow() else { return }
 
         let label = UILabel()
@@ -103,7 +107,7 @@ enum MinisToast {
         check.translatesAutoresizingMaskIntoConstraints = false
 
         let capsule = UIView()
-        capsule.backgroundColor = UIColor.black.withAlphaComponent(0.8)
+        capsule.backgroundColor = (tint ?? UIColor.black).withAlphaComponent(tint == nil ? 0.8 : 0.92)
         capsule.layer.cornerRadius = 18
         capsule.layer.cornerCurve = .continuous
         capsule.translatesAutoresizingMaskIntoConstraints = false
@@ -123,7 +127,9 @@ enum MinisToast {
             label.topAnchor.constraint(equalTo: capsule.topAnchor, constant: 10),
             label.bottomAnchor.constraint(equalTo: capsule.bottomAnchor, constant: -10),
             capsule.centerXAnchor.constraint(equalTo: window.centerXAnchor),
-            capsule.bottomAnchor.constraint(equalTo: window.safeAreaLayoutGuide.bottomAnchor, constant: -48),
+            // [T-toast-top] Show it from the top edge: a bottom toast covered the
+            // composer and read as part of the input bar rather than a notice.
+            capsule.topAnchor.constraint(equalTo: window.safeAreaLayoutGuide.topAnchor, constant: 8),
             capsule.leadingAnchor.constraint(greaterThanOrEqualTo: window.leadingAnchor, constant: 24),
             capsule.trailingAnchor.constraint(lessThanOrEqualTo: window.trailingAnchor, constant: -24),
         ])
