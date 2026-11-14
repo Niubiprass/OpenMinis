@@ -63,7 +63,7 @@ class SourceContracts(unittest.TestCase):
     def test_real_sources_and_legacy_projection(self):
         for symbol in ['struct QuotaInfo {', 'var balanceUSD: Double? = nil',
                        'var amountUSD: Double? = nil', 'enum Kind { case used, balance }',
-                       'func cachedQuota(instanceId:', 'let ttl: TimeInterval = 300']:
+                       'func cachedQuota(instanceId:', 'let ttl: TimeInterval = 15 * 60']:
             self.assertIn(symbol, SOURCE)
         self.assertIn('static func parseSub2API(', PROTOCOL)
         self.assertIn('static func parseNewAPI(', PROTOCOL)
