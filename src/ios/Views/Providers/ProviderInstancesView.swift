@@ -320,7 +320,7 @@ struct ProviderInstancesView: View {
                     target: type,
                     dragging: $draggingGroup,
                     targetHighlight: $dropTarget,
-                    perform: { from, to in moveGroup(from, before: to) }
+                    perform: { source, target in moveGroup(from: source, before: target) }
                 ))
             }
         }

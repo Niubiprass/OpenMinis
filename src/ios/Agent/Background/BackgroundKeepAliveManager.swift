@@ -93,7 +93,11 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     /// requires a current successful audio-session apply AND a running source.
     /// Never infer survival from switches or an optimistic engine-owner flag.
     var enhancedBackgroundEffective: Bool {
-        enhancedBackgroundEnabled && backgroundSpeakEnabled && backgroundExecutionIsBacked
+        // [T-bka-match-official] Official only asks for the two switches. The
+        // extra "proven backed by audio" requirement made the app declare
+        // itself un-backed (and stop) whenever a route change briefly paused
+        // playback, which is why tasks died after ~20s in the background.
+        enhancedBackgroundEnabled && backgroundSpeakEnabled
     }
 
     /// Synchronous readback used at finite-task expiry. In-flight applies,
@@ -241,7 +245,6 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     private var silentAudioWanted: Bool {
         isActive && enhancedBackgroundEnabled && backgroundSpeakEnabled
             && appIsInBackground && silentAudioSuspendCount == 0
-            && !AudioSessionCoordinator.shared.keepAlivePlaybackBlocked
     }
 
     /// [T-bg-keepalive-debounce] Pending debounced stop of silent audio. When
@@ -295,7 +298,7 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
 
     /// True if the keep-alive engine is genuinely running right now.
     var silentAudioIsPlaying: Bool {
-        (audioEngine?.isRunning ?? false) && (silentPlayerNode?.isPlaying ?? false)
+        audioEngine?.isRunning ?? false
     }
     /// Last current successful session application, independent of engine intent.
     var audioSessionIsActive: Bool { AudioSessionCoordinator.shared.appliedIntent != nil }
@@ -1392,9 +1395,13 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
                 self.stopSilentAudio(reason: "start_no_longer_wanted")
                 return
             }
-            guard applied, coordinator.keepAlivePlaybackApplied else {
-                self.scheduleSilentAudioActivationRetry()
-                return
+            if !applied || !coordinator.keepAlivePlaybackApplied {
+                // [T-bka-match-official] The silent ENGINE is what keeps the
+                // process alive; official starts it right after declaring the
+                // intent instead of waiting for the session acknowledgement.
+                // Waiting here meant that any interruption left the app with no
+                // keep-alive at all, so iOS suspended it ~20s after backgrounding.
+                self.logger.info("[BKA][Start] session not applied yet (applied=\(applied)) — starting engine anyway")
             }
             if self.silentAudioIsPlaying {
                 self.silentAudioActivationRetries = 0
