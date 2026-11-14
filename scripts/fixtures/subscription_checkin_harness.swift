@@ -42,7 +42,9 @@ expect(!SubscriptionCheckinPolicy.needsSuccessNotice(record, now: noon), "attemp
 record.completedDay = "2026-01-02"
 expect(!SubscriptionCheckinPolicy.canAttempt(record, now: noon.addingTimeInterval(6 * 3600)), "completed stops retry")
 expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon), "completed needs no reminder")
-expect(SubscriptionCheckinPolicy.needsSuccessNotice(record, now: noon), "success notice once")
+expect(!SubscriptionCheckinPolicy.needsSuccessNotice(record, now: noon), "legacy or discovered completion is silent")
+record.receiptDay = "2026-01-02"
+expect(SubscriptionCheckinPolicy.needsSuccessNotice(record, now: noon), "new receipt success notice once")
 record.notifiedDay = "2026-01-02"
 expect(!SubscriptionCheckinPolicy.needsSuccessNotice(record, now: noon), "success notice only once")
 
@@ -60,4 +62,16 @@ expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon.addingTimeInte
 expect(SubscriptionCheckinPolicy.needsReminder(record, now: noon.addingTimeInterval(2 * 3600)), "reminder at 2h")
 expect(SubscriptionCheckinPolicy.canAttempt(record, now: noon), "reminder does not consume attempt")
 
+// Definite ineligibility is never a daily reminder either.
+record = SubscriptionCheckinRecord()
+record.blockedDay = "2026-01-02"
+for hours in [0.0, 2.0, 8.0] {
+    let later = noon.addingTimeInterval(hours * 3600)
+    expect(!SubscriptionCheckinPolicy.canAttempt(record, now: later), "blocked has zero same-day retries")
+    expect(!SubscriptionCheckinPolicy.needsReminder(record, now: later), "blocked has zero same-day reminders")
+    expect(!SubscriptionCheckinPolicy.needsSuccessNotice(record, now: later), "blocked has no success")
+}
+expect(SubscriptionCheckinPolicy.canAttempt(record, now: tomorrow), "blocked expires next day")
+let legacy = try! JSONDecoder().decode(SubscriptionCheckinRecord.self, from: Data("{\"completedDay\":\"2026-01-02\"}".utf8))
+expect(!SubscriptionCheckinPolicy.needsSuccessNotice(legacy, now: noon), "legacy completion silent")
 print("subscription-checkin-ok")

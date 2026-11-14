@@ -102,7 +102,60 @@ class CheckinSourceContracts(unittest.TestCase):
         self.assertNotIn('Task.detached', text)
 
 
+    def test_silent_terminal_and_receipt_contracts(self):
+        coord, credit = COORD.read_text(), CREDIT.read_text()
+        policy = section(coord, 'enum SubscriptionCheckinPolicy', '// END SUBSCRIPTION_CHECKIN_POLICY_PURE')
+        self.assertIn('record.receiptDay == day(now)', policy)
+        self.assertEqual(policy.count('if record.blockedDay == today { return false }'), 2)
+        self.assertIn('notify: Bool = false', coord)
+        self.assertIn('notify: false, now: now', coord)
+        self.assertIn('noticeKeys = noticeKeys.filter', coord)
+        self.assertIn('reminderKeys = reminderKeys.filter', coord)
+        read = section(credit, '    static func checkin(', '    private static func queryCheckin(')
+        for required in ['SubscriptionCheckinLedger.cachedStatus(key)', 'running.day == requestDay',
+                         'SubscriptionCheckinLedger.remember(value', 'try requireCurrent(context)',
+                         'guard requestDay == SubscriptionCheckinPolicy.day(Date())', 'traeCheckinRefusal(error)']:
+            self.assertIn(required, read)
+        self.assertNotIn('SubscriptionCheckinLedger.confirmed', read)
+        claim = section(credit, '    static func claim(', '    private static func post(')
+        catch = claim[claim.index('        } catch {'):]
+        self.assertLess(catch.index('try requireCurrent(context)'), catch.index('SubscriptionCheckinLedger.blocked'))
+        self.assertIn('notify: true', claim)
+        accounts = section(ACCOUNTS.read_text(), '    private func claim()', '\n}')
+        self.assertLess(accounts.index('needsSuccessNotice'), accounts.index('markNotified'))
+        self.assertLess(accounts.index('markNotified'), accounts.index('MinisToast.show'))
+
+
 class CheckinSwiftContract(unittest.TestCase):
+    def test_actual_ledger_and_api_behaviour(self):
+        compiler = shutil.which('swiftc')
+        if not compiler:
+            if os.getenv('V64R_REQUIRE_SWIFT') == '1':
+                self.fail('Swift required; check-in runtime NOT executed')
+            self.skipTest('Swift unavailable; production ledger/API harness NOT compiled/executed')
+        coord, credit = COORD.read_text(), CREDIT.read_text()
+        policy = section(coord, '// BEGIN SUBSCRIPTION_CHECKIN_POLICY_PURE', '// END SUBSCRIPTION_CHECKIN_POLICY_PURE')
+        ledger = section(coord, '@MainActor\nenum SubscriptionCheckinLedger', '/// Foreground only:')
+        billing = section(credit, '// BEGIN SUBSCRIPTION_BILLING_PURE', '// END SUBSCRIPTION_BILLING_PURE')
+        api = section(credit, '@MainActor\nenum SubscriptionCreditAPI', '    private static func post(')
+        # Replace only transport and app dependencies; execute the actual production methods.
+        api += '''    private static func post(_ context: Context, host: String, path: String,
+            body: [String: Any], mutation: Bool = false) async throws -> [String: Any] {
+            try await CheckinTransport.send(mutation: mutation)
+        }
+    }
+'''
+        fixture = (ROOT / 'scripts/fixtures/subscription_checkin_runtime_harness.swift').read_text()
+        with tempfile.TemporaryDirectory(prefix='checkin-runtime-') as tmp:
+            path, binary = Path(tmp) / 'Harness.swift', Path(tmp) / 'checkin'
+            path.write_text('import Foundation\nimport CoreFoundation\n' + billing + policy + ledger + api + fixture)
+            result = subprocess.run([compiler, '-swift-version', '5', '-parse-as-library', str(path), '-o', str(binary)], capture_output=True, text=True, timeout=180)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = subprocess.run([str(binary)], env={**os.environ, 'HOME': tmp}, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('subscription-checkin-runtime-ok', result.stdout)
+
+
     def test_actual_policy_behaviour(self):
         compiler = shutil.which('swiftc')
         if not compiler:

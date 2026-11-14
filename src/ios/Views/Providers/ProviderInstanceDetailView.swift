@@ -30,6 +30,9 @@ struct ProviderInstanceDetailView: View {
     @State private var fetchError: String?
     @State private var fetchWarnings: [String] = []
     @State private var fetchSource: String?
+    /// [T-model-refresh-summary] "Found N / added X / removed Y" for the last
+    /// successful refresh, measured against the list that was on screen.
+    @State private var fetchSummary: String?
     @State private var showDeleteConfirm = false
     @State private var showExportShare = false
     @State private var showAddCustomModel = false
@@ -620,6 +623,14 @@ struct ProviderInstanceDetailView: View {
                         Label("Loaded from \(source)", systemImage: "checkmark.circle")
                             .font(.caption)
                             .foregroundStyle(.green)
+                    }
+                    // [T-model-refresh-summary] Same information the refresh
+                    // actually applied: how many the provider returned and what
+                    // changed on screen (custom rows and voice seeds preserved).
+                    if let summary = fetchSummary {
+                        Label(summary, systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     // Warnings (yellow) — diagnostic tips for each fallback step
                     ForEach(fetchWarnings, id: \.self) { warning in
@@ -1592,13 +1603,18 @@ struct ProviderInstanceDetailView: View {
         fetchError = nil
         fetchWarnings = []
         fetchSource = nil
+        fetchSummary = nil
         Task {
             defer { isFetchingModels = false }
             do {
                 let result = try await ProviderConfigStore.fetchModelsWithFallback(freshInstance, forceRefresh: true)
-                store.replaceEntries(for: freshInstance.id, models: result.models)
+                try Task.checkCancellation()
+                guard let diff = store.replaceEntries(for: freshInstance.id, models: result.models) else { return }
                 fetchWarnings = result.warnings
                 fetchSource = result.source
+                // [T-model-refresh-summary] Counts reflect the applied list,
+                // including preserved custom models and voice templates.
+                fetchSummary = "找到 \(diff.found) 个模型（新增 \(diff.added)，移除 \(diff.removed)）"
             } catch {
                 fetchError = FriendlyErrorText.sanitize(error) ?? AppLocalized("供应商返回了无法识别的错误")
             }

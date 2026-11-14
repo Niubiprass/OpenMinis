@@ -4,6 +4,9 @@ Run: python3 scripts/test_provider_group_order_20261113.py
 """
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +36,7 @@ class ProviderGroupOrderTests(unittest.TestCase):
         self.assertIn("seen.insert(instance.providerType).inserted", types)
         self.assertNotIn("isEnabled", types)
         self.assertNotIn("isVoiceOnly", types)
-        self.assertIn("ForEach(ProviderGroupOrder.types(in: store.instances)", VIEW)
+        self.assertIn("ProviderGroupOrder.rows(in: store.instances)", VIEW)
         build = block(PICKER, "private func buildSections()")
         self.assertIn("for type in ProviderGroupOrder.types(in: store.instances)", build)
         self.assertLess(build.index("ProviderGroupOrder.types"), build.index("instance.isEnabled"))
@@ -45,33 +48,61 @@ class ProviderGroupOrderTests(unittest.TestCase):
         self.assertIn("instances.filter { $0.providerType == type }.map(\\.id)", ids)
         self.assertNotIn("isEnabled", ids)
         self.assertNotIn("sorted", ids)
-        move = block(VIEW, "private func moveGroups(")
-        self.assertIn("types.move(fromOffsets: source, toOffset: destination)", move)
-        self.assertIn("ProviderGroupOrder.instanceIDs(in: instances, orderedTypes: types)", move)
+        move = block(VIEW, "private func moveRows(")
+        self.assertIn("ProviderGroupOrder.reorderedIDs(", move)
         self.assertIn("store.reorderInstances(orderedIds)", move)
+        logic = block(VIEW, "static func reorderedIDs(")
+        self.assertIn("if case .group(let type) = row { return type }", logic)
+        self.assertIn("instanceIDs(in: instances, orderedTypes: orderedTypes)", logic)
+        self.assertNotIn("orderedTypes.append(instance.providerType)", logic)
 
     def test_groups_are_dragged_inline_in_edit_mode(self):
-        # Groups drag in the same list as providers: no sheet, no second screen.
         self.assertNotIn("showGroupOrder", VIEW)
         self.assertNotIn("ProviderGroupOrderSheet", VIEW)
         self.assertIn(".environment(\\.editMode, $editMode)", VIEW)
-        editing = block(VIEW, "if editMode.isEditing, ProviderGroupOrder.types")
-        self.assertIn("ForEach(ProviderGroupOrder.types(in: store.instances)", editing)
-        self.assertIn(".onMove(perform: moveGroups)", editing)
-        self.assertIn("分组顺序", editing)
-        # Both drag surfaces share one persistence path.
-        self.assertIn("moveGroups", VIEW)
-        self.assertIn("moveInstances(in: type, from: source, to: destination)", VIEW)
+        self.assertIn("ForEach(listRows)", VIEW)
+        self.assertIn(".onMove(perform: moveRows)", VIEW)
+        self.assertIn("groupHeaderRow(type)", VIEW)
+        self.assertNotIn(".onMove(perform: moveGroups)", VIEW)
+        self.assertIn("allowsFullSwipe: false", VIEW)
+        swipe = block(VIEW, ".swipeActions(")
+        self.assertIn("pendingDeleteInstance = instance", swipe)
+        self.assertNotIn("store.removeInstance", swipe)
+        self.assertIn("presenting: pendingDeleteInstance", VIEW)
+        self.assertIn("store.removeInstance(instance.id)", VIEW)
+        self.assertIn(".swipeEditDestination(item: $editingInstanceId)", VIEW)
 
     def test_instance_drag_and_shadow_voice_are_retained(self):
-        self.assertIn("moveInstances(in: type, from: source, to: destination)", VIEW)
-        move = block(VIEW, "private func moveInstances(in")
-        self.assertIn("sectionIter.next() ?? inst.id", move)
-        self.assertIn("store.reorderInstances(newGlobalIds)", move)
+        move = block(VIEW, "static func reorderedIDs(")
+        self.assertIn("member.providerType == instance.providerType", move)
+        self.assertIn("orderedIDs = instances.map", move)
+        self.assertIn("members.next() ?? instance.id", move)
         self.assertIn("let shadows = store.shadowVoiceProviders()", VIEW)
         self.assertIn("store.hasFoldedShadowDuplicates()", VIEW)
         self.assertIn("ForEach(shadows)", VIEW)
         self.assertIn("ShadowVoiceProviderDetailView(instanceId: shadow.instanceId)", VIEW)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "swiftc unavailable locally; run production Swift logic on Swift-enabled CI")
+    def test_production_swift_drag_logic(self):
+        # Compile the real production enums, not a Python rewrite. Only the two
+        # model types are stubbed to avoid SwiftUI, Keychain and app dependencies.
+        prelude = '''import Foundation
+        enum ProviderType: String { case a, b, c }
+        struct ProviderInstance { let id: String; let providerType: ProviderType }
+        '''
+        source = prelude + "\nenum ProviderGroupOrder {" + block(VIEW, "enum ProviderGroupOrder") + "}\n"
+        source += "enum ProviderListRow: Identifiable {" + block(VIEW, "enum ProviderListRow") + "}\n"
+        source += (ROOT / "scripts/fixtures/provider_group_order_main.swift").read_text()
+        with tempfile.TemporaryDirectory(prefix="provider-group-order-") as directory:
+            main = Path(directory) / "main.swift"
+            binary = Path(directory) / "drag-tests"
+            main.write_text(source)
+            compiled = subprocess.run([shutil.which("swiftc"), str(main), "-o", str(binary)],
+                                      capture_output=True, text=True, timeout=120)
+            self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
+            executed = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(executed.returncode, 0, executed.stdout + executed.stderr)
+            self.assertIn("PASS: 92 production Swift drag checks", executed.stdout)
 
     def test_picker_keeps_saved_order_after_selection_and_reload(self):
         capped = block(PICKER, "private var cappedEntriesByInstance")

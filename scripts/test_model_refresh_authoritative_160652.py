@@ -46,6 +46,21 @@ def main():
          "grace expiry no longer decides deletion")
     need("absentSince: nil" in store, "returned entries carry no stale marker")
 
+    # Display counts must describe the applied list, not falsely count preserved
+    # custom/voice rows as removed or duplicate API rows as extra models.
+    summary = store.index('let finalModelIds =')
+    need(summary > store.index('config.modelEntries.append(contentsOf: enrichedCustom)'),
+         'summary measured after custom preservation')
+    need(summary > store.index('config.modelEntries.append(contentsOf: preservedVoice)'),
+         'summary measured after voice preservation')
+    need('ModelListDiff(found: models.count,' in store, 'found count uses deduplicated models')
+    need('removed: beforeSet.subtracting(finalSet).count' in store, 'removed count uses final applied set')
+    need('added: finalSet.subtracting(beforeSet).count' in store, 'added count uses final applied set')
+    detail = (ROOT / 'src/ios/Views/Providers/ProviderInstanceDetailView.swift').read_text()
+    need('guard let diff = store.replaceEntries' in detail, 'skipped application cannot display success')
+    need('fetchSummary = nil' in detail and 'if let summary = fetchSummary' in detail,
+         'summary clears at refresh start and is displayed')
+
     # Restoration.
     need("struct RetiredModelOverride: Codable" in store, "tombstone type exists")
     need("retiredModelTTL: TimeInterval = 90 * 24 * 60 * 60" in store, "tombstones expire")

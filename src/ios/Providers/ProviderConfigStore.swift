@@ -1922,10 +1922,20 @@ final class ProviderConfigStore: ObservableObject {
     /// When a built-in model matches a previously custom entry, the custom entry's UUID and
     /// overrides are preserved and the entry is converted to non-custom (so the user's
     /// selected model keeps working after refresh).
-    func replaceEntries(for instanceId: String, models rawModels: [LLMModel], caller: String = #function) {
-        guard !removedSubscriptionInstanceIds.contains(instanceId) else { return }
+    /// What a refresh actually changed on screen. Measured after custom rows and
+    /// voice seeds were preserved, so the counts match the visible list.
+    struct ModelListDiff {
+        let found: Int
+        let added: Int
+        let removed: Int
+        let kept: Int
+    }
+
+    @discardableResult
+    func replaceEntries(for instanceId: String, models rawModels: [LLMModel], caller: String = #function) -> ModelListDiff? {
+        guard !removedSubscriptionInstanceIds.contains(instanceId) else { return nil }
         if let instance = instance(for: instanceId), instance.providerType.isDomesticSubscription,
-           !instance.computeHasAnyCredential() { return } // sign-out / reauth during a fetch
+           !instance.computeHasAnyCredential() { return nil } // sign-out / reauth during a fetch
         // [T-icloud-provider-sync-consistency] Deduplicate the incoming model
         // list by id BEFORE building entries. Some provider /v1/models
         // endpoints (notably the OpenAI-compatible OAuth path) can return the
@@ -2139,7 +2149,17 @@ final class ProviderConfigStore: ObservableObject {
             logger.info("[ModelList] replaceEntries caller=\(caller) instance=\(instanceLabel)(\(instanceId.prefix(8))) pruned \(prunedEntryIds.count) stale entries from groups=[\(affectedGroups.joined(separator: ","))]")
         }
 
+        // [T-model-refresh-summary] What the screen will now show, measured
+        // after custom rows and voice seeds were preserved.
+        let finalModelIds = config.modelEntries.filter { $0.providerInstanceId == instanceId }.map(\.baseModel.id)
+        let finalSet = Set(finalModelIds)
+        let diff = ModelListDiff(found: models.count,
+                                 added: finalSet.subtracting(beforeSet).count,
+                                 removed: beforeSet.subtracting(finalSet).count,
+                                 kept: finalSet.intersection(beforeSet).count)
+
         save()
+        return diff
     }
 
     // MARK: - Model Groups

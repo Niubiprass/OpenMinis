@@ -40,6 +40,9 @@ struct SubscriptionCheckinReceipt: Equatable, Sendable {
 struct SubscriptionBillingError: LocalizedError, Sendable {
     let message: String
     var code: Int? = nil
+    /// A definite business answer for today (already checked in, device used,
+    /// not eligible). The automatic pass must not retry or remind again today.
+    var terminal: Bool = false
     var errorDescription: String? { message }
 }
 
@@ -154,6 +157,13 @@ enum SubscriptionBillingProtocol {
                                    reward: reward, note: note)
     }
 
+    /// Only this explicit Trae business refusal is terminal for today. HTTP,
+    /// transport, parsing and other business errors keep the normal retry path.
+    static func traeCheckinRefusal(_ error: Error) -> SubscriptionCheckin? {
+        guard let error = error as? SubscriptionBillingError, error.code == 9095 else { return nil }
+        return SubscriptionCheckin(checkedIn: false, canClaim: false, reward: nil, note: error.message)
+    }
+
     static func workBuddyClaim(_ root: [String: Any]) throws -> SubscriptionCheckinReceipt {
         let data = try checked(root, wrapped: true)
         return SubscriptionCheckinReceipt(granted: try data["credit"].map { try quantity($0) })
@@ -233,27 +243,40 @@ enum SubscriptionCreditAPI {
         }
     }
 
-    private static var statusTasks: [String: (id: UUID, task: Task<SubscriptionCheckin, Error>)] = [:]
+    private static var statusTasks: [String: (id: UUID, day: String, task: Task<SubscriptionCheckin, Error>)] = [:]
 
-    static func checkin(_ context: Context) async throws -> SubscriptionCheckin {
+    static func checkin(_ context: Context, forceRefresh: Bool = false) async throws -> SubscriptionCheckin {
         try requireCurrent(context)
         let key = SubscriptionCheckinLedger.key(context)
-        if SubscriptionCheckinLedger.completed(key) {
-            return SubscriptionCheckin(checkedIn: true, canClaim: false, reward: nil)
+        if let cached = SubscriptionCheckinLedger.cachedStatus(key), cached.checkedIn || !forceRefresh {
+            return cached
         }
-        if let running = statusTasks[key] {
-            let value = try await running.task.value
-            try requireCurrent(context)
-            return value
-        }
-        let id = UUID()
         let requestDay = SubscriptionCheckinPolicy.day(Date())
-        let task = Task { @MainActor in try await queryCheckin(context) }
-        statusTasks[key] = (id, task)
+        let id: UUID
+        let task: Task<SubscriptionCheckin, Error>
+        if let running = statusTasks[key], running.day == requestDay {
+            id = running.id
+            task = running.task
+        } else {
+            id = UUID()
+            // The shared read is independent of any one waiter's cancellation.
+            // Every waiter validates its own account and day before remembering.
+            task = Task { @MainActor in
+                do { return try await queryCheckin(context) }
+                catch {
+                    try requireCurrent(context)
+                    guard context.type == .traeCN,
+                          let refused = SubscriptionBillingProtocol.traeCheckinRefusal(error) else { throw error }
+                    return refused
+                }
+            }
+            statusTasks[key] = (id, requestDay, task)
+        }
         defer { if statusTasks[key]?.id == id { statusTasks[key] = nil } }
         let value = try await task.value
         try requireCurrent(context)
-        if value.checkedIn { SubscriptionCheckinLedger.confirmed(key, requestDay: requestDay) }
+        guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
+        SubscriptionCheckinLedger.remember(value, key: key, requestDay: requestDay)
         return value
     }
 
@@ -288,9 +311,15 @@ enum SubscriptionCreditAPI {
         // One fresh status query under the same lock for manual and automatic
         // paths. Cached completion above never dispatches another server request.
         let current = try await checkin(context)
+        try requireCurrent(context)
+        guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
         if current.checkedIn { return .alreadyCheckedIn }
         guard current.canClaim else {
-            throw SubscriptionBillingProtocol.fail(current.note ?? "当前账号暂不能签到")
+            // "Device already used today" / "not eligible" is a definite answer
+            // for today: remember it so the automatic pass stays quiet.
+            let note = current.note ?? "当前账号暂不能签到"
+            SubscriptionCheckinLedger.blocked(key, requestDay: requestDay, note: note)
+            throw SubscriptionBillingError(message: note, terminal: true)
         }
         try requireCurrent(context)
         guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
@@ -300,24 +329,39 @@ enum SubscriptionCreditAPI {
                   parent.isEnabled, parent.subscriptionAutoCheckin else { throw CancellationError() }
         }
         let receipt: SubscriptionCheckinReceipt
-        switch context.type {
-        case .workBuddy:
-            let root = try await post(context, host: "www.codebuddy.cn",
-                path: "/v2/billing/meter/daily-checkin", body: [:], mutation: true)
-            receipt = try SubscriptionBillingProtocol.workBuddyClaim(root)
-        case .traeCN:
-            // Only use the identity recorded by this account's successful login.
-            // A new/random id would misrepresent a device and bypass status.
-            guard let device = TraeCredential(context.credentials).deviceID, !device.isEmpty else {
-                throw SubscriptionBillingProtocol.fail("登录信息缺少签到所需的设备标识，请重新登录")
+        do {
+            switch context.type {
+            case .workBuddy:
+                let root = try await post(context, host: "www.codebuddy.cn",
+                    path: "/v2/billing/meter/daily-checkin", body: [:], mutation: true)
+                receipt = try SubscriptionBillingProtocol.workBuddyClaim(root)
+            case .traeCN:
+                // Only use the identity recorded by this account's successful login.
+                // A new/random id would misrepresent a device and bypass status.
+                guard let device = TraeCredential(context.credentials).deviceID, !device.isEmpty else {
+                    throw SubscriptionBillingProtocol.fail("登录信息缺少签到所需的设备标识，请重新登录")
+                }
+                let root = try await post(context, host: "api.trae.cn",
+                    path: "/trae/api/v2/ug/checkin_credits/claim", body: [:], mutation: true)
+                receipt = try SubscriptionBillingProtocol.traeClaim(root)
+            default: throw SubscriptionBillingProtocol.fail("这个服务商不支持签到")
             }
-            let root = try await post(context, host: "api.trae.cn",
-                path: "/trae/api/v2/ug/checkin_credits/claim", body: [:], mutation: true)
-            receipt = try SubscriptionBillingProtocol.traeClaim(root)
-        default: throw SubscriptionBillingProtocol.fail("这个服务商不支持签到")
+        } catch {
+            // 9095 is Trae's "this device already took part today" refusal: a
+            // definite no for today, so remember it instead of nagging.
+            try requireCurrent(context)
+            guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
+            guard context.type == .traeCN,
+                  let refused = SubscriptionBillingProtocol.traeCheckinRefusal(error) else {
+                throw error
+            }
+            let note = refused.note ?? "此设备今天已参与签到"
+            SubscriptionCheckinLedger.blocked(key, requestDay: requestDay, note: note)
+            throw SubscriptionBillingError(message: note, terminal: true)
         }
         try requireCurrent(context)
-        SubscriptionCheckinLedger.confirmed(key, requestDay: requestDay)
+        guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
+        SubscriptionCheckinLedger.confirmed(key, requestDay: requestDay, notify: true)
         return .accepted(receipt)
     }
 
