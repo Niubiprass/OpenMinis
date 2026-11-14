@@ -618,19 +618,18 @@ struct ProviderInstanceDetailView: View {
                 }
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
-                    // Source info (green)
+                    // [T-model-refresh-summary] One line, not two: the source and
+                    // the applied counts describe the same refresh, and a second
+                    // grey row read as unrelated noise.
                     if let source = fetchSource {
-                        Label("Loaded from \(source)", systemImage: "checkmark.circle")
+                        Label(fetchSummary.map { "Loaded from \(source) · \($0)" } ?? "Loaded from \(source)",
+                              systemImage: "checkmark.circle")
                             .font(.caption)
                             .foregroundStyle(.green)
-                    }
-                    // [T-model-refresh-summary] Same information the refresh
-                    // actually applied: how many the provider returned and what
-                    // changed on screen (custom rows and voice seeds preserved).
-                    if let summary = fetchSummary {
-                        Label(summary, systemImage: "arrow.triangle.2.circlepath")
+                    } else if let summary = fetchSummary {
+                        Label(summary, systemImage: "checkmark.circle")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.green)
                     }
                     // Warnings (yellow) — diagnostic tips for each fallback step
                     ForEach(fetchWarnings, id: \.self) { warning in

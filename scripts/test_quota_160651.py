@@ -41,7 +41,9 @@ check("ObservableObject + revision", "@Published private(set) var revision" in q
 check("sync cached read for UI", "func cachedQuota(instanceId:" in q)
 check("missing/stale gate", "func isMissing(instanceId:" in q)
 check("batch refresh", "func refreshAllIfNeeded(instances:" in q)
-check("5-minute TTL", "let ttl: TimeInterval = 300" in q)
+# 2026-11-15: 15 minutes, foreground only — fewer requests to the relay.
+check("15-minute TTL", "let ttl: TimeInterval = 15 * 60" in q)
+check("no background refresh", "guard UIApplication.shared.applicationState == .active else { return }" in q)
 check("API-key instances only", "case .apiKey:" in q and "keychain" in q.lower() or "loadAPIKey" in q)
 
 # 2) Data source = OpenAI billing endpoints

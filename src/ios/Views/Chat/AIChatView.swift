@@ -2354,6 +2354,7 @@ _ios15Seg7
             thinkingLevelName: vm.currentThinkingLevel.displayName,
             fallbackTrigger: vm.fallbackTrigger,
             fallbackPulse: fallbackPulseOpacity,
+            quotaRevision: quotaService.revision,
             titleLocked: titleIsVisuallyLocked
         )
     }
@@ -4848,7 +4849,10 @@ _ios15Seg7
                     vm.moveAttachment(fromID: fromID, toID: toID)
                 }
             },
-            onRetry: { attachment in retryPhotoLoad(id: attachment.id) }
+            onRetry: { attachment in retryPhotoLoad(id: attachment.id) },
+            // [T-input-video-presenter] A pending video plays in the page's
+            // existing full-screen player, not from inside the input area.
+            onOpenVideo: { url in previewVideoFile = url }
         )
     }
 
@@ -5627,6 +5631,12 @@ private struct NavTitleKey: Equatable {
     /// the gated titleView — each discrete set (6 over ~1.75s) must pierce
     /// the gate or the red pulse freezes at its first frame.
     let fallbackPulse: Double
+    /// [T-quota-live] The model chip renders the provider balance from
+    /// ProviderQuotaService. That number is otherwise NOT part of this key, so
+    /// a balance refreshed elsewhere (or by the 5-minute TTL) never rebuilt the
+    /// title and the chip kept showing the old figure until the chat was left
+    /// and re-entered. Bumping this on every quota publish fixes that.
+    let quotaRevision: Int
     /// [T-ios-navtitle-blur-stuck-after-unlock] Face ID lock state — the
     /// title's `.blur(radius: titleIsVisuallyLocked ? 8 : 0)` renders inside
     /// the gated toolbar content, so the unlock transition must pierce the

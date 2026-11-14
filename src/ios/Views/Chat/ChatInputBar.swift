@@ -157,9 +157,14 @@ struct InputAttachmentGridView: View {
     var onMove: ((_ fromID: UUID, _ toID: UUID) -> Void)?
     /// Photo: re-run the failed provider load. Video: no-op (chip has no retry).
     var onRetry: ((InputAttachment) -> Void)?
+    /// [T-input-video-presenter] The chat page owns the video presenter. This
+    /// grid used to open its own `.fullScreenCover` from inside the input
+    /// area's ScrollView, where presenting silently did nothing on iOS 15:
+    /// the chip took the tap and no player ever appeared. Routing the URL up
+    /// to the page's existing player makes the tap work.
+    var onOpenVideo: ((URL) -> Void)?
 
     @State private var draggingID: UUID?
-    @State private var videoPreview: InputAttachment?
 
     var body: some View {
         FlowLayout(hSpacing: 8, vSpacing: 8) {
@@ -168,7 +173,9 @@ struct InputAttachmentGridView: View {
                                onRetry: onRetry.map { retry in
                                    { retry(attachment) }
                                },
-                               onOpenVideo: { videoPreview = $0 }) {
+                               onOpenVideo: { attachment in
+                                   onOpenVideo?(attachment.cacheURL)
+                               }) {
                     onRemove(attachment)
                 }
                 .opacity(draggingID == attachment.id ? 0.4 : 1)
@@ -188,9 +195,6 @@ struct InputAttachmentGridView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 6)  // room for × button overhang (offset y: -4)
-        .fullScreenCover(item: $videoPreview) { attachment in
-            MinisVideoFullscreenPlayer(fileURL: attachment.cacheURL)
-        }
     }
 }
 
@@ -268,13 +272,17 @@ private struct AttachmentChip: View {
     }
 
     private func openPreview() {
+        // [T-input-video-presenter] Always-on (not verbose) so the next device
+        // log can prove whether the tap reached the chip at all, separately
+        // from whether the player presented.
+        AppLogger(category: "InputVideo").info("stage=input.preview.tap kind=\(attachment.kind) video=\(isVideoAttachment(attachment))")
         if let error = MinisVideoFileValidation.error(for: attachment.cacheURL) {
             previewError = error
             InputVideoDiagnostics.error("stage=input.preview.invalid_file")
             return
         }
         if isVideoAttachment(attachment) {
-            InputVideoDiagnostics.trace("stage=input.preview.video")
+            AppLogger(category: "InputVideo").info("stage=input.preview.forward_to_page_player")
             onOpenVideo(attachment)
         } else {
             showPreview = true

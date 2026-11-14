@@ -25,6 +25,7 @@ LIST = (ROOT / 'src/ios/Agent/MessageList/CollectionViewMessageListV3.swift').re
 MEDIA = (ROOT / 'src/ios/Views/Chat/MinisMediaViews.swift').read_text()
 AUDIO = (ROOT / 'src/ios/Views/Chat/Media/AudioPreview.swift').read_text()
 PBX = (ROOT / 'src/ios/Minis.xcodeproj/project.pbxproj').read_text()
+CHATVIEW = (ROOT / 'src/ios/Views/Chat/AIChatView.swift').read_text()
 
 
 class AttachmentPreviewRegression(unittest.TestCase):
@@ -126,7 +127,16 @@ class AttachmentPreviewRegression(unittest.TestCase):
         self.assertIn('guard let local, local.isFileURL', PREVIEW)
         self.assertIn('self.openVideo(local)', PREVIEW)
         self.assertIn('resolveMinisFileURLCached(url: fileURL)', VIDEO)
-        self.assertIn('MinisVideoFullscreenPlayer(fileURL: attachment.cacheURL)', INPUTBAR)
+        # [T-input-video-presenter] A PENDING video used to open its own
+        # `.fullScreenCover` from inside the input area's ScrollView, where the
+        # tap produced nothing at all on iOS 15. The chip must forward the file
+        # URL to the page's existing player instead of presenting locally.
+        self.assertIn('var onOpenVideo: ((URL) -> Void)?', INPUTBAR)
+        self.assertIn('onOpenVideo?(attachment.cacheURL)', INPUTBAR)
+        self.assertNotIn('fullScreenCover(item: $videoPreview)', INPUTBAR)
+        self.assertIn('onOpenVideo: { url in previewVideoFile = url }', CHATVIEW)
+        self.assertIn('.fullScreenCover(item: $previewVideoFile) { fileURL in', CHATVIEW)
+        self.assertIn('MinisVideoFullscreenPlayer(fileURL: fileURL)', CHATVIEW)
 
     def test_tool_sheet_wrapper_survives_the_file_sheet_insert(self):
         # The 153fb09 run failed at `swiftc -parse` because the new file

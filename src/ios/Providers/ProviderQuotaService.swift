@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import WebKit
 import Combine
 import CryptoKit
@@ -98,7 +99,10 @@ final class ProviderQuotaService: ObservableObject {
     private var inFlight: [String: UUID] = [:]
     private var epochs: [String: UUID] = [:]
     private let lock = NSLock()
-    private let ttl: TimeInterval = 300
+    /// [T-quota-15min] How long a stored balance is reused before the list
+    /// asks the relay again. Longer means fewer requests to someone else's
+    /// server; the detail page still refreshes only when the user asks.
+    private let ttl: TimeInterval = 15 * 60
     private var observers: [AnyCancellable] = []
     private var cookieObserver: ProviderQuotaCookieObserver?
     private static let salt = UUID().uuidString
@@ -208,8 +212,11 @@ final class ProviderQuotaService: ObservableObject {
         let text: String
         if primary.rejected { text = "Key 已失效" }
         else if let value {
+            // [T-quota-no-raw-points] A reading the site only reports in quota
+            // points is NOT money. Showing "11817571.00 quota" in the row read
+            // as a life-changing balance; say plainly that it is unconverted.
             let number = primary.unit.isUSD ? String(format: "$%.2f", value)
-                : String(format: "%.2f %@", value, primary.unit.label)
+                : AppLocalized("额度点未换算")
             text = (hasRemaining ? primary.label : "已用") + " " + number
         } else if primary.unlimited { text = primary.label + " · 不限量" }
         else if let total = primary.total {
@@ -273,8 +280,15 @@ final class ProviderQuotaService: ObservableObject {
             .filter { $0.isEnabled && !ProviderMultiKeyManager.shared.isEnabled(for: $0.id) }
             .filter { isMissing(instanceId: $0.id) }
         guard !missing.isEmpty else { return }
+        // [T-quota-foreground-only] Never query a provider while the app is
+        // backgrounded: nobody is looking at the number, and it only adds
+        // traffic the relay can see.
+        guard UIApplication.shared.applicationState == .active else { return }
         Task.detached(priority: .utility) {
-            for instance in missing { await self.refreshQuota(for: instance) }
+            for instance in missing {
+                guard UIApplication.shared.applicationState == .active else { return }
+                await self.refreshQuota(for: instance)
+            }
         }
     }
     func refreshAllKeys(for instance: ProviderInstance) async {
@@ -498,9 +512,13 @@ final class ProviderQuotaService: ObservableObject {
     private static func fetchNewAPIBalance(_ ctx: Context) async throws -> [RelayQuotaProtocol.Reading] {
         let req = try RelayQuotaProtocol.request(root: ctx.accountRoot, source: .newAPIAccount,
                                                 chatKey: nil, accountToken: ctx.token, userID: ctx.uid, cookie: ctx.cookie)
+        // [T-quota-parallel-scale] Ask for the ratio while the balance request
+        // is still in flight. Serially this was two round trips on every
+        // refresh — the 4-5s entries in the device log.
+        async let pendingScale = siteScale(root: ctx.accountRoot)
         let data = try await get(req), observedAt = Date()
         _ = try RelayQuotaProtocol.parseAccount(data, root: ctx.accountRoot, now: observedAt, scale: nil)
-        let scale = await siteScale(root: ctx.accountRoot)
+        let scale = await pendingScale
         return try RelayQuotaProtocol.parseAccount(data, root: ctx.accountRoot, now: observedAt, scale: scale)
     }
     private static func query(_ source: RelayQuotaProtocol.Source, ctx: Context) async throws -> [RelayQuotaProtocol.Reading] {
@@ -562,6 +580,21 @@ final class ProviderQuotaService: ObservableObject {
 
     /// Public site metadata: no Authorization/Cookie, per-root in-flight
     /// coalescing and 5-minute positive AND negative cache. No default USD rate.
+    private static let scalePrefix = "quota.qpu."
+
+    private static func storeScale(_ value: Double, root: String) {
+        guard value > 0 else { return }
+        UserDefaults.standard.set(value, forKey: scalePrefix + root)
+    }
+
+    /// Last ratio this site published, reused when today's request fails.
+    private static func storedScale(root: String) -> RelayQuotaProtocol.Scale? {
+        let value = UserDefaults.standard.double(forKey: scalePrefix + root)
+        guard value > 0 else { return nil }
+        return RelayQuotaProtocol.Scale(quotaPerUnit: value, observedAt: Date(),
+                                        endpoint: root + "/api/status")
+    }
+
     private static func siteScale(root: String) async -> RelayQuotaProtocol.Scale? {
         metadataLock.lock()
         if let cached = scales[root], Date().timeIntervalSince(cached.1) < 300 {
@@ -572,8 +605,16 @@ final class ProviderQuotaService: ObservableObject {
             guard let url = RelayQuotaProtocol.endpoint(root: root, path: "/api/status") else { return nil }
             var req = URLRequest(url: url)
             req.timeoutInterval = 8; req.httpShouldHandleCookies = false
-            guard let data = try? await get(req) else { return nil }
-            return RelayQuotaProtocol.scale(data, root: root, now: Date())
+            guard let data = try? await get(req),
+                  let fresh = RelayQuotaProtocol.scale(data, root: root, now: Date()) else {
+                // [T-quota-qpu-persist] A relay that answered once keeps its
+                // ratio across launches. Without this a failed /api/status
+                // turned the next reading into raw quota points, which the row
+                // then showed as a huge bogus number (11817571.00 quota).
+                return Self.storedScale(root: root)
+            }
+            Self.storeScale(fresh.quotaPerUnit, root: root)
+            return fresh
         }
         scaleTasks[root] = task
         metadataLock.unlock()
