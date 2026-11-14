@@ -1401,7 +1401,7 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
                 // intent instead of waiting for the session acknowledgement.
                 // Waiting here meant that any interruption left the app with no
                 // keep-alive at all, so iOS suspended it ~20s after backgrounding.
-                self.logger.info("[BKA][Start] session not applied yet (applied=\(applied)) — starting engine anyway")
+                logger.info("[BKA][Start] session not applied yet (applied=\(applied)) — starting engine anyway")
             }
             if self.silentAudioIsPlaying {
                 self.silentAudioActivationRetries = 0
