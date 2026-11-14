@@ -110,9 +110,16 @@ struct TraeCredential { init(_ credentials: KWWKAI.OAuthCredentials) {}; var dev
         SubscriptionCheckinLedger.confirmed(key, requestDay: "1900-01-01", notify: true, now: now)
         SubscriptionCheckinLedger.blocked(key, requestDay: "1900-01-01", note: "old", now: now)
         expect(SubscriptionCheckinLedger.cachedStatus(key) == nil, "cross-day writes ignored")
-        SubscriptionCheckinLedger.beginAttempt(key, now: now)
-        expect(!SubscriptionCheckinPolicy.canAttempt(SubscriptionCheckinLedger.record(key), now: now.addingTimeInterval(7199)), "network retry before two hours blocked")
-        expect(SubscriptionCheckinPolicy.canAttempt(SubscriptionCheckinLedger.record(key), now: now.addingTimeInterval(7200)), "network retry at two hours allowed")
+        // The retry window is a 2 h interval but eligibility is per Asia/Shanghai day:
+        // outside 00:00–21:59 local, `now + 7199s` is already tomorrow and the policy
+        // (correctly) allows the attempt. Pin the sample to a fixed local time so the
+        // assertion tests the interval instead of the wall clock the runner happened to use.
+        var pinned = Calendar(identifier: .gregorian)
+        pinned.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let localNoon = pinned.date(bySettingHour: 12, minute: 0, second: 0, of: now)!
+        SubscriptionCheckinLedger.beginAttempt(key, now: localNoon)
+        expect(!SubscriptionCheckinPolicy.canAttempt(SubscriptionCheckinLedger.record(key), now: localNoon.addingTimeInterval(7199)), "network retry before two hours blocked")
+        expect(SubscriptionCheckinPolicy.canAttempt(SubscriptionCheckinLedger.record(key), now: localNoon.addingTimeInterval(7200)), "network retry at two hours allowed")
         clear()
         print("subscription-checkin-runtime-ok")
     }
