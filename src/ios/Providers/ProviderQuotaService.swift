@@ -216,7 +216,7 @@ final class ProviderQuotaService: ObservableObject {
             // points is NOT money. Showing "11817571.00 quota" in the row read
             // as a life-changing balance; say plainly that it is unconverted.
             let number = primary.unit.isUSD ? String(format: "$%.2f", value)
-                : AppLocalized("额度点未换算")
+                : "额度点未换算"
             text = (hasRemaining ? primary.label : "已用") + " " + number
         } else if primary.unlimited { text = primary.label + " · 不限量" }
         else if let total = primary.total {
