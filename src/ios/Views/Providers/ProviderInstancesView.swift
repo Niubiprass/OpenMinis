@@ -116,8 +116,10 @@ struct ProviderInstancesView: View {
             Section {
                 ForEach(listRows) { entry in
                     rowContent(entry)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-                        .listRowSeparator(entry.isGroupTitle || entry.isFirstMember ? .hidden : .visible)
+                        // Default insets: the previous custom ones squeezed the
+                        // row in edit mode (the drag handle takes a column) and
+                        // wrapped provider names.
+                        .listRowSeparator(entry.isGroupTitle ? .hidden : .visible)
                         .listRowBackground(rowBackground(entry))
                 }
                 .onMove(perform: moveRows)
