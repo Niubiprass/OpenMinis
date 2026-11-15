@@ -154,16 +154,23 @@ jobs:
           mkdir -p Payload
           ditto "$APP" Payload/Minis.app
           python3 scripts/strip_ios15_incompatible_extensions.py Payload/Minis.app
-          # Preserve only source entitlements; no sandbox-disabling additions.
-          python3 scripts/v64r_package.py Payload/Minis.app
           /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Payload/Minis.app/Info.plist
-          # [T-inapp-update-beta] Monotonic build stamp for the in-app updater.
+          # [T-inapp-update-beta] Finish plist mutations BEFORE signing: changing
+          # MinisBuildNumber afterwards invalidates CodeDirectory's Info slot.
           /usr/libexec/PlistBuddy -c "Set :MinisBuildNumber ${{ github.run_number }}" Payload/Minis.app/Info.plist \
             || /usr/libexec/PlistBuddy -c "Add :MinisBuildNumber string ${{ github.run_number }}" Payload/Minis.app/Info.plist
           /usr/libexec/PlistBuddy -c 'Print :MinisBuildNumber' Payload/Minis.app/Info.plist
+          # Preserve only source entitlements; no sandbox-disabling additions.
+          python3 scripts/v64r_package.py Payload/Minis.app
           xcrun vtool -show-build Payload/Minis.app/Minis | tee minos-v64r.txt
           zip -qry Minis-160652-FourFeatures-iOS15.5.ipa Payload
           unzip -tq Minis-160652-FourFeatures-iOS15.5.ipa
+          # Validate the bytes we will publish, not only the pre-zip staging app.
+          IPA_VERIFY_DIR=$(mktemp -d)
+          trap 'rm -rf "$IPA_VERIFY_DIR"' EXIT
+          unzip -q Minis-160652-FourFeatures-iOS15.5.ipa -d "$IPA_VERIFY_DIR"
+          codesign --verify --deep --strict "$IPA_VERIFY_DIR/Payload/Minis.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MinisBuildNumber' "$IPA_VERIFY_DIR/Payload/Minis.app/Info.plist")" = "${{ github.run_number }}"
           shasum -a 256 Minis-160652-FourFeatures-iOS15.5.ipa > SHA256SUMS
       - name: Upload IPA
         uses: actions/upload-artifact@v4

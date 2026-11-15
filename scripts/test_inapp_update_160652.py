@@ -119,6 +119,21 @@ def main():
     need("--prerelease" in wf, "tagged as a test channel")
     need("Set :MinisBuildNumber ${{ github.run_number }}" in wf, "run number is injected")
 
+    # build290: signing first and stamping Info.plist afterwards invalidated
+    # the final IPA's Info signature slot despite a green pre-zip verification.
+    package = wf.split("- name: Package without adding elevated entitlements", 1)[1].split("- name: Upload IPA", 1)[0]
+    stamp = package.index("Set :MinisBuildNumber")
+    sign = package.index("python3 scripts/v64r_package.py")
+    archive = package.index("zip -qry")
+    need(stamp < sign < archive, "build metadata is finalized before signing and archiving")
+    final_verify = 'codesign --verify --deep --strict "$IPA_VERIFY_DIR/Payload/Minis.app"'
+    need(final_verify in package, "the extracted final IPA is signature-verified")
+    if final_verify in package:
+        need(archive < package.index(final_verify) < package.index("shasum -a 256"),
+             "final IPA verification gates the checksum and publication")
+    need("-c 'Print :MinisBuildNumber' \"$IPA_VERIFY_DIR/Payload/Minis.app/Info.plist\"" in package,
+         "the extracted IPA retains the intended updater build stamp")
+
     if fails:
         print("❌ in-app update guard failed:")
         for f in fails:
