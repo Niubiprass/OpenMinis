@@ -423,16 +423,28 @@ private struct ProviderGroupDragAnchor: UIViewRepresentable {
     static func dismantleUIView(_ view: ProviderGroupDragProbe, coordinator: ()) { view.disconnect() }
 }
 
-private final class ProviderGroupDragProbe: UIView {
+private final class ProviderGroupDragProbe: UIView, UIGestureRecognizerDelegate {
     var type: ProviderType
     weak var bridge: ProviderGroupDragBridge?
+    private let press = UILongPressGestureRecognizer()
 
     init(type: ProviderType, bridge: ProviderGroupDragBridge) {
         self.type = type
         self.bridge = bridge
         super.init(frame: .zero)
-        isUserInteractionEnabled = false
+        // This zero-height background is the ONLY thing the bridge touches: it
+        // is interaction-enabled so the recognizer is attached to the title
+        // itself. Finding the enclosing scroll view on a separate ancestor
+        // recognizer did not receive presses on device (build 291: no events).
+        isUserInteractionEnabled = true
         backgroundColor = .clear
+        press.minimumPressDuration = 0.3
+        press.allowableMovement = 10
+        press.cancelsTouchesInView = true
+        press.delegate = self
+        press.isEnabled = false
+        press.addTarget(self, action: #selector(handle(_:)))
+        addGestureRecognizer(press)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func didMoveToWindow() {
@@ -448,6 +460,13 @@ private final class ProviderGroupDragProbe: UIView {
         if window != nil { next.register(self) }
     }
     func disconnect() { bridge?.unregister(self); bridge = nil }
+    func setDragEnabled(_ on: Bool) { press.isEnabled = on }
+    @objc private func handle(_ recognizer: UILongPressGestureRecognizer) {
+        bridge?.pressChanged(recognizer, type: type, from: self)
+    }
+    func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        bridge?.canBegin(type) ?? false
+    }
 }
 
 /// Long-press / snapshot / edge scrolling adapted from Adam Shin's MIT-licensed
@@ -462,15 +481,8 @@ private final class ProviderGroupDragBridge: NSObject, ObservableObject, UIGestu
     private var members: [[String]] = []
     private var enabled = false
     private var move: (([ProviderType], [[String]], ProviderType, Int) -> Void)?
-    private lazy var press: UILongPressGestureRecognizer = {
-        let recognizer = UILongPressGestureRecognizer(target: self, action: #selector(handlePress(_:)))
-        recognizer.minimumPressDuration = 0.3
-        recognizer.allowableMovement = 10
-        recognizer.cancelsTouchesInView = true
-        recognizer.delegate = self
-        recognizer.isEnabled = false
-        return recognizer
-    }()
+    /// The header recognizer currently held down (weak: the probe owns it).
+    private weak var activePress: UILongPressGestureRecognizer?
     private var source: ProviderType?
     private var originalOrder: [ProviderType] = []
     private var originalMembers: [[String]] = []
@@ -499,15 +511,16 @@ private final class ProviderGroupDragBridge: NSObject, ObservableObject, UIGestu
         self.order = order
         self.members = members
         self.move = move
-        press.isEnabled = enabled
+        probes.values.forEach { $0.setDragEnabled(enabled) }
     }
     func stop() {
         finish(commit: false)
         enabled = false
-        press.isEnabled = false
+        probes.values.forEach { $0.setDragEnabled(false) }
     }
     func register(_ probe: ProviderGroupDragProbe) {
         probes[probe.type] = probe
+        probe.setDragEnabled(enabled)
         var ancestor = probe.superview
         while let view = ancestor {
             if let scroll = view as? UIScrollView { attach(to: scroll); break }
@@ -520,12 +533,7 @@ private final class ProviderGroupDragBridge: NSObject, ObservableObject, UIGestu
     private func attach(to scroll: UIScrollView) {
         guard scrollView !== scroll else { return }
         finish(commit: false)
-        scrollView?.removeGestureRecognizer(press)
         scrollView = scroll
-        scroll.addGestureRecognizer(press)
-        // Only a press starting INSIDE a group title may delay scroll. Row
-        // handles, horizontal swipes and normal scroll remain List's gestures.
-        scroll.panGestureRecognizer.require(toFail: press)
         if resignObserver == nil {
             resignObserver = NotificationCenter.default.addObserver(
                 forName: UIApplication.willResignActiveNotification, object: nil, queue: .main
@@ -558,38 +566,39 @@ private final class ProviderGroupDragBridge: NSObject, ObservableObject, UIGestu
             return rect.height > 0 && rect.contains(point)
         }
     }
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        guard enabled, UIApplication.shared.applicationState == .active,
-              let scroll = scrollView else { return false }
-        return group(at: touch.location(in: scroll)) != nil
-    }
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard enabled, let scroll = scrollView,
-              let type = group(at: gestureRecognizer.location(in: scroll)),
-              let index = order.firstIndex(of: type), let probe = probes[type],
-              let section = sectionIndex(containing: headerRect(probe, in: scroll).midY),
-              let measured = measureSections(base: section - index) else { return false }
-        return ProviderGroupDragPolicy.destination(at: Double(gestureRecognizer.location(in: scroll).y),
-            ranges: measured.0.map { .init(minY: Double($0.minY), maxY: Double($0.maxY)) }, sourceIndex: index) != nil
-    }
     private func resetPress() {
         guard !resettingPress else { return }
         resettingPress = true
-        press.isEnabled = false
-        press.isEnabled = enabled
+        activePress?.isEnabled = false
+        activePress?.isEnabled = enabled
         resettingPress = false
     }
-    @objc private func handlePress(_ recognizer: UILongPressGestureRecognizer) {
+    /// Entry point from the title's own recognizer.
+    func pressChanged(_ recognizer: UILongPressGestureRecognizer, type: ProviderType, from probe: ProviderGroupDragProbe) {
         guard !resettingPress else { return }
+        activePress = recognizer
         switch recognizer.state {
-        case .began: begin(at: recognizer.location(in: scrollView))
+        case .began:
+            guard enabled, canBegin(type) else { resetPress(); return }
+            begin(type: type, probe: probe)
         case .changed: update()
         case .ended: update(); finish(commit: true)
         case .cancelled, .failed: finish(commit: false)
         default: break
         }
     }
-
+    /// Preconditions checked before the gesture starts, so a failed start never
+    /// delays the list's own scroll/row gestures.
+    func canBegin(_ type: ProviderType) -> Bool {
+        guard enabled, UIApplication.shared.applicationState == .active,
+              let scroll = scrollView, let probe = probes[type], let index = order.firstIndex(of: type),
+              let section = sectionIndex(containing: headerRect(probe, in: scroll).midY),
+              let measured = measureSections(base: section - index) else { return false }
+        return ProviderGroupDragPolicy.destination(
+            at: Double(probe.convert(probe.bounds, to: scroll).midY),
+            ranges: measured.0.map { .init(minY: Double($0.minY), maxY: Double($0.maxY)) },
+            sourceIndex: index) != nil
+    }
     /// UIKit knows the native header/section layout for off-screen groups too.
     private func sectionIndex(containing y: CGFloat) -> Int? {
         if let table = scrollView as? UITableView {
@@ -656,15 +665,14 @@ private final class ProviderGroupDragBridge: NSObject, ObservableObject, UIGestu
         snapshot.addSubview(pixels)
         return snapshot
     }
-    private func begin(at point: CGPoint) {
+    private func begin(type: ProviderType, probe: ProviderGroupDragProbe) {
         guard enabled, let scroll = scrollView, let host = scroll.superview,
-              let type = group(at: point), let sourceIndex = order.firstIndex(of: type),
-              let probe = probes[type] else { resetPress(); return }
+              let sourceIndex = order.firstIndex(of: type) else { resetPress(); return }
         scroll.layoutIfNeeded()
         guard let section = sectionIndex(containing: headerRect(probe, in: scroll).midY),
               let measured = measureSections(base: section - sourceIndex),
               measured.0.count == order.count,
-              ProviderGroupDragPolicy.destination(at: Double(point.y), ranges: measured.0.map {
+              ProviderGroupDragPolicy.destination(at: Double(probe.convert(probe.bounds, to: scroll).midY), ranges: measured.0.map {
                   .init(minY: Double($0.minY), maxY: Double($0.maxY))
               }, sourceIndex: sourceIndex) != nil else {
             logger.warning("begin skipped: section geometry unavailable; no order changed")
@@ -708,7 +716,7 @@ private final class ProviderGroupDragBridge: NSObject, ObservableObject, UIGestu
         canvas.addSubview(snapshot)
         floating = canvas
         snapshotStartFrame = start
-        fingerStart = press.location(in: canvas)
+        fingerStart = (activePress?.location(in: canvas) ?? .zero)
         lastFinger = fingerStart
         let line = UIView(frame: .zero)
         line.isUserInteractionEnabled = false
@@ -739,11 +747,11 @@ private final class ProviderGroupDragBridge: NSObject, ObservableObject, UIGestu
         }
         ranges = measured.0
         originMask?.frame = ranges[sourceIndex]
-        lastFinger = press.location(in: canvas)
+        lastFinger = (activePress?.location(in: canvas) ?? .zero)
         if let snapshot = canvas.subviews.first {
             snapshot.frame.origin.y = snapshotStartFrame.minY + lastFinger.y - fingerStart.y
         }
-        let contentY = press.location(in: scroll).y
+        let contentY = (activePress?.location(in: scroll) ?? .zero).y
         let next = ProviderGroupDragPolicy.destination(at: Double(contentY), ranges: ranges.map {
             .init(minY: Double($0.minY), maxY: Double($0.maxY))
         }, sourceIndex: sourceIndex)
@@ -764,7 +772,7 @@ private final class ProviderGroupDragBridge: NSObject, ObservableObject, UIGestu
     }
     func autoScroll(_ link: CADisplayLink) {
         guard source != nil, let scroll = scrollView, let canvas = floating else { return }
-        let point = press.location(in: canvas)
+        let point = (activePress?.location(in: canvas) ?? .zero)
         let edge: CGFloat = 48
         let distance: CGFloat
         if point.y < edge { distance = -min(1, (edge - point.y) / edge) }
@@ -806,7 +814,6 @@ private final class ProviderGroupDragBridge: NSObject, ObservableObject, UIGestu
         insertionLine?.removeFromSuperview()
         originMask?.removeFromSuperview()
         if let bounces = oldBounces { scrollView?.bounces = bounces }
-        if let scroll = scrollView { scroll.removeGestureRecognizer(press) }
         if let observer = resignObserver { NotificationCenter.default.removeObserver(observer) }
     }
 }
