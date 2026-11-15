@@ -26,10 +26,26 @@ struct SubscriptionCredit: Equatable, Sendable {
 }
 
 struct SubscriptionCheckin: Equatable, Sendable {
+    enum Eligibility: Equatable, Sendable { case eligible, ineligible, unknown }
     let checkedIn: Bool
-    let canClaim: Bool
+    let eligibility: Eligibility
     let reward: Double?
-    var note: String? = nil
+    var note: String?
+    var canClaim: Bool { !checkedIn && eligibility == .eligible }
+
+    init(checkedIn: Bool, eligibility: Eligibility, reward: Double?, note: String? = nil) {
+        self.checkedIn = checkedIn
+        self.eligibility = eligibility
+        self.reward = reward
+        self.note = note
+    }
+
+    // Existing completion/cache callers supply a definite result. Parsers must
+    // use the three-state initializer so missing flags never imply eligibility.
+    init(checkedIn: Bool, canClaim: Bool, reward: Double?, note: String? = nil) {
+        self.init(checkedIn: checkedIn, eligibility: canClaim ? .eligible : .ineligible,
+                  reward: reward, note: note)
+    }
 }
 
 struct SubscriptionCheckinReceipt: Equatable, Sendable {
@@ -43,6 +59,9 @@ struct SubscriptionBillingError: LocalizedError, Sendable {
     /// A definite business answer for today (already checked in, device used,
     /// not eligible). The automatic pass must not retry or remind again today.
     var terminal: Bool = false
+    /// Explicit non-zero service acknowledgment, distinct from HTTP/transport
+    /// and parsing errors whose mutation outcome is unknown.
+    var businessRefusal: Bool = false
     var errorDescription: String? { message }
 }
 
@@ -75,7 +94,7 @@ enum SubscriptionBillingProtocol {
             let code = Int(value)
             if code != 0 {
                 let text = code == 9095 ? "此设备今天已经参与签到" : "服务未接受本次请求（编号 \(code)）"
-                throw SubscriptionBillingError(message: text, code: code)
+                throw SubscriptionBillingError(message: text, code: code, businessRefusal: true)
             }
         } else if requireCode { throw fail("服务没有确认请求结果，请刷新状态") }
         if !wrapped { return root }
@@ -135,32 +154,42 @@ enum SubscriptionBillingProtocol {
 
     static func workBuddyStatus(_ root: [String: Any]) throws -> SubscriptionCheckin {
         let data = try checked(root, wrapped: true)
-        guard let active = flag(data["active"]), let done = flag(data["today_checked_in"]) else {
-            throw fail("没查到今天的签到状态")
-        }
-        let reward = try data["daily_credit"].map { try quantity($0) }
-        return SubscriptionCheckin(checkedIn: done, canClaim: active && !done, reward: reward,
-            note: !active && !done ? "当前账号暂不能签到" : nil)
+        let done = flag(data["today_checked_in"])
+        let active = flag(data["active"])
+        let eligibility: SubscriptionCheckin.Eligibility = active == false ? .ineligible
+            : active == true && done == false ? .eligible : .unknown
+        // Optional reward metadata must not erase definite eligibility/completion.
+        let reward = try? quantity(data["daily_credit"])
+        return SubscriptionCheckin(checkedIn: done == true, eligibility: eligibility, reward: reward,
+            note: done == true ? nil : eligibility == .ineligible ? "当前账号暂不能签到"
+                : eligibility == .unknown ? "签到资格暂未确认，请稍后刷新" : nil)
     }
 
     static func traeStatus(_ root: [String: Any]) throws -> SubscriptionCheckin {
         let data = try checked(root, wrapped: false)
-        guard let done = flag(data["checked_in"]) else { throw fail("没查到今天的签到状态") }
-        let enabled = flag(data["enable"]) ?? true
-        let deviceUsed = flag(data["did_checked_in"]) == true
-        let base = try data["credits"].map { try quantity($0) }
-        let extra = try data["extra_credits"].map { try quantity($0) } ?? 0
-        let reward = base.map { $0 + extra }
-        let note: String? = deviceUsed && !done ? "此设备今天已参与签到"
-            : !enabled && !done ? "暂未满足签到条件" : nil
-        return SubscriptionCheckin(checkedIn: done, canClaim: enabled && !done && !deviceUsed,
+        let done = flag(data["checked_in"])
+        let enabled = flag(data["enable"])
+        let deviceUsed = flag(data["did_checked_in"])
+        // did_checked_in is optional in the frozen source/tests. An absent
+        // value may proceed with explicit enable=true; a malformed value cannot.
+        let deviceKnown = data["did_checked_in"] == nil || deviceUsed != nil
+        let eligibility: SubscriptionCheckin.Eligibility = enabled == false || deviceUsed == true ? .ineligible
+            : enabled == true && done == false && deviceKnown ? .eligible : .unknown
+        let base = try? quantity(data["credits"])
+        let extra: Double? = data["extra_credits"] == nil ? 0 : (try? quantity(data["extra_credits"]))
+        let reward = base.flatMap { base in extra.map { base + $0 } }
+        let note: String? = done == true ? nil : deviceUsed == true ? "此设备今天已参与签到"
+            : enabled == false ? "暂未满足签到条件"
+            : eligibility == .unknown ? "签到资格暂未确认，请稍后刷新" : nil
+        return SubscriptionCheckin(checkedIn: done == true, eligibility: eligibility,
                                    reward: reward, note: note)
     }
 
     /// Only this explicit Trae business refusal is terminal for today. HTTP,
     /// transport, parsing and other business errors keep the normal retry path.
     static func traeCheckinRefusal(_ error: Error) -> SubscriptionCheckin? {
-        guard let error = error as? SubscriptionBillingError, error.code == 9095 else { return nil }
+        guard let error = error as? SubscriptionBillingError,
+              error.businessRefusal, error.code == 9095 else { return nil }
         return SubscriptionCheckin(checkedIn: false, canClaim: false, reward: nil, note: error.message)
     }
 
@@ -259,6 +288,7 @@ enum SubscriptionCreditAPI {
             return cached
         }
         let requestDay = SubscriptionCheckinPolicy.day(Date())
+        let expectedRecord = SubscriptionCheckinLedger.record(key)
         let id: UUID
         let task: Task<SubscriptionCheckin, Error>
         if let running = statusTasks[key], running.day == requestDay {
@@ -280,11 +310,23 @@ enum SubscriptionCreditAPI {
             statusTasks[key] = (id, requestDay, task)
         }
         defer { if statusTasks[key]?.id == id { statusTasks[key] = nil } }
-        let value = try await task.value
-        try requireCurrent(context)
-        guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
-        SubscriptionCheckinLedger.remember(value, key: key, requestDay: requestDay)
-        return value
+        do {
+            let value = try await task.value
+            try requireCurrent(context)
+            guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
+            if value.eligibility == .unknown && !value.checkedIn {
+                SubscriptionCheckinLedger.unknown(key, requestDay: requestDay, expected: expectedRecord)
+            } else {
+                SubscriptionCheckinLedger.remember(value, key: key, requestDay: requestDay)
+            }
+            return value
+        } catch {
+            try requireCurrent(context)
+            guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
+            if error is CancellationError { throw error }
+            SubscriptionCheckinLedger.unknown(key, requestDay: requestDay, expected: expectedRecord)
+            throw error
+        }
     }
 
     private static func queryCheckin(_ context: Context) async throws -> SubscriptionCheckin {
@@ -315,6 +357,7 @@ enum SubscriptionCreditAPI {
         defer { claiming.remove(key) }
         let requestDay = SubscriptionCheckinPolicy.day(Date())
         SubscriptionCheckinLedger.beginAttempt(key)
+        SubscriptionCheckinLedger.clearClaimOutcome(key, requestDay: requestDay)
         // One fresh status query under the same lock for manual and automatic
         // paths. Cached completion above never dispatches another server request.
         let current = try await checkin(context)
@@ -323,6 +366,9 @@ enum SubscriptionCreditAPI {
         if current.checkedIn {
             logger.info("check-in \(context.type.rawValue) already done today")
             return .alreadyCheckedIn
+        }
+        guard current.eligibility != .unknown else {
+            throw SubscriptionBillingProtocol.fail(current.note ?? "签到资格暂未确认，请稍后刷新")
         }
         guard current.canClaim else {
             // "Device already used today" / "not eligible" is a definite answer
@@ -339,6 +385,12 @@ enum SubscriptionCreditAPI {
                   let parent = ProviderConfigStore.shared.instance(for: context.parentId),
                   parent.isEnabled, parent.subscriptionAutoCheckin else { throw CancellationError() }
         }
+        // Local preflight is not a dispatched claim and cannot count as failure.
+        if context.type == .traeCN {
+            guard let device = TraeCredential(context.credentials).deviceID, !device.isEmpty else {
+                throw SubscriptionBillingProtocol.fail("登录信息缺少签到所需的设备标识，请重新登录")
+            }
+        }
         let receipt: SubscriptionCheckinReceipt
         do {
             switch context.type {
@@ -349,9 +401,6 @@ enum SubscriptionCreditAPI {
             case .traeCN:
                 // Only use the identity recorded by this account's successful login.
                 // A new/random id would misrepresent a device and bypass status.
-                guard let device = TraeCredential(context.credentials).deviceID, !device.isEmpty else {
-                    throw SubscriptionBillingProtocol.fail("登录信息缺少签到所需的设备标识，请重新登录")
-                }
                 let root = try await post(context, host: "api.trae.cn",
                     path: "/trae/api/v2/ug/checkin_credits/claim", body: [:], mutation: true)
                 receipt = try SubscriptionBillingProtocol.traeClaim(root)
@@ -362,13 +411,20 @@ enum SubscriptionCreditAPI {
             // definite no for today, so remember it instead of nagging.
             try requireCurrent(context)
             guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
-            guard context.type == .traeCN,
-                  let refused = SubscriptionBillingProtocol.traeCheckinRefusal(error) else {
-                throw error
+            if error is CancellationError { throw error }
+            if context.type == .traeCN,
+               let refused = SubscriptionBillingProtocol.traeCheckinRefusal(error) {
+                let note = refused.note ?? "此设备今天已参与签到"
+                SubscriptionCheckinLedger.blocked(key, requestDay: requestDay, note: note)
+                throw SubscriptionBillingError(message: note, terminal: true)
             }
-            let note = refused.note ?? "此设备今天已参与签到"
-            SubscriptionCheckinLedger.blocked(key, requestDay: requestDay, note: note)
-            throw SubscriptionBillingError(message: note, terminal: true)
+            if (error as? SubscriptionBillingError)?.businessRefusal == true {
+                SubscriptionCheckinLedger.failedClaim(key, requestDay: requestDay)
+            } else {
+                // Lost/invalid replies cannot prove whether the claim succeeded.
+                SubscriptionCheckinLedger.unknown(key, requestDay: requestDay)
+            }
+            throw error
         }
         try requireCurrent(context)
         guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
@@ -412,10 +468,19 @@ enum SubscriptionCreditAPI {
         let response: HTTPURLResponse, data: Data
         let started = Date()
         do {
+            let requestBody = try JSONSerialization.data(withJSONObject: body)
+            try requireCurrent(context)
+            if mutation {
+                guard SubscriptionCheckinLedger.beginClaim(SubscriptionCheckinLedger.key(context),
+                    requestDay: SubscriptionCheckinPolicy.day(started)) else { throw CancellationError() }
+            }
             (response, data) = try await client.request(url: url, method: "POST", headers: headers,
-                body: JSONSerialization.data(withJSONObject: body))
+                body: requestBody)
         } catch {
             try requireCurrent(context)
+            if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                throw CancellationError()
+            }
             // [T-subscription-log] Nothing in this module was ever logged, so a
             // failed check-in or credit read left no trace at all.
             Self.logger.warning("\(context.type.rawValue) \(path) failed after \(Self.elapsed(since: started))s: \(error.localizedDescription)")

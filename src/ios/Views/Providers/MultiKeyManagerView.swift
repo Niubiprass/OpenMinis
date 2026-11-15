@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// [T-multikey] Key ring management for one provider.
 ///
@@ -369,8 +370,8 @@ struct MultiKeyManagerView: View {
     }
 }
 
-/// [T-multikey-edit] Edit an existing key without ever showing the full secret.
-/// An empty replacement field keeps the stored credential untouched.
+/// [T-multikey-edit] Full credentials are visible only in this explicit editor;
+/// list rows keep using `masked`. Empty or unchanged input preserves the key.
 struct MultiKeyEditSheet: View {
     let key: ProviderAPIKey
     let existingKeys: [String]
@@ -390,7 +391,7 @@ struct MultiKeyEditSheet: View {
         self.existingKeys = existingKeys
         self.onSave = onSave
         _name = State(initialValue: key.name ?? "")
-        _replacement = State(initialValue: key.masked)
+        _replacement = State(initialValue: key.key)
         _enabled = State(initialValue: key.isEnabled)
     }
 
@@ -406,15 +407,23 @@ struct MultiKeyEditSheet: View {
                 }
 
                 Section {
-                    TextField("", text: $replacement)
-                        .textContentType(.password)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
+                    TextEditor(text: $replacement)
+                        .textContentType(.oneTimeCode)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
+                        .frame(minHeight: 96)
+                        .accessibilityLabel("完整 API Key")
+                    Button {
+                        UIPasteboard.general.string = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+                    } label: {
+                        Label("复制完整 Key", systemImage: "doc.on.doc")
+                    }
+                    .disabled(replacement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 } header: {
                     Text("API Key")
                 } footer: {
-                    Text("输入框里显示的是当前 Key。不修改则保持原 Key；换成新 Key 直接覆盖这段遮罩文本，保存后不会显示完整内容。")
+                    Text("这里显示完整 Key，可以查看、复制或直接修改。留空或不修改会保留原 Key；保存后列表仍只显示缩略内容。")
                 }
 
                 Section {
@@ -436,12 +445,13 @@ struct MultiKeyEditSheet: View {
                     Button("保存") {
                         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
                         let trimmedKey = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !trimmedKey.isEmpty, existingKeys.contains(trimmedKey) {
+                        let keyChanged = !trimmedKey.isEmpty && trimmedKey != key.key
+                        if keyChanged, existingKeys.contains(trimmedKey) {
                             duplicateKey = true
                             return
                         }
                         onSave(trimmedName.isEmpty ? nil : trimmedName,
-                               (trimmedKey.isEmpty || trimmedKey == key.masked) ? nil : trimmedKey,
+                               keyChanged ? trimmedKey : nil,
                                enabled)
                         dismiss()
                     }
@@ -455,7 +465,7 @@ struct MultiKeyEditSheet: View {
             .onAppear {
                 // SwiftUI may reuse sheet state when another key is opened.
                 name = key.name ?? ""
-                replacement = key.masked
+                replacement = key.key
                 enabled = key.isEnabled
             }
         }

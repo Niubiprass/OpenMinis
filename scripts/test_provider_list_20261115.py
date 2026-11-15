@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 IOS = ROOT / 'src/ios'
 VIEW = (IOS/'Views/Providers/ProviderInstancesView.swift').read_text()
 STORE = (IOS/'Providers/ProviderConfigStore.swift').read_text()
+KEY_MODEL = (IOS/'Providers/ProviderMultiKeys.swift').read_text()
+KEY_VIEW = (IOS/'Views/Providers/MultiKeyManagerView.swift').read_text()
 FIXTURES = ROOT/'scripts/fixtures'
 
 
@@ -47,7 +49,12 @@ class ProviderListContracts(unittest.TestCase):
         self.assertIn('ForEach(ProviderGroupOrder.types(in: store.instances)', browsing)
         self.assertIn('ForEach(members)', browsing)
         self.assertIn('providerLink(instance)', browsing)
-        self.assertNotIn('.listRowBackground', browsing)
+        self.assertIn('.listRowBackground(', browsing)
+        self.assertIn('Color(UIColor.secondarySystemGroupedBackground)', browsing)
+        self.assertIn('let isLastMember = instance.id == members.last?.id', browsing)
+        self.assertIn('ProviderRowSeparator(isLastMember: isLastMember)', browsing)
+        self.assertIn('.listRowSeparator(.hidden)', browsing)
+        self.assertNotIn('.clipShape(', declaration(VIEW, 'private func providerLink('))
         self.assertNotIn('UISwipeAction', VIEW)
 
     def test_card_gap_reserves_content_space_and_internal_lines(self):
@@ -56,11 +63,13 @@ class ProviderListContracts(unittest.TestCase):
         self.assertIn('.padding(.bottom, entry.isLastMember ? 10 : 0)', declaration(VIEW, 'private func rowBackground('))
         content = declaration(VIEW, 'private func rowBackground(')
         self.assertNotIn('.overlay', declaration(VIEW, 'private func rowContent('))
-        self.assertIn('if !entry.isLastMember {', content)
-        self.assertIn('Color(UIColor.separator)', content)
-        self.assertIn('1 / UIScreen.main.scale', content)
-        self.assertIn('.allowsHitTesting(false)', content)
-        self.assertIn('.accessibilityHidden(true)', content)
+        self.assertIn('ProviderRowSeparator(isLastMember: entry.isLastMember)', content)
+        separator = declaration(VIEW, 'private struct ProviderRowSeparator: View')
+        self.assertIn('if !isLastMember {', separator)
+        self.assertIn('Color(UIColor.separator)', separator)
+        self.assertIn('1 / UIScreen.main.scale', separator)
+        self.assertIn('.allowsHitTesting(false)', separator)
+        self.assertIn('.accessibilityHidden(true)', separator)
         self.assertIn('.listSectionSeparator(.hidden)', VIEW)
         self.assertNotIn('.listRowInsets(', VIEW)
 
@@ -149,6 +158,61 @@ print("PASS: production visible model count")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             print(result.stdout.strip())
 
+    def test_editor_save_preserves_existing_credential_state(self):
+        compiler = self.compiler()
+        source = 'import Foundation\n' + declaration(KEY_MODEL, 'struct ProviderAPIKey:')
+        action = declaration(KEY_VIEW, 'Button("保存") {')
+        action = action[action.index('{') + 1:-1].replace('dismiss()', 'dismissed = true')
+        source += '''
+struct EditorProbe {
+    let key: ProviderAPIKey
+    var name = ""
+    var replacement: String
+    var enabled = true
+    var existingKeys: [String] = []
+    var duplicateKey = false
+    var dismissed = false
+    var saves = 0
+    var savedName: String?
+    var savedReplacement: String?
+    var savedEnabled = true
+    mutating func onSave(_ name: String?, _ replacement: String?, _ enabled: Bool) {
+        saves += 1; savedName = name; savedReplacement = replacement; savedEnabled = enabled
+    }
+    mutating func save() {
+''' + action + '''
+    }
+}
+// Synthetic values only. The production Save closure runs verbatim.
+let original = ProviderAPIKey(key: "synthetic-long-key-0123456789")
+var unchanged = EditorProbe(key: original, name: "new note", replacement: original.key, enabled: false)
+unchanged.save()
+precondition(unchanged.saves == 1 && unchanged.savedReplacement == nil)
+precondition(unchanged.savedName == "new note" && !unchanged.savedEnabled && unchanged.dismissed)
+var blank = EditorProbe(key: original, replacement: "  ")
+blank.save()
+precondition(blank.savedReplacement == nil && blank.saves == 1)
+var changed = EditorProbe(key: original, replacement: "  synthetic-replacement-key  ")
+changed.save()
+precondition(changed.savedReplacement == "synthetic-replacement-key" && changed.dismissed)
+var duplicate = EditorProbe(key: original, replacement: "synthetic-duplicate", existingKeys: ["synthetic-duplicate"])
+duplicate.save()
+precondition(duplicate.duplicateKey && duplicate.saves == 0 && !duplicate.dismissed)
+var preserved = EditorProbe(key: original, replacement: original.key, existingKeys: [original.key])
+preserved.save()
+precondition(preserved.saves == 1 && preserved.savedReplacement == nil && !preserved.duplicateKey)
+print("PASS: production editor Save unchanged / blank / replace / duplicate")
+'''
+        with tempfile.TemporaryDirectory(prefix='multikey-editor-save-') as tmp:
+            swift, binary = Path(tmp)/'main.swift', Path(tmp)/'save'
+            swift.write_text(source)
+            result = subprocess.run([compiler, '-swift-version', '5', str(swift), '-o', str(binary)],
+                                    text=True, capture_output=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            print(result.stdout.strip())
+
     def test_modified_views_typecheck_for_ios15(self):
         xcrun = shutil.which('xcrun')
         if sys.platform != 'darwin' or not xcrun:
@@ -161,8 +225,11 @@ print("PASS: production visible model count")
         ui_support = ui_support.replace('// COUNT_METHOD', declaration(STORE, 'func visibleEntryCount('))
         declarations = '\n'.join(declaration(VIEW, marker) for marker in [
             'enum ProviderGroupOrder {', 'struct ProviderListEntry:', 'struct CardCornerShape:',
+            'private struct ProviderRowSeparator: View',
             'final class ProviderRowCredentialCache:', 'private struct InstanceRow: View'
         ])
+        declarations += '\n' + declaration(KEY_MODEL, 'struct ProviderAPIKey:')
+        declarations += '\n' + declaration(KEY_VIEW, 'struct MultiKeyEditSheet: View')
         # Extract the actual conditional list subtree (both branches) and exact
         # edit button. Everything below compiles against real SwiftUI/UIKit;
         # only service/model dependencies are substituted.

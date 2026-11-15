@@ -73,6 +73,24 @@ class CheckinSourceContracts(unittest.TestCase):
         self.assertIn('timer?.invalidate(); timer = nil', auto)
         self.assertIn('task?.cancel()', auto)
 
+    def test_failures_need_qualification_dispatch_and_definite_refusal(self):
+        coord, credit = COORD.read_text(), CREDIT.read_text()
+        policy = section(coord, '    static func needsReminder(', '    static func isBlocked(')
+        for field in ['eligibleDay', 'claimDay', 'failedClaimDay']:
+            self.assertIn('record.' + field + ' == today', policy)
+        claim = section(credit, '    static func claim(', '    private static func post(')
+        self.assertLess(claim.index('guard current.eligibility != .unknown'), claim.index('daily-checkin'))
+        self.assertIn('?.businessRefusal == true', claim)
+        self.assertIn('SubscriptionCheckinLedger.failedClaim(key', claim)
+        post = section(credit, '    private static func post(', '\n}')
+        self.assertLess(post.index('SubscriptionCheckinLedger.beginClaim'), post.index('client.request'))
+        read = section(credit, '    static func checkin(', '    private static func queryCheckin(')
+        self.assertIn('expected: expectedRecord', read)
+        self.assertIn('if value.eligibility == .unknown && !value.checkedIn', read)
+        parser = section(credit, '    static func traeStatus(', '    /// Only this explicit Trae')
+        self.assertNotIn('?? true', parser)
+        self.assertIn('enabled == true && done == false', parser)
+
     def test_switches_default_on_and_are_persisted(self):
         instance = (ROOT / 'src/ios/Providers/ProviderInstance.swift').read_text()
         self.assertIn('subscriptionAutoCheckin = try c.decodeIfPresent(Bool.self, forKey: .subscriptionAutoCheckin) ?? true', instance)
@@ -145,10 +163,18 @@ class CheckinSwiftContract(unittest.TestCase):
         # Replace only transport and app dependencies; execute the actual production methods.
         api += '''    private static func post(_ context: Context, host: String, path: String,
             body: [String: Any], mutation: Bool = false) async throws -> [String: Any] {
-            try await CheckinTransport.send(mutation: mutation)
+            try requireCurrent(context)
+            if mutation {
+                guard SubscriptionCheckinLedger.beginClaim(SubscriptionCheckinLedger.key(context),
+                    requestDay: SubscriptionCheckinPolicy.day(Date())) else { throw CancellationError() }
+            }
+            return try await CheckinTransport.send(mutation: mutation, slot: context.instanceId)
         }
     }
 '''
+        # Visibility only changes so the test can await the production run once.
+        auto = coord[coord.index('@MainActor\nenum SubscriptionAutoCheckin'):]
+        auto = auto.replace('private static func run() async', 'static func run() async', 1)
         fixture = (ROOT / 'scripts/fixtures/subscription_checkin_runtime_harness.swift').read_text()
         # [T-subscription-log] The API logs through the production AppLogger, which is
         # outside this harness's compile unit; fail here with a clear message instead of
@@ -158,7 +184,7 @@ class CheckinSwiftContract(unittest.TestCase):
                           'SubscriptionCreditAPI now logs; its AppLogger stub must stay in the harness fixture')
         with tempfile.TemporaryDirectory(prefix='checkin-runtime-') as tmp:
             path, binary = Path(tmp) / 'Harness.swift', Path(tmp) / 'checkin'
-            path.write_text('import Foundation\nimport CoreFoundation\n' + billing + policy + ledger + api + fixture)
+            path.write_text('import Foundation\nimport CoreFoundation\n' + billing + policy + ledger + api + auto + fixture)
             result = subprocess.run([compiler, '-swift-version', '5', '-parse-as-library', str(path), '-o', str(binary)], capture_output=True, text=True, timeout=180)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             result = subprocess.run([str(binary)], env={**os.environ, 'HOME': tmp}, capture_output=True, text=True, timeout=30)

@@ -68,6 +68,23 @@ struct CardCornerShape: Shape {
     }
 }
 
+/// Both browsing and sorting draw the same line at the cell's bottom edge.
+/// A group's final member has no line; headers never use this view.
+private struct ProviderRowSeparator: View {
+    let isLastMember: Bool
+
+    var body: some View {
+        if !isLastMember {
+            Rectangle()
+                .fill(Color(UIColor.separator))
+                .frame(height: 1 / UIScreen.main.scale)
+                .padding(.leading, 16)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
 /// Lists all configured provider instances grouped by provider type.
 /// Replaces the old ProvidersView for the new multi-instance model.
 struct ProviderInstancesView: View {
@@ -129,11 +146,20 @@ struct ProviderInstancesView: View {
                     let members = store.instances.filter { $0.providerType == type }
                     Section {
                         ForEach(members) { instance in
+                            let isLastMember = instance.id == members.last?.id
                             providerLink(instance)
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(
+                                    Color(UIColor.secondarySystemGroupedBackground)
+                                        .overlay(alignment: .bottom) {
+                                            ProviderRowSeparator(isLastMember: isLastMember)
+                                        }
+                                )
                         }
                     } header: {
                         providerGroupTitle(type, count: members.count)
                     }
+                    .listSectionSeparator(.hidden)
                 }
             }
             // [T-mimo-shadow-voice] Voice Services = a read-only SHADOW view of any
@@ -410,14 +436,7 @@ struct ProviderInstancesView: View {
                 // Here the line is at the CELL edge, outside the label's default
                 // vertical insets. Never draw one under a title or group end.
                 .overlay(alignment: .bottom) {
-                    if !entry.isLastMember {
-                        Rectangle()
-                            .fill(Color(UIColor.separator))
-                            .frame(height: 1 / UIScreen.main.scale)
-                            .padding(.leading, 16)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
-                    }
+                    ProviderRowSeparator(isLastMember: entry.isLastMember)
                 }
         }
     }

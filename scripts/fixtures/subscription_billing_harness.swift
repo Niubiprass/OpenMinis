@@ -47,8 +47,28 @@ for (done, enabled, deviceUsed) in [(false,true,false),(true,true,false),(false,
     check(status.checkedIn == done && status.canClaim == (enabled && !done && !deviceUsed), "Trae claim gating")
     check(status.reward == 200, "reported base plus bonus")
 }
-rejects("unknown check-in status") { _ = try SubscriptionBillingProtocol.traeStatus(["code":0]) }
-rejects("WorkBuddy unknown check-in status") { _ = try SubscriptionBillingProtocol.workBuddyStatus(["code":0,"data":[:]]) }
+for enable in [NSNull(), "true", 1] as [Any] {
+    let status = try SubscriptionBillingProtocol.traeStatus(["code":0,"checked_in":false,"enable":enable])
+    check(status.eligibility == .unknown && !status.canClaim, "malformed enable stays unknown")
+}
+for payload in [["code":0], ["code":0,"checked_in":false], ["code":0,"enable":true]] as [[String: Any]] {
+    let status = try SubscriptionBillingProtocol.traeStatus(payload)
+    check(status.eligibility == .unknown && !status.checkedIn && !status.canClaim, "missing flags stay unknown")
+}
+let unknownWB = try SubscriptionBillingProtocol.workBuddyStatus(["code":0,"data":[:]])
+check(unknownWB.eligibility == .unknown && !unknownWB.canClaim, "WorkBuddy missing flags unknown")
+let inactive = try SubscriptionBillingProtocol.workBuddyStatus(["code":0,"data":["active":false]])
+check(inactive.eligibility == .ineligible && !inactive.checkedIn, "explicit inactive is definitive without done")
+let disabled = try SubscriptionBillingProtocol.traeStatus(["code":0,"enable":false])
+check(disabled.eligibility == .ineligible && !disabled.checkedIn, "explicit disabled is definitive without done")
+let malformedDevice = try SubscriptionBillingProtocol.traeStatus(["code":0,"enable":true,"checked_in":false,"did_checked_in":"false"])
+check(malformedDevice.eligibility == .unknown && !malformedDevice.canClaim, "malformed device flag never permits claim")
+let malformedReward = try SubscriptionBillingProtocol.traeStatus(["code":0,"enable":false,"checked_in":false,"credits":"bad"])
+check(malformedReward.eligibility == .ineligible && malformedReward.reward == nil, "optional reward cannot erase ineligibility")
+let doneWithoutEnable = try SubscriptionBillingProtocol.traeStatus(["code":0,"checked_in":true,"credits":"bad"])
+check(doneWithoutEnable.checkedIn && !doneWithoutEnable.canClaim, "explicit completion survives missing eligibility/reward")
+let optionalDevice = try SubscriptionBillingProtocol.traeStatus(["code":0,"checked_in":false,"enable":true])
+check(optionalDevice.canClaim, "frozen tests permit absent optional device flag")
 let noGrant = try SubscriptionBillingProtocol.traeClaim(["code":0,"credits":200])
 check(noGrant.granted == nil, "quoted reward is not a grant")
 let grant = try SubscriptionBillingProtocol.workBuddyClaim(["code":0,"data":["credit":100]])
@@ -60,4 +80,7 @@ do {
 } catch let e as SubscriptionBillingError {
     check(e.code == 9095, "device already used remains a refusal")
 }
+check(SubscriptionBillingProtocol.traeCheckinRefusal(SubscriptionBillingError(message: "untyped", code: 9095)) == nil,
+      "9095 without business evidence is not a refusal")
+check(!SubscriptionBillingError(message: "http", code: 503).businessRefusal, "HTTP code is not a business refusal")
 print("subscription-billing-ok checks=\(checks)")

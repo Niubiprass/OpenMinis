@@ -19,6 +19,13 @@ struct SubscriptionCheckinRecord: Codable, Equatable {
     /// Only a newly accepted claim may produce a success notice. Legacy
     /// completed records and status discoveries carry no new receipt.
     var receiptDay: String?
+    /// Missing in v2 legacy JSON: pending attempts never imply eligibility.
+    /// Together with blockedDay, absence means eligibility is unknown today.
+    var eligibleDay: String?
+    /// Only an actually dispatched claim followed by a definite business
+    /// refusal may set failedClaimDay. Unknown/cancelled replies stay silent.
+    var claimDay: String?
+    var failedClaimDay: String?
 }
 
 enum SubscriptionCheckinPolicy {
@@ -49,6 +56,8 @@ enum SubscriptionCheckinPolicy {
         // A definite "cannot check in today" answer is shown on that account's
         // row only; it never produces a popup or the two-hour reminder.
         if record.blockedDay == today { return false }
+        guard record.eligibleDay == today, record.claimDay == today,
+              record.failedClaimDay == today else { return false }
         guard record.reminderDay == today, let last = record.remindedAt else { return true }
         return now.timeIntervalSince(last) >= retryInterval
     }
@@ -96,6 +105,51 @@ enum SubscriptionCheckinLedger {
         write(key, value)
     }
 
+    /// Called only after acquiring the per-account claim lock, before querying
+    /// qualification. A scheduler/context read must not clear an in-flight claim.
+    static func clearClaimOutcome(_ key: String, requestDay: String, now: Date = Date()) {
+        guard requestDay == SubscriptionCheckinPolicy.day(now) else { return }
+        var value = record(key)
+        value.claimDay = nil
+        value.failedClaimDay = nil
+        write(key, value)
+    }
+
+    @discardableResult
+    static func beginClaim(_ key: String, requestDay: String, now: Date = Date()) -> Bool {
+        guard requestDay == SubscriptionCheckinPolicy.day(now) else { return false }
+        var value = record(key)
+        guard value.eligibleDay == requestDay, value.completedDay != requestDay,
+              value.blockedDay != requestDay else { return false }
+        value.claimDay = requestDay
+        value.failedClaimDay = nil
+        write(key, value)
+        return true
+    }
+
+    static func failedClaim(_ key: String, requestDay: String, now: Date = Date()) {
+        guard requestDay == SubscriptionCheckinPolicy.day(now) else { return }
+        var value = record(key)
+        guard value.eligibleDay == requestDay, value.claimDay == requestDay,
+              value.completedDay != requestDay, value.blockedDay != requestDay else { return }
+        value.failedClaimDay = requestDay
+        write(key, value)
+    }
+
+    /// An unsuccessful qualification read or unconfirmed write is not evidence
+    /// of either completion, ineligibility or a failed claim.
+    static func unknown(_ key: String, requestDay: String, expected: SubscriptionCheckinRecord? = nil,
+                        now: Date = Date()) {
+        guard requestDay == SubscriptionCheckinPolicy.day(now) else { return }
+        var value = record(key)
+        // A slow read/context failure must not erase a newer claim's evidence.
+        if let expected, value != expected { return }
+        guard value.completedDay != requestDay, value.blockedDay != requestDay else { return }
+        value.eligibleDay = nil
+        value.failedClaimDay = nil
+        write(key, value)
+    }
+
     static func confirmed(_ key: String, requestDay: String, notify: Bool = false, now: Date = Date()) {
         // A reply crossing midnight cannot mark the new day as signed.
         guard requestDay == SubscriptionCheckinPolicy.day(now) else { return }
@@ -104,6 +158,8 @@ enum SubscriptionCheckinLedger {
         value.completedDay = requestDay
         value.blockedDay = nil
         value.blockedNote = nil
+        value.eligibleDay = nil
+        value.failedClaimDay = nil
         // A repeated status read must not consume a concurrent new receipt's
         // pending notice. Discovering an existing check-in is otherwise silent.
         if notify {
@@ -124,6 +180,8 @@ enum SubscriptionCheckinLedger {
         let previous = value
         value.blockedDay = requestDay
         value.blockedNote = note
+        value.eligibleDay = nil
+        value.failedClaimDay = nil
         guard value != previous else { return }
         write(key, value)
         ProviderConfigStore.shared.authRevision &+= 1
@@ -145,16 +203,21 @@ enum SubscriptionCheckinLedger {
         guard requestDay == SubscriptionCheckinPolicy.day(now) else { return }
         if status.checkedIn {
             confirmed(key, requestDay: requestDay, notify: false, now: now)
-        } else if !status.canClaim {
+        } else if status.eligibility == .ineligible {
             blocked(key, requestDay: requestDay, note: status.note ?? "今天暂不能签到", now: now)
-        } else {
+        } else if status.eligibility == .eligible {
             // An explicit manual refresh may confirm eligibility has changed.
             var value = record(key)
-            guard SubscriptionCheckinPolicy.isBlocked(value, now: now) else { return }
+            guard value.completedDay != requestDay else { return }
+            let previous = value
+            value.eligibleDay = requestDay
             value.blockedDay = nil
             value.blockedNote = nil
+            guard value != previous else { return }
             write(key, value)
             ProviderConfigStore.shared.authRevision &+= 1
+        } else {
+            unknown(key, requestDay: requestDay, now: now)
         }
     }
 
@@ -225,19 +288,24 @@ enum SubscriptionAutoCheckin {
                 var record = SubscriptionCheckinLedger.record(key)
                 if SubscriptionCheckinPolicy.canAttempt(record, now: now) {
                     SubscriptionCheckinLedger.beginAttempt(key, now: now)
+                    let expectedRecord = SubscriptionCheckinLedger.record(key)
+                    var reachedClaim = false
                     do {
                         let context = try await SubscriptionCreditAPI.context(current, accountSlot: slot)
                         guard let fresh = store.instance(for: current.id), fresh.isEnabled,
                               fresh.subscriptionAutoCheckin, !Task.isCancelled else { continue }
-                        // claim owns the one fresh status read and the write lock.
-                        // It records a definite "not today" answer as blocked.
+                        // claim owns qualification and the account write lock.
+                        reachedClaim = true
                         _ = try await SubscriptionCreditAPI.claim(context, automatic: true)
                     } catch {
                         if error is CancellationError || Task.isCancelled { return }
-                        // Terminal answers (device already used, not eligible,
-                        // already signed) are remembered by claim and stay silent.
+                        if !reachedClaim {
+                            SubscriptionCheckinLedger.unknown(key, requestDay: SubscriptionCheckinPolicy.day(now),
+                                expected: expectedRecord)
+                        }
+                        // Terminal answers are silent; only claim can record a
+                        // definite dispatched failure. Unknowns retry in two hours.
                         if (error as? SubscriptionBillingError)?.terminal == true { continue }
-                        // Anything else stays pending and retries in two hours.
                     }
                     record = SubscriptionCheckinLedger.record(key)
                 }

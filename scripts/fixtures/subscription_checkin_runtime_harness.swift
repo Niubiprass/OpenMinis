@@ -18,24 +18,61 @@ extension String { static let oauth = "oauth" }
 @MainActor enum SubscriptionAccounts { static func identity(_ token: SubscriptionTokenStorage) -> String? { token.provider + ":" + token.credentials.access } }
 // Stable deterministic hash stand-in: key selection itself remains production code.
 enum SHA256 { static func hash(data: Data) -> [UInt8] { Array(data) } }
-@MainActor final class ProviderConfigStore { static let shared = ProviderConfigStore(); var authRevision = 0; func instance(for id: String) -> ProviderInstance? { ProviderInstance(id: id) } }
-@MainActor final class SubscriptionOAuthManager { static let shared = SubscriptionOAuthManager(); var epoch = UUID(); func accountEpoch(instanceId: String) -> UUID { epoch }; func validCredentials(instanceId: String, type: ProviderType) async throws -> KWWKAI.OAuthCredentials { .init(access: "fake-account") } }
+@MainActor final class ProviderConfigStore {
+    static let shared = ProviderConfigStore()
+    var authRevision = 0
+    var instances: [ProviderInstance] = []
+    func instance(for id: String) -> ProviderInstance? { instances.first { $0.id == id } ?? ProviderInstance(id: id) }
+}
+@MainActor final class SubscriptionOAuthManager {
+    static let shared = SubscriptionOAuthManager()
+    var epoch = UUID()
+    func accountEpoch(instanceId: String) -> UUID { epoch }
+    func validCredentials(instanceId: String, type: ProviderType) async throws -> KWWKAI.OAuthCredentials {
+        .init(access: ProviderKeychainHelper.accessBySlot[instanceId] ?? "fake-account")
+    }
+}
 @MainActor enum ProviderKeychainHelper {
+    static var accessBySlot: [String: String] = [:]
     static func oauthNeedsReauth(instanceId: String) -> Bool { false }
-    static func loadOAuthToken(instanceId: String, as: SubscriptionTokenStorage.Type) -> SubscriptionTokenStorage? { SubscriptionTokenStorage(provider: "traeCN", credentials: .init(access: "fake-account"), loginAccount: nil) }
+    static func loadOAuthToken(instanceId: String, as: SubscriptionTokenStorage.Type) -> SubscriptionTokenStorage? {
+        SubscriptionTokenStorage(provider: "traeCN", credentials: .init(access: accessBySlot[instanceId] ?? "fake-account"), loginAccount: nil)
+    }
 }
 struct TraeCredential { init(_ credentials: KWWKAI.OAuthCredentials) {}; var deviceID: String? { "fixture-device" } }
-@MainActor final class UIApplication { static let shared = UIApplication(); enum State { case active }; let applicationState = State.active }
+@MainActor final class UIApplication {
+    static let shared = UIApplication()
+    enum State { case active, background }
+    var applicationState = State.active
+    var isProtectedDataAvailable = true
+}
+enum TestTint { case systemGreen, systemRed }
+@MainActor enum MinisToast {
+    static var notices: [String] = []
+    static func show(_ text: String, duration: Double = 3, systemImage: String = "", tint: TestTint = .systemGreen) {
+        notices.append(text)
+    }
+}
 @MainActor enum CheckinTransport {
     static var reads = 0, writes = 0
     static var status: [String: Any] = ["code": 0, "checked_in": true]
     static var response: [String: Any] = ["code": 0]
     static var suspended = false
     static var pending: CheckedContinuation<Void, Never>?
-    static func send(mutation: Bool) async throws -> [String: Any] {
-        if mutation { writes += 1 } else { reads += 1 }
+    static var statusError: SubscriptionBillingError?
+    static var claimError: SubscriptionBillingError?
+    static var cancelClaim = false
+    static var statusBySlot: [String: [String: Any]] = [:]
+    static var responseBySlot: [String: [String: Any]] = [:]
+    static var writesBySlot: [String: Int] = [:]
+    static func send(mutation: Bool, slot: String) async throws -> [String: Any] {
+        if mutation { writes += 1; writesBySlot[slot, default: 0] += 1 } else { reads += 1 }
         if suspended { await withCheckedContinuation { pending = $0 } }
-        return mutation ? response : status
+        if mutation {
+            if cancelClaim { throw CancellationError() }
+            if let claimError { throw claimError }
+        } else if let statusError { throw statusError }
+        return mutation ? (responseBySlot[slot] ?? response) : (statusBySlot[slot] ?? status)
     }
     static func release() { suspended = false; pending?.resume(); pending = nil }
 }
@@ -85,6 +122,49 @@ struct TraeCredential { init(_ credentials: KWWKAI.OAuthCredentials) {}; var dev
         catch let error as SubscriptionBillingError { expect(error.terminal, "mutation refusal terminal") }
         expect(SubscriptionCheckinLedger.cachedStatus(key)?.canClaim == false, "mutation refusal saved")
         clear()
+        let writesBeforeQualification = CheckinTransport.writes
+        for payload in [["code": 0, "enable": false], ["code": 0, "checked_in": false], ["code": 701]] as [[String: Any]] {
+            CheckinTransport.status = payload
+            do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("unqualified must not claim") }
+            catch is SubscriptionBillingError { }
+            expect(CheckinTransport.writes == writesBeforeQualification, "ineligible/unknown never dispatch")
+            expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "ineligible/unknown silent")
+            clear()
+        }
+        CheckinTransport.status = ["code": 0, "checked_in": false, "enable": true]
+        CheckinTransport.response = ["code": 9004]
+        do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("definite refusal must fail") }
+        catch let error as SubscriptionBillingError { expect(error.businessRefusal, "business rejection retained") }
+        let rejected = SubscriptionCheckinLedger.record(key)
+        expect(rejected.eligibleDay == day && rejected.claimDay == day && rejected.failedClaimDay == day, "only eligible dispatched refusal has failure evidence")
+        expect(SubscriptionCheckinPolicy.needsReminder(rejected, now: now), "real claim failure counted")
+        let persistedFailure = defaults.data(forKey: "subscription.checkin.v2." + key)!
+        expect(try JSONDecoder().decode(SubscriptionCheckinRecord.self, from: persistedFailure) == rejected, "failure persistence roundtrip")
+        CheckinTransport.claimError = SubscriptionBillingError(message: "fixture reply lost")
+        do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("lost reply must not succeed") }
+        catch is SubscriptionBillingError { }
+        expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "uncertain next claim cannot reuse old failure")
+        CheckinTransport.claimError = nil
+        clear()
+        CheckinTransport.cancelClaim = true
+        do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("cancel must abort") }
+        catch is CancellationError { }
+        expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "cancel has no failure")
+        CheckinTransport.cancelClaim = false
+        clear()
+        CheckinTransport.statusError = SubscriptionBillingError(message: "fixture query failed")
+        do { _ = try await SubscriptionCreditAPI.checkin(ctx); fatalError("query must fail") }
+        catch is SubscriptionBillingError { }
+        expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "qualification error is not claim failure")
+        CheckinTransport.statusError = nil
+        clear()
+        let expected = SubscriptionCheckinLedger.record(key)
+        SubscriptionCheckinLedger.remember(.init(checkedIn: false, canClaim: true, reward: nil), key: key, requestDay: day)
+        SubscriptionCheckinLedger.beginClaim(key, requestDay: day)
+        SubscriptionCheckinLedger.failedClaim(key, requestDay: day)
+        SubscriptionCheckinLedger.unknown(key, requestDay: day, expected: expected)
+        expect(SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "stale unknown cannot erase newer refusal")
+        clear()
         let reads = CheckinTransport.reads
         CheckinTransport.suspended = true
         let first = Task { @MainActor in try await SubscriptionCreditAPI.checkin(ctx) }
@@ -121,6 +201,43 @@ struct TraeCredential { init(_ credentials: KWWKAI.OAuthCredentials) {}; var dev
         expect(!SubscriptionCheckinPolicy.canAttempt(SubscriptionCheckinLedger.record(key), now: localNoon.addingTimeInterval(7199)), "network retry before two hours blocked")
         expect(SubscriptionCheckinPolicy.canAttempt(SubscriptionCheckinLedger.record(key), now: localNoon.addingTimeInterval(7200)), "network retry at two hours allowed")
         clear()
+        // Run the production automatic loop, not just the pure count predicate.
+        func resetFourAccounts() {
+            for entry in defaults.dictionaryRepresentation().keys where entry.hasPrefix("subscription.checkin.v2.") {
+                defaults.removeObject(forKey: entry)
+            }
+            let slots = ["one", "two", "three", "four"]
+            var provider = ProviderInstance(id: "four-account-provider")
+            provider.subscriptionAccountSlots = slots
+            ProviderConfigStore.shared.instances = [provider]
+            ProviderKeychainHelper.accessBySlot = Dictionary(uniqueKeysWithValues: slots.map { ($0, "synthetic-" + $0) })
+            CheckinTransport.status = ["code": 0, "checked_in": false, "enable": true]
+            CheckinTransport.response = ["code": 0]
+            CheckinTransport.statusBySlot = [:]; CheckinTransport.responseBySlot = [:]
+            CheckinTransport.writesBySlot = [:]
+            MinisToast.notices = []
+        }
+        for fourth in [["code": 0, "enable": false], ["code": 0, "checked_in": false], ["code": 701]] as [[String: Any]] {
+            resetFourAccounts()
+            CheckinTransport.statusBySlot["four"] = fourth
+            await SubscriptionAutoCheckin.run()
+            expect(MinisToast.notices == ["3 个账号已签到"], "three successes plus unqualified fourth has no failure")
+            expect(CheckinTransport.writesBySlot["four", default: 0] == 0, "fourth never receives claim")
+            expect(CheckinTransport.writesBySlot.values.reduce(0, +) == 3, "only three eligible claims")
+            let readsAfter = CheckinTransport.reads
+            MinisToast.notices = []
+            await SubscriptionAutoCheckin.run()
+            expect(MinisToast.notices.isEmpty && CheckinTransport.reads == readsAfter, "same-day repeated pass is silent and cached")
+        }
+        resetFourAccounts()
+        CheckinTransport.responseBySlot["four"] = ["code": 9004]
+        await SubscriptionAutoCheckin.run()
+        expect(MinisToast.notices == ["3 个账号已签到，1 个签到失败"], "eligible fourth with definite dispatched refusal still reports real failure")
+        expect(CheckinTransport.writesBySlot["four", default: 0] == 1, "real failure requires a dispatch")
+        resetFourAccounts()
+        UIApplication.shared.applicationState = .background
+        await SubscriptionAutoCheckin.run()
+        expect(MinisToast.notices.isEmpty && CheckinTransport.writesBySlot.isEmpty, "background has no claims or notices")
         print("subscription-checkin-runtime-ok")
     }
 }

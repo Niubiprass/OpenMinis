@@ -125,9 +125,10 @@ class Ui(unittest.TestCase):
         for s in ['个 Key', '正常', '错误', '负载均衡策略']:
             self.assertIn(s, VIEW)
 
-    def test_keys_are_masked_never_raw(self):
-        self.assertIn('k.masked', VIEW)
-        self.assertNotIn('Text(k.key)', VIEW)
+    def test_list_rows_keep_masked_credentials(self):
+        row = VIEW.split('private func keyRow', 1)[1].split('private func displayNote', 1)[0]
+        self.assertIn('k.masked', row)
+        self.assertNotIn('Text(k.key)', row)
 
     def test_saved_note_is_the_visible_row_title(self):
         self.assertIn('Text(displayName(k))', VIEW)
@@ -140,10 +141,16 @@ class Ui(unittest.TestCase):
         self.assertIn('.frame(maxWidth: .infinity, alignment: .leading)', row)
         self.assertEqual(row.count('.frame(minWidth: 118, maxWidth: 145'), 0)
 
-    def test_edit_field_shows_current_masked_key_as_normal_text(self):
-        self.assertIn('TextField("", text: $replacement)', VIEW)
-        self.assertIn('_replacement = State(initialValue: key.masked)', VIEW)
-        self.assertIn('trimmedKey == key.masked', VIEW)
+    def test_editor_loads_full_key_and_has_copy_action(self):
+        editor = VIEW.split('struct MultiKeyEditSheet: View', 1)[1].split('struct MultiKeyStrategyView:', 1)[0]
+        self.assertIn('TextEditor(text: $replacement)', editor)
+        self.assertIn('_replacement = State(initialValue: key.key)', editor)
+        self.assertIn('replacement = key.key', editor)
+        self.assertNotIn('key.masked', editor)
+        self.assertIn('trimmedKey != key.key', editor)
+        self.assertIn('keyChanged ? trimmedKey : nil', editor)
+        self.assertIn('Label("复制完整 Key", systemImage: "doc.on.doc")', editor)
+        self.assertIn('UIPasteboard.general.string = replacement.trimmingCharacters', editor)
 
     def test_error_keys_can_be_reactivated(self):
         self.assertIn('reactivate(keyId:', VIEW)
@@ -157,8 +164,8 @@ class ManagementUi(unittest.TestCase):
     def test_existing_key_can_be_edited(self):
         self.assertIn('MultiKeyEditSheet', VIEW)
         self.assertIn('manager.update(keyId: key.id', VIEW)
-        self.assertIn('TextField("", text: $replacement)', VIEW)
-        self.assertIn('换成新 Key 直接覆盖', VIEW)
+        self.assertIn('TextEditor(text: $replacement)', VIEW)
+        self.assertIn('这里显示完整 Key，可以查看、复制或直接修改', VIEW)
 
     def test_existing_key_can_be_deleted(self):
         self.assertIn('manager.remove(keyId:', VIEW)
@@ -180,9 +187,14 @@ class ManagementUi(unittest.TestCase):
         self.assertIn('existingKeys.contains(trimmedKey)', VIEW)
         self.assertIn('keys.contains(where: { $0.key == trimmed })', VIEW)
 
-    def test_key_never_rendered_in_clear(self):
-        self.assertNotIn('Text(k.key)', VIEW)
-        self.assertNotIn('Text(key.key)', VIEW)
+    def test_full_key_is_limited_to_explicit_editor(self):
+        listing = VIEW.split('struct MultiKeyEditSheet: View', 1)[0]
+        self.assertNotIn('Text(k.key)', listing)
+        self.assertNotIn('Text(key.key)', listing)
+        editor = VIEW.split('struct MultiKeyEditSheet: View', 1)[1].split('struct MultiKeyStrategyView:', 1)[0]
+        self.assertIn('Button("取消") { dismiss() }', editor)
+        self.assertEqual(editor.count('onSave(trimmedName'), 1)
+        self.assertNotIn('.onChange(of: replacement)', editor)
 
 
 class EmptyRingAndLockIO(unittest.TestCase):

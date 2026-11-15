@@ -36,6 +36,19 @@ updates only for the same stored credential and account generation. Credit
 and check-in reads fail independently. A claim without a numeric grant cannot
 invent its reward; a fresh checked-in status may confirm completion.
 
+Qualification is three-state: explicitly eligible, explicitly ineligible, or
+unknown. Missing/malformed eligibility flags no longer default to eligible;
+optional malformed reward metadata cannot erase an explicit denial. An
+ineligible account is excluded from all automatic counts/notices. Unknown
+qualification and uncertain claim replies are also silent. A failure notice
+requires today's explicit eligibility, a dispatched claim, and a definite
+service refusal. A generic non-zero business code only proves that the claim
+was rejected; it does not establish eligibility or a new capability rule.
+Only the documented Trae 9095 refusal is classified by business code. Legacy
+pending records carry no eligibility/claim-failure evidence and stay silent.
+The user's fourth account's actual qualification payload has not been read,
+so no extra vendor denial code or response shape is inferred from this fix.
+
 These are upstream source/test contracts, not proof that the user's current
 account/phone accepts the adapted requests. The GitHub Swift tests compile and
 execute the production parser region; device acceptance and actual credited

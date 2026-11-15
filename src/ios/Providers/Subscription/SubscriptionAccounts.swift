@@ -117,7 +117,7 @@ struct SubscriptionAccountsSection: View {
         } header: {
             Text("账号 · \(accounts.count)")
         } footer: {
-            Text("模型只显示一套，积分按实际使用的账号扣除。自动换号只在明确额度不足且尚未开始回复时发生。签到完成后当天不再查询；未完成时每两小时重试并轻提示。")
+            Text("模型只显示一套，积分按实际使用的账号扣除。自动换号只在明确额度不足且尚未开始回复时发生。已签到账号当天不再查询；不能签到的账号不计数、不提醒。资格或结果未确认时每两小时查询确认。")
         }
         .task(id: "\(store.authRevision)-\(store.configRevision)") {
             let snapshot = instance

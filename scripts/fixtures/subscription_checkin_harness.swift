@@ -23,12 +23,11 @@ expect(SubscriptionCheckinPolicy.day(parseDay("2026-01-01T16:00:00Z")) == "2026-
 let noon = parseDay("2026-01-02T04:00:00Z")
 expect(SubscriptionCheckinPolicy.day(noon) == "2026-01-02", "noon same day")
 
-// Fresh record: eligible.
+// Fresh record: eligibility is unknown; qualification reads may still retry.
 var record = SubscriptionCheckinRecord()
 expect(SubscriptionCheckinPolicy.canAttempt(record, now: noon), "fresh record may attempt")
 expect(!SubscriptionCheckinPolicy.needsSuccessNotice(record, now: noon), "nothing signed, no success notice")
-// Not completed and never reminded: the first reminder is due.
-expect(SubscriptionCheckinPolicy.needsReminder(record, now: noon), "first reminder due")
+expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon), "fresh unknown has no failure reminder")
 
 // An attempt is not a completion: still pending, but not immediately retried.
 record.attemptDay = "2026-01-02"
@@ -51,11 +50,17 @@ expect(!SubscriptionCheckinPolicy.needsSuccessNotice(record, now: noon), "succes
 // Next day: a completed yesterday must not block today.
 let tomorrow = parseDay("2026-01-03T04:00:00Z")
 expect(SubscriptionCheckinPolicy.canAttempt(record, now: tomorrow), "new day may attempt")
-expect(SubscriptionCheckinPolicy.needsReminder(record, now: tomorrow), "new day reminder due")
+expect(!SubscriptionCheckinPolicy.needsReminder(record, now: tomorrow), "new day has no qualification or failed claim yet")
 expect(!SubscriptionCheckinPolicy.needsSuccessNotice(record, now: tomorrow), "yesterday is not today's success")
 
-// Reminder throttling is independent from attempts.
+// Only a known eligible, dispatched, definite failure can be reminded.
 record = SubscriptionCheckinRecord()
+record.eligibleDay = "2026-01-02"
+expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon), "eligibility alone is not failure")
+record.claimDay = "2026-01-02"
+expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon), "dispatch alone is not failure")
+record.failedClaimDay = "2026-01-02"
+expect(SubscriptionCheckinPolicy.needsReminder(record, now: noon), "definite eligible claim failure can remind")
 record.reminderDay = "2026-01-02"
 record.remindedAt = noon
 expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon.addingTimeInterval(3600)), "reminder throttled 1h")
@@ -74,4 +79,22 @@ for hours in [0.0, 2.0, 8.0] {
 expect(SubscriptionCheckinPolicy.canAttempt(record, now: tomorrow), "blocked expires next day")
 let legacy = try! JSONDecoder().decode(SubscriptionCheckinRecord.self, from: Data("{\"completedDay\":\"2026-01-02\"}".utf8))
 expect(!SubscriptionCheckinPolicy.needsSuccessNotice(legacy, now: noon), "legacy completion silent")
+let pendingLegacy = try! JSONDecoder().decode(SubscriptionCheckinRecord.self,
+    from: Data("{\"attemptDay\":\"2026-01-02\",\"reminderDay\":\"2026-01-02\"}".utf8))
+expect(pendingLegacy.eligibleDay == nil && pendingLegacy.failedClaimDay == nil, "old JSON needs no migration")
+expect(!SubscriptionCheckinPolicy.needsReminder(pendingLegacy, now: noon), "old pending never implies failed claim")
+
+// User's four-account case: only three new receipts enter the report.
+var completed = SubscriptionCheckinRecord()
+completed.completedDay = "2026-01-02"
+completed.receiptDay = "2026-01-02"
+var unavailable = SubscriptionCheckinRecord()
+unavailable.blockedDay = "2026-01-02"
+var accounts = [completed, completed, completed, unavailable]
+expect(accounts.filter { SubscriptionCheckinPolicy.needsSuccessNotice($0, now: noon) }.count == 3, "three successes")
+expect(accounts.filter { SubscriptionCheckinPolicy.needsReminder($0, now: noon) }.isEmpty, "unavailable fourth never fails")
+accounts[3] = pendingLegacy
+expect(accounts.filter { SubscriptionCheckinPolicy.needsReminder($0, now: noon) }.isEmpty, "unknown fourth never fails")
+let roundTrip = try! JSONDecoder().decode(SubscriptionCheckinRecord.self, from: JSONEncoder().encode(unavailable))
+expect(roundTrip == unavailable && !SubscriptionCheckinPolicy.needsReminder(roundTrip, now: noon), "blocked persists across reload")
 print("subscription-checkin-ok")
