@@ -73,6 +73,9 @@ struct CardCornerShape: Shape {
 struct ProviderInstancesView: View {
     @ObservedObject private var store = ProviderConfigStore.shared
     @State private var editMode: EditMode = .inactive
+    // Only the Edit/Done button changes the layout. SwiftUI can enter transient
+    // edit mode for a row swipe; that must never change section structure.
+    @State private var isSortingProviders = false
     @State private var showAddProvider = false
     @State private var showImportFile = false
     @State private var importMessage: String?
@@ -107,22 +110,31 @@ struct ProviderInstancesView: View {
             // shows its text models here AND a shadow voice row below ("dual
             // visibility"). Pure-voice vendors (ElevenLabs etc.) still appear here
             // too; they just have no usable text models, which is expected.
-            // [T-provider-group-drag-v3] The group title is a LIST ROW, so it
-            // gets the same native ☰ the providers get. Sections cannot be
-            // reordered by the list engine, and a header cannot carry a row
-            // handle — that is why the earlier attempt (a custom gesture on the
-            // header) never reacted. Rows still render as separate rounded
-            // cards; the spacing between groups is drawn by the row background.
-            Section {
-                ForEach(listRows) { entry in
-                    rowContent(entry)
-                        // Default insets: the previous custom ones squeezed the
-                        // row in edit mode (the drag handle takes a column) and
-                        // wrapped provider names.
-                        .listRowSeparator(entry.isGroupTitle ? .hidden : .visible)
-                        .listRowBackground(rowBackground(entry))
+            // [T-provider-row-layout] Native browsing sections own their corner
+            // clipping, including the system swipe buttons. Flatten only for
+            // the explicitly requested title-row reorder handles, not a swipe.
+            if isSortingProviders {
+                Section {
+                    ForEach(listRows) { entry in
+                        rowContent(entry)
+                            .padding(.bottom, entry.isLastMember ? 10 : 0)
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(rowBackground(entry))
+                    }
+                    .onMove(perform: moveRows)
                 }
-                .onMove(perform: moveRows)
+                .listSectionSeparator(.hidden)
+            } else {
+                ForEach(ProviderGroupOrder.types(in: store.instances), id: \.self) { type in
+                    let members = store.instances.filter { $0.providerType == type }
+                    Section {
+                        ForEach(members) { instance in
+                            providerLink(instance)
+                        }
+                    } header: {
+                        providerGroupTitle(type, count: members.count)
+                    }
+                }
             }
             // [T-mimo-shadow-voice] Voice Services = a read-only SHADOW view of any
             // instance that has audio-modality models, FOLDED by base URL so two
@@ -171,13 +183,16 @@ struct ProviderInstancesView: View {
                 }
             }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle("Providers")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-
-                ToolbarItem(placement: .topBarLeading) {
-                    EditButton()
+            ToolbarItem(placement: .topBarLeading) {
+                Button(isSortingProviders ? AppLocalized("Done") : AppLocalized("Edit")) {
+                    isSortingProviders.toggle()
+                    editMode = isSortingProviders ? .active : .inactive
                 }
+            }
             
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -334,37 +349,47 @@ struct ProviderInstancesView: View {
     private func rowContent(_ entry: ProviderListEntry) -> some View {
         switch entry.row {
         case .group(let type):
-            HStack(spacing: 8) {
-                Text(type.displayName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                Text("\(store.instances.filter { $0.providerType == type }.count)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.top, 12)
-            .padding(.bottom, 6)
-            .contentShape(Rectangle())
+            providerGroupTitle(type, count: store.instances.filter { $0.providerType == type }.count)
+                .padding(.top, 12)
+                .padding(.bottom, 6)
+                .contentShape(Rectangle())
         case .instance(let instance):
-            NavigationLink {
-                ProviderInstanceDetailView(instanceId: instance.id)
+            providerLink(instance)
+        }
+    }
+
+    private func providerGroupTitle(_ type: ProviderType, count: Int) -> some View {
+        HStack(spacing: 8) {
+            Text(type.displayName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Text("\(count)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .textCase(nil)
+    }
+
+    /// Same navigation, actions and deletion confirmation in both layouts.
+    private func providerLink(_ instance: ProviderInstance) -> some View {
+        NavigationLink {
+            ProviderInstanceDetailView(instanceId: instance.id)
+        } label: {
+            InstanceRow(instance: instance)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                pendingDeleteInstance = instance
             } label: {
-                InstanceRow(instance: instance)
+                Label("Delete", systemImage: "trash")
             }
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                Button(role: .destructive) {
-                    pendingDeleteInstance = instance
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
-                Button {
-                    editingInstanceId = instance.id
-                } label: {
-                    Label("Edit", systemImage: "pencil")
-                }
-                .tint(.blue)
+            Button {
+                editingInstanceId = instance.id
+            } label: {
+                Label("Edit", systemImage: "pencil")
             }
+            .tint(.blue)
         }
     }
 
@@ -382,6 +407,18 @@ struct ProviderInstancesView: View {
                             bottom: entry.isLastMember ? 12 : 0)
                 .fill(Color(UIColor.secondarySystemGroupedBackground))
                 .padding(.bottom, entry.isLastMember ? 10 : 0)
+                // Here the line is at the CELL edge, outside the label's default
+                // vertical insets. Never draw one under a title or group end.
+                .overlay(alignment: .bottom) {
+                    if !entry.isLastMember {
+                        Rectangle()
+                            .fill(Color(UIColor.separator))
+                            .frame(height: 1 / UIScreen.main.scale)
+                            .padding(.leading, 16)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
         }
     }
 
@@ -421,76 +458,168 @@ struct ProviderInstancesView: View {
     }
 }
 
-/// [T-ios-provider-row-keychain-in-body] Per-row credential display state, resolved
-/// ONCE per (instance, authRevision) instead of on every SwiftUI body evaluation.
-///
-/// `isConfigured` and `credentialSummary` were each reading Keychain directly from
-/// `body`. Every `SecItemCopyMatching` is a synchronous XPC round-trip to
-/// `securityd`, so one body pass over N provider rows cost 2N blocking IPCs on the
-/// MAIN THREAD — a real user log shows 110 `caller=isConfigured` +
-/// 110 `caller=credentialSummary` reads in a single session (655 Keychain reads
-/// overall). A crash report from that same session caught the main thread parked
-/// inside `SecItemCopyMatching` under `InstanceRow.body`.
-///
-/// This is the same hazard `ProviderCredentialCache`
-/// ([T-new-session-hang-credential-cache]) already exists for; the row simply
-/// bypassed it. A separate cache is used rather than `hasAnyCredential` because
-/// the row needs strictly more than a Bool — it renders the MASKED KEY, and its
-/// OAuth notion of "authenticated" is per-provider-manager, not the router's
-/// any-credential test. Reusing `hasAnyCredential` here would silently change
-/// what the row displays.
-///
-/// Keying on `authRevision` (bumped by `notifyAuthChanged` on every credential
-/// write/delete) makes invalidation exact: the UI still updates immediately after
-/// the user adds or removes a key. The TTL is only a backstop for credential
-/// changes that happen outside the app (Keychain iCloud sync).
+/// [T-ios-provider-row-keychain-in-body] Reuse the credential caches' 15s
+/// backstop, but cache an off-main task as well as its result. A cold row must
+/// never perform Keychain I/O from `body`. The router's Bool cache cannot supply
+/// the masked subtitle or the row's provider-specific authentication semantics.
 final class ProviderRowCredentialCache: @unchecked Sendable {
     static let shared = ProviderRowCredentialCache()
+    static let didInvalidate = Notification.Name("ProviderRowCredentialCache.didInvalidate")
 
-    struct Display {
+    /// Only immutable, Sendable inputs cross into the Keychain worker. Account
+    /// selection is part of identity even though the existing row authenticates
+    /// the instance's own slot, not any/active subscription account.
+    struct Request: Hashable, Sendable {
+        let instanceId: String
+        let providerType: ProviderType
+        let credentialType: ProviderCredential
+        let allowsEmptyAPIKey: Bool
+        let subscriptionAccountIds: [String]?
+        let subscriptionActiveAccountId: String?
+        let revision: UInt
+        let generation: UInt
+    }
+
+    struct Display: Sendable {
         let isConfigured: Bool
         let summary: String
-        /// [T-oauth-keep-credentials] OAuth credential kept but its refresh was
-        /// rejected — row renders red until the user signs in again.
         var needsReauth = false
+        static let loading = Display(isConfigured: false, summary: "…")
     }
 
-    /// Backstop only — `authRevision` is the primary invalidation signal.
+    private struct Entry {
+        let request: Request
+        let id = UUID()
+        let task: Task<Display, Never>
+        let at: Date
+    }
+
     private static let ttl: TimeInterval = 15
-
     private let lock = NSLock()
-    private var entries: [String: (value: Display, revision: UInt, at: Date)] = [:]
+    private var entries: [String: Entry] = [:]
+    // UI reads only already-completed, masked display values. No Keychain read
+    // or token decoding is permitted on this synchronous lookup.
+    private var completed: [String: (request: Request, display: Display)] = [:]
+    private var invalidationGeneration: UInt = 0
 
-    private init() {}
+    var generation: UInt {
+        lock.lock()
+        defer { lock.unlock() }
+        return invalidationGeneration
+    }
 
-    /// Drop everything. Called from the SAME places that clear
-    /// `ProviderCredentialCache`, because those events (Keychain iCloud
-    /// `view-change`, app foreground) change credentials WITHOUT bumping
-    /// `authRevision` — so the revision key alone would not notice them.
+    /// Existing foreground and iCloud Keychain hooks call this. Notify visible
+    /// rows too: a stored SwiftUI snapshot no longer re-probes on every redraw.
     func invalidateAll() {
         lock.lock()
+        invalidationGeneration &+= 1
         entries.removeAll()
+        completed.removeAll()
         lock.unlock()
+        NotificationCenter.default.post(name: Self.didInvalidate, object: nil)
     }
 
-    func value(for instanceId: String, revision: UInt, probe: () -> Display) -> Display {
+    func cachedDisplay(for request: Request) -> Display? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard request.generation == invalidationGeneration,
+              let cached = completed[request.instanceId], cached.request == request else { return nil }
+        return cached.display
+    }
+
+    func value(for request: Request) async -> Display? {
+        await value(for: request, probe: Self.probe)
+    }
+
+    // Probe injection lets the real cache be tested with deterministic delayed
+    // responses without touching credentials or any server.
+    func value(for request: Request,
+               probe: @escaping @Sendable (Request) -> Display) async -> Display? {
+        guard !Task.isCancelled, let entry = entry(for: request, probe: probe) else { return nil }
+        let value = await entry.task.value
+        guard !Task.isCancelled, rememberIfCurrent(value, entry: entry) else { return nil }
+        return value
+    }
+
+    /// Synchronous lock scope, never held across an await or Keychain work.
+    /// Keeping the task shares a cold probe across disappearing/reappearing rows;
+    /// completion never writes into the dictionary, so old work cannot refill it.
+    private func entry(for request: Request, probe: @escaping @Sendable (Request) -> Display) -> Entry? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard request.generation == invalidationGeneration else { return nil }
         let now = Date()
-        lock.lock()
-        if let e = entries[instanceId], e.revision == revision,
-           now.timeIntervalSince(e.at) < Self.ttl {
-            lock.unlock()
-            return e.value
+        if let existing = entries[request.instanceId] {
+            guard existing.request.revision <= request.revision else { return nil }
+            if existing.request == request, now.timeIntervalSince(existing.at) < Self.ttl {
+                return existing
+            }
         }
-        lock.unlock()
+        let task = Task.detached(priority: .userInitiated) { probe(request) }
+        let entry = Entry(request: request, task: task, at: now)
+        entries[request.instanceId] = entry
+        return entry
+    }
 
-        // Probe runs OUTSIDE the lock — it does Keychain XPC and must not
-        // serialize concurrent probes for different instances.
-        let fresh = probe()
-
+    private func rememberIfCurrent(_ value: Display, entry: Entry) -> Bool {
         lock.lock()
-        entries[instanceId] = (fresh, revision, now)
-        lock.unlock()
-        return fresh
+        defer { lock.unlock() }
+        guard entry.request.generation == invalidationGeneration,
+              entries[entry.request.instanceId]?.id == entry.id else { return false }
+        completed[entry.request.instanceId] = (entry.request, value)
+        return true
+    }
+
+    private static func probe(_ request: Request) -> Display {
+        switch request.credentialType {
+        case .apiKey:
+            let key = ProviderKeychainHelper.loadAPIKey(instanceId: request.instanceId)
+            if key == nil, request.allowsEmptyAPIKey {
+                return Display(isConfigured: true, summary: AppLocalized("No key required"))
+            }
+            return Display(isConfigured: key != nil, summary: key.map(maskKey) ?? AppLocalized("No API key"))
+        case .oauth:
+            let authed = probeOAuthAuthenticated(request)
+            let needsReauth = (authed || request.providerType.isDomesticSubscription)
+                && ProviderKeychainHelper.oauthNeedsReauth(instanceId: request.instanceId)
+            return Display(isConfigured: authed && !needsReauth,
+                           summary: needsReauth ? AppLocalized("Sign-in expired")
+                               : authed ? AppLocalized("Authenticated") : AppLocalized("Not authenticated"),
+                           needsReauth: needsReauth)
+        }
+    }
+
+    /// These are the managers' local isAuthenticated predicates, not their login
+    /// or refresh methods. Managers are MainActor-isolated; their Keychain reads
+    /// and token decoding are not. Preserve the exact storage type and empty-token
+    /// rules instead of invoking a manager (or the router's broader Bool probe).
+    private static func probeOAuthAuthenticated(_ request: Request) -> Bool {
+        let id = request.instanceId
+        if request.providerType.isDomesticSubscription {
+            guard !ProviderKeychainHelper.oauthNeedsReauth(instanceId: id),
+                  let token = ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: SubscriptionTokenStorage.self),
+                  token.provider == request.providerType.rawValue else { return false }
+            return !token.accessToken.isEmpty
+        }
+        if ProviderKeychainHelper.loadOAuthString(instanceId: id, account: "manual-oauth-token") != nil {
+            return true
+        }
+        switch request.providerType {
+        case .anthropic: return ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: ClaudeTokenStorage.self)?.accessToken != nil
+        case .gemini: return ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: GeminiTokenStorage.self)?.accessToken != nil
+        case .openAI: return ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: CodexTokenStorage.self)?.accessToken != nil
+        case .antigravity: return ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: AntigravityTokenStorage.self)?.accessToken != nil
+        case .openRouter: return ProviderKeychainHelper.loadAPIKey(instanceId: id) != nil
+        case .xAI: return ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: XAITokenStorage.self)?.accessToken != nil
+        case .kimiCode: return ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: KimiTokenStorage.self)?.accessToken != nil
+        case .githubCopilot: return ProviderKeychainHelper.loadOAuthToken(instanceId: id, as: CopilotTokenStorage.self)?.githubToken.isEmpty == false
+        case .openAIResponses, .unsupported, .workBuddy, .traeCN: return false
+        }
+    }
+
+    private static func maskKey(_ key: String) -> String {
+        guard key.count > 8 else { return "****" }
+        return String(key.prefix(6)) + "..." + String(key.suffix(4))
     }
 }
 
@@ -499,84 +628,41 @@ private struct InstanceRow: View {
     @ObservedObject private var store = ProviderConfigStore.shared
     @ObservedObject private var quotaService = ProviderQuotaService.shared
 
-    /// Both display properties come from one cached probe, so a body pass costs
-    /// zero Keychain round-trips once warm.
-    private var credentialDisplay: ProviderRowCredentialCache.Display {
-        ProviderRowCredentialCache.shared.value(for: instance.id, revision: store.authRevision) {
-            let configured: Bool
-            let summary: String
-            var needsReauth = false
-            switch instance.credentialType {
-            case .apiKey:
-                // Single Keychain read serves BOTH the dot and the masked subtitle;
-                // previously these were two independent reads of the same item.
-                let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id)
-                // [T-empty-key-compat-endpoints] A keyless third-party
-                // compatible endpoint is configured-by-definition; say so
-                // instead of the alarming "No API key".
-                if key == nil, instance.allowsEmptyAPIKey {
-                    configured = true
-                    summary = AppLocalized("No key required")
-                } else {
-                    configured = key != nil
-                    summary = key.map(Self.maskKey) ?? AppLocalized("No API key")
-                }
-            case .oauth:
-                let authed = Self.probeOAuthAuthenticated(instance)
-                needsReauth = (authed || instance.providerType.isDomesticSubscription)
-                    && ProviderKeychainHelper.oauthNeedsReauth(instanceId: instance.id)
-                configured = authed && !needsReauth
-                summary = needsReauth ? AppLocalized("Sign-in expired")
-                    : authed ? AppLocalized("Authenticated")
-                    : AppLocalized("Not authenticated")
-            }
-            return .init(isConfigured: configured, summary: summary, needsReauth: needsReauth)
-        }
+    @State private var credentialResult: (request: ProviderRowCredentialCache.Request,
+                                           display: ProviderRowCredentialCache.Display)?
+    @State private var credentialGeneration = ProviderRowCredentialCache.shared.generation
+
+    private var credentialRequest: ProviderRowCredentialCache.Request {
+        .init(instanceId: instance.id, providerType: instance.providerType,
+              credentialType: instance.credentialType, allowsEmptyAPIKey: instance.allowsEmptyAPIKey,
+              subscriptionAccountIds: instance.subscriptionAccountIds,
+              subscriptionActiveAccountId: instance.subscriptionActiveAccountId,
+              revision: store.authRevision, generation: credentialGeneration)
     }
 
-    private var isConfigured: Bool { credentialDisplay.isConfigured }
-
-    private var credentialSummary: String { credentialDisplay.summary }
-
-    /// The uncached OAuth probe. `static` so the cache closure can call it without
-    /// capturing `self` (the row is a short-lived struct; the cache outlives it).
-    private static func probeOAuthAuthenticated(_ instance: ProviderInstance) -> Bool {
-        if instance.providerType.isDomesticSubscription {
-            return SubscriptionOAuthManager.shared.isAuthenticated(instanceId: instance.id, type: instance.providerType)
-        }
-        // Manual OAuth token is always considered authenticated
-        if ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") != nil {
-            return true
-        }
-        switch instance.providerType {
-        case .anthropic: return ClaudeOAuthManager.shared.isAuthenticated(instanceId: instance.id)
-        case .gemini: return GeminiOAuthManager.shared.isAuthenticated(instanceId: instance.id)
-        case .openAI: return CodexOAuthManager.shared.isAuthenticated(instanceId: instance.id)
-        case .antigravity: return AntigravityOAuthManager.shared.isAuthenticated(instanceId: instance.id)
-        case .openRouter: return OpenRouterOAuthManager.shared.isAuthenticated(instanceId: instance.id)
-        case .openAIResponses: return false // API key only
-        case .xAI: return XAIOAuthManager.shared.isAuthenticated(instanceId: instance.id)
-        case .kimiCode: return KimiOAuthManager.shared.isAuthenticated(instanceId: instance.id)
-        case .githubCopilot: return CopilotOAuthManager.shared.isAuthenticated(instanceId: instance.id)
-        case .workBuddy, .traeCN:
-            return SubscriptionOAuthManager.shared.isAuthenticated(instanceId: instance.id, type: instance.providerType)
-        case .unsupported: return false // synced from newer build
-        }
-    }
-
-    private var modelCount: Int {
-        store.visibleEntries(for: instance.id).count
+    @MainActor
+    private func currentRequestMatches(_ request: ProviderRowCredentialCache.Request) -> Bool {
+        guard let current = store.instance(for: request.instanceId) else { return false }
+        return current.id == instance.id && store.authRevision == request.revision
+            && current.providerType == request.providerType
+            && current.credentialType == request.credentialType
+            && current.allowsEmptyAPIKey == request.allowsEmptyAPIKey
+            && current.subscriptionAccountIds == request.subscriptionAccountIds
+            && current.subscriptionActiveAccountId == request.subscriptionActiveAccountId
     }
 
     var body: some View {
-        let _ = store.authRevision  // subscribe to OAuth state changes
+        let request = credentialRequest
+        let credentialDisplay = (credentialResult?.request == request ? credentialResult?.display : nil)
+            ?? ProviderRowCredentialCache.shared.cachedDisplay(for: request) ?? .loading
+        let modelCount = store.visibleEntryCount(for: instance.id)
         // [T-115-quota] Quota pill for this instance (nil = unsupported/unfetched).
         let quota = quotaService.cachedQuota(instanceId: instance.id)
         HStack(spacing: 12) {
             Circle()
                 .fill(quota?.highlighted == true ? Color.yellow
                       : (credentialDisplay.needsReauth ? Color.red
-                         : isConfigured && instance.isEnabled ? Color.green : Color(UIColor.quaternaryLabel)))
+                         : credentialDisplay.isConfigured && instance.isEnabled ? Color.green : Color(UIColor.quaternaryLabel)))
                 .frame(width: 8, height: 8)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -589,7 +675,7 @@ private struct InstanceRow: View {
                     Text("·")
                         .font(.caption)
                         .foregroundStyle(.quaternary)
-                    Text(credentialSummary)
+                    Text(credentialDisplay.summary)
                         .font(.caption)
                         .foregroundStyle(credentialDisplay.needsReauth ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
                         .lineLimit(1)
@@ -635,18 +721,26 @@ private struct InstanceRow: View {
             }
         }
         .padding(.vertical, 2)
+        .onReceive(NotificationCenter.default.publisher(for: ProviderRowCredentialCache.didInvalidate)
+            .receive(on: DispatchQueue.main)) { _ in
+                credentialGeneration = ProviderRowCredentialCache.shared.generation
+        }
+        .task(id: request) {
+            let cache = ProviderRowCredentialCache.shared
+            let latestGeneration = cache.generation
+            guard request.generation == latestGeneration else {
+                credentialGeneration = latestGeneration
+                return
+            }
+            guard let display = await cache.value(for: request), !Task.isCancelled,
+                  credentialRequest == request, cache.generation == request.generation,
+                  currentRequestMatches(request) else { return }
+            credentialResult = (request, display)
+        }
         .onAppear {
-            // [T-115-quota] Fetch the instance quota once per row appearance
-            // (cached 5 min; UI updates via quotaService.revision).
+            // Existing 15-minute foreground gate stays in the quota service.
             quotaService.refreshAllIfNeeded(instances: [instance])
         }
-    }
-
-    /// `static` (was an instance method) so the credential-cache probe closure can
-    /// call it without capturing `self`. Pure function — no behaviour change.
-    private static func maskKey(_ key: String) -> String {
-        guard key.count > 8 else { return "****" }
-        return String(key.prefix(6)) + "..." + String(key.suffix(4))
     }
 }
 

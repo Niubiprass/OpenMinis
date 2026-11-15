@@ -50,6 +50,7 @@ jobs:
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_billing_20261113.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_checkin_20261113.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_group_order_20261113.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_list_20261115.py
           python3 scripts/test_v64r_text_layout.py
           python3 scripts/test_model_refresh_authoritative_160652.py
           python3 scripts/test_inapp_update_160652.py

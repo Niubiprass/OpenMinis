@@ -1704,6 +1704,14 @@ final class ProviderConfigStore: ObservableObject {
             config.modelEntries.filter { $0.providerInstanceId == instanceId && !$0.isHidden })
     }
 
+    /// The provider list only needs a count. Use the same visibility rule as
+    /// visibleEntries without building the release index or sorting models.
+    func visibleEntryCount(for instanceId: String) -> Int {
+        config.modelEntries.reduce(into: 0) { count, entry in
+            if entry.providerInstanceId == instanceId && !entry.isHidden { count += 1 }
+        }
+    }
+
     /// [T-model-release-ranking] Release-rank sort that ranks each entry ONCE
     /// (decorate-sort-undecorate), which is what every list-shaped caller should
     /// use instead of `sorted(by: releaseRankOrder)`.
