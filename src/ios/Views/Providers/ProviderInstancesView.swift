@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import UniformTypeIdentifiers
 import WebKit
 
@@ -22,40 +21,52 @@ enum ProviderGroupOrder {
     }
 }
 
-// BEGIN PROVIDER_GROUP_DRAG_POLICY_PURE
-/// Rectangles are in the scroll view's content coordinates, ordered top to bottom.
-struct ProviderGroupDragRange {
-    let minY: Double
-    let maxY: Double
-}
-
-enum ProviderGroupDragPolicy {
-    /// Final insertion slot among the OTHER groups (0 = first, count - 1 = last).
-    /// Comparing with complete groups, rather than a narrow header drop target,
-    /// also accepts release over a card, its trailing space, or either list end.
-    static func destination(at y: Double, ranges: [ProviderGroupDragRange], sourceIndex: Int) -> Int? {
-        guard y.isFinite, ranges.indices.contains(sourceIndex),
-              ranges.allSatisfy({ $0.minY.isFinite && $0.maxY.isFinite && $0.maxY > $0.minY }) else { return nil }
-        for index in ranges.indices.dropFirst() {
-            guard ranges[index].minY >= ranges[index - 1].maxY else { return nil }
-        }
-        return ranges.enumerated().filter { $0.offset != sourceIndex }
-            .prefix { y >= ($0.element.minY + $0.element.maxY) / 2 }.count
+/// [T-provider-group-drag-v3] One list row. A group row carries its title; the
+/// first/last flags let the row background draw a separate rounded card.
+struct ProviderListEntry: Identifiable {
+    enum Row {
+        case group(ProviderType)
+        case instance(ProviderInstance)
     }
 
-    /// `destination` is the final slot AFTER removal, not an index needing a
-    /// direction-dependent adjustment. Top, bottom and adjacent swaps all use
-    /// this one definition. No change or invalid data never schedules a save.
-    static func reordered<T: Hashable>(_ order: [T], moving source: T, to destination: Int) -> [T]? {
-        guard Set(order).count == order.count, let from = order.firstIndex(of: source),
-              order.indices.contains(destination) else { return nil }
-        var result = order
-        result.remove(at: from)
-        result.insert(source, at: destination)
-        return result == order ? nil : result
+    let id: String
+    let row: Row
+    var isGroupTitle: Bool {
+        if case .group = row { return true }
+        return false
+    }
+    /// True only for a group's first / last PROVIDER row (title rows: false).
+    let isFirstMember: Bool
+    let isLastMember: Bool
+}
+
+/// Rounds only the given corners; `UnevenRoundedRectangle` is iOS 16+ and this
+/// app still targets 15.5.
+struct CardCornerShape: Shape {
+    let top: CGFloat
+    let bottom: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let tl = min(top, rect.width / 2), tr = tl
+        let bl = min(bottom, rect.width / 2), br = bl
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + tl, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - tr, y: rect.minY))
+        if tr > 0 { path.addArc(center: CGPoint(x: rect.maxX - tr, y: rect.minY + tr), radius: tr,
+                                startAngle: .degrees(-90), endAngle: .degrees(0), clockwise: false) }
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - br))
+        if br > 0 { path.addArc(center: CGPoint(x: rect.maxX - br, y: rect.maxY - br), radius: br,
+                                startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false) }
+        path.addLine(to: CGPoint(x: rect.minX + bl, y: rect.maxY))
+        if bl > 0 { path.addArc(center: CGPoint(x: rect.minX + bl, y: rect.maxY - bl), radius: bl,
+                                startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false) }
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + tl))
+        if tl > 0 { path.addArc(center: CGPoint(x: rect.minX + tl, y: rect.minY + tl), radius: tl,
+                                startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false) }
+        path.closeSubpath()
+        return path
     }
 }
-// END PROVIDER_GROUP_DRAG_POLICY_PURE
 
 /// Lists all configured provider instances grouped by provider type.
 /// Replaces the old ProvidersView for the new multi-instance model.
@@ -76,7 +87,6 @@ struct ProviderInstancesView: View {
     /// alert — a provider carries API keys and every model entry under it, so
     /// it must never be a one-swipe irreversible act.
     @State private var pendingDeleteInstance: ProviderInstance?
-    @StateObject private var groupDrag = ProviderGroupDragBridge()
 
     var body: some View {
         List {
@@ -97,10 +107,20 @@ struct ProviderInstancesView: View {
             // shows its text models here AND a shadow voice row below ("dual
             // visibility"). Pure-voice vendors (ElevenLabs etc.) still appear here
             // too; they just have no usable text models, which is expected.
-            // Original Section headers and grouped cards stay native. Only
-            // header long-press handling is bridged; row onMove is unchanged.
-            ForEach(ProviderGroupOrder.types(in: store.instances), id: \.self) { type in
-                groupSection(type)
+            // [T-provider-group-drag-v3] The group title is a LIST ROW, so it
+            // gets the same native ☰ the providers get. Sections cannot be
+            // reordered by the list engine, and a header cannot carry a row
+            // handle — that is why the earlier attempt (a custom gesture on the
+            // header) never reacted. Rows still render as separate rounded
+            // cards; the spacing between groups is drawn by the row background.
+            Section {
+                ForEach(listRows) { entry in
+                    rowContent(entry)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                        .listRowSeparator(entry.isGroupTitle || entry.isFirstMember ? .hidden : .visible)
+                        .listRowBackground(rowBackground(entry))
+                }
+                .onMove(perform: moveRows)
             }
             // [T-mimo-shadow-voice] Voice Services = a read-only SHADOW view of any
             // instance that has audio-modality models, FOLDED by base URL so two
@@ -184,10 +204,6 @@ struct ProviderInstancesView: View {
             }
         }
         .environment(\.editMode, $editMode)
-        .onAppear { configureGroupDrag() }
-        .onChange(of: editMode) { _ in configureGroupDrag() }
-        .onChange(of: store.instances.map(\.id)) { _ in configureGroupDrag() }
-        .onDisappear { groupDrag.stop() }
         .sheet(isPresented: $showAddProvider) {
             NavigationStack {
                 AddProviderView()
@@ -292,540 +308,116 @@ struct ProviderInstancesView: View {
         }
     }
 
-    // MARK: - Whole-group reordering; original Section UI is unchanged
+    // MARK: - [T-provider-group-drag-v3] Reordering
 
-    /// The bridge only commits on a real release. A background switch, leaving
-    /// the page, cancelled gesture or an intervening sync leaves order alone.
-    private func configureGroupDrag() {
-        let types = ProviderGroupOrder.types(in: store.instances)
-        let members = types.map { type in
-            store.instances.filter { $0.providerType == type }.map(\.id)
-        }
-        groupDrag.configure(enabled: editMode == .active, order: types, members: members) {
-            [weak store = store] expected, expectedMembers, source, destination in
-            guard let store else { return }
-            let instances = store.instances
-            let current = ProviderGroupOrder.types(in: instances)
-            let currentMembers = current.map { type in
-                instances.filter { $0.providerType == type }.map(\.id)
+    /// Group title row, then that group's rows. Title rows carry the group's
+    /// own count; the last row of a group ends its card.
+    private var listRows: [ProviderListEntry] {
+        let instances = store.instances
+        var entries: [ProviderListEntry] = []
+        for type in ProviderGroupOrder.types(in: instances) {
+            let members = instances.filter { $0.providerType == type }
+            guard !members.isEmpty else { continue }
+            entries.append(ProviderListEntry(id: "group." + type.rawValue, row: .group(type),
+                                             isFirstMember: false, isLastMember: false))
+            for (index, member) in members.enumerated() {
+                entries.append(ProviderListEntry(id: member.id, row: .instance(member),
+                                                 isFirstMember: index == 0, isLastMember: index == members.count - 1))
             }
-            guard current == expected, currentMembers == expectedMembers,
-                  let ordered = ProviderGroupDragPolicy.reordered(current, moving: source, to: destination)
-            else { return }
-            let ids = ProviderGroupOrder.instanceIDs(in: instances, orderedTypes: ordered)
-            guard ids.count == instances.count, Set(ids) == Set(instances.map(\.id)) else { return }
-            store.reorderInstances(ids)
-            AppLogger(category: "ProviderGroupDrag").info("saved order=\(ordered.map(\.rawValue).joined(separator: ","))")
         }
+        return entries
     }
 
     @ViewBuilder
-    private func groupSection(_ type: ProviderType) -> some View {
-        let members = store.instances.filter { $0.providerType == type }
-        if !members.isEmpty {
-            Section {
-                ForEach(members) { instance in
-                    NavigationLink {
-                        ProviderInstanceDetailView(instanceId: instance.id)
-                    } label: {
-                        InstanceRow(instance: instance)
-                    }
-                    // [T-provider-group-swipe-actions] Swipe actions and
-                    // `.onMove` coexist: UIKit routes a horizontal drag to the
-                    // row's swipe actions and a vertical one to the reorder
-                    // engine, and in edit mode the handles take over entirely.
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) {
-                            pendingDeleteInstance = instance
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                        Button {
-                            editingInstanceId = instance.id
-                        } label: {
-                            Label("Edit", systemImage: "pencil")
-                        }
-                        .tint(.blue)
-                    }
+    private func rowContent(_ entry: ProviderListEntry) -> some View {
+        switch entry.row {
+        case .group(let type):
+            HStack(spacing: 8) {
+                Text(type.displayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text("\(store.instances.filter { $0.providerType == type }.count)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.top, 12)
+            .padding(.bottom, 6)
+            .contentShape(Rectangle())
+        case .instance(let instance):
+            NavigationLink {
+                ProviderInstanceDetailView(instanceId: instance.id)
+            } label: {
+                InstanceRow(instance: instance)
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button(role: .destructive) {
+                    pendingDeleteInstance = instance
+                } label: {
+                    Label("Delete", systemImage: "trash")
                 }
-                .onMove { source, destination in
-                    moveInstances(in: type, from: source, to: destination)
+                Button {
+                    editingInstanceId = instance.id
+                } label: {
+                    Label("Edit", systemImage: "pencil")
                 }
-            } header: {
-                HStack(spacing: 8) {
-                    Text(type.displayName)
-                    Spacer(minLength: 0)
-                    Text("\(members.count)")
-                        .foregroundStyle(.tertiary)
-                }
-                .frame(maxWidth: .infinity)
-                .background(ProviderGroupDragAnchor(type: type, bridge: groupDrag))
+                .tint(.blue)
             }
         }
     }
 
-    /// Providers inside one group only ever move among themselves.
-    private func moveInstances(in type: ProviderType, from source: IndexSet, to destination: Int) {
-        let all = store.instances
-        let members = all.filter { $0.providerType == type }
-        var ordered = members
-        ordered.move(fromOffsets: source, toOffset: destination)
-        var iterator = ordered.makeIterator()
-        let ids = all.map { instance -> String in
-            guard instance.providerType == type else { return instance.id }
-            return iterator.next()?.id ?? instance.id
+    /// The title row draws NOTHING — it must look like the old grey section
+    /// header outside the card. Provider rows draw one card per group: only the
+    /// group's first row rounds its top and its last row rounds the bottom, so
+    /// the rows in between join seamlessly.
+    @ViewBuilder
+    private func rowBackground(_ entry: ProviderListEntry) -> some View {
+        switch entry.row {
+        case .group:
+            Color.clear
+        case .instance:
+            CardCornerShape(top: entry.isFirstMember ? 12 : 0,
+                            bottom: entry.isLastMember ? 12 : 0)
+                .fill(Color(UIColor.secondarySystemGroupedBackground))
+                .padding(.bottom, entry.isLastMember ? 10 : 0)
         }
-        guard ids != all.map(\.id) else { return }
+    }
+
+    /// Whole-group moves come from dragging a title row; provider drags only
+    /// reorder inside their own group. Group order is read from title rows
+    /// alone, so a provider row can never pin or lift a group.
+    private func moveRows(from source: IndexSet, to destination: Int) {
+        let instances = store.instances
+        var rows = listRows.map(\.row)
+        guard !source.isEmpty, source.allSatisfy({ rows.indices.contains($0) }),
+              (0...rows.count).contains(destination) else { return }
+        let moved = source.map { rows[$0] }
+        let insertion = destination - source.filter { $0 < destination }.count
+        for index in source.reversed() { rows.remove(at: index) }
+        rows.insert(contentsOf: moved, at: insertion)
+
+        var types: [ProviderType] = []
+        var members: [ProviderType: [String]] = [:]
+        for row in rows {
+            switch row {
+            case .group(let type):
+                if !types.contains(type) { types.append(type) }
+                if members[type] == nil { members[type] = [] }
+            case .instance(let instance):
+                members[instance.providerType, default: []].append(instance.id)
+            }
+        }
+        for instance in instances where members[instance.providerType]?.contains(instance.id) != true {
+            if !types.contains(instance.providerType) { types.append(instance.providerType) }
+            members[instance.providerType, default: []].append(instance.id)
+        }
+        let ids = types.flatMap { members[$0] ?? [] }
+        guard ids.count == instances.count,
+              Set(ids) == Set(instances.map(\.id)),
+              ids != instances.map(\.id) else { return }
         store.reorderInstances(ids)
     }
 }
-
-/*
-Adapted long-press/auto-scroll technique from SwiftReorder.
-Copyright (c) 2016 Adam Shin
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-*/
-// BEGIN PROVIDER_GROUP_DRAG_UIKIT
-// MARK: - Whole-section dragging (preserves the native List/Section renderer)
-
-/// A zero-size background view: never adds a row, icon, padding or hit-test area.
-/// It locates the existing header and scroll view; the recognizer lives on the
-/// scroll view so the gesture continues after the finger leaves the header.
-private struct ProviderGroupDragAnchor: UIViewRepresentable {
-    let type: ProviderType
-    let bridge: ProviderGroupDragBridge
-
-    func makeUIView(context: Context) -> ProviderGroupDragProbe {
-        ProviderGroupDragProbe(type: type, bridge: bridge)
-    }
-    func updateUIView(_ view: ProviderGroupDragProbe, context: Context) {
-        if view.type != type { view.bridge?.unregister(view) }
-        view.type = type
-        view.connect(to: bridge)
-    }
-    static func dismantleUIView(_ view: ProviderGroupDragProbe, coordinator: ()) { view.disconnect() }
-}
-
-private final class ProviderGroupDragProbe: UIView, UIGestureRecognizerDelegate {
-    var type: ProviderType
-    weak var bridge: ProviderGroupDragBridge?
-    private let press = UILongPressGestureRecognizer()
-
-    init(type: ProviderType, bridge: ProviderGroupDragBridge) {
-        self.type = type
-        self.bridge = bridge
-        super.init(frame: .zero)
-        // This zero-height background is the ONLY thing the bridge touches: it
-        // is interaction-enabled so the recognizer is attached to the title
-        // itself. Finding the enclosing scroll view on a separate ancestor
-        // recognizer did not receive presses on device (build 291: no events).
-        isUserInteractionEnabled = true
-        backgroundColor = .clear
-        press.minimumPressDuration = 0.3
-        press.allowableMovement = 10
-        press.cancelsTouchesInView = true
-        press.delegate = self
-        press.isEnabled = false
-        press.addTarget(self, action: #selector(handle(_:)))
-        addGestureRecognizer(press)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil { bridge?.register(self) } else { bridge?.unregister(self) }
-    }
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        if window != nil { bridge?.register(self) }
-    }
-    func connect(to next: ProviderGroupDragBridge) {
-        if bridge !== next { disconnect(); bridge = next }
-        if window != nil { next.register(self) }
-    }
-    func disconnect() { bridge?.unregister(self); bridge = nil }
-    func setDragEnabled(_ on: Bool) { press.isEnabled = on }
-    @objc private func handle(_ recognizer: UILongPressGestureRecognizer) {
-        bridge?.pressChanged(recognizer, type: type, from: self)
-    }
-    func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        bridge?.canBegin(type) ?? false
-    }
-}
-
-/// Long-press / snapshot / edge scrolling adapted from Adam Shin's MIT-licensed
-/// SwiftReorder (9553a0d805c68d2bdd1bc6e5385cf1d5e9c44a4c).
-/// Unlike its row-reorder integration, this bridge never takes List's delegate,
-/// data source or reorder controls; SwiftUI continues rendering every Section.
-private final class ProviderGroupDragBridge: NSObject, ObservableObject, UIGestureRecognizerDelegate {
-    private let logger = AppLogger(category: "ProviderGroupDrag")
-    private weak var scrollView: UIScrollView?
-    private var probes: [ProviderType: ProviderGroupDragProbe] = [:]
-    private var order: [ProviderType] = []
-    private var members: [[String]] = []
-    private var enabled = false
-    private var move: (([ProviderType], [[String]], ProviderType, Int) -> Void)?
-    /// The header recognizer currently held down (weak: the probe owns it).
-    private weak var activePress: UILongPressGestureRecognizer?
-    private var source: ProviderType?
-    private var originalOrder: [ProviderType] = []
-    private var originalMembers: [[String]] = []
-    private var ranges: [CGRect] = []
-    private var sectionBase: Int?
-    private var resettingPress = false
-    private var destination: Int?
-    private var floating: UIView?
-    private var insertionLine: UIView?
-    private var originMask: UIView?
-    private var snapshotStartFrame: CGRect = .zero
-    private var fingerStart: CGPoint = .zero
-    private var lastFinger: CGPoint = .zero
-    private var oldBounces: Bool?
-    private var displayLink: CADisplayLink?
-    private var displayLinkTarget: ProviderGroupDragDisplayTarget?
-    private var resignObserver: NSObjectProtocol?
-
-    func configure(enabled: Bool, order: [ProviderType], members: [[String]],
-                   move: @escaping ([ProviderType], [[String]], ProviderType, Int) -> Void) {
-        if source != nil && (!enabled || order != self.order || members != self.members) {
-            finish(commit: false)
-            resetPress()
-        }
-        self.enabled = enabled
-        self.order = order
-        self.members = members
-        self.move = move
-        probes.values.forEach { $0.setDragEnabled(enabled) }
-    }
-    func stop() {
-        finish(commit: false)
-        enabled = false
-        probes.values.forEach { $0.setDragEnabled(false) }
-    }
-    func register(_ probe: ProviderGroupDragProbe) {
-        probes[probe.type] = probe
-        probe.setDragEnabled(enabled)
-        var ancestor = probe.superview
-        while let view = ancestor {
-            if let scroll = view as? UIScrollView { attach(to: scroll); break }
-            ancestor = view.superview
-        }
-    }
-    func unregister(_ probe: ProviderGroupDragProbe) {
-        if probes[probe.type] === probe { probes[probe.type] = nil }
-    }
-    private func attach(to scroll: UIScrollView) {
-        guard scrollView !== scroll else { return }
-        finish(commit: false)
-        scrollView = scroll
-        if resignObserver == nil {
-            resignObserver = NotificationCenter.default.addObserver(
-                forName: UIApplication.willResignActiveNotification, object: nil, queue: .main
-            ) { [weak self] _ in
-                self?.finish(commit: false)
-                self?.resetPress()
-            }
-        }
-    }
-    private func headerRect(_ probe: ProviderGroupDragProbe, in scroll: UIScrollView) -> CGRect {
-        var rect = probe.convert(probe.bounds, to: scroll)
-        // Probe locates the header; UIKit supplies its full vertical hit area,
-        // including the native section's padding. Nothing alters its layout.
-        if let section = sectionIndex(containing: rect.midY) {
-            if let table = scroll as? UITableView { rect = table.rectForHeader(inSection: section) }
-            else if let collection = scroll as? UICollectionView,
-                    let attributes = collection.collectionViewLayout.layoutAttributesForSupplementaryView(
-                        ofKind: UICollectionView.elementKindSectionHeader,
-                        at: IndexPath(item: 0, section: section)) { rect = attributes.frame }
-        }
-        rect.origin.x = 0
-        rect.size.width = scroll.bounds.width
-        return rect
-    }
-    private func group(at point: CGPoint) -> ProviderType? {
-        guard let scroll = scrollView else { return nil }
-        return order.first { type in
-            guard let probe = probes[type], probe.window != nil else { return false }
-            let rect = headerRect(probe, in: scroll)
-            return rect.height > 0 && rect.contains(point)
-        }
-    }
-    private func resetPress() {
-        guard !resettingPress else { return }
-        resettingPress = true
-        activePress?.isEnabled = false
-        activePress?.isEnabled = enabled
-        resettingPress = false
-    }
-    /// Entry point from the title's own recognizer.
-    func pressChanged(_ recognizer: UILongPressGestureRecognizer, type: ProviderType, from probe: ProviderGroupDragProbe) {
-        guard !resettingPress else { return }
-        activePress = recognizer
-        switch recognizer.state {
-        case .began:
-            guard enabled, canBegin(type) else { resetPress(); return }
-            begin(type: type, probe: probe)
-        case .changed: update()
-        case .ended: update(); finish(commit: true)
-        case .cancelled, .failed: finish(commit: false)
-        default: break
-        }
-    }
-    /// Preconditions checked before the gesture starts, so a failed start never
-    /// delays the list's own scroll/row gestures.
-    func canBegin(_ type: ProviderType) -> Bool {
-        guard enabled, UIApplication.shared.applicationState == .active,
-              let scroll = scrollView, let probe = probes[type], let index = order.firstIndex(of: type),
-              let section = sectionIndex(containing: headerRect(probe, in: scroll).midY),
-              let measured = measureSections(base: section - index) else { return false }
-        return ProviderGroupDragPolicy.destination(
-            at: Double(probe.convert(probe.bounds, to: scroll).midY),
-            ranges: measured.0.map { .init(minY: Double($0.minY), maxY: Double($0.maxY)) },
-            sourceIndex: index) != nil
-    }
-    /// UIKit knows the native header/section layout for off-screen groups too.
-    private func sectionIndex(containing y: CGFloat) -> Int? {
-        if let table = scrollView as? UITableView {
-            return (0..<table.numberOfSections).first {
-                let rect = table.rectForHeader(inSection: $0)
-                return rect.height > 0 && rect.minY <= y && y <= rect.maxY
-            }
-        }
-        if let collection = scrollView as? UICollectionView {
-            for section in 0..<collection.numberOfSections {
-                if let rect = collection.collectionViewLayout.layoutAttributesForSupplementaryView(
-                    ofKind: UICollectionView.elementKindSectionHeader,
-                    at: IndexPath(item: 0, section: section))?.frame,
-                   rect.height > 0 && rect.minY <= y && y <= rect.maxY { return section }
-            }
-        }
-        return nil
-    }
-    private func measureSections(base: Int) -> ([CGRect], [CGRect])? {
-        guard base >= 0 else { return nil }
-        if let table = scrollView as? UITableView {
-            guard base + order.count <= table.numberOfSections else { return nil }
-            return (order.indices.map { table.rect(forSection: base + $0) },
-                    order.indices.map { table.rectForHeader(inSection: base + $0) })
-        }
-        if let collection = scrollView as? UICollectionView {
-            guard base + order.count <= collection.numberOfSections else { return nil }
-            var sections: [CGRect] = [], headers: [CGRect] = []
-            for section in base..<(base + order.count) {
-                var rect = CGRect.null
-                let path = IndexPath(item: 0, section: section)
-                let header = collection.collectionViewLayout.layoutAttributesForSupplementaryView(
-                    ofKind: UICollectionView.elementKindSectionHeader, at: path)?.frame ?? .zero
-                if header.height > 0 { rect = rect.union(header) }
-                for item in 0..<collection.numberOfItems(inSection: section) {
-                    if let frame = collection.collectionViewLayout.layoutAttributesForItem(
-                        at: IndexPath(item: item, section: section))?.frame { rect = rect.union(frame) }
-                }
-                guard !rect.isNull, rect.height > 0 else { return nil }
-                sections.append(rect); headers.append(header)
-            }
-            return (sections, headers)
-        }
-        return nil
-    }
-    /// Native pixels only: never scroll or materialise off-screen rows merely
-    /// to build a preview (row appearance can otherwise issue quota requests).
-    /// Keep the complete section size, with its visible pixels at their original
-    /// offsets. The list viewport clips a tall group; the committed move still
-    /// includes every member of it, including all off-screen providers.
-    private func snapshotSection(base: Int, sourceIndex: Int) -> UIView? {
-        guard let scroll = scrollView, let measured = measureSections(base: base),
-              measured.0.indices.contains(sourceIndex) else { return nil }
-        let complete = measured.0[sourceIndex]
-        let viewport = scroll.bounds.inset(by: scroll.adjustedContentInset)
-        let visible = complete.intersection(viewport)
-        guard !visible.isNull, visible.height > 0,
-              let pixels = scroll.resizableSnapshotView(from: visible,
-                  afterScreenUpdates: false, withCapInsets: .zero) else { return nil }
-        let snapshot = UIView(frame: CGRect(origin: .zero, size: complete.size))
-        snapshot.backgroundColor = .clear
-        snapshot.isUserInteractionEnabled = false
-        pixels.frame = visible.offsetBy(dx: -complete.minX, dy: -complete.minY)
-        snapshot.addSubview(pixels)
-        return snapshot
-    }
-    private func begin(type: ProviderType, probe: ProviderGroupDragProbe) {
-        guard enabled, let scroll = scrollView, let host = scroll.superview,
-              let sourceIndex = order.firstIndex(of: type) else { resetPress(); return }
-        scroll.layoutIfNeeded()
-        guard let section = sectionIndex(containing: headerRect(probe, in: scroll).midY),
-              let measured = measureSections(base: section - sourceIndex),
-              measured.0.count == order.count,
-              ProviderGroupDragPolicy.destination(at: Double(probe.convert(probe.bounds, to: scroll).midY), ranges: measured.0.map {
-                  .init(minY: Double($0.minY), maxY: Double($0.maxY))
-              }, sourceIndex: sourceIndex) != nil else {
-            logger.warning("begin skipped: section geometry unavailable; no order changed")
-            resetPress()
-            return
-        }
-        let base = section - sourceIndex
-        guard let snapshot = snapshotSection(base: base, sourceIndex: sourceIndex),
-              let refreshed = measureSections(base: base),
-              refreshed.0.count == order.count else {
-            logger.warning("begin skipped: section snapshot unavailable; no order changed")
-            resetPress()
-            return
-        }
-        let visible = scroll.bounds.inset(by: scroll.adjustedContentInset)
-        let completeSource = refreshed.0[sourceIndex]
-        source = type
-        originalOrder = order
-        originalMembers = members
-        ranges = refreshed.0
-        sectionBase = base
-        destination = sourceIndex
-        let mask = UIView(frame: completeSource)
-        mask.isUserInteractionEnabled = false
-        mask.backgroundColor = (scroll.backgroundColor ?? .systemGroupedBackground).withAlphaComponent(0.6)
-        scroll.addSubview(mask)
-        originMask = mask
-        // This overlay is present only during a drag and clips at the list's
-        // viewport; the unchanged native section renderer stays beneath it.
-        let canvas = UIView(frame: scroll.convert(visible, to: host))
-        canvas.isUserInteractionEnabled = false
-        canvas.clipsToBounds = true
-        canvas.backgroundColor = .clear
-        host.addSubview(canvas)
-        let start = scroll.convert(completeSource, to: canvas)
-        snapshot.frame = start
-        snapshot.layer.shadowColor = UIColor.black.cgColor
-        snapshot.layer.shadowOpacity = 0.28
-        snapshot.layer.shadowRadius = 8
-        snapshot.layer.shadowOffset = CGSize(width: 0, height: 4)
-        canvas.addSubview(snapshot)
-        floating = canvas
-        snapshotStartFrame = start
-        fingerStart = (activePress?.location(in: canvas) ?? .zero)
-        lastFinger = fingerStart
-        let line = UIView(frame: .zero)
-        line.isUserInteractionEnabled = false
-        line.backgroundColor = .systemBlue
-        line.layer.cornerRadius = 1
-        scroll.addSubview(line)
-        insertionLine = line
-        oldBounces = scroll.bounces
-        scroll.bounces = false
-        UISelectionFeedbackGenerator().selectionChanged()
-        logger.info("begin group=\(type.rawValue) index=\(sourceIndex) groups=\(order.count)")
-        let target = ProviderGroupDragDisplayTarget(owner: self)
-        let link = CADisplayLink(target: target, selector: #selector(ProviderGroupDragDisplayTarget.tick(_:)))
-        displayLinkTarget = target
-        displayLink = link
-        link.add(to: .main, forMode: .common)
-        update()
-    }
-    private func update() {
-        guard let scroll = scrollView, let canvas = floating, let type = source,
-              let sourceIndex = originalOrder.firstIndex(of: type) else { return }
-        // Automatic cell-height estimation changes as we scroll. Re-read actual
-        // native rectangles before EVERY destination decision and the release.
-        scroll.layoutIfNeeded()
-        guard let base = sectionBase, let measured = measureSections(base: base),
-              measured.0.count == originalOrder.count else {
-            finish(commit: false); resetPress(); return
-        }
-        ranges = measured.0
-        originMask?.frame = ranges[sourceIndex]
-        lastFinger = (activePress?.location(in: canvas) ?? .zero)
-        if let snapshot = canvas.subviews.first {
-            snapshot.frame.origin.y = snapshotStartFrame.minY + lastFinger.y - fingerStart.y
-        }
-        let contentY = (activePress?.location(in: scroll) ?? .zero).y
-        let next = ProviderGroupDragPolicy.destination(at: Double(contentY), ranges: ranges.map {
-            .init(minY: Double($0.minY), maxY: Double($0.maxY))
-        }, sourceIndex: sourceIndex)
-        if next != destination {
-            destination = next
-            UISelectionFeedbackGenerator().selectionChanged()
-        }
-        guard let next else {
-            finish(commit: false); resetPress(); return
-        }
-        let other = originalOrder.indices.filter { $0 != sourceIndex }
-        let y: CGFloat
-        if next == sourceIndex { y = ranges[sourceIndex].minY }
-        else if next < other.count { y = ranges[other[next]].minY }
-        else { y = ranges[other.last ?? sourceIndex].maxY }
-        insertionLine?.frame = CGRect(x: 16, y: y - 1, width: max(0, scroll.bounds.width - 32), height: 2)
-        insertionLine?.isHidden = false
-    }
-    func autoScroll(_ link: CADisplayLink) {
-        guard source != nil, let scroll = scrollView, let canvas = floating else { return }
-        let point = (activePress?.location(in: canvas) ?? .zero)
-        let edge: CGFloat = 48
-        let distance: CGFloat
-        if point.y < edge { distance = -min(1, (edge - point.y) / edge) }
-        else if point.y > canvas.bounds.height - edge {
-            distance = min(1, (point.y - canvas.bounds.height + edge) / edge)
-        } else { distance = 0 }
-        let dt = min(max(link.targetTimestamp - link.timestamp, 0), 0.05)
-        let minY = -scroll.adjustedContentInset.top
-        let maxY = max(minY, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
-        let newY = min(max(scroll.contentOffset.y + distance * 320 * CGFloat(dt), minY), maxY)
-        if abs(newY - scroll.contentOffset.y) > 0.01 {
-            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: newY), animated: false)
-        }
-        update()
-    }
-    private func finish(commit: Bool) {
-        let type = source, next = destination, expected = originalOrder, expectedMembers = originalMembers
-        source = nil
-        destination = nil
-        displayLink?.invalidate(); displayLink = nil; displayLinkTarget = nil
-        floating?.removeFromSuperview(); floating = nil
-        insertionLine?.removeFromSuperview(); insertionLine = nil
-        originMask?.removeFromSuperview(); originMask = nil
-        if let bounces = oldBounces { scrollView?.bounces = bounces }
-        oldBounces = nil
-        ranges = []; sectionBase = nil; originalOrder = []; originalMembers = []
-        guard let type else { return }
-        if commit, enabled, UIApplication.shared.applicationState == .active, let next,
-           expected == order, expectedMembers == members {
-            logger.info("release group=\(type.rawValue) from=\(expected.firstIndex(of: type) ?? -1) to=\(next)")
-            move?(expected, expectedMembers, type, next)
-        } else {
-            logger.info("cancel group=\(type.rawValue); no order saved")
-        }
-    }
-    deinit {
-        displayLink?.invalidate()
-        floating?.removeFromSuperview()
-        insertionLine?.removeFromSuperview()
-        originMask?.removeFromSuperview()
-        if let bounces = oldBounces { scrollView?.bounces = bounces }
-        if let observer = resignObserver { NotificationCenter.default.removeObserver(observer) }
-    }
-}
-
-/// CADisplayLink retains its target; use a weak proxy so it cannot keep a
-/// closed provider screen alive after cancellation/dismantling.
-private final class ProviderGroupDragDisplayTarget: NSObject {
-    weak var owner: ProviderGroupDragBridge?
-    init(owner: ProviderGroupDragBridge) { self.owner = owner }
-    @objc func tick(_ link: CADisplayLink) { owner?.autoScroll(link) }
-}
-// END PROVIDER_GROUP_DRAG_UIKIT
 
 /// [T-ios-provider-row-keychain-in-body] Per-row credential display state, resolved
 /// ONCE per (instance, authRevision) instead of on every SwiftUI body evaluation.

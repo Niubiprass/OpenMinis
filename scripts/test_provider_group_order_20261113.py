@@ -37,71 +37,44 @@ class ProviderGroupOrderTests(unittest.TestCase):
         self.assertIn("seen.insert(instance.providerType).inserted", types)
         self.assertNotIn("isEnabled", types)
         self.assertNotIn("isVoiceOnly", types)
-        section = block(VIEW, "private func groupSection(")
-        self.assertIn("store.instances.filter { $0.providerType == type }", section)
-        self.assertNotIn("isEnabled", section)
+        rows = block(VIEW, "private var listRows")
+        self.assertIn("instances.filter { $0.providerType == type }", rows)
+        self.assertNotIn("isEnabled", rows)
         build = block(PICKER, "private func buildSections()")
         self.assertIn("for type in ProviderGroupOrder.types(in: store.instances)", build)
         self.assertLess(build.index("ProviderGroupOrder.types"), build.index("instance.isEnabled"))
         self.assertNotIn("ProviderType.allCases", VIEW + build)
 
-    def test_groups_keep_their_original_section_card_layout(self):
-        # The UI must stay the original grouped list: one Section per provider
-        # type, native header outside, one card of rows inside. The flattened
-        # single-section rewrite and per-row card backgrounds were rejected.
-        self.assertIn("ForEach(ProviderGroupOrder.types(in: store.instances), id: \\.self) { type in", VIEW)
-        self.assertIn('groupSection(type)', VIEW)
-        section = block(VIEW, 'private func groupSection(')
-        self.assertIn('Section {', section)
-        self.assertIn('} header: {', section)
-        self.assertIn('.onMove { source, destination in', section)
-        self.assertIn('moveInstances(in: type, from: source, to: destination)', section)
-        for gone in ('ProviderListEntry', 'rowBackground', 'CardCornerShape',
-                     'listRowBackground', 'ProviderGroupOrderSheet', '分组顺序'):
-            self.assertNotIn(gone, VIEW)
+    def test_titles_are_rows_so_the_system_gives_them_a_handle(self):
+        # Chosen explicitly: the system only reorders ROWS, so the grey title is
+        # a row now and gets the native ☰ in edit mode. It is drawn with a clear
+        # background so the screen still looks like separate cards with the
+        # title outside them.
+        self.assertIn('ForEach(listRows)', VIEW)
+        self.assertIn('.onMove(perform: moveRows)', VIEW)
+        self.assertIn('private func moveRows(from source: IndexSet', VIEW)
+        self.assertNotIn('ProviderGroupDragBridge', VIEW)
+        self.assertNotIn('UILongPressGestureRecognizer', VIEW)
+        self.assertNotIn('GroupHeaderDrag', VIEW)
+        self.assertNotIn('line.3.horizontal', VIEW)
 
-    def test_header_grip_preserves_native_layout_and_row_sort(self):
-        section = block(VIEW, 'private func groupSection(')
-        self.assertNotIn('line.3.horizontal', section)
-        self.assertNotIn('.onDrag', section)
-        self.assertNotIn('.onDrop', section)
-        self.assertIn('ProviderGroupDragAnchor(type: type, bridge: groupDrag)', section)
-        self.assertIn('enabled: editMode == .active', VIEW)
-        probe = block(VIEW, 'private final class ProviderGroupDragProbe: UIView')
-        self.assertIn('press.addTarget(self, action: #selector(handle(_:)))', probe)
-        self.assertIn('addGestureRecognizer(press)', probe)
-        bridge = block(VIEW, 'private final class ProviderGroupDragBridge:')
-        self.assertIn('func pressChanged(_ recognizer: UILongPressGestureRecognizer', bridge)
-        self.assertIn('case .ended: update(); finish(commit: true)', bridge)
-        self.assertIn('case .cancelled, .failed: finish(commit: false)', bridge)
-        self.assertIn('func canBegin(_ type: ProviderType) -> Bool', bridge)
-        self.assertIn('rect(forSection:', bridge)
-        self.assertIn('CADisplayLink(', bridge)
-        self.assertNotIn('.delegate = self', bridge.replace('recognizer.delegate = self', ''))
-        self.assertNotIn('.dataSource =', bridge)
-        self.assertIn('willResignActiveNotification', bridge)
-        self.assertIn('displayLink?.invalidate()', bridge)
-        snapshot = block(VIEW, 'private func snapshotSection(')
-        self.assertNotIn('setContentOffset', snapshot)
-        self.assertNotIn('refreshQuota', snapshot)
-        self.assertIn('size: complete.size', snapshot)
-        update = block(VIEW, 'private func update()')
-        self.assertIn('measureSections(base: base)', update)
-        self.assertIn('scroll.layoutIfNeeded()', update)
-        self.assertIn('resetPress()', update)
-        begin = block(VIEW, 'func canBegin(')
-        self.assertIn('measureSections(base: section - index)', begin)
+    def test_group_title_looks_like_the_old_header(self):
+        bg = block(VIEW, 'private func rowBackground(')
+        self.assertIn('case .group:', bg)
+        self.assertIn('Color.clear', bg)
+        self.assertIn('CardCornerShape(top: entry.isFirstMember ? 12 : 0', bg)
+        content = block(VIEW, 'private func rowContent(')
+        self.assertIn('.font(.caption)', content)
+        self.assertIn('case .group(let type):', content)
+        rows = block(VIEW, 'private var listRows')
+        self.assertIn('isFirstMember: index == 0, isLastMember: index == members.count - 1', rows)
 
-    def test_released_group_uses_existing_save_and_rejects_changed_members(self):
-        commit = block(VIEW, 'private func configureGroupDrag(')
-        self.assertIn('current == expected, currentMembers == expectedMembers', commit)
-        self.assertIn('ProviderGroupDragPolicy.reordered(current, moving: source, to: destination)', commit)
-        self.assertIn('ProviderGroupOrder.instanceIDs(in: instances, orderedTypes: ordered)', commit)
-        self.assertIn('store.reorderInstances(ids)', commit)
-        bridge = block(VIEW, 'private final class ProviderGroupDragBridge:')
-        self.assertIn('expected == order, expectedMembers == members', bridge)
-        self.assertIn('move?(expected, expectedMembers, type, next)', bridge)
-        self.assertIn('no order saved', bridge)
+    def test_group_order_comes_only_from_title_rows(self):
+        move = block(VIEW, 'private func moveRows(from source: IndexSet')
+        self.assertIn('case .group(let type):', move)
+        self.assertIn('if !types.contains(type) { types.append(type) }', move)
+        self.assertIn('store.reorderInstances(ids)', move)
+        self.assertIn('Set(ids) == Set(instances.map(\\.id))', move)
 
     def test_instance_and_shadow_voice_behaviour_is_kept(self):
         self.assertIn('allowsFullSwipe: false', VIEW)
