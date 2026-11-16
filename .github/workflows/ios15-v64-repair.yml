@@ -51,9 +51,10 @@ jobs:
           key: ${{ steps.keyword_cache.outputs.cache-primary-key }}
       - name: Verify fixed source (never fetch or re-port upstream)
         id: source_gate
-        # Collect the full App compiler result even when a native fixture fails.
-        # Packaging BELOW checks this outcome and still refuses publication.
-        continue-on-error: true
+        # The current full App baseline has compiled. Fail early on a native
+        # regression instead of spending another full build before rejecting it.
+        # Packaging BELOW still checks the outcome; no failed check is bypassed.
+        continue-on-error: false
         run: |
           git log -1 --format='%H %s'
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_feature_compile_160651.py

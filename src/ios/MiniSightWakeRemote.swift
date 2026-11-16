@@ -7,9 +7,11 @@ import Foundation
 /// never treated as proof that the companion is ready.
 @MainActor
 final class MiniSightWakeRemote {
-    static let requestNote = "com.openminis.minisight.namewake.request"
-    static let responseNote = "com.openminis.minisight.namewake.response"
-    static let stateNote = "com.openminis.minisight.namewake.state"
+    // Immutable Sendable notification names are shared with the file queue;
+    // mutable remote lifecycle and UI callbacks remain MainActor-owned.
+    nonisolated static let requestNote = "com.openminis.minisight.namewake.request"
+    nonisolated static let responseNote = "com.openminis.minisight.namewake.response"
+    nonisolated static let stateNote = "com.openminis.minisight.namewake.state"
     struct State: Equatable, Sendable {
         let clock: Double
         let host: String

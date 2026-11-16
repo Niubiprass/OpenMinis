@@ -67,6 +67,7 @@ def sourceguard(plugin):
         "wire boolean types": "CFBooleanGetTypeID()" in writer and "reader wire CFBoolean" in main,
         "static real reader": "MiniSightWakeRemote.decodeState" in main and "MiniSightWakeRemote.decodeReply" in main,
         "real policy": all(s in main for s in ("MiniSightWakePolicy.decision", "c.updateCompanion", "MiniSightWakePolicy.remoteReplyCurrent", "MiniSightWakePolicy.validHit", "MiniSightWakePolicy.permitsContinuation")),
+        "immutable notification names shared safely": all('nonisolated static let ' + name + ' =' in remote for name in ('requestNote', 'responseNote', 'stateNote')) and 'nonisolated(unsafe)' not in remote,
         "reader strict CFBoolean": "if type == CFBooleanGetTypeID() { return number.boolValue }" in remote,
         "reader strict legacy CFNumber": "guard type == CFNumberGetTypeID() else { return nil }" in remote,
         "reader rejects float": "guard !CFNumberIsFloatType(legacy) else { return nil }" in remote,
