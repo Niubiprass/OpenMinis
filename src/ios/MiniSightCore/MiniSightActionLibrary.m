@@ -644,9 +644,7 @@ static MSALState * _Nullable MSALLoadState(NSString * _Nullable path, NSError * 
 - (void)requestFrameForClip:(MiniSightActionClip *)clip index:(NSUInteger)index completion:(MSALFrameCompletion)completion {
     NSAssert(NSThread.isMainThread, @"Action-library calls belong on main.");
     uint64_t epoch = [_state advancePurging:NO];
-    // ARC's strong block store copies once; avoid an extra Objective-C -copy
-    // result owner. Only these main-owned slots retain the caller's callback.
-    _activeCompletion = nil; _pendingCompletion = completion; _pendingEpoch = epoch;
+    _activeCompletion = nil; _pendingCompletion = [completion copy]; _pendingEpoch = epoch;
     BOOL valid = [clip isKindOfClass:MiniSightActionClip.class] && _state->clips[clip.identifier] == clip && index < clip.frameCount;
     _pendingFrame = valid ? clip.frames[index] : nil;
     _pendingKey = valid ? MSALKey(clip, index) : nil;

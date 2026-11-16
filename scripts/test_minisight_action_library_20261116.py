@@ -301,6 +301,12 @@ class StaticContract(unittest.TestCase):
         self.assertIn("Load(entry[@\"path\"], &error)", native)
         self.assertIn("SchedulerTests", native)
         self.assertIn("CacheTests", native)
+        self.assertIn('__weak NSObject *weakActive;', native)
+        self.assertIn('__weak NSObject *weakPending;', native)
+        self.assertNotIn('__weak NSObject *weakActive, *weakPending;', native)
+        self.assertIn('NSObject * __weak *probe', native)
+        self.assertIn('objc_precise_lifetime', native)
+        self.assertIn('CHECK(!weakPending)', native)
 
     def test_fixture_materialization_not_native_execution(self):
         # Exercise real fixture construction, not just manifest recipes. This does
@@ -385,8 +391,23 @@ def native_tests():
         subprocess.run(command, check=True, timeout=120)
         plan = build_plan(directory)
         subprocess.run([str(executable), str(plan)], check=True, timeout=240)
-        # Exercise the same runtime after corrupting ONLY cancellation ownership;
-        # it must die at the real weakPending assertion, not compilation or ASan.
+        # Prove the old fixture's actual ownership error with Apple's compiler:
+        # prefix __weak qualifies ONLY the first pointer declarator, leaving
+        # weakPending strong. The exact weak** helper rejects that original form.
+        native_source = (FIXTURES / 'native.m').read_text()
+        correct = '__weak NSObject *weakActive;\n        __weak NSObject *weakPending;'
+        assert native_source.count(correct) == 1
+        bad_probe = directory / 'strong-pending-probe.m'
+        bad_probe.write_text(native_source.replace(correct,
+            '__weak NSObject *weakActive, *weakPending;', 1))
+        ownership_command = command.copy()
+        ownership_command[ownership_command.index(str(FIXTURES / 'native.m'))] = str(bad_probe)
+        ownership_command[ownership_command.index(str(executable))] = str(directory / 'strong-probe-tests')
+        ownership = subprocess.run(ownership_command, capture_output=True, text=True, timeout=120)
+        if ownership.returncode == 0 or 'changes retain/release properties of pointer' not in ownership.stderr:
+            raise AssertionError('Old strong probe was not type-rejected:\n' + ownership.stdout + ownership.stderr)
+        print('NATIVE PASS ownership negative: original weakPending was strong; exact weak** rejects it', flush=True)
+        # The same real harness must still reject missing production cancellation.
         start = SOURCE.index('- (void)cancelPendingFrameRequests {')
         end = SOURCE.index('- (void)purgeFrames {', start)
         cancel = SOURCE[start:end]
