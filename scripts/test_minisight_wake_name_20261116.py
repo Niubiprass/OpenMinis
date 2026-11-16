@@ -87,9 +87,13 @@ def main():
                   flush=True)
             return 2 if args.require_native else 0
         print("TOOLCHAIN: " + reason, flush=True)
+        sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+                                      text=True, timeout=30).strip()
+        if not Path(sdk).is_dir():
+            raise RuntimeError("Apple macOS SDK unavailable; native behavior did not run")
         with tempfile.TemporaryDirectory(prefix="minisight-wake-name-") as directory:
             binary = str(Path(directory) / "wake-name-fixtures")
-            subprocess.run([compiler, "-swift-version", "5", "-warnings-as-errors", str(SOURCE),
+            subprocess.run([compiler, "-sdk", sdk, "-swift-version", "5", "-warnings-as-errors", str(SOURCE),
                             str(FIXTURES / "main.swift"), "-o", binary], check=True, timeout=120)
             subprocess.run([binary, str(FIXTURES)], check=True, timeout=30)
         return 0

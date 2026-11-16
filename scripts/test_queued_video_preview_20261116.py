@@ -131,6 +131,9 @@ class QueuedVideoContracts(unittest.TestCase):
             if REQUIRE_NATIVE:
                 self.fail(message + ' (--require-native fails closed)')
             self.skipTest(message)
+        compiler = subprocess.check_output(['xcrun', '--find', 'swiftc'], text=True, timeout=30).strip()
+        sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True, timeout=30).strip()
+        self.assertTrue(Path(sdk).is_dir(), 'Native macOS SDK unavailable')
         fixture = (ROOT / 'scripts/fixtures/queued_video_preview_20261116.swift').read_text()
         mocks, cases = fixture.split('// MARK: - Native cases', 1)
         retained = PREVIEW.split('// MARK: - Queued video retained source', 1)[1].split('\n', 1)[1].split('// MARK: - End queued video retained source', 1)[0]
@@ -144,7 +147,7 @@ class QueuedVideoContracts(unittest.TestCase):
             swift = Path(directory) / 'main.swift'
             binary = Path(directory) / 'fixture'
             swift.write_text(production)
-            compiled = subprocess.run([compiler, '-swift-version', '5', '-parse-as-library',
+            compiled = subprocess.run([compiler, '-sdk', sdk, '-swift-version', '5', '-parse-as-library',
                                        str(swift), '-o', str(binary)], capture_output=True, text=True, timeout=120)
             self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
             ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)

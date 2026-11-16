@@ -104,9 +104,11 @@ def native(required):
         if required: raise RuntimeError('native Foundation REQUIRED; unavailable')
         return
     compiler=subprocess.check_output(['xcrun','--find','swiftc'],text=True).strip()
+    sdk=subprocess.check_output(['xcrun','--sdk','macosx','--show-sdk-path'],text=True,timeout=30).strip()
+    require(Path(sdk).is_dir(), 'Apple macOS SDK missing; Foundation tests did not run')
     with tempfile.TemporaryDirectory(prefix='ms-wake-foundation-') as d:
         binary=Path(d)/'wake-foundation'
-        subprocess.run([compiler,'-swift-version','5',str(IOS/'MiniSightWakePolicy.swift'),str(IOS/'MiniSightWakeAssets.swift'),
+        subprocess.run([compiler,'-sdk',sdk,'-swift-version','5',str(IOS/'MiniSightWakePolicy.swift'),str(IOS/'MiniSightWakeAssets.swift'),
             str(IOS/'MiniSightWakeName.swift'),str(FIX/'main.swift'),'-o',str(binary)],check=True,timeout=120)
         subprocess.run([str(binary),str(ASSETS)],check=True,timeout=45)
 
