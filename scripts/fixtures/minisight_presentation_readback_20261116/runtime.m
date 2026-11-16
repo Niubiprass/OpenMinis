@@ -63,7 +63,7 @@ int main(void) { @autoreleasepool {
     Check(gMiniSightUserHidden && !gMiniSightShown && gMiniSightShownWritePending, @"real user hide stops immediately before queued persistence");
     CompletePreferences(capturedBeforeHide);
     Check(gMiniSightUserHidden && showed == beforeShow && preferenceReads.count == 1, @"pending old ON read cannot reopen real user hide");
-    Wait(^{ return !gMiniSightShownWritePending; });
+    Wait(^BOOL(void) { return !gMiniSightShownWritePending; });
     Check(gMiniSightHideObservedOff && atomic_load(&notifications) == hideNotifications + 1, @"real UserHide write feedback and success notification");
     if (preferenceReads.count) CompletePreferences(Preferences());
     if (preferenceReads.count) CompletePreferences(Preferences());

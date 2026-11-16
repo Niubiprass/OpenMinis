@@ -564,12 +564,19 @@ final class ProviderQuotaService: ObservableObject {
     }
     private func publishRevision(_ instanceId: String) {
         lock.lock()
-        let rows = (keyCache[instanceId] ?? [:]).keys.sorted().map { id -> String in
+        let rowIds = (keyCache[instanceId] ?? [:]).keys.sorted()
+        let rowTexts: [String] = rowIds.map { id in
             let entry = keyCache[instanceId]?[id]
-            return id + ":" + (entry?.info?.displayText ?? "?") + ":" + String(entry?.info?.observedAt?.timeIntervalSince1970 ?? 0)
-                + ":" + String(entry?.info?.isStale ?? true) + ":" + (failureNotes[failureKey(instanceId, id)] ?? "")
-        }.joined(separator: "|")
-        let value = (currentOrigins[instanceId]?.rowId ?? "unknown") + ":" + (currentOrigins[instanceId]?.owner ?? "") + rows
+            let display = entry?.info?.displayText ?? "?"
+            let observed = String(entry?.info?.observedAt?.timeIntervalSince1970 ?? 0)
+            let stale = String(entry?.info?.isStale ?? true)
+            let failure = failureNotes[failureKey(instanceId, id)] ?? ""
+            return [id, display, observed, stale, failure].joined(separator: ":")
+        }
+        let rows = rowTexts.joined(separator: "|")
+        let origin = currentOrigins[instanceId]
+        let identity = [origin?.rowId ?? "unknown", origin?.owner ?? ""].joined(separator: ":")
+        let value = identity + rows
         let changed = lastPublished[instanceId] != value
         lastPublished[instanceId] = value
         lock.unlock()
