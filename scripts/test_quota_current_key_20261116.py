@@ -120,7 +120,11 @@ def storage_harness():
     text = text.replace(stub, real)
     # Real foreground TTL entry, not a counter/policy substitute.
     foreground = re.sub(r'\b(?:fileprivate|private)\s+', '', declaration(Q, 'func refreshAllIfNeeded('))
-    text = text.replace('final class CacheAsyncHarness {', 'final class CacheAsyncHarness {\n' + foreground)
+    # The synthetic UIKit replacement is explicitly MainActor-isolated (unlike
+    # Swift-5 SDK compatibility annotations). Keep the production method body
+    # byte-exact and annotate only this fixture entry; real calls below already
+    # execute inside MainActor.run. Never weaken the UIApplication substitute.
+    text = text.replace('final class CacheAsyncHarness {', 'final class CacheAsyncHarness {\n@MainActor\n' + foreground)
     return text + (ROOT / 'scripts/fixtures/quota_storage_async_20261117.swift').read_text()
 
 def assert_memory_isolation(test, source):
@@ -161,6 +165,8 @@ class SourceContracts(unittest.TestCase):
             production = re.sub(r'\b(?:fileprivate|private)\s+', '', declaration(Q, marker))
             self.assertEqual(declaration(text, marker), production, marker)
         self.assertIn(writer_members(), text)
+        self.assertIn('@MainActor\nfunc refreshAllIfNeeded(', text)
+        self.assertIn('@MainActor final class UIApplication {', text)
         self.assertNotIn('scheduledCount[id, default: 0] += 1', text)
         self.assertIn('DispatchQueue.main.async', text)
         self.assertIn('Foundation.UserDefaults.didChangeNotification', text)
