@@ -97,7 +97,13 @@ def manager():
                'private func unlockedKeys(', 'private func reserveCursor(', 'func lease(for ',
                'private func increment(', 'func recordSuccess(lease:', 'func notifyQuotaSuccess(',
                'func reportQuotaSuccess(']
-    return skeleton.replace('// PRODUCTION MEMBERS', '\n'.join(public(decl(M, marker)) for marker in markers))
+    def extract(marker):
+        # quota's multiline extractor ends at an indented closing brace. This
+        # production helper is one line and must not swallow recordSuccess.
+        if marker == 'private func increment(':
+            return M[M.index(marker):].split('\n', 1)[0]
+        return decl(M, marker)
+    return skeleton.replace('// PRODUCTION MEMBERS', '\n'.join(public(extract(marker)) for marker in markers))
 
 class SourceContracts(unittest.TestCase):
     def test_production_extraction_is_exact(self):
@@ -116,6 +122,9 @@ class SourceContracts(unittest.TestCase):
         self.assertIn(top(M, 'struct ProviderKeyLease:'), text)
         self.assertEqual(text.count('struct ProviderAPIKey:'), 1)
         self.assertEqual(text.count('struct ProviderKeyLease:'), 1)
+        self.assertEqual(text.count('func recordSuccess(lease:'), 1)
+        self.assertEqual(text.count('func increment('), 1)
+        self.assertIn(public(M[M.index('private func increment('):].split('\n', 1)[0]), text)
         self.assertNotIn('SyntheticKeyStatus', text)
         self.assertIn(boundary(O, '        let overridesCredential = spec.headers.keys.contains', '\n\n        var out:'), text)
         image_start = T.index('        case .imageGen:', T.index('let request = try await LLMProviderFactory.makeProviderWithConsumption'))
