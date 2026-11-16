@@ -76,6 +76,20 @@ class Source(unittest.TestCase):
    text=(FIX/filename).read_text();self.assertNotIn('https://',text);self.assertNotIn('AVAudio',text)
   self.assertIn('stale cached ON page exit must not undo menu hide',(FIX/'shown_main.swift').read_text())
   self.assertIn('unknown screen is not trusted locked',(FIX/'screen_cases.swift').read_text())
+ def test_actual_roundtrip_entry_uses_public_decoded_state(self):
+  expected=ROOT/'scripts/fixtures/minisight_name_roundtrip_20261116' if IS_APP else FIX/'roundtrip_baseline'
+  self.assertEqual(ROUND.FIXTURE.resolve(),expected.resolve())
+  entry=(ROUND.FIXTURE/'main.swift').read_text()
+  import inspect
+  runner=inspect.getsource(Native.name)
+  self.assertIn('old=ROUND.FIXTURE',runner)
+  self.assertIn("main=(old/'main.swift').read_text()",runner)
+  self.assertIn('guard let state = MiniSightWakeRemote.decodeState(value)',entry)
+  self.assertNotIn('MiniSightWakeRemote.boolean(',entry)
+  for field in ('unlocked','allowed','busy','lockKnown','screenKnown','screenOff'):
+   self.assertIn('"'+field+'": state.'+field,entry)
+  for assertion in ('legacy integer 0/1 semantics','invalid boolean','missing boolean','normalized state cannot grant unsafe listen','legacy integer actual temporary file','state exact schema missing','state exact schema extra'):
+   self.assertIn(assertion,entry)
 class Native(unittest.TestCase):
  def tools(self,tmp):
   tools,reason=ROUND.apple_toolchain(tmp)

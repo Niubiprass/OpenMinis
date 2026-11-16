@@ -99,7 +99,8 @@ func stateFixtures(_ directory: String) throws -> [String: Any] {
             guard let state = MiniSightWakeRemote.decodeState(value) else {
                 throw FixtureFailure(description: "FAIL assertion: legacy integer 0/1 rejected " + field)
             }
-            let actual = MiniSightWakeRemote.boolean(value[field])
+            let actual = ["unlocked": state.unlocked, "allowed": state.allowed, "busy": state.busy,
+                          "lockKnown": state.lockKnown, "screenKnown": state.screenKnown, "screenOff": state.screenOff][field]
             try check(actual == (integer == 1), "legacy integer 0/1 semantics " + field)
             try check(!state.allowed || (state.lockKnown && state.unlocked && state.screenKnown && !state.screenOff), "normalized state cannot grant unsafe listen")
             let data = try JSONSerialization.data(withJSONObject: value)
