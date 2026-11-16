@@ -162,7 +162,7 @@ def cmake_pin(path, name, url, digest):
 def prepare(work):
     ci_only(); work.mkdir(parents=True, exist_ok=True)
     budget = 50*1024*1024
-    archive = work/'downloads/sherpa-'+COMMIT+'.tar.gz'
+    archive = work/'downloads'/('sherpa-'+COMMIT+'.tar.gz')
     download(SOURCE_URL, archive, SOURCE_SHA, budget, SOURCE_SIZE); budget -= archive.stat().st_size
     trees = {'sherpa': extract_source(archive, work/'source')}
     require(sha(work/'source/sherpa-onnx/c-api/c-api.h') == HEADER_SHA, 'fixed C API header drift')
@@ -459,6 +459,8 @@ def static_gate():
         try: safe_path(name)
         except RuntimeError: pass
         else: raise RuntimeError('unsafe archive path accepted')
+    example = Path('/tmp/minisight-source-fixture')/'downloads'/('sherpa-'+COMMIT+'.tar.gz')
+    require(example.name == 'sherpa-'+COMMIT+'.tar.gz', 'download path construction changed')
     print('PASS controlled rebuild source contracts (static only; no build/run performed)')
 
 
