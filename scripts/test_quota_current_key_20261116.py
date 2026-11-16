@@ -338,5 +338,11 @@ class NativeProductionFixtures(unittest.TestCase):
         self.assertIn(anchor, text)
         unsafe = text.replace(anchor, anchor + '\n            Self.store(info, instanceId: instance.id, origin: origin, at: entry.fetchedAt)', 1)
         self.run_production(unsafe, 'quota-storage-async-ok', library=True, reject=True)
+        # Behavior negative control: an older durable pointer must not replace
+        # the latest real successful Key retained across ordinary invalidation.
+        candidate = 'capturedOrigin ?? invalidatedOrigin ?? Self.storedCurrent(instanceId)'
+        self.assertIn(candidate, text)
+        self.run_production(text.replace(candidate, 'capturedOrigin ?? Self.storedCurrent(instanceId)', 1),
+                            'quota-storage-async-ok', library=True, reject=True)
 
 if __name__ == '__main__': unittest.main(verbosity=2)

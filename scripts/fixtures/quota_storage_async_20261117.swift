@@ -140,15 +140,25 @@
         let allSave = Task { await query(all, id: "all") }
         await allGate.waitForArrival(); await allSave.value
         await success(all, id: "all", row: "main", key: "synthetic-main")
+        let pendingMain = all.inspect { $0.currentOrigins["all"]! }
         all.invalidateAll()
         await mainProbe(all, id: "all")
         allGate.release(); await all.flushWriter()
         checkAsync(UserDefaults.standard.data(forKey: CacheAsyncHarness.storedPrefix + "all.main") != nil && CacheAsyncHarness.storedCurrent("all") == durableAll, "all barrier preserves durable data, rejects queued pointer")
         _ = await all.resolveCurrent("all", epoch: all.inspect { $0.epochs["all"]! })
-        checkAsync(all.cachedQuota(instanceId: "all")?.amountUSD == 2.31, "ordinary all invalidation restores valid owner balance offline")
+        // A newer actual Main success was not written before the epoch barrier.
+        // The production invalidatedOrigins candidate must beat the older Ring
+        // disk pointer; restoring 2.31 here would silently change the actual Key.
+        checkAsync(all.cachedQuota(instanceId: "all")?.amountUSD == 1.10 && all.inspect { $0.currentOrigins["all"] } == pendingMain, "all invalidation preserves latest successful owner over old disk pointer")
         all.invalidate(instanceId: "all"); await all.flushWriter()
         _ = await all.resolveCurrent("all", epoch: all.inspect { $0.epochs["all"]! })
-        checkAsync(all.cachedQuota(instanceId: "all")?.amountUSD == 2.31 && CacheAsyncHarness.storedCurrent("all") == durableAll, "ordinary instance invalidation also preserves and restores")
+        checkAsync(all.cachedQuota(instanceId: "all")?.amountUSD == 1.10 && all.inspect { $0.currentOrigins["all"] } == pendingMain && CacheAsyncHarness.storedCurrent("all") == durableAll, "instance invalidation preserves latest successful owner and durable data")
+        // With no in-memory success candidate, a cold service still restores the
+        // valid older durable Ring record. This separately proves offline IO.
+        let allCold = CacheAsyncHarness(), allColdEpoch = UUID()
+        allCold.setup { $0.epochs["all"] = allColdEpoch }
+        _ = await allCold.resolveCurrent("all", epoch: allColdEpoch)
+        checkAsync(allCold.cachedQuota(instanceId: "all")?.amountUSD == 2.31 && allCold.inspect { $0.currentOrigins["all"] } == durableAll, "cold all invalidation restores valid durable owner balance offline")
         checkAsync(CacheAsyncHarness.storedInfo(instanceId: "sibling", origin: siblingOrigin, processOwner: siblingOrigin.owner) != nil, "all barrier leaves sibling records untouched")
 
         let seed = CacheAsyncHarness(); await query(seed, id: "cold"); await seed.flushWriter()
