@@ -52,17 +52,20 @@ let lock = NSLock()
 
 def async_harness():
     pure = Q.split('// BEGIN QUOTA_CURRENT_KEY_PURE', 1)[1].split('// END QUOTA_CURRENT_KEY_PURE', 1)[0]
+    # The policy clock also has a consumed(at:) method. Extract only the real
+    # service class, never a same-named pure helper and its following members.
+    service = Q[Q.index('final class ProviderQuotaService:'):]
     members = ['struct QuotaInfo {', 'private struct StoredQuota:', 'private struct CacheEntry {',
                'private struct RefreshOutcome {', 'private final class RetryCapture', 'private struct Context {',
                'private static func store(', 'private static func storedInfo(', 'private static func storedCurrent(',
                'private static func snapshot(', 'private static func reproject(', 'static func project(',
                'private func publishAggregate(', 'private static func rowKey(', 'private func failureKey(',
-               'private func resolveCurrent(', 'func consumed(', 'private func runAutomatic(',
+               'private func resolveCurrent(', 'func consumed(_ success: ProviderQuotaSuccess)', 'private func runAutomatic(',
                'private func refreshRow(', 'private func invalidateRow(', 'private func publishRevision(']
     def extract(marker):
         if marker in ('private final class RetryCapture', 'private func failureKey('):
-            return Q[Q.index(marker):].split('\n', 1)[0]
-        return declaration(Q, marker)
+            return service[service.index(marker):].split('\n', 1)[0]
+        return declaration(service, marker)
     body = '\n'.join(re.sub(r'\b(?:fileprivate|private)\s+', '', extract(item)) for item in members)
     success = M[M.index('struct ProviderQuotaSuccess:'):M.index('\nenum MultiKeyFailureKind:')]
     skeleton = '''
@@ -158,6 +161,13 @@ class SourceContracts(unittest.TestCase):
         self.assertNotIn('filevar ', asynchronous)
         for marker in ('func resolveCurrent(', 'func runAutomatic(', 'func refreshRow(', 'func invalidateRow('):
             self.assertIn(marker, asynchronous)
+        service_class = asynchronous[asynchronous.index('final class CacheAsyncHarness {'):]
+        self.assertEqual(service_class.count('func consumed(_ success: ProviderQuotaSuccess)'), 1)
+        self.assertNotIn('func consumed(at now:', service_class)
+        self.assertNotIn('mutating func begin(', service_class)
+        event_method = declaration(Q, 'func consumed(_ success: ProviderQuotaSuccess)')
+        extracted_event = declaration(asynchronous, 'func consumed(_ success: ProviderQuotaSuccess)')
+        self.assertEqual(extracted_event, re.sub(r'\b(?:fileprivate|private)\s+', '', event_method))
         self.assertIn('await gate.waitForArrival()', asynchronous)
         self.assertNotIn('URLSession(', asynchronous)
         self.assertNotIn('SecItemCopyMatching(', asynchronous)
