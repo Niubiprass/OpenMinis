@@ -47,8 +47,11 @@ def harness():
     base = quota.async_harness().split('@main struct QuotaAsyncFixture', 1)[0]
     base = base.replace(top(base, 'struct ProviderInstance:'), top(support(), 'struct ProviderInstance:'))
     base = base.replace(top(base, '@MainActor final class ProviderConfigStore'), top(support(), '@MainActor final class ProviderConfigStore'))
+    # Match the entire current dependency declaration, not a stale one-line
+    # literal: quota's synthetic key now has usage/masking members as well.
+    base = base.replace(top(base, 'struct ProviderAPIKey {'), top(M, 'struct ProviderAPIKey:'))
     base = base.replace('enum SyntheticKeyStatus { case active, disabled }\n', '')
-    base = base.replace('struct ProviderAPIKey { let id: String; var key: String; var isEnabled = true; var status = SyntheticKeyStatus.active }', top(M, 'struct ProviderAPIKey:'))
+    base += '\n' + top(M, 'struct ProviderKeyLease:')
     base = base.replace(top(base, 'final class ProviderMultiKeyManager'), manager())
     # Real scheduling: a successful emitted event must actually query/commit
     # the selected synthetic row without an explicit manual refresh in tests.
@@ -109,6 +112,11 @@ class SourceContracts(unittest.TestCase):
         self.assertIn(decl(F, '    static func makeAgentProvider(\n'), text)
         self.assertIn(decl(L, '    static func makeProviderWithConsumption('), text)
         self.assertIn(top(M, 'struct ProviderConsumptionReporter:'), text)
+        self.assertIn(top(M, 'struct ProviderAPIKey:'), text)
+        self.assertIn(top(M, 'struct ProviderKeyLease:'), text)
+        self.assertEqual(text.count('struct ProviderAPIKey:'), 1)
+        self.assertEqual(text.count('struct ProviderKeyLease:'), 1)
+        self.assertNotIn('SyntheticKeyStatus', text)
         self.assertIn(boundary(O, '        let overridesCredential = spec.headers.keys.contains', '\n\n        var out:'), text)
         image_start = T.index('        case .imageGen:', T.index('let request = try await LLMProviderFactory.makeProviderWithConsumption'))
         self.assertIn(T[image_start:T.index('        case .speechOut:', image_start)].split('\n', 1)[1], text)
