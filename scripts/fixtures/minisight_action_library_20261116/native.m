@@ -180,16 +180,16 @@ static void SchedulerTests(NSString *path) {
                 (void)image; CHECK(active); delivered++;
             }];
         }
-        CHECK(weakActive);
+        @autoreleasepool { CHECK(weakActive); }
         @autoreleasepool {
             NSObject *pending = [NSObject new]; weakPending = pending;
             [library requestFrameForClip:idle index:1 completion:^(UIImage *image) {
                 (void)image; CHECK(pending); delivered++;
             }];
         }
-        CHECK(!weakActive && weakPending); // Superseding releases the active block.
+        @autoreleasepool { CHECK(!weakActive && weakPending); } // Probe temporary strong loads drain here.
         if (purge) [library purgeFrames]; else [library cancelPendingFrameRequests];
-        CHECK(!weakPending); // Cancellation drops the retained callback immediately.
+        @autoreleasepool { CHECK(!weakPending); } // Cancellation drops the retained callback immediately.
         dispatch_semaphore_signal(gate); DrainWorker();
         CHECK(delivered == 1 && [[state valueForKey:@"cost"] unsignedIntegerValue] == 0);
     }

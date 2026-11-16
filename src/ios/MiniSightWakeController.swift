@@ -172,7 +172,7 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
         let enabled = UserDefaults.standard.bool(forKey: MiniSightSettingKey.wakeEnabled)
         if !enabled || !armed { timer?.invalidate(); timer = nil; return }
         guard timer == nil else { return }
-        let t = Timer(timeInterval: .5, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.pollRemoteState(); self?.refresh() }
         }
         timer = t; RunLoop.main.add(t, forMode: .common)

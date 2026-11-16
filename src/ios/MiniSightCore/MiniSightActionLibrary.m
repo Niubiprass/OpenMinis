@@ -573,11 +573,20 @@ static MSALState * _Nullable MSALLoadState(NSString * _Nullable path, NSError * 
         for (MSALFrame *frame in clip.frames) [sources addObject:frame->source];
     NSUInteger totalBytes = data.length, sourceFrames = 0;
     for (MSALSource *source in sources) {
+        // NSError ** is autoreleasing. A strong owner OUTSIDE this inner pool
+        // must retain failures before its drain, then forward them afterwards.
+        NSError *sourceError = nil;
+        BOOL sourceOK = NO;
         @autoreleasepool {
             NSUInteger remaining = MSALInputBytes - totalBytes;
-            NSData *input = MSALRead(root, source->file, MIN(MSALSourceBytes, remaining), NULL, &source->identity, error);
-            if (!input || !MSALInspectSource(source, input, &sourceFrames, error)) { close(root); return nil; }
-            totalBytes += input.length;
+            NSData *input = MSALRead(root, source->file, MIN(MSALSourceBytes, remaining), NULL, &source->identity, &sourceError);
+            sourceOK = input && MSALInspectSource(source, input, &sourceFrames, &sourceError);
+            if (sourceOK) totalBytes += input.length;
+        }
+        if (!sourceOK) {
+            close(root);
+            if (error) *error = sourceError;
+            return nil;
         }
     }
     close(root);
@@ -635,7 +644,9 @@ static MSALState * _Nullable MSALLoadState(NSString * _Nullable path, NSError * 
 - (void)requestFrameForClip:(MiniSightActionClip *)clip index:(NSUInteger)index completion:(MSALFrameCompletion)completion {
     NSAssert(NSThread.isMainThread, @"Action-library calls belong on main.");
     uint64_t epoch = [_state advancePurging:NO];
-    _activeCompletion = nil; _pendingCompletion = [completion copy]; _pendingEpoch = epoch;
+    // ARC's strong block store copies once; avoid an extra Objective-C -copy
+    // result owner. Only these main-owned slots retain the caller's callback.
+    _activeCompletion = nil; _pendingCompletion = completion; _pendingEpoch = epoch;
     BOOL valid = [clip isKindOfClass:MiniSightActionClip.class] && _state->clips[clip.identifier] == clip && index < clip.frameCount;
     _pendingFrame = valid ? clip.frames[index] : nil;
     _pendingKey = valid ? MSALKey(clip, index) : nil;

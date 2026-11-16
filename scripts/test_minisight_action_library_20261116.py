@@ -265,6 +265,15 @@ class StaticContract(unittest.TestCase):
         for forbidden in ("NSURLSession", "dataWithContentsOfURL", "imageNamed:", "animatedImageWithImages:", "NSLog("):
             self.assertNotIn(forbidden, SOURCE)
 
+    def test_error_ownership_crosses_inner_pool(self):
+        # Source conformance only; real invalid-source cases + ASan execute this.
+        loop = SOURCE.split('for (MSALSource *source in sources) {', 1)[1]
+        self.assertLess(loop.index('NSError *sourceError = nil;'), loop.index('@autoreleasepool'))
+        self.assertIn('&source->identity, &sourceError', loop)
+        self.assertIn('MSALInspectSource(source, input, &sourceFrames, &sourceError)', loop)
+        self.assertLess(loop.index('@autoreleasepool'), loop.index('if (!sourceOK)'))
+        self.assertIn('if (error) *error = sourceError;', loop)
+
     def test_main_boundary_and_epoch_guards(self):
         self.assertEqual(SOURCE.count("[UIImage imageWithCGImage:"), 1)
         finish = SOURCE.split("- (void)finishFrame:(MSALBitmap * _Nullable)bitmap epoch:(uint64_t)epoch {", 1)[1]
@@ -369,12 +378,33 @@ def native_tests():
         directory = Path(temporary)
         executable = directory / "action-library-tests"
         command = ["xcrun", "--sdk", "macosx", "clang", "-std=gnu11", "-fobjc-arc", "-fblocks",
+                   "-g", "-O1", "-fsanitize=address", "-fno-omit-frame-pointer",
                    "-Wall", "-Wextra", "-Werror", "-I", str(FIXTURES), "-I", str(CORE),
                    str(FIXTURES / "native.m"), "-framework", "Foundation", "-framework", "ImageIO",
                    "-framework", "CoreGraphics", "-o", str(executable)]
         subprocess.run(command, check=True, timeout=120)
         plan = build_plan(directory)
         subprocess.run([str(executable), str(plan)], check=True, timeout=240)
+        # Exercise the same runtime after corrupting ONLY cancellation ownership;
+        # it must die at the real weakPending assertion, not compilation or ASan.
+        start = SOURCE.index('- (void)cancelPendingFrameRequests {')
+        end = SOURCE.index('- (void)purgeFrames {', start)
+        cancel = SOURCE[start:end]
+        assert cancel.count('_pendingCompletion = nil;') == 1
+        mutant = directory / 'retained-callback'
+        mutant.mkdir()
+        (mutant / 'MiniSightActionLibrary.m').write_text(SOURCE[:start] +
+            cancel.replace('_pendingCompletion = nil;', '', 1) + SOURCE[end:])
+        mutant_executable = directory / 'retained-callback-tests'
+        mutant_command = command.copy()
+        at = mutant_command.index(str(CORE)) - 1
+        mutant_command[at:at] = ['-I', str(mutant)]
+        mutant_command[mutant_command.index(str(executable))] = str(mutant_executable)
+        subprocess.run(mutant_command, check=True, timeout=120)
+        killed = subprocess.run([str(mutant_executable), str(plan)], capture_output=True, text=True, timeout=240)
+        if killed.returncode == 0 or 'FAIL line' not in killed.stderr or '!weakPending' not in killed.stderr:
+            raise AssertionError('Native cancellation mutant not assertion-killed:\n' + killed.stdout + killed.stderr)
+        print('NATIVE PASS mutation: cancellation releases pending callback immediately', flush=True)
     print("Native tests used actual production code; only UIImage delivery was shimmed on macOS")
 
 

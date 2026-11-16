@@ -55,7 +55,7 @@ def contract_errors(source, header):
         "cost limit": "_cache.totalCostLimit = 4 * MSLyricsMaxBytes;",
         "main delegate queue": "delegateQueue:NSOperationQueue.mainQueue",
         "cancel task": "[_task cancel];",
-        "weak delegate owner": "@property(nonatomic, weak) MiniSightLyricsClient *owner;",
+        "weak delegate owner": "@property(nonatomic, weak, nullable) MiniSightLyricsClient *owner;",
         "no redirects": "completionHandler(nil);",
         "honor server wait": "MAX(fallback, seconds)",
         "blank clearing": "if (!line.text.length || time - line.time >= MSLyricsMaxDisplay) return nil;",

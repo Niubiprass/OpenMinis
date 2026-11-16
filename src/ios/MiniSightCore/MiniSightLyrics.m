@@ -4,6 +4,8 @@
 #import <stdlib.h>
 #import <dispatch/dispatch.h>
 
+NS_ASSUME_NONNULL_BEGIN
+
 static const NSUInteger MSLyricsMaxBytes = 1024 * 1024;
 static const NSTimeInterval MSLyricsMaxDisplay = 12.0;
 
@@ -11,7 +13,7 @@ static BOOL MSLyricsDurationOK(NSTimeInterval value) {
     return isfinite(value) && value >= 1.0 && value <= 3600.0;
 }
 
-static NSString *MSLyricsNormalize(id value) {
+static NSString * _Nullable MSLyricsNormalize(id _Nullable value) {
     if (![value isKindOfClass:NSString.class] || [value length] > 512 || ![value canBeConvertedToEncoding:NSUTF8StringEncoding]) return nil;
     NSArray *parts = [value componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     NSMutableArray *words = [NSMutableArray array];
@@ -21,7 +23,7 @@ static NSString *MSLyricsNormalize(id value) {
     return [text lowercaseStringWithLocale:[NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]];
 }
 
-static NSRegularExpression *MSLyricsRegex(NSString *pattern) {
+static NSRegularExpression * _Nullable MSLyricsRegex(NSString *pattern) {
     return [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:NULL];
 }
 
@@ -44,7 +46,7 @@ static NSRegularExpression *MSLyricsRegex(NSString *pattern) {
     if ((self = [super init])) { _lines = [lines copy]; _duration = duration; }
     return self;
 }
-+ (instancetype)timelineWithLRC:(NSString *)lrc duration:(NSTimeInterval)duration {
++ (nullable instancetype)timelineWithLRC:(NSString *)lrc duration:(NSTimeInterval)duration {
     if (!MSLyricsDurationOK(duration) || ![lrc isKindOfClass:NSString.class] ||
         !lrc.length || lrc.length > MSLyricsMaxBytes || ![lrc canBeConvertedToEncoding:NSUTF8StringEncoding] ||
         [lrc lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > MSLyricsMaxBytes) return nil;
@@ -110,7 +112,7 @@ static NSRegularExpression *MSLyricsRegex(NSString *pattern) {
     for (NSNumber *time in [[unique allKeys] sortedArrayUsingSelector:@selector(compare:)]) [lines addObject:unique[time]];
     return [[self alloc] initWithLines:lines duration:duration];
 }
-- (NSString *)lineAtTime:(NSTimeInterval)time {
+- (nullable NSString *)lineAtTime:(NSTimeInterval)time {
     if (!isfinite(time) || time < 0.0 || time >= _duration || !_lines.count) return nil;
     NSUInteger lo = 0, hi = _lines.count;
     while (lo < hi) {
@@ -125,7 +127,7 @@ static NSRegularExpression *MSLyricsRegex(NSString *pattern) {
 @end
 
 @implementation MiniSightLyricsTrack
-- (instancetype)initWithTitle:(NSString *)title artist:(NSString *)artist duration:(NSTimeInterval)duration {
+- (nullable instancetype)initWithTitle:(NSString *)title artist:(NSString *)artist duration:(NSTimeInterval)duration {
     NSString *normalizedTitle = MSLyricsNormalize(title), *normalizedArtist = MSLyricsNormalize(artist);
     if (!normalizedTitle || !normalizedArtist || !MSLyricsDurationOK(duration)) return nil;
     if ((self = [super init])) {
@@ -138,7 +140,7 @@ static NSRegularExpression *MSLyricsRegex(NSString *pattern) {
 }
 @end
 
-static BOOL MSLyricsAllowedURL(NSURL *url) {
+static BOOL MSLyricsAllowedURL(NSURL * _Nullable url) {
     return [url.scheme.lowercaseString isEqualToString:@"https"] &&
            [url.host.lowercaseString isEqualToString:@"lrclib.net"] &&
            [url.path isEqualToString:@"/api/get"] && (!url.port || url.port.integerValue == 443) &&
@@ -153,7 +155,7 @@ static BOOL MSLyricsAllowedURL(NSURL *url) {
 @end
 
 @interface MSLyricsSessionDelegate : NSObject <NSURLSessionDataDelegate>
-@property(nonatomic, weak) MiniSightLyricsClient *owner;
+@property(nonatomic, weak, nullable) MiniSightLyricsClient *owner;
 @end
 
 @interface MiniSightLyricsClient ()
@@ -200,7 +202,7 @@ static BOOL MSLyricsAllowedURL(NSURL *url) {
 }
 - (void)dealloc { [_session invalidateAndCancel]; }
 
-+ (MiniSightLyricsTimeline *)timelineForResponseData:(NSData *)data response:(NSHTTPURLResponse *)response track:(MiniSightLyricsTrack *)track {
++ (nullable MiniSightLyricsTimeline *)timelineForResponseData:(NSData *)data response:(NSHTTPURLResponse *)response track:(MiniSightLyricsTrack *)track {
     if (![track isKindOfClass:MiniSightLyricsTrack.class] || ![response isKindOfClass:NSHTTPURLResponse.class] ||
         response.statusCode != 200 || !MSLyricsAllowedURL(response.URL) ||
         ![response.MIMEType.lowercaseString isEqualToString:@"application/json"] ||
@@ -239,7 +241,7 @@ static BOOL MSLyricsAllowedURL(NSURL *url) {
     NSDate *date = [formatter dateFromString:header];
     return date ? MAX(fallback, [date timeIntervalSinceDate:now]) : fallback;
 }
-- (void)deliver:(MiniSightLyricsTimeline *)timeline generation:(NSUInteger)generation completion:(MiniSightLyricsCompletion)completion {
+- (void)deliver:(MiniSightLyricsTimeline * _Nullable)timeline generation:(NSUInteger)generation completion:(MiniSightLyricsCompletion _Nullable)completion {
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         MiniSightLyricsClient *owner = weakSelf;
@@ -339,7 +341,7 @@ static BOOL MSLyricsAllowedURL(NSURL *url) {
     }
     [_body appendData:data];
 }
-- (void)finishedTask:(NSURLSessionTask *)task error:(NSError *)error {
+- (void)finishedTask:(NSURLSessionTask *)task error:(NSError * _Nullable)error {
     if (task != _task) return;
     if (_activeGeneration != self.generation) return;
     MiniSightLyricsTimeline *timeline = nil;
@@ -369,7 +371,7 @@ static BOOL MSLyricsAllowedURL(NSURL *url) {
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
     [self.owner receivedData:data task:task];
 }
-- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError * _Nullable)error {
     [self.owner finishedTask:task error:error];
 }
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest * _Nullable))completionHandler {
@@ -384,3 +386,5 @@ static BOOL MSLyricsAllowedURL(NSURL *url) {
     [self URLSession:session didReceiveChallenge:challenge completionHandler:completionHandler];
 }
 @end
+
+NS_ASSUME_NONNULL_END
