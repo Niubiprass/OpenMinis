@@ -247,7 +247,7 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Minis uses your location to record where agent sessions are started for your session history.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Minis needs microphone access for voice-to-text input in chat.</string>
+	<string>Minis uses the microphone for voice input and, only when you enable it, local pet-name detection that continues in the background. Passive wake audio is not saved or uploaded.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Minis needs permission to save videos and images to your photo library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

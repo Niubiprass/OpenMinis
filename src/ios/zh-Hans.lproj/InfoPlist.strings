@@ -13,7 +13,7 @@
 "NSHealthUpdateUsageDescription" = "Minis 需要写入健康数据的权限，以便 AI 智能体代您记录步数、体重和饮水量等数据。";
 "NSContactsUsageDescription" = "Minis 需要访问通讯录，以便 AI 智能体代您搜索、查看和管理联系人。";
 "NSAppleMusicUsageDescription" = "Minis 需要访问媒体资料库，以便 AI 智能体搜索音乐并代您控制播放。";
-"NSMicrophoneUsageDescription" = "Minis 需要使用麦克风进行语音转文字输入。";
+"NSMicrophoneUsageDescription" = "Minis 使用麦克风进行语音输入，并仅在您开启名字唤醒后，在本机后台等待您喊桌宠名字。被动唤醒声音不保存、不上传。";
 "NSSpeechRecognitionUsageDescription" = "Minis 使用语音识别将您的语音转换为文字消息。";
 "NSHomeKitUsageDescription" = "Minis 需要访问 HomeKit，以便 AI 智能体代您查询和控制智能家居设备。";
 "NSAlarmKitUsageDescription" = "Minis 使用闹钟功能，以便 AI 智能体代您设置闹钟和计时器。";

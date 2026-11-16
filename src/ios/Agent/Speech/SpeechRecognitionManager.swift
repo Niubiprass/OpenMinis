@@ -104,6 +104,18 @@ final class SpeechRecognitionManager: ObservableObject {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
+    private var recordingIntent: AudioSessionCoordinator.Intent?
+    private var recordingGeneration: UInt64 = 0
+    /// Normal final/interruption notifies the bridge synchronously after physical
+    /// stop but BEFORE releasing its session. MAIN may atomically begin wakeWord
+    /// here if fresh policy permits; cancellation/failure still releases at once.
+    var onNameWakeRecordingEnded: (@MainActor () -> Void)?
+
+    /// A physical, name-derived input source, not an enabled/ownership flag.
+    /// The coordinator's applied state is checked separately by the BKA reader.
+    var backgroundRecognitionHasLiveAudio: Bool {
+        recordingIntent == .nameWakeDictation && audioEngine.isRunning && state == .recording
+    }
     private let logger = AppLogger(category: "Speech")
 
     private init() {
@@ -139,6 +151,13 @@ final class SpeechRecognitionManager: ObservableObject {
         }
         self.availableLocales = sorted
 
+        AudioSessionCoordinator.shared.onNameWakeDictationPreempted = { [weak self] in
+            guard let self, self.recordingIntent == .nameWakeDictation else { return }
+            // Synchronous physical stop; coordinator already removed this intent,
+            // so teardown cannot deactivate/reconfigure the competing owner.
+            self.tearDown()
+        }
+
         // [T-voice-interrupt-cannot-restart] Observe interruptions so a call /
         // Siri that kills the engine is reflected in `state` immediately,
         // instead of leaving the UI showing "recording" over a dead engine
@@ -172,12 +191,13 @@ final class SpeechRecognitionManager: ObservableObject {
     func setLanguage(_ newLocale: Locale) {
         guard newLocale.identifier != locale.identifier else { return }
         let wasRecording = state == .recording
+        let wasNameWake = recordingIntent == .nameWakeDictation
         if wasRecording { stopRecording() }
         locale = newLocale
         logger.info("Language set to \(self.locale.identifier)")
         // Defer restart until the sheet is fully dismissed,
         // otherwise AVAudioSession conflicts with the sheet transition.
-        pendingRecordingRestart = wasRecording
+        pendingRecordingRestart = wasRecording && !wasNameWake
     }
 
     /// Call after the language picker sheet is dismissed to restart recording
@@ -191,10 +211,11 @@ final class SpeechRecognitionManager: ObservableObject {
     func setProvider(_ newProvider: SpeechProvider) {
         guard newProvider != provider else { return }
         let wasRecording = state == .recording
+        let wasNameWake = recordingIntent == .nameWakeDictation
         if wasRecording { stopRecording() }
         provider = newProvider
         logger.info("Speech provider set to \(newProvider.rawValue)")
-        if wasRecording {
+        if wasRecording && !wasNameWake {
             try? startRecording()
         }
     }
@@ -232,7 +253,18 @@ final class SpeechRecognitionManager: ObservableObject {
 
     // MARK: - Recording
 
-    func startRecording() throws {
+    func startRecording(nameWake: Bool = false) throws {
+        if nameWake {
+            // Named input must never prompt or borrow an existing recorder.
+            guard permissionsAlreadyGranted, state != .recording,
+                  AudioSessionCoordinator.shared.canBeginNameWakeDictation else {
+                throw NSError(domain: "SpeechRecognition", code: -3,
+                              userInfo: [NSLocalizedDescriptionKey: "Name voice input is unavailable or busy"])
+            }
+        } else if recordingIntent == .nameWakeDictation && audioEngine.isRunning {
+            throw NSError(domain: "SpeechRecognition", code: -3,
+                          userInfo: [NSLocalizedDescriptionKey: "Microphone capture is already in use"])
+        }
         // [T-voice-interrupt-cannot-restart] This manager observes no audio
         // interruptions at all, so a call/Siri that stops the engine leaves
         // `state == .recording` with nothing running, and every later call
@@ -246,14 +278,33 @@ final class SpeechRecognitionManager: ObservableObject {
         }
         guard state == .idle else { return }
 
+        let coordinator = AudioSessionCoordinator.shared
+        // The capture intent is not reference-counted: do not borrow or end a
+        // VAD/other recorder's existing lease, even if its profile is applied.
+        guard !coordinator.isCapturing else {
+            throw NSError(domain: "SpeechRecognition", code: -3,
+                          userInfo: [NSLocalizedDescriptionKey: "Microphone capture is already in use"])
+        }
+        guard let recognizer = speechRecognizer, recognizer.isAvailable else {
+            throw NSError(domain: "SpeechRecognition", code: -4,
+                          userInfo: [NSLocalizedDescriptionKey: "Speech recognizer unavailable"])
+        }
+        recordingGeneration &+= 1
+        let generation = recordingGeneration
         recognitionTask?.cancel()
         recognitionTask = nil
 
-        let audioSession = AVAudioSession.sharedInstance()
-        // No `.duckOthers`: capturing the mic shouldn't quiet other apps' audio
-        // (it sometimes stayed ducked after recording stopped).
-        try audioSession.setCategory(.record, mode: .measurement)
-        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        let intent: AudioSessionCoordinator.Intent = nameWake ? .nameWakeDictation : .capture
+        recordingIntent = intent
+        var started = false
+        defer { if !started { tearDown() } }
+        // MAIN retains .wakeWord until this atomic replacement; no end/begin
+        // inactive gap, and no change to manual .record/.measurement behavior.
+        guard coordinator.beginAndWait(intent) else {
+            throw AudioSessionCoordinator.lastApplyError
+                ?? NSError(domain: "SpeechRecognition", code: -5,
+                           userInfo: [NSLocalizedDescriptionKey: "Microphone session could not be activated"])
+        }
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
@@ -262,12 +313,20 @@ final class SpeechRecognitionManager: ObservableObject {
         }
         recognitionRequest = request
 
-        let inputNode = audioEngine.inputNode
-        // Defensive: remove any stale tap before installing a new one.
-        inputNode.removeTap(onBus: 0)
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-
-        guard recordingFormat.channelCount > 0 else {
+        var resolvedNode: AVAudioInputNode?
+        var resolvedFormat: AVAudioFormat?
+        let formatOK = noff_try_objc {
+            let node = self.audioEngine.inputNode
+            node.removeTap(onBus: 0)
+            resolvedNode = node
+            resolvedFormat = node.outputFormat(forBus: 0)
+        }
+        guard formatOK, let inputNode = resolvedNode, let recordingFormat = resolvedFormat else {
+            throw NSError(domain: "SpeechRecognition", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Microphone input unavailable"])
+        }
+        guard recordingFormat.channelCount > 0, recordingFormat.sampleRate.isFinite,
+              recordingFormat.sampleRate > 0 else {
             logger.error("Recording format has 0 channels — cannot install tap")
             throw NSError(domain: "SpeechRecognition", code: -1, userInfo: [NSLocalizedDescriptionKey: "Recording format has 0 channels"])
         }
@@ -288,7 +347,9 @@ final class SpeechRecognitionManager: ObservableObject {
                 request.append(buffer)
                 let rms = self?.computeRMS(buffer: buffer) ?? 0
                 Task { @MainActor [weak self] in
-                    self?.pushLevel(rms)
+                    guard let self, self.recordingGeneration == generation,
+                          self.recordingIntent == intent else { return }
+                    self.pushLevel(rms)
                 }
             }
 
@@ -300,13 +361,9 @@ final class SpeechRecognitionManager: ObservableObject {
             }
         }
 
-        guard installOk, startError == nil else {
-            // Roll back anything that partially succeeded so the next attempt
-            // starts clean and no orphaned tap remains on the input node.
-            audioEngine.stop()
-            inputNode.removeTap(onBus: 0)
-            recognitionRequest = nil
-            state = .idle
+        guard installOk, startError == nil, audioEngine.isRunning else {
+            // The deferred teardown also releases THIS manager's own input lease
+            // on Swift errors or Objective-C exceptions, without clearing text.
             let reason = installOk
                 ? (startError?.localizedDescription ?? "audio engine failed to start")
                 : "installTap raised an exception (audio session unavailable?)"
@@ -315,39 +372,58 @@ final class SpeechRecognitionManager: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: reason])
         }
 
-        recognitionTask = speechRecognizer?.recognitionTask(with: request) { [weak self] result, error in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if let result {
-                    self.recognizedText = result.bestTranscription.formattedString
-                }
-                if error != nil || (result?.isFinal ?? false) {
-                    self.tearDown()
+        let recognitionOK = noff_try_objc {
+            self.recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+                Task { @MainActor [weak self] in
+                    guard let self, self.recordingGeneration == generation,
+                          self.recordingIntent == intent else { return }
+                    if let result {
+                        self.recognizedText = result.bestTranscription.formattedString
+                    }
+                    if error != nil || (result?.isFinal ?? false) {
+                        self.tearDown()
+                    }
                 }
             }
+        }
+        guard recognitionOK, recognitionTask != nil else {
+            throw NSError(domain: "SpeechRecognition", code: -6,
+                          userInfo: [NSLocalizedDescriptionKey: "Speech recognition could not be initialized"])
         }
 
         recognizedText = ""
         state = .recording
+        started = true
         logger.info("Recording started (\(self.locale.identifier))")
     }
 
     func stopRecording() {
-        guard state == .recording else { return }
+        guard state == .recording || recordingIntent != nil else { return }
         tearDown()
         logger.info("Recording stopped")
     }
 
+    /// Cancelling a named bridge lease must never stop a later manual/VAD lease.
+    func stopNameWakeRecording() {
+        guard recordingIntent == .nameWakeDictation else { return }
+        tearDown()
+    }
+
     private func tearDown() {
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        recognitionRequest?.endAudio()
+        let intent = recordingIntent
+        let wasRecording = state == .recording
+        recordingIntent = nil // Reentrant named completion cannot stop a new owner.
+        recordingGeneration &+= 1 // Invalidate callbacks BEFORE cancellation.
+        _ = noff_try_objc { self.audioEngine.stop() }
+        _ = noff_try_objc { self.audioEngine.inputNode.removeTap(onBus: 0) }
+        if let request = recognitionRequest { _ = noff_try_objc { request.endAudio() } }
         recognitionRequest = nil
-        recognitionTask?.cancel()
+        if let task = recognitionTask { _ = noff_try_objc { task.cancel() } }
         recognitionTask = nil
         state = .idle
 
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if wasRecording && intent == .nameWakeDictation { onNameWakeRecordingEnded?() }
+        if let intent { AudioSessionCoordinator.shared.end(intent) }
     }
 
     private func computeRMS(buffer: AVAudioPCMBuffer) -> Float {

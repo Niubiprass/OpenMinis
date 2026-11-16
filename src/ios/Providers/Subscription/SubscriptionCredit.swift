@@ -62,6 +62,9 @@ struct SubscriptionBillingError: LocalizedError, Sendable {
     /// Explicit non-zero service acknowledgment, distinct from HTTP/transport
     /// and parsing errors whose mutation outcome is unknown.
     var businessRefusal: Bool = false
+    /// Separate verified evidence only; no parser assigns this from a guessed
+    /// business code. Automatic generic refusals must stay quiet.
+    var verifiedRetryableFailure: Bool = false
     var errorDescription: String? { message }
 }
 
@@ -185,8 +188,8 @@ enum SubscriptionBillingProtocol {
                                    reward: reward, note: note)
     }
 
-    /// Only this explicit Trae business refusal is terminal for today. HTTP,
-    /// transport, parsing and other business errors keep the normal retry path.
+    /// Only documented Trae 9095 proves device participation today. 9004 is a
+    /// request/device-parameter error, not proof of account ineligibility.
     static func traeCheckinRefusal(_ error: Error) -> SubscriptionCheckin? {
         guard let error = error as? SubscriptionBillingError,
               error.businessRefusal, error.code == 9095 else { return nil }
@@ -317,13 +320,16 @@ enum SubscriptionCreditAPI {
             if value.eligibility == .unknown && !value.checkedIn {
                 SubscriptionCheckinLedger.unknown(key, requestDay: requestDay, expected: expectedRecord)
             } else {
-                SubscriptionCheckinLedger.remember(value, key: key, requestDay: requestDay)
+                SubscriptionCheckinLedger.remember(value, key: key, requestDay: requestDay, forceRefresh: forceRefresh)
             }
+            // A slow qualification cannot downgrade a concurrent accepted claim.
+            if let cached = SubscriptionCheckinLedger.cachedStatus(key), cached.checkedIn { return cached }
             return value
         } catch {
             try requireCurrent(context)
             guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
             if error is CancellationError { throw error }
+            if let cached = SubscriptionCheckinLedger.cachedStatus(key), cached.checkedIn { return cached }
             SubscriptionCheckinLedger.unknown(key, requestDay: requestDay, expected: expectedRecord)
             throw error
         }
@@ -351,16 +357,23 @@ enum SubscriptionCreditAPI {
         try requireCurrent(context)
         let key = SubscriptionCheckinLedger.key(context)
         if SubscriptionCheckinLedger.completed(key) { return .alreadyCheckedIn }
+        if automatic && !SubscriptionCheckinLedger.canAttempt(key) {
+            throw SubscriptionBillingError(message: "本轮自动签到已跳过", terminal: true)
+        }
         guard claiming.insert(key).inserted else {
             throw SubscriptionBillingProtocol.fail("正在签到，请稍等")
         }
         defer { claiming.remove(key) }
         let requestDay = SubscriptionCheckinPolicy.day(Date())
-        SubscriptionCheckinLedger.beginAttempt(key)
-        SubscriptionCheckinLedger.clearClaimOutcome(key, requestDay: requestDay)
-        // One fresh status query under the same lock for manual and automatic
-        // paths. Cached completion above never dispatches another server request.
-        let current = try await checkin(context)
+        // Qualification precedes EVERY attempt/outcome update. Ineligible and
+        // unknown accounts never create an automatic journal. An explicit manual
+        // action may requalify, but cannot bypass the actual qualification flags.
+        let current: SubscriptionCheckin
+        if automatic {
+            current = try await checkin(context)
+        } else {
+            current = try await checkin(context, forceRefresh: true)
+        }
         try requireCurrent(context)
         guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
         if current.checkedIn {
@@ -388,9 +401,12 @@ enum SubscriptionCreditAPI {
         // Local preflight is not a dispatched claim and cannot count as failure.
         if context.type == .traeCN {
             guard let device = TraeCredential(context.credentials).deviceID, !device.isEmpty else {
+                SubscriptionCheckinLedger.unknown(key, requestDay: requestDay)
                 throw SubscriptionBillingProtocol.fail("登录信息缺少签到所需的设备标识，请重新登录")
             }
         }
+        SubscriptionCheckinLedger.beginAttempt(key)
+        SubscriptionCheckinLedger.clearClaimOutcome(key, requestDay: requestDay)
         let receipt: SubscriptionCheckinReceipt
         do {
             switch context.type {
@@ -412,16 +428,23 @@ enum SubscriptionCreditAPI {
             try requireCurrent(context)
             guard requestDay == SubscriptionCheckinPolicy.day(Date()) else { throw CancellationError() }
             if error is CancellationError { throw error }
+            if SubscriptionCheckinLedger.completed(key) { return .alreadyCheckedIn }
             if context.type == .traeCN,
                let refused = SubscriptionBillingProtocol.traeCheckinRefusal(error) {
                 let note = refused.note ?? "此设备今天已参与签到"
                 SubscriptionCheckinLedger.blocked(key, requestDay: requestDay, note: note)
                 throw SubscriptionBillingError(message: note, terminal: true)
             }
-            if (error as? SubscriptionBillingError)?.businessRefusal == true {
-                SubscriptionCheckinLedger.failedClaim(key, requestDay: requestDay)
+            if let billing = error as? SubscriptionBillingError, billing.businessRefusal {
+                if billing.verifiedRetryableFailure {
+                    SubscriptionCheckinLedger.failedClaim(key, requestDay: requestDay,
+                        verifiedRetryableFailure: true)
+                } else {
+                    // Generic/9004 refusals are NOT unsupported-account proof.
+                    // Drop uncompleted provisional state and do not auto claim again today.
+                    SubscriptionCheckinLedger.quietRefusal(key, requestDay: requestDay)
+                }
             } else {
-                // Lost/invalid replies cannot prove whether the claim succeeded.
                 SubscriptionCheckinLedger.unknown(key, requestDay: requestDay)
             }
             throw error

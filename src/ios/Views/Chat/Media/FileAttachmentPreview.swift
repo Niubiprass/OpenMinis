@@ -2,6 +2,118 @@ import Foundation
 import QuickLook
 import SwiftUI
 import UIKit
+import Darwin
+
+// [T-queued-video-preview] The reusable cell emits a LOCAL queue intent only.
+struct OpenQueuedVideoAction {
+    var handler: (InputAttachment, UUID) -> Bool
+
+    @discardableResult
+    func callAsFunction(_ attachment: InputAttachment, messageID: UUID) -> Bool {
+        handler(attachment, messageID)
+    }
+}
+
+private struct OpenQueuedVideoKey: EnvironmentKey {
+    static let defaultValue = OpenQueuedVideoAction { _, _ in false }
+}
+
+extension EnvironmentValues {
+    var openQueuedVideo: OpenQueuedVideoAction {
+        get { self[OpenQueuedVideoKey.self] }
+        set { self[OpenQueuedVideoKey.self] = newValue }
+    }
+}
+
+// MARK: - Queued video retained source (Foundation/POSIX; native fixture extracts this)
+
+/// Independent copy owned by a presentation, never by the queue. No hard links:
+/// cache and temporary directories can live on different volumes. Deletion is
+/// off-main and only targets the unique directory created by this lease.
+final class QueuedVideoPreviewLease: @unchecked Sendable {
+    let url: URL
+    private let directory: URL
+
+    init(url: URL, directory: URL) {
+        self.url = url
+        self.directory = directory
+    }
+
+    deinit {
+        let directory = directory
+        DispatchQueue.global(qos: .utility).async {
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+}
+
+/// One bounded, nonblocking open at tap time pins the inode BEFORE the main
+/// queue can drain/unlink it. Metadata, validation, and all byte IO are done by
+/// the detached copy task. Only that single worker ever reads this handle.
+final class QueuedVideoPreviewSource: @unchecked Sendable {
+    enum Failure: Error { case invalidFile, cancelled, copyFailed }
+    static let maximumBytes: Int64 = 512 * 1024 * 1024
+    static let chunkBytes = 256 * 1024
+    private let handle: FileHandle
+    private let fileExtension: String
+
+    init?(url: URL) {
+        guard url.isFileURL else { return nil }
+        let ext = url.pathExtension.lowercased()
+        guard ["mp4", "mov", "m4v", "3gp", "3g2", "avi", "mkv", "webm", "mpg", "mpeg"].contains(ext) else { return nil }
+        // NOFOLLOW rejects a final-component symlink; NONBLOCK means even a
+        // malicious FIFO cannot stall a tap. fstat below rejects non-files.
+        let descriptor = url.path.withCString {
+            Darwin.open($0, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else { return nil }
+        handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        fileExtension = ext
+    }
+
+    /// MUST run off-main. Fixed metadata + bounded chunks, not readToEnd/Data
+    /// of a 60 MB video. The handle survives unlink during this copy as well.
+    func retainCopy(isCancelled: () -> Bool) throws -> QueuedVideoPreviewLease {
+        guard !isCancelled() else { throw Failure.cancelled }
+        var metadata = stat()
+        guard fstat(handle.fileDescriptor, &metadata) == 0,
+              (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              metadata.st_size > 0, metadata.st_size <= Self.maximumBytes else {
+            throw Failure.invalidFile
+        }
+        let manager = FileManager.default
+        let directory = manager.temporaryDirectory
+            .appendingPathComponent("queued-video-preview-" + UUID().uuidString, isDirectory: true)
+        try manager.createDirectory(at: directory, withIntermediateDirectories: false,
+                                    attributes: [.posixPermissions: 0o700])
+        var committed = false
+        defer { if !committed { try? manager.removeItem(at: directory) } }
+        let destination = directory.appendingPathComponent("preview." + fileExtension)
+        guard manager.createFile(atPath: destination.path, contents: nil,
+                                 attributes: [.posixPermissions: 0o600]) else { throw Failure.copyFailed }
+        let output = try FileHandle(forWritingTo: destination)
+        defer { try? output.close() }
+        try handle.seek(toOffset: 0)
+        var remaining = Int64(metadata.st_size)
+        while remaining > 0 {
+            guard !isCancelled() else { throw Failure.cancelled }
+            let count = Int(min(remaining, Int64(Self.chunkBytes)))
+            guard let data = try handle.read(upToCount: count), !data.isEmpty else { throw Failure.copyFailed }
+            try output.write(contentsOf: data)
+            remaining -= Int64(data.count)
+        }
+        guard !isCancelled() else { throw Failure.cancelled }
+        // Reject a source truncated/grown in place; unlink alone is harmless.
+        var finalMetadata = stat()
+        guard fstat(handle.fileDescriptor, &finalMetadata) == 0,
+              finalMetadata.st_size == metadata.st_size else { throw Failure.invalidFile }
+        let lease = QueuedVideoPreviewLease(url: destination, directory: directory)
+        committed = true
+        return lease
+    }
+}
+
+// MARK: - End queued video retained source
 
 // [T-file-group-preview-fix] A cell emits intent only. The stable list overlay
 // owns presentation, and the owning VM supplies the session (never the global
@@ -92,6 +204,14 @@ enum FileAttachmentSheet: Identifiable {
 struct FileAttachmentVideoPresentation: Identifiable {
     let id = UUID()
     let url: URL
+    // The cover's immutable payload retains this even after reset/session
+    // change sets videoSheet to nil, until its player actually disappears.
+    let queuedLease: QueuedVideoPreviewLease?
+
+    init(url: URL, queuedLease: QueuedVideoPreviewLease? = nil) {
+        self.url = url
+        self.queuedLease = queuedLease
+    }
 }
 
 @MainActor
@@ -101,6 +221,10 @@ final class FileAttachmentPresenter: ObservableObject {
     @Published var unavailableName: String?
     private var ownerSessionId: String?
     private var requestToken = UUID()
+    private var queuedVideoCopyTask: Task<QueuedVideoPreviewLease?, Never>?
+    private let queuedVideoLogger = AppLogger(category: "QueuedVideoPreview")
+
+    deinit { queuedVideoCopyTask?.cancel() }
 
     func bind(to sessionId: String?) {
         guard ownerSessionId != sessionId else { return }
@@ -110,17 +234,71 @@ final class FileAttachmentPresenter: ObservableObject {
 
     func reset() {
         requestToken = UUID()
+        queuedVideoCopyTask?.cancel()
+        queuedVideoCopyTask = nil
         sheet = nil
         videoSheet = nil
         unavailableName = nil
     }
 
+    /// A queued preview is read-only. It never sends, withdraws, deletes the
+    /// queue entry, or changes read state. Pin the source before returning to
+    /// the runloop, then validate/copy off-main and hand off to openVideo.
+    @discardableResult
+    func openQueuedVideo(_ attachment: InputAttachment, sessionId: String?) -> Bool {
+        queuedVideoLogger.info("[QueuedVideoPreview] stage=request")
+        guard let sessionId, !sessionId.isEmpty, sessionId == ownerSessionId,
+              attachment.kind == .video, attachment.loadState == .ready,
+              attachment.cacheURL.isFileURL else {
+            queuedVideoLogger.info("[QueuedVideoPreview] stage=rejected")
+            return false
+        }
+        reset()
+        guard let source = QueuedVideoPreviewSource(url: attachment.cacheURL) else {
+            unavailableName = attachment.fileName
+            queuedVideoLogger.info("[QueuedVideoPreview] stage=unavailable")
+            return true
+        }
+        let token = requestToken
+        let name = attachment.fileName
+        let worker = Task.detached(priority: .userInitiated) { () -> QueuedVideoPreviewLease? in
+            try? source.retainCopy(isCancelled: { Task.isCancelled })
+        }
+        queuedVideoCopyTask = worker
+        Task { [weak self] in
+            let lease = await worker.value
+            guard let self else { return }
+            guard self.requestToken == token, self.ownerSessionId == sessionId else {
+                self.queuedVideoLogger.info("[QueuedVideoPreview] stage=discarded")
+                return
+            }
+            self.queuedVideoCopyTask = nil
+            guard let lease else {
+                self.unavailableName = name
+                self.queuedVideoLogger.info("[QueuedVideoPreview] stage=unavailable")
+                return
+            }
+            self.queuedVideoLogger.info("[QueuedVideoPreview] stage=retained")
+            self.openVideo(lease.url, queuedLease: lease)
+        }
+        return true
+    }
+
+    /// Called by this specific cover's disappearance, not by cell reuse.
+    /// An old dismiss callback must never clear a newer presentation.
+    func queuedVideoDidDisappear(id: UUID) {
+        guard videoSheet?.id == id else { return }
+        videoSheet = nil
+        queuedVideoLogger.info("[QueuedVideoPreview] stage=closed")
+    }
+
     /// Tapping a sent video opens the player directly. Previously the URL
     /// router had no video branch, classified `.mp4`/`.mov` as `.share`, and
     /// iOS popped the share sheet instead of playing the file.
-    func openVideo(_ url: URL) {
+    func openVideo(_ url: URL, queuedLease: QueuedVideoPreviewLease? = nil) {
         reset()
-        videoSheet = FileAttachmentVideoPresentation(url: url)
+        videoSheet = FileAttachmentVideoPresentation(url: url, queuedLease: queuedLease)
+        if queuedLease != nil { queuedVideoLogger.info("[QueuedVideoPreview] stage=present") }
     }
 
     func open(_ attachments: [AttachmentMeta], startingAt selectedID: UUID, sessionId: String?) {

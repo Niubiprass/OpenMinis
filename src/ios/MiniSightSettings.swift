@@ -22,6 +22,11 @@ enum MiniSightSettingKey {
     static let frameLimit = "minisight.frameLimit"
     static let dragResponse = "minisight.dragResponse"
     static let petSound = "minisight.petSound"
+    static let lyricsEnabled = "minisight.music.lyrics"
+    static let musicMotion = "minisight.music.motion"
+    static let wakeEnabled = "minisight.wake.enabled"
+    static let wakeName = "minisight.wake.name"
+    static let wakePronunciation = "minisight.wake.pronunciation"
     static let bottomGap = "minisight.bottomGap"
 
     static let tint = "minisight.pet.tint"
@@ -171,6 +176,9 @@ enum MiniSightConfig {
         MiniSightSettingKey.longPress: "longPress", MiniSightSettingKey.activity: "activity",
         MiniSightSettingKey.activityInterval: "activityInterval", MiniSightSettingKey.frameLimit: "frameLimit",
         MiniSightSettingKey.dragResponse: "dragResponse", MiniSightSettingKey.petSound: "sound",
+        MiniSightSettingKey.lyricsEnabled: "lyricsEnabled", MiniSightSettingKey.musicMotion: "musicMotion",
+        MiniSightSettingKey.wakeEnabled: "wakeEnabled", MiniSightSettingKey.wakeName: "wakeName",
+        MiniSightSettingKey.wakePronunciation: "wakePronunciation",
         MiniSightSettingKey.bottomGap: "bottomGap", MiniSightSettingKey.tint: "tint",
         MiniSightSettingKey.costume: "costume", MiniSightSettingKey.supplier: "supplier",
         MiniSightSettingKey.downloadSource: "downloadSource", MiniSightSettingKey.darkMode: "darkMode",
@@ -212,6 +220,11 @@ enum MiniSightConfig {
             MiniSightSettingKey.frameLimit: 0,
             MiniSightSettingKey.dragResponse: true,
             MiniSightSettingKey.petSound: false,
+            MiniSightSettingKey.lyricsEnabled: false,
+            MiniSightSettingKey.musicMotion: false,
+            MiniSightSettingKey.wakeEnabled: false,
+            MiniSightSettingKey.wakeName: "",
+            MiniSightSettingKey.wakePronunciation: "",
             MiniSightSettingKey.bottomGap: 12.0,
             MiniSightSettingKey.tint: "natural",
             MiniSightSettingKey.supplier: MiniSightSupplier.deepseek.rawValue,
@@ -307,7 +320,7 @@ enum MiniSightRuntimeSnapshot {
 
     @discardableResult
     static func write(container: URL, rawValues: [String: Any]) -> Bool {
-        guard MiniSightConfig.runtimeFields.count == 46,
+        guard MiniSightConfig.runtimeFields.count == 51,
               MiniSightConfig.all.allSatisfy({ rawValues[$0] != nil }) else { return false }
         var canonical: [String: Any] = [:]
         var values: [String: Any] = ["version": 2]

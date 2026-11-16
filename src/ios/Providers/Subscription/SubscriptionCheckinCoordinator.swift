@@ -3,8 +3,8 @@ import CryptoKit
 import UIKit
 
 // BEGIN SUBSCRIPTION_CHECKIN_POLICY_PURE
-/// Local state has no credential or account name. Confirmed completion and
-/// explicit ineligibility stop automatic queries for today; transport errors retry.
+/// Durable state contains confirmed receipts or specifically verified retryable
+/// failures only. Qualification, exclusion and uncertain outcomes live in memory.
 struct SubscriptionCheckinRecord: Codable, Equatable {
     var completedDay: String?
     var notifiedDay: String?
@@ -12,8 +12,7 @@ struct SubscriptionCheckinRecord: Codable, Equatable {
     var attemptedAt: Date?
     var reminderDay: String?
     var remindedAt: Date?
-    /// Suppresses automatic attempts until tomorrow. An explicit manual refresh
-    /// may recheck eligibility if the account's conditions change during the day.
+    /// Read compatibility only. New exclusions are never written to defaults.
     var blockedDay: String?
     var blockedNote: String?
     /// Only a newly accepted claim may produce a success notice. Legacy
@@ -22,10 +21,36 @@ struct SubscriptionCheckinRecord: Codable, Equatable {
     /// Missing in v2 legacy JSON: pending attempts never imply eligibility.
     /// Together with blockedDay, absence means eligibility is unknown today.
     var eligibleDay: String?
-    /// Only an actually dispatched claim followed by a definite business
-    /// refusal may set failedClaimDay. Unknown/cancelled replies stay silent.
     var claimDay: String?
     var failedClaimDay: String?
+    /// Opt-in evidence, not a classification inferred from arbitrary codes.
+    /// Old JSON defaults to false and must never keep nagging after upgrade.
+    var verifiedRetryableFailure: Bool = false
+}
+
+extension SubscriptionCheckinRecord {
+    enum CodingKeys: String, CodingKey {
+        case completedDay, notifiedDay, attemptDay, attemptedAt, reminderDay, remindedAt
+        case blockedDay, blockedNote, receiptDay, eligibleDay, claimDay, failedClaimDay
+        case verifiedRetryableFailure
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        completedDay = try c.decodeIfPresent(String.self, forKey: .completedDay)
+        notifiedDay = try c.decodeIfPresent(String.self, forKey: .notifiedDay)
+        attemptDay = try c.decodeIfPresent(String.self, forKey: .attemptDay)
+        attemptedAt = try c.decodeIfPresent(Date.self, forKey: .attemptedAt)
+        reminderDay = try c.decodeIfPresent(String.self, forKey: .reminderDay)
+        remindedAt = try c.decodeIfPresent(Date.self, forKey: .remindedAt)
+        blockedDay = try c.decodeIfPresent(String.self, forKey: .blockedDay)
+        blockedNote = try c.decodeIfPresent(String.self, forKey: .blockedNote)
+        receiptDay = try c.decodeIfPresent(String.self, forKey: .receiptDay)
+        eligibleDay = try c.decodeIfPresent(String.self, forKey: .eligibleDay)
+        claimDay = try c.decodeIfPresent(String.self, forKey: .claimDay)
+        failedClaimDay = try c.decodeIfPresent(String.self, forKey: .failedClaimDay)
+        verifiedRetryableFailure = try c.decodeIfPresent(Bool.self, forKey: .verifiedRetryableFailure) ?? false
+    }
 }
 
 enum SubscriptionCheckinPolicy {
@@ -53,10 +78,11 @@ enum SubscriptionCheckinPolicy {
     static func needsReminder(_ record: SubscriptionCheckinRecord, now: Date) -> Bool {
         let today = day(now)
         guard record.completedDay != today else { return false }
-        // A definite "cannot check in today" answer is shown on that account's
-        // row only; it never produces a popup or the two-hour reminder.
+        // Legacy exclusions never produce a popup or reminder; new excluded
+        // accounts show no check-in control/note and have only memory state.
         if record.blockedDay == today { return false }
-        guard record.eligibleDay == today, record.claimDay == today,
+        guard record.verifiedRetryableFailure,
+              record.eligibleDay == today, record.claimDay == today,
               record.failedClaimDay == today else { return false }
         guard record.reminderDay == today, let last = record.remindedAt else { return true }
         return now.timeIntervalSince(last) >= retryInterval
@@ -71,6 +97,40 @@ enum SubscriptionCheckinPolicy {
 @MainActor
 enum SubscriptionCheckinLedger {
     private static let prefix = "subscription.checkin.v2."
+    private struct Participation {
+        var day: String
+        var status: SubscriptionCheckin
+        var updatedAt: Date
+        var retryAt: Date?
+        var stopForDay = false
+        var dispatched = false
+    }
+    private static let memoryLimit = 128
+    private static var participation: [String: Participation] = [:]
+
+    private static func transient(_ key: String, now: Date) -> Participation? {
+        let today = SubscriptionCheckinPolicy.day(now)
+        participation = participation.filter { $0.value.day == today }
+        return participation[key]
+    }
+
+    private static func keep(_ value: Participation, key: String, now: Date) {
+        _ = transient(key, now: now)
+        if participation[key] == nil, participation.count >= memoryLimit,
+           let oldest = participation.min(by: { $0.value.updatedAt < $1.value.updatedAt })?.key {
+            participation.removeValue(forKey: oldest)
+        }
+        participation[key] = value
+    }
+
+    static func canAttempt(_ key: String, now: Date = Date()) -> Bool {
+        let value = record(key, now: now)
+        if let state = transient(key, now: now) {
+            if state.stopForDay { return false }
+            if let retryAt = state.retryAt, now < retryAt { return false }
+        }
+        return SubscriptionCheckinPolicy.canAttempt(value, now: now)
+    }
 
     static func key(token: SubscriptionTokenStorage, slot: String) -> String {
         let identity = SubscriptionAccounts.identity(token) ?? "\(token.provider):slot:\(slot)"
@@ -82,10 +142,43 @@ enum SubscriptionCheckinLedger {
             credentials: context.credentials, loginAccount: nil), slot: context.instanceId)
     }
 
-    static func record(_ key: String) -> SubscriptionCheckinRecord {
+    static func record(_ key: String, now: Date = Date()) -> SubscriptionCheckinRecord {
         guard let data = UserDefaults.standard.data(forKey: prefix + key),
-              let value = try? JSONDecoder().decode(SubscriptionCheckinRecord.self, from: data)
+              var value = try? JSONDecoder().decode(SubscriptionCheckinRecord.self, from: data)
         else { return SubscriptionCheckinRecord() }
+        let today = SubscriptionCheckinPolicy.day(now)
+        let legacyBlocked = value.blockedDay != nil
+        let legacyFailure = value.failedClaimDay != nil && !value.verifiedRetryableFailure
+        if value.completedDay != today {
+            if value.blockedDay == today {
+                keep(Participation(day: today, status: .init(checkedIn: false,
+                    eligibility: .ineligible, reward: nil), updatedAt: now, stopForDay: true), key: key, now: now)
+            } else if legacyFailure && value.failedClaimDay == today {
+                // The old nonzero code is not proof of permanent ineligibility.
+                // Quiet for this process/day, without replaying that old refusal.
+                keep(Participation(day: today, status: .init(checkedIn: false,
+                    eligibility: .unknown, reward: nil), updatedAt: now, stopForDay: true), key: key, now: now)
+            } else if value.completedDay == nil, !value.verifiedRetryableFailure,
+                      value.attemptDay == today, let last = value.attemptedAt {
+                keep(Participation(day: today, status: .init(checkedIn: false,
+                    eligibility: .unknown, reward: nil), updatedAt: now,
+                    retryAt: last.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval)), key: key, now: now)
+            }
+        }
+        if value.completedDay == nil && !value.verifiedRetryableFailure {
+            // Only this identity's obsolete, uncompleted check-in key is removed.
+            UserDefaults.standard.removeObject(forKey: prefix + key)
+            return SubscriptionCheckinRecord()
+        }
+        if legacyBlocked || legacyFailure {
+            // Preserve all confirmed completion/receipt/dedup fields, including
+            // yesterday's success, while retiring obsolete failure-only fields.
+            value.blockedDay = nil; value.blockedNote = nil
+            if legacyFailure {
+                value.eligibleDay = nil; value.claimDay = nil; value.failedClaimDay = nil
+            }
+            write(key, value)
+        }
         return value
     }
 
@@ -95,59 +188,87 @@ enum SubscriptionCheckinLedger {
     }
 
     static func completed(_ key: String, now: Date = Date()) -> Bool {
-        record(key).completedDay == SubscriptionCheckinPolicy.day(now)
+        record(key, now: now).completedDay == SubscriptionCheckinPolicy.day(now)
     }
 
+    /// Qualification must precede this call. Even an eligible attempt stays
+    /// memory-only until a receipt or specifically verified retry error arrives.
     static func beginAttempt(_ key: String, now: Date = Date()) {
-        var value = record(key)
-        value.attemptDay = SubscriptionCheckinPolicy.day(now)
-        value.attemptedAt = now
-        write(key, value)
+        guard var state = transient(key, now: now), state.status.canClaim,
+              !state.stopForDay, !completed(key, now: now) else { return }
+        state.updatedAt = now
+        state.retryAt = now.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval)
+        state.dispatched = false
+        keep(state, key: key, now: now)
     }
 
-    /// Called only after acquiring the per-account claim lock, before querying
-    /// qualification. A scheduler/context read must not clear an in-flight claim.
+    /// Caller owns the claim lock and has already qualified. No fresh key is
+    /// created, and a concurrent receipt can never be removed by cleanup.
     static func clearClaimOutcome(_ key: String, requestDay: String, now: Date = Date()) {
+        discardUncompleted(key, requestDay: requestDay, now: now)
+    }
+
+    private static func discardUncompleted(_ key: String, requestDay: String, now: Date) {
         guard requestDay == SubscriptionCheckinPolicy.day(now) else { return }
-        var value = record(key)
-        value.claimDay = nil
-        value.failedClaimDay = nil
-        write(key, value)
+        var value = record(key, now: now)
+        guard value.completedDay != requestDay else { return }
+        if value.completedDay == nil {
+            if UserDefaults.standard.data(forKey: prefix + key) != nil {
+                UserDefaults.standard.removeObject(forKey: prefix + key)
+            }
+        } else {
+            let previous = value
+            value.eligibleDay = nil; value.claimDay = nil; value.failedClaimDay = nil
+            value.verifiedRetryableFailure = false
+            value.blockedDay = nil; value.blockedNote = nil
+            if value != previous { write(key, value) }
+        }
     }
 
     @discardableResult
     static func beginClaim(_ key: String, requestDay: String, now: Date = Date()) -> Bool {
-        guard requestDay == SubscriptionCheckinPolicy.day(now) else { return false }
-        var value = record(key)
-        guard value.eligibleDay == requestDay, value.completedDay != requestDay,
-              value.blockedDay != requestDay else { return false }
-        value.claimDay = requestDay
-        value.failedClaimDay = nil
-        write(key, value)
+        guard requestDay == SubscriptionCheckinPolicy.day(now), !completed(key, now: now),
+              var state = transient(key, now: now), state.status.canClaim,
+              !state.stopForDay else { return false }
+        state.dispatched = true
+        keep(state, key: key, now: now)
         return true
     }
 
-    static func failedClaim(_ key: String, requestDay: String, now: Date = Date()) {
-        guard requestDay == SubscriptionCheckinPolicy.day(now) else { return }
-        var value = record(key)
-        guard value.eligibleDay == requestDay, value.claimDay == requestDay,
-              value.completedDay != requestDay, value.blockedDay != requestDay else { return }
+    static func failedClaim(_ key: String, requestDay: String,
+                            verifiedRetryableFailure: Bool = false, now: Date = Date()) {
+        guard verifiedRetryableFailure, requestDay == SubscriptionCheckinPolicy.day(now),
+              let state = transient(key, now: now), state.status.canClaim,
+              state.dispatched, !state.stopForDay else { return }
+        var value = record(key, now: now)
+        guard value.completedDay != requestDay else { return }
+        value.attemptDay = requestDay; value.attemptedAt = state.updatedAt
+        value.eligibleDay = requestDay; value.claimDay = requestDay
         value.failedClaimDay = requestDay
+        value.verifiedRetryableFailure = true
         write(key, value)
     }
 
-    /// An unsuccessful qualification read or unconfirmed write is not evidence
-    /// of either completion, ineligibility or a failed claim.
+    /// Unknown qualifications/replies never create a durable failure or attempt.
     static func unknown(_ key: String, requestDay: String, expected: SubscriptionCheckinRecord? = nil,
                         now: Date = Date()) {
         guard requestDay == SubscriptionCheckinPolicy.day(now) else { return }
-        var value = record(key)
-        // A slow read/context failure must not erase a newer claim's evidence.
+        let value = record(key, now: now)
         if let expected, value != expected { return }
-        guard value.completedDay != requestDay, value.blockedDay != requestDay else { return }
-        value.eligibleDay = nil
-        value.failedClaimDay = nil
-        write(key, value)
+        guard value.completedDay != requestDay else { return }
+        if let state = transient(key, now: now), state.stopForDay || (expected != nil && state.dispatched) { return }
+        discardUncompleted(key, requestDay: requestDay, now: now)
+        keep(Participation(day: requestDay, status: .init(checkedIn: false,
+            eligibility: .unknown, reward: nil), updatedAt: now,
+            retryAt: now.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval)), key: key, now: now)
+    }
+
+    /// Unmapped refusal: quiet for today, NOT labelled unsupported/ineligible.
+    static func quietRefusal(_ key: String, requestDay: String, now: Date = Date()) {
+        guard requestDay == SubscriptionCheckinPolicy.day(now), !completed(key, now: now) else { return }
+        discardUncompleted(key, requestDay: requestDay, now: now)
+        keep(Participation(day: requestDay, status: .init(checkedIn: false,
+            eligibility: .unknown, reward: nil), updatedAt: now, stopForDay: true), key: key, now: now)
     }
 
     static func confirmed(_ key: String, requestDay: String, notify: Bool = false, now: Date = Date()) {
@@ -160,6 +281,8 @@ enum SubscriptionCheckinLedger {
         value.blockedNote = nil
         value.eligibleDay = nil
         value.failedClaimDay = nil
+        value.verifiedRetryableFailure = false
+        participation.removeValue(forKey: key)
         // A repeated status read must not consume a concurrent new receipt's
         // pending notice. Discovering an existing check-in is otherwise silent.
         if notify {
@@ -173,62 +296,55 @@ enum SubscriptionCheckinLedger {
     }
 
     static func blocked(_ key: String, requestDay: String, note: String, now: Date = Date()) {
-        guard requestDay == SubscriptionCheckinPolicy.day(now) else { return }
-        var value = record(key)
-        // A late refusal must never downgrade confirmed completion.
-        guard value.completedDay != requestDay else { return }
-        let previous = value
-        value.blockedDay = requestDay
-        value.blockedNote = note
-        value.eligibleDay = nil
-        value.failedClaimDay = nil
-        guard value != previous else { return }
-        write(key, value)
-        ProviderConfigStore.shared.authRevision &+= 1
+        guard requestDay == SubscriptionCheckinPolicy.day(now), !completed(key, now: now) else { return }
+        // A late refusal never downgrades a confirmed receipt. No blockedDay
+        // is written, and only this identity's uncompleted old key is retired.
+        discardUncompleted(key, requestDay: requestDay, now: now)
+        let status = SubscriptionCheckin(checkedIn: false, eligibility: .ineligible, reward: nil, note: note)
+        let changed = transient(key, now: now)?.status != status
+        keep(Participation(day: requestDay, status: status, updatedAt: now, stopForDay: true), key: key, now: now)
+        if changed { ProviderConfigStore.shared.authRevision &+= 1 }
     }
 
     static func cachedStatus(_ key: String, now: Date = Date()) -> SubscriptionCheckin? {
-        let value = record(key)
+        let value = record(key, now: now)
         if value.completedDay == SubscriptionCheckinPolicy.day(now) {
             return SubscriptionCheckin(checkedIn: true, canClaim: false, reward: nil)
         }
-        if SubscriptionCheckinPolicy.isBlocked(value, now: now) {
-            return SubscriptionCheckin(checkedIn: false, canClaim: false, reward: nil,
-                note: value.blockedNote ?? "今天暂不能签到")
+        if let state = transient(key, now: now), state.stopForDay || (state.retryAt.map { now < $0 } ?? false),
+           state.status.eligibility != .eligible {
+            return state.status
         }
         return nil
     }
 
-    static func remember(_ status: SubscriptionCheckin, key: String, requestDay: String, now: Date = Date()) {
+    static func remember(_ status: SubscriptionCheckin, key: String, requestDay: String,
+                         forceRefresh: Bool = false, now: Date = Date()) {
         guard requestDay == SubscriptionCheckinPolicy.day(now) else { return }
         if status.checkedIn {
             confirmed(key, requestDay: requestDay, notify: false, now: now)
         } else if status.eligibility == .ineligible {
             blocked(key, requestDay: requestDay, note: status.note ?? "今天暂不能签到", now: now)
         } else if status.eligibility == .eligible {
-            // An explicit manual refresh may confirm eligibility has changed.
-            var value = record(key)
-            guard value.completedDay != requestDay else { return }
-            let previous = value
-            value.eligibleDay = requestDay
-            value.blockedDay = nil
-            value.blockedNote = nil
-            guard value != previous else { return }
-            write(key, value)
-            ProviderConfigStore.shared.authRevision &+= 1
+            guard !completed(key, now: now) else { return }
+            // Only an explicit refresh can lift an earlier same-day exclusion.
+            if let state = transient(key, now: now), state.stopForDay && !forceRefresh { return }
+            keep(Participation(day: requestDay, status: status, updatedAt: now), key: key, now: now)
         } else {
             unknown(key, requestDay: requestDay, now: now)
         }
     }
 
     static func markNotified(_ key: String, now: Date = Date()) {
-        var value = record(key)
+        var value = record(key, now: now)
+        guard SubscriptionCheckinPolicy.needsSuccessNotice(value, now: now) else { return }
         value.notifiedDay = SubscriptionCheckinPolicy.day(now)
         write(key, value)
     }
 
     static func markReminded(_ key: String, now: Date = Date()) {
-        var value = record(key)
+        var value = record(key, now: now)
+        guard SubscriptionCheckinPolicy.needsReminder(value, now: now) else { return }
         value.reminderDay = SubscriptionCheckinPolicy.day(now)
         value.remindedAt = now
         write(key, value)
@@ -286,9 +402,8 @@ enum SubscriptionAutoCheckin {
                 guard visited.insert(key).inserted else { continue }
                 let now = Date()
                 var record = SubscriptionCheckinLedger.record(key)
-                if SubscriptionCheckinPolicy.canAttempt(record, now: now) {
-                    SubscriptionCheckinLedger.beginAttempt(key, now: now)
-                    let expectedRecord = SubscriptionCheckinLedger.record(key)
+                if SubscriptionCheckinLedger.canAttempt(key, now: now) {
+                    let expectedRecord = record
                     var reachedClaim = false
                     do {
                         let context = try await SubscriptionCreditAPI.context(current, accountSlot: slot)
@@ -303,16 +418,16 @@ enum SubscriptionAutoCheckin {
                             SubscriptionCheckinLedger.unknown(key, requestDay: SubscriptionCheckinPolicy.day(now),
                                 expected: expectedRecord)
                         }
-                        // Terminal answers are silent; only claim can record a
-                        // definite dispatched failure. Unknowns retry in two hours.
-                        if (error as? SubscriptionBillingError)?.terminal == true { continue }
+                        // Refusals/unknowns are silent. Only specifically verified
+                        // retryable failures can enter the reminder report below.
                     }
                     record = SubscriptionCheckinLedger.record(key)
                 }
                 // [T-checkin-exclude-blocked] An account the server says cannot
                 // check in today is OUT of the report entirely: it is not a
                 // success, not a failure, and never counted or mentioned.
-                if SubscriptionCheckinPolicy.isBlocked(record, now: Date()) { continue }
+                if SubscriptionCheckinLedger.cachedStatus(key)?.eligibility == .ineligible,
+                   record.completedDay != SubscriptionCheckinPolicy.day(Date()) { continue }
                 if SubscriptionCheckinPolicy.needsSuccessNotice(record, now: Date()) {
                     noticeKeys.append(key)
                 } else if SubscriptionCheckinPolicy.needsReminder(record, now: Date()) {

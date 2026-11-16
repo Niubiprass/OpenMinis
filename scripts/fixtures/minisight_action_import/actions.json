@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "id": "BE27E983-68DC-4D38-9755-13BBA99862A9",
+  "clips": [
+    {
+      "id": "rest",
+      "role": "idle",
+      "frames": [
+        {
+          "file": "idle.gif",
+          "index": 0,
+          "duration": 0.04
+        },
+        {
+          "file": "idle.gif",
+          "index": 1,
+          "duration": 0.17
+        }
+      ]
+    },
+    {
+      "id": "touch",
+      "role": "tap",
+      "frames": [
+        {
+          "file": "source.png",
+          "index": 0,
+          "duration": 0.2
+        }
+      ]
+    },
+    {
+      "id": "music",
+      "role": "music",
+      "frames": [
+        {
+          "file": "idle.gif",
+          "index": 1,
+          "duration": 0.3
+        }
+      ]
+    }
+  ]
+}

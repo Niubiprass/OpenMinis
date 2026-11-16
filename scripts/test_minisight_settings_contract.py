@@ -33,6 +33,9 @@ def read(path):
 keys_src = read(KEYS)
 store = read(STORE)
 runtime = read(RUNTIME)
+# Names are consumed by the explicit App-only observer, not by SpringBoard.
+# Include its real source so the independent listener is audited too.
+runtime += "\n" + read(IOS / "MiniSightWakeController.swift")
 pages = "\n".join(p.read_text() for p in sorted(PAGES.glob("MiniSight*.swift")))
 snapshot = keys_src  # runtimeFields mapping and snapshot live in this one allowlist file
 

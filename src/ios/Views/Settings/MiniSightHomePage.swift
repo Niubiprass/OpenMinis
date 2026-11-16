@@ -71,7 +71,7 @@ struct MiniSightHomeView: View {
             Section {
                 NavigationLink("素材与服装") { MiniSightCostumePage() }
             } header: { Text("素材") } footer: {
-                Text("素材来自本机导入；8 列 × 9 行的动作图集按行播放动作，其他图片按单张静态角色保留原分辨率。桌宠直接使用素材原色。")
+                Text("保留原有图片和 8×9 图集；GIF 按自己的帧时长播放，多动作素材可从动作文件夹导入。缺少专用姿态时使用原画面和轻柔受力反馈，不会凭空生成肢体动作。素材不绑定某个角色，也不覆盖旧文件。")
             }
 
             Section {
@@ -87,6 +87,21 @@ struct MiniSightHomeView: View {
                 }
             } header: { Text("动作与手感") } footer: {
                 Text("动作音效只在互动和自主活动时响。")
+            }
+
+            Section {
+                Toggle("自动显示在线歌词", isOn: $config.lyricsEnabled)
+                Toggle("跟随播放轻轻律动", isOn: $config.musicMotion)
+            } header: { Text("音乐与歌词") } footer: {
+                Text("歌词通过越狱插件识别当前播放，再向 LRCLIB 发送歌名、歌手和时长自动匹配；不读取音乐账号，不录音。气泡只显示当前歌词，找不到或暂停时隐藏；聊天与审批优先。音乐动作是平滑播放联动，不是精准节拍检测。需插件配合，播放器或曲目未匹配时不会硬显示。")
+            }
+
+            Section {
+                NavigationLink(config.wakeName.isEmpty ? "设置唤醒名字" : "名字唤醒：\(config.wakeName)") {
+                    MiniSightWakePage()
+                }
+            } header: { Text("名字唤醒") } footer: {
+                Text("直接喊你设置的名字，不用“嘿 Siri”。后台名字唤醒默认关闭；开启后回主屏幕或打开其他 App 仍可唤醒，需要 App 与越狱插件配套。进入后可确认读音并主动允许权限。")
             }
 
             Section {
@@ -198,6 +213,7 @@ struct MiniSightDownloadPage: View {
     @State private var failed = false
     @State private var importing = false
     @State private var showFiles = false
+    @State private var showActionFolder = false
     @State private var showPhotos = false
     @State private var operation: MiniSightAssetOperation?
     @State private var downloader: MiniSightAssetDownload?
@@ -209,17 +225,18 @@ struct MiniSightDownloadPage: View {
                 Picker("素材格式", selection: $kind) {
                     ForEach(MiniSightAssetCatalog.ImportKind.allCases) { Text($0.title).tag($0) }
                 }.disabled(importing)
-                TextField("图片或 8×9 图集直链", text: $link)
+                TextField("图片、GIF 或 8×9 图集直链", text: $link)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                 Button("从链接添加") { importLink() }.disabled(importing || link.isEmpty)
                 Button("从相册添加") { showPhotos = true }.disabled(importing)
-                Button("从文件添加") { showFiles = true }.disabled(importing)
+                Button("从文件添加图片 / GIF") { showFiles = true }.disabled(importing)
+                Button("从文件夹添加 JSON 动作包") { showActionFolder = true }.disabled(importing)
                 if importing {
                     HStack { ProgressView(); Button("取消") { if operation?.cancel() == true { notice = "正在取消…" } } }
                 }
                 if !notice.isEmpty { Text(notice).font(.caption).foregroundStyle(failed ? Color.red : Color.secondary) }
             } header: { Text("添加素材") } footer: {
-                Text("支持图片直链、相册或文件；网页和 ZIP 不直接导入。8 列 × 9 行的动作图集按行播放动作（PNG 或相册转换件都行），其他图片按单张静态角色保留原分辨率。添加不会替你打开桌宠。")
+                Text("原静态图和已知 8×9 图集导入不变。单个 GIF 保留帧时长并明确映射为 idle；相册可能转换 GIF，保留动画请优先用文件。JSON 包请选择根目录含 actions.json 的文件夹，资源仅用相对路径，role 须显式填写且至少含 idle（可选 music），不会按文件名猜动作。所有资源先复制、校验再添加，不覆盖原素材；添加后点列表才切换。ZIP、网页素材包、视频/WebM、任意图集自动拆分和远程 JSON 包均不支持。")
             }
             Section {
                 TextField("素材目录地址（可选记录）", text: $config.downloadSource)
@@ -262,14 +279,27 @@ struct MiniSightDownloadPage: View {
         .navigationTitle("添加素材")
         .onAppear { reload() }
         .onDisappear { _ = operation?.cancel() }
-        .sheet(isPresented: $showFiles) { MiniSightFilePicker { file in showFiles = false; importFile(file) } }
+        .sheet(isPresented: $showFiles) {
+            MiniSightFilePicker(onCancel: { showFiles = false }) { file in showFiles = false; importFile(file) }
+        }
+        .sheet(isPresented: $showActionFolder) {
+            MiniSightFilePicker(contentTypes: [.folder], asCopy: false, onCancel: { showActionFolder = false }) { root in
+                showActionFolder = false
+                let op = begin()
+                MiniSightAssetCatalog.io.async {
+                    do { complete(.success(try MiniSightAssetCatalog.importActionDirectory(root, title: root.lastPathComponent, operation: op))) }
+                    catch { complete(.failure(error)) }
+                }
+            }
+        }
         .sheet(isPresented: $showPhotos) {
             MiniSightAssetPhotoPicker { provider in
                 showPhotos = false
                 guard let provider else { return }
                 let op = begin()
                 let selectedKind = kind
-                let type = provider.registeredTypeIdentifiers.first { UTType($0)?.conforms(to: .image) == true } ?? UTType.image.identifier
+                let type = provider.hasItemConformingToTypeIdentifier(UTType.gif.identifier) ? UTType.gif.identifier :
+                    (provider.registeredTypeIdentifiers.first { UTType($0)?.conforms(to: .image) == true } ?? UTType.image.identifier)
                 provider.loadFileRepresentation(forTypeIdentifier: type) { url, error in
                     guard let url else { complete(.failure(error ?? MiniSightAssetCatalog.Failure.unreadable)); return }
                     // Provider URLs expire at callback return: stage bytes here,
@@ -347,22 +377,24 @@ struct MiniSightDownloadPage: View {
         }
     }
     private func activate(_ item: MiniSightAssetCatalog.Item) {
-        perform { try MiniSightAssetCatalog.activate(item) }
-        config.costume = item.title
+        perform({ try MiniSightAssetCatalog.activate(item) }, onSuccess: { config.costume = item.title })
     }
     private func remove(_ item: MiniSightAssetCatalog.Item) {
-        perform { try MiniSightAssetCatalog.delete(item) }
-        if item.id == currentID { config.costume = "" }
+        // Removing a catalog entry does not change the active appearance/name.
+        perform({ try MiniSightAssetCatalog.delete(item) })
     }
-    private func restore() { perform { try MiniSightAssetCatalog.restorePrevious() }; config.costume = "" }
-    private func perform(_ work: @escaping () throws -> Void) {
+    private func restore() {
+        perform({ try MiniSightAssetCatalog.restorePrevious() }, onSuccess: { config.costume = "" })
+    }
+    private func perform(_ work: @escaping () throws -> Void, onSuccess: @escaping () -> Void = {}) {
         importing = true
         MiniSightAssetCatalog.io.async {
             do {
                 try work()
                 DispatchQueue.main.async {
+                    onSuccess()
                     importing = false; failed = false; notice = "素材已更新。"
-                    MiniSightAssetCatalog.publishChange(); reload()
+                    reload() // Catalog publishes only after successful commit.
                 }
             } catch { DispatchQueue.main.async { importing = false; failed = true; notice = error.localizedDescription } }
         }
@@ -370,24 +402,35 @@ struct MiniSightDownloadPage: View {
 }
 
 struct MiniSightFilePicker: UIViewControllerRepresentable {
+    var contentTypes: [UTType] = [.image]
+    var asCopy = true
+    var onCancel: () -> Void = {}
     let onPick: (URL) -> Void
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.image], asCopy: true)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes, asCopy: asCopy)
+        picker.allowsMultipleSelection = false
         picker.delegate = context.coordinator
         return picker
     }
     func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
-    func makeCoordinator() -> Coordinator { Coordinator(onPick) }
+    func makeCoordinator() -> Coordinator { Coordinator(onPick, onCancel: onCancel) }
     final class Coordinator: NSObject, UIDocumentPickerDelegate {
         let onPick: (URL) -> Void
-        init(_ onPick: @escaping (URL) -> Void) { self.onPick = onPick }
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { if let url = urls.first { onPick(url) } }
+        let onCancel: () -> Void
+        init(_ onPick: @escaping (URL) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick; self.onCancel = onCancel
+        }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            if let url = urls.first { onPick(url) } else { onCancel() }
+        }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { onCancel() }
     }
 }
 struct MiniSightAssetPhotoPicker: UIViewControllerRepresentable {
     let picked: (NSItemProvider?) -> Void
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration(photoLibrary: .shared()); config.filter = .images; config.selectionLimit = 1
+        config.preferredAssetRepresentationMode = .current
         let picker = PHPickerViewController(configuration: config); picker.delegate = context.coordinator; return picker
     }
     func updateUIViewController(_ controller: PHPickerViewController, context: Context) {}

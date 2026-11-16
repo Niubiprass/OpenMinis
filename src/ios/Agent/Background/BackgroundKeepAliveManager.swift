@@ -107,6 +107,10 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
         let coordinator = AudioSessionCoordinator.shared
         guard let applied = coordinator.appliedIntent else { return false }
         switch applied {
+        case .wakeWord, .nameWakeDictation:
+            // Bare intents/enabled flags do not back execution. MAIN includes
+            // its genuine input engine, response TTS and token-confirmed ASR.
+            return MiniSightWakeController.shared.backgroundAudioIsLive
         case .capture:
             return VoiceModePreference.shared.isCapturing
         case .mediaAttachment:
@@ -245,6 +249,15 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     private var silentAudioWanted: Bool {
         isActive && enhancedBackgroundEnabled && backgroundSpeakEnabled
             && appIsInBackground && silentAudioSuspendCount == 0
+            && !AudioSessionCoordinator.shared.hasNameWakeInputIntent
+            && !MiniSightWakeController.shared.backgroundAudioIsLive
+    }
+
+    /// Coordinator calls this synchronously after inserting the real input
+    /// owner, before its mixable profile. Retain an existing silent lease so it
+    /// can resume through the usual applied-state observer after input ends.
+    func yieldSilentAudioToNameInput() {
+        stopSilentAudio(reason: "name_input", releaseIntent: false)
     }
 
     /// [T-bg-keepalive-debounce] Pending debounced stop of silent audio. When
@@ -1217,6 +1230,12 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
             // and a successful session apply after rapid foreground/background.
             startSilentAudio()
         } else if hasAudioWork {
+            if AudioSessionCoordinator.shared.hasNameWakeInputIntent,
+               isActive && enhancedBackgroundEnabled && backgroundSpeakEnabled
+                   && appIsInBackground && silentAudioSuspendCount == 0 {
+                yieldSilentAudioToNameInput()
+                return
+            }
             // [T-ios-bg-idle-grace] Split the single "should stop" branch by WHY.
             // Only the pure-idle transition (isActive went false while every other
             // condition still says "keep playing") gets the 60s grace window.
@@ -1522,7 +1541,7 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
         return (true, nil)
     }
 
-    func stopSilentAudio(reason: String = "direct") {
+    func stopSilentAudio(reason: String = "direct", releaseIntent: Bool = true) {
         // A direct stop supersedes any debounced one and aborts pending retries.
         cancelPendingSilentAudioStop(reason: "stopSilentAudio called")
         // [T-ios-bg-idle-grace] Also clear a pending idle grace. Required, not
@@ -1550,8 +1569,8 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
         // End the keep-alive intent — the coordinator re-applies the next-highest
         // intent's profile (reply TTS / capture) or deactivates the session,
         // letting other apps resume. (No direct setActive here anymore.)
-        coordinator.end(.backgroundKeepAlive)
-        logger.info("[BKA][Stop] engine.stop() + end(.backgroundKeepAlive)")
+        if releaseIntent { coordinator.end(.backgroundKeepAlive) }
+        logger.info("[BKA][Stop] engine.stop() releaseIntent=\(releaseIntent)")
     }
 
     // MARK: - Live Activity Updates

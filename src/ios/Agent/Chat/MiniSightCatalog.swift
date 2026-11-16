@@ -1,6 +1,7 @@
 import Combine
 import CoreFoundation
 import CryptoKit
+import Darwin
 import Foundation
 import ImageIO
 import SwiftUI
@@ -56,7 +57,7 @@ enum MiniSightAssetCatalog {
             case .contentType: return "下载类型不是受支持图片，网页、ZIP 和网站素材包不能直接导入。"
             case .tooLarge: return "素材超过 24 MiB 输入上限，或本地文件不是普通文件。"
             case .dimensions: return "图片尺寸无效：每边最多 16384 像素，总像素最多 4000 万。"
-            case .format: return "仅支持 ImageIO 可解码的静态 PNG、JPEG、HEIC/HEIF、WebP。"
+            case .format: return "支持 ImageIO 可解码的静态图片和 GIF 动画；多动作素材请从本机动作文件夹导入，不支持视频或 WebM。"
             case .atlasLayout: return "8 列 × 9 行图集必须正向、无间隔，每格宽高 12:13（例如整图 768×936 或 2304×2808）。"
             case .unreadable: return "素材或元数据不可读，原素材未替换。请重新选择格式后导入。"
             case .verification: return "素材写入或本地回读校验失败，未确认切换。"
@@ -92,6 +93,9 @@ enum MiniSightAssetCatalog {
         /// 1 once the stored pixels are known upright. Absent on records
         /// written by the version that flipped the import canvas.
         var upright: Int? = nil
+        /// Only this optional marker enables generic actions. Old records keep
+        /// their existing atlas/static interpretation and their exact bytes.
+        var actionPack: String? = nil
         var valid: Bool {
             schema == 1 && format == "minisight-atlas-v1" && UUID(uuidString: id) != nil &&
             columns == 8 && rows == 9 && cellWidth == 96 && cellHeight == 104 &&
@@ -102,7 +106,10 @@ enum MiniSightAssetCatalog {
                 : ((variants ?? 72) == 72 && (layoutVersion ?? 1) <= 2)) &&
             ImportKind(rawValue: sourceKind) != nil && sourceKind != ImportKind.auto.rawValue &&
             bytes > 0 && bytes <= maxStoredBytes &&
-            sha256.count == 64 && UUID(uuidString: revision) != nil && title.utf8.count <= 512
+            sha256.count == 64 && UUID(uuidString: revision) != nil && title.utf8.count <= 512 &&
+            (actionPack == nil || (MiniSightActionImport.validReference(actionPack!, id: id) &&
+                sourceKind == ImportKind.singleImage.rawValue && layoutVersion == 1 &&
+                variants == 1 && selectedVariant == 0))
         }
     }
     struct Item: Identifiable {
@@ -112,7 +119,7 @@ enum MiniSightAssetCatalog {
         let variant: Int
         let metadata: Metadata?
         let preview: UIImage?
-        var id: String { "\(name)#\(variant)" }
+        var id: String { "\(metadata?.id ?? name)#\(variant)" }
         /// The old tiler already replaced the source with 12x11 frames; it
         /// cannot be restored, so the UI must ask for one fresh import.
         var isLossyLegacySingle: Bool {
@@ -481,6 +488,9 @@ enum MiniSightAssetCatalog {
     /// Every outcome lands on a state that the same guard rejects next time.
     @discardableResult
     private static func migrateSheet(file: URL, metaFile: URL, meta: Metadata) -> Metadata? {
+        // A generic pack's whole-image poster is never an inferred Petdex
+        // sheet, even at exactly 768:936. Do not rewrite or flip its source.
+        guard meta.actionPack == nil else { return nil }
         guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
         let shaped = packShaped(props)
@@ -592,6 +602,16 @@ enum MiniSightAssetCatalog {
 
     static func importData(_ data: Data, kind: ImportKind, title: String,
                            operation: MiniSightAssetOperation) throws -> Item {
+        guard data.count <= maxInputBytes else { throw Failure.tooLarge }
+        // Only a positively identified GIF takes the generic path. Static
+        // and known Petdex inputs continue through the unchanged old pipeline.
+        if let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+           CGImageSourceGetType(source) as String? == "com.compuserve.gif" {
+            let staged = try MiniSightActionImport.temporary()
+            defer { try? FileManager.default.removeItem(at: staged) }
+            let id = try MiniSightActionImport.stageGIF(data, to: staged, operation: operation)
+            return try commitAction(staged, id: id, title: title, operation: operation)
+        }
         let (png, meta) = try prepare(data, kind: kind, title: title, operation: operation)
         try operation.check()
         let file = dir.appendingPathComponent(meta.id + ".png")
@@ -602,6 +622,7 @@ enum MiniSightAssetCatalog {
             try write(png, to: file)
             try write(json, to: sidecar(file))
             try verify(try boundedData(file, limit: maxStoredBytes), metadata: metadata(at: sidecar(file)))
+            changed()
             return Item(name: file.lastPathComponent, title: meta.title, bytes: png.count, variant: 0, metadata: meta, preview: nil)
         } catch {
             // Cleanup failures are surfaced; a partial record is never a usable atlas.
@@ -611,16 +632,114 @@ enum MiniSightAssetCatalog {
         }
     }
 
+    static func importActionDirectory(_ root: URL, title: String,
+                                      operation: MiniSightAssetOperation) throws -> Item {
+        let staged = try MiniSightActionImport.temporary()
+        defer { try? FileManager.default.removeItem(at: staged) }
+        let id = try MiniSightActionImport.stageDirectory(root, to: staged, operation: operation)
+        return try commitAction(staged, id: id, title: title, operation: operation)
+    }
+
+    private static func commitAction(_ staged: URL, id: String, title: String,
+                                     operation: MiniSightAssetOperation) throws -> Item {
+        let manifest = try MiniSightActionImport.validate(staged, operation: operation)
+        guard manifest.id == id else { throw Failure.verification }
+        let poster = try MiniSightActionImport.poster(staged, manifest: manifest)
+        // Immutable poster.png is NORMAL ImageIO orientation. Only the legacy
+        // catalog/pet.png copy uses the existing vertically inverted convention.
+        try MiniSightActionImport.save(poster, root: staged, path: "poster.png")
+        guard let png = flippedPNG(poster) else { throw Failure.verification }
+        var meta = Metadata(id: id, title: String(title.prefix(100)), sourceKind: ImportKind.singleImage.rawValue,
+                            bytes: png.count, sha256: digest(png), revision: UUID().uuidString,
+                            createdAt: Date().timeIntervalSince1970)
+        meta.layoutVersion = 1; meta.variants = 1; meta.selectedVariant = 0
+        meta.actionPack = "actionpacks/\(id)/actions.json"
+        try verify(png, metadata: meta)
+        let json = try JSONEncoder().encode(meta)
+        let fm = FileManager.default
+        let packs = MiniSightPetFile.directory.appendingPathComponent("actionpacks", isDirectory: true)
+        let final = packs.appendingPathComponent(id, isDirectory: true)
+        let file = dir.appendingPathComponent(id + ".png")
+        try fm.createDirectory(at: packs, withIntermediateDirectories: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        for root in [packs, dir] {
+            let info = try root.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+            guard info.isSymbolicLink != true, info.isDirectory == true else { throw Failure.verification }
+        }
+        guard !fm.fileExists(atPath: final.path), !fm.fileExists(atPath: file.path),
+              !fm.fileExists(atPath: sidecar(file).path) else { throw Failure.verification }
+        try operation.beginCommit()
+        var installed = false
+        do {
+            try fm.moveItem(at: staged, to: final); installed = true
+            try write(png, to: file)
+            try write(json, to: sidecar(file)) // Catalog commit marker LAST.
+            try verify(try boundedData(file, limit: maxStoredBytes), metadata: metadata(at: sidecar(file)))
+            changed()
+            return Item(name: file.lastPathComponent, title: meta.title, bytes: png.count, variant: 0, metadata: meta, preview: nil)
+        } catch {
+            do {
+                try put(nil, at: file); try put(nil, at: sidecar(file))
+                if installed { try fm.removeItem(at: final) }
+            } catch { throw Failure.rollback }
+            throw error
+        }
+    }
+
+    private static func verifyAction(_ meta: Metadata) throws {
+        guard let path = meta.actionPack else { return }
+        guard meta.valid, MiniSightActionImport.validReference(path, id: meta.id) else { throw Failure.verification }
+        let root = MiniSightPetFile.directory.appendingPathComponent(path).deletingLastPathComponent()
+        // Validate through the containing directory too, rejecting replaced
+        // actionpacks/<id> symlinks before any decoder receives a path.
+        _ = try MiniSightActionImport.read(MiniSightPetFile.directory, path, limit: MiniSightActionImport.manifestLimit)
+        let manifest = try MiniSightActionImport.validate(root, operation: MiniSightAssetOperation())
+        guard manifest.id == meta.id else { throw Failure.verification }
+        _ = try MiniSightActionImport.poster(root, manifest: manifest)
+    }
+
+    /// Fail closed if ANY marker is unreadable: a leaked orphan is preferable
+    /// to deleting a live/backup resource. Catalog removal alone never switches.
+    private static func collectActionPacks() {
+        let fm = FileManager.default
+        do {
+            var markers = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "json" }
+            markers += [metadataURL, MiniSightPetFile.directory.appendingPathComponent("pet.backup.json")]
+            var retained = Set<UUID>()
+            for marker in markers where fm.fileExists(atPath: marker.path) {
+                let meta = try JSONDecoder().decode(Metadata.self, from: boundedData(marker, limit: 16 * 1024))
+                if let path = meta.actionPack {
+                    guard MiniSightActionImport.validReference(path, id: meta.id), let id = UUID(uuidString: meta.id) else { return }
+                    retained.insert(id)
+                }
+            }
+            let packs = MiniSightPetFile.directory.appendingPathComponent("actionpacks", isDirectory: true)
+            let values = try packs.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+            guard values.isSymbolicLink != true, values.isDirectory == true else { return }
+            for pack in try fm.contentsOfDirectory(at: packs, includingPropertiesForKeys: [.isSymbolicLinkKey, .isDirectoryKey]) {
+                guard let id = UUID(uuidString: pack.lastPathComponent), !retained.contains(id) else { continue }
+                let info = try pack.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+                guard info.isSymbolicLink != true, info.isDirectory == true else { continue }
+                try fm.removeItem(at: pack)
+            }
+        } catch { /* No guessing around damaged old metadata. */ }
+    }
+    private static func changed() { DispatchQueue.main.async { publishChange() } }
+
     static func activate(_ item: Item) throws {
         let file = try assetURL(item.name)
         let meta = try metadata(at: sidecar(file))
         let data = try boundedData(file, limit: maxStoredBytes)
         try verify(data, metadata: meta)
+        try verifyAction(meta)
         var selected = meta
         selected.selectedVariant = item.variant
         selected.revision = UUID().uuidString
+        try verify(data, metadata: selected)
         try replaceCurrent(data, json: JSONEncoder().encode(selected), keepBackup: true)
         try? Data("\(item.variant)".utf8).write(to: MiniSightPetFile.directory.appendingPathComponent("variant"), options: .atomic)
+        collectActionPacks(); changed()
     }
 
     /// Backup first, then image, then JSON manifest (commit marker). If any step
@@ -630,11 +749,15 @@ enum MiniSightAssetCatalog {
         let image = MiniSightPetFile.url
         let oldImage = try optionalData(image, limit: maxInputBytes)
         let oldJSON = try optionalData(metadataURL, limit: 16 * 1024)
-        if keepBackup, let oldImage {
-            try write(oldImage, to: MiniSightPetFile.directory.appendingPathComponent("pet.backup.png"))
-            try put(oldJSON, at: MiniSightPetFile.directory.appendingPathComponent("pet.backup.json"))
-        }
+        let backupImage = MiniSightPetFile.directory.appendingPathComponent("pet.backup.png")
+        let backupJSON = MiniSightPetFile.directory.appendingPathComponent("pet.backup.json")
+        let previousBackupImage = try optionalData(backupImage, limit: maxInputBytes)
+        let previousBackupJSON = try optionalData(backupJSON, limit: 16 * 1024)
         do {
+            if keepBackup, let oldImage {
+                try write(oldImage, to: backupImage)
+                try put(oldJSON, at: backupJSON)
+            }
             try write(data, to: image)
             try put(json, at: metadataURL)
             if let json {
@@ -643,7 +766,10 @@ enum MiniSightAssetCatalog {
                 guard try metadata(at: metadataURL) == meta else { throw Failure.verification }
             }
         } catch {
-            do { try put(oldImage, at: image); try put(oldJSON, at: metadataURL) }
+            do {
+                try put(oldImage, at: image); try put(oldJSON, at: metadataURL)
+                try put(previousBackupImage, at: backupImage); try put(previousBackupJSON, at: backupJSON)
+            }
             catch { throw Failure.rollback }
             throw error
         }
@@ -654,9 +780,13 @@ enum MiniSightAssetCatalog {
         let jsonURL = MiniSightPetFile.directory.appendingPathComponent("pet.backup.json")
         let data = try boundedData(image, limit: maxInputBytes)
         let json = try optionalData(jsonURL, limit: 16 * 1024)
-        if let json { try verify(data, metadata: JSONDecoder().decode(Metadata.self, from: json)) }
+        let meta = try json.map { try JSONDecoder().decode(Metadata.self, from: $0) }
+        if let meta { try verify(data, metadata: meta); try verifyAction(meta) }
         // Old metadata-free bytes are deliberately restored unchanged.
         try replaceCurrent(data, json: json, keepBackup: true)
+        try? Data("\(meta?.selectedVariant ?? 0)".utf8)
+            .write(to: MiniSightPetFile.directory.appendingPathComponent("variant"), options: .atomic)
+        collectActionPacks(); changed()
     }
 
     static func delete(_ item: Item) throws {
@@ -669,6 +799,7 @@ enum MiniSightAssetCatalog {
         do {
             try put(nil, at: file); try put(nil, at: sidecar(file))
             guard !fm.fileExists(atPath: file.path), !fm.fileExists(atPath: sidecar(file).path) else { throw Failure.verification }
+            collectActionPacks(); changed()
         } catch {
             do { try put(image, at: file); try put(json, at: sidecar(file)) }
             catch { throw Failure.rollback }
@@ -721,6 +852,351 @@ enum MiniSightAssetCatalog {
         NotificationCenter.default.post(name: didChange, object: nil)
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
             CFNotificationName(resourceNotification as CFString), nil, nil, true)
+    }
+}
+
+// MARK: - Generic action package import (Foundation / ImageIO; no renderer dependency)
+enum MiniSightActionImport {
+    static let roles: Set<String> = ["idle", "idleAlt", "tap", "drag", "shakeSoft", "shakeHard",
+        "flight", "land", "walkLeft", "walkRight", "jump", "sleep", "wake", "music"]
+    static let manifestLimit = 1024 * 1024
+    static let totalLimit = 128 * 1024 * 1024
+    enum Invalid: LocalizedError {
+        case package, path, limits, image, timing, aspect
+        var errorDescription: String? {
+            switch self {
+            case .package: return "动作包需选择含 actions.json 的文件夹；schema=1，角色显式指定且至少有一个 idle。"
+            case .path: return "动作包路径无效、文件缺失或含符号链接；只允许包内相对路径。"
+            case .limits: return "动作包超限：JSON 1 MiB、64 动作、每动作 600 帧、共 6000 帧；单文件 24 MiB、总计 128 MiB。"
+            case .image: return "动作源仅支持可解码 PNG/JPEG/GIF/APNG，每边 ≤4096、≤800 万像素；帧索引和裁切范围必须有效。"
+            case .timing: return "帧时长须为 0.02–10 秒、单动作 ≤120 秒；GIF 超限时拒绝导入，不改写原始帧时长。"
+            case .aspect: return "动作帧的逻辑画布宽高比必须一致；请在 JSON 显式给出裁切 rect，不会猜测图集含义。"
+            }
+        }
+    }
+    struct Manifest: Codable {
+        var schema: Int
+        var id: String
+        var clips: [Clip]
+    }
+    struct Clip: Codable {
+        var id: String
+        var role: String
+        var frames: [Frame]
+    }
+    struct Frame: Codable {
+        var file: String
+        var index: Int
+        var duration: Double
+        var rect: [Double]? = nil
+    }
+    static func validReference(_ path: String, id: String) -> Bool {
+        id.utf8.count == 36 && UUID(uuidString: id)?.uuidString.lowercased() == id.lowercased() &&
+            path == "actionpacks/\(id)/actions.json"
+    }
+    static func safePath(_ path: String) -> Bool {
+        guard !path.isEmpty, path.utf8.count <= 512,
+              !path.contains("\\"), !path.contains(":"), !path.contains("%"),
+              path.rangeOfCharacter(from: .controlCharacters) == nil else { return false }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        return parts.count <= 16 && parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." && $0.utf8.count <= 255 }
+    }
+    /// openat + O_NOFOLLOW for EVERY component: checking only the final URL
+    /// would still permit an intermediate symlink or a check/read race.
+    static func read(_ root: URL, _ path: String, limit: Int) throws -> Data {
+        guard root.isFileURL, safePath(path) else { throw Invalid.path }
+        var directory = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard directory >= 0 else { throw Invalid.path }
+        defer { close(directory) }
+        let parts = path.split(separator: "/").map(String.init)
+        for part in parts.dropLast() {
+            let next = openat(directory, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+            guard next >= 0 else { throw Invalid.path }
+            close(directory); directory = next
+        }
+        let fd = openat(directory, parts.last!, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw Invalid.path }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              info.st_size > 0, info.st_size <= Int64(limit) else { throw Invalid.limits }
+        let data = try MiniSightAssetCatalog.boundedData(handle, limit: limit)
+        var after = stat()
+        guard fstat(fd, &after) == 0, info.st_dev == after.st_dev, info.st_ino == after.st_ino,
+              info.st_size == after.st_size, data.count == Int(info.st_size),
+              info.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              info.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              info.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              info.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else { throw Invalid.path }
+        return data
+    }
+    static func structure(_ manifest: Manifest) throws {
+        guard manifest.schema == 1, UUID(uuidString: manifest.id) != nil,
+              !manifest.clips.isEmpty, manifest.clips.count <= 64,
+              manifest.clips.contains(where: { $0.role == "idle" }) else { throw Invalid.package }
+        var identifiers = Set<String>(), total = 0
+        for clip in manifest.clips {
+            guard let first = clip.id.utf8.first, clip.id.utf8.count <= 64,
+                  (48...57).contains(first) || (65...90).contains(first) || (97...122).contains(first),
+                  clip.id.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) ||
+                      (97...122).contains($0) || $0 == 45 || $0 == 95 }),
+                  identifiers.insert(clip.id).inserted, roles.contains(clip.role) else { throw Invalid.package }
+            guard !clip.frames.isEmpty, clip.frames.count <= 600 else { throw Invalid.limits }
+            total += clip.frames.count
+            guard total <= 6000 else { throw Invalid.limits }
+            var seconds = 0.0
+            for frame in clip.frames {
+                guard safePath(frame.file) else { throw Invalid.path }
+                guard frame.index >= 0, frame.index < 600 else { throw Invalid.image }
+                guard frame.duration.isFinite, (0.02...10).contains(frame.duration) else { throw Invalid.timing }
+                seconds += frame.duration
+                if let r = frame.rect {
+                    guard r.count == 4, r.allSatisfy({ $0.isFinite }), r[0] >= 0, r[1] >= 0,
+                          r[2] > 0, r[3] > 0, r[0] + r[2] <= 1, r[1] + r[3] <= 1 else { throw Invalid.image }
+                }
+            }
+            guard seconds <= 120.0 + 1e-9 else { throw Invalid.timing }
+        }
+    }
+    /// Bound nesting and reject duplicate keys before Codable can discard
+    /// ambiguity. This is syntax preflight only; no imported code is executed.
+    static func envelope(_ data: Data) throws {
+        let bytes = [UInt8](data)
+        var stack: [(kind: UInt8, keys: Set<String>)] = []
+        var i = 0
+        while i < bytes.count {
+            let c = bytes[i]
+            if c == 34 {
+                let start = i
+                i += 1
+                while i < bytes.count && bytes[i] != 34 {
+                    if bytes[i] == 92 { i += 1 }
+                    i += 1
+                }
+                guard i < bytes.count else { throw Invalid.package }
+                var after = i + 1
+                while after < bytes.count && [9, 10, 13, 32].contains(bytes[after]) { after += 1 }
+                if stack.last?.kind == 123, after < bytes.count, bytes[after] == 58 {
+                    guard let key = try JSONSerialization.jsonObject(with: Data(bytes[start...i]), options: .fragmentsAllowed) as? String,
+                          stack[stack.count - 1].keys.insert(key).inserted else { throw Invalid.package }
+                }
+            } else if c == 123 || c == 91 {
+                guard stack.count < 8 else { throw Invalid.package }
+                stack.append((c, []))
+            } else if c == 125 || c == 93 {
+                guard let last = stack.popLast(), last.kind == (c == 125 ? 123 : 91) else { throw Invalid.package }
+            }
+            i += 1
+        }
+        guard stack.isEmpty else { throw Invalid.package }
+    }
+    static func parse(_ data: Data) throws -> Manifest {
+        guard data.count <= manifestLimit else { throw Invalid.limits }
+        try envelope(data)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(object.keys) == ["schema", "id", "clips"],
+              let clips = object["clips"] as? [[String: Any]] else { throw Invalid.package }
+        for clip in clips {
+            guard Set(clip.keys) == ["id", "role", "frames"], let frames = clip["frames"] as? [[String: Any]] else { throw Invalid.package }
+            for frame in frames {
+                let keys = Set(frame.keys)
+                guard keys == ["file", "index", "duration"] || keys == ["file", "index", "duration", "rect"],
+                      !(frame["rect"] is NSNull) else { throw Invalid.package }
+            }
+        }
+        let result: Manifest
+        do { result = try JSONDecoder().decode(Manifest.self, from: data) }
+        catch { throw Invalid.package }
+        try structure(result)
+        return result
+    }
+    static func source(_ data: Data) throws -> CGImageSource {
+        guard let source = CGImageSourceCreateWithData(data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary),
+              let type = CGImageSourceGetType(source) as String?,
+              ["public.png", "public.jpeg", "com.compuserve.gif"].contains(type),
+              CGImageSourceGetCount(source) > 0, CGImageSourceGetCount(source) <= 600,
+              CGImageSourceGetStatus(source) == .statusComplete,
+              type != "public.jpeg" || CGImageSourceGetCount(source) == 1 else { throw Invalid.image }
+        return source
+    }
+    static func dimensions(_ source: CGImageSource, index: Int) throws -> (Int, Int) {
+        guard index >= 0, index < CGImageSourceGetCount(source),
+              let p = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+              let w = (p[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let h = (p[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              w > 0, h > 0, w <= 4096, h <= 4096, Int64(w) * Int64(h) <= 8_000_000,
+              CGImageSourceGetStatusAtIndex(source, index) == .statusComplete else { throw Invalid.image }
+        let orientation = (p[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        guard (1...8).contains(orientation) else { throw Invalid.image }
+        return (5...8).contains(orientation) ? (h, w) : (w, h)
+    }
+    static func orientedRect(_ frame: Frame, source: CGImageSource) -> [Double] {
+        let r = frame.rect ?? [0, 0, 1, 1]
+        let p = CGImageSourceCopyPropertiesAtIndex(source, frame.index, nil) as? [CFString: Any]
+        let orientation = (p?[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        let x = r[0], y = r[1], w = r[2], h = r[3]
+        switch orientation {
+        case 2: return [1-x-w, y, w, h]
+        case 3: return [1-x-w, 1-y-h, w, h]
+        case 4: return [x, 1-y-h, w, h]
+        case 5: return [y, x, h, w]
+        case 6: return [1-y-h, x, h, w]
+        case 7: return [1-y-h, 1-x-w, h, w]
+        case 8: return [y, 1-x-w, h, w]
+        default: return r
+        }
+    }
+    static func frameAspect(_ frame: Frame, source: CGImageSource) throws -> Double {
+        let (w, h) = try dimensions(source, index: frame.index)
+        let r = orientedRect(frame, source: source)
+        let cw = Double(w) * r[2], ch = Double(h) * r[3]
+        guard cw >= 1, ch >= 1 else { throw Invalid.image }
+        let aspect = cw / ch
+        guard aspect.isFinite, aspect > 0 else { throw Invalid.image }
+        return aspect
+    }
+    static func decode(_ source: CGImageSource, frame: Frame) throws -> CGImage {
+        _ = try dimensions(source, index: frame.index)
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceShouldCache: false, kCGImageSourceThumbnailMaxPixelSize: 384]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, frame.index, options as CFDictionary),
+              image.width <= 384, image.height <= 384 else { throw Invalid.image }
+        guard frame.rect != nil else { return image }
+        let r = orientedRect(frame, source: source)
+        let ratio = try frameAspect(frame, source: source)
+        let w = max(1, Int((ratio >= 1 ? 384 : 384 * ratio).rounded()))
+        let h = max(1, Int((ratio >= 1 ? 384 / ratio : 384).rounded()))
+        guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw Invalid.image }
+        let fullW = Double(w) / r[2], fullH = Double(h) / r[3]
+        guard fullW.isFinite, fullH.isFinite else { throw Invalid.image }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: -r[0] * fullW, y: -(1-r[1]-r[3]) * fullH, width: fullW, height: fullH))
+        guard let cropped = context.makeImage() else { throw Invalid.image }
+        return cropped
+    }
+    /// Every referenced index is actually decoded, one <=384px frame at a
+    /// time, not merely tested for existence. Never build an animated UIImage.
+    static func validate(_ root: URL, operation: MiniSightAssetOperation) throws -> Manifest {
+        let manifestData = try read(root, "actions.json", limit: manifestLimit)
+        let manifest = try parse(manifestData)
+        let groups = Dictionary(grouping: manifest.clips.flatMap(\.frames), by: \.file)
+        var bytes = manifestData.count
+        var sourceFrames = 0
+        let idle = manifest.clips.first(where: { $0.role == "idle" })!.frames[0]
+        let aspect: Double = try autoreleasepool {
+            let imageSource = try source(read(root, idle.file, limit: MiniSightAssetCatalog.maxInputBytes))
+            return try frameAspect(idle, source: imageSource)
+        }
+        for path in groups.keys.sorted() {
+            try operation.check()
+            try autoreleasepool {
+                let data = try read(root, path, limit: MiniSightAssetCatalog.maxInputBytes)
+                bytes += data.count
+                guard bytes <= totalLimit else { throw Invalid.limits }
+                let imageSource = try source(data)
+                sourceFrames += CGImageSourceGetCount(imageSource)
+                guard sourceFrames <= 6000 else { throw Invalid.limits }
+                for index in 0..<CGImageSourceGetCount(imageSource) {
+                    try operation.check()
+                    _ = try dimensions(imageSource, index: index)
+                }
+                for frame in groups[path]! {
+                    try operation.check()
+                    let ratio = try frameAspect(frame, source: imageSource)
+                    guard abs(ratio / aspect - 1) <= 1e-6 else { throw Invalid.aspect }
+                    try autoreleasepool { _ = try decode(imageSource, frame: frame) }
+                }
+            }
+        }
+        return manifest
+    }
+    static func poster(_ root: URL, manifest: Manifest) throws -> Data {
+        guard let frame = manifest.clips.first(where: { $0.role == "idle" })?.frames.first else { throw Invalid.package }
+        let imageSource = try source(read(root, frame.file, limit: MiniSightAssetCatalog.maxInputBytes))
+        let image = try decode(imageSource, frame: frame)
+        let output = NSMutableData()
+        guard let writer = CGImageDestinationCreateWithData(output, UTType.png.identifier as CFString, 1, nil) else { throw Invalid.image }
+        CGImageDestinationAddImage(writer, image, nil)
+        guard CGImageDestinationFinalize(writer) else { throw Invalid.image }
+        return output as Data
+    }
+    static func temporary() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("minisight-actions-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        return url
+    }
+    static func save(_ data: Data, root: URL, path: String) throws {
+        guard safePath(path) else { throw Invalid.path }
+        let file = root.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: file, options: .atomic)
+        guard try read(root, path, limit: max(manifestLimit, data.count)) == data else { throw MiniSightAssetCatalog.Failure.verification }
+    }
+    /// Selected folder access is held throughout NSFileCoordinator copying.
+    /// Later validation/commit reads ONLY the app-owned temporary snapshot.
+    static func stageDirectory(_ selected: URL, to staged: URL, operation: MiniSightAssetOperation) throws -> String {
+        guard selected.isFileURL else { throw Invalid.path }
+        let scoped = selected.startAccessingSecurityScopedResource()
+        defer { if scoped { selected.stopAccessingSecurityScopedResource() } }
+        var coordinationError: NSError?
+        var result: Result<String, Error> = .failure(Invalid.path)
+        NSFileCoordinator(filePresenter: nil).coordinate(readingItemAt: selected, options: [], error: &coordinationError) { root in
+            result = Result {
+                try operation.check()
+                let original = try read(root, "actions.json", limit: manifestLimit)
+                var manifest = try parse(original)
+                let id = UUID().uuidString
+                var bytes = original.count
+                for path in Set(manifest.clips.flatMap(\.frames).map(\.file)).sorted() {
+                    try operation.check()
+                    let data = try read(root, path, limit: MiniSightAssetCatalog.maxInputBytes)
+                    bytes += data.count
+                    guard bytes <= totalLimit else { throw Invalid.limits }
+                    try save(data, root: staged, path: "resources/" + path)
+                }
+                try save(original, root: staged, path: "original-actions.json")
+                manifest.id = id
+                for ci in manifest.clips.indices {
+                    for fi in manifest.clips[ci].frames.indices {
+                        manifest.clips[ci].frames[fi].file = "resources/" + manifest.clips[ci].frames[fi].file
+                    }
+                }
+                try save(JSONEncoder().encode(manifest), root: staged, path: "actions.json")
+                return id
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        return try result.get()
+    }
+    static func stageGIF(_ data: Data, to staged: URL, operation: MiniSightAssetOperation) throws -> String {
+        try operation.check()
+        guard data.count <= MiniSightAssetCatalog.maxInputBytes else { throw Invalid.limits }
+        let imageSource = try source(data)
+        guard CGImageSourceGetType(imageSource) as String? == "com.compuserve.gif",
+              CGImageSourceGetCount(imageSource) <= 600 else { throw Invalid.image }
+        var frames: [Frame] = []
+        for index in 0..<CGImageSourceGetCount(imageSource) {
+            try operation.check()
+            _ = try dimensions(imageSource, index: index)
+            let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, index, nil) as? [CFString: Any]
+            let gif = properties?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+            // Do not take ImageIO's browser-clamped value in preference to
+            // the original GIF delay. Missing/zero/out-of-policy delays fail.
+            guard let delay = (gif?[kCGImagePropertyGIFUnclampedDelayTime] as? NSNumber) ??
+                    (gif?[kCGImagePropertyGIFDelayTime] as? NSNumber) else { throw Invalid.timing }
+            frames.append(Frame(file: "resources/original.gif", index: index, duration: delay.doubleValue))
+        }
+        let id = UUID().uuidString
+        let manifest = Manifest(schema: 1, id: id, clips: [Clip(id: "idle", role: "idle", frames: frames)])
+        try structure(manifest)
+        try save(data, root: staged, path: "resources/original.gif")
+        try save(JSONEncoder().encode(manifest), root: staged, path: "actions.json")
+        return id
     }
 }
 
@@ -803,7 +1279,7 @@ final class MiniSightAssetDownload: NSObject, URLSessionDataDelegate {
                 let session = URLSession(configuration: config, delegate: self, delegateQueue: queue)
                 self.session = session
                 var request = URLRequest(url: url)
-                request.setValue("image/png, image/jpeg, image/heic, image/heif, image/webp", forHTTPHeaderField: "Accept")
+                request.setValue("image/png, image/jpeg, image/heic, image/heif, image/webp, image/gif", forHTTPHeaderField: "Accept")
                 task = session.dataTask(with: request)
                 operation.setCancellation { [weak self] in self?.cancel() }
                 let work = DispatchWorkItem { [weak self] in
@@ -835,7 +1311,7 @@ final class MiniSightAssetDownload: NSObject, URLSessionDataDelegate {
             try operation.check()
             guard let http = response as? HTTPURLResponse else { throw MiniSightAssetCatalog.Failure.contentType }
             guard (200...299).contains(http.statusCode) else { throw MiniSightAssetCatalog.Failure.http(http.statusCode) }
-            guard ["image/png", "image/jpeg", "image/heic", "image/heif", "image/webp", "application/octet-stream"]
+            guard ["image/png", "image/jpeg", "image/heic", "image/heif", "image/webp", "image/gif", "application/octet-stream"]
                 .contains(http.mimeType?.lowercased() ?? "") else { throw MiniSightAssetCatalog.Failure.contentType }
             guard response.expectedContentLength <= Int64(MiniSightAssetCatalog.maxInputBytes) else {
                 throw MiniSightAssetCatalog.Failure.tooLarge

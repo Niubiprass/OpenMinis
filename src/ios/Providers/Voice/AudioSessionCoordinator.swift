@@ -16,7 +16,9 @@ import UIKit
 //   .capture            — mic recording (.record/.measurement)            [highest]
 //   .mediaAttachment    — Markdown audio attachment / auto_play playback
 //   .replyTTS           — read-replies (cloud VoiceOutputPlayer OR System AVSpeech)
-//   .backgroundKeepAlive— silent keep-alive track (background only)        [lowest]
+//   .nameWakeDictation  — token-claimed short, mixable name-derived dictation
+//   .wakeWord           — explicitly enabled real passive microphone input
+//   .backgroundKeepAlive— silent keep-alive track (background only)       [lowest]
 //
 // `.mediaAttachment` and `.replyTTS` are mutually exclusive at the source level
 // (the media player preempts TTS — see AIChatViewModel.stopSpeech on play), so in
@@ -28,15 +30,51 @@ final class AudioSessionCoordinator {
     private init() { registerInterruptionObserver() }
 
     enum Intent: Int {
-        // Higher rawValue = higher priority.
+        // Wire/debug raw values stay stable; priority is explicitly independent.
+        case nameWakeDictation = -2
+        case wakeWord = -1
         case backgroundKeepAlive = 0
         case replyTTS = 1
         case mediaAttachment = 2
         case capture = 3
+
+        var priority: Int {
+            switch self {
+            case .backgroundKeepAlive: return 0
+            case .wakeWord: return 1
+            case .nameWakeDictation: return 2
+            case .replyTTS: return 3
+            case .mediaAttachment: return 4
+            case .capture: return 5
+            }
+        }
+
+        var isNameWakeInput: Bool { self == .wakeWord || self == .nameWakeDictation }
     }
 
     private let logger = AppLogger(category: "AudioSession")
     private var active: Set<Intent> = []
+    private var wakeWordGeneration: UInt64 = 0
+    private var isPreemptingWakeWord = false
+    private var isPreemptingNameWakeDictation = false
+
+    /// Owners synchronously stop physical input BEFORE any competing profile.
+    var onWakeWordPreempted: (@MainActor () -> Void)?
+    var onNameWakeDictationPreempted: (@MainActor () -> Void)?
+
+    var canBeginWakeWordListening: Bool {
+        !interrupted && !pausedByExternalAudio && !isPreemptingWakeWord
+            && !isPreemptingNameWakeDictation
+            && active.allSatisfy { $0.isNameWakeInput || $0 == .backgroundKeepAlive }
+    }
+
+    var canBeginNameWakeDictation: Bool {
+        !interrupted && !pausedByExternalAudio && !isPreemptingWakeWord
+            && !isPreemptingNameWakeDictation
+            && active.allSatisfy { $0 == .wakeWord || $0 == .backgroundKeepAlive }
+    }
+
+    var hasNameWakeInputIntent: Bool { active.contains(where: { $0.isNameWakeInput }) }
 
     /// True while the mic is capturing — reply TTS is suppressed in this state.
     var isCapturing: Bool { active.contains(.capture) }
@@ -94,7 +132,72 @@ final class AudioSessionCoordinator {
         return hit && appliedIntent == intent
     }
 
+    /// FIFO acknowledgement only; this never starts an engine or requests
+    /// permission. The foreground/asset gates belong to the wake controller.
+    func beginWakeWordListening(completion: @escaping (Bool) -> Void) {
+        guard canBeginWakeWordListening else {
+            Task { @MainActor in completion(false) }
+            return
+        }
+        wakeWordGeneration &+= 1
+        let generation = wakeWordGeneration
+        beginInternal(.wakeWord)
+        let revision = Self.applyStateLock.withLock { Self.applyRevision }
+        Self.sessionQueue.async {
+            Task { @MainActor in
+                let current = Self.applyStateLock.withLock { Self.applyRevision == revision }
+                let granted = generation == self.wakeWordGeneration && current
+                    && self.canBeginWakeWordListening && self.hasIntent(.wakeWord)
+                    && self.appliedIntent == .wakeWord
+                // Failed initialization must not leave a passive session lease.
+                // An obsolete acknowledgement never ends a newer owner's lease.
+                if !granted, generation == self.wakeWordGeneration {
+                    self.end(.wakeWord)
+                }
+                completion(granted)
+            }
+        }
+    }
+
+    private func preemptWakeWord() {
+        guard active.remove(.wakeWord) != nil else { return }
+        wakeWordGeneration &+= 1
+        isPreemptingWakeWord = true
+        defer { isPreemptingWakeWord = false }
+        // Remove ownership FIRST: the owner's end(.wakeWord) is now a no-op,
+        // and a reentrant begin cannot reopen sampling during preemption.
+        onWakeWordPreempted?()
+    }
+
+    private func preemptNameWakeDictation() {
+        guard active.remove(.nameWakeDictation) != nil else { return }
+        isPreemptingNameWakeDictation = true
+        defer { isPreemptingNameWakeDictation = false }
+        onNameWakeDictationPreempted?()
+    }
+
     private func beginInternal(_ intent: Intent) {
+        guard intent != .wakeWord || canBeginWakeWordListening else { return }
+        guard intent != .nameWakeDictation || canBeginNameWakeDictation else { return }
+        if intent.isNameWakeInput {
+            // Insert the next owner FIRST: neither handoff can enqueue idle.
+            active.insert(intent)
+            if intent == .nameWakeDictation {
+                // MAIN claimNameWakeVoice already stopped the old physical input.
+                // Calling its cancellation callback here would cancel the claim.
+                if active.remove(.wakeWord) != nil { wakeWordGeneration &+= 1 }
+            } else {
+                // Reverse handoff also synchronously removes the dictation tap.
+                preemptNameWakeDictation()
+            }
+            // Keep the silent owner's lease, but stop its engine BEFORE applying
+            // playAndRecord. This does not mutate either user's background switch.
+            BackgroundKeepAliveManager.shared.yieldSilentAudioToNameInput()
+        } else if intent.priority > Intent.wakeWord.priority {
+            active.insert(intent)
+            preemptWakeWord()
+            preemptNameWakeDictation()
+        }
         // Media attachment preempts reply TTS (mutually exclusive voice content):
         // stop the cloud queue directly and notify the chat VM to stop System TTS,
         // BEFORE media takes the session. (TTS is not auto-resumed afterwards.)
@@ -110,6 +213,7 @@ final class AudioSessionCoordinator {
     func end(_ intent: Intent) {
         guard active.contains(intent) else { return }
         active.remove(intent)
+        if intent == .wakeWord { wakeWordGeneration &+= 1 }
         apply(reason: "end(\(intent))")
     }
 
@@ -153,11 +257,11 @@ final class AudioSessionCoordinator {
         return top
     }
 
-    var keepAlivePlaybackBlocked: Bool { interrupted || isCapturing }
+    var keepAlivePlaybackBlocked: Bool { interrupted || isCapturing || hasNameWakeInputIntent }
 
     var keepAlivePlaybackApplied: Bool {
         guard hasIntent(.backgroundKeepAlive), let top = appliedIntent else { return false }
-        return top != .capture
+        return top != .capture && !top.isNameWakeInput
     }
 
     /// Async FIFO acknowledgement, with no wait/IPC on the main actor. The
@@ -199,10 +303,15 @@ final class AudioSessionCoordinator {
         lastApplyLock.withLock { _lastApplyError }
     }
 
-    private var highest: Intent? { active.max(by: { $0.rawValue < $1.rawValue }) }
+    private var highest: Intent? { active.max(by: { $0.priority < $1.priority }) }
 
     private func profile(for intent: Intent) -> (AVAudioSession.Category, AVAudioSession.Mode, AVAudioSession.CategoryOptions) {
         switch intent {
+        case .wakeWord, .nameWakeDictation:
+            // Real, mixable background input. No Bluetooth/defaultToSpeaker
+            // option until route/quality is verified on the target device.
+            // A profile alone is never permission or proof of running input.
+            return (.playAndRecord, .measurement, [.mixWithOthers])
         case .capture:
             return (.record, .measurement, [])
         case .mediaAttachment:
@@ -267,6 +376,13 @@ final class AudioSessionCoordinator {
         Self.pendingLock.withLock { Self.pendingApplies += 1 }
         let t0 = CFAbsoluteTimeGetCurrent()
         Self.sessionQueue.async {
+            // An ended/preempted/interrupted passive request must not activate
+            // later merely because it was waiting behind slow audio IPC.
+            if top == nil || top?.isNameWakeInput == true,
+               !Self.applyStateLock.withLock({ Self.applyRevision == revision }) {
+                Self.pendingLock.withLock { Self.pendingApplies -= 1 }
+                return
+            }
             var succeeded = false
             do {
                 let session = AVAudioSession.sharedInstance()
@@ -373,6 +489,11 @@ final class AudioSessionCoordinator {
         // both fire) must not clear an already-recorded pause intent.
         guard !pausedByExternalAudio else { return }
         pausedByExternalAudio = true
+        if hasNameWakeInputIntent {
+            preemptWakeWord()
+            preemptNameWakeDictation()
+            apply(reason: "wake-external-audio")
+        }
         VoiceOutputPlayer.shared.pause()
         logger.info("[AudioSession] \(reason) → TTS paused (external audio)")
     }
@@ -392,6 +513,8 @@ final class AudioSessionCoordinator {
         case .began:
             logger.info("[AudioSession] interruption began")
             interrupted = true
+            preemptWakeWord()
+            preemptNameWakeDictation()
             Self.applyStateLock.withLock {
                 Self.applyRevision &+= 1
                 Self.applySucceeded = false

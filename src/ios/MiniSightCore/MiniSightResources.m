@@ -18,13 +18,14 @@ static UIImage *MSAtlas;
         @"minisight.gesture.long": @"longPress", @"minisight.activity": @"activity",
         @"minisight.activity.interval": @"activityInterval", @"minisight.frameLimit": @"frameLimit",
         @"minisight.dragResponse": @"dragResponse", @"minisight.petSound": @"sound",
+        @"minisight.music.lyrics": @"lyricsEnabled", @"minisight.music.motion": @"musicMotion",
         @"minisight.bottomGap": @"bottomGap", @"minisight.pet.tint": @"tint",
         @"minisight.pet.costume": @"costume", @"minisight.ai.supplier": @"supplier",
         @"minisight.asset.source": @"downloadSource", @"minisight.darkMode": @"darkMode",
         @"minisight.ai.persona": @"persona", @"minisight.ai.nickname": @"nickname",
         @"minisight.ai.adjust": @"aiAdjust", @"minisight.ai.permissions": @"aiPermissions",
         @"minisight.ai.adjustments": @"adjustments", @"minisight.proactive": @"proactive",
-        @"minisight.proactive.interval": @"proactiveInterval", @"minisight.dialogue.scale": @"bubbleScale",
+        @"minisight.proactive.interval": @"proactiveInterval", @"minisight.dialogue.scale": @"bubbleScale", @"minisight.chat.panelScale": @"panelScale",
         @"minisight.dialogue.textScale": @"textScale", @"minisight.dialogue.dwell": @"dwell",
         @"minisight.dialogue.return": @"returnKey", @"minisight.voice.reply": @"voiceReply",
         @"minisight.voice.input": @"voiceInput", @"minisight.voice.snore": @"snore",
@@ -32,7 +33,8 @@ static UIImage *MSAtlas;
         @"minisight.quick.lines": @"quickLines", @"minisight.quick.order": @"quickOrder",
         @"minisight.record": @"record", @"minisight.longPress": @"longPressRecord",
         @"minisight.diagnostics": @"diagnostics", @"minisight.shown": @"shown",
-        @"minisight.settings.revision": @"revision"
+        @"minisight.settings.revision": @"revision",
+        @"minisight.wake.enabled": @"wakeEnabled"
     }; });
     return fields;
 }

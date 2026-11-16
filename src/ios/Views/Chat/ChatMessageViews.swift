@@ -207,6 +207,7 @@ struct ChatMessageRow: View {
     /// after it. Only set for non-queued user bubbles when idle.
     var onDeleteFrom: (() -> Void)?
     var onWithdraw: (() -> Void)?
+    @Environment(\.openQueuedVideo) private var openQueuedVideo
     var autoRetryAttempt: Int = 0
     var autoRetryCountdown: Int = 0
     var autoRetryIsNetwork: Bool = false
@@ -413,9 +414,14 @@ struct ChatMessageRow: View {
                 // User-attached files above the text bubble
                 if !message.attachments.isEmpty {
                     UserAttachmentList(attachments: message.attachments)
-                } else if !message.inputAttachments.isEmpty {
+                }
+                if !message.inputAttachments.isEmpty && (message.isQueued || message.attachments.isEmpty) {
+                    // Queued inputs are distinct from pasted-card metadata. Do
+                    // not hide their video buttons merely because metadata exists.
                     // Queued message: show previews from cache before queue drain
-                    QueuedAttachmentPreview(attachments: message.inputAttachments)
+                    QueuedAttachmentPreview(attachments: message.inputAttachments, onOpenVideo: { attachment in
+                        openQueuedVideo(attachment, messageID: message.id)
+                    })
                 }
 
                 if !userDisplayText.isEmpty {

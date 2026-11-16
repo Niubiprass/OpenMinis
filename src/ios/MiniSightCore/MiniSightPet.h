@@ -30,9 +30,16 @@ typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
 @property (nonatomic) NSInteger spriteLayout;
 /// Play one short blip when an action clip starts.
 @property (nonatomic) BOOL soundEnabled;
-/// Hold a run-direction clip for the whole drag; end returns to idle.
+/// Legacy drag API remains source compatible; missing drag artwork uses idle.
 - (void)beginDraggingWithDirection:(CGFloat)direction;
 - (void)endDragging;
+- (void)beginDraggingAtPoint:(CGPoint)localPoint NS_SWIFT_NAME(beginDragging(at:));
+- (void)updateDraggingTarget:(CGPoint)center NS_SWIFT_NAME(updateDraggingTarget(_:));
+- (void)endDraggingCancelled:(BOOL)cancelled NS_SWIFT_NAME(endDraggingCancelled(_:));
+@property (nonatomic, copy, nullable) NSString *actionManifestPath;
+@property (nonatomic, copy, nullable) NSString *lyricsLine;
+@property (nonatomic) BOOL musicPlaying;
+@property (nonatomic) BOOL lyricsSuppressed;
 
 /// Main-thread API, like UIView. sprite is an already decoded/downsampled,
 /// upright 9-row / 8-column atlas; preparation belongs to the host, off-main.

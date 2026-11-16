@@ -1,0 +1,3 @@
+# CI generates and verifies these artifacts. Never commit binaries, build
+# cache, runner source worktrees or transient source manifests to the App repo.
+Artifacts/

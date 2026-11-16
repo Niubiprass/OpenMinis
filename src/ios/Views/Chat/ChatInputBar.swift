@@ -1004,6 +1004,8 @@ private final class QueuedGalleryImageSource: @unchecked Sendable {
 /// Async image tile — loads and decodes off the main thread, caches via NativeMediaImageCache.
 struct QueuedAttachmentPreview: View {
     let attachments: [InputAttachment]
+    // Explicit message-row -> V3 bridge; never present from a reusable cell.
+    let onOpenVideo: (InputAttachment) -> Bool
     @Environment(\.openImageGallery) private var openImageGallery
 
     private let tileSize: CGFloat = UserAttachmentTileMetrics.tile
@@ -1021,7 +1023,21 @@ struct QueuedAttachmentPreview: View {
                     .disabled(attachment.loadState != .ready)
                     .accessibilityLabel(AppLocalized("预览图片"))
                 case .video:
-                    placeholderTile(icon: "film", fileName: attachment.fileName)
+                    Button {
+                        guard attachment.loadState == .ready, attachment.cacheURL.isFileURL else { return }
+                        onOpenVideo(attachment)
+                    } label: {
+                        placeholderTile(icon: "film", fileName: attachment.fileName)
+                            .overlay(alignment: .center) {
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 22, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .shadow(color: .black.opacity(0.5), radius: 2)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(attachment.loadState != .ready || !attachment.cacheURL.isFileURL)
+                    .accessibilityLabel(AppLocalized("预览视频"))
                 case .document:
                     placeholderTile(icon: "doc.fill", fileName: attachment.fileName)
                 }

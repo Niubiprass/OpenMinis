@@ -46,6 +46,27 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)showLocalText:(NSString *)text inWindowScene:(nullable UIWindowScene *)scene
     NS_SWIFT_NAME(showLocalText(_:in:));
 
+/// Explicit name-hit entry. Local response only, preserves the existing draft;
+/// refuses an already-owned panel and never starts recognition before the handoff.
+- (BOOL)showNameWakeResponseInWindowScene:(nullable UIWindowScene *)scene
+    NS_SWIFT_NAME(showNameWakeResponse(in:));
+@property (nonatomic, readonly) NSUInteger nameWakeResponseGeneration;
+/// Set by the host AFTER showing the response and BEFORE its voice handoff.
+@property (nonatomic, copy, nullable) NSString *nameWakeRequestToken;
+@property (nonatomic, readonly) NSUInteger currentVoiceGeneration;
+/// Plugin host defers only named start notes until its response mailbox is verified.
+@property (nonatomic) BOOL nameWakeVoiceRequestDeferred;
+/// Invalidates only the matching named response/voice, never a manual session.
+- (BOOL)cancelNameWakeRequestForToken:(NSString *)token
+    NS_SWIFT_NAME(cancelNameWakeRequest(token:));
+@property (nonatomic, copy, nullable) void (^nameWakeCancellationHandler)(void);
+/// Natural/stop completion keeps the draft visible; only explicit cancel tears ownership down.
+@property (nonatomic, copy, nullable) void (^nameWakeVoiceFinishedHandler)(void);
+- (BOOL)isNameWakeResponseCurrent:(NSUInteger)generation
+    NS_SWIFT_NAME(isNameWakeResponseCurrent(generation:));
+- (BOOL)beginNameWakeVoiceInputForGeneration:(NSUInteger)generation
+    NS_SWIFT_NAME(beginNameWakeVoiceInput(generation:));
+
 /// Reveals the input row if it is hidden (second tap). Never builds the panel.
 - (void)revealComposerIfNeeded;
 /// Explicit gestures must execute their selected action, not all open a menu.

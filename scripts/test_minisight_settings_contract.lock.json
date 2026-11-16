@@ -27,6 +27,8 @@
   "minisight.interaction",
   "minisight.longPress",
   "minisight.mode",
+  "minisight.music.lyrics",
+  "minisight.music.motion",
   "minisight.pet.costume",
   "minisight.pet.tint",
   "minisight.petSize",
@@ -44,5 +46,8 @@
   "minisight.style",
   "minisight.voice.input",
   "minisight.voice.reply",
-  "minisight.voice.snore"
+  "minisight.voice.snore",
+  "minisight.wake.enabled",
+  "minisight.wake.name",
+  "minisight.wake.pronunciation"
 ]

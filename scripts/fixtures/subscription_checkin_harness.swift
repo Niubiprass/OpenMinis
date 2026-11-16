@@ -60,7 +60,9 @@ expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon), "eligibility
 record.claimDay = "2026-01-02"
 expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon), "dispatch alone is not failure")
 record.failedClaimDay = "2026-01-02"
-expect(SubscriptionCheckinPolicy.needsReminder(record, now: noon), "definite eligible claim failure can remind")
+expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon), "unclassified business refusal cannot remind")
+record.verifiedRetryableFailure = true
+expect(SubscriptionCheckinPolicy.needsReminder(record, now: noon), "specifically verified retryable claim failure can remind")
 record.reminderDay = "2026-01-02"
 record.remindedAt = noon
 expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon.addingTimeInterval(3600)), "reminder throttled 1h")
@@ -83,6 +85,9 @@ let pendingLegacy = try! JSONDecoder().decode(SubscriptionCheckinRecord.self,
     from: Data("{\"attemptDay\":\"2026-01-02\",\"reminderDay\":\"2026-01-02\"}".utf8))
 expect(pendingLegacy.eligibleDay == nil && pendingLegacy.failedClaimDay == nil, "old JSON needs no migration")
 expect(!SubscriptionCheckinPolicy.needsReminder(pendingLegacy, now: noon), "old pending never implies failed claim")
+let failedLegacy = try! JSONDecoder().decode(SubscriptionCheckinRecord.self,
+    from: Data("{\"eligibleDay\":\"2026-01-02\",\"claimDay\":\"2026-01-02\",\"failedClaimDay\":\"2026-01-02\"}".utf8))
+expect(!failedLegacy.verifiedRetryableFailure && !SubscriptionCheckinPolicy.needsReminder(failedLegacy, now: noon), "old failed JSON defaults verified evidence to false")
 
 // User's four-account case: only three new receipts enter the report.
 var completed = SubscriptionCheckinRecord()

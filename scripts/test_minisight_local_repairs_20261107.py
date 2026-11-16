@@ -20,17 +20,26 @@ need('no_visible_ack' in c and 'cancelPet(id' in c, 'missing pet ack falls back 
 bridge = read(ROOT / 'MiniSightVoiceBridge.swift')
 app = read(ROOT / 'MinisApp.swift')
 need('MiniSightVoiceBridge.shared.install()' in app, 'voice bridge installed at launch')
-need('self.emit(manager.recognizedText, final: true' in bridge and
-     bridge.index('self.emit(manager.recognizedText, final: true') < bridge.index('self.listening = false'), 'final transcript emitted before state clear')
+idle = bridge[bridge.index('    private func recordingBecameIdle('):bridge.index('    private func handleRequest(')]
+need('emit(manager.recognizedText, final: true' in idle and
+     idle.index('emit(manager.recognizedText, final: true') < idle.index('listening = false'), 'manual final emitted before state clear')
+need('finishNameWake(generation:' in idle and 'result: manager.recognizedText' in idle,
+     'named final uses the real transcript before terminal cleanup')
 need('"starting"' in bridge and 'generation' in bridge, 'voice has startup ack and generation')
 need('url.host == "minisight"' in app and 'url.path == "/voice"' in app, 'voice can wake a suspended App')
 need('reason: "stopped"' in bridge or 'reason: "stopped"' in bridge.replace('"', '"'), 'pending start can be stopped')
 need('empty_transcript' in bridge, 'empty final is explicit')
 
-# Runtime snapshot: real 45-key transport, written before notification, launch repair.
+# Runtime snapshot: 46 legacy + 2 audited media + 3 explicit wake identity keys.
 settings = read(ROOT / 'MiniSightSettings.swift')
 store = read(ROOT / 'MiniSightConfigStore.swift')
-need('runtimeFields.count == 46' in settings, 'snapshot validates 46 keys')
+need('runtimeFields.count == 51' in settings, 'snapshot validates 51 audited keys')
+need('MiniSightSettingKey.lyricsEnabled: "lyricsEnabled"' in settings and
+     'MiniSightSettingKey.musicMotion: "musicMotion"' in settings, 'approved media fields remain in snapshot')
+for var in ['wakeEnabled', 'wakeName', 'wakePronunciation']:
+    need(f'MiniSightSettingKey.{var}: "{var}"' in settings and
+         f'case MiniSightSettingKey.{var}: return {var}' in store, f'explicit wake field {var} is wired')
+need('MiniSightSettingKey.wakeEnabled: false' in settings, 'wake stays opt-in by default')
 need('values["preferences"] = canonical' in settings, 'snapshot has canonical preferences bag')
 need(settings.index('data.write(to: url') < settings.index('CFNotificationCenterPostNotification'), 'snapshot writes before notify')
 need('if !FileManager.default.fileExists' in store and 'writeSnapshot()' in store, 'launch repairs missing snapshot')
@@ -95,7 +104,10 @@ need('@AppStorage("minisight.petSound")' in runtime and 'MiniSightBlip.playIfEna
 need('MiniSightBlip.h' in read(ROOT / 'MinisApp-Bridging-Header.h'), 'sound player is visible to Swift')
 need('@AppStorage("minisight.interaction")' in runtime and 'parent.interactionEnabled' in runtime, 'in-app gestures honour the interaction switch')
 need('@AppStorage("minisight.gesture.single")' in runtime and 'parent.onGesture(parent.singleAction' in runtime, 'in-app taps follow the configured action')
-need('pet.beginDragging(withDirection' in runtime and 'pet.endDragging()' in runtime, 'drag holds one run clip until release')
+need('pet.beginDragging(at:' in runtime and 'pet.updateDraggingTarget(' in runtime and
+     'pet.endDraggingCancelled(false)' in runtime and 'pet.endDraggingCancelled(true)' in runtime,
+     'drag preserves one role; normal release and cancellation are distinct')
+need('pet.beginDragging(withDirection: delta.x)' not in runtime, 'direction samples cannot restart the drag clip')
 need('flippedVertically' in runtime and 'loadPet' in runtime, 'loaded sprites are flipped upright for display')
 panel = read(ROOT / 'MiniSightCore/MiniSightChatPanel.m')
 need('bubbleScale' in panel and '280. * panelScale' in panel, 'bubble scale changes the panel width')

@@ -1,0 +1,3 @@
+# Upstream licence/header notices are preserved byte-for-byte (SHA256 gates).
+# Their original trailing spaces/EOF blank lines are not App source edits.
+src/ios/Resources/MiniSightWake/Licenses/** -whitespace

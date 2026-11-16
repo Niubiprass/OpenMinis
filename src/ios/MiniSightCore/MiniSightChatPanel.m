@@ -1,4 +1,5 @@
 #import "MiniSightChatPanel.h"
+#import "MiniSightNameWakeGate.h"
 #import "MiniSightLog.h"
 #import "MiniSightChatLayout.h"
 #import "MiniSightBridgeIO.h"
@@ -272,6 +273,13 @@ static CGRect MSChatScreenRect(UIWindowScene *scene) {
 @property (nonatomic, assign) BOOL voicePending;
 @property (nonatomic, assign) BOOL voiceListening;
 @property (nonatomic, assign) BOOL voiceHeld;
+@property (nonatomic, readwrite) NSUInteger nameWakeResponseGeneration;
+@property (nonatomic) BOOL nameWakeResponsePending;
+@property (nonatomic) BOOL voiceFromNameWake;
+@property (nonatomic) BOOL nameWakeVoiceHandoff;
+@property (nonatomic, copy, nullable) NSString *voiceNameWakeToken;
+- (NSDictionary *)voiceRequestForAction:(NSString *)action;
+- (void)invalidateNameWakeResponse;
 @property (nonatomic, copy, nullable) NSString *voiceDraft;
 @property (nonatomic, copy, nullable) dispatch_block_t voiceWaiter;
 @property (nonatomic, strong, nullable) UITapGestureRecognizer *editorTap;
@@ -714,6 +722,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
         [self endSendingUI];
         [self.ai cancel];
     }
+    [self invalidateNameWakeResponse];
+    if (self.voiceFromNameWake) [self cancelVoice];
     ++self.lifecycleGeneration;
     self.closing = NO;
     self.composerVisible = NO;
@@ -736,6 +746,61 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     if (self.visibilityHandler) self.visibilityHandler(YES);
     MSDiagEvent(@"chat", @"show", @"ok", @{ @"generation": @(self.lifecycleGeneration), @"visible": @YES });
     return YES;
+}
+
+- (BOOL)showNameWakeResponseInWindowScene:(UIWindowScene *)scene {
+    NSCAssert(NSThread.isMainThread, @"Name response is main-thread owned");
+    if (self.visible || self.sending || self.voicePending || self.voiceListening || !scene) return NO;
+    if (![self showInWindowScene:scene]) return NO;
+    self.nameWakeResponseGeneration = self.lifecycleGeneration;
+    self.nameWakeResponsePending = YES;
+    self.composerVisible = YES;
+    [self deactivateEditor];
+    [self appendMessage:@"我在，听你说。" role:MiniSightChatRoleAssistant];
+    [self layoutForCurrentScreen];
+    return self.visible;
+}
+- (BOOL)isNameWakeResponseCurrent:(NSUInteger)generation {
+    return MSNameWakeMayStartInput(generation, self.nameWakeResponseGeneration,
+        self.lifecycleGeneration, self.nameWakeResponsePending, self.visible,
+        self.sending, self.editorActive, self.voicePending, self.voiceListening);
+}
+- (void)invalidateNameWakeResponse {
+    BOOL owned = self.nameWakeResponseGeneration != 0;
+    self.nameWakeResponsePending = NO;
+    self.nameWakeResponseGeneration = 0;
+    if (owned) {
+        self.nameWakeRequestToken = nil;
+        if (self.nameWakeCancellationHandler) self.nameWakeCancellationHandler();
+    }
+}
+- (NSUInteger)currentVoiceGeneration {
+    return self.voicePending || self.voiceListening ? self.voiceGeneration : 0;
+}
+- (BOOL)cancelNameWakeRequestForToken:(NSString *)token {
+    NSCAssert(NSThread.isMainThread, @"Named cancellation is main-thread owned");
+    if (!token.length || !([token isEqualToString:self.nameWakeRequestToken] ||
+        (self.voiceFromNameWake && [token isEqualToString:self.voiceNameWakeToken]))) return NO;
+    if (self.voiceFromNameWake) [self cancelVoice];
+    [self invalidateNameWakeResponse];
+    self.nameWakeRequestToken = nil;
+    return YES; // Do not close or cancel an editor/manual panel on host cancellation.
+}
+- (BOOL)beginNameWakeVoiceInputForGeneration:(NSUInteger)generation {
+    NSString *token = self.nameWakeRequestToken;
+    NSUUID *identity = [[NSUUID alloc] initWithUUIDString:token];
+    if (![self isNameWakeResponseCurrent:generation] || token.length != 36 || !identity ||
+        [identity.UUIDString caseInsensitiveCompare:token] != NSOrderedSame) return NO;
+    // Consume only this response. A user edit/reopen cannot consume an old hit.
+    self.nameWakeResponsePending = NO;
+    self.nameWakeResponseGeneration = 0;
+    self.voiceNameWakeToken = token;
+    self.voiceFromNameWake = YES;
+    self.nameWakeVoiceHandoff = YES;
+    [self revealComposer];
+    [self voiceTapped]; // Existing transcript-to-draft path, never automatic send.
+    self.nameWakeVoiceHandoff = NO;
+    return self.voicePending || self.voiceListening;
 }
 
 - (void)showLocalText:(NSString *)text inWindowScene:(UIWindowScene *)scene {
@@ -767,6 +832,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 - (void)activateEditor {
     NSCAssert([NSThread isMainThread], @"chat editor is main-thread only");
     if (!self.visible || !self.editorWindow || !self.editorField || self.editorActive) return;
+    [self invalidateNameWakeResponse];
+    if (self.voiceFromNameWake) [self cancelVoice];
     self.editorField.text = self.inputField.text;
     // Editing follows the moving pet; the editor window tracks its world frame.
     // Do not acquire a pet motion lock here.
@@ -830,6 +897,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 - (void)hideWithoutKey {
     NSCAssert([NSThread isMainThread], @"chat panel is main-thread only");
     if (!self.built) return;
+    [self invalidateNameWakeResponse];
     [self cancelVoice];
     BOOL wasVisible = self.visible;
     ++self.lifecycleGeneration;
@@ -856,6 +924,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     MSDiag(@"chat close visible=%d sending=%d generation=%lu", self.visible, self.sending,
            (unsigned long)self.requestGeneration);
     if (!self.visible || self.closing) return;
+    [self invalidateNameWakeResponse];
     [self cancelVoice];
     self.visible = NO;
     self.closing = YES;
@@ -892,11 +961,20 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 /// All replies are fenced by this UI generation; neither a repeated Darwin
 /// note nor a previous attempt may append another error or replace a draft.
 - (void)beginVoiceInput { [self voiceTapped]; }
+- (NSDictionary *)voiceRequestForAction:(NSString *)action {
+    if (self.voiceFromNameWake && self.voiceNameWakeToken.length)
+        return @{@"action": action, @"generation": @(self.voiceGeneration),
+            @"source": @"nameWake", @"nameWakeToken": self.voiceNameWakeToken};
+    return @{@"action": action, @"generation": @(self.voiceGeneration)}; // Manual wire unchanged.
+}
 - (void)voiceTapped {
     if (!self.visible || self.sending) return;
+    if (!self.nameWakeVoiceHandoff) [self invalidateNameWakeResponse];
     if (self.voicePending || self.voiceListening) {
-        MSBridgeWrite(self.containerPath, @"voice.json", @{@"action": @"stop", @"generation": @(self.voiceGeneration)});
+        MSBridgeWrite(self.containerPath, @"voice.json", [self voiceRequestForAction:@"stop"]);
         MSBridgePost(@"com.openminis.minisight.voice");
+        // Stop requests the current transcript; do not race it with a second
+        // cancellation channel which would overwrite that final with empty text.
         return;
     }
     [self deactivateEditor];
@@ -907,12 +985,12 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     self.inputField.placeholder = @"正在连接语音…";
     self.micButton.tintColor = UIColor.systemBlueColor;
     [self.micButton setImage:[UIImage systemImageNamed:@"stop.circle.fill"] forState:UIControlStateNormal];
-    if (!MSBridgeWrite(self.containerPath, @"voice.json", @{@"action": @"start", @"generation": @(self.voiceGeneration)})) {
+    if (!MSBridgeWrite(self.containerPath, @"voice.json", [self voiceRequestForAction:@"start"])) {
         [self finishVoiceWithReason:@"write_request"];
         return;
     }
     MSDiagEvent(@"voice", @"request", @"pending", @{@"source": @"plugin", @"generation": @(self.voiceGeneration)});
-    MSBridgePost(@"com.openminis.minisight.voice");
+    if (!(self.voiceFromNameWake && self.nameWakeVoiceRequestDeferred)) MSBridgePost(@"com.openminis.minisight.voice");
     __weak typeof(self) weakSelf = self;
     NSUInteger generation = self.voiceGeneration;
     self.voiceWaiter = dispatch_block_create((dispatch_block_flags_t)0, ^{
@@ -928,7 +1006,18 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
                 MSBridgePost(@"com.openminis.minisight.voice");
         });
     });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), self.voiceWaiter);
+    if (!self.voiceFromNameWake) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), self.voiceWaiter);
+    } else {
+        // Name detection already owns a running App; never foreground it by URL.
+        dispatch_block_cancel(self.voiceWaiter);
+        self.voiceWaiter = nil;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            MiniSightChatPanel *panel = weakSelf;
+            if (panel && generation == panel.voiceGeneration && panel.voicePending && panel.voiceFromNameWake)
+                [panel finishVoiceWithReason:@"background_voice_unavailable"];
+        });
+    }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(50 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         MiniSightChatPanel *panel = weakSelf;
         if (panel && generation == panel.voiceGeneration && (panel.voicePending || panel.voiceListening))
@@ -940,8 +1029,23 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     if (!self.voicePending && !self.voiceListening) return;
     if (self.voiceWaiter) dispatch_block_cancel(self.voiceWaiter);
     self.voiceWaiter = nil;
+    BOOL named = self.voiceFromNameWake;
+    BOOL notifyNamedEnd = named && self.nameWakeRequestToken.length > 0;
+    if (named && ([@"voice_timeout" isEqualToString:reason] || [@"background_voice_unavailable" isEqualToString:reason])) {
+        MSBridgeWrite(self.containerPath, @"voice.json", [self voiceRequestForAction:@"cancel"]);
+        MSBridgePost(@"com.openminis.minisight.voice");
+    }
     self.voicePending = NO;
     self.voiceListening = NO;
+    self.voiceFromNameWake = NO;
+    self.voiceNameWakeToken = nil;
+    if (named) self.nameWakeRequestToken = nil;
+    if (notifyNamedEnd) {
+        BOOL completed = !reason.length || [reason isEqualToString:@"empty_transcript"];
+        if (completed) {
+            if (self.nameWakeVoiceFinishedHandler) self.nameWakeVoiceFinishedHandler();
+        } else if (self.nameWakeCancellationHandler) self.nameWakeCancellationHandler();
+    }
     self.micButton.tintColor = UIColor.secondaryLabelColor;
     [self.micButton setImage:[UIImage systemImageNamed:@"mic.fill"] forState:UIControlStateNormal];
     self.inputField.placeholder = @"和我说点什么…";
@@ -955,7 +1059,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 
 - (void)cancelVoice {
     if (!self.voicePending && !self.voiceListening) return;
-    MSBridgeWrite(self.containerPath, @"voice.json", @{@"action": @"cancel", @"generation": @(self.voiceGeneration)});
+    MSBridgeWrite(self.containerPath, @"voice.json", [self voiceRequestForAction:@"cancel"]);
     MSBridgePost(@"com.openminis.minisight.voice");
     [self finishVoiceWithReason:@"cancelled"];
     ++self.voiceGeneration;
@@ -1460,6 +1564,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
         MSDiagEvent(@"chat", @"skip", @"skipped", @{ @"reason": @"empty_input" });
         return;
     }
+    [self invalidateNameWakeResponse];
+    if (self.voiceFromNameWake) [self cancelVoice];
     NSString *requestID = self.ai.nextRequestID;
     MSDiagEvent(@"chat", @"send", @"pending", @{ @"request": requestID, @"generation": @(self.requestGeneration + 1), @"chars": @(text.length) });
     [self deactivateEditor];
@@ -1625,6 +1731,8 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
 #pragma mark Clear
 
 - (void)clearConversation {
+    [self invalidateNameWakeResponse];
+    if (self.voiceFromNameWake) [self cancelVoice];
     for (NSLayoutConstraint *c in self.bubbleWidths) [c setActive:NO];
     [self.bubbleWidths removeAllObjects];
     if (self.sending) {

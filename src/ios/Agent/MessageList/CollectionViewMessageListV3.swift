@@ -269,6 +269,12 @@ struct CollectionViewMessageListV3: UIViewControllerRepresentable {
         }
     }
 
+    static func dismantleUIViewController(_ uiViewController: MessageListViewController, coordinator: Coordinator) {
+        // Cancel unfinished retained-copy work when the list leaves its owner.
+        // A mounted cover still owns its immutable lease through teardown.
+        coordinator.fileAttachmentPresenter.reset()
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     enum Section { case main }
@@ -1597,6 +1603,12 @@ extension CollectionViewMessageListV3 {
                     .environment(\.openFileAttachments, OpenFileAttachmentsAction { [weak self] attachments, tappedId in
                         self?.openFileAttachments(attachments, startingAt: tappedId) ?? false
                     })
+                    // Queue video needs its own LOCAL intent, explicitly
+                    // injected into this isolated host. Capture the owning
+                    // session so a stale cell cannot open in a different one.
+                    .environment(\.openQueuedVideo, OpenQueuedVideoAction { [weak self, sessionId = vm.sessionId] attachment, messageID in
+                        self?.openQueuedVideo(attachment, messageID: messageID, sessionId: sessionId) ?? false
+                    })
                     .environment(\.openMinisURL, OpenMinisURLAction { [weak self] url in
                         self?.openMinisURLInOwningSession(url) ?? .systemAction
                     })
@@ -2097,6 +2109,21 @@ extension CollectionViewMessageListV3 {
             return true
         }
 
+        /// [T-queued-video-preview] Verify the live queue identity, not the
+        /// recycled cell's snapshot. This is an intent bridge, not queue logic.
+        @discardableResult
+        func openQueuedVideo(_ attachment: InputAttachment, messageID: UUID, sessionId: String?) -> Bool {
+            guard let vm, let sessionId, !sessionId.isEmpty, sessionId == vm.sessionId,
+                  let message = vm.messages.first(where: { $0.id == messageID }), message.isQueued,
+                  let current = message.inputAttachments.first(where: { $0.id == attachment.id }),
+                  current.kind == .video, current.loadState == .ready,
+                  current.cacheURL == attachment.cacheURL else {
+                AppLogger(category: "QueuedVideoPreview").info("[QueuedVideoPreview] stage=stale-cell")
+                return false
+            }
+            return fileAttachmentPresenter.openQueuedVideo(current, sessionId: sessionId)
+        }
+
         /// Used by fallback links inside the whole-message tree. Resolve against
         /// THIS list's VM session, never a transient frontmost session.
         func openMinisURLInOwningSession(_ url: URL) -> OpenURLAction.Result {
@@ -2150,6 +2177,8 @@ extension CollectionViewMessageListV3 {
             lastMessageSub?.cancel(); lastMessageSub = nil
             lastMessageBlockCountSub?.cancel(); lastMessageBlockCountSub = nil
             lastMessageId = nil
+            // A replacement VM is a new owner even when its session ID agrees.
+            fileAttachmentPresenter.reset()
             vm = newVM
             bindViewModel(newVM)
             // Re-apply from the new VM's authoritative messages (identity may
@@ -6827,6 +6856,13 @@ private struct SheetOverlayView: View {
             // own black chrome and hides the status bar.
             .fullScreenCover(item: $filePresenter.videoSheet) { video in
                 MinisVideoFullscreenPlayer(fileURL: video.url)
+                    // Capture the payload (and lease) through player teardown;
+                    // reset/session change may already have cleared videoSheet.
+                    .onDisappear {
+                        withExtendedLifetime(video.queuedLease) {
+                            filePresenter.queuedVideoDidDisappear(id: video.id)
+                        }
+                    }
             }
             .alert(
                 AppLocalized("File Not Found"),

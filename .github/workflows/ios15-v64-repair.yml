@@ -21,7 +21,7 @@ env:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 65
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,6 +31,17 @@ jobs:
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
+      - name: Cache controlled keyword runtime
+        uses: actions/cache@v4
+        with:
+          path: src/ios/Packages/MiniSightKeywordRuntime/Artifacts
+          key: minisight-keyword-ios15.5-${{ runner.arch }}-${{ hashFiles('scripts/build_minisight_keyword_runtime_20261116.sh', 'scripts/test_minisight_keyword_provenance_20261116.py', 'src/ios/Packages/MiniSightKeywordRuntime/Package.swift', 'src/ios/Packages/MiniSightKeywordRuntime/Sources/Version.swift') }}
+      - name: Build pinned keyword dependency from pristine source
+        run: |
+          set -euo pipefail
+          brew install cmake ninja
+          bash scripts/build_minisight_keyword_runtime_20261116.sh
+          python3 scripts/test_minisight_keyword_provenance_20261116.py --artifact
       - name: Verify fixed source (never fetch or re-port upstream)
         run: |
           git log -1 --format='%H %s'
@@ -89,6 +100,19 @@ jobs:
           python3 scripts/test_error_copy_l10n_160651.py
           python3 scripts/test_friendly_error_text_behavior_160651.py
           python3 scripts/test_minisight_local_repairs_20261107.py
+          # The cross-tree settings audit runs locally with both repositories;
+          # this independent runner checks the new settings in the liveliness gate.
+          python3 scripts/test_minisight_action_import.py --require-native
+          python3 scripts/test_minisight_action_library_20261116.py --ci
+          python3 scripts/test_minisight_lyrics_20261116.py --require-native
+          python3 scripts/test_minisight_music_monitor_20261116.py --require-native
+          python3 scripts/test_minisight_liveliness_20261116.py --require-ios
+          python3 scripts/test_minisight_effects_runtime_20261116.py --require-native
+          python3 scripts/test_minisight_wake_name_20261116.py --require-native
+          python3 scripts/test_minisight_name_background_audio_20261116.py --require-native
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_checkin_no_participation_20261116.py
+          python3 scripts/test_queued_video_preview_20261116.py --require-native
+          python3 scripts/test_minisight_wake_20261116.py --require-native --require-ios
           python3 scripts/test_multikey_160651.py
           python3 scripts/test_multikey_persistence_160651.py
           python3 scripts/test_multikey_freeze_20261101.py
@@ -150,6 +174,9 @@ jobs:
       - name: Package without adding elevated entitlements
         run: |
           set -euo pipefail
+          # Native dependency notices/source obligations must be closed before
+          # any IPA artifact/release publication. Compilation is not this gate.
+          python3 scripts/test_minisight_wake_20261116.py --require-release-license
           APP=DerivedData/Build/Products/Release-iphoneos/Minis.app
           test -f "$APP/Info.plist"
           mkdir -p Payload
@@ -190,6 +217,8 @@ jobs:
           path: |
             build-v64r.log
             minos-v64r.txt
+            src/ios/Packages/MiniSightKeywordRuntime/Artifacts/provenance.json
+            src/ios/Packages/MiniSightKeywordRuntime/Artifacts/Proof
           if-no-files-found: ignore
           retention-days: 14
       # [T-inapp-update-beta] Feed for the in-app updater. A fixed tag is

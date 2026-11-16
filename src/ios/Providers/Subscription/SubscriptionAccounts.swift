@@ -185,14 +185,18 @@ private struct SubscriptionAccountRow: View {
                 if claiming {
                     ProgressView().controlSize(.small)
                 } else if authenticated {
-                    Button(checkin?.checkedIn == true ? "已签到" : "签到") { claim() }
-                        .font(.caption).buttonStyle(.borderless)
-                        .disabled(loading || checkin?.checkedIn == true || checkin?.canClaim == false)
+                    if checkin?.checkedIn == true || checkin?.eligibility != .ineligible {
+                        Button(checkin?.checkedIn == true ? "已签到" : "签到") { claim() }
+                            .font(.caption).buttonStyle(.borderless)
+                            .disabled(loading || checkin?.canClaim == false || checkin == nil)
+                    }
                 } else {
                     Button("登录", action: onReauthenticate).font(.caption).buttonStyle(.borderless)
                 }
             }
-            if let note { Text(note).font(.caption).foregroundColor(.secondary) }
+            if checkin?.eligibility != .ineligible, let note {
+                Text(note).font(.caption).foregroundColor(.secondary)
+            }
             if expanded {
                 if let credit {
                     ProgressView(value: credit.remainingFraction).tint(credit.isLow ? .orange : .green)
@@ -212,7 +216,7 @@ private struct SubscriptionAccountRow: View {
             }
         }
         .padding(.vertical, 2)
-        .onAppear { if !loaded { refresh() } }
+        .onAppear { if !loaded { refresh(forceRefresh: false) } }
         .onDisappear { reset() }
         .onChange(of: store.authRevision) { _ in authChanged() }
     }
@@ -227,14 +231,14 @@ private struct SubscriptionAccountRow: View {
 
     private func authChanged() {
         if let context, (try? SubscriptionCreditAPI.requireCurrent(context)) != nil {
-            if SubscriptionCheckinLedger.completed(SubscriptionCheckinLedger.key(context)) {
-                checkin = SubscriptionCheckin(checkedIn: true, canClaim: false, reward: nil)
-                note = nil
+            if let cached = SubscriptionCheckinLedger.cachedStatus(SubscriptionCheckinLedger.key(context)) {
+                checkin = cached
+                if cached.checkedIn || cached.eligibility == .ineligible { note = nil }
             }
             return
         }
         reset()
-        refresh()
+        refresh(forceRefresh: false)
     }
 
     private func safeMessage(_ error: Error) -> String {
@@ -243,7 +247,7 @@ private struct SubscriptionAccountRow: View {
         return FriendlyErrorText.sanitize(error) ?? "查询未完成，请稍后刷新"
     }
 
-    private func refresh() {
+    private func refresh(forceRefresh: Bool = true) {
         guard !loading && !claiming else { return }
         guard authenticated else { loaded = true; return }
         loading = true
@@ -255,7 +259,11 @@ private struct SubscriptionAccountRow: View {
                 let ctx = try await SubscriptionCreditAPI.context(instance, accountSlot: account.id)
                 guard generation == request else { return }
                 context = ctx
-                await read(ctx, generation: request)
+                if forceRefresh {
+                    await read(ctx, generation: request, forceRefresh: true)
+                } else {
+                    await read(ctx, generation: request)
+                }
             } catch {
                 guard generation == request else { return }
                 creditNote = safeMessage(error)
@@ -263,7 +271,7 @@ private struct SubscriptionAccountRow: View {
         }
     }
 
-    private func read(_ ctx: SubscriptionCreditAPI.Context, generation request: UUID) async {
+    private func read(_ ctx: SubscriptionCreditAPI.Context, generation request: UUID, forceRefresh: Bool = false) async {
         do {
             let value = try await SubscriptionCreditAPI.credit(ctx)
             try SubscriptionCreditAPI.requireCurrent(ctx)
@@ -274,11 +282,11 @@ private struct SubscriptionAccountRow: View {
             creditNote = safeMessage(error)
         }
         do {
-            let value = try await SubscriptionCreditAPI.checkin(ctx)
+            let value = try await SubscriptionCreditAPI.checkin(ctx, forceRefresh: forceRefresh)
             try SubscriptionCreditAPI.requireCurrent(ctx)
             guard generation == request else { return }
             checkin = value
-            note = value.checkedIn ? nil : value.note
+            note = value.checkedIn || value.eligibility == .ineligible ? nil : value.note
         } catch {
             guard generation == request, !Task.isCancelled else { return }
             note = safeMessage(error)

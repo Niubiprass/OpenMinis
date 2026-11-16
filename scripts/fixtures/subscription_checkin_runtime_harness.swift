@@ -61,6 +61,7 @@ enum TestTint { case systemGreen, systemRed }
     static var pending: CheckedContinuation<Void, Never>?
     static var statusError: SubscriptionBillingError?
     static var claimError: SubscriptionBillingError?
+    static var claimErrorBySlot: [String: SubscriptionBillingError] = [:]
     static var cancelClaim = false
     static var statusBySlot: [String: [String: Any]] = [:]
     static var responseBySlot: [String: [String: Any]] = [:]
@@ -70,6 +71,7 @@ enum TestTint { case systemGreen, systemRed }
         if suspended { await withCheckedContinuation { pending = $0 } }
         if mutation {
             if cancelClaim { throw CancellationError() }
+            if let error = claimErrorBySlot[slot] { throw error }
             if let claimError { throw claimError }
         } else if let statusError { throw statusError }
         return mutation ? (responseBySlot[slot] ?? response) : (statusBySlot[slot] ?? status)
@@ -88,7 +90,13 @@ enum TestTint { case systemGreen, systemRed }
         let duplicate = SubscriptionCreditAPI.Context(instanceId: "b", parentId: "p", type: .traeCN, epoch: ctx.epoch, credentials: ctx.credentials)
         let key = SubscriptionCheckinLedger.key(ctx)
         expect(key == SubscriptionCheckinLedger.key(duplicate), "same account across slots")
-        func clear() { defaults.removeObject(forKey: "subscription.checkin.v2." + key) }
+        func clear() {
+            defaults.removeObject(forKey: "subscription.checkin.v2." + key)
+            // Exercise day expiry rather than adding test-only production APIs.
+            _ = SubscriptionCheckinLedger.cachedStatus(key, now: now.addingTimeInterval(86400))
+        }
+        func absent(_ identity: String) -> Bool { defaults.data(forKey: "subscription.checkin.v2." + identity) == nil }
+        clear()
         _ = try await SubscriptionCreditAPI.checkin(ctx)
         expect(SubscriptionCheckinLedger.completed(key), "status persisted")
         expect(!SubscriptionCheckinPolicy.needsSuccessNotice(SubscriptionCheckinLedger.record(key), now: now), "discovered completion silent")
@@ -101,7 +109,8 @@ enum TestTint { case systemGreen, systemRed }
         let refused = try await SubscriptionCreditAPI.checkin(ctx)
         expect(!refused.canClaim, "9095 status becomes terminal status")
         let blocked = SubscriptionCheckinLedger.record(key)
-        expect(!SubscriptionCheckinPolicy.canAttempt(blocked, now: now), "terminal blocks automatic retry")
+        expect(!SubscriptionCheckinLedger.canAttempt(key, now: now), "memory terminal blocks automatic retry")
+        expect(absent(key), "status exclusion writes no UserDefaults journal")
         expect(!SubscriptionCheckinPolicy.needsReminder(blocked, now: now), "terminal has no reminder")
         _ = try await SubscriptionCreditAPI.checkin(duplicate)
         expect(CheckinTransport.reads == 2, "blocked cache reused")
@@ -129,6 +138,7 @@ enum TestTint { case systemGreen, systemRed }
             catch is SubscriptionBillingError { }
             expect(CheckinTransport.writes == writesBeforeQualification, "ineligible/unknown never dispatch")
             expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "ineligible/unknown silent")
+            expect(absent(key), "ineligible/unknown qualification never creates journal")
             clear()
         }
         CheckinTransport.status = ["code": 0, "checked_in": false, "enable": true]
@@ -136,10 +146,22 @@ enum TestTint { case systemGreen, systemRed }
         do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("definite refusal must fail") }
         catch let error as SubscriptionBillingError { expect(error.businessRefusal, "business rejection retained") }
         let rejected = SubscriptionCheckinLedger.record(key)
-        expect(rejected.eligibleDay == day && rejected.claimDay == day && rejected.failedClaimDay == day, "only eligible dispatched refusal has failure evidence")
-        expect(SubscriptionCheckinPolicy.needsReminder(rejected, now: now), "real claim failure counted")
+        expect(!rejected.verifiedRetryableFailure && !SubscriptionCheckinPolicy.needsReminder(rejected, now: now), "9004 alone cannot establish retryable account support")
+        expect(absent(key), "generic refusal drops uncompleted UserDefaults key")
+        expect(SubscriptionCheckinLedger.cachedStatus(key)?.eligibility == .unknown, "9004 not mislabelled ineligible")
+        let refusedWrites = CheckinTransport.writes
+        do { _ = try await SubscriptionCreditAPI.claim(ctx, automatic: true); fatalError("quiet memory must skip") }
+        catch is SubscriptionBillingError { }
+        expect(CheckinTransport.writes == refusedWrites, "automatic refusal not replayed today")
+        clear()
+        CheckinTransport.claimError = SubscriptionBillingError(message: "specifically verified retry fixture",
+            businessRefusal: true, verifiedRetryableFailure: true)
+        do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("verified fixture must fail") }
+        catch is SubscriptionBillingError { }
+        let verified = SubscriptionCheckinLedger.record(key)
+        expect(verified.verifiedRetryableFailure && SubscriptionCheckinPolicy.needsReminder(verified, now: now), "separate verified evidence can remind")
         let persistedFailure = defaults.data(forKey: "subscription.checkin.v2." + key)!
-        expect(try JSONDecoder().decode(SubscriptionCheckinRecord.self, from: persistedFailure) == rejected, "failure persistence roundtrip")
+        expect(try JSONDecoder().decode(SubscriptionCheckinRecord.self, from: persistedFailure) == verified, "verified failure roundtrip")
         CheckinTransport.claimError = SubscriptionBillingError(message: "fixture reply lost")
         do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("lost reply must not succeed") }
         catch is SubscriptionBillingError { }
@@ -150,18 +172,21 @@ enum TestTint { case systemGreen, systemRed }
         do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("cancel must abort") }
         catch is CancellationError { }
         expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "cancel has no failure")
+        expect(absent(key), "cancelled mutation leaves no journal")
         CheckinTransport.cancelClaim = false
         clear()
         CheckinTransport.statusError = SubscriptionBillingError(message: "fixture query failed")
         do { _ = try await SubscriptionCreditAPI.checkin(ctx); fatalError("query must fail") }
         catch is SubscriptionBillingError { }
         expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "qualification error is not claim failure")
+        expect(absent(key), "qualification transport error creates no journal")
         CheckinTransport.statusError = nil
         clear()
         let expected = SubscriptionCheckinLedger.record(key)
         SubscriptionCheckinLedger.remember(.init(checkedIn: false, canClaim: true, reward: nil), key: key, requestDay: day)
+        SubscriptionCheckinLedger.beginAttempt(key)
         SubscriptionCheckinLedger.beginClaim(key, requestDay: day)
-        SubscriptionCheckinLedger.failedClaim(key, requestDay: day)
+        SubscriptionCheckinLedger.failedClaim(key, requestDay: day, verifiedRetryableFailure: true)
         SubscriptionCheckinLedger.unknown(key, requestDay: day, expected: expected)
         expect(SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "stale unknown cannot erase newer refusal")
         clear()
@@ -178,6 +203,29 @@ enum TestTint { case systemGreen, systemRed }
         _ = try await second.value
         expect(CheckinTransport.reads == reads + 1, "concurrent waiters share status")
         expect(SubscriptionCheckinLedger.completed(key), "live waiter persists despite owner cancellation")
+        clear()
+        CheckinTransport.status = ["code": 0, "checked_in": false, "enable": false]
+        CheckinTransport.suspended = true
+        let lateQuery = Task { @MainActor in try await SubscriptionCreditAPI.checkin(ctx) }
+        while CheckinTransport.pending == nil { await Task.yield() }
+        SubscriptionCheckinLedger.confirmed(key, requestDay: day, notify: true)
+        let concurrentReceipt = defaults.data(forKey: "subscription.checkin.v2." + key)!
+        CheckinTransport.release()
+        let lateResult = try await lateQuery.value
+        expect(lateResult.checkedIn, "late ineligible query returns confirmed completion")
+        expect(defaults.data(forKey: "subscription.checkin.v2." + key) == concurrentReceipt, "late query preserves pending receipt bytes")
+        clear()
+        CheckinTransport.status = ["code": 0, "checked_in": false, "enable": true]
+        CheckinTransport.response = ["code": 0]
+        CheckinTransport.suspended = true
+        let priorWrites = CheckinTransport.writes
+        let claimingFirst = Task { @MainActor in try await SubscriptionCreditAPI.claim(ctx) }
+        while CheckinTransport.pending == nil { await Task.yield() }
+        do { _ = try await SubscriptionCreditAPI.claim(duplicate); fatalError("concurrent duplicate must not claim") }
+        catch is SubscriptionBillingError { }
+        CheckinTransport.release()
+        _ = try await claimingFirst.value
+        expect(CheckinTransport.writes == priorWrites + 1, "concurrent claims dispatch one mutation")
         clear()
         CheckinTransport.suspended = true
         let stale = Task { @MainActor in try await SubscriptionCreditAPI.checkin(ctx) }
@@ -197,12 +245,14 @@ enum TestTint { case systemGreen, systemRed }
         var pinned = Calendar(identifier: .gregorian)
         pinned.timeZone = TimeZone(identifier: "Asia/Shanghai")!
         let localNoon = pinned.date(bySettingHour: 12, minute: 0, second: 0, of: now)!
-        SubscriptionCheckinLedger.beginAttempt(key, now: localNoon)
-        expect(!SubscriptionCheckinPolicy.canAttempt(SubscriptionCheckinLedger.record(key), now: localNoon.addingTimeInterval(7199)), "network retry before two hours blocked")
-        expect(SubscriptionCheckinPolicy.canAttempt(SubscriptionCheckinLedger.record(key), now: localNoon.addingTimeInterval(7200)), "network retry at two hours allowed")
+        SubscriptionCheckinLedger.unknown(key, requestDay: SubscriptionCheckinPolicy.day(localNoon), now: localNoon)
+        expect(absent(key), "network retry metadata memory only")
+        expect(!SubscriptionCheckinLedger.canAttempt(key, now: localNoon.addingTimeInterval(7199)), "network retry before two hours blocked")
+        expect(SubscriptionCheckinLedger.canAttempt(key, now: localNoon.addingTimeInterval(7200)), "network retry at two hours allowed")
         clear()
         // Run the production automatic loop, not just the pure count predicate.
         func resetFourAccounts() {
+            _ = SubscriptionCheckinLedger.cachedStatus(key, now: now.addingTimeInterval(86400))
             for entry in defaults.dictionaryRepresentation().keys where entry.hasPrefix("subscription.checkin.v2.") {
                 defaults.removeObject(forKey: entry)
             }
@@ -214,14 +264,27 @@ enum TestTint { case systemGreen, systemRed }
             CheckinTransport.status = ["code": 0, "checked_in": false, "enable": true]
             CheckinTransport.response = ["code": 0]
             CheckinTransport.statusBySlot = [:]; CheckinTransport.responseBySlot = [:]
+            CheckinTransport.claimErrorBySlot = [:]
             CheckinTransport.writesBySlot = [:]
             MinisToast.notices = []
         }
-        for fourth in [["code": 0, "enable": false], ["code": 0, "checked_in": false], ["code": 701]] as [[String: Any]] {
+        func fourthKey() -> String {
+            SubscriptionCheckinLedger.key(token: SubscriptionTokenStorage(provider: "traeCN",
+                credentials: .init(access: "synthetic-four"), loginAccount: nil), slot: "four")
+        }
+        func expectThreeOnly(_ label: String) {
+            expect(MinisToast.notices == ["3 个账号已签到"], label)
+            expect(absent(fourthKey()), "fourth UserDefaults key must be ABSENT: " + label)
+            let savedKeys = defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("subscription.checkin.v2.") }
+            expect(savedKeys.count == 3, "only three confirmed success journals saved")
+            expect(savedKeys.allSatisfy { SubscriptionCheckinLedger.record(String($0.dropFirst("subscription.checkin.v2.".count))).completedDay == day }, "saved three all confirmed")
+        }
+        for fourth in [["code": 0, "enable": false], ["code": 0, "checked_in": false],
+                       ["code": 0], ["code": 9095], ["code": 701]] as [[String: Any]] {
             resetFourAccounts()
             CheckinTransport.statusBySlot["four"] = fourth
             await SubscriptionAutoCheckin.run()
-            expect(MinisToast.notices == ["3 个账号已签到"], "three successes plus unqualified fourth has no failure")
+            expectThreeOnly("three successes plus unqualified fourth has no failure")
             expect(CheckinTransport.writesBySlot["four", default: 0] == 0, "fourth never receives claim")
             expect(CheckinTransport.writesBySlot.values.reduce(0, +) == 3, "only three eligible claims")
             let readsAfter = CheckinTransport.reads
@@ -229,12 +292,62 @@ enum TestTint { case systemGreen, systemRed }
             await SubscriptionAutoCheckin.run()
             expect(MinisToast.notices.isEmpty && CheckinTransport.reads == readsAfter, "same-day repeated pass is silent and cached")
         }
+        for code in [9095, 9004, 701] {
+            resetFourAccounts()
+            CheckinTransport.responseBySlot["four"] = ["code": code]
+            await SubscriptionAutoCheckin.run()
+            expectThreeOnly("fourth refusal remains outside the report")
+            expect(CheckinTransport.writesBySlot["four", default: 0] == 1, "only initial refusal was dispatched")
+            expect(SubscriptionCheckinLedger.cachedStatus(fourthKey())?.eligibility == (code == 9095 ? .ineligible : .unknown), "unmapped code never invents ineligibility")
+            let readsAfter = CheckinTransport.reads
+            MinisToast.notices = []
+            await SubscriptionAutoCheckin.run()
+            expect(CheckinTransport.writesBySlot["four", default: 0] == 1 && CheckinTransport.reads == readsAfter, "no repeated claim/read while excluded in memory")
+            expect(MinisToast.notices.isEmpty && absent(fourthKey()), "refusal never leaves daily reminder/journal")
+            expect(SubscriptionCheckinLedger.canAttempt(fourthKey(), now: now.addingTimeInterval(86400)), "explicit/generic exclusion expires next day")
+        }
         resetFourAccounts()
-        CheckinTransport.responseBySlot["four"] = ["code": 9004]
+        CheckinTransport.claimErrorBySlot["four"] = SubscriptionBillingError(message: "verified retry fixture only",
+            businessRefusal: true, verifiedRetryableFailure: true)
         await SubscriptionAutoCheckin.run()
-        expect(MinisToast.notices == ["3 个账号已签到，1 个签到失败"], "eligible fourth with definite dispatched refusal still reports real failure")
-        expect(CheckinTransport.writesBySlot["four", default: 0] == 1, "real failure requires a dispatch")
+        expect(MinisToast.notices == ["3 个账号已签到，1 个签到失败"], "specifically verified retryable failure still reminds in production loop")
+        expect(SubscriptionCheckinLedger.record(fourthKey()).verifiedRetryableFailure, "verified-only durable failure evidence saved")
+        let verifiedWrites = CheckinTransport.writes
+        MinisToast.notices = []
+        await SubscriptionAutoCheckin.run()
+        expect(MinisToast.notices.isEmpty && CheckinTransport.writes == verifiedWrites, "verified reminder and retry are still throttled")
         resetFourAccounts()
+        let old = Data("{\"eligibleDay\":\"\(day)\",\"claimDay\":\"\(day)\",\"failedClaimDay\":\"\(day)\"}".utf8)
+        defaults.set(old, forKey: "subscription.checkin.v2." + fourthKey())
+        await SubscriptionAutoCheckin.run()
+        expectThreeOnly("legacy unverified failure migrated without nagging")
+        expect(CheckinTransport.writesBySlot["four", default: 0] == 0, "old refusal not automatically reattempted today")
+        MinisToast.notices = []
+        await SubscriptionAutoCheckin.run()
+        expect(MinisToast.notices.isEmpty && absent(fourthKey()), "legacy failure stays absent and silent")
+        // Explicit user refresh can requalify; regular automatic reads cannot.
+        let fourthContext = try await SubscriptionCreditAPI.context(ProviderConfigStore.shared.instances[0], accountSlot: "four")
+        let eligibleAgain = try await SubscriptionCreditAPI.checkin(fourthContext, forceRefresh: true)
+        expect(eligibleAgain.canClaim && absent(fourthKey()), "manual force refresh requalifies without creating journal")
+        _ = try await SubscriptionCreditAPI.claim(fourthContext)
+        expect(SubscriptionCheckinLedger.completed(fourthKey()), "explicit action can claim after requalification")
+        let completedData = defaults.data(forKey: "subscription.checkin.v2." + fourthKey())!
+        SubscriptionCheckinLedger.blocked(fourthKey(), requestDay: day, note: "late refusal")
+        SubscriptionCheckinLedger.quietRefusal(fourthKey(), requestDay: day)
+        SubscriptionCheckinLedger.unknown(fourthKey(), requestDay: day)
+        expect(defaults.data(forKey: "subscription.checkin.v2." + fourthKey()) == completedData, "late refusal/error preserves actual success bytes")
+        expect(!SubscriptionCheckinLedger.canAttempt(fourthKey()), "actual success remains deduplicated")
+        expect(SubscriptionCheckinLedger.canAttempt(fourthKey(), now: now.addingTimeInterval(86400)), "memory exclusion expires next Asia/Shanghai day")
+        resetFourAccounts()
+        for index in 0...128 {
+            SubscriptionCheckinLedger.unknown("memory-fixture-\(index)", requestDay: day,
+                now: now.addingTimeInterval(Double(index) / 1000))
+        }
+        let boundedNow = now.addingTimeInterval(0.2)
+        expect(SubscriptionCheckinLedger.cachedStatus("memory-fixture-0", now: boundedNow) == nil, "bounded memory evicts oldest entry")
+        expect(SubscriptionCheckinLedger.cachedStatus("memory-fixture-128", now: boundedNow)?.eligibility == .unknown, "bounded memory retains latest")
+        expect(absent("memory-fixture-128"), "bounded retry entries never persist")
+        expect(SubscriptionCheckinLedger.cachedStatus("memory-fixture-128", now: now.addingTimeInterval(86400)) == nil, "memory entries expire at day boundary")
         UIApplication.shared.applicationState = .background
         await SubscriptionAutoCheckin.run()
         expect(MinisToast.notices.isEmpty && CheckinTransport.writesBySlot.isEmpty, "background has no claims or notices")

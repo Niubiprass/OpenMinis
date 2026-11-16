@@ -35,15 +35,17 @@ class CheckinSourceContracts(unittest.TestCase):
         self.assertIn('SHA256.hash', ledger)
         # Completion is a confirmed day, never a mere attempt.
         self.assertIn('value.completedDay = requestDay', ledger)
-        self.assertIn('value.attemptDay = SubscriptionCheckinPolicy.day(now)', ledger)
+        self.assertIn('value.attemptDay = requestDay', ledger)
+        self.assertIn('verifiedRetryableFailure: Bool = false', ledger)
         self.assertNotIn('completedDay = SubscriptionCheckinPolicy.day(now)', ledger)
 
     def test_only_confirmed_completion_stops_queries(self):
         text = CREDIT.read_text()
         claim = section(text, '    static func claim(', '    private static func post(')
         self.assertIn('if SubscriptionCheckinLedger.completed(key) { return .alreadyCheckedIn }', claim)
-        self.assertLess(claim.index('SubscriptionCheckinLedger.beginAttempt(key)'),
-                        claim.index('try await checkin(context)'))
+        self.assertLess(claim.index('try await checkin(context'),
+                        claim.index('SubscriptionCheckinLedger.beginAttempt(key)'))
+        self.assertLess(claim.index('guard current.canClaim'), claim.index('SubscriptionCheckinLedger.clearClaimOutcome'))
         # A crossing-midnight claim reply must not record the new day.
         self.assertIn('guard requestDay == SubscriptionCheckinPolicy.day(Date())', claim)
         # Cancellation and account replacement abort before the write.
@@ -65,7 +67,9 @@ class CheckinSourceContracts(unittest.TestCase):
         self.assertIn('MinisToast.show', auto)
         # [T-checkin-exclude-blocked] An account that cannot check in today is
         # skipped before the report, so it is never counted or mentioned.
-        self.assertIn('if SubscriptionCheckinPolicy.isBlocked(record, now: Date()) { continue }', auto)
+        self.assertIn('SubscriptionCheckinLedger.cachedStatus(key)?.eligibility == .ineligible', auto)
+        self.assertIn('SubscriptionCheckinLedger.canAttempt(key, now: now)', auto)
+        self.assertNotIn('SubscriptionCheckinLedger.beginAttempt', auto)
         self.assertIn('个账号已签到', auto)
         self.assertNotIn('UIAlertController', auto)
         self.assertIn('markNotified', auto)
@@ -80,14 +84,17 @@ class CheckinSourceContracts(unittest.TestCase):
             self.assertIn('record.' + field + ' == today', policy)
         claim = section(credit, '    static func claim(', '    private static func post(')
         self.assertLess(claim.index('guard current.eligibility != .unknown'), claim.index('daily-checkin'))
-        self.assertIn('?.businessRefusal == true', claim)
+        self.assertIn('billing.businessRefusal', claim)
+        self.assertIn('if billing.verifiedRetryableFailure', claim)
         self.assertIn('SubscriptionCheckinLedger.failedClaim(key', claim)
+        self.assertIn('SubscriptionCheckinLedger.quietRefusal(key', claim)
+        self.assertIn('record.verifiedRetryableFailure', policy)
         post = section(credit, '    private static func post(', '\n}')
         self.assertLess(post.index('SubscriptionCheckinLedger.beginClaim'), post.index('client.request'))
         read = section(credit, '    static func checkin(', '    private static func queryCheckin(')
         self.assertIn('expected: expectedRecord', read)
         self.assertIn('if value.eligibility == .unknown && !value.checkedIn', read)
-        parser = section(credit, '    static func traeStatus(', '    /// Only this explicit Trae')
+        parser = section(credit, '    static func traeStatus(', '    /// Only documented Trae')
         self.assertNotIn('?? true', parser)
         self.assertIn('enabled == true && done == false', parser)
 
@@ -116,7 +123,7 @@ class CheckinSourceContracts(unittest.TestCase):
         text = ACCOUNTS.read_text()
         self.assertIn('struct SubscriptionAccountsSection: View', text)
         self.assertIn('SubscriptionAccountRow', text)
-        for required in ['store.setActiveSubscriptionAccount', 'checkin?.canClaim == false',
+        for required in ['store.setActiveSubscriptionAccount', 'checkin?.canClaim == false || checkin == nil',
                          'SubscriptionCreditAPI.claim(ctx)',
                          'SubscriptionCheckinLedger.markNotified']:
             self.assertIn(required, text)

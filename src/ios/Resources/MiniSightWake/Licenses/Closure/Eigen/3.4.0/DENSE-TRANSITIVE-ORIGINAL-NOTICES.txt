@@ -1,0 +1,3238 @@
+
+===== Eigen/Cholesky | source SHA256 48c72c2d7b98fdb451675d2ee03850ecfdc97ea41bce55ed754b03da4ab09bd0 =====
+--- Original lines 1-6 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/Core | source SHA256 b8ae5f77a30d48bcaf622a56f7047baa8b2fb790f5db7361aa1d57f424fa3c1e =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2007-2011 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/Dense | source SHA256 5325c9d4d693e504ee012c5275ad4b10b135a701cbd87c14466d2ea21ea22ee5 =====
+
+===== Eigen/Eigenvalues | source SHA256 f1958a9acf3cd3e1f518d871d7dc602e8101b33ce35008b8ee8e1720845bda07 =====
+--- Original lines 1-6 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/Geometry | source SHA256 f38a145ee513d1fa75bfcfc794fbc47c9de65a3af5d9fb719e057ac63302c2f8 =====
+--- Original lines 1-6 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/Householder | source SHA256 1a18ea2659db15ce93de0f5aff135a536af9701da9af4f026710e56def23a559 =====
+--- Original lines 1-6 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/Jacobi | source SHA256 af3020c91b8e92d0734c113fb1511d96a0d6b058128911d898e0177628a358c8 =====
+--- Original lines 1-6 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/LU | source SHA256 d00fab176922cdd4a231ff33ead58fc2db21a9d93034bcf7ba0c2a351a654ba4 =====
+--- Original lines 1-6 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/QR | source SHA256 e77ae1010e9df1dcb0e5a8756048c3880ceb023711e8d1b569e01b039f130820 =====
+--- Original lines 1-6 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/SVD | source SHA256 1155a32efd664cb43333a34fa8acbcbc26fa33adaedfee8e20eddf67436ae886 =====
+--- Original lines 1-6 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Cholesky/LDLT.h | source SHA256 cc6362ddcddea1403ea9ec1cbea2ca6eaf1c5874630f1b13084f51c78f339d78 =====
+--- Original lines 1-11 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2011 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2009 Keir Mierle <mierle@gmail.com>
+// Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2011 Timothy E. Holy <tim.holy@gmail.com >
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Cholesky/LLT.h | source SHA256 362fe6b080c9b67d11106f821f926fa84ed24b2120fbdba2a09efb0869eef1ec =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Cholesky/LLT_LAPACKE.h | source SHA256 1efc3720834ec96ba0df4a0622aa20c3a80ae48d90d60cfaad5e0bf9c1cfa04b =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to LAPACKe
+ *     LLt decomposition based on LAPACKE_?potrf function.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Core/ArithmeticSequence.h | source SHA256 f2f81c23a86e2fbac5847d8348f7dd10f0fe39812834d34b54446e1bca44fbaf =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2017 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Array.h | source SHA256 dfd7ca3f27664e4e391a251de4da52b457507fc942516a21ab3e8b9fa4fe8da4 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/ArrayBase.h | source SHA256 87a5c07a596b5225d49b0da2585d81d146f7f23b7a0da7a20c51eb5b746afc5e =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/ArrayWrapper.h | source SHA256 8bd0a78e64c08c3cbde4af3536ffe6e062a12ce9c7321c43a1469704a937cce4 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Assign.h | source SHA256 74a400998f745e1897a3f29de0c1f10e6ad2e97269f72945abb259e6617f3b62 =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2007 Michael Olbrich <michael.olbrich@gmx.net>
+// Copyright (C) 2006-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/AssignEvaluator.h | source SHA256 1395011c35047d223939e6acf3d096e83aec761286e9a109674a5b75e06d65a3 =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2011 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2011-2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2011-2012 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Assign_MKL.h | source SHA256 74f63085b8537072933ec173b91b4370bed151778c6435a272a941b678f8b490 =====
+--- Original lines 1-32 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+ Copyright (C) 2015 Gael Guennebaud <gael.guennebaud@inria.fr>
+ 
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to Intel(R) MKL
+ *   MKL VML support for coefficient-wise unary Eigen expressions like a=b.sin()
+ ********************************************************************************
+*/
+
+===== Eigen/src/Core/BandMatrix.h | source SHA256 66eb0ca50b93f4dcdc083aa21f431dd9052c319911356d9025576f0cd9c6c893 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Block.h | source SHA256 1092867fec68004388b0ba38d37ad603cc7cb5d034dc28b6fe3a82e92ad888ad =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/BooleanRedux.h | source SHA256 51dbe1e82d3639ba7d30b794e0a9982cf8b3bf989955688970d4bcd723c70aa5 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/CommaInitializer.h | source SHA256 a8027642762277db0114a8f4ef40903035484121d5b4edf9a50d5c10e11a1b20 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/ConditionEstimator.h | source SHA256 b9276dfb980b45f22ede4e08eee447f5e00847400e66f267967692233e424c27 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2016 Rasmus Munk Larsen (rmlarsen@google.com)
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/CoreEvaluators.h | source SHA256 e89d28c6eb156cb659f58a86197fde240ac4c8611a3dd2911e41a2a70d027a33 =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2011 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2011-2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2011-2012 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/CoreIterators.h | source SHA256 30bc5387d90ca841e6ec85686d2125318a19d4fdaa05a87fae6ffab0848f749a =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/CwiseBinaryOp.h | source SHA256 0316cc07e8eb45487ae4f2432791168e1c13407120014ebb3f41613ffc6e302c =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/CwiseNullaryOp.h | source SHA256 70f5b90290fd0ddc75d0b361df6e2eff4fbbbd997f5b8932140ac581802024df =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/CwiseTernaryOp.h | source SHA256 97d9e03c73e1a101352d8b00ee191013b6b6acf00e90c887dd54bea4551de7be =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2016 Eugene Brevdo <ebrevdo@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/CwiseUnaryOp.h | source SHA256 a6d4fe54959a3aad044a15f126688b445ba317c8cd8f60c3a4e18632e3015c90 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/CwiseUnaryView.h | source SHA256 e59aa61f61a67532d4a6ba173844703c7e98e28d7b8c7e9cee0aa9d30d6b9675 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/DenseBase.h | source SHA256 868ea8559aa11e574ce734a14ea56f5ce5032746b2d73f4c8c7930f89c598227 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2007-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/DenseCoeffsBase.h | source SHA256 b212b3f08925bc43f7803709976f08cf4a83dadd545d558ba91599e92a009659 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/DenseStorage.h | source SHA256 235e92f381291ff75dde3f5bd838dcf7e4c6c80ba83940550e26f7ee4b7c0c88 =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2010-2013 Hauke Heibel <hauke.heibel@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Diagonal.h | source SHA256 0e8854fc839b941abf3b09652b5fec4fa5a7cd3a44acfcb5274a7773b69b2fff =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2007-2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2009-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/DiagonalMatrix.h | source SHA256 2a0d43560b3cceafa37ad26cc7b44a951545e56a87d17e78b896c6d063c64718 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2007-2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/DiagonalProduct.h | source SHA256 ffa71f347a5914c9e9341ea82bb42bf7b6f7b8d0454bc17bc5629addb82138cb =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2007-2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Dot.h | source SHA256 4959d72a6f76f94171e56245e7332d555a7751d29dcbe04b3aaea2c8418e0ef5 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2008, 2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/EigenBase.h | source SHA256 f6743198aace0229364aef3842d7a4caec4c648268112d5dc88750d139f0261a =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Fuzzy.h | source SHA256 4da4a3ce3d7a85b30d35977658415e48a4c1051ed6ba1dd4c61cbc8d350027d3 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/GeneralProduct.h | source SHA256 bb7a50eea61bf87cebb8c5ff2553e3641e1e77d62f561838e1265bf42ac883a0 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008-2011 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/GenericPacketMath.h | source SHA256 15ab400433df502dc3961993455b563c55d5fa47c5a93204d12ad2a79730afdd =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/GlobalFunctions.h | source SHA256 3531619ec23b938dff23039a3f0dd892be533f63d681c7d6596659dbb0ae31a2 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2010-2016 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/IO.h | source SHA256 89a4eb492f4a4a0a9e21eff6666383152d0f45ef82d4a1879e61277dafb4ad4f =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/IndexedView.h | source SHA256 5fa91088fba62f34cf0ab4e6cbbaba88a36b7c4b195de6d2f67c96e293f32fec =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2017 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Inverse.h | source SHA256 5eef2f26e105349881eb1408cc2eb674b264c924d45ba3f6bfcebbcadfe6b10c =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2014-2019 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Map.h | source SHA256 37d3c3611a846089cb30a0d78dddc45d322985bb63fa4df5680f6f33c016a07b =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2007-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/MapBase.h | source SHA256 eeecf78d69227844bb2914dc936d54db6acd9fa8ef8d0e29a9272b84938de1a0 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2007-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/MathFunctions.h | source SHA256 b3c6cd173d4ac879e568ac5708042dd0bb160805c6ba9c55da05c8134656f758 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/MathFunctionsImpl.h | source SHA256 96f735785742399ffc6109a6d8a41bf2392789b5a713c9cbfb2f089767491247 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2014 Pedro Gonnet (pedro.gonnet@gmail.com)
+// Copyright (C) 2016 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Matrix.h | source SHA256 fd84dfc1c70b042952d299f39f05694f82ca1f17ca013eb336757a3cf71e6d11 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/MatrixBase.h | source SHA256 3fca778dd610923f7c089fe6f63e600005f14fedc156851591fca999a28e592b =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/NestByValue.h | source SHA256 5e93bda8542a8ebfb321dc9199b110a53ae2fb8f2c20e10b6f24e4379b0a27cb =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/NoAlias.h | source SHA256 229d6ce4cb8a1921cacd634f6fe64e698c54077302487c62202b845a7446618d =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/NumTraits.h | source SHA256 6039578b4c17f244eb6e0b18f29b8089cb4affbd4431365e4fe8b248259199f1 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/PartialReduxEvaluator.h | source SHA256 863ec1c5b7dedcb8cebda4cb9c38b6fc77dc75d2290dbff2c39a7db98ce33a38 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2011-2018 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/PermutationMatrix.h | source SHA256 c4ea371dc8fd72bc610d97b9e8e241d9765c08d8d6a93e66d851fc095cd9ce60 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2009-2015 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/PlainObjectBase.h | source SHA256 faa54cb79fd74db5fd5fb3c6f60fc252398ebc3529e9607cfde2232244162335 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Product.h | source SHA256 47958609570712d8c066c8e7529fce3346f0cc794accd390f753d9703d4842cf =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2011 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/ProductEvaluators.h | source SHA256 d8863af78cf309c898d34f0e8b38bb4c1b370b5622a48064211f5b3b0ad91eb0 =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2011 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Random.h | source SHA256 fc95b14bef2692647c0891b25906cac988e9519e5f719db0fd9e64e0faf0a6c2 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Redux.h | source SHA256 dcdb68827c7f9063af745c9a0e1e85cf53c0a69b67d3d4880134a2ef8ed1f3f6 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Ref.h | source SHA256 f4a08654c367bde51b9589279956c23a1b747a78a5b94eb4c7e43f16ae262ebc =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2012 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Replicate.h | source SHA256 6f77a1da5cd4bcebe1cbb90d52fd7fc23d19a46e8b1b8f2a808ed0ecbf9bdbee =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Reshaped.h | source SHA256 5101b12821837460013e70adb2d542f5e623cdd6541d3604af628d2a78de7e14 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2017 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2014 yoco <peter.xiau@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/ReturnByValue.h | source SHA256 8a385498f0ba0c67466fe151af42e5537bd3c5d75b89d40b73bc103c77309665 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2009-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Reverse.h | source SHA256 9660864ae4cfc85dec40d82e79a598b71e5c58f53034bdd30c74093c5ab9a154 =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2009 Ricard Marxer <email@ricardmarxer.com>
+// Copyright (C) 2009-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Select.h | source SHA256 0b9bee78d59350121108778bbad203a463d81c71bfb5cd732b859c02605a1eb5 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/SelfAdjointView.h | source SHA256 6b05fc31cae6f946db7fcf4439efa13eb21cd9b1903ae7910cc74a611b95f68f =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/SelfCwiseBinaryOp.h | source SHA256 4d0f02140378c8fd28bb05d2f13dc50dd867bdbc2dddce223fe37b82dbf17ab5 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Solve.h | source SHA256 d1411e4c37b3443d3422dffba6225a70ae186b0ed90a3f09bbec14727edf86f2 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/SolveTriangular.h | source SHA256 f29b27b474efe5692bbbf1f1863f0ddb4ccf039e3eda02796f54c33889dc86a1 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/SolverBase.h | source SHA256 339ee50a16430116e2be23b29441ec7fb90b73ff2bf6be8a39e1c74fb3e171ae =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2015 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/StableNorm.h | source SHA256 488e4d101a3d0013b191b80c18fc1c42e988733b6109b704bfa40ccf77d3d187 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/StlIterators.h | source SHA256 cae751132eb5be81f1974936f9a9041935aa8a91d7d0065b48301e4cf57b10c4 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2018 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Stride.h | source SHA256 5ef8631f1222d499e9c273266ecbb8077891268b20dd11c7bf57e83b3fb7c37d =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Swap.h | source SHA256 72add24f5533477f1aa3de05213be772eeea9a13d67db82d02f74fcce501ea40 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Transpose.h | source SHA256 aa104b2fdf7371831d4fcee2383deca5300c49805b99a3c883e13f40b1225750 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2009-2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Transpositions.h | source SHA256 390f37b9c86bed1f1708c5f7786b4609665820370a437a222da320a30c7b9867 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2010-2011 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/TriangularMatrix.h | source SHA256 cc4c2090bbf9ed02b0a36129809fb2c39a32d2bd2efea05d0debb1eafe848111 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/VectorBlock.h | source SHA256 d7f545fba1479e339e3040799ec1a0008b242cbafb456100cb95e7cd64586b49 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/VectorwiseOp.h | source SHA256 b5a10c9e4ef1a0048e8bd17e514354b1e1647b1d700d59076c1fa34ecf04bc3d =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2019 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/Visitor.h | source SHA256 d32f1b4fb0065a312bf13a2861cf3c3d2ff08d2bef4ad8b014b50061ae8802a4 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AVX/Complex.h | source SHA256 4d178124b64acb5f5915a96f29e97f2ebe3dc44208085199bd092c37c8416f10 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2014 Benoit Steiner (benoit.steiner.goog@gmail.com)
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AVX/MathFunctions.h | source SHA256 738a0df89554cfda21a52c3ba46e47bdff9e35199c788dd8dd4d9ba3c1598105 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2014 Pedro Gonnet (pedro.gonnet@gmail.com)
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AVX/PacketMath.h | source SHA256 2344a8cc87e4c35891534a7ac7dde73e012935e0cd65699b18ee77bbe697fe40 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2014 Benoit Steiner (benoit.steiner.goog@gmail.com)
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AVX/TypeCasting.h | source SHA256 2cabb8f3dea66b916017058b63e542d218a1ed8f59ec396ff21ae3574b59726c =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2015 Benoit Steiner <benoit.steiner.goog@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AVX512/Complex.h | source SHA256 ba0af7273126239fb7b47251be282a7c0b9eea6796dfb0f7c411be5f3b0923c4 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2018 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AVX512/MathFunctions.h | source SHA256 d395757ee69c05b7ff210129bd7f54207bf8ab644909a282f5184c8c356e3247 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2016 Pedro Gonnet (pedro.gonnet@gmail.com)
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AVX512/PacketMath.h | source SHA256 394147fddc34b07d8a7a28bc80a5edd1fa5ef3f65101b5356ce168d07f71c31f =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2016 Benoit Steiner (benoit.steiner.goog@gmail.com)
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AVX512/TypeCasting.h | source SHA256 7520e93ada4015cb38bcb41359235a8bae936d2539dff86cd4afa76831751a3b =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2019 Rasmus Munk Larsen <rmlarsen@google.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AltiVec/Complex.h | source SHA256 0944a8651cca7c25f17907c42e521be72f3bf7f9ec92e60f3e901adf800351e1 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010-2016 Konstantinos Margaritis <markos@freevec.org>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AltiVec/MathFunctions.h | source SHA256 1a4c8e0b6d0f2cacdb516d922613f3a92bc77f8d637d98dca2668066ce0dd74b =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2007 Julien Pommier
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2016 Konstantinos Margaritis <markos@freevec.org>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AltiVec/MatrixProduct.h | source SHA256 a87e086b0361e64082e5ed84798bdb87c97505f625c9230ee2b0c0a96b4eaac6 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2020 Everton Constantino (everton.constantino@ibm.com)
+// Copyright (C) 2021 Chip Kerchner (chip.kerchner@ibm.com)
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AltiVec/MatrixProductCommon.h | source SHA256 04e7139eff7b385865b97f12f87f9ce34810128ba99bd06a5cf3aafcfa09fb4e =====
+
+===== Eigen/src/Core/arch/AltiVec/MatrixProductMMA.h | source SHA256 3112535947d405562c0ecd7cf47d682017a86306caf746a7671275c3f66a93d1 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2020 Everton Constantino (everton.constantino@ibm.com)
+// Copyright (C) 2021 Chip Kerchner (chip.kerchner@ibm.com)
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/AltiVec/PacketMath.h | source SHA256 a0f61d6868ddd83b777f56f76006f35395bbddc808cfbfda0e1cd0e7e21e4a2f =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2016 Konstantinos Margaritis <markos@freevec.org>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/CUDA/Complex.h | source SHA256 a1fef89efd39c77dd8d3d247034e829e93069e128cfbec9aef028e8b95c786ed =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2014 Benoit Steiner <benoit.steiner.goog@gmail.com>
+// Copyright (C) 2021 C. Antonio Sanchez <cantonios@google.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/Default/BFloat16.h | source SHA256 1c3faf2e812a463d0be1c7dab3368ede6afe84d34f042c007bc5dad375e96bd9 =====
+--- Original lines 1-14 ---
+/* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+===== Eigen/src/Core/arch/Default/ConjHelper.h | source SHA256 fad5548a5fd3f3e4bcb16fe28549ee73c1ede5f9e29f6c9022bd4d8ad3eaa520 =====
+--- Original lines 2-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2017 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/Default/GenericPacketMathFunctions.h | source SHA256 e3ef23672902a6a0fef39c9b6c5952ba9ed69e6a0eb32f0ecc13004fc660052d =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2007 Julien Pommier
+// Copyright (C) 2014 Pedro Gonnet (pedro.gonnet@gmail.com)
+// Copyright (C) 2009-2019 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/Default/GenericPacketMathFunctionsFwd.h | source SHA256 6bd2e4d5286176d0b823708e1a699cf4694cb74ebf54f2ddb678270db5c46717 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2019 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/Default/Half.h | source SHA256 bcdf4205c17eddcacbc175c1a5d188db2b36c9e5029b3829076d05dfda406f4d =====
+--- Original lines 1-25 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+//
+// The conversion routines are Copyright (c) Fabian Giesen, 2016.
+// The original license follows:
+//
+// Copyright (c) Fabian Giesen, 2016
+// All rights reserved.
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted.
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+===== Eigen/src/Core/arch/Default/Settings.h | source SHA256 41b87a95edc400e7545f7273c59742abc95defae6ca7cd85f962d51a7a8fb790 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/Default/TypeCasting.h | source SHA256 4efe3b7a0099da41b42040000a9c4b92bd48efb35b9505c453b5f3d304fb4f75 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2016 Benoit Steiner <benoit.steiner.goog@gmail.com>
+// Copyright (C) 2019 Rasmus Munk Larsen <rmlarsen@google.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/GPU/MathFunctions.h | source SHA256 58d0579333d6cd9c7e6bd5582abfeedc0da64bcd1e011c2263c2dd7e54664f57 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2014 Benoit Steiner <benoit.steiner.goog@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/GPU/PacketMath.h | source SHA256 d8a2a3529c220e0cdbc4c5e847007b160e41b3df0db069fd456aa0bddd0ba03d =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2014 Benoit Steiner <benoit.steiner.goog@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/GPU/TypeCasting.h | source SHA256 1d1d4e3872dbf4d9ab22c5b67644418265a0a641e26d6c340d4809caa3bc2e98 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2016 Benoit Steiner <benoit.steiner.goog@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/HIP/hcc/math_constants.h | source SHA256 4d86a4154ef20638d72ab2f585ec61f6c0881908d986a2b4ffb44efa97f97246 =====
+
+===== Eigen/src/Core/arch/MSA/Complex.h | source SHA256 983d7be618a33cb2ae3d6320246f139f5739bb25337512cc252cde6364879164 =====
+--- Original lines 1-11 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2018 Wave Computing, Inc.
+// Written by:
+//   Chris Larsen
+//   Alexey Frunze (afrunze@wavecomp.com)
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/MSA/MathFunctions.h | source SHA256 f160e1405034b3fbbd2cd64e87a27c0d0faf90072139b937bf6eb71f36983f28 =====
+--- Original lines 1-15 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2007 Julien Pommier
+// Copyright (C) 2014 Pedro Gonnet (pedro.gonnet@gmail.com)
+// Copyright (C) 2016 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// Copyright (C) 2018 Wave Computing, Inc.
+// Written by:
+//   Chris Larsen
+//   Alexey Frunze (afrunze@wavecomp.com)
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/MSA/PacketMath.h | source SHA256 3dac6c302dca476b5fbdde9e5871b7faf48473fd74d2602c07e7483a2cb864ce =====
+--- Original lines 1-11 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2018 Wave Computing, Inc.
+// Written by:
+//   Chris Larsen
+//   Alexey Frunze (afrunze@wavecomp.com)
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/NEON/Complex.h | source SHA256 cb2278d5839544bac8ab0b38f4375b8badffb1c746a8d6af99766fe764afedf6 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010 Konstantinos Margaritis <markos@freevec.org>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/NEON/GeneralBlockPanelKernel.h | source SHA256 54d3101e149f291848d1170a2616a5388f2c91b878a74f2d3163da82207ea7a7 =====
+
+===== Eigen/src/Core/arch/NEON/MathFunctions.h | source SHA256 8cd8f6d69e1b8c60eaa88c0f951eab619b8ece903393d7f90d726aa487da816e =====
+--- Original lines 1-6 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/NEON/PacketMath.h | source SHA256 3e13180a0dd01b9a69bd17f17aa869c38c4515df1cc83043b88f43d9a131b75f =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010 Konstantinos Margaritis <markos@freevec.org>
+// Heavily based on Gael's SSE version.
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/NEON/TypeCasting.h | source SHA256 736c98b778932aba5914b418fd810a13557a2eb786b5d11e736828a9f3ee7081 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2018 Rasmus Munk Larsen <rmlarsen@google.com>
+// Copyright (C) 2020 Antonio Sanchez <cantonios@google.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/SSE/Complex.h | source SHA256 87a6f05e1122f886550a985ccb79150be09999352d7cbce86bbeed648a2157a9 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/SSE/MathFunctions.h | source SHA256 7007304a115b9f42b483e4e2ca836a0ec578d68a89a3f90c048ddebf074673e5 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2007 Julien Pommier
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/SSE/PacketMath.h | source SHA256 a5e086e96bf7876bd9da0c43117f482435d04cdcbc4cf9c104c1724429804130 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/SSE/TypeCasting.h | source SHA256 52ad99dd125e1b5b7b6480a8a5219344e7b30def71c08fe74d14304856842e60 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2015 Benoit Steiner <benoit.steiner.goog@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/SVE/MathFunctions.h | source SHA256 02b207493b1cbbbefa644a22b61d4cbd5d7a07114086f57788b61d0b8cd81e32 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2020, Arm Limited and Contributors
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/SVE/PacketMath.h | source SHA256 1319cfeb0c5e4dffa6b90125d241aaa7d685ac6e9907558445a124449c57eaff =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2020, Arm Limited and Contributors
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/SVE/TypeCasting.h | source SHA256 7aecdde0b05a3dc66fbaa138c3658c885cb2b1049813f368f4c76a19f3bbbe34 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2020, Arm Limited and Contributors
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/SYCL/InteropHeaders.h | source SHA256 d86e4da28f7f77f32f2686deccdf5ec57d737af7d6fe5a3a95feb76358f53934 =====
+--- Original lines 1-11 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Mehdi Goli    Codeplay Software Ltd.
+// Ralph Potter  Codeplay Software Ltd.
+// Luke Iwanski  Codeplay Software Ltd.
+// Contact: <eigen@codeplay.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/SYCL/MathFunctions.h | source SHA256 4b3ba6d7dfe783fa17f93b7fa3290e1ee107b14905f3c815e4e137e9a32ea43f =====
+--- Original lines 1-11 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Mehdi Goli    Codeplay Software Ltd.
+// Ralph Potter  Codeplay Software Ltd.
+// Luke Iwanski  Codeplay Software Ltd.
+// Contact: <eigen@codeplay.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/SYCL/PacketMath.h | source SHA256 75992417c92ed3317ffe971893214d09e904860df1062f4d0cf4e65038b0a4b5 =====
+--- Original lines 1-11 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Mehdi Goli    Codeplay Software Ltd.
+// Ralph Potter  Codeplay Software Ltd.
+// Luke Iwanski  Codeplay Software Ltd.
+// Contact: <eigen@codeplay.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/SYCL/SyclMemoryModel.h | source SHA256 2083acd84d60e7f88a69eb85f9a0bcca0270ead6fc2a70cbce494c864c064359 =====
+--- Original lines 1-21 ---
+/***************************************************************************
+ *  Copyright (C) 2017 Codeplay Software Limited
+ *  This Source Code Form is subject to the terms of the Mozilla
+ *  Public License v. 2.0. If a copy of the MPL was not distributed
+ *  with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *
+ *  SyclMemoryModel.h
+ *
+ *  Description:
+ *    Interface for SYCL buffers to behave as a non-dereferenceable pointer
+ *    Interface for Placeholder accessor to behave as a pointer on both host
+ *    and device
+ *
+ * Authors:
+ *
+ *    Ruyman Reyes   Codeplay Software Ltd.
+ *    Mehdi Goli     Codeplay Software Ltd.
+ *    Vanya Yaneva   Codeplay Software Ltd.
+ *
+ **************************************************************************/
+
+===== Eigen/src/Core/arch/SYCL/TypeCasting.h | source SHA256 07fa00a20f141e40e7da538ef8385546801a0164f65ade6c04758020a0bdffba =====
+--- Original lines 1-11 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Mehdi Goli    Codeplay Software Ltd.
+// Ralph Potter  Codeplay Software Ltd.
+// Luke Iwanski  Codeplay Software Ltd.
+// Contact: <eigen@codeplay.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/ZVector/Complex.h | source SHA256 e64803d7d661abd130c48ecf864441c0b9c0d5c5c3e2e8a8508a3b87f0db2c5f =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2016 Konstantinos Margaritis <markos@freevec.org>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/ZVector/MathFunctions.h | source SHA256 00be6ff296decb639ebb277be64555983e8edaaf7cc1a4a790a627b33375f44b =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2007 Julien Pommier
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2016 Konstantinos Margaritis <markos@freevec.org>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/arch/ZVector/PacketMath.h | source SHA256 174d47bf730813229a9ddfd5c52e24bd51cc832042e18a1a7a99e984f2a22176 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2016 Konstantinos Margaritis <markos@freevec.org>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/functors/AssignmentFunctors.h | source SHA256 d8f1b1224441face5efe4271d7354683ec16b5cbe8ec89e7c728c13ff85bf160 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/functors/BinaryFunctors.h | source SHA256 0b07cd6d40cbf96561824eb80aae5af719dcfe1c4d349b011100acdb57821997 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/functors/NullaryFunctors.h | source SHA256 190a630e8482bc0b94383c67b9b5d7a41f3c26cb10894d54597cfde3d73ba70b =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2016 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/functors/StlFunctors.h | source SHA256 71823e6fcbe89847bb7caef19e837b1eed1c32442cdf8d104103888c4ffe4bb0 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/functors/TernaryFunctors.h | source SHA256 0fc3c1aa2a5ad2f1ca9cdbcf37a633712cc0452b107ed63f6a4cf10d67111168 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2016 Eugene Brevdo <ebrevdo@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/functors/UnaryFunctors.h | source SHA256 905b211c94fccc6047ae262673c644ab829c8275e98b6f4b8978c73cb349462a =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2016 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/GeneralBlockPanelKernel.h | source SHA256 b1824739dc829bdd5c87d4e2035794230f5ea8e3007977e378399e19562b98f3 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/GeneralMatrixMatrix.h | source SHA256 df7aa1bd01e45c47e71ea38ce579d81f5b79aa55ded40f21685802946564ec20 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/GeneralMatrixMatrixTriangular.h | source SHA256 b415ab39c5c03ea6f2f3f749ba623424b9f1e0f7ea1e7df71e160f2ee391796e =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/GeneralMatrixMatrixTriangular_BLAS.h | source SHA256 973de070289ba262340b5d463fd59625f2f125691fa3322e69e28f58da7c2a84 =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to BLAS F77
+ *   Level 3 BLAS SYRK/HERK implementation.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Core/products/GeneralMatrixMatrix_BLAS.h | source SHA256 79cd720f0506bcadc600ea2de3405a4457536e4a35beb4078161f75f76134f67 =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to BLAS F77
+ *   General matrix-matrix product functionality based on ?GEMM.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Core/products/GeneralMatrixVector.h | source SHA256 ea08550845627bf3d7c0ad30ed7061d5eb9590b1fb548fd3d8fde906707b11f3 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2016 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/GeneralMatrixVector_BLAS.h | source SHA256 999b5819ab540b4f9bba07cb57763cd433c9cbc1fea66e05da12aa41064e7693 =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to BLAS F77
+ *   General matrix-vector product functionality based on ?GEMV.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Core/products/Parallelizer.h | source SHA256 2c54b4e297c0cb187ee47aec319eead343a6fcfdb3f414d42758bfd68ff4938d =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/SelfadjointMatrixMatrix.h | source SHA256 e204012c3add3c045207b5e4e7eeea5f83bf3da9d0c6f7e287acea1c58a4b22d =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/SelfadjointMatrixMatrix_BLAS.h | source SHA256 74ed10cd34a5118d0300b7c91cd08bbfe56ac9659d18a383eb8d2aaf3a070cec =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+ ********************************************************************************
+ *   Content : Eigen bindings to BLAS F77
+ *   Self adjoint matrix * matrix product functionality based on ?SYMM/?HEMM.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Core/products/SelfadjointMatrixVector.h | source SHA256 5fd54cb6290c9437875265e5b673797f4cdb6e45c791fe0247b41e098e331055 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/SelfadjointMatrixVector_BLAS.h | source SHA256 10aad74414d67ae92cd458c5267f84c441dd2c3de826cd4f9333aa042cc76b1c =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to BLAS F77
+ *   Selfadjoint matrix-vector product functionality based on ?SYMV/HEMV.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Core/products/SelfadjointProduct.h | source SHA256 0e47b0162e6cfd1d8dc314d7cbc105529936b03a802f546c1226d11b6a38dbe6 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/SelfadjointRank2Update.h | source SHA256 1a3064b1b2d3521f1d4b022ba0103314065dde9366686ce0c2af72fc07b38406 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/TriangularMatrixMatrix.h | source SHA256 8a726cee8a7523991eaf9d5a4cef2b691c318394d64f4b2f55e13588a599ed16 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/TriangularMatrixMatrix_BLAS.h | source SHA256 b09bbec2fc888d442697d26d62571f1a991b4a12f347748930f3592d537c39da =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to BLAS F77
+ *   Triangular matrix * matrix product functionality based on ?TRMM.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Core/products/TriangularMatrixVector.h | source SHA256 a45c7b2e4fa32c52372f9d635c6599a1844f9053edd9108774e64972b0bdc8fe =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/TriangularMatrixVector_BLAS.h | source SHA256 4ac4ff35409d8875e57af5cec80ae7c537b64034e2720d401fbeba4ec7268749 =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to BLAS F77
+ *   Triangular matrix-vector product functionality based on ?TRMV.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Core/products/TriangularSolverMatrix.h | source SHA256 7bbe79b4abbec7879feb1c84c2bf92b8e5039baa7a7bcfeee9decb3abf544550 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/products/TriangularSolverMatrix_BLAS.h | source SHA256 d9c296e7a71f502a2804bbf8a704b4f5e866b5978d6f941685c3548ba5e6a842 =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to BLAS F77
+ *   Triangular matrix * matrix product functionality based on ?TRMM.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Core/products/TriangularSolverVector.h | source SHA256 5febd767c379a570c5f918b07890f75c87bf9ae4d6b0f565456f275b308d10be =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/BlasUtil.h | source SHA256 478865886bd886a3b0f6e221ff9b811be3742274d1fa260c7fbd525a2bc55716 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/ConfigureVectorization.h | source SHA256 3eec3fdfce850c87aca7bac45ce2bf1898804a845e29a9548c3e98e4c82ad35a =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2018 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2020, Arm Limited and Contributors
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/Constants.h | source SHA256 b6d536a1e9b8cc1c685f7c6cf794ebe70a672099370fe57e475f6ca1739236a0 =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2015 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2007-2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2020, Arm Limited and Contributors
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/DisableStupidWarnings.h | source SHA256 62dab2d7be4090aaa05e3d2c6581b249b7365726bb7506cdc910552fc8386c55 =====
+
+===== Eigen/src/Core/util/ForwardDeclarations.h | source SHA256 661744e9dc5ad6fbd6325a068f188d56a7d4c53a2e577bdf02d2032e83f93541 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2007-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/IndexedViewHelper.h | source SHA256 e88f96baa8297511a439002d23b0ae30045e9c5438a4b9b3680e4182d6e2b6d5 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2017 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/IntegralConstant.h | source SHA256 32c1a018fdf7bd1f36e310773032566f351aff3b5a00d5f239e24d0c2809ee69 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2017 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/MKL_support.h | source SHA256 487f0c220d40b8418876b5c7d9032d3597374cdff790d4022e8f4eea932cf620 =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to Intel(R) MKL
+ *   Include file with common MKL declarations
+ ********************************************************************************
+*/
+
+===== Eigen/src/Core/util/Macros.h | source SHA256 8d73259b4ba482e6dbd11b31d8887fd350dfb0836700d32793446bba6ab1ae7a =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2015 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/Memory.h | source SHA256 e25565aa6ae3e612c26b92cfe731a5df90d7edfa667be5b987c2801c70b2c95c =====
+--- Original lines 1-13 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2015 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2008-2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2009 Kenneth Riddile <kfriddile@yahoo.com>
+// Copyright (C) 2010 Hauke Heibel <hauke.heibel@gmail.com>
+// Copyright (C) 2010 Thomas Capricelli <orzel@freehackers.org>
+// Copyright (C) 2013 Pavel Holoborodko <pavel@holoborodko.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/Meta.h | source SHA256 4ee6855c8f37669b8c86483342c56f9ad06f2dfc69abfe4691298a8d2a944202 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2015 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/ReenableStupidWarnings.h | source SHA256 e0200d2f76f2944831e0c12973faa72fabb0445bbafd65c7ae516ab8cd67ade5 =====
+
+===== Eigen/src/Core/util/ReshapedHelper.h | source SHA256 22248d610522a08d515c72596f8e69a5bd0f6930545a9846c575da55119b3512 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2017 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/StaticAssert.h | source SHA256 16ecc74d0318e07c847799e6757a8b4ddd7769d6f07077a180a7def3eeb6d1bd =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/SymbolicIndex.h | source SHA256 db1f06b723a94199dc28c614e4d91d25ab51612d3c1bd705627376ff1d0c9efe =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2017 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Core/util/XprHelper.h | source SHA256 f75169c4a2ca3e51a8e6ac423ff34ad827bf73264ccbbdfa3b11ad19f8ef10de =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Eigenvalues/ComplexEigenSolver.h | source SHA256 b250df4b92be54eaf46979f8338413d887d011c1e81fe5b71dca98a85a8a6357 =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Claire Maurice
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010,2012 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Eigenvalues/ComplexSchur.h | source SHA256 6712338e5d075ddd3da52d2f28ba29b192ea479211c097161844dcd0182ea79a =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Claire Maurice
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010,2012 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Eigenvalues/ComplexSchur_LAPACKE.h | source SHA256 fd6553437ebd9249d16e31ae2aeed73c983cafa3cab835cc9829343e5ccefa4f =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to LAPACKe
+ *    Complex Schur needed to complex unsymmetrical eigenvalues/eigenvectors.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Eigenvalues/EigenSolver.h | source SHA256 764e4b1848ee16fbd42450a100b8b1e965f1f92f41ba48beb2bb6010ba0b8440 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010,2012 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Eigenvalues/GeneralizedEigenSolver.h | source SHA256 82385783f608b22cec0699df6e58e3b8e9fbce6b40933d257afbd1651cd74f87 =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2012-2016 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010,2012 Jitse Niesen <jitse@maths.leeds.ac.uk>
+// Copyright (C) 2016 Tobias Wood <tobias@spinicist.org.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Eigenvalues/GeneralizedSelfAdjointEigenSolver.h | source SHA256 e3fac33dfc12461ba86cbbca58bb12d9d4750bfd4eea87d63d7f3524a5d3b084 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Eigenvalues/HessenbergDecomposition.h | source SHA256 3b956b75ba5931285e0ac53f6d4b2bed51ffb09528e4687c460f83d2712de95b =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Eigenvalues/MatrixBaseEigenvalues.h | source SHA256 bb128af249c17734931952429fcaadd3b27f4aa183b4d7d3ededb3e30ab525e8 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Eigenvalues/RealQZ.h | source SHA256 f3bd8d77d945ad3090c21b4b582c80b6765e1b59a76865a2d50eb422a556198a =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2012 Alexey Korepanov <kaikaikai@yandex.ru>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Eigenvalues/RealSchur.h | source SHA256 60870a96d42c0195cfadf9169cce3895602f881e040d0f31ff564a95a3ea672f =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010,2012 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Eigenvalues/RealSchur_LAPACKE.h | source SHA256 30aafb5459f8297d6851aa6a8b651275565d9faa451332d04af50713c043562b =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to LAPACKe
+ *    Real Schur needed to real unsymmetrical eigenvalues/eigenvectors.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Eigenvalues/SelfAdjointEigenSolver.h | source SHA256 0bdabc304df900248cc79eef7e1b9df57a6b2586b3b9d93d421344b806c26ee6 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Eigenvalues/SelfAdjointEigenSolver_LAPACKE.h | source SHA256 595ae077aa38318a867fa6543fea9fb5e6a545532f27d676958cc1fae6ef6fa4 =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to LAPACKe
+ *    Self-adjoint eigenvalues/eigenvectors.
+ ********************************************************************************
+*/
+
+===== Eigen/src/Eigenvalues/Tridiagonalization.h | source SHA256 9a794635df375a50699403e22410f6a6dc7ccfec85b6a6ac1fba04ca01051047 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/AlignedBox.h | source SHA256 2c95fadc8549fa236d6f8aa38022badf9186d63aed12a102bb806bcf0f6d522e =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+--- Original lines 10-44 ---
+// Function void Eigen::AlignedBox::transform(const Transform& transform)
+// is provided under the following license agreement:
+//
+// Software License Agreement (BSD License)
+//
+// Copyright (c) 2011-2014, Willow Garage, Inc.
+// Copyright (c) 2014-2015, Open Source Robotics Foundation
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions
+// are met:
+//
+//  * Redistributions of source code must retain the above copyright
+//    notice, this list of conditions and the following disclaimer.
+//  * Redistributions in binary form must reproduce the above
+//    copyright notice, this list of conditions and the following
+//    disclaimer in the documentation and/or other materials provided
+//    with the distribution.
+//  * Neither the name of Open Source Robotics Foundation nor the names of its
+//    contributors may be used to endorse or promote products derived
+//    from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+// FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+// COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+// INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+// BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+// LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+--- Original lines 332-337 ---
+/**
+   * Transforms this box by \a transform and recomputes it to
+   * still be an axis-aligned box.
+   *
+   * \note This method is provided under BSD license (see the top of this file).
+   */
+
+===== Eigen/src/Geometry/AngleAxis.h | source SHA256 856101e8feca9153a3503ca23e475567bbf53e87c3508405403560b871b27425 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/EulerAngles.h | source SHA256 32f9878596c7d0d7fd633646f01f188d7bc75d0b16cf75bc1d8f9b6c25e85fa9 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/Homogeneous.h | source SHA256 1ae6f1571132c5216266218c4df967edd997c376b2ab9e48add27947ea316fdf =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/Hyperplane.h | source SHA256 2f9aa22b1ec7f26869bdfdde5e13c2a5cb9dcff8f0e1727b9ef684b72f36aad7 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/OrthoMethods.h | source SHA256 3d403f7f2ce47d4a06d7a4e5be2f362c2b0ed8bc7c2c044de7a09fb231956c44 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/ParametrizedLine.h | source SHA256 fd7066d3470cbb61af4b173f56ad0bc37098ea03d03e62eb7ae8f7f998469121 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/Quaternion.h | source SHA256 8e281fe29f4971828e790f334653fcaaafe34a7853b0eece4224a63a1ccf1fa8 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2009 Mathieu Gautier <mathieu.gautier@cea.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/Rotation2D.h | source SHA256 649177f4b89e0f22d573cdb00818dcbfef3d5d49a38223fcfc51ad5b8961bce3 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/RotationBase.h | source SHA256 122a302f2f3593ac3951e4408c7d1404360a031baa0380617ba1dd6dd64518cc =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/Scaling.h | source SHA256 54fd4bf3253dfa48d7811a4944343f3286e6e05e9ce3b58142edaa17be6a6cec =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/Transform.h | source SHA256 fcbc9705bef43e82d419e6aced39194400c11fc807289a74d6e8bb4662667ac3 =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2010 Hauke Heibel <hauke.heibel@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/Translation.h | source SHA256 3107a52aa3043cc603c41c7fa3f0629f58f89e52f9690aee9f3dff4d8adc4639 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/Umeyama.h | source SHA256 f1606af01abe78e0b008fa42109bc257801d1bd8bef8c60fb884337a48e5b470 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Hauke Heibel <hauke.heibel@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Geometry/arch/Geometry_SIMD.h | source SHA256 2b4a5474d7503125279f1de2bae8ef56f99ac52dfecd3218fff5d79027779a7a =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Rohit Garg <rpg.314@gmail.com>
+// Copyright (C) 2009-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Householder/BlockHouseholder.h | source SHA256 813fa52ae65ce67f45ca5437740445e52d1aecce09f77993ee847323cecaa1ae =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2010 Vincent Lejeune
+// Copyright (C) 2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Householder/Householder.h | source SHA256 4a6f35c282bd96fad7f18717a8b4ad66a7681f2594c4ef5594b3b313688e8b2d =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Householder/HouseholderSequence.h | source SHA256 a89c7bbc9a8e7f0ba4d9b382c13fea480e2e411039b832b4ee584c3a624d4ce8 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/Jacobi/Jacobi.h | source SHA256 7aaafa09ea25c02f6cf78c9e08594617f31d4afced1aa0ebf0e2e74fa5c3a74f =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/LU/Determinant.h | source SHA256 123f081581c38e07a204cf0cb28a220a96d93051fc7c00c8d19b9a186fc2fb27 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/LU/FullPivLU.h | source SHA256 702ed2ee3e70425633198292e989cf308559e64fda172284daf475519312a471 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/LU/InverseImpl.h | source SHA256 61c32ebf15d645a38a24981fe98cc02fa51a9e15bbb15030832c963926a155e4 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/LU/PartialPivLU.h | source SHA256 2dbea49a53a0ecc035f167804008f4cb4652e49fa1899fa4888cd7d1f6c0a64b =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2006-2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/LU/PartialPivLU_LAPACKE.h | source SHA256 e34e5e8934c5c1a591ca3eafd1a7045898c404a95b93eeb374466a1278c44625 =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to LAPACKe
+ *     LU decomposition with partial pivoting based on LAPACKE_?getrf function.
+ ********************************************************************************
+*/
+
+===== Eigen/src/LU/arch/InverseSize4.h | source SHA256 8c4a357bce437b540a2b9829481df051c8879ef9abe10812e184e10cd2203502 =====
+--- Original lines 1-34 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2001 Intel Corporation
+// Copyright (C) 2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+//
+// The algorithm below is a reimplementation of former \src\LU\Inverse_SSE.h using PacketMath.
+// inv(M) = M#/|M|, where inv(M), M# and |M| denote the inverse of M,
+// adjugate of M and determinant of M respectively. M# is computed block-wise
+// using specific formulae. For proof, see:
+// https://lxjk.github.io/2017/09/03/Fast-4x4-Matrix-Inverse-with-SSE-SIMD-Explained.html
+// Variable names are adopted from \src\LU\Inverse_SSE.h.
+//
+// The SSE code for the 4x4 float and double matrix inverse in former (deprecated) \src\LU\Inverse_SSE.h
+// comes from the following Intel's library:
+// http://software.intel.com/en-us/articles/optimized-matrix-library-for-use-with-the-intel-pentiumr-4-processors-sse2-instructions/
+//
+// Here is the respective copyright and license statement:
+//
+//   Copyright (c) 2001 Intel Corporation.
+//
+// Permition is granted to use, copy, distribute and prepare derivative works
+// of this library for any purpose and without fee, provided, that the above
+// copyright notice and this statement appear in all copies.
+// Intel makes no representations about the suitability of this software for
+// any purpose, and specifically disclaims all warranties.
+// See LEGAL.TXT for all the legal information.
+//
+// TODO: Unify implementations of different data types (i.e. float and double).
+
+===== Eigen/src/QR/ColPivHouseholderQR.h | source SHA256 191a654a935f1fdbb58468fe50eff4012ac9b2a530d57f3bdf31f295ff7c32c8 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/QR/ColPivHouseholderQR_LAPACKE.h | source SHA256 3e0e20fee012834d4652f2aff391d9d7499c2c86f64ec0407bc4f150853331bb =====
+--- Original lines 1-32 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to LAPACKe
+ *    Householder QR decomposition of a matrix with column pivoting based on
+ *    LAPACKE_?geqp3 function.
+ ********************************************************************************
+*/
+
+===== Eigen/src/QR/CompleteOrthogonalDecomposition.h | source SHA256 2bcd1741daadb7b1ad68eeadad27bd77ee92bf017f7666244caf9a8a9d343fd6 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2016 Rasmus Munk Larsen <rmlarsen@google.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/QR/FullPivHouseholderQR.h | source SHA256 d263bac11d8ecf82e43beeb77628b1b62e6646913094ad63e894295d38e49e1e =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/QR/HouseholderQR.h | source SHA256 6ee0d450a2a447b1adb86e7d9c69a764e1cfb8f39f9d6a99fa89a162aedeeedf =====
+--- Original lines 1-10 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2010 Vincent Lejeune
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/QR/HouseholderQR_LAPACKE.h | source SHA256 8a8486145c909c2108aaf1bbd5b448f91c0bb2553070da5e4e1b38661b76aa87 =====
+--- Original lines 1-32 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to LAPACKe
+ *    Householder QR decomposition of a matrix w/o pivoting based on
+ *    LAPACKE_?geqrf function.
+ ********************************************************************************
+*/
+
+===== Eigen/src/SVD/BDCSVD.h | source SHA256 fd6e4b1d4a5383ba44e3c8c20aaa197fa25b193b94050efac781049273fd12bf =====
+--- Original lines 1-18 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+// 
+// We used the "A Divide-And-Conquer Algorithm for the Bidiagonal SVD"
+// research report written by Ming Gu and Stanley C.Eisenstat
+// The code variable names correspond to the names they used in their 
+// report
+//
+// Copyright (C) 2013 Gauthier Brun <brun.gauthier@gmail.com>
+// Copyright (C) 2013 Nicolas Carre <nicolas.carre@ensimag.fr>
+// Copyright (C) 2013 Jean Ceccato <jean.ceccato@ensimag.fr>
+// Copyright (C) 2013 Pierre Zoppitelli <pierre.zoppitelli@ensimag.fr>
+// Copyright (C) 2013 Jitse Niesen <jitse@maths.leeds.ac.uk>
+// Copyright (C) 2014-2017 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/SVD/JacobiSVD.h | source SHA256 8409c413f2193d51ea9669c2f0b7d280319da95265a35c323fabc65f8a407108 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2013-2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/SVD/JacobiSVD_LAPACKE.h | source SHA256 91aeb6dcd05f0eb685d7171ae98f953599493d651c3eec3b0c8df90e59d22e9a =====
+--- Original lines 1-31 ---
+/*
+ Copyright (c) 2011, Intel Corporation. All rights reserved.
+
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+ * Neither the name of Intel Corporation nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+ ********************************************************************************
+ *   Content : Eigen bindings to LAPACKe
+ *    Singular Value Decomposition - SVD.
+ ********************************************************************************
+*/
+
+===== Eigen/src/SVD/SVDBase.h | source SHA256 ec1658c7f805aac8a2621a1b1e63fa84a8fed21c7f24e176ec862a945562300a =====
+--- Original lines 1-14 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// Copyright (C) 2013 Gauthier Brun <brun.gauthier@gmail.com>
+// Copyright (C) 2013 Nicolas Carre <nicolas.carre@ensimag.fr>
+// Copyright (C) 2013 Jean Ceccato <jean.ceccato@ensimag.fr>
+// Copyright (C) 2013 Pierre Zoppitelli <pierre.zoppitelli@ensimag.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/SVD/UpperBidiagonalization.h | source SHA256 e88a6624218c9b6933ce125e2c03d036df9c4a67439be51c78e9b940d0d21f5f =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2013-2014 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/misc/Image.h | source SHA256 f8f9fb664c1462056175f956d9377bedd150e8c45fb89a39ef4463b63686c4a1 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/misc/Kernel.h | source SHA256 2088910ed3d2fd24df3d2f7cd3164bc8457c782a8e0058b7f4adf228a1d3eeba =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/misc/RealSvd2x2.h | source SHA256 5fe0795f45cd92a09b48c02259ef743bacbbe86f890cb0c0725c0c03fb56886a =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2009-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+// Copyright (C) 2013-2016 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/misc/blas.h | source SHA256 74e5a8752672edadd93637f6dc7feb8a50427ea94f9ac5d1ed56dc2dae0fad67 =====
+
+===== Eigen/src/misc/lapacke.h | source SHA256 06673e96af65b907c83d42495b754361b42bdbf9efc6353d51f2e702396caeb7 =====
+--- Original lines 1-32 ---
+/*****************************************************************************
+  Copyright (c) 2010, Intel Corp.
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+    * Neither the name of Intel Corporation nor the names of its contributors
+      may be used to endorse or promote products derived from this software
+      without specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+  LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+  THE POSSIBILITY OF SUCH DAMAGE.
+******************************************************************************
+* Contents: Native C interface to LAPACK
+* Author: Intel Corporation
+* Generated November, 2011
+*****************************************************************************/
+
+===== Eigen/src/misc/lapacke_mangling.h | source SHA256 7d71fdee53a1e0cd01568aba2f152f2e1e4fbb849e84d740e3b031e819fbfa22 =====
+
+===== Eigen/src/plugins/ArrayCwiseBinaryOps.h | source SHA256 dc9ebce46c9243ec3d013746ff25392b6fde9e87eb3c1063858cc16875c19d49 =====
+
+===== Eigen/src/plugins/ArrayCwiseUnaryOps.h | source SHA256 2f0f0334476bad09adaf5ba3eb8c2528c2b6ab3ae47210832cbd276388513f4c =====
+
+===== Eigen/src/plugins/BlockMethods.h | source SHA256 54fe460d2f69168b0db431756e96b4a5467dbaaa426acdc21b87a507a7c26b0f =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2010 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/plugins/CommonCwiseBinaryOps.h | source SHA256 1f8a9bec47fcd5f7f529d5956e15da2d0d32511879bdf613d39fb22fbc9b4498 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2016 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/plugins/CommonCwiseUnaryOps.h | source SHA256 2a8ba7687292c6b301ccfeec51c51275210b3744218c2497b1865b5370d83256 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/plugins/IndexedViewMethods.h | source SHA256 5e9583f2c6105e3bf013ddc1afe2a0685b4aba060ef6110446e9379754046548 =====
+--- Original lines 1-8 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2017 Gael Guennebaud <gael.guennebaud@inria.fr>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/plugins/MatrixCwiseBinaryOps.h | source SHA256 90ea8491924c90080397fb1e3f33d0e1a842f5a3b80b99fc52a20651958c6982 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/plugins/MatrixCwiseUnaryOps.h | source SHA256 8410b62cad9a1ed8be0ea7a5b1f1821b0e7330cc6a6858c8c9dfc327e49dd7b3 =====
+--- Original lines 1-9 ---
+// This file is part of Eigen, a lightweight C++ template library
+// for linear algebra.
+//
+// Copyright (C) 2008-2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla
+// Public License v. 2.0. If a copy of the MPL was not distributed
+// with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+===== Eigen/src/plugins/ReshapedMethods.h | source SHA256 398c8eff2a19dd32fb5fc185ac85be20aceab3fd4b6ccd0cf7a1c9c990153a2f =====
