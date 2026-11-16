@@ -41,6 +41,16 @@ FUNCTIONS = ['SherpaOnnxCreateKeywordSpotter','SherpaOnnxDestroyKeywordSpotter',
  'SherpaOnnxOnlineStreamAcceptWaveform','SherpaOnnxIsKeywordStreamReady',
  'SherpaOnnxDecodeKeywordStream','SherpaOnnxGetKeywordResult',
  'SherpaOnnxDestroyKeywordResult','SherpaOnnxResetKeywordStream']
+# Two non-build Go examples in the exact pinned archive point at the author's
+# Mac. Never materialize those absolute links on the runner. Preserve the full
+# original archive/manifest and disclose the omissions in build proof; no C/C++
+# or covered dependency source is omitted or rewritten.
+OMITTED_EXAMPLE_LINKS = {
+ 'scripts/go/_internal/vad-spoken-language-identification/main.go':
+ '/Users/fangjun/open-source/sherpa-onnx/go-api-examples/vad-spoken-language-identification/main.go',
+ 'scripts/go/_internal/vad-spoken-language-identification/run.sh':
+ '/Users/fangjun/open-source/sherpa-onnx/go-api-examples/vad-spoken-language-identification/run.sh',
+}
 
 
 def require(ok, message):
@@ -126,7 +136,10 @@ def extract_source(archive, dest):
         if 'link' not in row: continue
         p = dest/name; p.parent.mkdir(parents=True, exist_ok=True)
         target = (p.parent/row['link']).resolve()
-        require(target.is_relative_to(dest.resolve()), 'unsafe source symlink')
+        if not target.is_relative_to(dest.resolve()):
+            require(OMITTED_EXAMPLE_LINKS.get(name) == row['link'] and sha(archive) == SOURCE_SHA,
+                    'unsafe source symlink: '+name)
+            continue # Pinned, unused Go example only; NEVER follow or rewrite it.
         p.symlink_to(row['link'])
     return rows
 
@@ -318,10 +331,13 @@ def finalize(work):
     for record in inputs['records']:
         name = record['name']
         if name == 'onnxruntime': continue
-        src = Path(record['source']); original = trees[name]; headers = {}
+        src = Path(record['source']); original = trees[name]; headers = {}; omitted = {}
         for rel, row in original.items():
             p = src/rel
-            if 'link' in row: require(p.is_symlink() and os.readlink(p) == row['link'], 'modified source link: '+name+'/'+rel)
+            if name == 'sherpa' and row.get('link') == OMITTED_EXAMPLE_LINKS.get(rel) and 'link' in row:
+                require(not p.exists() and not p.is_symlink(), 'omitted example was materialized: '+rel)
+                omitted[rel] = row['link']
+            elif 'link' in row: require(p.is_symlink() and os.readlink(p) == row['link'], 'modified source link: '+name+'/'+rel)
             else:
                 require(p.is_file() and sha(p) == row['sha256'], 'modified original source: '+name+'/'+rel)
                 if p.suffix in ('.h','.hpp','.hxx') or rel.startswith('Eigen/'):
@@ -336,6 +352,7 @@ def finalize(work):
             actual[rel] = sha(p)
         proofs[name] = {'source':str(src),'rootSha256':hashlib.sha256(canonical(original)).hexdigest(),
                         'unmodifiedOriginalFiles':True,'originalFileCount':len(original),
+                        'omittedNonBuildSymlinks':omitted,
                         'headersSha256':headers,'compiledHeadersSha256':actual}
         dependency_headers[name] = actual
     require(dependency_headers['eigen'] and dependency_headers['json'], 'Ninja actual Eigen/JSON header trace missing')
@@ -347,6 +364,8 @@ def finalize(work):
     for name in FUNCTIONS: require(re.search(r'\b_'+name+r'$', symbols, re.M), 'missing required C API '+name)
     probe = work/'link-probe'; macho_object(probe.read_bytes(), exact=True)
     commands = (work/'build/compile_commands.json').read_text()
+    for rel in OMITTED_EXAMPLE_LINKS:
+        require(rel not in commands, 'omitted example selected as a build input: '+rel)
     require(str(eigen_source) in commands and 'SHERPA_ONNX_ENABLE_TTS=0' in commands
             and 'SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=0' in commands, 'compile flags/headers not effective')
     proof_dir = ARTIFACTS/'Proof'; proof_dir.mkdir(parents=True, exist_ok=True)
@@ -418,8 +437,12 @@ def artifact_gate(identity=None, candidate=None):
         root_hash = hashlib.sha256(canonical(trees[name])).hexdigest()
         require(root_hash == headers[name]['rootSha256'] and headers[name]['unmodifiedOriginalFiles'] is True,
                 'unproven pristine source root '+name)
+        omissions = headers[name].get('omittedNonBuildSymlinks', {})
+        require(omissions == (OMITTED_EXAMPLE_LINKS if name == 'sherpa' else {}),
+                'unexpected non-build source omissions: '+name)
         for path, digest in headers[name]['compiledHeadersSha256'].items():
-            require(trees[name].get(path, {}).get('sha256') == digest, 'compiled header SHA '+name+'/'+path)
+            require(path not in omissions and trees[name].get(path, {}).get('sha256') == digest,
+                    'compiled header SHA '+name+'/'+path)
     require(headers['eigen']['compiledHeadersSha256'] and headers['json']['compiledHeadersSha256'], 'missing actual dependency-header trace')
     require(headers['sherpa']['rootSha256'] == proof['originalSourceRootSha256'], 'root proof binding drift')
     bundle_sources(trees['eigen'], trees['json'])
