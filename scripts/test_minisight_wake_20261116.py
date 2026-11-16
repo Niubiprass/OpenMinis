@@ -62,6 +62,12 @@ def source_gate():
     for name in ['Controller','Engine','Assets','Name','Policy','Remote','AudioPulse','Page']:
         require(project.count('MiniSightWake'+name+'.swift in Sources')==2, 'PBX '+name)
     require('relativePath = Packages/MiniSightKeywordRuntime;' in project,'local binary package')
+    workflow = (ROOT/'.github/workflows/ios15-v64-repair.yml').read_text()
+    require('id: source_gate' in workflow, 'CI must retain the native validation outcome')
+    package = workflow.split('- name: Package without adding elevated entitlements', 1)[1]
+    require('if [ "${{ steps.source_gate.outcome }}" != success ]; then' in package and
+            package.index('steps.source_gate.outcome') < package.index('APP=DerivedData/'),
+            'Failed native validation must block every IPA publication')
     manifest=json.loads((ASSETS/'manifest.json').read_text())
     require({x['file'] for x in manifest['files']}=={'encoder.onnx','decoder.onnx','joiner.onnx','tokens.txt'},'model-only resources')
     for row in manifest['files']:

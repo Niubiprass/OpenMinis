@@ -32,7 +32,8 @@ jobs:
         with:
           xcode-version: latest-stable
       - name: Cache controlled keyword runtime
-        uses: actions/cache@v4
+        id: keyword_cache
+        uses: actions/cache/restore@v4
         with:
           path: src/ios/Packages/MiniSightKeywordRuntime/Artifacts
           key: minisight-keyword-ios15.5-${{ runner.arch }}-${{ hashFiles('scripts/build_minisight_keyword_runtime_20261116.sh', 'scripts/test_minisight_keyword_provenance_20261116.py', 'src/ios/Packages/MiniSightKeywordRuntime/Package.swift', 'src/ios/Packages/MiniSightKeywordRuntime/Sources/Version.swift') }}
@@ -42,7 +43,17 @@ jobs:
           brew install cmake ninja
           bash scripts/build_minisight_keyword_runtime_20261116.sh
           python3 scripts/test_minisight_keyword_provenance_20261116.py --artifact
+      - name: Save verified keyword runtime cache
+        if: steps.keyword_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: src/ios/Packages/MiniSightKeywordRuntime/Artifacts
+          key: ${{ steps.keyword_cache.outputs.cache-primary-key }}
       - name: Verify fixed source (never fetch or re-port upstream)
+        id: source_gate
+        # Collect the full App compiler result even when a native fixture fails.
+        # Packaging BELOW checks this outcome and still refuses publication.
+        continue-on-error: true
         run: |
           git log -1 --format='%H %s'
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_feature_compile_160651.py
@@ -174,6 +185,10 @@ jobs:
       - name: Package without adding elevated entitlements
         run: |
           set -euo pipefail
+          if [ "${{ steps.source_gate.outcome }}" != success ]; then
+            echo 'FAIL CLOSED: source/native checks failed; compiler evidence collected, no IPA publication'
+            exit 1
+          fi
           # Native dependency notices/source obligations must be closed before
           # any IPA artifact/release publication. Compilation is not this gate.
           python3 scripts/test_minisight_wake_20261116.py --require-release-license
