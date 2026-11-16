@@ -1,8 +1,10 @@
 #import "MiniSightNameWakeState.h"
-- (void)publishContainer:(NSString *)container revision:(NSString *)revision unlocked:(BOOL)unlocked allowed:(BOOL)allowed busy:(BOOL)busy {
+- (void)publishContainer:(NSString *)container revision:(NSString *)revision
+    lockKnown:(BOOL)lockKnown unlocked:(BOOL)unlocked screenKnown:(BOOL)screenKnown screenOff:(BOOL)screenOff
+    allowed:(BOOL)allowed busy:(BOOL)busy {
     NSAssert(NSThread.isMainThread, @"Name wake host state is main-thread owned");
     container = [container copy]; revision = [revision copy] ?: @"";
-    NSDictionary *entry = MSNameWakeStateMessage(self.host, revision, unlocked, allowed, busy,
+    NSDictionary *entry = MSNameWakeStateMessage(self.host, revision, lockKnown, unlocked, screenKnown, screenOff, allowed, busy,
         NSProcessInfo.processInfo.systemUptime);
     __block NSUInteger ticket; @synchronized (self) { ticket = ++_stateTicket; }
     dispatch_async(_queue, ^{

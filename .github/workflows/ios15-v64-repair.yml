@@ -120,11 +120,15 @@ jobs:
           python3 scripts/test_minisight_music_monitor_20261116.py --require-native
           python3 scripts/test_minisight_presentation_readback_20261116.py --require-native
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_quota_current_key_20261116.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_consumption_20261117.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_quota_detail_repair_20261117.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_minisight_shown_name_20261117.py
           python3 scripts/test_minisight_name_roundtrip_20261116.py --require-native
           python3 scripts/test_minisight_liveliness_20261116.py --require-ios
           python3 scripts/test_minisight_effects_runtime_20261116.py --require-native
           python3 scripts/test_minisight_wake_name_20261116.py --require-native
           python3 scripts/test_minisight_name_background_audio_20261116.py --require-native
+          python3 scripts/test_minisight_wake_audio_20261116.py --require-native
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_checkin_no_participation_20261116.py
           python3 scripts/test_queued_video_preview_20261116.py --require-native
           python3 scripts/test_minisight_wake_20261116.py --require-native --require-ios

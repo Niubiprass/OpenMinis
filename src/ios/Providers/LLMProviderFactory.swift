@@ -35,6 +35,16 @@ enum LLMProviderFactory {
     /// and cross-turn cache instability for anything that got past it.
     static func makeProvider(for entry: ModelEntry,
                              resolveSessionId: @escaping @Sendable () -> String?) async throws -> any LLMProvider {
+        try await makeProviderWithConsumption(for: entry, resolveSessionId: resolveSessionId).provider
+    }
+
+    /// Keep the concrete LLM provider intact (OpenAI casts select image/raw
+    /// routes). Callers opt into success observation at their own final send/
+    /// stream boundary, using the SAME main key frozen for construction.
+    static func makeProviderWithConsumption(
+        for entry: ModelEntry,
+        resolveSessionId: @escaping @Sendable () -> String? = { nil }
+    ) async throws -> (provider: any LLMProvider, consumption: ProviderConsumptionReporter?) {
         let store = ProviderConfigStore.shared
         guard let instance = store.instance(for: entry.providerInstanceId) else {
             throw FactoryError.noInstance
@@ -55,33 +65,47 @@ enum LLMProviderFactory {
             return applyModelOverrides(p, entry: entry)
         }
         let openCode = finish
+        let supportsAPIKey: Bool
+        switch instance.providerType {
+        case .anthropic, .gemini, .openAI, .openRouter, .openAIResponses, .xAI, .kimiCode:
+            supportsAPIKey = instance.credentialType == .apiKey
+        default: supportsAPIKey = false
+        }
+        let frozenKey = supportsAPIKey
+            ? await ProviderMultiKeyManager.shared.primaryKeyAsync(for: instance.id) ?? ""
+            : nil
+        let consumption = frozenKey.flatMap {
+            ProviderConsumptionReporter(instanceId: instance.id, mainAPIKey: $0)
+        }
+        let provider: any LLMProvider
         switch instance.providerType {
         case .anthropic:
-            return makeAnthropicProvider(instance: instance, model: entry.model)
+            provider = makeAnthropicProvider(instance: instance, model: entry.model, apiKeyOverride: frozenKey)
         case .gemini:
-            return await makeGeminiProvider(instance: instance, model: entry.model)
+            provider = await makeGeminiProvider(instance: instance, model: entry.model, apiKeyOverride: frozenKey)
         case .openAI:
-            return openCode(makeOpenAIProvider(instance: instance, model: entry.model))
+            provider = openCode(makeOpenAIProvider(instance: instance, model: entry.model, apiKeyOverride: frozenKey))
         case .antigravity:
-            return await makeAntigravityProvider(instance: instance, model: entry.model)
+            provider = await makeAntigravityProvider(instance: instance, model: entry.model)
         case .openRouter:
-            return openCode(makeOpenRouterProvider(instance: instance, model: entry.model))
+            provider = openCode(makeOpenRouterProvider(instance: instance, model: entry.model, apiKeyOverride: frozenKey))
         case .openAIResponses:
-            return openCode(makeOpenAIResponsesProvider(instance: instance, model: entry.model))
+            provider = openCode(makeOpenAIResponsesProvider(instance: instance, model: entry.model, apiKeyOverride: frozenKey))
         case .xAI:
-            return openCode(makeXAIProvider(instance: instance, model: entry.model))
+            provider = openCode(makeXAIProvider(instance: instance, model: entry.model, apiKeyOverride: frozenKey))
         case .kimiCode:
-            return openCode(makeKimiProvider(instance: instance, model: entry.model))
+            provider = openCode(makeKimiProvider(instance: instance, model: entry.model, apiKeyOverride: frozenKey))
         case .githubCopilot:
-            return openCode(makeCopilotProvider(instance: instance, model: entry.model))
+            provider = openCode(makeCopilotProvider(instance: instance, model: entry.model))
         case .workBuddy, .traeCN:
             // Fixed-host, OAuth-only text subscriptions; never wrap as OpenAI/Azure/OpenCode.
             guard instance.credentialType == .oauth else { throw FactoryError.noCredentials }
-            return SubscriptionLLMProvider(instance: instance, model: entry.model,
-                                           resolveSessionId: resolveSessionId, overrides: entry.overrides)
+            provider = SubscriptionLLMProvider(instance: instance, model: entry.model,
+                                               resolveSessionId: resolveSessionId, overrides: entry.overrides)
         case .unsupported:
             throw FactoryError.voiceOnlyProvider
         }
+        return (provider, consumption)
     }
 
     /// Inject the instance's custom `User-Agent` into an OpenAI-family provider's

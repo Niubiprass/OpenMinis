@@ -197,23 +197,31 @@ final class TestSession: ObservableObject {
     private static func performTest(_ kind: ModelQuickTestSheet.Kind, entry: ModelEntry) async throws -> TestRun.State {
         switch kind {
         case .text:
-            let provider = try await LLMProviderFactory.makeProvider(for: entry)
+            let request = try await LLMProviderFactory.makeProviderWithConsumption(for: entry)
+            let provider = request.provider
             let messages = [LLMMessage(
                 role: .user,
                 content: "Hi! I'm setting you up in Minis. Say hello back in one short, friendly sentence.")]
+            let consumption = request.consumption?.started()
             let resp = try await provider.sendMessage(
                 messages: messages, systemPrompt: nil, maxTokens: 128, temperature: nil)
+            let succeededAt = Date()
+            consumption?.succeeded(at: succeededAt)
             let text = resp.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return .text(text.isEmpty ? AppLocalized("(empty reply)") : text)
 
         case .imageGen:
-            let provider = try await LLMProviderFactory.makeProvider(for: entry)
+            let request = try await LLMProviderFactory.makeProviderWithConsumption(for: entry)
+            let provider = request.provider
             guard let openAI = provider as? OpenAIProvider else {
                 throw QuickTestError.unsupported(AppLocalized("This model's provider doesn't support image generation via Quick Test."))
             }
+            let consumption = request.consumption?.started()
             let resp = try await openAI.generateImage(
                 prompt: "A friendly cute mascot logo for an app called Minis, minimalist, centered, soft colors",
                 n: 1, size: "1024x1024", quality: nil)
+            let succeededAt = Date()
+            consumption?.succeeded(at: succeededAt)
             guard let img = resp.mediaAttachments.first(where: { $0.type == .image }) else {
                 throw QuickTestError.noOutput(AppLocalized("No image was returned."))
             }

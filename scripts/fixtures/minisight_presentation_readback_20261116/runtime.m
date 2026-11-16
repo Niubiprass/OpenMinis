@@ -69,6 +69,24 @@ int main(void) { @autoreleasepool {
     if (preferenceReads.count) CompletePreferences(Preferences());
     Check(!MiniSightShown() && showed == beforeShow, @"latest OFF converges without forced presentation");
 
+    // Actual RESOURCE completion, not only preference completion, arrives
+    // after manual hide. Neither ON metadata nor a late queued callback revives.
+    Check(MSMusicWriteShownVerified(YES, gMiniSightContainer), @"reenable for late-resource negative");
+    MiniSightReloadSettings();
+    while (preferenceReads.count) CompletePreferences(Preferences());
+    MiniSightRequestResources(YES, ^{ ++callbackCount; });
+    NSDictionary *onResourceBeforeHide = Preferences();
+    NSUInteger showBeforeResourceHide = showed;
+    MiniSightUserHide();
+    CompleteResource(onResourceBeforeHide);
+    Check(gMiniSightUserHidden && !MiniSightShown() && showed == showBeforeResourceHide, @"late resource after manual hide cannot revive");
+    Wait(^BOOL(void) { return !gMiniSightShownWritePending; });
+    for (NSUInteger i = 0; i < 8 && (resourceReads.count || preferenceReads.count); ++i) {
+        if (resourceReads.count) CompleteResource(Preferences());
+        if (preferenceReads.count) CompletePreferences(Preferences());
+    }
+    Check(!resourceReads.count && !preferenceReads.count && !MiniSightShown() && showed == showBeforeResourceHide, @"resource completion converges OFF with no revival");
+
     __block BOOL done = NO, verified = NO; __block NSString *previous;
     NSString *writeContainer = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
     Check(MSMusicWriteShownVerified(YES, writeContainer), @"seed real previous ON");

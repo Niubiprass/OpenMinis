@@ -344,6 +344,9 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
     private let instanceId: String
     private let baseline: any AgentProvider
     private let builder: Builder
+    // A success-only mode reuses this adapter's existing Anthropic/signature
+    // compatibility. It bypasses ALL ring selection, retry and key statistics.
+    private let consumption: ProviderConsumptionReporter?
     private let lock = NSLock()
     private var metadata: [String: ToolCallMetadata] = [:]
     private var resumeExclusions: Set<String> = []
@@ -356,6 +359,14 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
 
     init(instanceId: String, baseline: any AgentProvider, builder: @escaping Builder) {
         self.instanceId = instanceId; self.baseline = baseline; self.builder = builder
+        consumption = nil
+    }
+
+    init(baseline: any AgentProvider, consumption: ProviderConsumptionReporter) {
+        instanceId = consumption.instanceId
+        self.baseline = baseline
+        self.consumption = consumption
+        builder = { _ in baseline } // Never invoked in success-only mode.
     }
 
     func restoreToolCallMetadata(_ values: [String: ToolCallMetadata]) {
@@ -394,6 +405,42 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                                    tools: [AgentToolDefinition], maxTokens: Int,
                                    thinkingLevel: ThinkingLevel) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
         try Task.checkCancellation()
+        if let consumption {
+            // Restore signatures on the same concrete baseline, just as the
+            // pooled path does on each attempt. No credential lookup here.
+            let signatures = metadataSnapshot()
+            await MainActor.run {
+                (baseline as? GeminiAgentProvider)?.restoreToolCallMetadata(signatures)
+            }
+            try Task.checkCancellation()
+            let requestConsumption = consumption.started()
+            let stream = try await baseline.streamAgentMessageClamped(
+                messages: messages, systemPrompt: systemPrompt, tools: tools,
+                maxTokens: maxTokens, thinkingLevel: thinkingLevel)
+            return AsyncThrowingStream { continuation in
+                let worker = Task {
+                    do {
+                        for try await event in stream {
+                            try Task.checkCancellation()
+                            if case .toolCallComplete(let id, _, _, let info) = event, let info {
+                                restoreToolCallMetadata([id: info])
+                                await MainActor.run {
+                                    (baseline as? GeminiAgentProvider)?.recordToolCallMetadata(id: id, metadata: info)
+                                }
+                            }
+                            continuation.yield(event)
+                        }
+                        try Task.checkCancellation()
+                        let succeededAt = Date()
+                        requestConsumption.succeeded(at: succeededAt)
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in worker.cancel() }
+            }
+        }
         let manager = ProviderMultiKeyManager.shared
         let active = await manager.isActiveAsync(for: instanceId)
         let ring = await manager.keysAsync(for: instanceId)
@@ -460,6 +507,9 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                                 antigravity.restoreToolCallMetadata(signatures)
                             }
                         }
+                        try Task.checkCancellation()
+                        let credentialIdentity = ProviderQuotaSuccess.identity(lease.key)
+                        let requestEpoch = ProviderQuotaService.shared.consumptionEpoch(for: instanceId)
                         let stream = try await provider.streamAgentMessageClamped(
                             messages: messages, systemPrompt: systemPrompt, tools: tools,
                             maxTokens: maxTokens, thinkingLevel: thinkingLevel)
@@ -491,8 +541,11 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                             continuation.yield(event)
                         }
                         try Task.checkCancellation()
+                        let succeededAt = Date()
                         for item in pending { continuation.yield(item) }
-                        if await manager.isActiveAsync(for: instanceId) { manager.recordSuccess(lease: lease, for: instanceId) }
+                        if await manager.isActiveAsync(for: instanceId) {
+                            manager.recordSuccess(lease: lease, for: instanceId, succeededAt: succeededAt, requestEpoch: requestEpoch, credentialIdentity: credentialIdentity)
+                        }
                         continuation.finish(); return
                     } catch {
                         if Task.isCancelled { continuation.finish(throwing: CancellationError()); return }

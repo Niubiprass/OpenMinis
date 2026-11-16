@@ -23,21 +23,29 @@ enum MiniSightWakePolicy {
         var companionReady = false
         var companionLocked = false
         var companionBusy = false
+        var companionScreenOff = false
+        var companionSafetyUnknown = false
 
-        mutating func updateCompanion(fresh: Bool, unlocked: Bool?, allowed: Bool?, busy: Bool?) {
+        mutating func updateCompanion(fresh: Bool, unlocked: Bool?, allowed: Bool?, busy: Bool?,
+                                     lockKnown: Bool?, screenKnown: Bool?, screenOff: Bool?) {
             // Missing/invalid/stale IPC is absence of proof, NOT a lock fact.
-            companionLocked = fresh && unlocked == false
-            companionReady = fresh && allowed == true
+            companionLocked = fresh && lockKnown == true && unlocked == false
+            companionScreenOff = fresh && screenKnown == true && screenOff == true
+            companionSafetyUnknown = fresh && (lockKnown != true || screenKnown != true)
+            companionReady = fresh && allowed == true && lockKnown == true && unlocked == true &&
+                screenKnown == true && screenOff == false
             companionBusy = fresh && busy == true
         }
     }
     enum Decision: Equatable {
-        case disabled, inactive, locked, hidden, companion, missingAsset, permission, busy, cooldown, listen
+        case disabled, inactive, locked, screenOff, screenUnknown, hidden, companion, missingAsset, permission, busy, cooldown, listen
         var message: String {
             switch self {
             case .disabled: return "名字唤醒已关闭"
             case .inactive: return "请在 App 内开启并允许名字监听"
             case .locked: return "锁定时暂停名字监听"
+            case .screenOff: return "屏幕关闭时暂停名字监听"
+            case .screenUnknown: return "屏幕安全状态未知，名字监听已暂停"
             case .hidden: return "桌宠隐藏时暂停名字监听"
             case .companion: return "桌宠状态未就绪，名字监听已暂停"
             case .missingAsset: return "先导入并启用桌宠素材"
@@ -52,6 +60,8 @@ enum MiniSightWakePolicy {
         if !c.enabled { return .disabled }
         if !c.armed { return .inactive }
         if !c.unlocked || (c.companionRequired && c.companionLocked) { return .locked }
+        if c.companionRequired && c.companionScreenOff { return .screenOff }
+        if c.companionRequired && c.companionSafetyUnknown { return .screenUnknown }
         if !c.shown || !c.petStyle { return .hidden }
         if c.companionRequired && !c.companionReady {
             return c.companionBusy ? .busy : .companion
@@ -67,7 +77,8 @@ enum MiniSightWakePolicy {
         // This never opens new audio or runs keyword recognition. Retain only
         // the already-authorized input for the old bounded three-second handoff.
         inputRunning && existingAsset && c.enabled && c.armed && c.unlocked &&
-            !c.companionLocked && c.shown && c.petStyle && c.permissionGranted &&
+            !c.companionLocked && !c.companionScreenOff && !c.companionSafetyUnknown &&
+            c.shown && c.petStyle && c.permissionGranted &&
             c.audioAvailable && !c.recordingOrCall && c.now.isFinite && deadline.isFinite &&
             c.now < deadline && deadline - c.now <= 3
     }

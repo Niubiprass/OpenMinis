@@ -1,0 +1,107 @@
+{
+  "kind": "literal-production-excerpts-not-copied-behavior",
+  "excerpts": [
+    {
+      "fixture": "host_producer.inc",
+      "marker": "static NSString *MiniSightNameWakeRevision(void)",
+      "sources": [
+        "PLUGIN/MiniSightNameWakeHost.h"
+      ],
+      "sha256": "25193f237b43f5b56f7f492a65674934fc6df003fed6de78a32487bb21979147"
+    },
+    {
+      "fixture": "host_producer.inc",
+      "marker": "static BOOL MiniSightNameWakeEnabled(void)",
+      "sources": [
+        "PLUGIN/MiniSightNameWakeHost.h"
+      ],
+      "sha256": "67066c661779dbe4f450b4903f88809c870494dd62e6730807b34b672295e7ed"
+    },
+    {
+      "fixture": "host_producer.inc",
+      "marker": "static BOOL MiniSightNameWakeSafe(",
+      "sources": [
+        "PLUGIN/MiniSightNameWakeHost.h"
+      ],
+      "sha256": "632d8dfcaab490aec0bd507bfcb4fb6c299971ced6599df853e9ec2130b2e64e"
+    },
+    {
+      "fixture": "resources_producer.inc",
+      "marker": "+ (NSDictionary<NSString *, id> *)shownEvidenceWithContainer:",
+      "sources": [
+        "src/ios/MiniSightCore/MiniSightResources.m",
+        "PLUGIN/MiniSightResources.m"
+      ],
+      "sha256": "c6946f69759102f74cc56f5d1a6f1dac4b0f21c8be5771fde1a5b64408a7e256"
+    },
+    {
+      "fixture": "resources_producer.inc",
+      "marker": "+ (BOOL)saveShown:",
+      "sources": [
+        "src/ios/MiniSightCore/MiniSightResources.m",
+        "PLUGIN/MiniSightResources.m"
+      ],
+      "sha256": "42b133fb31a63c17bba9aeb92334f1e2695fde8ccc9e7418a6b8fa5504d26991"
+    },
+    {
+      "fixture": "shown_producer.inc",
+      "marker": "    static func loadShown()",
+      "sources": [
+        "src/ios/Views/Settings/MiniSightSettingsView.swift"
+      ],
+      "sha256": "9e1fed07cdc8b6280bc9debb7e474f85226277b5d2609882053ee17d4292d2d2"
+    },
+    {
+      "fixture": "shown_producer.inc",
+      "marker": "    static func saveShown(",
+      "sources": [
+        "src/ios/Views/Settings/MiniSightSettingsView.swift"
+      ],
+      "sha256": "e36a20677dc21c0308f3fa817c0030e8bf60e97fab2247aa73b4235038ebecea"
+    },
+    {
+      "fixture": "store_producer.inc",
+      "marker": "    private func publishShown()",
+      "sources": [
+        "src/ios/MiniSightConfigStore.swift"
+      ],
+      "sha256": "ed811428045e808674a869f2e6dc53028f20ca9e9ec23666ba237e917c6157ec"
+    },
+    {
+      "fixture": "store_producer.inc",
+      "marker": "    func reloadShownFromFile()",
+      "sources": [
+        "src/ios/MiniSightConfigStore.swift"
+      ],
+      "sha256": "ba7113579e9bbb9710083194f21e4150506e8e8f5f772bfccfe5d662af05a556"
+    },
+    {
+      "fixture": "store_producer.inc",
+      "marker": "    func persistAll()",
+      "sources": [
+        "src/ios/MiniSightConfigStore.swift"
+      ],
+      "sha256": "186f819373c7baf93d4325e46cb9440ea4e83c7638495b7c614517a7bb197719"
+    }
+  ],
+  "native_files": {
+    "shown_producer.inc": "a86151faf7ab8de662517d77432b7cf77e6633c528d068f1b6f2a087f267db1d",
+    "resources_bridge.h": "d006e369f4814c9656b9027c711d283433bf220f6bed4325404a4b63f1e29d8e",
+    "screen_cases.swift": "5be5d547045322b5a8a1480eed0b416fd65638fe900ab6365354e7d87ecf4bae",
+    "host_support.m": "a4126cc29995e7573aac81e3f31998ffb1f2e28b40ee30656c22d93db5e93a4c",
+    "native_tools.py": "b16244999e0f43debfd3b3d60a2d71633e8efab76e53f6443d2d71b9bbbcf953",
+    "resources_producer.inc": "3a75d1d60574e1893eb964648bd5f794a2c1e8175259fdc6de748e8d0d565811",
+    "shown_main.swift": "cc0a3611faede4e5709625df9e465fc1f2e7f9520d2459b5e1dedcbddcb358df",
+    "shown_support.swift": "3a9139d323abd66da04c407fc9686cc6ddbdc4823924d79fc9fae2f88ccd9cd6",
+    "screen_cases.inc": "bcf3f747d6e280814b3c199329a7bce2194c794d615a007ecb6a5dc32ca65e81",
+    "MiniSightNameWakeProtocol.h": "1f5de540b769434dc6411bba2f5d055e2ff5d5ff98e6abf79019b91709e3f52c",
+    "store_producer.inc": "d9e410fc49917635f8543f56628cae73c7863f4e800e1eeccb56c0d6a330f8e5",
+    "store_support.swift": "bb2d9e8dd4842bdce111fb057db298566aa895b98741a924f32acdd5c49f5b98",
+    "host_producer.inc": "cdb7db6df7ec15ffea4ad1abb4928739a34e1cb10cc8b5f12c1e8b3b6fe97634",
+    "roundtrip_baseline/writer.m": "cefb1915934ac6208864c6ee2dc1b5db1929c12262703c462f88ca35e40dfc65",
+    "roundtrip_baseline/support.swift": "e506e014229ca512a886fc930fe7dfe8d62590657cad95674359c334fa993ebf",
+    "roundtrip_baseline/main.swift": "7a9af7616d9d0f5390b20dad25dd5103d12219cd20cd92d340548fa2c3070de7",
+    "swift_sources/MiniSightWakePolicy.swift": "a2fa2dba3a96cfcc4847b5b3cd67157b5c522e1a60828db50749694b2d476086",
+    "swift_sources/MiniSightWakeRemote.swift": "513416982d572d2f4502b39be45d37f21e3482d8ee22ffd06895c5af66bd4137"
+  }
+}

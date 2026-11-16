@@ -1,8 +1,8 @@
 {
   "kind": "literal-production-writer-evidence-only-not-App-bridge",
-  "header_sha256": "e4da1ff1750c429259542d3f54ac865fafc5337f71a89c820460a123307a12df",
-  "excerpt_sha256": "bf78de2a8790281d67714601ad8fc53c22c1667305a98676c54ba3e73930c780",
-  "plugin_base": "8d433c1",
+  "header_sha256": "8158c8fb46e4295feb237c3aa638c6faf1ba7c8bdc3277f36a372005d2510a00",
+  "excerpt_sha256": "e06089b0506786b0d7a5f7ddaedbe57dc089955623a019f22637cadd51660776",
+  "plugin_base": "fd321d3",
   "native_writer": "MSNameWakeStateMessage",
   "verification": "local-source-gate-compares-current-plugin-method; independent-App-CI-checks-same-pinned-builder"
 }

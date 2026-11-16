@@ -69,6 +69,7 @@ final class MiniSightConfigStore: ObservableObject {
     @Published private(set) var saveState = "已加载"
 
     private var loaded = false
+    private var readingShown = false
     private var publishWork: DispatchWorkItem?
     private var publishGeneration = 0
 
@@ -144,7 +145,9 @@ final class MiniSightConfigStore: ObservableObject {
 
     private func raw(_ key: String) -> Any {
         switch key {
-        case MiniSightSettingKey.shown: return shown
+        // A settings snapshot is not an explicit enable transaction. The menu
+        // may have hidden the pet while this page retained an old ON value.
+        case MiniSightSettingKey.shown: return MiniSightPetFile.loadShown()
         case MiniSightSettingKey.style: return style
         case MiniSightSettingKey.renderer: return renderer
         case MiniSightSettingKey.mode: return mode
@@ -204,7 +207,7 @@ final class MiniSightConfigStore: ObservableObject {
     /// readback verifies. Without this the toggle only changed memory and the
     /// next scene-active refresh reverted it from the untouched file.
     private func publishShown() {
-        guard loaded else { return }
+        guard loaded, !readingShown else { return }
         let on = shown
         do {
             try MiniSightPetFile.saveShown(on) {
@@ -212,6 +215,7 @@ final class MiniSightConfigStore: ObservableObject {
             }
             publish(MiniSightSettingKey.shown)
         } catch {
+            reloadShownFromFile()
             lastError = "桌宠显示状态没能保存，请重试。"
             saveState = "保存失败"
             let rev = UUID().uuidString
@@ -225,7 +229,10 @@ final class MiniSightConfigStore: ObservableObject {
     /// when its page appears instead of showing an outdated ON state.
     func reloadShownFromFile() {
         let fileValue = MiniSightPetFile.loadShown()
+        readingShown = true
+        defer { readingShown = false }
         if shown != fileValue { shown = fileValue }
+        UserDefaults.standard.set(fileValue, forKey: MiniSightSettingKey.shown)
     }
 
     /// Defaults keep the App's local view; the atomic, verified runtime file is
@@ -284,18 +291,16 @@ final class MiniSightConfigStore: ObservableObject {
     }
 
     func persistAll() {
+        // Unrelated page exits may save their settings, but must NEVER write
+        // shown. Only publishShown (the explicit switch edit) owns that file.
+        // A reload alone would still leave a read->write race with menu hide.
+        reloadShownFromFile()
         let d = UserDefaults.standard
         d.set(UUID().uuidString, forKey: MiniSightSettingKey.shownRevision)
         for key in MiniSightConfig.all { d.set(raw(key), forKey: key) }
-        do {
-            try MiniSightPetFile.saveShown(shown) { }
-            publishGeneration &+= 1
-            deliver(generation: publishGeneration,
-                    revision: d.string(forKey: MiniSightSettingKey.shownRevision) ?? "", attempt: 0)
-        } catch {
-            lastError = "桌宠显示状态没能保存，请重试。"
-            saveState = "保存失败"
-        }
+        publishGeneration &+= 1
+        deliver(generation: publishGeneration,
+                revision: d.string(forKey: MiniSightSettingKey.shownRevision) ?? "", attempt: 0)
     }
 
     /// Name and reading are one identity. Do not publish an intermediate name

@@ -39,7 +39,15 @@ class SettingsArchitecture(unittest.TestCase):
     def test_file_writes_verified_and_persona_autosave(self):
         shown = VIEW[VIEW.index("static func saveShown("):VIEW.index("static func loadAI(")]
         self.assertIn("throws", shown)
-        self.assertIn("Data(contentsOf: shownURL) == expected", shown)
+        self.assertIn("guard MiniSightResources.saveShown(on, container: containerPath)", shown)
+        self.assertLess(shown.index("guard MiniSightResources.saveShown"), shown.index("onWrite()"))
+        resources = (IOS / "MiniSightCore/MiniSightResources.m").read_text()
+        self.assertIn("return MSMusicWriteShownVerified(shown, container);", resources)
+        readback = (IOS / "MiniSightCore/MiniSightShownReadback.h").read_text()
+        self.assertIn("before.st_size == 1", readback)
+        self.assertIn("count == 1 && (bytes[0] == '0' || bytes[0] == '1')", readback)
+        self.assertIn('readback[@"_minisightShownKnown"]', readback)
+        self.assertIn('readback[@"_minisightShown"] boolValue] == shown', readback)
         self.assertIn("DispatchQueue.main.asyncAfter(deadline: .now() + 0.5", AI)
         self.assertIn("replacingPersona(text, in: current)", VIEW)
         self.assertIn("verified == data, UIImage(data: verified) != nil", VIEW)

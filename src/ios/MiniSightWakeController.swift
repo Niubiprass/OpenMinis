@@ -227,7 +227,8 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
             chatVisible: usePlugin ? fresh && companion?.busy == true : MiniSightChatPanel.existing()?.isVisible == true,
             now: now, cooldownUntil: cooldownUntil)
         c.armed = armed; c.companionRequired = usePlugin
-        c.updateCompanion(fresh: fresh, unlocked: companion?.unlocked, allowed: companion?.allowed, busy: companion?.busy)
+        c.updateCompanion(fresh: fresh, unlocked: companion?.unlocked, allowed: companion?.allowed, busy: companion?.busy,
+                          lockKnown: companion?.lockKnown, screenKnown: companion?.screenKnown, screenOff: companion?.screenOff)
         return c
     }
     private func settingsChanged() {

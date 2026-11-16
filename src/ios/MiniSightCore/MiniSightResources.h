@@ -14,6 +14,12 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)refresh:(void (^)(NSString * _Nullable container, NSDictionary *preferences,
                          BOOL shown, UIImage * _Nullable atlas))completion;
 + (void)refreshPreferences:(void (^)(NSString * _Nullable container, NSDictionary *preferences))completion;
+/// Bounded shared 0/1 readback, including its opaque file identity. No scan.
++ (NSDictionary<NSString *, id> *)shownEvidenceWithContainer:(nullable NSString *)container
+    NS_SWIFT_NAME(shownEvidence(container:));
+/// Synchronous settings transaction: atomic write -> exact readback. Notify only afterwards.
++ (BOOL)saveShown:(BOOL)shown container:(nullable NSString *)container
+    NS_SWIFT_NAME(saveShown(_:container:));
 + (void)writeShown:(BOOL)shown container:(NSString *)container;
 /// Main-thread feedback; only verified writes emit the settings notification.
 + (void)writeShown:(BOOL)shown container:(nullable NSString *)container completion:(nullable void (^)(BOOL verified))completion;

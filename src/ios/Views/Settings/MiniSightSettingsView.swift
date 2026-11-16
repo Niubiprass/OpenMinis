@@ -188,17 +188,18 @@ enum MiniSightPetFile {
     static var shownURL: URL { directory.appendingPathComponent("shown") }
 
     static func loadShown() -> Bool {
-        guard let data = try? Data(contentsOf: shownURL) else { return true }
-        return String(data: data, encoding: .utf8) != "0"
+        let evidence = MiniSightResources.shownEvidence(container: containerPath)
+        return (evidence["_minisightShownKnown"] as? Bool) == true &&
+            (evidence["_minisightShown"] as? Bool) == true
     }
 
     static func saveShown(_ on: Bool, onWrite: () -> Void) throws {
-        let expected = Data((on ? "1" : "0").utf8)
-        try expected.write(to: shownURL, options: .atomic)
-        onWrite()
-        guard try Data(contentsOf: shownURL) == expected else {
+        // The same bounded native transaction as the companion; missing/bad
+        // files never imply ON. Defaults/notification follow verified disk only.
+        guard MiniSightResources.saveShown(on, container: containerPath) else {
             throw MiniSightAIConfigFile.Failure.verificationFailed
         }
+        onWrite()
     }
 
     static func loadAI() -> (String, String, String, String) {

@@ -43,7 +43,8 @@ func context(_ state: MiniSightWakeRemote.State?, foreground: Bool = true,
         now: now, cooldownUntil: 0)
     c.armed = true
     c.companionRequired = required
-    c.updateCompanion(fresh: fresh, unlocked: state?.unlocked, allowed: state?.allowed, busy: state?.busy)
+    c.updateCompanion(fresh: fresh, unlocked: state?.unlocked, allowed: state?.allowed, busy: state?.busy,
+                      lockKnown: state?.lockKnown, screenKnown: state?.screenKnown, screenOff: state?.screenOff)
     return c
 }
 func realFloat(_ value: Double) throws -> NSNumber {
@@ -59,7 +60,7 @@ func stateFixtures(_ directory: String) throws -> [String: Any] {
     let decisions: [MiniSightWakePolicy.Decision] = [.locked, .locked, .locked, .locked, .companion, .busy, .listen, .busy]
     for mask in 0..<8 {
         let wire = try object(directory, "flags-\(mask).json")
-        for field in ["unlocked", "allowed", "busy"] {
+        for field in ["unlocked", "allowed", "busy", "lockKnown", "screenKnown", "screenOff"] {
             guard let number = wire[field] as? NSNumber else {
                 throw FixtureFailure(description: "FAIL assertion: boolean NSNumber " + field)
             }
@@ -92,14 +93,15 @@ func stateFixtures(_ directory: String) throws -> [String: Any] {
         }
     }
     let base = try object(directory, "flags-6.json")
-    for field in ["unlocked", "allowed", "busy"] {
+    for field in ["unlocked", "allowed", "busy", "lockKnown", "screenKnown", "screenOff"] {
         for integer in [0, 1] {
             var value = base; value[field] = NSNumber(value: integer)
             guard let state = MiniSightWakeRemote.decodeState(value) else {
                 throw FixtureFailure(description: "FAIL assertion: legacy integer 0/1 rejected " + field)
             }
-            let actual = field == "unlocked" ? state.unlocked : (field == "allowed" ? state.allowed : state.busy)
+            let actual = MiniSightWakeRemote.boolean(value[field])
             try check(actual == (integer == 1), "legacy integer 0/1 semantics " + field)
+            try check(!state.allowed || (state.lockKnown && state.unlocked && state.screenKnown && !state.screenOff), "normalized state cannot grant unsafe listen")
             let data = try JSONSerialization.data(withJSONObject: value)
             let file = URL(fileURLWithPath: directory).appendingPathComponent("legacy-\(field)-\(integer).json")
             try data.write(to: file, options: .atomic)
@@ -120,7 +122,7 @@ func stateFixtures(_ directory: String) throws -> [String: Any] {
         ("host", "not-a-uuid"), ("host", otherHost.lowercased()), ("host", ""), ("host", NSNull()), ("host", 1),
         ("revision", ""), ("revision", String(repeating: "R", count: 129)),
         ("revision", "SYNTHETIC\nREV"), ("revision", String(repeating: "界", count: 43)), ("revision", true),
-        ("schema", true), ("schema", 0), ("schema", 2), ("schema", -1), ("schema", "1"), ("schema", NSNull()),
+        ("schema", true), ("schema", 0), ("schema", 3), ("schema", -1), ("schema", "1"), ("schema", NSNull()),
         ("clock", true), ("clock", "1000"), ("clock", -1), ("clock", NSNull()),
         ("clock", Double.nan), ("clock", Double.infinity)]
     for (field, bad) in invalidFields {
@@ -250,7 +252,7 @@ func replyFixtures() throws {
     try check(!MiniSightWakePolicy.validHit(active: nil, incoming: identity, isListening: true, decision: .listen), "cancel clears active token; late hit rejected")
     try check(!MiniSightWakePolicy.validHit(active: replacement, incoming: identity, isListening: true, decision: .listen), "replacement rejects old token")
     try check(!MiniSightWakePolicy.validHit(active: identity, incoming: identity, isListening: false, decision: .listen), "stopped listener late callback")
-    let gatedDecisions: [MiniSightWakePolicy.Decision] = [.disabled, .inactive, .locked, .companion, .busy, .cooldown]
+    let gatedDecisions: [MiniSightWakePolicy.Decision] = [.disabled, .inactive, .locked, .screenOff, .screenUnknown, .companion, .busy, .cooldown]
     for decision in gatedDecisions {
         try check(!MiniSightWakePolicy.validHit(active: identity, incoming: identity, isListening: true, decision: decision), "gated late hit")
     }

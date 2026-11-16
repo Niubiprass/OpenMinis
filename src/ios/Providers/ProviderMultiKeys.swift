@@ -16,9 +16,46 @@ struct ProviderQuotaSuccess: Sendable {
     let rowId: String
     let credentialIdentity: String
     let succeededAt: Date
+    // nil preserves compatibility for existing internal/manual events. New
+    // request paths bind the quota epoch BEFORE sending, not at completion.
+    var requestEpoch: UUID? = nil
     static func identity(_ key: String) -> String {
         let value = key.trimmingCharacters(in: .whitespacesAndNewlines)
         return SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// Success-only observation of a credential already frozen by a factory.
+/// Carries no raw key, never leases/retries, and leaves identity revalidation
+/// to the quota service. Call only at the final successful request boundary.
+struct ProviderConsumptionReporter: Sendable {
+    let instanceId: String
+    let rowId: String
+    let credentialIdentity: String
+    private var requestEpoch: UUID?
+
+    init?(instanceId: String, mainAPIKey: String) {
+        let key = mainAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return nil }
+        self.instanceId = instanceId
+        rowId = "main"
+        credentialIdentity = ProviderQuotaSuccess.identity(key)
+        requestEpoch = nil
+    }
+
+    /// Call immediately before the provider sends. Reusable providers receive
+    /// a fresh request-local epoch each time; no key lookup/selection occurs.
+    func started() -> Self {
+        var request = self
+        request.requestEpoch = ProviderQuotaService.shared.consumptionEpoch(for: instanceId)
+        return request
+    }
+
+    func succeeded(at succeededAt: Date) {
+        guard let requestEpoch else { return } // Construction is not a request.
+        let event = ProviderQuotaSuccess(instanceId: instanceId, rowId: rowId,
+            credentialIdentity: credentialIdentity, succeededAt: succeededAt, requestEpoch: requestEpoch)
+        ProviderMultiKeyManager.shared.reportQuotaSuccess(event)
     }
 }
 
@@ -403,13 +440,19 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
                 userInfo: ["quotaCredentialsUnchanged": quotaCredentialsUnchanged])
         }
     }
-    func notifyQuotaSuccess(lease: ProviderKeyLease, for instanceId: String) {
+    func notifyQuotaSuccess(lease: ProviderKeyLease, for instanceId: String, succeededAt: Date, requestEpoch: UUID, credentialIdentity: String) {
         let current = lease.id == "main" ? ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)
             : keys(for: instanceId).first { $0.id == lease.id && $0.isEnabled && $0.status != .disabled }?.key
         guard current?.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key else { return }
         let event = ProviderQuotaSuccess(instanceId: instanceId, rowId: lease.id,
-            credentialIdentity: ProviderQuotaSuccess.identity(lease.key), succeededAt: Date())
-        // Ensure the service observes the FIRST successful request too.
+            credentialIdentity: credentialIdentity, succeededAt: succeededAt, requestEpoch: requestEpoch)
+        reportQuotaSuccess(event)
+    }
+
+    func reportQuotaSuccess(_ event: ProviderQuotaSuccess) {
+        // Ensure the service observes the FIRST successful request too. The
+        // identical event is posted asynchronously: do not resample its time.
+        // consumed's existing same-origin/time dedup handles didSucceed replay.
         ProviderQuotaService.shared.consumed(event)
         DispatchQueue.main.async { NotificationCenter.default.post(name: Self.didSucceed, object: event) }
     }
@@ -898,9 +941,9 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
 
     private func increment(_ count: Int) -> Int { count < Int.max ? max(0, count) + 1 : Int.max }
 
-    func recordSuccess(lease: ProviderKeyLease, for instanceId: String) {
+    func recordSuccess(lease: ProviderKeyLease, for instanceId: String, succeededAt: Date, requestEpoch: UUID, credentialIdentity: String) {
         if Thread.isMainThread {
-            DispatchQueue.global(qos: .utility).async { self.recordSuccess(lease: lease, for: instanceId) }
+            DispatchQueue.global(qos: .utility).async { self.recordSuccess(lease: lease, for: instanceId, succeededAt: succeededAt, requestEpoch: requestEpoch, credentialIdentity: credentialIdentity) }
             return
         }
         if lease.id == "main" {
@@ -917,11 +960,10 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
             lock.unlock()
             schedulePersistence(for: instanceId)
         } else {
-            let now = Date()
             mutateKeys(for: instanceId, quotaCredentialsUnchanged: true) { list in
                 guard let index = list.firstIndex(where: { $0.id == lease.id && $0.key.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key }) else { return }
                 list[index].successCount = increment(list[index].successCount)
-                list[index].lastUsed = now
+                list[index].lastUsed = max(list[index].lastUsed ?? succeededAt, succeededAt)
                 // A success older than a newer failure/manual edit cannot
                 // reactivate or overwrite a parked/replaced key.
                 if list[index].updatedAt <= lease.startedAt {
@@ -931,7 +973,7 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
                 }
             }
         }
-        notifyQuotaSuccess(lease: lease, for: instanceId)
+        notifyQuotaSuccess(lease: lease, for: instanceId, succeededAt: succeededAt, requestEpoch: requestEpoch, credentialIdentity: credentialIdentity)
     }
 
     func recordFailure(lease: ProviderKeyLease, kind: MultiKeyFailureKind, for instanceId: String) {
@@ -979,7 +1021,8 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
                 guard let index = list.firstIndex(where: { $0.id == lease.id && $0.key.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key }) else { return }
                 list[index].failureCount = increment(list[index].failureCount)
                 list[index].consecutiveFailures = increment(list[index].consecutiveFailures)
-                list[index].lastUsed = now; list[index].updatedAt = now; list[index].lastError = summary
+                list[index].lastUsed = max(list[index].lastUsed ?? now, now)
+                list[index].updatedAt = now; list[index].lastError = summary
                 if let seconds = cooldown(list[index].consecutiveFailures) {
                     list[index].unavailableUntil = now.addingTimeInterval(seconds)
                     if list[index].isEnabled && list[index].status != .disabled { list[index].status = .error }

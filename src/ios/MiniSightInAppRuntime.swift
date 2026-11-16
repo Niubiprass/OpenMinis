@@ -283,12 +283,8 @@ struct MiniSightInAppRuntime: View {
         panel.anchorView = anchor
         panel.hidePetHandler = {
             MiniSightChatPanel.existing()?.hideWithoutKey()
-            let shownURL = MiniSightAppFiles.directory.appendingPathComponent("shown")
             do {
-                try "0".write(to: shownURL, atomically: true, encoding: .utf8)
-                guard try String(contentsOf: shownURL, encoding: .utf8) == "0" else {
-                    throw CocoaError(.fileReadCorruptFile)
-                }
+                try MiniSightPetFile.saveShown(false) { }
                 MiniSightAppFiles.postForegroundChanged()
                 activity.refresh()
                 MSDiagEvent("runtime", "hide", "ok", ["source": "app", "reason": "user_menu"])
@@ -494,21 +490,28 @@ private final class MiniSightMusicBridge: ObservableObject {
 private final class MiniSightAppActivity: ObservableObject {
     @Published private(set) var active = false
     @Published private(set) var executing = false
-    @Published private(set) var shown = true
+    @Published private(set) var shown = false
     private var refreshInFlight = false
 
     func refresh() {
         guard !refreshInFlight else { return }
         refreshInFlight = true
         let url = MiniSightAppFiles.directory.appendingPathComponent("activity.json")
-        let shownURL = MiniSightAppFiles.directory.appendingPathComponent("shown")
+        let container = MiniSightAppFiles.containerPath
         DispatchQueue.global(qos: .utility).async {
             let data = try? Data(contentsOf: url)
             let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             let isActive = (object?["activeCount"] as? Int ?? 0) > 0 || (object?["visible"] as? Bool ?? false)
             let isExecuting = (object?["executingCount"] as? Int ?? 0) > 0
-            let isShown = (try? String(contentsOf: shownURL, encoding: .utf8)) != "0"
+            let evidence = MiniSightResources.shownEvidence(container: container)
             DispatchQueue.main.async {
+                // A queued ON read cannot paint after a menu hide/new file.
+                // Exact one-byte I/O only; this does not scan or decode assets.
+                let current = MiniSightResources.shownEvidence(container: container)
+                let isShown = (evidence["_minisightShownKnown"] as? Bool) == true &&
+                    (current["_minisightShownKnown"] as? Bool) == true &&
+                    (current["_minisightShown"] as? Bool) == true &&
+                    (evidence["_minisightShownIdentity"] as? String) == (current["_minisightShownIdentity"] as? String)
                 if self.active != isActive || self.executing != isExecuting || self.shown != isShown {
                     MSDiagEvent("activity", "state", "ok", ["source": "app", "active": isActive, "executing": isExecuting, "visible": isShown])
                 }

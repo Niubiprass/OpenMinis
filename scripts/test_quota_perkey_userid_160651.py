@@ -7,6 +7,7 @@ id is only the fallback.
 """
 from pathlib import Path
 import unittest
+from test_quota_current_key_20261116 import declaration
 
 ROOT = Path(__file__).resolve().parents[1]
 IOS = ROOT / "src/ios"
@@ -53,11 +54,30 @@ class MainThreadFreeze(unittest.TestCase):
         i = DETAIL.index("Button(quotaRefreshing")
         j = DETAIL.index(".disabled(quotaRefreshing)", i)
         block = DETAIL[i:j]
-        self.assertGreaterEqual(block.count("Task.detached(priority: .userInitiated)"), 3)
-        self.assertIn("ProviderQuotaService.shared.quotaRows(for: instance)", block)
-        self.assertNotIn(
-            "await ProviderQuotaService.shared.refreshAllKeys(for: instance)\n                    let refreshed = ProviderQuotaService.shared.quotaRows",
-            block)
+        # The production loader owns bounded detached work now, rather than
+        # three ad-hoc Task.detached closures inside this button. Inspect the
+        # real methods and retain both query and projection off-main fences.
+        self.assertIn("quotaDetail.refresh(for: instance, multi: multiKeyOn)", block)
+        self.assertNotIn("ProviderQuotaService.shared.quotaRows(", block)
+        self.assertNotIn("Task.detached", block)
+        build = declaration(DETAIL, "nonisolated private static func buildSnapshot(")
+        query = declaration(DETAIL, "nonisolated private static func query(")
+        for worker in (build, query):
+            self.assertIn("Task.detached(priority: .userInitiated)", worker)
+            self.assertIn("withTaskCancellationHandler", worker)
+            self.assertIn("onCancel: { worker.cancel() }", worker)
+        self.assertIn("ProviderQuotaService.shared.quotaRows(for: instance)", build)
+        self.assertIn("await ProviderQuotaService.shared.refreshAllKeys(for: instance)", query)
+        self.assertIn("await ProviderQuotaService.shared.refreshQuota(for: instance)", query)
+        section = declaration(DETAIL, "private func quotaSection(")
+        self.assertIn("let rows = quotaRowsSnapshot", section)
+        self.assertNotIn("ProviderQuotaService.shared.quotaRows(", section)
+        projection = declaration(DETAIL, "private func startProjection(")
+        self.assertIn("guard projectionTask == nil, pending != nil", projection)
+        self.assertIn("if !Task.isCancelled, accepts(request) { snapshot = value }", projection)
+        refresh = declaration(DETAIL, "func refresh(for instance:")
+        self.assertIn("manualTask == nil", refresh)
+        self.assertIn("if accepts(request)", refresh)
 
 
 if __name__ == "__main__":

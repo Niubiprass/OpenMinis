@@ -173,6 +173,9 @@ final class ProviderQuotaService: ObservableObject {
     private var inFlight: [String: UUID] = [:]
     private var epochs: [String: UUID] = [:]
     private var currentOrigins: [String: ProviderQuotaCurrentKeyPolicy.Origin] = [:]
+    // In-memory candidate only: an invalidate may retire a not-yet-written
+    // current pointer. Revalidate this owner before falling back to older disk.
+    private var invalidatedOrigins: [String: ProviderQuotaCurrentKeyPolicy.Origin] = [:]
     private var rowOrigins: [String: [String: ProviderQuotaCurrentKeyPolicy.Origin]] = [:]
     // A disabled row may still be manually inspected, but never becomes the
     // representative. Cache ownership and request selectability are distinct.
@@ -182,7 +185,91 @@ final class ProviderQuotaService: ObservableObject {
     private var scheduled: [String: Task<Void, Never>] = [:]
     private var fallbackTask: Task<Void, Never>?
     private var lastPublished: [String: String] = [:]
+    // MEMORY ONLY: UI snapshots never wait for Defaults, codecs, projection,
+    // Keychain, or the storage queue. See the ordered writer below.
     private let lock = NSLock()
+    private var memoryVersions: [String: UInt64] = [:]
+    private enum PersistenceValue {
+        case row(QuotaInfo?, ProviderQuotaCurrentKeyPolicy.Origin, Date)
+        case current(ProviderQuotaCurrentKeyPolicy.Origin)
+        case retire(String, String?)
+        case reset
+    }
+    private struct PersistenceJob {
+        let instanceId: String
+        let epoch: UUID
+        let version: UInt64
+        let domain: String
+        let value: PersistenceValue
+    }
+    // One immutable latest job per row/current/reset, not one task per event.
+    // All three mutation sources share the same commit order. An in-progress
+    // old write cannot be interrupted, but its successor/reset always follows.
+    private var pendingWrites: [String: [String: PersistenceJob]] = [:]
+    private var writeVersion: UInt64 = 0
+    private var writerScheduled = false
+    private let writer = DispatchQueue(label: "com.openminis.quota.persist", qos: .utility)
+    /// Caller holds the memory mutex; ONLY bounded memory work here.
+    private func enqueuePersistence(_ value: PersistenceValue, instanceId: String, domain: String) {
+        writeVersion &+= 1
+        let epoch = epochs[instanceId] ?? UUID(); epochs[instanceId] = epoch
+        pendingWrites[instanceId, default: [:]][domain] = PersistenceJob(
+            instanceId: instanceId, epoch: epoch, version: writeVersion, domain: domain, value: value)
+    }
+    private func resetPersistence(_ instanceId: String) {
+        memoryVersions[instanceId, default: 0] &+= 1
+        pendingWrites[instanceId] = [:] // tombstone supersedes all queued old-epoch jobs
+        enqueuePersistence(.reset, instanceId: instanceId, domain: "reset")
+    }
+    /// Like ProviderMultiKeys: schedule AFTER the memory commit, never sync.
+    private func schedulePersistence() {
+        lock.lock()
+        guard !writerScheduled, pendingWrites.values.contains(where: { !$0.isEmpty }) else { lock.unlock(); return }
+        writerScheduled = true
+        lock.unlock()
+        writer.async { [self] in persistLatest() }
+    }
+    private func persistLatest() {
+        while true {
+            lock.lock()
+            let next = pendingWrites.values.flatMap { $0.values }.min { $0.version < $1.version }
+            guard let job = next else { writerScheduled = false; lock.unlock(); return }
+            pendingWrites[job.instanceId]?.removeValue(forKey: job.domain)
+            let valid = epochs[job.instanceId] == job.epoch
+            lock.unlock()
+            if valid { Self.persist(job) }
+            // New commits can proceed even while persist is blocked. The one
+            // writer drains successors in version order, including tombstones.
+        }
+    }
+    private static func persist(_ job: PersistenceJob) {
+        switch job.value {
+        case let .row(info, origin, date):
+            store(info, instanceId: job.instanceId, origin: origin, at: date)
+        case let .current(origin):
+            if let data = try? JSONEncoder().encode(origin) {
+                UserDefaults.standard.set(data, forKey: currentPrefix + job.instanceId)
+            }
+        case let .retire(rowId, capturedOwner):
+            let key = storedPrefix + job.instanceId + "." + rowId
+            // Never let an old owner delete a newer row or sibling pointer.
+            if let data = UserDefaults.standard.data(forKey: key),
+               let saved = try? JSONDecoder().decode(StoredQuota.self, from: data),
+               saved.origin.rowId == rowId, saved.origin.owner == capturedOwner {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+            if let saved = storedCurrent(job.instanceId), saved.rowId == rowId, saved.owner == capturedOwner {
+                UserDefaults.standard.removeObject(forKey: currentPrefix + job.instanceId)
+            }
+        case .reset:
+            // Ordered epoch barrier, NOT a cache purge. Ordinary config/cookie
+            // invalidation must retain valid last-known balances for offline
+            // restore. Queued old jobs were retired under the memory mutex;
+            // an already-started job finishes before this barrier/successors.
+            // Restore still validates current credentials AND memory version.
+            break
+        }
+    }
     /// [T-quota-15min] How long a stored balance is reused before the list
     /// asks the relay again. Longer means fewer requests to someone else's
     /// server; the detail page still refreshes only when the user asks.
@@ -265,12 +352,13 @@ final class ProviderQuotaService: ObservableObject {
     }
     func cachedQuota(instanceId: String) -> QuotaInfo? {
         lock.lock()
-        let live = cache[instanceId]?.info.map { Self.reproject($0) }
+        let live = cache[instanceId]?.info
         let needsValidation = currentOrigins[instanceId] == nil && !validating.contains(instanceId)
         lock.unlock()
-        // Never do Keychain XPC in a SwiftUI body or expose unverified v1 data.
+        // Projection/threshold reads and asynchronous credential validation are
+        // outside the UI mutex; durableSalt is reached only by background context.
         if needsValidation { warmCurrent(instanceId: instanceId) }
-        return live
+        return live.map { Self.reproject($0) }
     }
     func isMissing(instanceId: String) -> Bool {
         lock.lock()
@@ -281,54 +369,67 @@ final class ProviderQuotaService: ObservableObject {
     }
     private func invalidateAll() {
         lock.lock()
+        let instances = Set(epochs.keys).union(memoryVersions.keys).union(pendingWrites.keys).union(clocks.keys)
+        for id in instances { epochs[id] = UUID(); resetPersistence(id) }
+        for (id, origin) in currentOrigins { invalidatedOrigins[id] = origin }
         cache.removeAll(); keyCache.removeAll(); failureNotes.removeAll()
         currentOrigins.removeAll(); rowOrigins.removeAll(); selectableOrigins.removeAll(); validating.removeAll()
-        epochs.removeAll(); inFlight.removeAll()
+        inFlight.removeAll() // keep tombstone epochs; old jobs/resolvers cannot revive
         for task in scheduled.values { task.cancel() }; scheduled.removeAll()
         clocks = clocks.mapValues { value in var clock = value; clock.cancelled(); return clock }
+        let dirtyEpochs = clocks.compactMap { id, clock in clock.dirty ? epochs[id].map { (id, $0) } : nil }
         lock.unlock()
+        schedulePersistence()
         Self.metadataLock.lock(); Self.relayHints.removeAll(); Self.metadataLock.unlock()
+        // Credential resolution is bounded by validating/epoch, independent of
+        // revision redraws. Only a still-valid current owner may resume dirty.
+        for (id, epoch) in dirtyEpochs { warmCurrent(instanceId: id, expectedEpoch: epoch) }
         Task { @MainActor in self.revision += 1 }
     }
     func invalidate(instanceId: String) {
         lock.lock()
+        if let origin = currentOrigins[instanceId] { invalidatedOrigins[instanceId] = origin }
         cache.removeValue(forKey: instanceId)
         keyCache.removeValue(forKey: instanceId)
         currentOrigins.removeValue(forKey: instanceId); rowOrigins.removeValue(forKey: instanceId)
         selectableOrigins.removeValue(forKey: instanceId)
         validating.remove(instanceId)
         scheduled.removeValue(forKey: instanceId)?.cancel()
-        clocks[instanceId, default: .init()].cancelled()
+        if var clock = clocks[instanceId] { clock.cancelled(); clocks[instanceId] = clock }
         failureNotes = failureNotes.filter { !$0.key.hasPrefix(instanceId + "|") }
         inFlight = inFlight.filter { !$0.key.hasPrefix(instanceId + "|") }
-        epochs[instanceId] = UUID()
+        let epoch = UUID(); epochs[instanceId] = epoch
+        resetPersistence(instanceId)
+        let dirty = clocks[instanceId]?.dirty == true
         lock.unlock()
+        schedulePersistence()
         Self.metadataLock.lock(); Self.relayHints.removeAll(); Self.metadataLock.unlock()
+        if dirty { warmCurrent(instanceId: instanceId, expectedEpoch: epoch) }
         Task { @MainActor in self.revision += 1 }
     }
 
     private func invalidateRow(instanceId: String, rowId: String, epoch: UUID, ticket: UUID,
-                               capturedOwner: String?) {
+                               capturedOwner: String?, capturedSuccessAt: Date?) {
         let slot = failureKey(instanceId, rowId)
         lock.lock()
         guard epochs[instanceId] == epoch, inFlight[slot] == ticket else { lock.unlock(); return }
         inFlight.removeValue(forKey: slot)
         let activeOrigin = rowOrigins[instanceId]?[rowId] ?? keyCache[instanceId]?[rowId]?.origin
-        let currentOrigin = currentOrigins[instanceId] ?? Self.storedCurrent(instanceId)
+        let currentOrigin = currentOrigins[instanceId]
         // A successful request may have installed a newer owner without a
         // config notification/epoch change. Only retire the captured old owner.
         guard activeOrigin == nil || activeOrigin?.owner == capturedOwner,
-              currentOrigin?.rowId != rowId || currentOrigin?.owner == capturedOwner else { lock.unlock(); return }
+              currentOrigin?.rowId != rowId || currentOrigin?.owner == capturedOwner,
+              currentOrigin?.rowId != rowId || clocks[instanceId]?.lastSuccessAt == capturedSuccessAt else { lock.unlock(); return }
         keyCache[instanceId]?.removeValue(forKey: rowId)
         rowOrigins[instanceId]?.removeValue(forKey: rowId)
         selectableOrigins[instanceId]?.removeValue(forKey: rowId)
         failureNotes.removeValue(forKey: slot)
         if currentOrigins[instanceId]?.rowId == rowId { currentOrigins.removeValue(forKey: instanceId) }
-        UserDefaults.standard.removeObject(forKey: Self.storedPrefix + instanceId + "." + rowId)
-        if let saved = Self.storedCurrent(instanceId), saved.rowId == rowId, saved.owner == capturedOwner {
-            UserDefaults.standard.removeObject(forKey: Self.currentPrefix + instanceId)
-        }
+        memoryVersions[instanceId, default: 0] &+= 1
+        enqueuePersistence(.retire(rowId, capturedOwner), instanceId: instanceId, domain: "row:" + rowId)
         lock.unlock()
+        schedulePersistence()
         _ = publishAggregate(for: instanceId)
         publishRevision(instanceId)
         // No sibling ticket, cache, epoch or retry clock is invalidated here.
@@ -395,12 +496,14 @@ final class ProviderQuotaService: ObservableObject {
     }
     private func attach(_ row: inout KeyQuota, instanceId: String) {
         let multiKeyOn = ProviderMultiKeyManager.shared.isEnabled(for: instanceId)
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         let candidate = keyCache[instanceId]?[row.id] ?? (row.isMain && !multiKeyOn ? cache[instanceId] : nil)
         let entry = candidate?.origin == rowOrigins[instanceId]?[row.id] ? candidate : nil
+        let failure = failureNotes[failureKey(instanceId, row.id)]
+        lock.unlock()
         row.info = entry?.info.map { Self.reproject($0) }
         row.queriedAt = entry?.fetchedAt
-        row.failureNote = failureNotes[failureKey(instanceId, row.id)]
+        row.failureNote = failure
     }
     static func mask(_ key: String) -> String {
         guard key.count > 14 else { return String(repeating: "•", count: 10) }
@@ -415,13 +518,21 @@ final class ProviderQuotaService: ObservableObject {
             $0.id == rowId && (includingUnavailable || ($0.isEnabled && $0.status != .disabled))
         }?.key
     }
-    private func warmCurrent(instanceId: String) {
+    private func warmCurrent(instanceId: String, expectedEpoch: UUID? = nil) {
         lock.lock()
-        guard !validating.contains(instanceId) else { lock.unlock(); return }
+        guard expectedEpoch == nil || epochs[instanceId] == expectedEpoch,
+              !validating.contains(instanceId) else { lock.unlock(); return }
         validating.insert(instanceId)
         let epoch = epochs[instanceId] ?? UUID(); epochs[instanceId] = epoch
         lock.unlock()
-        Task.detached(priority: .utility) { _ = await self.resolveCurrent(instanceId, epoch: epoch) }
+        Task.detached(priority: .utility) {
+            guard let context = await self.resolveCurrent(instanceId, epoch: epoch), !Task.isCancelled else { return }
+            let origin = ProviderQuotaCurrentKeyPolicy.Origin(rowId: context.rowId, owner: context.durableOwner)
+            // Do NOT restart the task that may currently be resolving/querying.
+            // A config invalidate removed the old scheduled slot; a revision
+            // warm did not. Dirty, running, foreground and epoch are rechecked.
+            await self.scheduleAutomatic(instanceId, expectedEpoch: epoch, validatedOrigin: origin, replacing: false)
+        }
     }
     @discardableResult
     private func resolveCurrent(_ instanceId: String, epoch: UUID) async -> Context? {
@@ -433,9 +544,15 @@ final class ProviderQuotaService: ObservableObject {
         }
         lock.lock()
         guard epochs[instanceId] == epoch else { lock.unlock(); return nil }
-        let last = currentOrigins[instanceId] ?? Self.storedCurrent(instanceId)
+        let capturedOrigin = currentOrigins[instanceId]
+        let invalidatedOrigin = invalidatedOrigins[instanceId]
+        let capturedVersion = memoryVersions[instanceId, default: 0]
         let lastSuccessAt = clocks[instanceId]?.lastSuccessAt
         lock.unlock()
+        // Invalidation keeps durable last-known data. All storage reads and
+        // owner validation are outside the mutex; the version/epoch recheck
+        // below prevents this old snapshot replacing any newer live commit.
+        let last = capturedOrigin ?? invalidatedOrigin ?? Self.storedCurrent(instanceId)
         let checkedRows = Array(Set([last?.rowId ?? "main", "main"]))
         var contexts: [(ProviderQuotaCurrentKeyPolicy.Origin, Context)] = []
         for rowId in checkedRows {
@@ -446,39 +563,64 @@ final class ProviderQuotaService: ObservableObject {
         // Keychain reads are outside the mutex, including the final readback.
         contexts = contexts.filter { Self.rowKey(instanceId, rowId: $0.0.rowId) == $0.1.key }
         let selected = ProviderQuotaCurrentKeyPolicy.current(lastSuccess: last, available: contexts.map { $0.0 })
+        var restored: [String: (info: QuotaInfo, fetchedAt: Date)] = [:]
+        for (origin, context) in contexts {
+            restored[origin.rowId] = Self.storedInfo(instanceId: instanceId, origin: origin, processOwner: context.owner)
+        }
         lock.lock()
         guard epochs[instanceId] == epoch else { lock.unlock(); return nil }
         validating.remove(instanceId)
-        guard !Task.isCancelled,
+        guard !Task.isCancelled, memoryVersions[instanceId, default: 0] == capturedVersion,
               ProviderQuotaCurrentKeyPolicy.mayCommitResolution(
-                captured: last, current: currentOrigins[instanceId] ?? Self.storedCurrent(instanceId),
+                captured: capturedOrigin, current: currentOrigins[instanceId],
                 capturedSuccessAt: lastSuccessAt, currentSuccessAt: clocks[instanceId]?.lastSuccessAt) else {
             lock.unlock()
             // A newer success owns the selection. Its dirty work must still
             // converge even when this was the already-scheduled lookup.
-            await scheduleAutomatic(instanceId)
+            await scheduleAutomatic(instanceId, expectedEpoch: epoch)
             return nil
         }
-        for rowId in checkedRows { selectableOrigins[instanceId]?.removeValue(forKey: rowId) }
+        var changed = currentOrigins[instanceId] != selected
+        for rowId in checkedRows {
+            let next = contexts.first { $0.0.rowId == rowId }?.0
+            if selectableOrigins[instanceId]?[rowId] != next { changed = true }
+            selectableOrigins[instanceId]?.removeValue(forKey: rowId)
+        }
         for (origin, context) in contexts {
+            if rowOrigins[instanceId]?[origin.rowId] != origin { changed = true }
             rowOrigins[instanceId, default: [:]][origin.rowId] = origin
             selectableOrigins[instanceId, default: [:]][origin.rowId] = origin
             if keyCache[instanceId]?[origin.rowId]?.owner != context.owner {
+                if keyCache[instanceId]?[origin.rowId] != nil || restored[origin.rowId] != nil { changed = true }
                 keyCache[instanceId]?[origin.rowId] = nil
-                if let saved = Self.storedInfo(instanceId: instanceId, origin: origin, processOwner: context.owner) {
+                if let saved = restored[origin.rowId] {
                     keyCache[instanceId, default: [:]][origin.rowId] = .init(info: saved.info, fetchedAt: saved.fetchedAt, owner: context.owner, origin: origin)
                 }
             }
         }
         currentOrigins[instanceId] = selected
+        invalidatedOrigins.removeValue(forKey: instanceId)
+        if changed { memoryVersions[instanceId, default: 0] &+= 1 }
         lock.unlock()
-        _ = publishAggregate(for: instanceId)
-        publishRevision(instanceId)
+        // A projection-triggered warm with no change must not publish another
+        // revision and create a projection -> warm -> revision feedback loop.
+        if changed {
+            _ = publishAggregate(for: instanceId)
+            publishRevision(instanceId)
+        }
         return contexts.first { $0.0 == selected }?.1
+    }
+    /// Freeze at the actual send boundary, not at a delayed success callback.
+    /// Only process-local epoch state; no credentials/storage under this mutex.
+    func consumptionEpoch(for instanceId: String) -> UUID {
+        lock.lock(); defer { lock.unlock() }
+        let epoch = epochs[instanceId] ?? UUID(); epochs[instanceId] = epoch
+        return epoch
     }
     func consumed(_ success: ProviderQuotaSuccess) {
         lock.lock()
         let epoch = epochs[success.instanceId] ?? UUID(); epochs[success.instanceId] = epoch
+        guard success.requestEpoch == nil || success.requestEpoch == epoch else { lock.unlock(); return }
         lock.unlock()
         Task.detached(priority: .utility) {
             let instance = await MainActor.run { ProviderConfigStore.shared.instance(for: success.instanceId) }
@@ -502,10 +644,10 @@ final class ProviderQuotaService: ObservableObject {
             self.rowOrigins[success.instanceId, default: [:]][success.rowId] = origin
             self.selectableOrigins[success.instanceId, default: [:]][success.rowId] = origin
             self.clocks[success.instanceId, default: .init()].consumed(at: success.succeededAt)
-            if let data = try? JSONEncoder().encode(origin) {
-                UserDefaults.standard.set(data, forKey: Self.currentPrefix + success.instanceId)
-            }
+            self.memoryVersions[success.instanceId, default: 0] &+= 1
+            self.enqueuePersistence(.current(origin), instanceId: success.instanceId, domain: "current")
             self.lock.unlock()
+            self.schedulePersistence()
             _ = self.publishAggregate(for: success.instanceId)
             self.publishRevision(success.instanceId)
             await self.scheduleAutomatic(success.instanceId)
@@ -528,11 +670,16 @@ final class ProviderQuotaService: ObservableObject {
         for task in scheduled.values { task.cancel() }; scheduled.removeAll()
         lock.unlock()
     }
-    private func scheduleAutomatic(_ instanceId: String) async {
+    private func scheduleAutomatic(_ instanceId: String, expectedEpoch: UUID? = nil,
+                                   validatedOrigin: ProviderQuotaCurrentKeyPolicy.Origin? = nil,
+                                   replacing: Bool = true) async {
         let active = await MainActor.run { UIApplication.shared.applicationState == .active }
         lock.lock()
         // Consumption during a query remains pending; do not cancel/restart it.
-        guard clocks[instanceId]?.running != true else { lock.unlock(); return }
+        guard expectedEpoch == nil || epochs[instanceId] == expectedEpoch,
+              validatedOrigin == nil || currentOrigins[instanceId] == validatedOrigin,
+              clocks[instanceId]?.running != true else { lock.unlock(); return }
+        if !replacing, scheduled[instanceId] != nil { lock.unlock(); return }
         scheduled.removeValue(forKey: instanceId)?.cancel()
         guard let deadline = clocks[instanceId]?.deadline(active: active, now: Date()) else { lock.unlock(); return }
         let epoch = epochs[instanceId] ?? UUID(); epochs[instanceId] = epoch
@@ -547,7 +694,8 @@ final class ProviderQuotaService: ObservableObject {
     private func runAutomatic(_ instanceId: String, epoch: UUID) async {
         guard await MainActor.run(body: { UIApplication.shared.applicationState == .active }) else { return }
         guard let context = await resolveCurrent(instanceId, epoch: epoch),
-              let instance = await MainActor.run(body: { ProviderConfigStore.shared.instance(for: instanceId) }) else { return }
+              let instance = await MainActor.run(body: { ProviderConfigStore.shared.instance(for: instanceId) }),
+              await MainActor.run(body: { UIApplication.shared.applicationState == .active }) else { return }
         let origin = ProviderQuotaCurrentKeyPolicy.Origin(rowId: context.rowId, owner: context.durableOwner)
         lock.lock()
         guard !Task.isCancelled, epochs[instanceId] == epoch, currentOrigins[instanceId] == origin,
@@ -560,7 +708,7 @@ final class ProviderQuotaService: ObservableObject {
         if Task.isCancelled || outcome.deferred { clocks[instanceId, default: .init()].cancelled() }
         else { clocks[instanceId, default: .init()].finish(at: Date(), succeeded: outcome.succeeded, retryAfter: outcome.retryAfter) }
         lock.unlock()
-        await scheduleAutomatic(instanceId)
+        await scheduleAutomatic(instanceId, expectedEpoch: epoch)
     }
     private func publishRevision(_ instanceId: String) {
         lock.lock()
@@ -637,6 +785,7 @@ final class ProviderQuotaService: ObservableObject {
         let epoch = epochs[instance.id] ?? UUID()
         epochs[instance.id] = epoch
         inFlight[slot] = ticket
+        let capturedSuccessAt = clocks[instance.id]?.lastSuccessAt
         lock.unlock()
         let context = await Self.context(for: instance, key: key, rowId: rowId)
         let started = Date()
@@ -656,54 +805,81 @@ final class ProviderQuotaService: ObservableObject {
         let selectable = Self.rowKey(instance.id, rowId: rowId) == verifiedKey && verifiedKey != nil
         if context?.owner != currentContext?.owner || currentKey != verifiedKey {
             invalidateRow(instanceId: instance.id, rowId: rowId, epoch: epoch, ticket: ticket,
-                          capturedOwner: context?.durableOwner)
+                          capturedOwner: context?.durableOwner, capturedSuccessAt: capturedSuccessAt)
             return .init()
         }
-        lock.lock()
-        guard epochs[instance.id] == epoch, inFlight[slot] == ticket else { lock.unlock(); return .init() }
-        inFlight.removeValue(forKey: slot)
-        guard !Task.isCancelled, let context, let result else { lock.unlock(); return .init() }
-        let origin = ProviderQuotaCurrentKeyPolicy.Origin(rowId: rowId, owner: context.durableOwner)
-        rowOrigins[instance.id, default: [:]][rowId] = origin
-        if selectable { selectableOrigins[instance.id, default: [:]][rowId] = origin }
-        else { selectableOrigins[instance.id]?.removeValue(forKey: rowId) }
-        let previous = keyCache[instance.id]?[rowId]?.info
-        let merged = result.merging(previous: previous.map { Self.snapshot($0) })
-        let info = Self.project(merged)
-        let entry = CacheEntry(info: info, fetchedAt: Date(), owner: context.owner, origin: origin)
-        keyCache[instance.id, default: [:]][rowId] = entry
-        let notes = result.attempts.filter { !$0.probeMiss }.compactMap(\.failureNote)
-        if !notes.isEmpty { failureNotes[slot] = Array(Set(notes)).sorted().joined(separator: "；") }
-        else if info == nil { failureNotes[slot] = AppLocalized("站点没有返回可用余额（可能不支持余额查询）") }
-        else if info?.kind == .used && info?.readings.allSatisfy({ !$0.unlimited && !$0.rejected && $0.total == nil }) == true {
-            failureNotes[slot] = AppLocalized("站点只返回了用量，没有返回剩余余额")
-        } else { failureNotes.removeValue(forKey: slot) }
-        // Persistence is inside the epoch fence; an old owner cannot replay
-        // after a newer credential event. Every manually queried row is saved.
-        let persisted = entry.info.map { Self.reproject($0) }
-        Self.store(persisted, instanceId: instance.id, origin: origin, at: entry.fetchedAt)
-        lock.unlock()
+        // Capture -> project outside the mutex -> recheck. Concurrent success,
+        // restoration or invalidation cannot be overwritten by an old snapshot.
+        var persisted: QuotaInfo?
+        var notes: [String] = []
+        while true {
+            lock.lock()
+            guard epochs[instance.id] == epoch, inFlight[slot] == ticket else { lock.unlock(); return .init() }
+            guard !Task.isCancelled, let context, let result else {
+                inFlight.removeValue(forKey: slot); lock.unlock(); return .init()
+            }
+            let origin = ProviderQuotaCurrentKeyPolicy.Origin(rowId: rowId, owner: context.durableOwner)
+            if clocks[instance.id]?.lastSuccessAt != capturedSuccessAt,
+               let current = currentOrigins[instance.id], current.rowId == rowId, current != origin {
+                inFlight.removeValue(forKey: slot); lock.unlock(); return .init()
+            }
+            let version = memoryVersions[instance.id, default: 0]
+            let previous = keyCache[instance.id]?[rowId]?.info
+            let needsDiskCurrent = currentOrigins[instance.id] == nil
+            lock.unlock()
+            let diskCurrent = needsDiskCurrent ? Self.storedCurrent(instance.id) : nil
+            let merged = result.merging(previous: previous.map { Self.snapshot($0) })
+            let info = Self.project(merged)
+            let entry = CacheEntry(info: info, fetchedAt: Date(), owner: context.owner, origin: origin)
+            notes = result.attempts.filter { !$0.probeMiss }.compactMap(\.failureNote)
+            let failure: String?
+            if !notes.isEmpty { failure = Array(Set(notes)).sorted().joined(separator: "；") }
+            else if info == nil { failure = AppLocalized("站点没有返回可用余额（可能不支持余额查询）") }
+            else if info?.kind == .used && info?.readings.allSatisfy({ !$0.unlimited && !$0.rejected && $0.total == nil }) == true {
+                failure = AppLocalized("站点只返回了用量，没有返回剩余余额")
+            } else { failure = nil }
+            lock.lock()
+            guard epochs[instance.id] == epoch, inFlight[slot] == ticket else { lock.unlock(); return .init() }
+            guard !Task.isCancelled else { inFlight.removeValue(forKey: slot); lock.unlock(); return .init() }
+            guard memoryVersions[instance.id, default: 0] == version else { lock.unlock(); continue }
+            inFlight.removeValue(forKey: slot)
+            rowOrigins[instance.id, default: [:]][rowId] = origin
+            if selectable { selectableOrigins[instance.id, default: [:]][rowId] = origin }
+            else { selectableOrigins[instance.id]?.removeValue(forKey: rowId) }
+            if selectable, currentOrigins[instance.id] == nil, diskCurrent == origin { currentOrigins[instance.id] = origin }
+            keyCache[instance.id, default: [:]][rowId] = entry
+            failureNotes[slot] = failure
+            memoryVersions[instance.id, default: 0] &+= 1
+            persisted = info
+            enqueuePersistence(.row(info, origin, entry.fetchedAt), instanceId: instance.id, domain: "row:" + rowId)
+            lock.unlock()
+            break
+        }
+        schedulePersistence()
         _ = publishAggregate(for: instance.id)
         Self.logRefresh(instanceId: instance.id, rowId: rowId, info: persisted, note: notes.first)
         Self.logger.info("balance query instance=\(instance.id.prefix(8)) row=\(rowId) took \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
         publishRevision(instance.id)
-        return .init(succeeded: result.attempts.contains { $0.succeeded } && context.retry.retryAfter == nil,
-                     retryAfter: context.retry.retryAfter)
+        return .init(succeeded: (result?.attempts.contains { $0.succeeded } ?? false) && context?.retry.retryAfter == nil,
+                     retryAfter: context?.retry.retryAfter)
     }
     /// Compatibility name only: publish the last SUCCESSFUL actual Key, never
     /// a minimum/sum across rows. A missing current-row reading stays unknown.
     private func publishAggregate(for instanceId: String) -> QuotaInfo? {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         let available = Array((selectableOrigins[instanceId] ?? [:]).values)
         let selected = ProviderQuotaCurrentKeyPolicy.current(
-            lastSuccess: currentOrigins[instanceId] ?? Self.storedCurrent(instanceId), available: available)
+            lastSuccess: currentOrigins[instanceId], available: available)
+        if currentOrigins[instanceId] != selected { memoryVersions[instanceId, default: 0] &+= 1 }
         currentOrigins[instanceId] = selected
         guard let selected, rowOrigins[instanceId]?[selected.rowId] == selected,
               let entry = keyCache[instanceId]?[selected.rowId], entry.origin == selected else {
             cache.removeValue(forKey: instanceId)
+            lock.unlock()
             return nil
         }
         cache[instanceId] = entry
+        lock.unlock()
         return entry.info.map { Self.reproject($0) }
     }
 

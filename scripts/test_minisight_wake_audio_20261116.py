@@ -66,24 +66,84 @@ def baseline(path):
     return subprocess.check_output(["git", "show", f"82f9fb1:{path}"], cwd=ROOT, text=True)
 
 
+def recording_start(source=SPEECH):
+    # Both current named-entry and the preserveDraft public-wrapper layout use
+    # this REAL shared implementation. Never look for the obsolete no-arg body.
+    marker = "private func startRecording(nameWake:" if "private func startRecording(nameWake:" in source else "func startRecording(nameWake:"
+    return block(source, marker)
+
+
 def extracted_sources():
-    coordinator = re.sub(r"(?m)^import (Foundation|AVFoundation|UIKit)\n", "", COORD)
-    start, end = span(coordinator, "private func registerInterruptionObserver()")
-    coordinator = coordinator[:start] + "private func registerInterruptionObserver() {}" + coordinator[end:]
-    coordinator = coordinator.replace("@objc ", "")
-    for method in ("handleInterruption", "handleSilenceSecondaryAudioHint", "handleRouteChange"):
-        coordinator = coordinator.replace(f"private func {method}(", f"func {method}(")
-    speech = re.sub(r"(?m)^import (AVFoundation|Combine|Speech)\n", "", SPEECH)
-    return ("import Foundation\nimport CoreFoundation\n" + coordinator,
-            "import Foundation\n" + speech)
+    # Lazy import preserves the existing background runner's block/span import.
+    # Reuse its production BKA/voice-bridge dependencies and shared MockAudio
+    # adaptation, not a second arbitration/permission model. Equality is tested.
+    from test_minisight_name_background_audio_20261116 import production_sources
+    return production_sources()
+
+
+def assert_manual_permission_contract(test, source):
+    start = block(source, "private func startListening(")
+    test.assertIn("guard await manager.requestPermissions() else", start)
+    test.assertLess(start.index("requestPermissions()"), start.index("try manager.startRecording("))
+    test.assertIn('reason: "permission"', start)
+    test.assertIn("generation == activeGeneration, lease == nextGeneration, !Task.isCancelled", start)
+    test.assertLess(start.index("!Task.isCancelled"), start.index("try manager.startRecording("))
+
+
+def assert_recording_contract(test, source):
+    start = recording_start(source)
+    test.assertIn("guard permissionsAlreadyGranted, state != .recording", start)
+    test.assertEqual(start.count("self.recordingGeneration == generation"), 2)
+    test.assertEqual(start.count("self.recordingIntent == intent"), 2)
+    test.assertLess(start.index("recordingGeneration &+= 1"), start.index("recognitionTask?.cancel()"))
+    teardown = block(source, "private func tearDown()")
+    test.assertLess(teardown.index("recordingGeneration &+= 1"), teardown.index("task.cancel()"))
+    test.assertIn("let intent = recordingIntent", teardown)
+    test.assertIn("if let intent { AudioSessionCoordinator.shared.end(intent) }", teardown)
+    test.assertEqual(teardown.count("AudioSessionCoordinator.shared.end("), 1)
+    test.assertLess(teardown.index("recordingIntent = nil"), teardown.index("end(intent)"))
+    test.assertNotIn("end(.capture)", teardown)
+    test.assertNotIn("end(.backgroundKeepAlive)", teardown)
+    test.assertNotIn("recognizedText =", teardown)
+
+
+def negative_sources(sources):
+    # Compile only deliberate mutations of extracted Swift. Python checks source
+    # structure; the native gate must also reject each mutant at a CHECK below.
+    def altered(name, old, new, count=1):
+        result = dict(sources)
+        assert result[name].count(old) == count, (name, old)
+        result[name] = result[name].replace(old, new)
+        return result
+    return {
+        "manual-permission-bypass": (
+            altered("VoiceBridge.swift", "guard await manager.requestPermissions() else {", "guard true else {"),
+            "manual speech denial never starts engine"),
+        "named-permission-bypass": (
+            altered("Speech.swift", "guard permissionsAlreadyGranted, state != .recording,", "guard state != .recording,"),
+            "named permission denial must throw"),
+        "lost-recording-generation": (
+            altered("Speech.swift", "self.recordingGeneration == generation,", "", count=2),
+            "cancelled callback cannot end newer capture"),
+        "foreign-owner-release": (
+            altered("Speech.swift", "if let intent { AudioSessionCoordinator.shared.end(intent) }",
+                    "if let intent { AudioSessionCoordinator.shared.end(intent); AudioSessionCoordinator.shared.end(.backgroundKeepAlive) }"),
+            "speech stop cannot release background owner"),
+    }
 
 
 class SourceContracts(unittest.TestCase):
     def test_intent_values_and_wake_profile(self):
         intent = block(COORD, "enum Intent: Int")
-        for name, value in (("wakeWord", -1), ("backgroundKeepAlive", 0), ("replyTTS", 1),
+        for name, value in (("nameWakeDictation", -2), ("wakeWord", -1),
+                            ("backgroundKeepAlive", 0), ("replyTTS", 1),
                             ("mediaAttachment", 2), ("capture", 3)):
             self.assertRegex(intent, rf"case {name} = {value}\b")
+        priority = block(intent, "var priority: Int")
+        for rank, name in enumerate(("backgroundKeepAlive", "wakeWord", "nameWakeDictation",
+                                     "replyTTS", "mediaAttachment", "capture")):
+            self.assertIn(f"case .{name}: return {rank}", priority)
+        self.assertIn("active.max(by: { $0.priority < $1.priority })", COORD)
         profile = block(COORD, "private func profile(")
         self.assertIn("return (.playAndRecord, .measurement, [.mixWithOthers])", profile)
         self.assertNotIn("allowBluetooth", profile)
@@ -99,7 +159,15 @@ class SourceContracts(unittest.TestCase):
         self.assertIn("!interrupted", guard)
         self.assertIn("!pausedByExternalAudio", guard)
         self.assertIn("!isPreemptingWakeWord", guard)
-        self.assertIn("active.allSatisfy { $0 == .wakeWord }", guard)
+        self.assertIn("!isPreemptingNameWakeDictation", guard)
+        self.assertIn("active.allSatisfy { $0.isNameWakeInput || $0 == .backgroundKeepAlive }", guard)
+        named_guard = block(COORD, "var canBeginNameWakeDictation")
+        for check in ("!interrupted", "!pausedByExternalAudio", "!isPreemptingWakeWord",
+                      "!isPreemptingNameWakeDictation",
+                      "active.allSatisfy { $0 == .wakeWord || $0 == .backgroundKeepAlive }"):
+            self.assertIn(check, named_guard)
+        self.assertIn("self == .wakeWord || self == .nameWakeDictation", block(COORD, "var isNameWakeInput"))
+        self.assertNotIn("active.isEmpty", guard + named_guard)
         begin = block(COORD, "func beginWakeWordListening(")
         self.assertIn("Self.sessionQueue.async", begin)
         self.assertIn("Task { @MainActor", begin)
@@ -134,7 +202,12 @@ class SourceContracts(unittest.TestCase):
         began = interruption.split("case .ended:")[0]
         self.assertLess(began.index("interrupted = true"), began.index("preemptWakeWord()"))
         self.assertIn("preemptWakeWord()", block(COORD, "private func pauseTTSForExternalAudio("))
-        self.assertIn("if top == .wakeWord,", block(COORD, "private func apply("))
+        self.assertIn("preemptNameWakeDictation()", began)
+        self.assertIn("preemptNameWakeDictation()", block(COORD, "private func pauseTTSForExternalAudio("))
+        apply = block(COORD, "private func apply(")
+        self.assertIn("if top == nil || top?.isNameWakeInput == true,", apply)
+        self.assertIn("!Self.applyStateLock.withLock({ Self.applyRevision == revision })", apply)
+        self.assertIn("if Self.applyRevision == revision", apply)
 
     def test_legacy_wait_and_background_ack_unchanged(self):
         old = baseline(COORD_PATH)
@@ -152,57 +225,143 @@ class SourceContracts(unittest.TestCase):
 
     def test_speech_no_direct_session_mutation(self):
         self.assertNotRegex(SPEECH, r"\.set(Category|Active)\s*\(")
-        start = block(SPEECH, "func startRecording()")
-        self.assertLess(start.index("guard !coordinator.isCapturing"), start.index("ownsCaptureIntent = true"))
-        self.assertLess(start.index("ownsCaptureIntent = true"), start.index("beginAndWait(.capture)"))
+        start = recording_start()
+        self.assertIn("nameWake ? .nameWakeDictation : .capture", start)
+        self.assertLess(start.index("guard !coordinator.isCapturing"), start.index("recordingIntent = intent"))
+        self.assertLess(start.index("recordingIntent = intent"), start.index("beginAndWait(intent)"))
         self.assertIn("defer { if !started { tearDown() } }", start)
-        self.assertIn("guard coordinator.beginAndWait(.capture) else", start)
-        self.assertLess(start.index("beginAndWait(.capture)"), start.index("audioEngine.inputNode"))
+        self.assertIn("guard coordinator.beginAndWait(intent) else", start)
+        self.assertLess(start.index("beginAndWait(intent)"), start.index("self.audioEngine.inputNode"))
+        if "func startRecording(preserveDraft:" in SPEECH:
+            # If a public draft-preserving wrapper is present, it must route
+            # ordinary recording to the same capture body, without discarding
+            # preserveDraft. The extracted wrapper itself remains byte-identical.
+            manual = block(SPEECH, "func startRecording(preserveDraft:")
+            self.assertRegex(manual, r"preserveDraft:\s*Bool\s*=\s*false\b")
+            self.assertRegex(manual, r"startRecording\(nameWake:\s*false,\s*preserveDraft:\s*preserveDraft\)")
+        else:
+            self.assertIn("func startRecording(nameWake: Bool = false)", start)
 
     def test_all_initialization_failures_rollback(self):
-        start = block(SPEECH, "func startRecording()")
-        for fragment in ("guard let recognizer = speechRecognizer", "recordingFormat.channelCount > 0",
-                         "recordingFormat.sampleRate > 0", "guard installOk, startError == nil else",
-                         "guard recognitionOK, recognitionTask != nil else"):
+        start = recording_start()
+        for fragment in ("guard let recognizer = speechRecognizer, recognizer.isAvailable",
+                         "guard formatOK, let inputNode", "recordingFormat.channelCount > 0",
+                         "recordingFormat.sampleRate.isFinite", "recordingFormat.sampleRate > 0",
+                         "guard installOk, startError == nil, audioEngine.isRunning else",
+                         "guard recognitionOK, recognitionTask != nil else",
+                         "defer { if !started { tearDown() } }"):
             self.assertIn(fragment, start)
         self.assertLess(start.index("recognitionOK, recognitionTask != nil"), start.index('recognizedText = ""'))
         self.assertLess(start.index('recognizedText = ""'), start.index("started = true"))
         teardown = block(SPEECH, "private func tearDown()")
-        self.assertIn("if ownsCaptureIntent {", teardown)
-        self.assertLess(teardown.index("ownsCaptureIntent = false"), teardown.index("end(.capture)"))
-        self.assertEqual(teardown.count("end(.capture)"), 1)
-        self.assertIn("noff_try_objc", teardown)
-        self.assertNotIn("recognizedText =", teardown)
+        assert_recording_contract(self, SPEECH)
+        for fragment in ("noff_try_objc { self.audioEngine.stop() }",
+                         "noff_try_objc { self.audioEngine.inputNode.removeTap(onBus: 0) }",
+                         "request.endAudio()", "task.cancel()"):
+            self.assertIn(fragment, teardown)
+        self.assertLess(teardown.index("recordingIntent = nil"), teardown.index("onNameWakeRecordingEnded?()"))
+        self.assertLess(teardown.index("onNameWakeRecordingEnded?()"), teardown.index("end(intent)"))
 
     def test_cancelled_callbacks_cannot_damage_new_recording(self):
-        start = block(SPEECH, "func startRecording()")
-        self.assertEqual(start.count("self.recordingGeneration == generation"), 2)
-        teardown = block(SPEECH, "private func tearDown()")
-        self.assertLess(teardown.index("recordingGeneration &+= 1"), teardown.index("recognitionTask?.cancel()"))
+        assert_recording_contract(self, SPEECH)
 
     def test_permission_and_language_policies_unchanged(self):
         old = baseline(SPEECH_PATH)
         for marker in ("var permissionsAlreadyGranted", "func requestPermissions()",
-                       "func setLanguage(", "func restartRecordingIfPending()", "func setProvider("):
+                       "func restartRecordingIfPending()"):
             self.assertEqual(block(SPEECH, marker), block(old, marker))
+        # The ONLY sanctioned language/provider delta is the named-input branch:
+        # ordinary capture still has precisely the historical control flow.
+        # Compare the complete blocks after undoing just that explicit delta.
+        for marker in ("func setLanguage(", "func setProvider("):
+            current = block(SPEECH, marker)
+            self.assertIn("let wasNameWake = recordingIntent == .nameWakeDictation", current)
+            current = current.replace("        let wasNameWake = recordingIntent == .nameWakeDictation\n", "")
+            current = current.replace("wasRecording && !wasNameWake", "wasRecording")
+            self.assertEqual(current, block(old, marker))
         self.assertNotIn("requestPermission", block(COORD, "func beginWakeWordListening("))
         self.assertIn("request.requiresOnDeviceRecognition = true", SPEECH)
         self.assertIn("guard let self, self.state == .recording", SPEECH)
+        sources = extracted_sources()
+        assert_manual_permission_contract(self, sources["VoiceBridge.swift"])
+        assert_recording_contract(self, SPEECH)
+
+    def test_atomic_input_handoff_retains_background_owner(self):
+        begin = block(COORD, "private func beginInternal(")
+        self.assertIn("intent.priority > Intent.wakeWord.priority", begin)
+        handoff = begin.split("if intent == .nameWakeDictation {")[1].split("} else {")[0]
+        self.assertIn("active.remove(.wakeWord)", handoff)
+        self.assertIn("wakeWordGeneration &+= 1", handoff)
+        self.assertNotIn("preemptWakeWord()", handoff)
+        self.assertNotIn("end(", handoff)
+        self.assertLess(begin.index("active.insert(intent)"), begin.index("yieldSilentAudioToNameInput()"))
+        self.assertLess(begin.index("yieldSilentAudioToNameInput()"), begin.index('apply(reason:'))
+        self.assertNotIn("end(.backgroundKeepAlive)", begin)
+        self.assertIn("!top.isNameWakeInput", block(COORD, "var keepAlivePlaybackApplied"))
+        self.assertIn("hasNameWakeInputIntent", block(COORD, "var keepAlivePlaybackBlocked"))
+
+    def test_source_negative_controls_reject_permission_generation_and_foreign_release(self):
+        sources = extracted_sources()
+        assert_manual_permission_contract(self, sources["VoiceBridge.swift"])
+        assert_recording_contract(self, sources["Speech.swift"])
+        for name, (mutant, _) in negative_sources(sources).items():
+            with self.subTest(mutant=name), self.assertRaises(AssertionError):
+                if name == "manual-permission-bypass":
+                    assert_manual_permission_contract(self, mutant["VoiceBridge.swift"])
+                else:
+                    assert_recording_contract(self, mutant["Speech.swift"])
 
     def test_extraction_keeps_production_methods_not_python_policy(self):
-        coordinator, speech = extracted_sources()
+        from test_minisight_name_background_audio_20261116 import production_sources
+        sources = extracted_sources()
+        self.assertEqual(sources, production_sources())
+        self.assertEqual(set(sources), {"MockAudio.swift", "BackgroundBridgeMocks.swift",
+                                      "Coordinator.swift", "Speech.swift", "VoiceBridge.swift"})
+        coordinator, speech = sources["Coordinator.swift"], sources["Speech.swift"]
+        # Whole-file speech equality: no production branch/guard/body rewritten.
+        self.assertEqual(speech, "import Foundation\n" + re.sub(
+            r"(?m)^import (AVFoundation|Combine|Speech)\n", "", SPEECH))
+        expected = re.sub(r"(?m)^import (Foundation|AVFoundation|UIKit)\n", "", COORD)
+        start, end = span(expected, "private func registerInterruptionObserver()")
+        expected = expected[:start] + "private func registerInterruptionObserver() {}" + expected[end:]
+        expected = expected.replace("@objc ", "")
+        for name in ("handleInterruption", "handleSilenceSecondaryAudioHint", "handleRouteChange"):
+            expected = expected.replace(f"private func {name}(", f"func {name}(")
+        self.assertEqual(coordinator, "import Foundation\nimport CoreFoundation\n" + expected)
         for marker in ("enum Intent: Int", "private func profile(", "func beginAndWait(",
-                       "func beginWakeWordListening(", "private func beginInternal(", "func end(",
-                       "private func apply(", "private func preemptWakeWord()"):
+                       "func beginBackgroundKeepAlive(", "func beginWakeWordListening(",
+                       "private func beginInternal(", "func end(", "private func apply(",
+                       "private func preemptWakeWord()", "private func preemptNameWakeDictation()"):
             self.assertEqual(block(coordinator, marker), block(COORD, marker))
-        for marker in ("func startRecording()", "private func tearDown()", "func setLanguage("):
+        self.assertEqual(recording_start(speech), recording_start(SPEECH))
+        for marker in ("private func tearDown()", "func setLanguage(",
+                       "func requestPermissions()", "func setProvider("):
             self.assertEqual(block(speech, marker), block(SPEECH, marker))
+        if "func startRecording(preserveDraft:" in SPEECH:
+            self.assertEqual(block(speech, "func startRecording(preserveDraft:"),
+                             block(SPEECH, "func startRecording(preserveDraft:"))
+        bridge = (ROOT / "src/ios/MiniSightVoiceBridge.swift").read_text()
+        for marker in ("func handleRequest(", "private func startListening(", "func stop()",
+                       "private func handleNameWakeRequest(", "private func startNameWakeListening(",
+                       "private func finishNameWake(", "func cancelNameWake("):
+            self.assertEqual(block(sources["VoiceBridge.swift"], marker), block(bridge, marker))
+        backing = (ROOT / "src/ios/Agent/Background/BackgroundKeepAliveManager.swift").read_text()
+        for marker in ("var backgroundExecutionIsBacked", "var silentAudioIsPlaying", "var silentAudioWanted",
+                       "func yieldSilentAudioToNameInput()", "func stopSilentAudio("):
+            self.assertEqual(block(sources["BackgroundBridgeMocks.swift"], marker), block(backing, marker))
+        mock = (FIXTURES / "MockAudio.swift").read_text()
+        mock = mock.replace("    var stopCount = 0", "    var isPlaying = false\n    var isPaused = false\n    var stopCount = 0")
+        mock = mock.replace("func stop() { isRunning = false }",
+                            'func stop() { isRunning = false; EventLog.shared.append("stop-engine") }')
+        self.assertEqual(sources["MockAudio.swift"], mock)
+        for name, source in sources.items():
+            self.assertNotRegex(source, r"(?m)^import (AVFoundation|Speech|UIKit|Combine)$", name)
         for path in FIXTURES.glob("*.swift"):
             self.assertNotRegex(path.read_text(), r"(?m)^import (AVFoundation|Speech|UIKit|Combine)$")
 
 
 class NativeProductionHarness(unittest.TestCase):
-    def test_native_production_swift_mock_harness(self):
+    def native_toolchain(self):
         compiler = shutil.which("swiftc")
         xcrun = shutil.which("xcrun")
         if not compiler or platform.system() != "Darwin" or not xcrun:
@@ -215,21 +374,38 @@ class NativeProductionHarness(unittest.TestCase):
             if REQUIRE_NATIVE:
                 self.fail("native REQUIRED: Apple host SDK unavailable")
             self.skipTest("native SKIP: Apple host SDK unavailable")
+        return compiler, sdk.stdout.strip()
+
+    def compile_and_run(self, sources, compiler, sdk):
         with tempfile.TemporaryDirectory(prefix="minisight-wake-audio-") as temporary:
             folder = Path(temporary)
-            coordinator, speech = extracted_sources()
-            (folder / "Coordinator.swift").write_text(coordinator)
-            (folder / "Speech.swift").write_text(speech)
+            for name, source in sources.items():
+                (folder / name).write_text(source)
             executable = folder / "wake-audio-harness"
-            result = subprocess.run([compiler, "-swift-version", "5", "-parse-as-library", "-sdk",
-                sdk.stdout.strip(), str(FIXTURES / "MockAudio.swift"), str(folder / "Coordinator.swift"),
-                str(folder / "Speech.swift"), str(FIXTURES / "WakeAudioHarness.swift"), "-o", str(executable)],
-                text=True, capture_output=True, timeout=120)
+            result = subprocess.run([compiler, "-swift-version", "5", "-parse-as-library", "-sdk", sdk,
+                *[str(folder / name) for name in sources], str(FIXTURES / "WakeAudioHarness.swift"),
+                "-o", str(executable)], text=True, capture_output=True, timeout=120)
+            # A mutant compile error is NOT evidence of behavioural rejection.
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            run = subprocess.run([str(executable)], text=True, capture_output=True, timeout=45)
-            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertIn("PASS native production Swift mock harness:", run.stdout)
-            print(run.stdout.strip())
+            return subprocess.run([str(executable)], text=True, capture_output=True, timeout=45)
+
+    def test_native_production_swift_mock_harness(self):
+        compiler, sdk = self.native_toolchain()
+        run = self.compile_and_run(extracted_sources(), compiler, sdk)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("PASS native production Swift mock harness:", run.stdout)
+        print(run.stdout.strip())
+
+    def test_native_negative_controls_fail_at_runtime(self):
+        compiler, sdk = self.native_toolchain()
+        for name, (sources, diagnostic) in negative_sources(extracted_sources()).items():
+            with self.subTest(mutant=name):
+                run = self.compile_and_run(sources, compiler, sdk)
+                self.assertNotEqual(run.returncode, 0, f"negative control escaped: {name}\n{run.stdout}")
+                self.assertNotIn("PASS native production Swift mock harness:", run.stdout)
+                self.assertIn(diagnostic, run.stdout + run.stderr,
+                              f"mutant failed at the wrong assertion: {name}\n{run.stdout}{run.stderr}")
+                print(f"PASS native negative control rejected at assertion: {name}")
 
 
 if __name__ == "__main__":

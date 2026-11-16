@@ -1,5 +1,150 @@
 import SwiftUI
 
+// BEGIN QUOTA_DETAIL_SNAPSHOT_LOADER
+/// One coalescing projection worker plus one user-owned query. Revision and
+/// threshold events project memory off-main; they never start quota requests.
+@MainActor final class ProviderQuotaDetailSnapshotLoader: ObservableObject {
+    struct Snapshot {
+        var rows: [ProviderQuotaService.KeyQuota] = []
+        var enabled = false
+        var usage: [String: String] = [:]
+    }
+    private struct Request {
+        let instance: ProviderInstance
+        let generation: UInt64
+        let scope: UInt64
+    }
+    @Published private(set) var snapshot = Snapshot()
+    @Published private(set) var refreshing = false
+    @Published private(set) var message: String?
+    private var instanceId: String?
+    private var generation: UInt64 = 0
+    private var scope: UInt64 = 0
+    private var manualVersion: UInt64 = 0
+    private var pending: Request?
+    private var projectionTask: Task<Void, Never>?
+    private var manualTask: Task<Void, Never>?
+
+    func isShowing(_ id: String) -> Bool { instanceId == id }
+    func cancel() {
+        generation &+= 1; scope &+= 1; manualVersion &+= 1
+        instanceId = nil; pending = nil
+        projectionTask?.cancel(); manualTask?.cancel()
+        refreshing = false; message = nil; snapshot = Snapshot()
+        // Do not nil projectionTask before its detached read has returned.
+        // A new appearance can replace pending, never spawn unlimited readers.
+    }
+    func reload(for instance: ProviderInstance) {
+        cancel()
+        instanceId = instance.id
+        project(for: instance)
+    }
+    func project(for instance: ProviderInstance) {
+        guard instanceId == instance.id else { return }
+        generation &+= 1
+        pending = Request(instance: instance, generation: generation, scope: scope)
+        startProjection()
+    }
+    private func accepts(_ request: Request) -> Bool {
+        instanceId == request.instance.id && scope == request.scope && generation == request.generation
+    }
+    private func startProjection() {
+        guard projectionTask == nil, pending != nil else { return }
+        projectionTask = Task {
+            while !Task.isCancelled, let request = pending {
+                pending = nil
+                let value = await Self.buildSnapshot(for: request.instance)
+                if !Task.isCancelled, accepts(request) { snapshot = value }
+            }
+            projectionTask = nil
+            // Cancellation/reload may have installed the latest pending request.
+            startProjection()
+        }
+    }
+    private func acceptsManual(_ instance: ProviderInstance, scope wantedScope: UInt64, version: UInt64) -> Bool {
+        instanceId == instance.id && scope == wantedScope && manualVersion == version && !Task.isCancelled
+    }
+    func refresh(for instance: ProviderInstance, multi: Bool? = nil) {
+        guard instanceId == instance.id, !refreshing, manualTask == nil else { return }
+        manualVersion &+= 1
+        let version = manualVersion, wantedScope = scope
+        generation &+= 1; pending = nil // invalidate every older reload result
+        refreshing = true; message = nil
+        manualTask = Task {
+            defer { manualTask = nil }
+            let useMulti: Bool
+            if let multi { useMulti = multi }
+            else { useMulti = await ProviderMultiKeyManager.shared.isActiveAsync(for: instance.id) }
+            guard acceptsManual(instance, scope: wantedScope, version: version) else { return }
+            await Self.query(for: instance, multi: useMulti)
+            guard acceptsManual(instance, scope: wantedScope, version: version) else { return }
+            // The result capture uses the SAME UI generation as every projection,
+            // while a separate scope rejects config changes/cancel/instance swaps.
+            generation &+= 1; pending = nil
+            let request = Request(instance: instance, generation: generation, scope: scope)
+            let value = await Self.buildSnapshot(for: instance)
+            guard acceptsManual(instance, scope: wantedScope, version: version) else { return }
+            if accepts(request) {
+                snapshot = value
+                message = Self.resultMessage(value.rows, multi: useMulti)
+            }
+            refreshing = false
+        }
+    }
+    nonisolated private static func buildSnapshot(for instance: ProviderInstance) async -> Snapshot {
+        let worker = Task.detached(priority: .userInitiated) {
+            let rows = ProviderQuotaService.shared.quotaRows(for: instance)
+            let enabled = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
+            let keys = ProviderMultiKeyManager.shared.keys(for: instance.id)
+            var usage = ["main": AppLocalized("主凭据 · 轮询兜底")]
+            for key in keys {
+                var parts = ["成功 \(key.successCount) 次"]
+                if let used = key.lastUsed { parts.append(Self.relativeUsage(used)) }
+                usage[key.id] = parts.joined(separator: " · ")
+            }
+            return Snapshot(rows: rows, enabled: enabled, usage: usage)
+        }
+        return await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+    }
+    nonisolated private static func query(for instance: ProviderInstance, multi: Bool) async {
+        let worker = Task.detached(priority: .userInitiated) {
+            guard !Task.isCancelled else { return }
+            if multi { await ProviderQuotaService.shared.refreshAllKeys(for: instance) }
+            else { await ProviderQuotaService.shared.refreshQuota(for: instance) }
+        }
+        await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+    }
+    private static func resultMessage(_ rows: [ProviderQuotaService.KeyQuota], multi: Bool) -> String {
+        if multi {
+            let balances = rows.filter { $0.info?.kind == .balance }.count
+            let used = rows.filter { $0.info?.kind == .used }.count
+            let failed = rows.filter { $0.info == nil }.count
+            var parts: [String] = []
+            if balances > 0 { parts.append(String(format: AppLocalized("%lld 把有余额"), Int64(balances))) }
+            if used > 0 { parts.append(String(format: AppLocalized("%lld 把只有用量"), Int64(used))) }
+            if failed > 0 { parts.append(String(format: AppLocalized("%lld 把查询失败"), Int64(failed))) }
+            let summary = parts.isEmpty ? AppLocalized("没有可查询的 Key") : parts.joined(separator: "，")
+            return rows.compactMap { $0.failureNote }.first.map { "\(summary)：\($0)" } ?? summary
+        }
+        let row = rows.first { $0.isMain }
+        if row?.info?.kind == .balance { return AppLocalized("已更新余额") }
+        if row?.info?.kind == .used {
+            return row?.failureNote.map { "\(AppLocalized("只查到用量"))：\($0)" }
+                ?? AppLocalized("只查到用量，没有返回剩余余额")
+        }
+        return row?.failureNote.map { "\(AppLocalized("查询失败"))：\($0)" }
+            ?? AppLocalized("查询失败，站点可能不支持余额查询")
+    }
+    nonisolated private static func relativeUsage(_ date: Date) -> String {
+        let s = Date().timeIntervalSince(date)
+        if s < 60 { return "刚刚用过" }
+        if s < 3600 { return "\(Int(s / 60)) 分钟前" }
+        if s < 86400 { return "\(Int(s / 3600)) 小时前" }
+        return "\(Int(s / 86400)) 天前"
+    }
+}
+// END QUOTA_DETAIL_SNAPSHOT_LOADER
+
 /// Detail view for a single ProviderInstance.
 /// Allows editing label, managing credential, viewing/hiding models, and deleting.
 struct ProviderInstanceDetailView: View {
@@ -49,16 +194,13 @@ struct ProviderInstanceDetailView: View {
     // [T-multikey] Key ring state shown in the credential area.
     @State private var multiKeyEnabled = false
     @State private var multiKeyCount = 0
-    @State private var quotaRefreshing = false
-    @State private var quotaMessage: String?
-    /// [T-multikey-lock-io] `quotaRows` reads the Keychain and the ring's lock;
-    /// doing that from `body` put the main thread behind a background
-    /// `recordSuccess` write (05:52 device freeze). Load it off-main once per
-    /// appearance and when a refresh finishes, then draw from this snapshot.
-    @State private var quotaRowsSnapshot: [ProviderQuotaService.KeyQuota] = []
-    /// [T-quota-row-usage] 每把 Key 的使用摘要（成功次数 · 最近使用），
-    /// 用来填满「名字」与「金额」之间那条空列。
-    @State private var keyUsageById: [String: String] = [:]
+    @StateObject private var quotaDetail = ProviderQuotaDetailSnapshotLoader()
+    @State private var quotaVisible = false
+    private var quotaRefreshing: Bool { quotaDetail.refreshing }
+    private var quotaMessage: String? { quotaDetail.message }
+    /// Cached projection only: no Keychain/ring/storage reads during body.
+    private var quotaRowsSnapshot: [ProviderQuotaService.KeyQuota] { quotaDetail.snapshot.rows }
+    private var keyUsageById: [String: String] { quotaDetail.snapshot.usage }
     @ObservedObject private var pricingService = ProviderPricingService.shared
     @State private var showRateOverride = false
     /// [T-quota-perkey-token] Which key's access token is being edited. Each
@@ -94,13 +236,28 @@ struct ProviderInstanceDetailView: View {
                         // TextField and could be skipped or re-seed stale state.
                         // `isEnabled` is a UserDefaults read; the ring itself is
                         // loaded by `reloadQuotaRows` off the main thread.
-                        multiKeyEnabled = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
+                        quotaVisible = true
                         reloadQuotaRows(instance)
                     }
                     .onReceive(NotificationCenter.default.publisher(for: ProviderMultiKeyManager.didChange)) { note in
-                        guard note.object as? String == instance.id else { return }
-                        multiKeyEnabled = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
-                        if ProviderMultiKeyManager.shared.keysReady(for: instance.id) { reloadQuotaRows(instance) }
+                        guard quotaVisible, note.object == nil || note.object as? String == instance.id else { return }
+                        reloadQuotaRows(instance)
+                    }
+                    .onChange(of: quotaService.revision) { _ in
+                        if quotaVisible { quotaDetail.project(for: instance) }
+                    }
+                    .onChange(of: quotaLowThreshold) { _ in
+                        if quotaVisible { quotaDetail.project(for: instance) }
+                    }
+                    .onChange(of: instance) { current in
+                        if quotaVisible { reloadQuotaRows(current) }
+                    }
+                    .onChange(of: store.authRevision) { _ in
+                        if quotaVisible { reloadQuotaRows(instance) }
+                    }
+                    .onReceive(quotaDetail.$snapshot) { value in
+                        multiKeyEnabled = value.enabled
+                        multiKeyCount = value.rows.filter { !$0.isMain }.count
                     }
                     // [T-turn-cost-site-pricing] One background read per
                     // provider, only when this page is opened. It never runs
@@ -114,6 +271,17 @@ struct ProviderInstanceDetailView: View {
                 Text("Instance not found")
                     .foregroundStyle(.secondary)
             }
+        }
+        .onDisappear {
+            quotaVisible = false
+            quotaDetail.cancel()
+        }
+        .onChange(of: instanceId) { _ in
+            quotaDetail.cancel()
+            if quotaVisible, let current = instance { reloadQuotaRows(current) }
+        }
+        .onChange(of: instance?.id) { id in
+            if id == nil { quotaDetail.cancel() }
         }
         .navigationTitle(instance?.label ?? "Provider")
         .navigationBarTitleDisplayMode(.inline)
@@ -219,49 +387,10 @@ struct ProviderInstanceDetailView: View {
         .sheet(isPresented: $showQuotaLogin) {
             if let instance = instance {
                 ProviderQuotaLoginView(instance: instance) {
-                    quotaRefreshing = true
-                    quotaMessage = nil
-                    Task {
-                        // Same rule as the button: a provider in 多 Key 模式 has
-                        // rows of its own, so the sign-in refresh covers them
-                        // all rather than only the credential key.
-                        if await ProviderMultiKeyManager.shared.isActiveAsync(for: instance.id) {
-                            await ProviderQuotaService.shared.refreshAllKeys(for: instance)
-                        } else {
-                            await ProviderQuotaService.shared.refreshQuota(for: instance)
-                        }
-                        let multi = await ProviderMultiKeyManager.shared.isActiveAsync(for: instance.id)
-                        let refreshed = await Task.detached(priority: .userInitiated) {
-                            ProviderQuotaService.shared.quotaRows(for: instance)
-                        }.value
-                        let info = ProviderQuotaService.shared.cachedQuota(instanceId: instance.id)
-                        let reason = ProviderQuotaService.shared.failureNote(instanceId: instance.id)
-                        await MainActor.run {
-                            quotaRefreshing = false
-                            quotaRowsSnapshot = refreshed
-                            multiKeyCount = refreshed.filter { !$0.isMain }.count
-                            if multi {
-                                let balances = refreshed.filter { $0.info?.kind == .balance }.count
-                                let used = refreshed.filter { $0.info?.kind == .used }.count
-                                let failed = refreshed.filter { $0.info == nil }.count
-                                var parts: [String] = []
-                                if balances > 0 { parts.append(String(format: AppLocalized("%lld 把有余额"), Int64(balances))) }
-                                if used > 0 { parts.append(String(format: AppLocalized("%lld 把只有用量"), Int64(used))) }
-                                if failed > 0 { parts.append(String(format: AppLocalized("%lld 把查询失败"), Int64(failed))) }
-                                let summary = parts.isEmpty ? AppLocalized("没有可查询的 Key") : parts.joined(separator: "，")
-                                let first = refreshed.compactMap { $0.failureNote }.first
-                                quotaMessage = first.map { "\(summary)：\($0)" } ?? summary
-                            } else if info?.kind == .balance {
-                                quotaMessage = AppLocalized("已更新余额")
-                            } else if info?.kind == .used {
-                                quotaMessage = reason.map { "\(AppLocalized("只查到用量"))：\($0)" }
-                                    ?? AppLocalized("只查到用量，没有返回剩余余额")
-                            } else {
-                                quotaMessage = reason.map { "\(AppLocalized("查询失败"))：\($0)" }
-                                    ?? AppLocalized("查询失败，站点可能不支持余额查询")
-                            }
-                        }
-                    }
+                    guard quotaVisible, quotaDetail.isShowing(instance.id),
+                          let current = store.instance(for: instance.id) else { return }
+                    reloadQuotaRows(current)
+                    quotaDetail.refresh(for: current)
                 }
             }
         }
@@ -848,29 +977,7 @@ struct ProviderInstanceDetailView: View {
     /// `quotaRows` touches the Keychain and `ProviderMultiKeyManager.lock`, so
     /// it must never run while SwiftUI is evaluating `body`.
     private func reloadQuotaRows(_ instance: ProviderInstance) {
-        let wanted = instance.id
-        Task.detached(priority: .userInitiated) {
-            let rows = ProviderQuotaService.shared.quotaRows(for: instance)
-            let enabled = ProviderMultiKeyManager.shared.isEnabled(for: instance.id)
-            // [T-quota-row-usage] 使用摘要也在后台算：keys(for:) 会拿
-            // ProviderMultiKeyManager 的锁，绝不能在 body 里调用。
-            let ringKeys = ProviderMultiKeyManager.shared.keys(for: instance.id)
-            var usage: [String: String] = [:]
-            // 主 Key 不参与轮询，但也不能在行里留空：写清它的角色。
-            usage["main"] = AppLocalized("主凭据 · 轮询兜底")
-            for key in ringKeys {
-                var parts: [String] = ["成功 \(key.successCount) 次"]
-                if let used = key.lastUsed { parts.append(Self.relativeUsage(used)) }
-                usage[key.id] = parts.joined(separator: " · ")
-            }
-            await MainActor.run {
-                guard instanceId == wanted else { return }
-                quotaRowsSnapshot = rows
-                multiKeyEnabled = enabled
-                multiKeyCount = rows.filter { !$0.isMain }.count
-                keyUsageById = usage
-            }
-        }
+        quotaDetail.reload(for: instance)
     }
 
     /// Real-balance credentials for New API / One API relays.
@@ -945,66 +1052,7 @@ struct ProviderInstanceDetailView: View {
                ? "刷新中…"
                : (multiKeyOn ? String(format: AppLocalized("测试并刷新余额（查全部 %lld 把）"), Int64(rows.count))
                              : AppLocalized("测试并刷新余额"))) {
-            quotaRefreshing = true
-            quotaMessage = nil
-            Task {
-                if multiKeyOn {
-                    // Both the per-key refresh and the row building touch the
-                    // Keychain and the ring lock. Running them in the button's
-                    // inherited MainActor task put that work on the main
-                    // thread — the same class of freeze the per-key patch was
-                    // supposed to remove. Detach the prefix, then only publish
-                    // the finished rows on the main actor.
-                    await Task.detached(priority: .userInitiated) {
-                        await ProviderQuotaService.shared.refreshAllKeys(for: instance)
-                    }.value
-                    let refreshed = await Task.detached(priority: .userInitiated) {
-                        ProviderQuotaService.shared.quotaRows(for: instance)
-                    }.value
-                    let balances = refreshed.filter { $0.info?.kind == .balance }.count
-                    let used = refreshed.filter { $0.info?.kind == .used }.count
-                    let failed = refreshed.filter { $0.info == nil }.count
-                    let firstReason = refreshed.compactMap { $0.failureNote }.first
-                    await MainActor.run {
-                        quotaRefreshing = false
-                        quotaRowsSnapshot = refreshed
-                        multiKeyCount = refreshed.filter { !$0.isMain }.count
-                        var parts: [String] = []
-                        if balances > 0 { parts.append(String(format: AppLocalized("%lld 把有余额"), Int64(balances))) }
-                        if used > 0 { parts.append(String(format: AppLocalized("%lld 把只有用量"), Int64(used))) }
-                        if failed > 0 { parts.append(String(format: AppLocalized("%lld 把查询失败"), Int64(failed))) }
-                        let summary = parts.isEmpty ? AppLocalized("没有可查询的 Key") : parts.joined(separator: "，")
-                        quotaMessage = firstReason.map { "\(summary)：\($0)" } ?? summary
-                    }
-                } else {
-                    await Task.detached(priority: .userInitiated) {
-                        await ProviderQuotaService.shared.refreshQuota(for: instance)
-                    }.value
-                    let result = await Task.detached(priority: .userInitiated) {
-                        let service = ProviderQuotaService.shared
-                        return (service.cachedQuota(instanceId: instance.id),
-                                service.failureNote(instanceId: instance.id),
-                                service.quotaRows(for: instance))
-                    }.value
-                    let info = result.0
-                    let reason = result.1
-                    let singleRows = result.2
-                    await MainActor.run {
-                        quotaRefreshing = false
-                        quotaRowsSnapshot = singleRows
-                        multiKeyCount = singleRows.filter { !$0.isMain }.count
-                        if info?.kind == .balance {
-                            quotaMessage = AppLocalized("已更新余额")
-                        } else if info?.kind == .used {
-                            quotaMessage = reason.map { "\(AppLocalized("只查到用量"))：\($0)" }
-                                ?? AppLocalized("只查到用量，没有返回剩余余额")
-                        } else {
-                            quotaMessage = reason.map { "\(AppLocalized("查询失败"))：\($0)" }
-                                ?? AppLocalized("查询失败，站点可能不支持余额查询")
-                        }
-                    }
-                }
-            }
+            quotaDetail.refresh(for: instance, multi: multiKeyOn)
         }
         .disabled(quotaRefreshing)
 

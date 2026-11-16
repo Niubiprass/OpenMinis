@@ -17,6 +17,19 @@
             ProviderKeychainHelper.put("synthetic-main", id: id)
             ProviderMultiKeyManager.shared.put([.init(id: "ring", key: "synthetic-ring")], id: id)
         }
+        let epochEvent = CacheAsyncHarness()
+        let retiredEpoch = epochEvent.consumptionEpoch(for: "race")
+        epochEvent.invalidate(instanceId: "race")
+        let currentEpoch = epochEvent.consumptionEpoch(for: "race")
+        checkAsync(retiredEpoch != currentEpoch, "actual send epoch rotates on invalidate")
+        epochEvent.consumed(.init(instanceId: "race", rowId: "main",
+            credentialIdentity: ProviderQuotaSuccess.identity("synthetic-main"), succeededAt: Date(), requestEpoch: retiredEpoch))
+        checkAsync(epochEvent.inspect { $0.clocks["race"] == nil && $0.currentOrigins["race"] == nil }, "stale send epoch rejected before any mutation/detach")
+        let compatibleTime = Date()
+        epochEvent.consumed(.init(instanceId: "race", rowId: "main",
+            credentialIdentity: ProviderQuotaSuccess.identity("synthetic-main"), succeededAt: compatibleTime))
+        await waitForSuccess(epochEvent, at: compatibleTime)
+        checkAsync(epochEvent.inspect { $0.currentOrigins["race"]?.rowId } == "main", "legacy nil requestEpoch remains compatible")
         let race = CacheAsyncHarness()
         let instance = ProviderInstance(id: "race")
         _ = await race.refreshRow(for: instance, key: "synthetic-main", rowId: "main", publishSingle: true)
@@ -83,9 +96,28 @@
         await ownerGate.release(); _ = await oldOwnerQuery.value
         checkAsync(ownerRace.inspect { $0.currentOrigins["owner-race"] } == newOrigin, "old owner failure cannot retire newer successful row")
         checkAsync(ownerRace.inspect { $0.rowOrigins["owner-race"]?["ring"] } == newOrigin, "new row identity survives stale invalidation")
+        await ownerRace.flushWriter()
         checkAsync(CacheAsyncHarness.storedCurrent("owner-race") == newOrigin, "old owner cannot erase durable new-success pointer")
         checkAsync(ownerRace.inspect { $0.inFlight["owner-race|ring"] } == nil, "old ticket still drained without retaining stale slot")
         checkAsync(ownerRace.inspect { $0.epochs["owner-race"] } == ownerEpoch, "same-epoch race really exercised")
+
+        // Same epoch AND same durable owner: successAt, not merely owner,
+        // fences a late failed request from deleting a newer success pointer.
+        let sameGate = FixtureGate()
+        await FixturePlan.shared.pauseCollect("ring", at: sameGate)
+        let sameOwnerOld = Task { await ownerRace.refreshRow(for: ownerInstance, key: "synthetic-new-owner", rowId: "ring", publishSingle: false) }
+        await sameGate.waitForArrival()
+        let sameSuccessAt = Date()
+        ownerRace.consumed(.init(instanceId: "owner-race", rowId: "ring",
+            credentialIdentity: ProviderQuotaSuccess.identity("synthetic-new-owner"), succeededAt: sameSuccessAt))
+        await waitForSuccess(ownerRace, id: "owner-race", at: sameSuccessAt)
+        await ownerRace.flushWriter()
+        ProviderMultiKeyManager.shared.put([], id: "owner-race")
+        await sameGate.release(); _ = await sameOwnerOld.value
+        checkAsync(ownerRace.inspect { $0.currentOrigins["owner-race"] } == newOrigin, "same-owner old failure cannot erase newer success")
+        await ownerRace.flushWriter()
+        checkAsync(CacheAsyncHarness.storedCurrent("owner-race") == newOrigin, "same-owner durable pointer survives successAt fence")
+        checkAsync(ownerRace.inspect { $0.inFlight["owner-race|ring"] } == nil, "same-owner stale ticket drained")
 
         let busy = CacheAsyncHarness(), busyInstance = ProviderInstance(id: "busy")
         _ = await busy.refreshRow(for: busyInstance, key: "synthetic-main", rowId: "main", publishSingle: true)

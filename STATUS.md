@@ -147,3 +147,24 @@
 - App CI 成功后会删除并重建公开 `beta-latest` release。用户已明确允许这次替换；这不改手机已安装 App 或手头的旧包，只替换测试更新入口。安装、卸载、注销、重启均未授权。
 - App 已推送至 `ios15-160652-four-features`：首提交 `4799aa96b6726cdf542fd339eaded5d294e48435`，补桥接提交 `089f0121a55e1fc5484f5ef483c29a71c141f549`。首轮 CI run `42985110218` 因验证脚本沿用旧绝对路径失败；补桥接后的 run `42987278213` 因错误测试误要求显示服务商符号码而失败，已将行为断言改为验证该符号码不泄露。**仍需再推送一个仅修正测试的提交并重跑 CI**，不得称 App 构建成功。
 - 插件 0.8.42 分支 `minisight-0.8.42-20261111` 提交 `1e816aa16e972b63718ed01e798ac3bba78b7c3f`，roothide 与 rootless CI 均成功；尚未下载 DEB/验包。App 与插件仍未 Apple 工具链同时验收；桌宠动作、键盘跟随与面板稳定性未真机验证。
+
+## 2026-11-17 build308 模型选择卡死：本地候选与扩查收口（未推送）
+- 用户反馈最新版点模型选择卡死，已退回上一版；3份IPS与308执行文件UUID一致。主cachedQuota等quota NSLock，后台store在持该锁的UserDefaults.set中等待；304同处先unlock后保存，本批回归已证。具体系统下游互等未精确符号化，不宣称锁闭环对象已全明。
+- 用户“修的同时检查一下还有没有其他问题”仅授权本地修与扩查，不含本批提交、推送、CI、安装、开麦、设备、注销或重启。HEAD仍5fb44c26a4b79265f435068a614f04d14a7b567e；插件及Factory/轮转/音频生产未改。
+- 本地quota候选：UI锁仅内存快照/围栏；row/current/retire共享utility串行writer与epoch/version顺序。JSON/Defaults、冷恢复、投影移锁外；恢复锁内复查epoch/version/identity/successAt。普通失效保有效durable，reset仅有序屏障，不扫全Defaults删盘。同owner的新成功保护防旧ticket删除其current；current代表/2s合并/30s自动/15min前台/disabled手动/轮转统计保持。
+- 真实生产存储夹具新增：门控暂停保存+真实Defaults main通知，非空余额UI仍读；FIFO/current/row/owner定向删除、旧writer失效、合法冷恢复、同owner旧删、新内存挡迟到磁盘。变异重放持UI锁保存必须拒绝。8源码守卫通过，3Swift/native本机无工具明确SKIP；V64R_REQUIRE_SWIFT=1退出1硬拒（3缺工具失败），未原生运行。
+- 父最终重跑29相邻入口exit0，其中16入口含Swift/Apple SKIP；不是29项全部原生通过。旧音频test_minisight_wake_audio_20261116仍3失败/4错误/1跳过（旧API/预期漂移），保留不删门槛。git diff --check及Python语法通过。
+- 两份独立扩查有真实final：普通单Key消费入口缺失、成功回调乱序可选错代表、失效后dirty调度搁置、详情快照不随revision/阈值且缺UIgeneration；shown缺失非法App/插件读法分叉、设置页退出旧ON可覆盖菜单OFF、屏幕未知/熄屏混成锁事实。均源码条件推演、非当前IPS根因，未native/真机；额外路径尚未修改，须用户确认范围。ProviderPricing并无HEAD持锁set，此类推断已纠正，原类字节保持。
+- 长期证据：shared/openminis/local-reviews/model-picker-watchdog-20261117/{QUOTA-LOCAL-REPAIR.md,ADJACENT-QUOTA-REVIEW.md,ADJACENT-NAME-MUSIC-REVIEW.md,other-issues-summary.md,adjacent-checks/RESULTS.json}。本地摘要docs/build308-quota-watchdog-local-20261117.md。当前待结果确认，推送与安装各另问。
+
+## 2026-11-17 本批额外修复最终本地收口（最新）
+
+- 用户后来批准一起修复，并独立明确“推送”；上段“额外路径尚未改/推送许可未获”仅为首轮历史。当前许可覆盖本批双端提交/推送/GitHub CI，不含设备、安装、注销、重启、开麦或完整IPA下载。
+- 原余额UI内存锁与有序writer候选保留；失效后dirty有限补查、当前未落盘代表验证、后台与owner/epoch/running围栏已落。详情一个后台worker/一个pending，revision/阈值只投影，generation拒旧结果；取消/实例切换/手动结果/登录回调均纳入围栏。
+- 单Key成功消费、实际main身份/请求epoch/真实完成Date冻结已接Agent/QuickTest/Offload。正常multi不双报；LLM具体类型、失败冷却/计数/取消路径保留，lastUsed采用max防乱序。
+- shown双端严格读写，有关开关显式写入才交付，无关设置退出不写旧ON；运行端晚ON复核文件身份。schema2分离trusted lock与screenKnown/screenOff，可信锁/熄屏硬停，未知安全关闭不误称锁定。App模块0.8.46-local.1配插件0.8.46。
+- 四任务真实final与所属文件冻结完成。父最终34个普通回归入口全部exit0，其中21入口含native SKIP，不能称34项native通过。6个required入口均因缺Swift/Apple工具非零硬拒；不算运行成功。新消费、详情、shown/name、旧音频及现行背景音频strict均登记CI。
+- 旧audio测试按当前真实五单元摘录适配，15 source PASS/2 native SKIP；现行background原测试和四音频生产字节保持。最终矩阵还发现旧额度“按钮内必须3个detached”和旧shown“退出必须写cachedON”两项过时断言，仅test精确升级为有界worker/权威读回，4个临时缺陷负控全部被拒，没有倒改生产或删测试。
+- 共享state/20新fixture/2音频镜像逐字一致，Resources平台差异保留。Pricing整类字节与基线一致，实际插件Tweak/Pet仅升版本、Panel/Music与App音频保持基线。两端diffcheck通过。插件旧host129/repairs/name60/guards3/approval13与新shown普通门槛通过，native仍未执行。
+- 提交前状态：App基线5fb44c26a4b79265f435068a614f04d14a7b567e、P基线fd321d3a374cfce99aafb652830b9d63ad998f6d。当前准备按新授权stage/commit/push；CI结果待实际执行。未安装、未加载/真机验收；编译、安装、功能验收分开报告。
+- 长期证据同目录四REPAIR报告、FROZEN-INTEGRATION.json、LEGACY-GATE-MUTANTS.json、extra-repair-checks/RESULTS.json；新发布记录shared/openminis/releases/Minis-0.8.46-20261117。

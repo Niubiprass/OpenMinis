@@ -16,7 +16,7 @@ static void Check(BOOL value, NSString *label) {
 }
 static void Write(NSString *directory, NSString *name, NSDictionary *message,
                   BOOL unlocked, BOOL allowed, BOOL busy) {
-    for (NSString *field in @[@"unlocked", @"allowed", @"busy"]) {
+    for (NSString *field in @[@"unlocked", @"allowed", @"busy", @"lockKnown", @"screenKnown", @"screenOff"]) {
         Check(CFGetTypeID((__bridge CFTypeRef)message[field]) == CFBooleanGetTypeID(),
               [@"writer CFBoolean " stringByAppendingString:field]);
     }
@@ -44,7 +44,7 @@ int main(int argc, const char *argv[]) {
             BOOL unlocked = (BOOL)((mask & 4) != 0);
             BOOL allowed = (BOOL)((mask & 2) != 0);
             BOOL busy = (BOOL)((mask & 1) != 0);
-            NSDictionary *entry = MSNameWakeStateMessage(host, revision, unlocked, allowed, busy, 1000.);
+            NSDictionary *entry = MSNameWakeStateMessage(host, revision, YES, unlocked, YES, NO, allowed, busy, 1000.);
             Write(directory, [NSString stringWithFormat:@"flags-%lu.json", (unsigned long)mask],
                   entry, unlocked, expectedAllowed[mask], busy);
         }
@@ -53,15 +53,15 @@ int main(int argc, const char *argv[]) {
         const BOOL revisionAllowed[4] = { NO, YES, YES, NO };
         for (NSUInteger i = 0; i < revisions.count; ++i) {
             Write(directory, [NSString stringWithFormat:@"revision-%lu.json", (unsigned long)i],
-                  MSNameWakeStateMessage(host, revisions[i], YES, YES, NO, 1000.),
+                  MSNameWakeStateMessage(host, revisions[i], YES, YES, YES, NO, YES, NO, 1000.),
                   YES, revisionAllowed[i], NO);
             Write(directory, [NSString stringWithFormat:@"revision-locked-%lu.json", (unsigned long)i],
-                  MSNameWakeStateMessage(host, revisions[i], NO, YES, NO, 1000.), NO, NO, NO);
+                  MSNameWakeStateMessage(host, revisions[i], YES, NO, YES, NO, YES, NO, 1000.), NO, NO, NO);
         }
-        Write(directory, @"clock-stale.json", MSNameWakeStateMessage(host, revision, YES, YES, NO, 995.999), YES, YES, NO);
-        Write(directory, @"clock-boundary.json", MSNameWakeStateMessage(host, revision, YES, YES, NO, 996.), YES, YES, NO);
-        Write(directory, @"clock-future.json", MSNameWakeStateMessage(host, revision, YES, YES, NO, 1000.001), YES, YES, NO);
-        Write(directory, @"clock-negative.json", MSNameWakeStateMessage(host, revision, YES, YES, NO, -1.), YES, YES, NO);
+        Write(directory, @"clock-stale.json", MSNameWakeStateMessage(host, revision, YES, YES, YES, NO, YES, NO, 995.999), YES, YES, NO);
+        Write(directory, @"clock-boundary.json", MSNameWakeStateMessage(host, revision, YES, YES, YES, NO, YES, NO, 996.), YES, YES, NO);
+        Write(directory, @"clock-future.json", MSNameWakeStateMessage(host, revision, YES, YES, YES, NO, YES, NO, 1000.001), YES, YES, NO);
+        Write(directory, @"clock-negative.json", MSNameWakeStateMessage(host, revision, YES, YES, YES, NO, YES, NO, -1.), YES, YES, NO);
         fprintf(stdout, "PASS native ObjC writer: %lu assertions; 20 production messages serialized to temporary files\n",
                 (unsigned long)assertions);
     }

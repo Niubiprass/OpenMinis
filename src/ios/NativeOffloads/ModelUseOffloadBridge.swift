@@ -352,9 +352,11 @@ private let logger = AppLogger(category: "ModelUseOffload")
         // source of truth elsewhere in this file (callerSid), so reuse it so an
         // OpenCode request from a tool shares its parent conversation's id
         // rather than silently omitting the header.
-        let provider = try await LLMProviderFactory.makeProvider(
-            for: entry,
-            sessionId: ISHExecutionCoordinator.mountedSessionIdSnapshot)
+        let callerSessionId = ISHExecutionCoordinator.mountedSessionIdSnapshot
+        let request = try await LLMProviderFactory.makeProviderWithConsumption(
+            for: entry, resolveSessionId: { callerSessionId })
+        let provider = request.provider
+        var consumption = request.consumption
 
         // [T-model-use-passthrough-mode] Explicit passthrough envelope — the
         // raw-mode escape hatch. Parsed before message validation because
@@ -370,7 +372,8 @@ private let logger = AppLogger(category: "ModelUseOffload")
             return try await Self.performRawPassthrough(
                 spec: ptSpec, entry: entry, openAI: openAI,
                 inputJSON: inputJSON, systemPrompt: systemPrompt,
-                maxTokens: maxTokens, outputHostPath: outputHostPath)
+                maxTokens: maxTokens, outputHostPath: outputHostPath,
+                consumption: consumption)
         }
 
         // 2. Parse OpenAI-format messages and optional generation config
@@ -410,6 +413,13 @@ private let logger = AppLogger(category: "ModelUseOffload")
                         var appliedHeaderKeys: [String] = []
                         for (k, v) in hdrs {
                             if let s = v as? String {
+                                // Raw auth overrides no longer represent the
+                                // factory's frozen main credential. Keep the
+                                // existing passthrough behavior, not a false
+                                // quota-success identity.
+                                if ["authorization", "api-key", "x-api-key"].contains(k.lowercased()) {
+                                    consumption = nil
+                                }
                                 openAI.extraHeaders[k] = s
                                 appliedHeaderKeys.append(k)
                             } else {
@@ -425,6 +435,9 @@ private let logger = AppLogger(category: "ModelUseOffload")
                 }
             }
             if let customPath = Self.parseCustomEndpointPath(inputJSON) {
+                if URLComponents(string: customPath)?.queryItems?.contains(where: {
+                    ["key", "api_key", "api-key", "token", "access_token"].contains($0.name.lowercased())
+                }) == true { consumption = nil }
                 openAI.absoluteEndpointOverride = customPath
                 appliedExtras["custom_endpoint"] = customPath
                 // [T-log-noise-privacy 2026-07-18] Query stripped (can carry
@@ -547,7 +560,10 @@ private let logger = AppLogger(category: "ModelUseOffload")
             let passthrough = Self.parseImagePassthrough(inputJSON)
             openAI.imageExtraBody = passthrough.body
             openAI.imagePathOverride = passthrough.path
-            for (k, v) in passthrough.headers { openAI.extraHeaders[k] = v }
+            for (k, v) in passthrough.headers {
+                if ["authorization", "api-key", "x-api-key"].contains(k.lowercased()) { consumption = nil }
+                openAI.extraHeaders[k] = v
+            }
             callWarnings.append(contentsOf: passthrough.warnings)
             if !passthrough.body.isEmpty || passthrough.path != nil || !passthrough.headers.isEmpty {
                 logger.info("[ModelUseRoute] PASSTHROUGH bodyKeys=[\(passthrough.body.keys.sorted().joined(separator: ","))] pathOverride=\(passthrough.path ?? "<nil>") extraHeaderKeys=[\(passthrough.headers.keys.sorted().joined(separator: ","))]")
@@ -658,6 +674,7 @@ private let logger = AppLogger(category: "ModelUseOffload")
                 logger.info("🖼️ image_endpoint=images_generations (forced/cached) for \(entry.model.id)")
                 logger.info("[ModelUseRoute] route=images-api method=POST url=\(openAI.customBaseURL ?? "https://api.openai.com")/v1/images/\(inputImages.isEmpty ? "generations" : "edits") model=\(entry.model.id) inputImages=\(inputImages.count)")
                 let response: LLMResponse
+                let requestConsumption = consumption?.started()
                 if inputImages.isEmpty {
                     response = try await openAI.generateImage(
                         prompt: prompt, n: imgConfig.n,
@@ -669,6 +686,8 @@ private let logger = AppLogger(category: "ModelUseOffload")
                         size: imgConfig.size, quality: imgConfig.quality
                     )
                 }
+                let succeededAt = Date()
+                requestConsumption?.succeeded(at: succeededAt)
                 return Self.attachCallFeedback(try Self.buildMediaResult(
                     response: response, entry: entry,
                     outputHostPath: outputHostPath, outputExt: outputExt0,
@@ -682,6 +701,7 @@ private let logger = AppLogger(category: "ModelUseOffload")
                 logger.info("[ModelUseRoute] route=images-api-auto-probe method=POST url=\(openAI.customBaseURL ?? "https://api.openai.com")/v1/images/\(inputImages.isEmpty ? "generations" : "edits") model=\(entry.model.id) inputImages=\(inputImages.count)")
                 do {
                     let response: LLMResponse
+                    let requestConsumption = consumption?.started()
                     if inputImages.isEmpty {
                         response = try await openAI.generateImage(
                             prompt: prompt, n: imgConfig.n,
@@ -693,6 +713,8 @@ private let logger = AppLogger(category: "ModelUseOffload")
                             size: imgConfig.size, quality: imgConfig.quality
                         )
                     }
+                    let succeededAt = Date()
+                    requestConsumption?.succeeded(at: succeededAt)
                     await MainActor.run {
                         ProviderConfigStore.shared.setImageEndpointResolved(
                             instanceId: instance.id, endpoint: .imagesGenerations)
@@ -755,6 +777,8 @@ private let logger = AppLogger(category: "ModelUseOffload")
                 // set). Without this reset that fragment would be prepended to
                 // the successful attempt's text and written to --output.
                 fullText = ""
+                try Task.checkCancellation()
+                let requestConsumption = consumption?.started()
                 let stream = try await provider.streamMessage(
                     messages: messages,
                     systemPrompt: systemPrompt,
@@ -762,6 +786,7 @@ private let logger = AppLogger(category: "ModelUseOffload")
                     temperature: temperature >= 0 ? temperature : nil
                 )
                 for try await chunk in stream {
+                    try Task.checkCancellation()
                     switch chunk {
                     case .text(let t):
                         fullText += t
@@ -777,6 +802,9 @@ private let logger = AppLogger(category: "ModelUseOffload")
                         break
                     }
                 }
+                try Task.checkCancellation()
+                let succeededAt = Date()
+                requestConsumption?.succeeded(at: succeededAt)
             }
 
             // Write output file if specified
@@ -796,12 +824,17 @@ private let logger = AppLogger(category: "ModelUseOffload")
             // surfaced to the caller until sendMessage returns, so the whole
             // request is always safe to retry.
             let response = try await withTransientRetry(label: "run/send \(entry.model.id)") {
-                try await provider.sendMessage(
+                try Task.checkCancellation()
+                let requestConsumption = consumption?.started()
+                let response = try await provider.sendMessage(
                     messages: messages,
                     systemPrompt: systemPrompt,
                     maxTokens: maxTokens,
                     temperature: temperature >= 0 ? temperature : nil
                 )
+                let succeededAt = Date()
+                requestConsumption?.succeeded(at: succeededAt)
+                return response
             }
 
             // Determine output format from --output extension
@@ -1454,7 +1487,8 @@ private let logger = AppLogger(category: "ModelUseOffload")
         inputJSON: String,
         systemPrompt: String?,
         maxTokens: Int,
-        outputHostPath: String?
+        outputHostPath: String?,
+        consumption: ProviderConsumptionReporter?
     ) async throws -> [String: Any] {
         // Baseline body for merge mode: the standard OpenAI-shape conversion
         // of the input (messages + system + max_tokens), so callers add ONLY
@@ -1487,12 +1521,22 @@ private let logger = AppLogger(category: "ModelUseOffload")
             bodyObject = baseline
         }
 
+        let overridesCredential = spec.headers.keys.contains {
+            ["authorization", "api-key", "x-api-key", "x-goog-api-key", "cookie"].contains($0.lowercased())
+        } || URLComponents(string: spec.endpoint)?.queryItems?.contains(where: {
+            ["key", "api_key", "api-key", "token", "access_token"].contains($0.name.lowercased())
+        }) == true
+        let requestConsumption = overridesCredential ? nil : consumption?.started()
         let result = try await openAI.rawPassthroughRequest(
             endpoint: spec.endpoint,
             method: spec.method,
             headers: spec.headers,
             bodyObject: bodyObject
         )
+        let succeededAt = Date()
+        if (200..<300).contains(result.status) {
+            requestConsumption?.succeeded(at: succeededAt)
+        }
 
         var out: [String: Any] = [
             "passthrough": true,

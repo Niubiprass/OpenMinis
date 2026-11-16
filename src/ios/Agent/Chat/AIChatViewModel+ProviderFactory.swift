@@ -127,6 +127,16 @@ extension AIChatViewModel {
         //
         // The channel installs a PER-REQUEST hook, so the session id is read
         // when each request is built rather than captured here.
+        // The resolved main credential is the one installed on the baseline.
+        // Never re-read or select a key at completion; recursive multi-key
+        // baselines/builders (allowsMultiKey:false) must not also report.
+        let consumption = allowsMultiKey && supportsKeyPool
+            ? ProviderConsumptionReporter(instanceId: instance.id, mainAPIKey: resolvedAPIKey ?? "")
+            : nil
+        func observe(_ provider: any AgentProvider) -> any AgentProvider {
+            guard let consumption else { return provider }
+            return MultiKeyAgentProvider(baseline: provider, consumption: consumption)
+        }
         func wrap(_ p: OpenAIProvider) -> OpenAIProvider {
             if instance.isOpenCodeChannel {
                 OpenCodeChannel.attach(to: p, resolveSessionId: resolveSessionId)
@@ -135,21 +145,21 @@ extension AIChatViewModel {
         }
         switch instance.providerType {
         case .anthropic:
-            return AnthropicAgentProvider(provider: LLMProviderFactory.makeAnthropicProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey))
+            return observe(AnthropicAgentProvider(provider: LLMProviderFactory.makeAnthropicProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
         case .gemini:
-            return GeminiAgentProvider(provider: await LLMProviderFactory.makeGeminiProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey))
+            return observe(GeminiAgentProvider(provider: await LLMProviderFactory.makeGeminiProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
         case .openAI:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
+            return observe(OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey))))
         case .antigravity:
             return AntigravityAgentProvider(provider: await LLMProviderFactory.makeAntigravityProvider(instance: instance, model: entry.model))
         case .openRouter:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenRouterProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
+            return observe(OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenRouterProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey))))
         case .openAIResponses:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIResponsesProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
+            return observe(OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeOpenAIResponsesProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey))))
         case .xAI:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeXAIProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
+            return observe(OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeXAIProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey))))
         case .kimiCode:
-            return OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeKimiProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey)))
+            return observe(OpenAIAgentProvider(provider: wrap(LLMProviderFactory.makeKimiProvider(instance: instance, model: entry.model, apiKeyOverride: resolvedAPIKey))))
         case .githubCopilot:
             // [T-copilot-no-chat-warning] No warning in the chat.
             //

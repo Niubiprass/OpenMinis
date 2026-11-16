@@ -58,7 +58,7 @@ def sourceguard(plugin):
         "production builder byte correspondence": data == (CORE / header.name).read_bytes(),
         "real builder signature": "MSNameWakeStateMessage(NSString *host, NSString *revision," in builder,
         "production bridge header import": '#import "MiniSightNameWakeState.h"' in production_bridge,
-        "production bridge builder call": "MSNameWakeStateMessage(self.host, revision, unlocked, allowed, busy," in production_bridge,
+        "production bridge builder call": "MSNameWakeStateMessage(self.host, revision, lockKnown, unlocked, screenKnown, screenOff, allowed, busy," in production_bridge,
         "writer actual header import": '#import "MiniSightNameWakeState.h"' in writer,
         "writer not a copied builder": writer.count("MSNameWakeStateMessage(") == 7 and "static inline NSDictionary" not in writer,
         "eight flags": "mask < 8" in writer and "expectedAllowed[8]" in writer,
@@ -72,10 +72,10 @@ def sourceguard(plugin):
         "reader strict legacy CFNumber": "guard type == CFNumberGetTypeID() else { return nil }" in remote,
         "reader rejects float": "guard !CFNumberIsFloatType(legacy) else { return nil }" in remote,
         "reader exact integers": all(s in remote for s in ("number.compare(NSNumber(value: 0))", "number.compare(NSNumber(value: 1))")),
-        "policy unknown not locked": "companionLocked = fresh && unlocked == false" in policy,
+        "policy unknown not locked": "companionLocked = fresh && lockKnown == true && unlocked == false" in policy,
         "policy ready proof": "companionReady = fresh && allowed == true" in policy,
         "controller local lock/protected data": "let unlocked = !appLocked && !protectedDataUnavailable && UIApplication.shared.isProtectedDataAvailable" in controller,
-        "controller trusted companion update": "c.updateCompanion(fresh: fresh, unlocked: companion?.unlocked, allowed: companion?.allowed, busy: companion?.busy)" in controller,
+        "controller trusted companion update": "c.updateCompanion(fresh: fresh, unlocked: companion?.unlocked, allowed: companion?.allowed, busy: companion?.busy," in controller,
         "bounded existing-input handoff": "MiniSightWakePolicy.mayHoldCompanionTransition(c," in controller and "pulse.setDetectionToken(nil); detector.stop(); phase = .holding" in controller and "deadline - c.now <= 3" in policy,
         "controller reply policy fencing": "MiniSightWakePolicy.remoteReplyCurrent" in controller and "active == cycle.token" in controller,
         "observer stub cannot poll": "fatalError(\"fixture must not poll remote state\")" in support,
@@ -178,8 +178,8 @@ def native_roundtrip(tmp, header_dir, toolchain):
 
     mutated_header_dir = tmp / "mutant-writer"
     mutate(header_dir / "MiniSightNameWakeState.h", mutated_header_dir / "MiniSightNameWakeState.h",
-           '@"allowed": @((BOOL)(allowed && unlocked && revision.length > 0 && revision.length <= 128))',
-           '@"allowed": @((int)(allowed && unlocked && revision.length > 0 && revision.length <= 128))')
+           '@"allowed": @((BOOL)(allowed && lockKnown && unlocked && screenKnown && !screenOff && revision.length > 0 && revision.length <= 128))',
+           '@"allowed": @((int)(allowed && lockKnown && unlocked && screenKnown && !screenOff && revision.length > 0 && revision.length <= 128))')
     compile_writer(mutated_header_dir, tmp / "writer-mutant")
     rejected(tmp / "writer-mutant", tmp / "mutant-wire", "FAIL assertion: writer CFBoolean allowed", "actual writer BOOL cast removed")
 
@@ -190,7 +190,7 @@ def native_roundtrip(tmp, header_dir, toolchain):
     rejected(tmp / "reader-mutant", wire, "FAIL assertion: invalid boolean unlocked", "actual reader accepts string truthiness")
 
     locked_policy = mutate(POLICY, tmp / "mutant-policy/MiniSightWakePolicy.swift",
-        "companionLocked = fresh && unlocked == false", "companionLocked = !fresh || unlocked == false")
+        "companionLocked = fresh && lockKnown == true && unlocked == false", "companionLocked = !fresh || unlocked == false")
     compile_reader(REMOTE, locked_policy, tmp / "policy-mutant")
     rejected(tmp / "policy-mutant", wire, "FAIL assertion: revision mismatch policy unknown not locked", "actual policy invents lock for unknown")
 

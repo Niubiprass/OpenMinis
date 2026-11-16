@@ -19,6 +19,9 @@ final class MiniSightWakeRemote {
         let unlocked: Bool
         let allowed: Bool
         let busy: Bool
+        let lockKnown: Bool
+        let screenKnown: Bool
+        let screenOff: Bool
         func isFresh(now: Double, revision: String) -> Bool {
             self.revision == revision && clock.isFinite && clock >= 0 &&
                 now.isFinite && now >= clock && now - clock <= 4
@@ -103,11 +106,22 @@ final class MiniSightWakeRemote {
         revision &+= 1; inFlight = false; again = false; lastReply = nil
     }
     nonisolated static func decodeState(_ value: [String: Any]) -> State? {
-        guard value.count == 7, schema(value), let clock = clock(value), let host = uuid(value["host"]),
+        guard let version = unsigned(value["schema"]), let clock = clock(value), let host = uuid(value["host"]),
               let revision = string(value["revision"], limit: 128),
               let unlocked = boolean(value["unlocked"]), let allowed = boolean(value["allowed"]),
               let busy = boolean(value["busy"]) else { return nil }
-        return State(clock: clock, host: host, revision: revision, unlocked: unlocked, allowed: allowed, busy: busy)
+        if version == 1, value.count == 7 {
+            // Old false combined unknown/off/locked. It cannot prove a lock.
+            // Old true was gated on a known, on, unlocked screen at the host.
+            return State(clock: clock, host: host, revision: revision, unlocked: unlocked,
+                         allowed: allowed && unlocked, busy: busy, lockKnown: unlocked,
+                         screenKnown: unlocked, screenOff: false)
+        }
+        guard version == 2, value.count == 10, let lockKnown = boolean(value["lockKnown"]),
+              let screenKnown = boolean(value["screenKnown"]), let screenOff = boolean(value["screenOff"]) else { return nil }
+        return State(clock: clock, host: host, revision: revision, unlocked: unlocked,
+                     allowed: allowed && lockKnown && unlocked && screenKnown && !screenOff,
+                     busy: busy, lockKnown: lockKnown, screenKnown: screenKnown, screenOff: screenOff)
     }
     nonisolated static func decodeReply(_ value: [String: Any]) -> Reply? {
         guard value.count == 9, schema(value), let clock = clock(value), let host = uuid(value["host"]),

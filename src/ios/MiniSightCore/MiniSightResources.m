@@ -196,6 +196,12 @@ static UIImage *MSLoadAtlas(NSString *path) {
         }
     });
 }
++ (NSDictionary<NSString *, id> *)shownEvidenceWithContainer:(NSString *)container {
+    return MSMusicShownEvidence(container, nil);
+}
++ (BOOL)saveShown:(BOOL)shown container:(NSString *)container {
+    return MSMusicWriteShownVerified(shown, container);
+}
 + (void)writeShown:(BOOL)shown container:(NSString *)container {
     [self writeShown:shown container:container completion:nil];
 }

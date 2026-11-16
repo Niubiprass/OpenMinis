@@ -9,6 +9,7 @@ and the snapshot key. Static only.
 """
 from pathlib import Path
 import sys
+from test_minisight_presentation_readback_20261116 import extract
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE = (ROOT / "src/ios/MiniSightConfigStore.swift").read_text()
@@ -31,20 +32,37 @@ need("try MiniSightPetFile.saveShown(on)" in STORE,
 need("UserDefaults.standard.set(on, forKey: MiniSightSettingKey.shown)" in STORE,
      "shown writes the plist key")
 need("publish(MiniSightSettingKey.shown)" in STORE, "shown goes through readback/deliver")
-need("case MiniSightSettingKey.shown: return shown" in STORE,
-     "shown is in raw() for readback")
+need("case MiniSightSettingKey.shown: return MiniSightPetFile.loadShown()" in STORE,
+     "raw() reads the authoritative file, not a cached ON")
 need("MiniSightPetFile.loadShown()" in STORE, "init takes the file as truth")
 need("func reloadShownFromFile()" in STORE, "menu-hide state can be re-synced")
 need("config.reloadShownFromFile()" in HOME, "home page re-syncs before showing the toggle")
-need("MiniSightPetFile.saveShown(shown)" in STORE,
-     "persistAll also maintains the file")
+persist = extract(STORE, "    func persistAll()")
+reload = extract(STORE, "    func reloadShownFromFile()")
+publish = extract(STORE, "    private func publishShown()")
+need("saveShown" not in persist and "reloadShownFromFile()" in persist,
+     "unrelated page exit re-reads but cannot undo menu hide")
+need("saveShown" not in reload and "readingShown = true" in reload,
+     "passive readback is not a shown write transaction")
+need("guard loaded, !readingShown" in publish,
+     "only explicit switch edit writes shown")
+need(publish.index("try MiniSightPetFile.saveShown(on)") < publish.index("publish(MiniSightSettingKey.shown)"),
+     "verified file save completes before delivery/notification")
 need('MiniSightSettingKey.shown: "shown"' in SETTINGS,
      "shown is part of the snapshot transport map")
 
 # The plugin must keep treating the file as the runtime truth.
-need('appendingPathComponent("shown")' in
-     (ROOT / "src/ios/MiniSightInAppRuntime.swift").read_text(),
-     "runtime still reads the shown file")
+runtime = (ROOT / "src/ios/MiniSightInAppRuntime.swift").read_text()
+need("MiniSightResources.shownEvidence(container: container)" in runtime,
+     "runtime reads the same strict shown file evidence")
+need("@Published private(set) var shown = false" in runtime,
+     "missing initial evidence fails closed")
+need('(evidence["_minisightShownIdentity"] as? String) == (current["_minisightShownIdentity"] as? String)' in runtime,
+     "late ON must still match current file identity")
+resources = (ROOT / "src/ios/MiniSightCore/MiniSightResources.m").read_text()
+need("return MSMusicShownEvidence(container, nil);" in extract(resources, "+ (NSDictionary<NSString *, id> *)shownEvidenceWithContainer:") and
+     "return MSMusicWriteShownVerified(shown, container);" in extract(resources, "+ (BOOL)saveShown:"),
+     "Resources reuse the mature verified single-byte file implementation")
 
 if fails:
     print("❌ MiniSight shown-switch guard failed:")
