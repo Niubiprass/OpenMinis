@@ -31,7 +31,8 @@ def detail_harness():
     extracted = '\n'.join(unprivate(declaration(Q, marker)) for marker in members)
     base = base.replace('final class CacheAsyncHarness {', 'final class CacheAsyncHarness {\nstatic let shared = CacheAsyncHarness()\n' + extracted)
     base = base.replace('func publishRevision(_ id: String) {}', unprivate(declaration(Q, 'private func publishRevision(')))
-    base = base.replace('static let shared = CacheAsyncHarness()', 'static let shared = CacheAsyncHarness()\n@Published var revision = 0')
+    revision = next(line.strip() for line in Q.splitlines() if line.strip().startswith('@Published private(set) var revision'))
+    base = base.replace('\nvar revision = 0\n', '\n' + unprivate(revision) + '\n', 1)
     base = base.replace('static var lowThresholdUSD: Double { 3 }', 'static var lowThresholdUSD: Double { FixtureThreshold.shared.read() }')
     return ('import Combine\n' + base + '\ntypealias ProviderQuotaService = CacheAsyncHarness\n' +
             (FIX / 'quota_detail_snapshot_support_20261117.swift').read_text() + detail_loader() +
@@ -69,6 +70,17 @@ class QuotaDetailSourceContracts(unittest.TestCase):
         self.assertNotIn('URLSession(', text)
         self.assertNotIn('SecItemCopyMatching(', text)
         self.assertIn('FixturePlan.shared.count', text)
+
+    def test_detail_has_one_real_published_revision_and_preserves_other_entries(self):
+        revision = re.compile(r'^\s*(?:@Published\s+)?var revision\s*=\s*0\s*$', re.MULTILINE)
+        detail = detail_harness()
+        actual = [line.strip() for line in revision.findall(detail)]
+        production = next(line.strip() for line in Q.splitlines() if line.strip().startswith('@Published private(set) var revision'))
+        self.assertEqual(actual, [unprivate(production)])
+        for text in (storage_harness(), dirty_harness()):
+            self.assertEqual([line.strip() for line in revision.findall(text)], ['var revision = 0'])
+        self.assertEqual(declaration(detail, 'func publishRevision('), unprivate(declaration(Q, 'private func publishRevision(')))
+        self.assertIn('ProviderQuotaService.shared.$revision.dropFirst().sink', detail)
 
     def test_dirty_resume_epoch_origin_foreground_and_no_revision_restart(self):
         warm = declaration(Q, 'private func warmCurrent(')
