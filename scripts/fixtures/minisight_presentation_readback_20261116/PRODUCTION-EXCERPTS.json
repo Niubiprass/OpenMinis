@@ -1,0 +1,15 @@
+{
+  "kind": "literal-production-excerpt-no-behavior-clone",
+  "tweak": {
+    "static void MiniSightApplyShownReadback(void) {": "65839e09db33e5f50f850ddfe536b4d1940d193e8bda4adf9a0ca3403d5e3d8b",
+    "static void MiniSightRequestResources(BOOL force, void (^completion)(void)) {": "dfd72a459455c198e71b5daffb8df2c94febe9c6e760a2c3e3ff3650c2de006d",
+    "static void MiniSightConvergeSettings(BOOL resourcesFresh) {": "173c892a90b2c9d3b630c6ac7b1dac5f429a312e1c27030f669a12548583cb94",
+    "static void MiniSightReloadSettings(void) {": "64e16ba2a233ea5ca70aefc5c3ad52548b86c828a61b3f33b4693d603ae17b4f",
+    "static void MiniSightUserHide(void) {": "0b56c0370f92d241df90f65a990971c6bc94de77680d4967339b2ea5232e6e69"
+  },
+  "resources": {
+    "+ (void)writeShown:(BOOL)shown container:(NSString *)container {": "afc9cb3a4d371beda954cd2f7f8ac4ab8576f8abefcc10ed8575fc1cca5a3b01",
+    "+ (void)writeShown:(BOOL)shown container:(NSString *)container completion:(void (^)(BOOL))completion {": "e079c821a3382db1fc54c9b4181c33a895b775f2db8209bf0d15f88be4c4be75",
+    "+ (void)writeShown:(BOOL)shown container:(NSString *)container verifiedReadback:(void (^)(BOOL, NSString *))completion {": "ebd42f0b1dd052e5d2ccba6391065c8d999b57d3839b622972bdb1e3c2083424"
+  }
+}

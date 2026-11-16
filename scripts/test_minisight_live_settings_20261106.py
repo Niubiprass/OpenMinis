@@ -37,8 +37,9 @@ need('static void MiniSightApplySettingsLive(void)' in TWEAK, "live apply exists
 need('[MiniSightResources refreshPreferences:' in TWEAK, "reload uses preferences-only read")
 reload = TWEAK[TWEAK.index('static void MiniSightReloadSettings(void) {'):]
 reload = reload[:reload.index('static void MiniSightApplySettingsLive') if False else reload.index('MiniSightApplySettingsLive') if 'static void MiniSightApplySettingsLive' in reload else 6000]
-need('BOOL structural = renderer != gMiniSightAppliedRenderer || style != gMiniSightAppliedStyle;' in TWEAK,
-     "full rebuild is limited to structural changes")
+need('BOOL structural = renderer != gMiniSightAppliedRenderer || style != gMiniSightAppliedStyle;' in TWEAK and
+     'MiniSightConvergeSettings(YES);' in TWEAK and 'MiniSightConvergeSettings(NO);' in TWEAK,
+     "full rebuild is limited to structural changes and rechecked at the resource tail")
 need('if (structural) {' in TWEAK and 'MiniSightDestroyUI();' in TWEAK,
      "destroy only on structural change")
 need('MiniSightApplySettingsLive();' in TWEAK, "non-structural changes use live apply")
@@ -56,8 +57,11 @@ for token, label in [
 
 # Shown file is re-read on the settings path, so the enable switch is live too.
 need('Documents/MiniSight/shown' in TWEAK, "shown file is read on reload")
-need('gMiniSightShown = ![shownText isEqualToString:@"0"];' in TWEAK,
-     "shown state follows the file immediately")
+need('MiniSightApplyShownReadback();' in TWEAK and
+     'if (!MSMusicEpochIsCurrent(gMiniSightSettingsEpoch, epoch) || gMiniSightSettingsRefreshAgain)' in TWEAK and
+     'MiniSightReloadSettings(); // stale completion cannot swallow the last requested apply' in TWEAK and
+     'MSMusicShownMayReleaseHidden(' in TWEAK,
+     "shown and settings converge through latest readback without stale completion or hidden replay")
 
 # Compact composer + motion, not a wide card.
 need('MIN(216., safe.size.width)' in PANEL and 'MSChatFloatingLayoutWithComposer' in PANEL, "composer is compact and follows the pet")

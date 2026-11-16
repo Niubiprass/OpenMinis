@@ -18,7 +18,8 @@ final class MiniSightWakeRemote {
         let allowed: Bool
         let busy: Bool
         func isFresh(now: Double, revision: String) -> Bool {
-            self.revision == revision && now.isFinite && now >= clock && now - clock <= 4
+            self.revision == revision && clock.isFinite && clock >= 0 &&
+                now.isFinite && now >= clock && now - clock <= 4
         }
     }
     struct Reply: Equatable, Sendable {
@@ -123,8 +124,18 @@ final class MiniSightWakeRemote {
         return value.isFinite && value >= 0 ? value : nil
     }
     nonisolated private static func boolean(_ value: Any?) -> Bool? {
-        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
-        return number.boolValue
+        guard let number = value as? NSNumber else { return nil }
+        let type = CFGetTypeID(number)
+        if type == CFBooleanGetTypeID() { return number.boolValue }
+        // Installed schema-1 companions boxed an Objective-C && as int. Accept
+        // only exact integer CFNumber 0/1 during this rolling local repair.
+        // No strings, truthiness, floats (even 0.0/1.0), or truncation/overflow.
+        guard type == CFNumberGetTypeID() else { return nil }
+        let legacy = unsafeBitCast(number, to: CFNumber.self) // verified toll-free type
+        guard !CFNumberIsFloatType(legacy) else { return nil }
+        if number.compare(NSNumber(value: 0)) == .orderedSame { return false }
+        if number.compare(NSNumber(value: 1)) == .orderedSame { return true }
+        return nil
     }
     nonisolated private static func unsigned(_ value: Any?) -> UInt? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }

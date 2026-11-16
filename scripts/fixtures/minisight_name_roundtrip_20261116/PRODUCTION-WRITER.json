@@ -1,0 +1,8 @@
+{
+  "kind": "literal-production-writer-evidence-only-not-App-bridge",
+  "header_sha256": "e4da1ff1750c429259542d3f54ac865fafc5337f71a89c820460a123307a12df",
+  "excerpt_sha256": "bf78de2a8790281d67714601ad8fc53c22c1667305a98676c54ba3e73930c780",
+  "plugin_base": "8d433c1",
+  "native_writer": "MSNameWakeStateMessage",
+  "verification": "local-source-gate-compares-current-plugin-method; independent-App-CI-checks-same-pinned-builder"
+}

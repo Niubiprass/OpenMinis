@@ -4,6 +4,69 @@ import WebKit
 import Combine
 import CryptoKit
 
+// BEGIN QUOTA_CURRENT_KEY_PURE
+/// Shared by production and offline Swift fixtures. No credential or transport.
+enum ProviderQuotaCurrentKeyPolicy {
+    struct Origin: Codable, Equatable {
+        let rowId: String
+        let owner: String
+    }
+    static func current(lastSuccess: Origin?, available: [Origin]) -> Origin? {
+        if let lastSuccess, available.contains(lastSuccess) { return lastSuccess }
+        return available.first { $0.rowId == "main" }
+    }
+    static func canRestore(_ stored: Origin, current: Origin?) -> Bool {
+        current == stored && !stored.owner.isEmpty
+    }
+    static func mayCommitResolution(captured: Origin?, current: Origin?,
+                                    capturedSuccessAt: Date?, currentSuccessAt: Date?) -> Bool {
+        captured == current && capturedSuccessAt == currentSuccessAt
+    }
+    struct RefreshClock {
+        var dirty = false
+        var lastSuccessAt: Date?
+        var lastAttemptAt: Date?
+        var retryAt: Date?
+        var failures = 0
+        var running = false
+        mutating func consumed(at now: Date) {
+            dirty = true
+            lastSuccessAt = now
+        }
+        func deadline(active: Bool, now: Date) -> Date? {
+            guard active, dirty, !running else { return nil }
+            return [now, lastSuccessAt?.addingTimeInterval(2) ?? now,
+                    lastAttemptAt?.addingTimeInterval(30) ?? now, retryAt ?? now].max()
+        }
+        mutating func begin(at now: Date) {
+            dirty = false; running = true; lastAttemptAt = now
+        }
+        mutating func finish(at now: Date, succeeded: Bool, retryAfter: TimeInterval? = nil) {
+            running = false
+            if succeeded { failures = 0; retryAt = nil }
+            else {
+                failures = min(failures + 1, 5)
+                let delay = max(30 * pow(2, Double(failures - 1)), retryAfter ?? 0)
+                retryAt = now.addingTimeInterval(min(900, max(30, delay)))
+                // No autonomous retry loop. New consumption/foreground TTL retries.
+            }
+        }
+        mutating func cancelled() { running = false; dirty = true }
+    }
+    static func retryAfter(_ header: String?, at now: Date) -> TimeInterval? {
+        guard let header else { return nil }
+        if let seconds = Double(header), seconds.isFinite {
+            return min(900, max(30, seconds))
+        }
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.timeZone = TimeZone(secondsFromGMT: 0)
+        parser.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return parser.date(from: header).map { min(900, max(30, $0.timeIntervalSince(now))) }
+    }
+}
+// END QUOTA_CURRENT_KEY_PURE
+
 /// Account ledgers and chat-key quotas remain independent readings. The old
 /// QuotaInfo projection is retained for existing titles, pickers and badges.
 final class ProviderQuotaService: ObservableObject {
@@ -34,18 +97,27 @@ final class ProviderQuotaService: ObservableObject {
     }
 
     static let lowThresholdDefaultsKey = "quota.lowThresholdUSD"
-    /// [T-quota-disk-cache] Only the numbers that were already on screen, so a
-    /// relaunch shows the last known balance at once instead of an empty row
-    /// while every relay is probed again. No credential, digest or endpoint.
+    /// v1 was an unowned lowest-key summary; never replay it as current Key.
+    /// v2 stores each row's origin (salted one-way identity, never credentials).
     private struct StoredQuota: Codable {
+        let origin: ProviderQuotaCurrentKeyPolicy.Origin
         let displayText: String
         let amountUSD: Double?
         let balanceUSD: Double?
         let kindIsBalance: Bool
         let highlighted: Bool
         let fetchedAt: Date
+        let observedAt: Date?
     }
-    private static let storedPrefix = "quota.lastKnown."
+    private static let storedPrefix = "quota.lastKnown.v2."
+    private static let currentPrefix = "quota.currentRow.v2."
+    private static let durableSalt: String = {
+        let slot = "quota.cacheOriginSalt.v2"
+        if let value = UserDefaults.standard.string(forKey: slot) { return value }
+        let value = UUID().uuidString
+        UserDefaults.standard.set(value, forKey: slot)
+        return value
+    }()
 
     private static let logger = AppLogger(category: "Quota")
 
@@ -61,43 +133,55 @@ final class ProviderQuotaService: ObservableObject {
         logger.info("balance query instance=\(instanceId.prefix(8)) row=\(rowId) kind=\(kind) value=\(amount) note=\(note ?? "-")")
     }
 
-    private static func store(_ info: QuotaInfo?, instanceId: String, at date: Date) {
-        let key = storedPrefix + instanceId
-        guard let info else {
-            UserDefaults.standard.removeObject(forKey: key)
-            return
-        }
-        let value = StoredQuota(displayText: info.displayText,
-                                amountUSD: info.amountUSD,
-                                balanceUSD: info.balanceUSD,
-                                kindIsBalance: info.kind == .balance,
-                                highlighted: info.highlighted,
-                                fetchedAt: date)
+    private static func store(_ info: QuotaInfo?, instanceId: String,
+                              origin: ProviderQuotaCurrentKeyPolicy.Origin, at date: Date) {
+        let key = storedPrefix + instanceId + "." + origin.rowId
+        guard let info else { UserDefaults.standard.removeObject(forKey: key); return }
+        let value = StoredQuota(origin: origin, displayText: info.displayText,
+                                amountUSD: info.amountUSD, balanceUSD: info.balanceUSD,
+                                kindIsBalance: info.kind == .balance, highlighted: info.highlighted,
+                                fetchedAt: date, observedAt: info.observedAt)
         guard let data = try? JSONEncoder().encode(value) else { return }
         UserDefaults.standard.set(data, forKey: key)
     }
 
-    private static func storedInfo(instanceId: String) -> (info: QuotaInfo, fetchedAt: Date)? {
-        guard let data = UserDefaults.standard.data(forKey: storedPrefix + instanceId),
-              let value = try? JSONDecoder().decode(StoredQuota.self, from: data) else { return nil }
-        let info = QuotaInfo(displayText: value.displayText,
-                             highlighted: value.highlighted,
+    private static func storedInfo(instanceId: String, origin: ProviderQuotaCurrentKeyPolicy.Origin,
+                                   processOwner: String) -> (info: QuotaInfo, fetchedAt: Date)? {
+        guard let data = UserDefaults.standard.data(forKey: storedPrefix + instanceId + "." + origin.rowId),
+              let value = try? JSONDecoder().decode(StoredQuota.self, from: data),
+              ProviderQuotaCurrentKeyPolicy.canRestore(value.origin, current: origin) else { return nil }
+        let info = QuotaInfo(displayText: value.displayText, highlighted: false,
                              kind: value.kindIsBalance ? .balance : .used,
-                             balanceUSD: value.balanceUSD,
-                             amountUSD: value.amountUSD)
+                             balanceUSD: value.balanceUSD, amountUSD: value.amountUSD,
+                             observedAt: value.observedAt, isStale: true, owner: processOwner)
         return (info, value.fetchedAt)
+    }
+    private static func storedCurrent(_ instanceId: String) -> ProviderQuotaCurrentKeyPolicy.Origin? {
+        guard let data = UserDefaults.standard.data(forKey: currentPrefix + instanceId) else { return nil }
+        return try? JSONDecoder().decode(ProviderQuotaCurrentKeyPolicy.Origin.self, from: data)
     }
 
     private struct CacheEntry {
         let info: QuotaInfo?
         let fetchedAt: Date // attempt time, NOT the successful observation time
         let owner: String
+        var origin: ProviderQuotaCurrentKeyPolicy.Origin? = nil
     }
     private var cache: [String: CacheEntry] = [:]
     private var keyCache: [String: [String: CacheEntry]] = [:]
     private var failureNotes: [String: String] = [:]
     private var inFlight: [String: UUID] = [:]
     private var epochs: [String: UUID] = [:]
+    private var currentOrigins: [String: ProviderQuotaCurrentKeyPolicy.Origin] = [:]
+    private var rowOrigins: [String: [String: ProviderQuotaCurrentKeyPolicy.Origin]] = [:]
+    // A disabled row may still be manually inspected, but never becomes the
+    // representative. Cache ownership and request selectability are distinct.
+    private var selectableOrigins: [String: [String: ProviderQuotaCurrentKeyPolicy.Origin]] = [:]
+    private var validating = Set<String>()
+    private var clocks: [String: ProviderQuotaCurrentKeyPolicy.RefreshClock] = [:]
+    private var scheduled: [String: Task<Void, Never>] = [:]
+    private var fallbackTask: Task<Void, Never>?
+    private var lastPublished: [String: String] = [:]
     private let lock = NSLock()
     /// [T-quota-15min] How long a stored balance is reused before the list
     /// asks the relay again. Longer means fewer requests to someone else's
@@ -129,11 +213,28 @@ final class ProviderQuotaService: ObservableObject {
                 store.$authRevision.dropFirst().sink { [weak self] _ in self?.invalidateAll() },
                 store.$config.dropFirst().sink { [weak self] _ in self?.invalidateAll() },
                 NotificationCenter.default.publisher(for: ProviderMultiKeyManager.didChange)
-                    .sink { [weak self] _ in self?.invalidateAll() }
+                    .sink { [weak self] note in
+                        guard note.userInfo?["quotaCredentialsUnchanged"] as? Bool != true else { return }
+                        if let id = note.object as? String { self?.invalidate(instanceId: id) }
+                        else { self?.invalidateAll() }
+                    },
+                NotificationCenter.default.publisher(for: ProviderMultiKeyManager.didSucceed)
+                    .sink { [weak self] note in
+                        guard let success = note.object as? ProviderQuotaSuccess else { return }
+                        self?.consumed(success)
+                    },
+                NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
+                    .sink { [weak self] _ in
+                        self?.refreshAllIfNeeded(instances: store.instances)
+                        self?.startForegroundFallback()
+                    },
+                NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+                    .sink { [weak self] _ in self?.suspendAutomaticRefresh() }
             ]
             let observer = ProviderQuotaCookieObserver { [weak self] in self?.invalidateAll() }
             self.cookieObserver = observer
             WKWebsiteDataStore.default().httpCookieStore.add(observer)
+            self.startForegroundFallback()
         }
     }
 
@@ -165,11 +266,11 @@ final class ProviderQuotaService: ObservableObject {
     func cachedQuota(instanceId: String) -> QuotaInfo? {
         lock.lock()
         let live = cache[instanceId]?.info.map { Self.reproject($0) }
+        let needsValidation = currentOrigins[instanceId] == nil && !validating.contains(instanceId)
         lock.unlock()
-        if let live { return live }
-        // [T-quota-disk-cache] Nothing in memory (fresh launch): show the last
-        // number this account already had instead of an empty row.
-        return Self.storedInfo(instanceId: instanceId)?.info
+        // Never do Keychain XPC in a SwiftUI body or expose unverified v1 data.
+        if needsValidation { warmCurrent(instanceId: instanceId) }
+        return live
     }
     func isMissing(instanceId: String) -> Bool {
         lock.lock()
@@ -181,7 +282,10 @@ final class ProviderQuotaService: ObservableObject {
     private func invalidateAll() {
         lock.lock()
         cache.removeAll(); keyCache.removeAll(); failureNotes.removeAll()
+        currentOrigins.removeAll(); rowOrigins.removeAll(); selectableOrigins.removeAll(); validating.removeAll()
         epochs.removeAll(); inFlight.removeAll()
+        for task in scheduled.values { task.cancel() }; scheduled.removeAll()
+        clocks = clocks.mapValues { value in var clock = value; clock.cancelled(); return clock }
         lock.unlock()
         Self.metadataLock.lock(); Self.relayHints.removeAll(); Self.metadataLock.unlock()
         Task { @MainActor in self.revision += 1 }
@@ -190,12 +294,44 @@ final class ProviderQuotaService: ObservableObject {
         lock.lock()
         cache.removeValue(forKey: instanceId)
         keyCache.removeValue(forKey: instanceId)
+        currentOrigins.removeValue(forKey: instanceId); rowOrigins.removeValue(forKey: instanceId)
+        selectableOrigins.removeValue(forKey: instanceId)
+        validating.remove(instanceId)
+        scheduled.removeValue(forKey: instanceId)?.cancel()
+        clocks[instanceId, default: .init()].cancelled()
         failureNotes = failureNotes.filter { !$0.key.hasPrefix(instanceId + "|") }
         inFlight = inFlight.filter { !$0.key.hasPrefix(instanceId + "|") }
         epochs[instanceId] = UUID()
         lock.unlock()
         Self.metadataLock.lock(); Self.relayHints.removeAll(); Self.metadataLock.unlock()
         Task { @MainActor in self.revision += 1 }
+    }
+
+    private func invalidateRow(instanceId: String, rowId: String, epoch: UUID, ticket: UUID,
+                               capturedOwner: String?) {
+        let slot = failureKey(instanceId, rowId)
+        lock.lock()
+        guard epochs[instanceId] == epoch, inFlight[slot] == ticket else { lock.unlock(); return }
+        inFlight.removeValue(forKey: slot)
+        let activeOrigin = rowOrigins[instanceId]?[rowId] ?? keyCache[instanceId]?[rowId]?.origin
+        let currentOrigin = currentOrigins[instanceId] ?? Self.storedCurrent(instanceId)
+        // A successful request may have installed a newer owner without a
+        // config notification/epoch change. Only retire the captured old owner.
+        guard activeOrigin == nil || activeOrigin?.owner == capturedOwner,
+              currentOrigin?.rowId != rowId || currentOrigin?.owner == capturedOwner else { lock.unlock(); return }
+        keyCache[instanceId]?.removeValue(forKey: rowId)
+        rowOrigins[instanceId]?.removeValue(forKey: rowId)
+        selectableOrigins[instanceId]?.removeValue(forKey: rowId)
+        failureNotes.removeValue(forKey: slot)
+        if currentOrigins[instanceId]?.rowId == rowId { currentOrigins.removeValue(forKey: instanceId) }
+        UserDefaults.standard.removeObject(forKey: Self.storedPrefix + instanceId + "." + rowId)
+        if let saved = Self.storedCurrent(instanceId), saved.rowId == rowId, saved.owner == capturedOwner {
+            UserDefaults.standard.removeObject(forKey: Self.currentPrefix + instanceId)
+        }
+        lock.unlock()
+        _ = publishAggregate(for: instanceId)
+        publishRevision(instanceId)
+        // No sibling ticket, cache, epoch or retry clock is invalidated here.
     }
 
     private static func snapshot(_ info: QuotaInfo) -> RelayQuotaProtocol.Snapshot {
@@ -260,7 +396,8 @@ final class ProviderQuotaService: ObservableObject {
     private func attach(_ row: inout KeyQuota, instanceId: String) {
         let multiKeyOn = ProviderMultiKeyManager.shared.isEnabled(for: instanceId)
         lock.lock(); defer { lock.unlock() }
-        let entry = keyCache[instanceId]?[row.id] ?? (row.isMain && !multiKeyOn ? cache[instanceId] : nil)
+        let candidate = keyCache[instanceId]?[row.id] ?? (row.isMain && !multiKeyOn ? cache[instanceId] : nil)
+        let entry = candidate?.origin == rowOrigins[instanceId]?[row.id] ? candidate : nil
         row.info = entry?.info.map { Self.reproject($0) }
         row.queriedAt = entry?.fetchedAt
         row.failureNote = failureNotes[failureKey(instanceId, row.id)]
@@ -271,24 +408,186 @@ final class ProviderQuotaService: ObservableObject {
     }
 
     // MARK: Refresh scheduling
+    private static func rowKey(_ instanceId: String, rowId: String, includingUnavailable: Bool = false) -> String? {
+        if rowId == "main" { return ProviderKeychainHelper.loadAPIKey(instanceId: instanceId) }
+        guard ProviderMultiKeyManager.shared.isEnabled(for: instanceId) else { return nil }
+        return ProviderMultiKeyManager.shared.keys(for: instanceId).first {
+            $0.id == rowId && (includingUnavailable || ($0.isEnabled && $0.status != .disabled))
+        }?.key
+    }
+    private func warmCurrent(instanceId: String) {
+        lock.lock()
+        guard !validating.contains(instanceId) else { lock.unlock(); return }
+        validating.insert(instanceId)
+        let epoch = epochs[instanceId] ?? UUID(); epochs[instanceId] = epoch
+        lock.unlock()
+        Task.detached(priority: .utility) { _ = await self.resolveCurrent(instanceId, epoch: epoch) }
+    }
+    @discardableResult
+    private func resolveCurrent(_ instanceId: String, epoch: UUID) async -> Context? {
+        let instance = await MainActor.run { ProviderConfigStore.shared.instance(for: instanceId) }
+        guard let instance else {
+            lock.lock()
+            if epochs[instanceId] == epoch { validating.remove(instanceId) }
+            lock.unlock(); return nil
+        }
+        lock.lock()
+        guard epochs[instanceId] == epoch else { lock.unlock(); return nil }
+        let last = currentOrigins[instanceId] ?? Self.storedCurrent(instanceId)
+        let lastSuccessAt = clocks[instanceId]?.lastSuccessAt
+        lock.unlock()
+        let checkedRows = Array(Set([last?.rowId ?? "main", "main"]))
+        var contexts: [(ProviderQuotaCurrentKeyPolicy.Origin, Context)] = []
+        for rowId in checkedRows {
+            guard !Task.isCancelled, let key = Self.rowKey(instanceId, rowId: rowId),
+                  let context = await Self.context(for: instance, key: key, rowId: rowId) else { continue }
+            contexts.append((.init(rowId: rowId, owner: context.durableOwner), context))
+        }
+        // Keychain reads are outside the mutex, including the final readback.
+        contexts = contexts.filter { Self.rowKey(instanceId, rowId: $0.0.rowId) == $0.1.key }
+        let selected = ProviderQuotaCurrentKeyPolicy.current(lastSuccess: last, available: contexts.map { $0.0 })
+        lock.lock()
+        guard epochs[instanceId] == epoch else { lock.unlock(); return nil }
+        validating.remove(instanceId)
+        guard !Task.isCancelled,
+              ProviderQuotaCurrentKeyPolicy.mayCommitResolution(
+                captured: last, current: currentOrigins[instanceId] ?? Self.storedCurrent(instanceId),
+                capturedSuccessAt: lastSuccessAt, currentSuccessAt: clocks[instanceId]?.lastSuccessAt) else {
+            lock.unlock()
+            // A newer success owns the selection. Its dirty work must still
+            // converge even when this was the already-scheduled lookup.
+            await scheduleAutomatic(instanceId)
+            return nil
+        }
+        for rowId in checkedRows { selectableOrigins[instanceId]?.removeValue(forKey: rowId) }
+        for (origin, context) in contexts {
+            rowOrigins[instanceId, default: [:]][origin.rowId] = origin
+            selectableOrigins[instanceId, default: [:]][origin.rowId] = origin
+            if keyCache[instanceId]?[origin.rowId]?.owner != context.owner {
+                keyCache[instanceId]?[origin.rowId] = nil
+                if let saved = Self.storedInfo(instanceId: instanceId, origin: origin, processOwner: context.owner) {
+                    keyCache[instanceId, default: [:]][origin.rowId] = .init(info: saved.info, fetchedAt: saved.fetchedAt, owner: context.owner, origin: origin)
+                }
+            }
+        }
+        currentOrigins[instanceId] = selected
+        lock.unlock()
+        _ = publishAggregate(for: instanceId)
+        publishRevision(instanceId)
+        return contexts.first { $0.0 == selected }?.1
+    }
+    func consumed(_ success: ProviderQuotaSuccess) {
+        lock.lock()
+        let epoch = epochs[success.instanceId] ?? UUID(); epochs[success.instanceId] = epoch
+        lock.unlock()
+        Task.detached(priority: .utility) {
+            let instance = await MainActor.run { ProviderConfigStore.shared.instance(for: success.instanceId) }
+            guard let instance, let key = Self.rowKey(success.instanceId, rowId: success.rowId),
+                  ProviderQuotaSuccess.identity(key) == success.credentialIdentity,
+                  let context = await Self.context(for: instance, key: key, rowId: success.rowId) else { return }
+            // Loading the account-cookie context may suspend. Never publish a
+            // successful lease for a row deleted/replaced/disabled meanwhile.
+            guard Self.rowKey(success.instanceId, rowId: success.rowId) == key else { return }
+            let origin = ProviderQuotaCurrentKeyPolicy.Origin(rowId: success.rowId, owner: context.durableOwner)
+            self.lock.lock()
+            guard self.epochs[success.instanceId] == epoch,
+                  self.clocks[success.instanceId]?.lastSuccessAt.map({ $0 < success.succeededAt }) ?? true else {
+                self.lock.unlock(); return
+            }
+            if self.rowOrigins[success.instanceId]?[success.rowId] != origin {
+                self.keyCache[success.instanceId]?.removeValue(forKey: success.rowId)
+                self.failureNotes.removeValue(forKey: self.failureKey(success.instanceId, success.rowId))
+            }
+            self.currentOrigins[success.instanceId] = origin
+            self.rowOrigins[success.instanceId, default: [:]][success.rowId] = origin
+            self.selectableOrigins[success.instanceId, default: [:]][success.rowId] = origin
+            self.clocks[success.instanceId, default: .init()].consumed(at: success.succeededAt)
+            if let data = try? JSONEncoder().encode(origin) {
+                UserDefaults.standard.set(data, forKey: Self.currentPrefix + success.instanceId)
+            }
+            self.lock.unlock()
+            _ = self.publishAggregate(for: success.instanceId)
+            self.publishRevision(success.instanceId)
+            await self.scheduleAutomatic(success.instanceId)
+        }
+    }
+    @MainActor private func startForegroundFallback() {
+        fallbackTask?.cancel()
+        guard UIApplication.shared.applicationState == .active else { return }
+        fallbackTask = Task { @MainActor in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 900_000_000_000) } catch { return }
+                guard UIApplication.shared.applicationState == .active else { return }
+                self.refreshAllIfNeeded(instances: ProviderConfigStore.shared.instances)
+            }
+        }
+    }
+    private func suspendAutomaticRefresh() {
+        lock.lock()
+        fallbackTask?.cancel(); fallbackTask = nil
+        for task in scheduled.values { task.cancel() }; scheduled.removeAll()
+        lock.unlock()
+    }
+    private func scheduleAutomatic(_ instanceId: String) async {
+        let active = await MainActor.run { UIApplication.shared.applicationState == .active }
+        lock.lock()
+        // Consumption during a query remains pending; do not cancel/restart it.
+        guard clocks[instanceId]?.running != true else { lock.unlock(); return }
+        scheduled.removeValue(forKey: instanceId)?.cancel()
+        guard let deadline = clocks[instanceId]?.deadline(active: active, now: Date()) else { lock.unlock(); return }
+        let epoch = epochs[instanceId] ?? UUID(); epochs[instanceId] = epoch
+        scheduled[instanceId] = Task.detached(priority: .utility) {
+            do { try await Task.sleep(nanoseconds: UInt64(max(0, deadline.timeIntervalSinceNow) * 1_000_000_000)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            await self.runAutomatic(instanceId, epoch: epoch)
+        }
+        lock.unlock()
+    }
+    private func runAutomatic(_ instanceId: String, epoch: UUID) async {
+        guard await MainActor.run(body: { UIApplication.shared.applicationState == .active }) else { return }
+        guard let context = await resolveCurrent(instanceId, epoch: epoch),
+              let instance = await MainActor.run(body: { ProviderConfigStore.shared.instance(for: instanceId) }) else { return }
+        let origin = ProviderQuotaCurrentKeyPolicy.Origin(rowId: context.rowId, owner: context.durableOwner)
+        lock.lock()
+        guard !Task.isCancelled, epochs[instanceId] == epoch, currentOrigins[instanceId] == origin,
+              let due = clocks[instanceId]?.deadline(active: true, now: Date()), due <= Date() else { lock.unlock(); return }
+        clocks[instanceId, default: .init()].begin(at: Date())
+        lock.unlock()
+        let outcome = await refreshRow(for: instance, key: context.key, rowId: context.rowId, publishSingle: true)
+        lock.lock()
+        guard epochs[instanceId] == epoch else { lock.unlock(); return }
+        if Task.isCancelled || outcome.deferred { clocks[instanceId, default: .init()].cancelled() }
+        else { clocks[instanceId, default: .init()].finish(at: Date(), succeeded: outcome.succeeded, retryAfter: outcome.retryAfter) }
+        lock.unlock()
+        await scheduleAutomatic(instanceId)
+    }
+    private func publishRevision(_ instanceId: String) {
+        lock.lock()
+        let rows = (keyCache[instanceId] ?? [:]).keys.sorted().map { id -> String in
+            let entry = keyCache[instanceId]?[id]
+            return id + ":" + (entry?.info?.displayText ?? "?") + ":" + String(entry?.info?.observedAt?.timeIntervalSince1970 ?? 0)
+                + ":" + String(entry?.info?.isStale ?? true) + ":" + (failureNotes[failureKey(instanceId, id)] ?? "")
+        }.joined(separator: "|")
+        let value = (currentOrigins[instanceId]?.rowId ?? "unknown") + ":" + (currentOrigins[instanceId]?.owner ?? "") + rows
+        let changed = lastPublished[instanceId] != value
+        lastPublished[instanceId] = value
+        lock.unlock()
+        if changed { Task { @MainActor in self.revision += 1 } }
+    }
     func refreshQuota(for instance: ProviderInstance) async {
         let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
         await refreshRow(for: instance, key: key, rowId: "main", publishSingle: true)
     }
     func refreshAllIfNeeded(instances: [ProviderInstance]) {
-        let missing = instances
-            .filter { $0.isEnabled && !ProviderMultiKeyManager.shared.isEnabled(for: $0.id) }
-            .filter { isMissing(instanceId: $0.id) }
-        guard !missing.isEmpty else { return }
-        // [T-quota-foreground-only] Never query a provider while the app is
-        // backgrounded: nobody is looking at the number, and it only adds
-        // traffic the relay can see.
+        // [T-quota-foreground-only] Automatic queries read ONLY the current row.
         guard UIApplication.shared.applicationState == .active else { return }
-        Task.detached(priority: .utility) {
-            for instance in missing {
-                guard UIApplication.shared.applicationState == .active else { return }
-                await self.refreshQuota(for: instance)
-            }
+        for instance in instances where instance.isEnabled && instance.credentialType == .apiKey {
+            lock.lock()
+            let missing = cache[instance.id].map { Date().timeIntervalSince($0.fetchedAt) >= ttl } ?? true
+            if missing { clocks[instance.id, default: .init()].dirty = true }
+            lock.unlock()
+            Task { await self.scheduleAutomatic(instance.id) }
         }
     }
     func refreshAllKeys(for instance: ProviderInstance) async {
@@ -313,17 +612,21 @@ final class ProviderQuotaService: ObservableObject {
                 }
             }
         }
-        if let aggregate = publishAggregate(for: instance.id) {
-            // [T-quota-disk-cache] Persist the multi-Key aggregate the row shows.
-            Self.store(aggregate, instanceId: instance.id, at: Date())
-        }
-        await MainActor.run { self.revision += 1 }
+        _ = publishAggregate(for: instance.id)
+        publishRevision(instance.id)
     }
+    private struct RefreshOutcome {
+        var succeeded = false
+        var retryAfter: TimeInterval? = nil
+        var deferred = false
+    }
+    @discardableResult
     private func refreshRow(for instance: ProviderInstance, key: String, rowId: String,
-                            publishSingle: Bool) async {
+                            publishSingle: Bool) async -> RefreshOutcome {
         let slot = failureKey(instance.id, rowId), ticket = UUID()
         lock.lock()
-        guard inFlight[slot] == nil else { lock.unlock(); return }
+        guard !Task.isCancelled else { lock.unlock(); return .init() }
+        guard inFlight[slot] == nil else { lock.unlock(); return .init(deferred: true) }
         let epoch = epochs[instance.id] ?? UUID()
         epochs[instance.id] = epoch
         inFlight[slot] = ticket
@@ -337,71 +640,72 @@ final class ProviderQuotaService: ObservableObject {
         if let context { result = await Self.collect(context) } else { result = nil }
         // Verify current stored credentials as well as the generation fence.
         // This catches Keychain replacement before its published event lands.
-        let currentKey = rowId == "main" ? ProviderKeychainHelper.loadAPIKey(instanceId: instance.id)
-            : ProviderMultiKeyManager.shared.keys(for: instance.id).first(where: { $0.id == rowId })?.key
-        let currentContext = await Self.context(for: instance, key: currentKey ?? "", rowId: rowId)
-        if context?.owner != currentContext?.owner {
-            invalidate(instanceId: instance.id)
-            return
+        let currentKey = Self.rowKey(instance.id, rowId: rowId, includingUnavailable: true)
+        let freshInstance = await MainActor.run { ProviderConfigStore.shared.instance(for: instance.id) }
+        let currentContext: Context?
+        if let freshInstance { currentContext = await Self.context(for: freshInstance, key: currentKey ?? "", rowId: rowId) }
+        else { currentContext = nil }
+        let verifiedKey = Self.rowKey(instance.id, rowId: rowId, includingUnavailable: true)
+        let selectable = Self.rowKey(instance.id, rowId: rowId) == verifiedKey && verifiedKey != nil
+        if context?.owner != currentContext?.owner || currentKey != verifiedKey {
+            invalidateRow(instanceId: instance.id, rowId: rowId, epoch: epoch, ticket: ticket,
+                          capturedOwner: context?.durableOwner)
+            return .init()
         }
         lock.lock()
-        guard epochs[instance.id] == epoch, inFlight[slot] == ticket else { lock.unlock(); return }
+        guard epochs[instance.id] == epoch, inFlight[slot] == ticket else { lock.unlock(); return .init() }
         inFlight.removeValue(forKey: slot)
-        let previous = keyCache[instance.id]?[rowId]?.info ?? (publishSingle ? cache[instance.id]?.info : nil)
-        let merged = result?.merging(previous: previous.map { Self.snapshot($0) })
-        let info = merged.flatMap { Self.project($0) }
-        let entry = CacheEntry(info: info, fetchedAt: Date(), owner: context?.owner ?? "")
+        guard !Task.isCancelled, let context, let result else { lock.unlock(); return .init() }
+        let origin = ProviderQuotaCurrentKeyPolicy.Origin(rowId: rowId, owner: context.durableOwner)
+        rowOrigins[instance.id, default: [:]][rowId] = origin
+        if selectable { selectableOrigins[instance.id, default: [:]][rowId] = origin }
+        else { selectableOrigins[instance.id]?.removeValue(forKey: rowId) }
+        let previous = keyCache[instance.id]?[rowId]?.info
+        let merged = result.merging(previous: previous.map { Self.snapshot($0) })
+        let info = Self.project(merged)
+        let entry = CacheEntry(info: info, fetchedAt: Date(), owner: context.owner, origin: origin)
         keyCache[instance.id, default: [:]][rowId] = entry
-        if publishSingle { cache[instance.id] = entry }
-        let notes = result?.attempts.filter { !$0.probeMiss }.compactMap(\.failureNote) ?? []
+        let notes = result.attempts.filter { !$0.probeMiss }.compactMap(\.failureNote)
         if !notes.isEmpty { failureNotes[slot] = Array(Set(notes)).sorted().joined(separator: "；") }
         else if info == nil { failureNotes[slot] = AppLocalized("站点没有返回可用余额（可能不支持余额查询）") }
         else if info?.kind == .used && info?.readings.allSatisfy({ !$0.unlimited && !$0.rejected && $0.total == nil }) == true {
             failureNotes[slot] = AppLocalized("站点只返回了用量，没有返回剩余余额")
         } else { failureNotes.removeValue(forKey: slot) }
+        // Persistence is inside the epoch fence; an old owner cannot replay
+        // after a newer credential event. Every manually queried row is saved.
+        let persisted = entry.info.map { Self.reproject($0) }
+        Self.store(persisted, instanceId: instance.id, origin: origin, at: entry.fetchedAt)
         lock.unlock()
-        if publishSingle {
-            // [T-quota-disk-cache] Persist what the row shows, so the next
-            // launch draws it before any request is sent.
-            let persisted = entry.info.map { Self.reproject($0) }
-            Self.store(persisted, instanceId: instance.id, at: entry.fetchedAt)
-            Self.logRefresh(instanceId: instance.id, rowId: rowId, info: persisted,
-                            note: notes.first)
-            Self.logger.info("balance query instance=\(instance.id.prefix(8)) row=\(rowId) took \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
-        }
-        await MainActor.run { self.revision += 1 }
+        _ = publishAggregate(for: instance.id)
+        Self.logRefresh(instanceId: instance.id, rowId: rowId, info: persisted, note: notes.first)
+        Self.logger.info("balance query instance=\(instance.id.prefix(8)) row=\(rowId) took \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
+        publishRevision(instance.id)
+        return .init(succeeded: result.attempts.contains { $0.succeeded } && context.retry.retryAfter == nil,
+                     retryAfter: context.retry.retryAfter)
     }
-    /// Select a representative; never sum balances or compare money to quota
-    /// points. Comparisons require the same scope, source, unit and host.
+    /// Compatibility name only: publish the last SUCCESSFUL actual Key, never
+    /// a minimum/sum across rows. A missing current-row reading stays unknown.
     private func publishAggregate(for instanceId: String) -> QuotaInfo? {
         lock.lock(); defer { lock.unlock() }
-        let entries = keyCache[instanceId] ?? [:]
-        let ordered = entries.keys.sorted { a, b in a == "main" ? b != "main" : (b == "main" ? false : a < b) }
-        let infos = ordered.compactMap { entries[$0]?.info }.map { Self.reproject($0) }
-        guard let first = infos.first else {
-            cache[instanceId] = CacheEntry(info: nil, fetchedAt: Date(), owner: "")
+        let available = Array((selectableOrigins[instanceId] ?? [:]).values)
+        let selected = ProviderQuotaCurrentKeyPolicy.current(
+            lastSuccess: currentOrigins[instanceId] ?? Self.storedCurrent(instanceId), available: available)
+        currentOrigins[instanceId] = selected
+        guard let selected, rowOrigins[instanceId]?[selected.rowId] == selected,
+              let entry = keyCache[instanceId]?[selected.rowId], entry.origin == selected else {
+            cache.removeValue(forKey: instanceId)
             return nil
         }
-        var selected = first
-        if let primary = first.readings.first(where: { $0.id == first.primaryReadingID }) {
-            let comparable = infos.filter { info in
-                guard let r = info.readings.first(where: { $0.id == info.primaryReadingID }) else { return false }
-                return !r.rejected && !r.unlimited && r.remaining != nil && r.scope == primary.scope
-                    && r.source == primary.source && r.unit == primary.unit && r.relayHost == primary.relayHost
-            }
-            selected = comparable.min { a, b in
-                let av = a.readings.first { $0.id == a.primaryReadingID }?.remaining ?? .infinity
-                let bv = b.readings.first { $0.id == b.primaryReadingID }?.remaining ?? .infinity
-                return av < bv
-            } ?? first
-        }
-        cache[instanceId] = CacheEntry(info: selected, fetchedAt: Date(), owner: selected.owner)
-        // [T-quota-disk-cache] The caller persists this representative (the
-        // same number the row shows) once the lock is released.
-        return Self.reproject(selected)
+        cache[instanceId] = entry
+        return entry.info.map { Self.reproject($0) }
     }
 
+    private final class RetryCapture { var retryAfter: TimeInterval? }
+    private struct RateLimited: Error { let retryAfter: TimeInterval }
     private struct Context {
+        let durableOwner: String
+        let rowId: String
+        let retry = RetryCapture()
         let root: String
         let accountRoot: String
         let key: String
@@ -432,7 +736,9 @@ final class ProviderQuotaService: ObservableObject {
         let input = parts.map { "\($0.utf8.count):" + $0 }.joined()
         let owner = SHA256.hash(data: Data(input.utf8)).map { String(format: "%02x", $0) }.joined()
         let host = URL(string: root)?.host?.lowercased() ?? ""
-        return Context(root: root, accountRoot: accountRoot, key: key, token: token, uid: uid,
+        let durableInput = ([durableSalt] + Array(parts.dropFirst())).map { "\($0.utf8.count):" + $0 }.joined()
+        let durableOwner = SHA256.hash(data: Data(durableInput.utf8)).map { String(format: "%02x", $0) }.joined()
+        return Context(durableOwner: durableOwner, rowId: rowId, root: root, accountRoot: accountRoot, key: key, token: token, uid: uid,
                        cookie: cookie, owner: owner, isRelay: host != "api.openai.com" && host != "api.anthropic.com",
                        anthropic: instance.providerType == .anthropic)
     }
@@ -451,16 +757,27 @@ final class ProviderQuotaService: ObservableObject {
         return project(await collect(ctx))
     }
 
-    private static func get(_ request: URLRequest) async throws -> Data {
+    private static func get(_ request: URLRequest, retry: RetryCapture? = nil) async throws -> Data {
+        try Task.checkCancellation()
         let result: (Data, URLResponse)
         do { result = try await transport.data(for: request) }
-        catch { throw RelayQuotaProtocol.Failure.transport }
+        catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw RelayQuotaProtocol.Failure.transport
+        }
+        try Task.checkCancellation()
         guard let http = result.1 as? HTTPURLResponse else { throw RelayQuotaProtocol.Failure.transport }
+        if http.statusCode == 429 {
+            let seconds = ProviderQuotaCurrentKeyPolicy.retryAfter(http.value(forHTTPHeaderField: "Retry-After"), at: Date()) ?? 30
+            retry?.retryAfter = max(retry?.retryAfter ?? 0, seconds)
+            throw RateLimited(retryAfter: seconds)
+        }
         guard http.statusCode == 200 else { throw RelayQuotaProtocol.Failure.http(http.statusCode) }
         return result.0
     }
     private static func failure(_ error: Error) -> String {
-        (error as? RelayQuotaProtocol.Failure)?.note ?? RelayQuotaProtocol.Failure.transport.note
+        if error is RateLimited { return RelayQuotaProtocol.Failure.http(429).note }
+        return (error as? RelayQuotaProtocol.Failure)?.note ?? RelayQuotaProtocol.Failure.transport.note
     }
     private static func collect(_ ctx: Context) async -> RelayQuotaProtocol.Snapshot {
         var readings: [RelayQuotaProtocol.Reading] = []
@@ -483,6 +800,7 @@ final class ProviderQuotaService: ObservableObject {
             ? (hint.map { [$0] } ?? RelayQuotaProtocol.Source.probeOrder)
             : [ctx.anthropic ? .anthropic : .openAIBilling]
         for source in order {
+            guard !Task.isCancelled, ctx.retry.retryAfter == nil else { break }
             do {
                 let values = try await query(source, ctx: ctx)
                 readings += values
@@ -516,7 +834,7 @@ final class ProviderQuotaService: ObservableObject {
         // is still in flight. Serially this was two round trips on every
         // refresh — the 4-5s entries in the device log.
         async let pendingScale = siteScale(root: ctx.accountRoot)
-        let data = try await get(req), observedAt = Date()
+        let data = try await get(req, retry: ctx.retry), observedAt = Date()
         _ = try RelayQuotaProtocol.parseAccount(data, root: ctx.accountRoot, now: observedAt, scale: nil)
         let scale = await pendingScale
         return try RelayQuotaProtocol.parseAccount(data, root: ctx.accountRoot, now: observedAt, scale: scale)
@@ -527,7 +845,7 @@ final class ProviderQuotaService: ObservableObject {
         if source == .anthropic {
             req.url = monthURL(req.url!, anthropic: true)
         }
-        let data = try await get(req), observedAt = Date()
+        let data = try await get(req, retry: ctx.retry), observedAt = Date()
         switch source {
         case .sub2api:
             return try RelayQuotaProtocol.parseSub2API(data, root: ctx.root, now: observedAt)
@@ -536,20 +854,20 @@ final class ProviderQuotaService: ObservableObject {
             let scale = await siteScale(root: ctx.root)
             return try RelayQuotaProtocol.parseNewAPI(data, root: ctx.root, now: observedAt, scale: scale)
         case .openAIBilling:
-            return try await fetchOpenAIBillingQuota(data, request: req, root: ctx.root, observedAt: observedAt)
+            return try await fetchOpenAIBillingQuota(data, request: req, root: ctx.root, observedAt: observedAt, retry: ctx.retry)
         case .anthropic:
             return try RelayQuotaProtocol.parseAnthropic(data, root: ctx.root, now: observedAt)
         case .newAPIAccount: throw RelayQuotaProtocol.Failure.unsupported
         }
     }
     private static func fetchOpenAIBillingQuota(_ subscription: Data, request: URLRequest, root: String,
-                                               observedAt: Date) async throws -> [RelayQuotaProtocol.Reading] {
+                                               observedAt: Date, retry: RetryCapture? = nil) async throws -> [RelayQuotaProtocol.Reading] {
         var req = request
         guard let url = RelayQuotaProtocol.endpoint(root: root, path: "/v1/dashboard/billing/usage") else {
             throw RelayQuotaProtocol.Failure.invalidURL
         }
         req.url = monthURL(url, anthropic: false)
-        let usage = try? await get(req)
+        let usage = try? await get(req, retry: retry)
         var readings = try RelayQuotaProtocol.parseBilling(subscription, usage: usage, root: root, now: observedAt)
         if readings.first?.used != nil { readings[0].usedObservedAt = Date() }
         // A failed usage half cannot replace a previous full remainder with an

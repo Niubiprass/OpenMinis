@@ -7,6 +7,8 @@ No compiler here is an explicit skip, never a claimed successful Swift build.
 """
 from pathlib import Path
 import shutil
+import os
+import sys
 import subprocess
 import tempfile
 import unittest
@@ -119,9 +121,15 @@ class SourceContracts(unittest.TestCase):
         self.assertNotIn('remaining.reduce', PROTOCOL)
         self.assertIn('r.remaining = r.used.flatMap', PROTOCOL)
         self.assertIn('primary.unit.isUSD ? value : nil', SOURCE)
-        self.assertIn('r.scope == primary.scope', SOURCE)
-        self.assertIn('r.unit == primary.unit', SOURCE)
-        self.assertIn('r.source == primary.source', SOURCE)
+        # Cross-row comparable minima were deliberately removed. Each actual
+        # row keeps the unchanged protocol's scope/source/unit and owner merge.
+        self.assertIn('enum Scope: String', PROTOCOL)
+        self.assertIn('let source: Source', PROTOCOL)
+        self.assertIn('let unit: Unit', PROTOCOL)
+        representative = declaration(SOURCE, 'private func publishAggregate(')
+        self.assertIn('entry.origin == selected', representative)
+        self.assertNotIn('.min', representative)
+        self.assertNotIn('.reduce', representative)
 
     def test_multikey_and_display_currency_are_preserved(self):
         body = declaration(SOURCE, 'func refreshAllKeys(')
@@ -129,7 +137,10 @@ class SourceContracts(unittest.TestCase):
         self.assertIn('for row in rows', body)
         self.assertIn('rowId: row.id', body)
         self.assertIn('if count >= 4', body)
-        self.assertIn('!ProviderMultiKeyManager.shared.isEnabled(for: $0.id)', SOURCE)
+        automatic = declaration(SOURCE, 'private func runAutomatic(')
+        self.assertIn('rowId: context.rowId', automatic)
+        self.assertIn('UIApplication.shared.applicationState == .active', automatic)
+        self.assertNotIn('refreshAllKeys', automatic)
         for method in ['effectiveDisplayRate', 'displayCurrency', 'setCustomCurrency', 'rateOverride']:
             self.assertIn('func ' + method, SOURCE)
 
@@ -142,14 +153,22 @@ class SourceContracts(unittest.TestCase):
 
     def test_foundation_behavior(self):
         swiftc = shutil.which('swiftc')
+        required = os.getenv('V64R_REQUIRE_SWIFT') == '1' or sys.platform == 'darwin'
         if not swiftc:
+            if required: self.fail('Apple Swift required; actual protocol behavior was NOT executed')
             self.skipTest('swiftc unavailable in iSH; actual Swift harness must run on macOS CI')
+        cmd = [swiftc, '-swift-version', '5']
+        if sys.platform == 'darwin':
+            xcrun = shutil.which('xcrun')
+            self.assertIsNotNone(xcrun, 'explicit macOS SDK unavailable; fail closed')
+            sdk = subprocess.check_output([xcrun, '--sdk', 'macosx', '--show-sdk-path'], text=True).strip()
+            cmd += ['-sdk', sdk]
         with tempfile.TemporaryDirectory(prefix='relay-quota-') as directory:
             path = Path(directory)
             swift = path / 'main.swift'
             swift.write_text(harness())
             binary = path / 'quota-tests'
-            compiled = subprocess.run([swiftc, '-swift-version', '5', str(swift), '-o', str(binary)],
+            compiled = subprocess.run(cmd + [str(swift), '-o', str(binary)],
                                       text=True, capture_output=True, timeout=120)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)

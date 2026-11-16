@@ -5,6 +5,12 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)shared;
 /// Main-thread, fail-closed private lock-state query; missing/wrong ABI returns NO.
 + (BOOL)deviceIsUnlocked;
+/// Distinguishes a verified lock from a missing/wrong-ABI lock query.
++ (BOOL)deviceIsUnlockedWithKnown:(BOOL * _Nullable)known;
+/// Main-thread evidence provider; missing/unknown visibility fails closed.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> * (^presentationHandler)(void);
+- (void)configureAllowed:(BOOL)allowed lyrics:(BOOL)lyrics motion:(BOOL)motion
+              container:(nullable NSString *)container presentation:(NSDictionary *)presentation;
 @property (nonatomic, copy, nullable) void (^updateHandler)(NSDictionary<NSString *, id> *snapshot);
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, id> *snapshot;
 /// allowed describes actual presentation eligibility (including App-owned mode).

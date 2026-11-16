@@ -15,6 +15,11 @@ NS_ASSUME_NONNULL_BEGIN
                          BOOL shown, UIImage * _Nullable atlas))completion;
 + (void)refreshPreferences:(void (^)(NSString * _Nullable container, NSDictionary *preferences))completion;
 + (void)writeShown:(BOOL)shown container:(NSString *)container;
+/// Main-thread feedback; only verified writes emit the settings notification.
++ (void)writeShown:(BOOL)shown container:(nullable NSString *)container completion:(nullable void (^)(BOOL verified))completion;
+/// Opaque previous file identity distinguishes an old ON from a new atomic enable.
++ (void)writeShown:(BOOL)shown container:(nullable NSString *)container
+    verifiedReadback:(void (^ _Nullable)(BOOL verified, NSString *previousIdentity))completion;
 + (void)releaseCachedAtlas;
 @end
 NS_ASSUME_NONNULL_END

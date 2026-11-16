@@ -108,7 +108,8 @@ static double MSMusicNumber(id value, double fallback) {
     BOOL _allowed, _lyrics, _motion, _playing, _reading, _eventQueued, _springBoard;
     NSUInteger _readGeneration, _trackGeneration, _readTicket, _readStage;
     NSTimeInterval _pollAt, _readAt, _elapsed, _stamp, _rate, _validAt, _writeAt;
-    BOOL _fetching, _awaitingFreshInfo, _readTimedOut;
+    BOOL _fetching, _awaitingFreshInfo, _lyricsAwaitingFreshInfo, _readTimedOut;
+    NSDictionary *_presentation;
     NSMutableDictionary<NSString *, NSNumber *> *_retryTimes;
     dispatch_queue_t _bridgeQueue;
     NSDictionary *_pendingSnapshot;
@@ -119,7 +120,9 @@ static double MSMusicNumber(id value, double fallback) {
 @end
 
 @implementation MiniSightMusicMonitor
-+ (BOOL)deviceIsUnlocked {
++ (BOOL)deviceIsUnlocked { return [self deviceIsUnlockedWithKnown:NULL]; }
++ (BOOL)deviceIsUnlockedWithKnown:(BOOL *)known {
+    if (known) *known = NO;
     NSAssert(NSThread.isMainThread, @"Lock state is main-thread owned");
     @try {
         id manager = MSMusicObject(NSClassFromString(@"SBLockScreenManager"), @"sharedInstance");
@@ -129,6 +132,8 @@ static double MSMusicNumber(id value, double fallback) {
         const char *type = signature.methodReturnType;
         if (!signature || signature.numberOfArguments != 2 || !type || (type[0] != 'B' && type[0] != 'c')) return NO;
         unsigned char locked = ((unsigned char (*)(id, SEL))objc_msgSend)(manager, sel);
+        if (locked > 1) return NO;
+        if (known) *known = YES;
         return locked == 0; // Unknown/non-boolean values never count as unlocked.
     } @catch (NSException *exception) { (void)exception; return NO; }
 }
@@ -169,12 +174,37 @@ static double MSMusicNumber(id value, double fallback) {
 }
 - (NSDictionary *)snapshot { return _snapshot; }
 - (void)configureAllowed:(BOOL)allowed lyrics:(BOOL)lyrics motion:(BOOL)motion container:(NSString *)container {
+    NSDictionary *presentation = _presentationHandler ? _presentationHandler() :
+        @{@"allowed": @((BOOL)allowed), @"stopReason": allowed ? @"eligible" : @"not_visible_or_disabled"};
+    [self configureAllowed:allowed lyrics:lyrics motion:motion container:container presentation:presentation];
+}
+- (void)configureAllowed:(BOOL)allowed lyrics:(BOOL)lyrics motion:(BOOL)motion container:(NSString *)container presentation:(NSDictionary *)presentation {
     NSAssert(NSThread.isMainThread, @"Music monitor is main-thread owned");
     allowed = allowed && _springBoard;
-    if (allowed && ![MiniSightMusicMonitor deviceIsUnlocked]) allowed = NO;
+    if (!_presentationHandler) {
+        allowed = NO;
+        presentation = @{@"allowed": @NO, @"stopReason": @"presentation_provider_missing"};
+    } else if (allowed) {
+        presentation = _presentationHandler(); // production provider, never caller's stale ON
+    }
+    BOOL lockKnown = NO;
+    if (allowed && ![MiniSightMusicMonitor deviceIsUnlockedWithKnown:&lockKnown]) {
+        allowed = NO;
+        NSMutableDictionary *closed = [presentation mutableCopy] ?: [NSMutableDictionary dictionary];
+        closed[@"allowed"] = @NO; closed[@"lockKnown"] = @((BOOL)lockKnown); closed[@"unlocked"] = @NO;
+        closed[@"stopReason"] = lockKnown ? @"device_locked" : @"lock_state_unknown";
+        presentation = closed;
+    }
+    id gate = presentation[@"allowed"];
+    if (_presentationHandler && (![gate isKindOfClass:NSNumber.class] ||
+        CFGetTypeID((__bridge CFTypeRef)gate) != CFBooleanGetTypeID() || ![gate boolValue])) allowed = NO;
+    _presentation = [presentation copy] ?: @{};
     BOOL changed = _allowed != allowed || _lyrics != lyrics || _motion != motion ||
         !((_container == container) || [_container isEqualToString:container]);
-    if (!changed) return;
+    if (!changed) {
+        [self publishLine:_snapshot[@"line"] playing:[_snapshot[@"playing"] boolValue] force:NO];
+        return;
+    }
     _allowed = allowed; _lyrics = lyrics; _motion = motion; _container = [container copy];
     // Invalidation is not cancellation: MediaRemote has no cancellation API.
     // Keep the physical slot occupied across close/open until its callback arrives.
@@ -214,12 +244,35 @@ static double MSMusicNumber(id value, double fallback) {
     }
     [self publishLine:nil playing:NO force:NO];
 }
+- (BOOL)refreshPresentation {
+    if (!_presentationHandler) {
+        [self configureAllowed:NO lyrics:_lyrics motion:_motion container:_container presentation:@{}];
+        return NO;
+    }
+    if (_presentationHandler) {
+        NSDictionary *current = _presentationHandler();
+        id gate = current[@"allowed"];
+        BOOL eligible = [gate isKindOfClass:NSNumber.class] &&
+            CFGetTypeID((__bridge CFTypeRef)gate) == CFBooleanGetTypeID() && [gate boolValue];
+        _presentation = [current copy] ?: @{};
+        if (!eligible) {
+            [self configureAllowed:NO lyrics:_lyrics motion:_motion container:_container presentation:_presentation];
+            return NO;
+        }
+    }
+    BOOL known = NO;
+    if (![MiniSightMusicMonitor deviceIsUnlockedWithKnown:&known]) {
+        NSMutableDictionary *closed = [_presentation mutableCopy] ?: [NSMutableDictionary dictionary];
+        closed[@"allowed"] = @NO; closed[@"lockKnown"] = @((BOOL)known); closed[@"unlocked"] = @NO;
+        closed[@"stopReason"] = known ? @"device_locked" : @"lock_state_unknown";
+        [self configureAllowed:NO lyrics:_lyrics motion:_motion container:_container presentation:closed];
+        return NO;
+    }
+    return YES;
+}
 - (void)tick {
     if (!_timer || !_allowed) return;
-    if (![MiniSightMusicMonitor deviceIsUnlocked]) {
-        [self configureAllowed:NO lyrics:_lyrics motion:_motion container:_container];
-        return;
-    }
+    if (![self refreshPresentation]) return;
     NSTimeInterval now = MSMusicNow();
     if (_reading && !_readTimedOut && now - _readAt > 3.) {
         // Fail closed, never launch replacements for a callback that may never arrive.
@@ -231,7 +284,7 @@ static double MSMusicNumber(id value, double fallback) {
     BOOL current = _validAt > 0 && now >= _validAt - 1 && now - _validAt <= 6;
     BOOL playing = current && _playing && !_awaitingFreshInfo;
     NSString *line = nil;
-    if (_lyrics && playing && _track) {
+    if (_lyrics && playing && _track && !_lyricsAwaitingFreshInfo) {
         double position = _elapsed + fmax(0., now - _stamp) * _rate;
         if (isfinite(position) && position >= 0 && position <= _track.duration + 0.1)
             line = [_timeline lineAtTime:position];
@@ -262,14 +315,17 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
     id identifier = MSMusicField(info, "kMRMediaRemoteNowPlayingInfoUniqueIdentifier");
     if ([identifier isKindOfClass:NSNumber.class]) identifier = [identifier stringValue];
     if (![identifier isKindOfClass:NSString.class] || [identifier length] > 256) identifier = @"";
-    return track ? [NSString stringWithFormat:@"%@|%@|%lu:%@", player, track.cacheKey,
-        (unsigned long)[identifier length], identifier] : nil;
+    if (![info isKindOfClass:NSDictionary.class] || !player.length) return nil;
+    // Motion needs a current playback sample, not an LRCLIB-searchable title.
+    // Unknown metadata never becomes bubble text; lyrics still require a track.
+    return [NSString stringWithFormat:@"%@|%@|%lu:%@", player, track.cacheKey ?: @"unknown",
+        (unsigned long)[identifier length], identifier];
 }
 - (BOOL)acceptRead:(NSUInteger)ticket generation:(NSUInteger)generation stage:(NSUInteger)stage player:(NSString *)player {
     NSAssert(NSThread.isMainThread, @"Media callbacks must hop to main");
     if (!_reading || ticket != _readTicket || stage != _readStage) return NO;
     ++_readStage; // Duplicate/reordered callbacks cannot consume the next stage.
-    if (!_timer || !_allowed || ![MiniSightMusicMonitor deviceIsUnlocked] ||
+    if (!_timer || !_allowed || ![self refreshPresentation] ||
         generation != _readGeneration || MSMusicNow() - _readAt > 3. || ![player isEqualToString:MSMusicPlayer()]) {
         _reading = NO;
         [self handleMediaChange];
@@ -341,12 +397,14 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
                 [self publishLine:nil playing:NO force:YES];
             }
             self->_source = player; self->_validAt = received; self->_awaitingFreshInfo = NO;
-            self->_playing = playing && track != nil && isfinite(elapsed) && elapsed >= 0 &&
-                elapsed <= track.duration && isfinite(rate) && rate > 0 && rate <= 4 &&
+            self->_lyricsAwaitingFreshInfo = NO;
+            BOOL timing = !track || (isfinite(elapsed) && elapsed >= 0 && elapsed <= track.duration &&
                 // Timestamp is the elapsed-time reference, not the date of this reply.
                 // Many players keep it unchanged while the track plays normally.
                 isfinite(age) && age >= -3. && age <= track.duration + 3. &&
-                elapsed + fmax(0., age) * rate <= track.duration + .1;
+                elapsed + fmax(0., age) * rate <= track.duration + .1);
+            self->_playing = playing == 1 && [info isKindOfClass:NSDictionary.class] &&
+                isfinite(rate) && rate > 0 && rate <= 4 && timing;
             self->_elapsed = elapsed; self->_rate = self->_playing ? rate : 0;
             self->_stamp = received - fmax(0., age);
             NSString *retryKey = self->_track.cacheKey;
@@ -366,7 +424,7 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
                         if (![player isEqualToString:MSMusicPlayer()]) { [self handleMediaChange]; return; }
                         // A result never publishes against the old sample: force a fresh
                         // identity sandwich, also covering same-player changes without a note.
-                        self->_awaitingFreshInfo = YES; self->_playing = NO;
+                        self->_lyricsAwaitingFreshInfo = YES;
                         self->_pollAt = fmax(self->_readAt + 0.5, MSMusicNow());
                         [self tick];
                     });
@@ -380,24 +438,34 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
     if (!_allowed || !_lyrics || !playing) safeLine = @"";
     NSString *source = _allowed ? (_source ?: @"") : @"";
     // Bounded diagnostics, never track metadata or status text for the bubble.
+    NSString *stopReason = [_presentation[@"stopReason"] isKindOfClass:NSString.class] ? _presentation[@"stopReason"] : @"unknown_gate";
     NSString *reason = !_allowed ? @"not_visible_or_disabled"
+        : (!_lyrics && !_motion) ? @"settings_disabled"
         : (!MSMusicInfo || !MSMusicIsPlaying) ? @"media_api_unavailable"
         : _readTimedOut && _reading ? @"media_callback_timeout"
         : _awaitingFreshInfo ? @"waiting_for_current_state"
-        : !_track ? @"no_supported_track"
         : !playing ? @"not_playing"
+        : !_track ? @"playing_without_lyrics_metadata"
         : !_lyrics ? @"motion_only"
         : _fetching ? @"lyrics_pending"
         : !_timeline ? @"no_synced_lyrics"
         : !safeLine.length ? @"no_current_line" : @"current_line";
     BOOL changed = ![_snapshot[@"line"] isEqual:safeLine] || [_snapshot[@"playing"] boolValue] != playing ||
-        ![_snapshot[@"source"] isEqual:source] || [_snapshot[@"lyricsEnabled"] boolValue] != _lyrics ||
-        [_snapshot[@"motionEnabled"] boolValue] != _motion || ![_snapshot[@"reason"] isEqual:reason];
+        ![_snapshot[@"source"] isEqual:source] || [_snapshot[@"lyricsEnabled"] boolValue] != (_allowed && _lyrics) ||
+        [_snapshot[@"motionEnabled"] boolValue] != (_allowed && _motion) ||
+        [_snapshot[@"allowed"] boolValue] != _allowed || ![_snapshot[@"reason"] isEqual:reason] ||
+        ![_snapshot[@"stopReason"] isEqual:stopReason];
     if (!changed && !force && MSMusicNow() - _writeAt < 2.) return;
     _writeAt = MSMusicNow();
-    _snapshot = @{@"version": @1, @"line": safeLine, @"playing": @(_allowed && playing),
-        @"source": source, @"lyricsEnabled": @(_allowed && _lyrics),
-        @"motionEnabled": @(_allowed && _motion), @"time": @(now), @"generation": @(_trackGeneration), @"reason": reason};
+    // Explicit BOOL casts prevent logical/conditional expressions boxing as int.
+    // Keep v1 envelope for installed readers; evidence is additive and separately versioned.
+    _snapshot = @{@"version": @1, @"evidenceVersion": @1, @"line": safeLine, @"playing": @((BOOL)(_allowed && playing)),
+        @"allowed": @((BOOL)_allowed), @"source": source,
+        @"lyricsEnabled": @((BOOL)(_allowed && _lyrics)),
+        @"motionEnabled": @((BOOL)(_allowed && _motion)),
+        @"requestedLyrics": @((BOOL)_lyrics), @"requestedMotion": @((BOOL)_motion),
+        @"presentation": _presentation ?: @{}, @"stopReason": stopReason,
+        @"time": @(now), @"generation": @(_trackGeneration), @"reason": reason};
     if (_updateHandler) _updateHandler(_snapshot);
     if (!_springBoard) return;
     @synchronized (self) {
@@ -420,7 +488,9 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
         if (_writtenContainer.length && ![_writtenContainer isEqualToString:container]) {
             NSMutableDictionary *clear = [snapshot mutableCopy];
             clear[@"line"] = @""; clear[@"source"] = @""; clear[@"playing"] = @NO;
-            clear[@"lyricsEnabled"] = @NO; clear[@"motionEnabled"] = @NO; clear[@"reason"] = @"container_changed";
+            clear[@"allowed"] = @NO; clear[@"lyricsEnabled"] = @NO; clear[@"motionEnabled"] = @NO;
+            clear[@"reason"] = @"container_changed"; clear[@"stopReason"] = @"container_changed";
+            clear[@"presentation"] = @{@"allowed": @NO, @"stopReason": @"container_changed"};
             if (MSBridgeWrite(_writtenContainer, @"music-state.json", clear) &&
                 [MSBridgeRead(_writtenContainer, @"music-state.json", 16384) isEqualToDictionary:clear])
                 MSBridgePost(@"com.openminis.minisight.music");

@@ -54,6 +54,7 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
     private var shown = false
     private var hasAsset = false
     private var appLocked = true
+    private var protectedDataUnavailable = false
     private var petInteractionBusy = false
     private var active: UUID?
     private weak var petAnchor: UIView?
@@ -80,6 +81,7 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
         calls.setDelegate(self, queue: .main)
         foreground = UIApplication.shared.applicationState == .active
         appLocked = SessionLockStore.shared.appIsLocked
+        protectedDataUnavailable = !UIApplication.shared.isProtectedDataAvailable
         remote.onState = { [weak self] state in self?.receivedCompanion(state) }
         remote.onReply = { [weak self] reply in self?.receivedReply(reply) }
         remote.install()
@@ -88,7 +90,15 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
         NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
             .receive(on: DispatchQueue.main).sink { [weak self] _ in self?.applicationChanged(active: true) }.store(in: &bag)
         NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)
-            .receive(on: DispatchQueue.main).sink { [weak self] _ in self?.pause(reason: "系统已锁定，名字监听停止") }.store(in: &bag)
+            .receive(on: DispatchQueue.main).sink { [weak self] _ in
+                self?.protectedDataUnavailable = true
+                self?.pause(reason: MiniSightWakePolicy.Decision.locked.message)
+            }.store(in: &bag)
+        NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)
+            .receive(on: DispatchQueue.main).sink { [weak self] _ in
+                self?.protectedDataUnavailable = false
+                self?.pollRemoteState(); self?.refresh()
+            }.store(in: &bag)
         NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)
             .receive(on: DispatchQueue.main).sink { [weak self] _ in self?.pause(reason: "App 即将退出，名字监听停止") }.store(in: &bag)
         SessionLockStore.shared.$appIsLocked.removeDuplicates().receive(on: DispatchQueue.main)
@@ -197,13 +207,15 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
         let session = AudioSessionCoordinator.shared, d = UserDefaults.standard
         let now = ProcessInfo.processInfo.systemUptime
         let revision = d.string(forKey: MiniSightSettingKey.shownRevision) ?? ""
-        let ready = companion?.isFresh(now: now, revision: revision) == true && companion?.allowed == true
+        let fresh = companion?.isFresh(now: now, revision: revision) == true
+        let ready = fresh && companion?.allowed == true
         let usePlugin = isUsingCompanion
         let hasOtherRecording = SpeechRecognitionManager.shared.state == .recording && namedGeneration == nil && !finishingNamedInput
         let blockedCapture = hasOtherRecording || RPScreenRecorder.shared().isRecording ||
             UIScreen.main.isCaptured || petInteractionBusy || calls.calls.contains { !$0.hasEnded }
-        let unlocked = !appLocked && UIApplication.shared.isProtectedDataAvailable &&
-            (!usePlugin || (companion?.isFresh(now: now, revision: revision) == true && companion?.unlocked == true))
+        // Only local lock/protected-data facts make this false. Unknown IPC
+        // stops through companion readiness, without inventing a locked screen.
+        let unlocked = !appLocked && !protectedDataUnavailable && UIApplication.shared.isProtectedDataAvailable
         var c = MiniSightWakePolicy.Context(enabled: d.bool(forKey: MiniSightSettingKey.wakeEnabled),
             foreground: foreground, unlocked: unlocked,
             shown: usePlugin ? d.bool(forKey: MiniSightSettingKey.shown) : shown,
@@ -212,9 +224,10 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
             hasAsset: usePlugin ? ready : hasAsset,
             permissionGranted: AVAudioSession.sharedInstance().recordPermission == .granted,
             audioAvailable: session.canBeginWakeWordListening, recordingOrCall: blockedCapture,
-            chatVisible: usePlugin ? companion?.busy != false : MiniSightChatPanel.existing()?.isVisible == true,
+            chatVisible: usePlugin ? fresh && companion?.busy == true : MiniSightChatPanel.existing()?.isVisible == true,
             now: now, cooldownUntil: cooldownUntil)
-        c.armed = armed; c.companionRequired = usePlugin; c.companionReady = ready
+        c.armed = armed; c.companionRequired = usePlugin
+        c.updateCompanion(fresh: fresh, unlocked: companion?.unlocked, allowed: companion?.allowed, busy: companion?.busy)
         return c
     }
     private func settingsChanged() {
@@ -239,8 +252,8 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
     private func refresh() {
         guard installed, !savingIdentity, !endingCycle else { return }
         let c = context(), decision = MiniSightWakePolicy.decision(c)
-        if isUsingCompanion && input.isRunning && c.now < companionTransitionUntil &&
-            c.enabled && c.armed && !appLocked && UIApplication.shared.isProtectedDataAvailable && !c.recordingOrCall {
+        if isUsingCompanion && MiniSightWakePolicy.mayHoldCompanionTransition(c,
+            inputRunning: input.isRunning, existingAsset: hasAsset, deadline: companionTransitionUntil) {
             let latest = companion?.isFresh(now: c.now,
                 revision: UserDefaults.standard.string(forKey: MiniSightSettingKey.shownRevision) ?? "") == true &&
                 (companion?.clock ?? 0) >= companionTransitionUntil - 3
@@ -251,27 +264,27 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
         }
         companionTransitionUntil = 0
         if remoteCycle != nil {
-            if MiniSightWakePolicy.safetyDecision(c) != nil {
-                pause(reason: "当前屏幕或音频不再允许名字对话")
-            }
+            if let stopped = MiniSightWakePolicy.safetyDecision(c) { pause(reason: stopped.message) }
             return // Companion busy includes THIS response; it is not a new hit.
         }
         if namedGeneration != nil {
-            if MiniSightWakePolicy.safetyDecision(c) != nil { pause(reason: "名字语音已被停止") }
+            if let stopped = MiniSightWakePolicy.safetyDecision(c) { pause(reason: stopped.message) }
             return
         }
         if startingPassiveHold {
-            if MiniSightWakePolicy.safetyDecision(c) != nil { pause(reason: "当前不允许恢复名字输入") }
+            if let stopped = MiniSightWakePolicy.safetyDecision(c) { pause(reason: stopped.message) }
             return
         }
         if voiceClaimPending {
-            if MiniSightWakePolicy.safetyDecision(c) != nil { pause(reason: "等待短语音时安全状态已改变") }
+            if let stopped = MiniSightWakePolicy.safetyDecision(c) { pause(reason: stopped.message) }
             return
         }
         if phase == .acknowledging {
             let cancelled = waitingForAnchor ? c.chatVisible
                 : responsePanel?.isNameWakeResponseCurrent(generation: responseGeneration) != true
-            if MiniSightWakePolicy.safetyDecision(c) != nil || cancelled || !c.foreground {
+            if let stopped = MiniSightWakePolicy.safetyDecision(c) {
+                pause(reason: stopped.message)
+            } else if cancelled || !c.foreground {
                 finishCycle(reason: "你已关闭或接管对话，回应已退让")
             }
             return
@@ -462,7 +475,9 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
         failureLatched = true; phase = .failed
     }
     private func receivedCompanion(_ state: MiniSightWakeRemote.State?) {
-        if let state, let old = companion, state.host == old.host && state.clock < old.clock { return }
+        if let state, let old = companion, state.host == old.host && state.clock < old.clock,
+           old.isFresh(now: ProcessInfo.processInfo.systemUptime,
+               revision: UserDefaults.standard.string(forKey: MiniSightSettingKey.shownRevision) ?? "") { return }
         companion = state
         if let cycle = remoteCycle,
            state?.host != cycle.state.host || state?.revision != cycle.state.revision || state?.allowed != true {

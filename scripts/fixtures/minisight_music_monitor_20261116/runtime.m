@@ -88,6 +88,7 @@ static MiniSightMusicMonitor *NewMonitor(FakeClient **client) {
     MiniSightMusicMonitor *m = [MiniSightMusicMonitor new]; *client = [FakeClient new];
     [m setValue:*client forKey:@"client"];
     m.updateHandler = ^(NSDictionary *s) { Check(NSThread.isMainThread, "main update callback"); };
+    m.presentationHandler = ^{ return @{@"allowed": @YES, @"stopReason": @"eligible"}; };
     [m configureAllowed:YES lyrics:YES motion:YES container:@"fixture-A"];
     return m;
 }
@@ -184,6 +185,34 @@ int main(void) { @autoreleasepool {
     Check(![disk[@"fixture-A"][@"line"] length] && ![disk[@"fixture-B"][@"line"] length], "container switch clears old and new");
     Check(disk[@"fixture-A"][@"title"] == nil && disk[@"fixture-A"][@"artist"] == nil, "no metadata persisted");
     Check(maxPending <= 1, "at most one pending native API callback");
-    puts("NATIVE PASS: ABI, five players, CF copy, main callbacks, storm, timeout/reopen, sandwich, late lyrics, cooldown, pause/stale, bridge mailbox/privacy");
+    m = NewMonitor(&c); Song(@"Recovery", @"recovery");
+    c.completion(nil); Pump();
+    Check([m.snapshot[@"playing"] boolValue], "no LRC/network failure cannot stop motion");
+    [m configureAllowed:NO lyrics:YES motion:YES container:@"fixture-A"];
+    [m configureAllowed:YES lyrics:NO motion:YES container:@"fixture-A"];
+    Song(@"Recovery", @"recovery");
+    Check([m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"lyricsEnabled"] boolValue], "allowed false->true and lyrics switch recover motion");
+    for (NSString *flag in @[@"playing", @"allowed", @"lyricsEnabled", @"motionEnabled", @"requestedLyrics", @"requestedMotion"]) {
+        Check(CFGetTypeID((__bridge CFTypeRef)m.snapshot[flag]) == CFBooleanGetTypeID(), "writer flags are CFBoolean not logical int");
+    }
+    NSDictionary *decoded = [NSJSONSerialization JSONObjectWithData:[NSJSONSerialization dataWithJSONObject:m.snapshot options:0 error:nil] options:0 error:nil];
+    Check(CFGetTypeID((__bridge CFTypeRef)decoded[@"playing"]) == CFBooleanGetTypeID(), "real writer->JSON->reader boolean round trip");
+    __block BOOL visibleGate = YES;
+    m.presentationHandler = ^{ return @{@"allowed": @((BOOL)visibleGate), @"stopReason": visibleGate ? @"eligible" : @"screen_state_unknown", @"screenKnown": @((BOOL)visibleGate)}; };
+    visibleGate = NO; [m tick];
+    Check([m valueForKey:@"timer"] == nil && ![m.snapshot[@"allowed"] boolValue] &&
+        [m.snapshot[@"stopReason"] isEqual:@"screen_state_unknown"], "unknown screen gate shuts down without polling");
+    NSUInteger pendingAtStop = infos.count + states.count;
+    [m tick]; Check(infos.count + states.count == pendingAtStop, "no hidden/unknown polling");
+    visibleGate = YES; [m configureAllowed:YES lyrics:NO motion:YES container:@"fixture-A"];
+    if (infos.count) Song(@"Recovery", @"recovery");
+    Check([m.snapshot[@"playing"] boolValue], "visible show restores after unknown shutdown");
+    Stop(m);
+    m = NewMonitor(&c);
+    NSDictionary *unknown = @{@"kMRMediaRemoteNowPlayingInfoPlaybackRate":@1};
+    GiveInfo(unknown, NO); GiveState(YES); GiveInfo(unknown, NO);
+    Check([m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"line"] length] && c.requests == 0, "unknown track allows motion but never lyrics/status text");
+    Stop(m);
+    puts("NATIVE PASS: ABI, five players, CF copy, main callbacks, storm, timeout/reopen, sandwich, late lyrics, cooldown, pause/stale, bridge mailbox/privacy, recovery/switches, unknown gate, no-LRC motion, real JSON booleans");
     return 0;
 } }

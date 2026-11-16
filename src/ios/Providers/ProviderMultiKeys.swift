@@ -10,6 +10,18 @@ struct ProviderKeyLease: Sendable {
     var startedAt: Date = Date()
 }
 
+/// Final successful request identity only. No raw credential in notifications.
+struct ProviderQuotaSuccess: Sendable {
+    let instanceId: String
+    let rowId: String
+    let credentialIdentity: String
+    let succeededAt: Date
+    static func identity(_ key: String) -> String {
+        let value = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        return SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 enum MultiKeyFailureKind: Sendable {
     case credential, forbidden, quota, rateLimit, transient, gatewayTimeout, requestTooLarge, network, other
 
@@ -383,11 +395,23 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
     private var loading: Set<String> = []
 
     static let didChange = Notification.Name("ProviderMultiKeyManager.didChange")
+    static let didSucceed = Notification.Name("ProviderMultiKeyManager.didSucceed")
 
-    private func notifyChange(_ instanceId: String) {
+    private func notifyChange(_ instanceId: String, quotaCredentialsUnchanged: Bool = false) {
         DispatchQueue.main.async {
-            NotificationCenter.default.post(name: Self.didChange, object: instanceId)
+            NotificationCenter.default.post(name: Self.didChange, object: instanceId,
+                userInfo: ["quotaCredentialsUnchanged": quotaCredentialsUnchanged])
         }
+    }
+    func notifyQuotaSuccess(lease: ProviderKeyLease, for instanceId: String) {
+        let current = lease.id == "main" ? ProviderKeychainHelper.loadAPIKey(instanceId: instanceId)
+            : keys(for: instanceId).first { $0.id == lease.id && $0.isEnabled && $0.status != .disabled }?.key
+        guard current?.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key else { return }
+        let event = ProviderQuotaSuccess(instanceId: instanceId, rowId: lease.id,
+            credentialIdentity: ProviderQuotaSuccess.identity(lease.key), succeededAt: Date())
+        // Ensure the service observes the FIRST successful request too.
+        ProviderQuotaService.shared.consumed(event)
+        DispatchQueue.main.async { NotificationCenter.default.post(name: Self.didSucceed, object: event) }
     }
 
     /// Enqueue one writer per provider. The writer always snapshots the latest
@@ -707,7 +731,8 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
     // In-memory read/modify/write is atomic across CRUD and request outcomes.
     // Callers must have loaded the ring (management UI disables edits until it
     // is ready); an unavailable Keychain is NOT an empty ring to overwrite.
-    private func mutateKeys(for instanceId: String, _ change: (inout [ProviderAPIKey]) -> Void) {
+    private func mutateKeys(for instanceId: String, quotaCredentialsUnchanged: Bool = false,
+                            _ change: (inout [ProviderAPIKey]) -> Void) {
         if !keysReady(for: instanceId) { _ = keys(for: instanceId) }
         lock.lock()
         guard var list = keySnapshots[instanceId] else { lock.unlock(); return }
@@ -716,7 +741,7 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
         bump(instanceId, .ring)
         lock.unlock()
         schedulePersistence(for: instanceId)
-        notifyChange(instanceId)
+        notifyChange(instanceId, quotaCredentialsUnchanged: quotaCredentialsUnchanged)
     }
 
     func add(_ key: String, name: String? = nil, for instanceId: String) -> ProviderAPIKey {
@@ -893,7 +918,7 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
             schedulePersistence(for: instanceId)
         } else {
             let now = Date()
-            mutateKeys(for: instanceId) { list in
+            mutateKeys(for: instanceId, quotaCredentialsUnchanged: true) { list in
                 guard let index = list.firstIndex(where: { $0.id == lease.id && $0.key.trimmingCharacters(in: .whitespacesAndNewlines) == lease.key }) else { return }
                 list[index].successCount = increment(list[index].successCount)
                 list[index].lastUsed = now
@@ -906,6 +931,7 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
                 }
             }
         }
+        notifyQuotaSuccess(lease: lease, for: instanceId)
     }
 
     func recordFailure(lease: ProviderKeyLease, kind: MultiKeyFailureKind, for instanceId: String) {

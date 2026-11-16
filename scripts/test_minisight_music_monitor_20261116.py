@@ -49,7 +49,12 @@ def errors(source):
         'container scrub': 'MSBridgeWrite(_writtenContainer, @"music-state.json", clear)',
         'lyrics generation': 'generation != self->_trackGeneration',
         'process fence': 'allowed = allowed && _springBoard;',
-        'lock state': 'if (allowed && ![MiniSightMusicMonitor deviceIsUnlocked]) allowed = NO;',
+        'lock state': 'if (allowed && ![MiniSightMusicMonitor deviceIsUnlockedWithKnown:&lockKnown]) {',
+        'runtime gate recheck': 'if (![self refreshPresentation]) return;',
+        'real boolean writer': '@"playing": @((BOOL)(_allowed && playing))',
+        'evidence writer': '@"presentation": _presentation ?: @{}, @"stopReason": stopReason',
+        'unknown metadata motion': 'track.cacheKey ?: @"unknown"',
+        'lyrics independent freshness': 'self->_lyricsAwaitingFreshInfo = YES;',
         'lock ABI': "(type[0] != 'B' && type[0] != 'c')",
         'reference time': 'age <= track.duration + 3.',
         'real readback': 'MSBridgeRead(container, @"music-state.json", 16384)',
@@ -93,6 +98,22 @@ class SourceTests(unittest.TestCase):
         self.assertIn('writes - before <= 2', native)
         self.assertNotIn('https://', native)
         self.assertNotIn('@implementation MiniSightMusicMonitor', native)
+
+
+class PortablePresentationTests(unittest.TestCase):
+    def test_actual_production_gate_and_epochs(self):
+        cc = shutil.which('cc') or shutil.which('clang')
+        self.assertIsNotNone(cc, 'Portable C compiler is required')
+        with tempfile.TemporaryDirectory(prefix='minisight-presentation-') as tmp:
+            binary = Path(tmp) / 'presentation'
+            result = subprocess.run([cc, '-std=c11', '-Wall', '-Wextra', '-Werror', '-pedantic',
+                '-I', str(plugin()), str(FIXTURE.with_name('presentation.c')), '-lm', '-o', str(binary)],
+                text=True, capture_output=True, timeout=90)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('PORTABLE PASS:', result.stdout)
+            print(result.stdout.strip())
 
 
 class NativeFoundationTests(unittest.TestCase):

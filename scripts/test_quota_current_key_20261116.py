@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Offline current-Key regression. Production Swift, synthetic identities only.
+macOS: V64R_REQUIRE_SWIFT=1 python3 scripts/test_quota_current_key_20261116.py
+No compiler/SDK is a SKIP locally and a hard failure when required/on macOS.
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+Q = (ROOT / 'src/ios/Providers/ProviderQuotaService.swift').read_text()
+M = (ROOT / 'src/ios/Providers/ProviderMultiKeys.swift').read_text()
+P = (ROOT / 'src/ios/Providers/RelayQuotaProtocol.swift').read_text()
+
+def declaration(text, marker):
+    start = text.index(marker)
+    return text[start:text.index('\n    }', start) + 6]
+
+FIXTURE_DEFAULTS = '''
+// Dependency injection only: exact production UserDefaults calls use a unique
+// Foundation suite. Fatal-error mutants cannot poison the next baseline run.
+enum UserDefaults {
+    static let standard = Foundation.UserDefaults(suiteName: "com.openminis.quota-fixture." + UUID().uuidString)!
+}
+'''
+
+def harness():
+    pure = Q.split('// BEGIN QUOTA_CURRENT_KEY_PURE', 1)[1].split('// END QUOTA_CURRENT_KEY_PURE', 1)[0]
+    members = ['struct QuotaInfo {', 'private struct StoredQuota:', 'private struct CacheEntry {',
+               'private static func store(', 'private static func storedInfo(', 'private static func storedCurrent(',
+               'private static func snapshot(', 'private static func reproject(', 'static func project(',
+               'private func publishAggregate(']
+    body = '\n'.join(re.sub(r'\b(?:fileprivate|private)\s+', '', declaration(Q, item)) for item in members)
+    skeleton = '''
+final class CacheHarness {
+static let storedPrefix = "quota.lastKnown.v2.fixture."
+static let currentPrefix = "quota.currentRow.v2.fixture."
+static var lowThresholdUSD: Double { 3 }
+var cache: [String: CacheEntry] = [:]
+var keyCache: [String: [String: CacheEntry]] = [:]
+var currentOrigins: [String: ProviderQuotaCurrentKeyPolicy.Origin] = [:]
+var rowOrigins: [String: [String: ProviderQuotaCurrentKeyPolicy.Origin]] = [:]
+var selectableOrigins: [String: [String: ProviderQuotaCurrentKeyPolicy.Origin]] = [:]
+let lock = NSLock()
+'''
+    return P + FIXTURE_DEFAULTS + pure + skeleton + body + '\n}\n' + (ROOT / 'scripts/fixtures/quota_current_key_20261116.swift').read_text()
+
+def async_harness():
+    pure = Q.split('// BEGIN QUOTA_CURRENT_KEY_PURE', 1)[1].split('// END QUOTA_CURRENT_KEY_PURE', 1)[0]
+    members = ['struct QuotaInfo {', 'private struct StoredQuota:', 'private struct CacheEntry {',
+               'private struct RefreshOutcome {', 'private final class RetryCapture', 'private struct Context {',
+               'private static func store(', 'private static func storedInfo(', 'private static func storedCurrent(',
+               'private static func snapshot(', 'private static func reproject(', 'static func project(',
+               'private func publishAggregate(', 'private static func rowKey(', 'private func failureKey(',
+               'private func resolveCurrent(', 'func consumed(', 'private func runAutomatic(',
+               'private func refreshRow(', 'private func invalidateRow(', 'private func publishRevision(']
+    def extract(marker):
+        if marker in ('private final class RetryCapture', 'private func failureKey('):
+            return Q[Q.index(marker):].split('\n', 1)[0]
+        return declaration(Q, marker)
+    body = '\n'.join(re.sub(r'\b(?:fileprivate|private)\s+', '', extract(item)) for item in members)
+    success = M[M.index('struct ProviderQuotaSuccess:'):M.index('\nenum MultiKeyFailureKind:')]
+    skeleton = '''
+final class CacheAsyncHarness {
+static let storedPrefix = "quota.lastKnown.v2.asyncfixture."
+static let currentPrefix = "quota.currentRow.v2.asyncfixture."
+static let logger = SyntheticLogger()
+static var lowThresholdUSD: Double { 3 }
+var revision = 0
+var cache: [String: CacheEntry] = [:]
+var keyCache: [String: [String: CacheEntry]] = [:]
+var failureNotes: [String: String] = [:]
+var inFlight: [String: UUID] = [:]
+var epochs: [String: UUID] = [:]
+var currentOrigins: [String: ProviderQuotaCurrentKeyPolicy.Origin] = [:]
+var rowOrigins: [String: [String: ProviderQuotaCurrentKeyPolicy.Origin]] = [:]
+var selectableOrigins: [String: [String: ProviderQuotaCurrentKeyPolicy.Origin]] = [:]
+var validating = Set<String>()
+var clocks: [String: ProviderQuotaCurrentKeyPolicy.RefreshClock] = [:]
+var lastPublished: [String: String] = [:]
+var scheduledCount: [String: Int] = [:]
+let lock = NSLock()
+'''
+    support = (ROOT / 'scripts/fixtures/quota_current_key_async_support_20261116.swift').read_text()
+    main = (ROOT / 'scripts/fixtures/quota_current_key_async_20261116.swift').read_text()
+    return 'import CryptoKit\n' + P + FIXTURE_DEFAULTS + pure + success + support + skeleton + body + '\n}\n' + main
+
+class SourceContracts(unittest.TestCase):
+    def test_current_not_lowest_or_other_row(self):
+        body = declaration(Q, 'private func publishAggregate(')
+        self.assertIn('ProviderQuotaCurrentKeyPolicy.current(', body)
+        self.assertIn('entry.origin == selected', body)
+        for bad in ('.min', '.reduce', 'infos.first', 'entries.keys.sorted'):
+            self.assertNotIn(bad, body)
+        self.assertNotIn('storedInfo(instanceId: instanceId)?.info', Q)
+
+    def test_final_success_separate_from_credentials_and_stats_retained(self):
+        body = declaration(M, 'func recordSuccess(lease:')
+        self.assertIn('successCount = increment', body)
+        self.assertIn('schedulePersistence(for: instanceId)', body)
+        self.assertIn('quotaCredentialsUnchanged: true', body)
+        self.assertIn('notifyQuotaSuccess(lease: lease', body)
+        self.assertIn('ProviderQuotaService.shared.consumed(event)', M)
+        self.assertIn('credentialIdentity', Q)
+
+    def test_cancel_owner_and_configuration_fences(self):
+        body = declaration(Q, 'private func refreshRow(')
+        for item in ('!Task.isCancelled', 'context?.owner != currentContext?.owner',
+                     'epochs[instance.id] == epoch', 'inFlight[slot] == ticket', 'freshInstance',
+                     'rowOrigins', 'origin: origin', 'merging(previous:'):
+            self.assertIn(item, body)
+        self.assertIn('canRestore(value.origin, current: origin)', Q)
+        self.assertIn('durableSalt', Q)
+        self.assertIn('key, token ?? "", uid ?? "", cookie ?? ""', Q)
+
+    def test_current_only_foreground_throttle_and_real_bill(self):
+        automatic = declaration(Q, 'private func runAutomatic(')
+        self.assertIn('rowId: context.rowId', automatic)
+        self.assertIn('currentOrigins[instanceId] == origin', automatic)
+        self.assertIn('Task.isCancelled || outcome.deferred', automatic)
+        self.assertNotIn('refreshAllKeys', automatic)
+        self.assertIn('UIApplication.shared.applicationState == .active', automatic)
+        self.assertIn('deadline(active:', automatic)
+        self.assertIn('get(req, retry: ctx.retry)', Q)
+        self.assertIn('value(forHTTPHeaderField: "Retry-After")', Q)
+        self.assertIn('ctx.retry.retryAfter == nil', declaration(Q, 'private static func collect('))
+        self.assertIn('let ttl: TimeInterval = 15 * 60', Q)
+        self.assertIn('900_000_000_000', Q)
+        self.assertNotIn('self.revision += 1', declaration(Q, 'private func refreshRow('))
+
+    def test_async_repair_fences_and_safe_extraction(self):
+        resolver = declaration(Q, 'private func resolveCurrent(')
+        self.assertIn('mayCommitResolution(', resolver)
+        self.assertIn('capturedSuccessAt: lastSuccessAt', resolver)
+        self.assertIn('currentSuccessAt: clocks[instanceId]?.lastSuccessAt', resolver)
+        row = declaration(Q, 'private func refreshRow(')
+        self.assertIn('includingUnavailable: true', row)
+        self.assertIn('invalidateRow(instanceId:', row)
+        self.assertNotIn('invalidate(instanceId:', row)
+        self.assertIn('return .init(deferred: true)', row)
+        retired = declaration(Q, 'private func invalidateRow(')
+        self.assertNotRegex(retired, r'epochs\[instanceId\]\s*=(?!=)')
+        self.assertNotIn('inFlight = inFlight.filter', retired)
+        self.assertNotIn('keyCache.removeValue', retired)
+        self.assertIn('activeOrigin?.owner == capturedOwner', retired)
+        self.assertIn('currentOrigin?.owner == capturedOwner', retired)
+        self.assertIn('capturedOwner: context?.durableOwner', row)
+        generated = harness()
+        self.assertNotIn('filevar ', generated)
+        self.assertIn('var owner: String = ""', generated)
+        self.assertIn('selectableOrigins', generated)
+        asynchronous = async_harness()
+        self.assertNotIn('filevar ', asynchronous)
+        for marker in ('func resolveCurrent(', 'func runAutomatic(', 'func refreshRow(', 'func invalidateRow('):
+            self.assertIn(marker, asynchronous)
+        self.assertIn('await gate.waitForArrival()', asynchronous)
+        self.assertNotIn('URLSession(', asynchronous)
+        self.assertNotIn('SecItemCopyMatching(', asynchronous)
+
+    def test_selection_failure_and_currency_unchanged(self):
+        old = subprocess.check_output(['git', '-C', str(ROOT), 'show', 'b0bec05:src/ios/Providers/ProviderMultiKeys.swift'], text=True)
+        for marker in ('func lease(for instanceId:', 'func recordFailure(lease:', 'private func reserveCursor('):
+            self.assertEqual(declaration(M, marker), declaration(old, marker))
+        self.assertIn('func effectiveDisplayRate', Q)
+        self.assertIn('func setCustomCurrency', Q)
+        self.assertIn('fetchNewAPIBalance(ctx)', declaration(Q, 'private static func collect('))
+
+class NativeProductionFixtures(unittest.TestCase):
+    def run_production(self, text, expected, *, library=False, reject=False):
+        compiler = shutil.which('swiftc')
+        required = os.getenv('V64R_REQUIRE_SWIFT') == '1' or sys.platform == 'darwin'
+        if not compiler:
+            if required: self.fail('Swift required; actual production native fixture NOT executed')
+            self.skipTest('iSH has no Swift/Apple SDK: native fixture NOT compiled/executed')
+        cmd = [compiler, '-swift-version', '5']
+        if sys.platform == 'darwin':
+            xcrun = shutil.which('xcrun')
+            self.assertIsNotNone(xcrun, 'macOS SDK required; fail closed')
+            sdk = subprocess.check_output([xcrun, '--sdk', 'macosx', '--show-sdk-path'], text=True).strip()
+            cmd += ['-sdk', sdk]
+        with tempfile.TemporaryDirectory(prefix='quota-current-') as tmp:
+            source, binary = Path(tmp) / 'main.swift', Path(tmp) / 'fixture'
+            source.write_text(text)
+            if library: cmd.append('-parse-as-library')
+            result = subprocess.run(cmd + [str(source), '-o', str(binary)], capture_output=True, text=True, timeout=180)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = subprocess.run([str(binary)], env={**os.environ, 'HOME': tmp}, capture_output=True, text=True, timeout=30)
+            if reject:
+                self.assertNotEqual(result.returncode, 0, 'Unsafe behavior mutation was not rejected')
+                self.assertNotIn(expected, result.stdout)
+            else:
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(expected, result.stdout)
+
+    def test_native_policy_cache_and_current_key(self):
+        self.run_production(harness(), 'quota-current-key-ok')
+
+    def test_native_real_async_and_behavior_mutations(self):
+        text = async_harness()
+        self.run_production(text, 'quota-current-key-async-ok', library=True)
+        mutations = [
+            ('captured == current && capturedSuccessAt == currentSuccessAt', 'true'),
+            ('Task.isCancelled || outcome.deferred', 'Task.isCancelled'),
+            ('rowId: rowId, includingUnavailable: true', 'rowId: rowId, includingUnavailable: false'),
+            ('activeOrigin == nil || activeOrigin?.owner == capturedOwner,\n              currentOrigin?.rowId != rowId || currentOrigin?.owner == capturedOwner', 'true')
+        ]
+        for old, new in mutations:
+            with self.subTest(mutation=old):
+                self.assertIn(old, text)
+                self.run_production(text.replace(old, new, 1), 'quota-current-key-async-ok', library=True, reject=True)
+
+if __name__ == '__main__': unittest.main(verbosity=2)

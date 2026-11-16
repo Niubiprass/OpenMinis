@@ -4,7 +4,7 @@ Old blocking-storage convoy is reproduced; the replacement's queue protocol
 is stressed with a deliberately blocked persistence backend and concurrent
 CRUD/outcomes/cursor reservations. Uses synthetic identifiers, never secrets.
 """
-import threading, concurrent.futures, time, random, unittest
+import threading, concurrent.futures, time, random, unittest, re
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 MODEL=(ROOT/'src/ios/Providers/ProviderMultiKeys.swift').read_text()
@@ -123,7 +123,9 @@ class SourceContracts(unittest.TestCase):
         self.assertIn('dirtyVersions[instanceId]?[domain] == versions[domain]',b)
         self.assertIn('dirty[instanceId]?.remove(domain)',b)
     def test_crud_and_outcomes_share_atomic_memory_mutations(self):
-        self.assertGreaterEqual(MODEL.count('mutateKeys(for: instanceId)'),5)
+        mutations = re.findall(r'mutateKeys\(for:\s*instanceId(?:,\s*quotaCredentialsUnchanged:\s*true)?\)', MODEL)
+        self.assertGreaterEqual(len(mutations), 5)
+        self.assertIn('mutateKeys(for: instanceId, quotaCredentialsUnchanged: true)', MODEL)
         self.assertIn('mainSnapshots[instanceId] = state',MODEL)
         self.assertIn('list[index].updatedAt <= lease.startedAt',MODEL)
         self.assertIn('state.lastFailureAt.map({ $0 <= lease.startedAt })',MODEL)

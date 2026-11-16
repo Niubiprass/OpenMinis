@@ -117,6 +117,9 @@ jobs:
           python3 scripts/test_minisight_action_library_20261116.py --ci
           python3 scripts/test_minisight_lyrics_20261116.py --require-native
           python3 scripts/test_minisight_music_monitor_20261116.py --require-native
+          python3 scripts/test_minisight_presentation_readback_20261116.py --require-native
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_quota_current_key_20261116.py
+          python3 scripts/test_minisight_name_roundtrip_20261116.py --require-native
           python3 scripts/test_minisight_liveliness_20261116.py --require-ios
           python3 scripts/test_minisight_effects_runtime_20261116.py --require-native
           python3 scripts/test_minisight_wake_name_20261116.py --require-native

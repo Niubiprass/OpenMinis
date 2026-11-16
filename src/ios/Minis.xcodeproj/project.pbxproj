@@ -1391,6 +1391,7 @@
 		BE1611160000000000000008 /* MiniSightLyrics.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightLyrics.m; sourceTree = "<group>"; };
 		BE1611160000000000000009 /* MiniSightLyrics.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightLyrics.h; sourceTree = "<group>"; };
 		BE161116000000000000000A /* MiniSightLiveliness.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightLiveliness.h; sourceTree = "<group>"; };
+		BE1611163000000000000004 /* MiniSightNameWakeState.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightNameWakeState.h; sourceTree = "<group>"; };
 		C0FFEE100000000000000002 /* MiniSightAI.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightAI.m; sourceTree = "<group>"; };
 		C0FFEE200000000000000002 /* ChatCore.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = tools/chat/ChatCore.c; sourceTree = "<group>"; };
 		C0FFEE200000000000000003 /* ChatCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = tools/chat/ChatCore.h; sourceTree = "<group>"; };
@@ -1683,6 +1684,7 @@
 				BE1611160000000000000008 /* MiniSightLyrics.m */,
 				BE1611160000000000000009 /* MiniSightLyrics.h */,
 				BE161116000000000000000A /* MiniSightLiveliness.h */,
+				BE1611163000000000000004 /* MiniSightNameWakeState.h */,
 				C0FFEE100000000000000002 /* MiniSightAI.m */,
 				C0FFEE200000000000000002 /* ChatCore.c */,
 				C0FFEE200000000000000003 /* ChatCore.h */,
