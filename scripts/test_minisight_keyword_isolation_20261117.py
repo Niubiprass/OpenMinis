@@ -121,8 +121,9 @@ class Image:
             elif cmd == 0x19:
                 require(length >= 72, 'short segment')
                 a, s, o, n = struct.unpack_from('<QQQQ', data, pos+24)
+                maxprot,initprot = struct.unpack_from('<II',data,pos+56)
                 require(o+n <= len(data), 'segment outside file')
-                self.segments.append((a, s, o, n))
+                self.segments.append((a, s, o, n, maxprot, initprot))
                 self.segment_names.append(data[pos+8:pos+24].rstrip(b'\0').decode())
                 count = struct.unpack_from('<I', data, pos+64)[0]
                 require(72+count*80 <= length, 'bad section count')
@@ -174,8 +175,8 @@ class Image:
         return self.data[offset:offset+size]
 
     def read_va(self, address, count):
-        for a, s, o, n in self.segments:
-            if a <= address and address+count <= a+n: return self.slice(o+address-a, count)
+        for a, s, o, n, _, _ in self.segments:
+            if a <= address and address+count <= a+min(s,n): return self.slice(o+address-a, count)
         # Static archive MH_OBJECT uses sections rather than segment VM ranges.
         if self.kind == 1:
             for a, n, o in self.sections:
@@ -202,23 +203,35 @@ class Image:
         function, rather than pretending dyld stream order proves resolution.
         System weak-coalescing inventory is not globally forbidden here.
         """
-        position = row['position']; width = row['width']
-        for previous_position in range(position-7,position+width):
-            previous = self.binding_slots.get(previous_position)
-            if previous is None or previous_position+previous['width'] <= position: continue
-            if previous_position != position or self.binding_target(previous) != self.binding_target(row):
-                self.binding_conflicts.update((previous_position,position))
-            del self.binding_slots[previous_position]
-        self.binding_events.append(row); self.binding_slots[position] = row
+        vmaddress = row['vmaddress']; width = row['width']
+        for previous_address in range(vmaddress-7,vmaddress+width):
+            previous = self.binding_slots.get(previous_address)
+            if previous is None or previous_address+previous['width'] <= vmaddress: continue
+            if previous_address != vmaddress or self.binding_target(previous) != self.binding_target(row):
+                self.binding_conflicts.update((previous_address,vmaddress))
+            del self.binding_slots[previous_address]
+        self.binding_events.append(row); self.binding_slots[vmaddress] = row
 
     def bind_stream(self, data, source):
         require(source in ('bind','weak','lazy'), 'unsupported bind stream source')
         pos = 0; ordinal = 0; name = None; segment = None; offset = 0; kind = 1; addend = 0; flags = 0
         def event():
             require(name and segment is not None and segment < len(self.segments), 'actual bind lacks symbol/segment')
-            address,vmsize,fileoff,filesize = self.segments[segment]; width = 8 if kind == 1 else 4
-            require(0 <= offset and offset+width <= min(vmsize,filesize), 'actual bind address outside file-backed segment')
-            self.binding_write({'position':fileoff+offset,'vmaddress':address+offset,'segment':segment,
+            address,vmsize,fileoff,filesize,maxprot,initprot = self.segments[segment]; width = 8 if kind == 1 else 4
+            require(vmsize >= width and offset <= vmsize-width,
+                    'actual bind address outside VM segment: symbol='+str(name)+' source='+source+
+                    ' segment='+str(segment)+' offset='+hex(offset)+' width='+str(width)+
+                    ' vmSize='+hex(vmsize)+' fileSize='+hex(filesize)+' vmAddress='+hex(address+offset))
+            if kind == 1:
+                require(initprot & 2 and not initprot & 4,
+                        'pointer bind segment must be writable/non-executable: symbol='+str(name))
+            elif kind in (2,3):
+                require(initprot & 4 and not initprot & 2,
+                        'text bind segment must be executable/non-writable: symbol='+str(name))
+            require(source != 'chained', 'chained bind cannot be zero-fill')
+            file_backed = offset+width <= filesize
+            self.binding_write({'position':address+offset,'vmaddress':address+offset,
+                'file_offset':fileoff+offset,'file_backed':file_backed,'segment':segment,
                 'offset':offset,'width':width,'bindtype':kind,'symbolflags':flags,'symbol':name,
                 'ordinal':ordinal,'effectiveaddend':addend,'loader_effectiveaddend':addend,
                 'tableaddend':0,'pointeraddend':addend,'auth':False,'pointerformat':None,'source':source})
@@ -296,7 +309,7 @@ class Image:
             self.add_import(name,ordinal,'chained-table') # defensive inventory, NOT actual binding
         number = struct.unpack_from('<I',data,starts)[0]
         require(number <= len(self.segments) and starts+4+number*4 <= len(data), 'bad starts_in_image segments')
-        base = next((a-o for a,s,o,n in self.segments if o == 0 and n),None)
+        base = next((a-o for a,s,o,n,_,_ in self.segments if o == 0 and n),None)
         require(base is not None, 'chained image has no base segment')
         seen = set()
         for index in range(number):
@@ -307,7 +320,7 @@ class Image:
             size,page,format,delta,maxvalid,pages = struct.unpack_from('<IHHQIH',data,p)
             require(size >= 22+pages*2 and not (size-22) % 2 and p+size <= imp and page in (4096,16384) and
                     format in (1,2,6,9,12) and maxvalid == 0, 'unsupported/bad chained pointer starts')
-            address,vmsize,fileoff,filesize = self.segments[index]
+            address,vmsize,fileoff,filesize,_,_ = self.segments[index]
             require(address-base == delta and pages*page <= vmsize+page-1, 'chain starts mismatch segment VM/page count')
             entrycount = (size-22)//2
             for pi in range(pages):
@@ -359,7 +372,8 @@ class Image:
                             else:
                                 target = (pointer & ((1 << 43)-1)) | (((pointer >> 43) & 255) << 56)
                                 if format != 1: target += base
-                        record = {'position':location,'vmaddress':address+local,'segment':index,'offset':local,
+                        record = {'position':address+local,'vmaddress':address+local,'file_offset':location,
+                            'file_backed':True,'segment':index,'offset':local,
                             'width':8,'bindtype':1,'auth':auth,'pointerformat':format,'source':'chained',
                             'rawpointer':pointer,'next':nxt,'stride':stride,**authfields}
                         if bound:
@@ -453,11 +467,11 @@ def binding_gate(image, symbol, expected):
             'wrong image/flat binding '+symbol)
     events = [r for r in image.binding_events if r['symbol'] == symbol]
     require(events, 'missing actual dyld bind/fixup '+symbol)
-    require(all(r['position'] not in image.binding_conflicts for r in events),
+    require(all(r['vmaddress'] not in image.binding_conflicts for r in events),
             'conflicting/overlapping actual binding writes '+symbol)
     final = [r for r in image.binding_slots.values() if r['symbol'] == symbol]
     require(final, 'no final effective dyld binding '+symbol)
-    require(all(r['source'] in ('bind','lazy','chained') and r['width'] == 8 and r['bindtype'] == 1 and
+    require(all(r.get('file_backed',False) and r['source'] in ('bind','lazy','chained') and r['width'] == 8 and r['bindtype'] == 1 and
                 r['effectiveaddend'] == 0 and r.get('signed_effectiveaddend',r['effectiveaddend']) == 0 for r in final),
             'actual binding is not zero-addend pointer/function entry '+symbol)
     require(all(1 <= r['ordinal'] <= len(image.dependencies) and image.dependencies[r['ordinal']-1] == expected for r in final),
@@ -473,7 +487,7 @@ def content_identity(image):
     """
     require(image.uuid is not None and image.segments, 'linked image UUID/segments missing')
     payloads = []
-    for name,(address,vmsize,offset,size) in zip(image.segment_names,image.segments):
+    for name,(address,vmsize,offset,size,_,_) in zip(image.segment_names,image.segments):
         begin,end = offset,offset+size
         if offset == 0 and size:
             section_offsets = [o for a,n,o in image.sections if o > 0 and offset <= o < end]
@@ -675,7 +689,7 @@ def fixture_trie(exports):
 
 
 def fixture_image(kind=6, install=INSTALL_NAME, exports=None, imports=None, api=28, weak=False, minimum=0xf0500,
-                  bind_bytes=None, chain_bytes=None):
+                  bind_bytes=None, chain_bytes=None, initprot=3, bss_size=0):
     """Structurally-built Mach-O fixture, never generated iOS machine code.
     ARM instructions are fixed integer test data; no compiler/toolchain used.
     """
@@ -717,13 +731,15 @@ def fixture_image(kind=6, install=INSTALL_NAME, exports=None, imports=None, api=
     trie = fixture_trie(exports) if exports else b''
     symoff = 4096+len(code); stroff = symoff+len(symbols); bindoff = stroff+len(strings); trieoff = bindoff+len(bind)
     chainoff = trieoff+len(trie); total = chainoff+len(chain_bytes or b'')
-    segment = struct.pack('<II16sQQQQIIII',0x19,152,b'__TEXT',base,symoff,0,symoff,7,5,1,0)
-    segment += struct.pack('<16s16sQQIIIIIIII',b'__text',b'__TEXT',start,len(code),4096,2,0,0,0x80000400,0,0,0)
-    linkedit = struct.pack('<II16sQQQQIIII',0x19,72,b'__LINKEDIT',base+symoff,total-symoff,symoff,total-symoff,7,1,0,0)
+    linkvm = 4096+symoff+bss_size
+    segment = struct.pack('<II16sQQQQIIII',0x19,152,b'__DATA',base,symoff+bss_size,0,symoff,7,initprot,1,0)
+    segment += struct.pack('<16s16sQQIIIIIIII',b'__data',b'__DATA',start,len(code),4096,2,0,0,0,0,0,0)
+    linkedit = struct.pack('<II16sQQQQIIII',0x19,72,b'__LINKEDIT',base+linkvm,total-symoff,symoff,total-symoff,7,1,0,0)
+    flags = 0x80 | (0x8000 if weak else 0)
     commands += [segment,linkedit,struct.pack('<6I',2,24,symoff,len(rows),stroff,len(strings)),
                  struct.pack('<12I',0x80000022,48,0,0,bindoff,len(bind),0,0,0,0,trieoff,len(trie))]
     if chain_bytes is not None: commands.append(struct.pack('<4I',0x80000034,16,chainoff,len(chain_bytes)))
-    joined = b''.join(commands); flags = 0x80 | (0x8000 if weak else 0)
+    joined = b''.join(commands)
     header = struct.pack('<8I',0xfeedfacf,0x0100000c,0,kind,len(commands),len(joined),flags,0)+joined
     require(len(header) <= 4096, 'fixture header overflow')
     return header+b'\0'*(4096-len(header))+code+symbols+strings+bind+trie+(chain_bytes or b'')
@@ -811,7 +827,21 @@ def portable_fixtures():
     zero.bind_stream(b'\x11\x40'+BRIDGE_NAME.encode()+b'\0\x70'+uleb(4096+200)+b'\xc0\0\0\0','bind')
     reject('DO_BIND count=0 is not actual binding',lambda: binding_gate(zero,BRIDGE_NAME,INSTALL_NAME))
     out = Image(proto); out.imports = {}
-    reject('legacy bind outside segment',lambda: out.bind_stream(b'\x11\x40'+BRIDGE_NAME.encode()+b'\0\x70'+uleb(len(proto)+8)+b'\x90\0','bind'))
+    reject('legacy bind outside VM segment',lambda: out.bind_stream(b'\x11\x40'+BRIDGE_NAME.encode()+b'\0\x70'+uleb(8192+8)+b'\x90\0','bind'))
+    bss = bytearray(fixture_image(kind=2,exports={},imports={BRIDGE_NAME:INSTALL_NAME},
+                                  bind_bytes=b'\0',bss_size=4096))
+    bss_image = Image(bss); bss_image.imports = {}
+    bss_stream = b'\x11\x40'+BRIDGE_NAME.encode()+b'\0\x51\x70'+uleb(len(proto)+272)+b'\x90\0'
+    bss_image.bind_stream(bss_stream,'bind')
+    bss_row = bss_image.binding_events[-1]
+    require(not bss_row['file_backed'] and bss_row['offset'] == len(proto)+272 and
+            bss_image.binding_slots[bss_row['vmaddress']] == bss_row,
+            'legacy BSS bind not represented by real VM slot')
+    try: binding_gate(bss_image,BRIDGE_NAME,INSTALL_NAME)
+    except RuntimeError as error: require('zero-addend pointer/function entry' in str(error),'BSS bind failed for unrelated reason')
+    else: raise RuntimeError('zero-fill slot falsely proves file-backed function entry')
+    tests += 1
+    print('PASS legacy VM-only BSS bind is inventoried but cannot prove file-backed function gate')
     unused = Image(proto); unused.imports = {}
     no_starts = struct.pack('<7I',0,28,32,36,1,1,0)+struct.pack('<II',0,1)+BRIDGE_NAME.encode()+b'\0'
     unused.chained_imports(no_starts)
@@ -849,9 +879,9 @@ def portable_fixtures():
     def legacy(symbol=BRIDGE_NAME, offset=200, addend=0, kind=1, flags=0, ordinal=1, opcode=b'\x90'):
         return (b'\x20'+uleb(ordinal)+bytes([0x40|flags])+symbol.encode()+b'\0'+bytes([0x50|kind,0x70])+
                 uleb(4096+offset)+b'\x60'+sleb(addend)+opcode)
-    def legacy_image(stream, imports=None):
+    def legacy_image(stream, imports=None, initprot=3):
         return Image(fixture_image(kind=2,exports={},imports={BRIDGE_NAME:INSTALL_NAME} if imports is None else imports,
-                                   bind_bytes=stream+b'\0'))
+                                   bind_bytes=stream+b'\0',initprot=initprot))
     def chain_image(format=6, tableformat=1, pointeraddend=0, tableaddend=0, auth=False,
                     key=0, weak=False, ordinal=1, index=0, reserved=0, tablereserved=0,
                     page_entries=(0xffff,200), slots=None, next_value=0, bind_bytes=b'\0', count=1):
@@ -872,19 +902,21 @@ def portable_fixtures():
         for offset,value in ({200:pointer} if slots is None else slots).items(): struct.pack_into('<Q',binary,4096+offset,value)
         return Image(binary)
     b1_accept('B1 legacy legal zero-addend function entry',legacy_image(legacy()))
+    for kind in (2,3):
+        rx = Image(fixture_image(kind=2,exports={},imports={BRIDGE_NAME:INSTALL_NAME},
+                                 bind_bytes=legacy(kind=kind)+b'\0',initprot=5))
+        b1_reject('B1 legacy nonpointer bind type '+str(kind),lambda kind=kind,rx=rx: binding_gate(rx,BRIDGE_NAME,INSTALL_NAME),'function entry')
     for value in (4,-4):
         b1_reject('B1 legacy addend '+str(value),lambda value=value: binding_gate(legacy_image(legacy(addend=value)),BRIDGE_NAME,INSTALL_NAME),'function entry')
-    for kind in (2,3):
-        b1_reject('B1 legacy nonpointer bind type '+str(kind),lambda kind=kind: binding_gate(legacy_image(legacy(kind=kind)),BRIDGE_NAME,INSTALL_NAME),'function entry')
     both = {BRIDGE_NAME:INSTALL_NAME,'_SherpaOnnxCreateKeywordSpotter':INSTALL_NAME}
     independent = Image(fixture_image(kind=2,exports={},imports=both))
-    require(set(independent.binding_slots) == {4296,4304}, 'fixture imports still alias one slot')
+    require(set(independent.binding_slots) == {0x1000010c8,0x1000010d0}, 'fixture imports still alias one VM slot')
     binding_gate(independent,'_SherpaOnnxCreateKeywordSpotter',INSTALL_NAME)
     b1_accept('B1 fixture imports occupy independent legal slots',independent)
     overwrite = legacy_image(legacy()+legacy('_SherpaOnnxCreateKeywordSpotter'),both)
     b1_reject('B1 same-address different function overwrite',lambda: binding_gate(overwrite,BRIDGE_NAME,INSTALL_NAME),'conflicting/overlapping')
     b1_reject('B1 replacement function cannot validate conflicted slot',lambda: binding_gate(overwrite,'_SherpaOnnxCreateKeywordSpotter',INSTALL_NAME),'conflicting/overlapping')
-    partial = legacy_image(legacy()+legacy('_SherpaOnnxCreateKeywordSpotter',offset=204,kind=2),both)
+    partial = legacy_image(legacy()+legacy('_SherpaOnnxCreateKeywordSpotter',offset=204,kind=1),both)
     b1_reject('B1 partial-width overlapping function write',lambda: binding_gate(partial,BRIDGE_NAME,INSTALL_NAME),'conflicting/overlapping')
     b1_accept('B1 identical target repeated at same slot',legacy_image(legacy()+legacy()))
     b1_accept('B1 identical target at independent slots',legacy_image(legacy()+legacy(offset=208)))
@@ -941,11 +973,11 @@ def portable_fixtures():
     multi = chain_image(page_entries=(0xffff,0x8002,200,0x8000|208),slots={200:1<<63,208:1<<63})
     b1_accept('B1 valid multi-start independent equal targets',multi)
     walked = chain_image(next_value=2,slots={200:(1<<63)|(2<<51),208:1<<63})
-    require(set(walked.binding_slots) == {4296,4304}, 'real chain did not walk next slot')
+    require(set(walked.binding_slots) == {0x1000010c8,0x1000010d0}, 'real chain did not walk next slot')
     b1_accept('B1 real PTR64 stride4 next walk',walked)
     for format in (1,9,12):
         walked = chain_image(format,slots={200:(1<<62)|(1<<51),208:1<<62})
-        require(set(walked.binding_slots) == {4296,4304}, 'arm64e chain did not walk stride8')
+        require(set(walked.binding_slots) == {0x1000010c8,0x1000010d0}, 'arm64e chain did not walk stride8')
         b1_accept('B1 real arm64e format '+str(format)+' stride8 next walk',walked)
     b1_accept('B1 identical legacy plus chained target',chain_image(bind_bytes=legacy()+b'\0'))
     rebase_overwrite = chain_image(bind_bytes=legacy()+b'\0',slots={200:160})
