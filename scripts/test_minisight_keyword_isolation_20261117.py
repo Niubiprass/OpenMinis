@@ -66,11 +66,18 @@ def cstring(data, offset, limit=None):
 
 def leb(data, offset, signed=False):
     value = shift = 0
+    mask = (1 << 64)-1
     for _ in range(10):
         require(offset < len(data), 'truncated LEB128')
-        b = data[offset]; offset += 1; value |= (b & 127) << shift; shift += 7
+        b = data[offset]; offset += 1
+        slice_value = b & 127
+        if shift < 64:
+            value = (value | ((slice_value << shift) & mask)) & mask
+        shift += 7
         if not b & 128:
-            if signed and b & 64: value -= 1 << shift
+            if signed:
+                if b & 64 and shift < 64: value = (value | ((~0 << shift) & mask)) & mask
+                if value & (1 << 63): value -= 1 << 64
             return value, offset
     raise RuntimeError('oversize LEB128')
 
@@ -747,6 +754,11 @@ def fixture_image(kind=6, install=INSTALL_NAME, exports=None, imports=None, api=
 
 def portable_fixtures():
     tests = 0
+    # dyld MachOFile::read_uleb128 accumulates into uint64_t. Bits above 63
+    # are truncated by the 64-bit shift; Python integers must model that.
+    wrapped, end = leb(bytes([0xa8,0x9f,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x02]),0)
+    require(wrapped == 0xfa8 and end == 10, 'ULEB64 did not match Apple loader wrap semantics')
+    tests += 1
     def reject(label,action):
         nonlocal tests
         try: action()
@@ -902,6 +914,14 @@ def portable_fixtures():
         for offset,value in ({200:pointer} if slots is None else slots).items(): struct.pack_into('<Q',binary,4096+offset,value)
         return Image(binary)
     b1_accept('B1 legacy legal zero-addend function entry',legacy_image(legacy()))
+    wrapped_offset = bytes([0xa8,0x9f,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x02])
+    wrapped_stream = (b'\x20\x01\x40'+BRIDGE_NAME.encode()+b'\0\x51\x70'+wrapped_offset+
+                      b'\x60\x00\x90')
+    wrapped_image = legacy_image(wrapped_stream)
+    require(wrapped_image.binding_events[-1]['offset'] == 0xfa8 and
+            wrapped_image.binding_events[-1]['file_backed'],
+            'legacy binding offset differs from Apple uint64 ULEB semantics')
+    b1_accept('B1 legacy actual DO_BIND uses dyld uint64 ULEB wrap',wrapped_image)
     for kind in (2,3):
         rx = Image(fixture_image(kind=2,exports={},imports={BRIDGE_NAME:INSTALL_NAME},
                                  bind_bytes=legacy(kind=kind)+b'\0',initprot=5))

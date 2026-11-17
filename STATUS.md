@@ -2,10 +2,11 @@
 
 - 根因以三份IPS与发布build316/UUID精确对应为准：名字Sherpa请求ORT API28，实际主程序的OrtGetApiBase却绑定旧VAD，仅支持1–20，空接口后Env+24崩溃。没有再查设备、复现或重启。
 - 生产候选采用固定ORT1.28.2私有动态Sherpa框架和构造前兼容预检；不改旧VAD、手动语音、后台名字、OFF/锁屏/取消、歌词动作、额度消费或设置持久化。
-- B1实际绑定复核：主checker修订前SHA `a0104d5b0e15e434a9726d2adaeb587a0dde3bc92935ab5fbe0c7d79343c72fe` 已经独立审过；本地CI后修正版本另保留134个便携例，非零加数、同槽/部分宽度覆盖仍拒绝。Apple dyld-955证实传统bind按虚拟段长度检查，已将覆盖历史按vmaddress追踪；可写、不可执行的VM-only零填充槽只记为事件，不可证明关键函数文件入口。chained仍限真实文件槽。独立77次旧版checker自造检查结果仅作B1窄审，非新checker原生或真机证明。
+- B1修订前checker `a0104d5b0e15e434a9726d2adaeb587a0dde3bc92935ab5fbe0c7d79343c72fe` 已由独立审计LOCAL_B1_PASS；最新工作树checker另加VM bind、zero-fill slot以及Apple ULEB64解码处理。Apple dyld-955证实传统bind以虚拟段地址计算、按uint64解码ULEB且pointer bind必须可写/不可执行。零填充bind仅作VM事件，不可通过关键函数的文件槽门槛；chained仍限文件槽。最新本地便携136例通过，加数/同槽及部分覆盖仍拒绝。
 - B2固定旧VAD loader基线从真实build316 VAD生成，SHA `6bedabc71b689910bb12918561483ee3edd26c74507809c25d7571cb8d310aac`。真实库42项静态/便携检查通过；成品门槛用真实旧VAD配合合成新App入口，原库通过，libc++依赖、实际malloc链及OrtGetApiBase地址三种改动均拒绝。不是最终App。
-- 最新回归矩阵24普通入口全通过；7严格入口均按预期拒绝缺少Apple工具或产物。Apple复制/移除签名/重签、host dyld、完整iOS编译和真机尚未执行；Release VAD strip阶段及PBX文件保持未改，签名无关身份检查要求经过strip后的旧库与固定基线一致。
-- 生产保护路径和项目工程文件哈希均与基线一致；完整结果及日志在 `shared/openminis/local-reviews/wake-ort-crash-20261117/checks/`。本地门槛完成后按用户本批“修复好了就推送，然后监控”授权推送App并监控CI；未stage/commit/push。无安装、开麦、注销、重启或整IPA下载授权。
+- 已推送修复提交 `88012c8` 的build317和VM绑定修订 `70c022f` 的build318均在Mac runner编完253个依赖目标并链接后、被新framework实际bind解析拦截，未完成完整依赖proof/App编译/签名/IPA。build318精确反例为 `_OBJC_CLASS_$_NSProcessInfo` 的10字节ULEB编码被Python任意精度错误解析成 `0x10000000000000fa8`；Apple dyld 64位实际结果是段内 `0xfa8`。当前本地checker已按uint64截断修正，并加端到端legacy流正例。两个run的完整CRC日志分别在 `logs-44090041391.zip`、`logs-44116160899.zip`。
+- 最新本地复核：136便携bind正反例通过（含BSS、权限及ULEB64端到端），24普通入口退出0，7严格缺Apple/产物门槛均精确拒绝，受保护源码和PBX仍与基线匹配。最新修订仍未stage/commit/push、未CI。Apple VAD重签、host dyld、完整iOS App及IPA/真机未通过或运行。没有新可安装版本。
+- 两份新上传IPS仍为1.15/build160652、旧UUID：一份复现ORT `EXC_BAD_ACCESS` 于0x18；另一份是独立主线程 SwiftUI `ChildEnvironment.updateValue()` / `___chkstk_darwin` 探测失败，运行约2小时40分，具体业务触发和根因未证，未并入ORT修复。未查设备、不安装、不重启、不下载IPA。
 - 根因与验收分层见 `docs/minisight-316-wake-runtime-crash-20261117.md`；长期证据目录 `shared/openminis/local-reviews/wake-ort-crash-20261117/`。
 
 ---
