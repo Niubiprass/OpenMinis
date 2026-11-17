@@ -206,7 +206,7 @@ def native_apple(data, cases, required):
             run(tools[1], '--force', '--sign', '-', '--timestamp=none', '--identifier', label, str(copied))
             run(tools[1], '--verify', '--strict', str(copied))
             signed = v.verify_vad_identity(copied.read_bytes())
-            detail = run(tools[1], '-d', '--verbose=0', str(copied))
+            detail = run(tools[1], '-d', '--verbose=2', str(copied))
             identity_line = next((line.strip() for line in (detail.stdout + detail.stderr).splitlines() if 'Identifier=' in line), '')
             assert ('Identifier=' + label) in identity_line, 'unexpected Apple ad-hoc signature identifier'
             assert signed['uuid'] == '67b203bff9a332989482b6e4458f4d49', 'Apple re-sign changed Mach-O UUID'
