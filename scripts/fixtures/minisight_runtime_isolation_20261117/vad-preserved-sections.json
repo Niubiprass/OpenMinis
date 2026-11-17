@@ -1,0 +1,115 @@
+{
+  "schema": "minisight-vad-preserved-sections-v1",
+  "source": "Minis build316 IPA; main UUID02d4f2b8-3a6b-35cb-8af0-f0c150e37dfd; Range entry CRC verified",
+  "installName": "@rpath/RealTimeCutVADCXXLibrary.framework/RealTimeCutVADCXXLibrary",
+  "sections": [
+    {
+      "segment": "__TEXT",
+      "section": "__text",
+      "size": 14397840,
+      "sha256": "1e0c82927324887e7d07538d0856ae54c3496623c42e1319349ef5ee01e5e07d"
+    },
+    {
+      "segment": "__TEXT",
+      "section": "__stubs",
+      "size": 4788,
+      "sha256": "b83329e966743aaa98e85b6b2a6b14e9eecc7d1762608bab38187cda991a3ec6"
+    },
+    {
+      "segment": "__TEXT",
+      "section": "__objc_stubs",
+      "size": 1152,
+      "sha256": "8575bfe83b7dffbdc62520312359a1f861e2d1aa3e6a050f727f78b816f37c2a"
+    },
+    {
+      "segment": "__TEXT",
+      "section": "__init_offsets",
+      "size": 132,
+      "sha256": "9dbb7de3dbe4d7533edb6a7aa5ea0580d348cb1f3248a3fdfc9662acb03b12f0"
+    },
+    {
+      "segment": "__TEXT",
+      "section": "__const",
+      "size": 693336,
+      "sha256": "45e7a1373f833aeb152cb172b2f2898075fc99528dff1c8bcafeeef3f331762d"
+    },
+    {
+      "segment": "__TEXT",
+      "section": "__gcc_except_tab",
+      "size": 625080,
+      "sha256": "52de14ff70a7ec66464e3339fb78b88b9eb802c4ed814033218f95a3d9d87946"
+    },
+    {
+      "segment": "__TEXT",
+      "section": "__cstring",
+      "size": 774992,
+      "sha256": "54a3c6ec583d31ae1cb368fe86f7e444b3a576967631a3f80ffd3ecf214dc23f"
+    },
+    {
+      "segment": "__TEXT",
+      "section": "__objc_methname",
+      "size": 776,
+      "sha256": "82daba84d7d77f9e216909722c1248f1818a96dfdd7f78c94fc5ded10721e012"
+    },
+    {
+      "segment": "__TEXT",
+      "section": "__unwind_info",
+      "size": 243952,
+      "sha256": "9ee82fd2da1ab2afa2de67d45a6c24afd0b9d3f4489ff519fdaf0df9dde5a93e"
+    },
+    {
+      "segment": "__TEXT",
+      "section": "__eh_frame",
+      "size": 9328,
+      "sha256": "b5a04199b50ab88e46b424d17e4bdf875dac847692b23012a55e01a83e0b3f23"
+    },
+    {
+      "segment": "__DATA_CONST",
+      "section": "__got",
+      "size": 4072,
+      "sha256": "255c22c30819f2de9a36a413ca8451669019de2f6594fe70d1ecc84778800e56"
+    },
+    {
+      "segment": "__DATA_CONST",
+      "section": "__const",
+      "size": 427728,
+      "sha256": "4e358476b6ab71f96959bac4f57edaa1e774a41abb5e6d3dadd7ef4bc9408de1"
+    },
+    {
+      "segment": "__DATA_CONST",
+      "section": "__cfstring",
+      "size": 64,
+      "sha256": "d350e265b3984940f53f9076abdbb87bad3059fd677e0954c08404e63f14fcc9"
+    },
+    {
+      "segment": "__DATA_CONST",
+      "section": "__objc_imageinfo",
+      "size": 8,
+      "sha256": "94039884329d3732c577860f40d0dfdf883ff89dac332f87216e692c08892fa2"
+    },
+    {
+      "segment": "__DATA",
+      "section": "__objc_selrefs",
+      "size": 288,
+      "sha256": "4305b6770b10953efce28f049420ee1184c276b42af205cd1336ab6ffe967d7b"
+    },
+    {
+      "segment": "__DATA",
+      "section": "__objc_classrefs",
+      "size": 104,
+      "sha256": "f1c7ce0f76364658c5461f887db60d9a7fc9be0b282d4a41f0adddeef199c92b"
+    },
+    {
+      "segment": "__DATA",
+      "section": "__data",
+      "size": 23868,
+      "sha256": "4cc3304f32df1a64934c36fe0124201be8ceed4ef56179e2869c5533e8016416"
+    },
+    {
+      "segment": "__DATA",
+      "section": "__thread_vars",
+      "size": 456,
+      "sha256": "17542471e4fc4c007d2dcdc9a9e5ad2ccb4949f02315b3ac8693080a547697b9"
+    }
+  ]
+}

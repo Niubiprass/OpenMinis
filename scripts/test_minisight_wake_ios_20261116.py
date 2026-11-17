@@ -51,17 +51,9 @@ def typecheck():
     from test_minisight_keyword_provenance_20261116 import artifact_gate
     artifact_gate()
     frameworks=['-F',str(controlled.parent)]
-    # Only ORT is fetched from the separately pinned remote archive. Do not
-    # typecheck against a different prebuilt Sherpa than the one we will ship.
-    for pin in [p for p in PINS if p[0] == 'ort']:
-        archive=download(pin,cache);destination=cache/pin[0]
-        marker=destination/'.verified-sha'
-        if not marker.is_file() or marker.read_text()!=pin[3]:
-            destination.mkdir(parents=True,exist_ok=True)
-            safe_extract(archive,destination);marker.write_text(pin[3])
-        found=list(destination.glob('*.xcframework/ios-arm64/*.framework'))
-        if len(found)!=1:raise RuntimeError('device arm64 framework missing: '+pin[0])
-        frameworks+=['-F',str(found[0].parent)]
+    # ORT is private inside the controlled dynamic image. App/WakeEngine must
+    # typecheck only against the exact Sherpa headers we ship, including preflight.
+    # Adding ORT's remote module here would conceal the forbidden App dependency.
     files=[IOS/('MiniSightWake'+x+'.swift') for x in ['Name','Policy','Assets','Engine','AudioPulse','Remote','Controller']]
     files += [IOS/'Views/Settings/MiniSightWakePage.swift',ROOT/'scripts/fixtures/minisight_wake_20261116/ios_support.swift']
     with tempfile.TemporaryDirectory(prefix='ms-wake-typecheck-') as d:

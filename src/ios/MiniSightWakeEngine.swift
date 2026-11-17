@@ -8,9 +8,10 @@ import SherpaOnnxC
 /// neither the engine nor this component writes audio or contacts a server.
 final class MiniSightWakeEngine: @unchecked Sendable {
     enum Failure: LocalizedError {
-        case model, audioFormat, conversion
+        case model, runtime, audioFormat, conversion
         var errorDescription: String? {
             switch self {
+            case .runtime: return "离线名字检测组件不兼容，监听已停止，其他桌宠功能不受影响。"
             case .model: return "离线名字检测器暂时无法加载，未开启麦克风。"
             case .audioFormat: return "当前麦克风格式不适合名字唤醒，监听已停止。"
             case .conversion: return "麦克风音频转换失败，名字监听已停止。"
@@ -95,6 +96,9 @@ final class MiniSightWakeEngine: @unchecked Sendable {
     }
     private func makeSpotter(files: MiniSightWakeAssets.Files, definition: String) throws
         -> (spotter: OpaquePointer, stream: OpaquePointer) {
+        // This preflight and Sherpa's inference code belong to the same isolated image.
+        // A nil ORT API is a setup error, never an Env null dereference.
+        guard SherpaOnnxMiniSightRuntimeIsCompatible() == 1 else { throw Failure.runtime }
         // C strings stay alive through the native constructor. Do not use the
         // example helper's temporary NSString UTF8 pointer in an escaped struct.
         return try files.encoder.path.withCString { encoder in

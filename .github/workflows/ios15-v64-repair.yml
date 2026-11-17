@@ -36,7 +36,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: src/ios/Packages/MiniSightKeywordRuntime/Artifacts
-          key: minisight-keyword-ios15.5-${{ runner.arch }}-${{ hashFiles('scripts/build_minisight_keyword_runtime_20261116.sh', 'scripts/test_minisight_keyword_provenance_20261116.py', 'src/ios/Packages/MiniSightKeywordRuntime/Package.swift', 'src/ios/Packages/MiniSightKeywordRuntime/Sources/Version.swift') }}
+          key: minisight-keyword-ios15.5-${{ runner.arch }}-${{ hashFiles('scripts/build_minisight_keyword_runtime_20261116.sh', 'scripts/test_minisight_keyword_provenance_20261116.py', 'scripts/test_minisight_keyword_isolation_20261117.py', 'scripts/minisight_vad_identity_20261117.py', 'scripts/test_minisight_vad_identity_20261117.py', 'scripts/fixtures/minisight_runtime_isolation_20261117/*.json', 'src/ios/Packages/MiniSightKeywordRuntime/Package.swift', 'src/ios/Packages/MiniSightKeywordRuntime/Sources/Version.swift') }}
       - name: Build pinned keyword dependency from pristine source
         run: |
           set -euo pipefail
@@ -131,6 +131,12 @@ jobs:
           python3 scripts/test_minisight_wake_audio_20261116.py --require-native
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_checkin_no_participation_20261116.py
           python3 scripts/test_queued_video_preview_20261116.py --require-native
+          python3 scripts/test_minisight_vad_identity_20261117.py --portable-only
+          python3 scripts/test_minisight_keyword_isolation_20261117.py --require-native
+          python3 scripts/test_minisight_keyword_isolation_20261117.py --native-host-fixture --require-native
+          python3 scripts/test_minisight_keyword_isolation_20261117.py --artifact --require-native
+          python3 scripts/test_minisight_runtime_preflight_20261117.py --require-native
+          python3 scripts/test_minisight_runtime_cancel_20261117.py --require-native
           python3 scripts/test_minisight_wake_20261116.py --require-native --require-ios
           python3 scripts/test_multikey_160651.py
           python3 scripts/test_multikey_persistence_160651.py
@@ -202,6 +208,11 @@ jobs:
           python3 scripts/test_minisight_wake_20261116.py --require-release-license
           APP=DerivedData/Build/Products/Release-iphoneos/Minis.app
           test -f "$APP/Info.plist"
+          # Final-image binding must match the private runtime, not VAD's older ORT.
+          python3 scripts/test_minisight_keyword_isolation_20261117.py --app "$APP" --require-native
+          python3 scripts/test_minisight_vad_identity_20261117.py \
+            --vad "$APP/Frameworks/RealTimeCutVADCXXLibrary.framework/RealTimeCutVADCXXLibrary" \
+            --native-apple --require-native --json-output vad-signing-identity.json
           mkdir -p Payload
           ditto "$APP" Payload/Minis.app
           python3 scripts/strip_ios15_incompatible_extensions.py Payload/Minis.app
@@ -221,6 +232,7 @@ jobs:
           trap 'rm -rf "$IPA_VERIFY_DIR"' EXIT
           unzip -q Minis-160652-FourFeatures-iOS15.5.ipa -d "$IPA_VERIFY_DIR"
           codesign --verify --deep --strict "$IPA_VERIFY_DIR/Payload/Minis.app"
+          python3 scripts/test_minisight_keyword_isolation_20261117.py --app "$IPA_VERIFY_DIR/Payload/Minis.app" --require-native
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinisBuildNumber' "$IPA_VERIFY_DIR/Payload/Minis.app/Info.plist")" = "${{ github.run_number }}"
           shasum -a 256 Minis-160652-FourFeatures-iOS15.5.ipa > SHA256SUMS
       - name: Upload IPA
@@ -240,6 +252,7 @@ jobs:
           path: |
             build-v64r.log
             minos-v64r.txt
+            vad-signing-identity.json
             src/ios/Packages/MiniSightKeywordRuntime/Artifacts/provenance.json
             src/ios/Packages/MiniSightKeywordRuntime/Artifacts/Proof
           if-no-files-found: ignore

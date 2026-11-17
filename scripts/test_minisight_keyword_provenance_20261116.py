@@ -5,6 +5,7 @@
 import argparse, hashlib, json, os, platform, plistlib, re, shutil, stat, struct
 import subprocess, sys, tarfile, urllib.request, zipfile
 from pathlib import Path, PurePosixPath
+import test_minisight_keyword_isolation_20261117 as isolation
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / 'src/ios/Packages/MiniSightKeywordRuntime'
@@ -18,7 +19,7 @@ ORT_URL = 'https://github.com/csukuangfj/onnxruntime-libs/releases/download/v1.2
 ORT_SHA = '2c2299acbb461d26d4bac4bc85985d40e7c7177ed6072703ae0846d88b0b4599'
 ORT_SIZE = 33821118
 HEADER_SHA = '5698f38ba09ad2bdf085c56a6cbbd7741acf15e25f4ce5c7097b9702cadf437f'
-MODULE = 'framework module SherpaOnnxC {\n  header "sherpa-onnx/c-api/c-api.h"\n  export *\n}\n'
+MODULE = isolation.MODULE
 # name, effective CMake owner, version, URL, SHA256. Main CMAKE_MODULE_PATH
 # precedes nested decoder/kaldifst modules: Eigen 5.0.1 / OpenFST July, NOT
 # decoder's standalone Eigen 3.4.0 / OpenFST April declarations.
@@ -202,6 +203,12 @@ def prepare(work):
     require(len(frameworks) == 1, 'ORT device arm64 framework not unique')
     fw = frameworks[0]
     macho_archive(fw/'onnxruntime', exact=False)
+    require(sha(fw/'onnxruntime') == isolation.ORT_BINARY_SHA and
+            sha(fw/'Headers/onnxruntime_c_api.h') == isolation.ORT_HEADER_SHA, 'fixed ORT binary/header bytes drift')
+    ort_members = isolation.archive_members((fw/'onnxruntime').read_bytes())
+    dispatch = [m for m in ort_members if any(s['name'] == '__ZN7OrtApis6GetApiEj' for s in m.symbols)]
+    require(len(dispatch) == 1, 'fixed ORT GetApi implementation not unique')
+    isolation.get_api_range(dispatch[0], private=False)
     records.append({'name':'onnxruntime','version':'1.28.2','url':ORT_URL,'sha256':ORT_SHA,
                     'archive':str(ort),'framework':str(fw)})
     write_json(work/'inputs.json', {'records':records,'trees':trees,'sourceBytes':50*1024*1024-budget})
@@ -359,10 +366,16 @@ def finalize(work):
     bundle_sources(trees['eigen'], trees['json'])
     binary = ARTIFACTS/'SherpaOnnxC.xcframework/ios-arm64/SherpaOnnxC.framework/SherpaOnnxC'
     require(binary.is_file(), 'built framework binary missing')
-    count = macho_archive(binary)
+    image = isolation.Image(binary.read_bytes())
+    exports = isolation.archive_exports((work/'build/lib/libsherpa-onnx-c-api.a').read_bytes())
+    dispatch = isolation.framework_gate(image, exports)
+    isolation.native_inspect(binary)
     symbols = subprocess.check_output(['xcrun','nm','-gU',str(binary)], text=True)
     for name in FUNCTIONS: require(re.search(r'\b_'+name+r'$', symbols, re.M), 'missing required C API '+name)
     probe = work/'link-probe'; macho_object(probe.read_bytes(), exact=True)
+    probe_image = isolation.Image(probe.read_bytes()); probe_image.target(2)
+    for name in (isolation.BRIDGE_NAME, '_SherpaOnnxCreateKeywordSpotter'):
+        isolation.binding_gate(probe_image, name, isolation.INSTALL_NAME)
     commands = (work/'build/compile_commands.json').read_text()
     for rel in OMITTED_EXAMPLE_LINKS:
         require(rel not in commands, 'omitted example selected as a build input: '+rel)
@@ -378,23 +391,41 @@ def finalize(work):
         shutil.copy2(archive, target); copy['archive'] = str(target.relative_to(ARTIFACTS)); public_records.append(copy)
     library_proof = [{'name':name, 'sha256':sha(work/'build/lib'/name),
                       'objects':macho_archive(work/'build/lib'/name)} for name in LIBRARIES]
-    require(sum(row['objects'] for row in library_proof) == count, 'merged static object closure differs')
+    count = sum(row['objects'] for row in library_proof)
     write_json(proof_dir/'static-library-inputs.json', library_proof)
+    shutil.copy2(work/'build/lib/libsherpa-onnx-c-api.a', proof_dir/'c-api-input.a')
+    ort = work/'ort/onnxruntime.xcframework/ios-arm64/onnxruntime.framework'
+    require(sha(ort/'onnxruntime') == isolation.ORT_BINARY_SHA and
+            sha(ort/'Headers/onnxruntime_c_api.h') == isolation.ORT_HEADER_SHA, 'ORT input binary/header drift')
+    write_json(proof_dir/'ort-static-input.json', {'binarySha256':sha(ort/'onnxruntime'),
+        'headerSha256':sha(ort/'Headers/onnxruntime_c_api.h'),'objects':macho_archive(ort/'onnxruntime',exact=False),
+        'minimumApi':1,'maximumApi':isolation.API_VERSION})
+    shutil.copy2(ort/'Headers/onnxruntime_c_api.h',proof_dir/'onnxruntime_c_api.h')
+    for name in ['minisight-runtime-isolation.c','minisight-runtime-isolation.h','exported-symbols.txt',
+                 'framework-link.map','framework-link-command.json','bridge-compile-command.json','link-probe']:
+        shutil.copy2(work/name,proof_dir/name)
+    write_json(proof_dir/'dynamic-isolation.json', {'binarySha256':sha(binary),'installName':isolation.INSTALL_NAME,
+        'exports':exports,'getApi':dispatch,'namespace':'two-level','runtimeTested':False})
+    write_json(proof_dir/'signature-independent.json', isolation.content_identity(image))
     write_json(proof_dir/'source-trees.json', trees); write_json(proof_dir/'headers.json', proofs)
     for name, path in [('CMakeCache.txt',work/'build/CMakeCache.txt'),('compile_commands.json',work/'build/compile_commands.json'),
                        ('observed-links.txt',work/'build/observed-links.txt'),('cmake-trace.jsonl',work/'cmake-trace.jsonl')]:
         shutil.copy2(path, proof_dir/name)
     (proof_dir/'defined-symbols.txt').write_text(symbols)
     write_json(proof_dir/'link.json', {'forceLoadAllSherpaObjects':True,'linkedOrtVersion':'1.28.2',
-                'probeSha256':sha(probe),'run':False,'command':(work/'link-command.json').read_text()})
+                'privateOrtStaticClosure':True,'probeSha256':sha(probe),'run':False,
+                'command':(work/'link-command.json').read_text(),
+                'frameworkCommand':(work/'framework-link-command.json').read_text()})
     files = {str(p.relative_to(ARTIFACTS)):sha(p) for p in ARTIFACTS.rglob('*') if p.is_file() and p.name != 'provenance.json'}
-    proof = {'schema':1,'status':'ci_build_verified','correspondenceVerified':True,
+    proof = {'schema':isolation.SCHEMA,'status':'ci_build_verified','correspondenceVerified':True,
+        'binaryKind':'private-dynamic-framework','installName':isolation.INSTALL_NAME,
+        'isolationProof':'Proof/dynamic-isolation.json','ortApiVersion':isolation.API_VERSION,
         'runtimeTested':False,'releaseReady':False,'buildIdentity':(work/'identity.json').read_text(),
         'sourceCommit':COMMIT,'sourceArchiveSha256':SOURCE_SHA,'ortArchiveSha256':ORT_SHA,
         'sourceBytes':inputs['sourceBytes'],'eigenVersion':cache['MINISIGHT_EIGEN_VERSION'],
         'eigenCmakeVersionString':cache['MINISIGHT_EIGEN_CMAKE_VERSION_STRING'],'eigenSource':str(eigen_source),
         'originalSourceRootSha256':proofs['sherpa']['rootSha256'],'cApiHeaderSha256':HEADER_SHA,
-        'target':{'platform':'iOS','architecture':'arm64','minimumOS':'15.5','objects':count},
+        'target':{'platform':'iOS','architecture':'arm64','minimumOS':'15.5','filetype':'MH_DYLIB','inputObjects':count},
         'staticLibraries':LIBRARIES,'inputs':public_records,'filesSha256':files}
     artifact_gate(candidate=proof)
     write_json(ARTIFACTS/'provenance.json', proof) # Commit ready evidence LAST, after every gate.
@@ -405,12 +436,27 @@ def artifact_gate(identity=None, candidate=None):
     p = ARTIFACTS/'provenance.json'
     if candidate is None: require(p.is_file(), 'CI artifact/provenance missing: run controlled rebuild first')
     proof = candidate if candidate is not None else json.loads(p.read_text())
-    require(proof.get('schema') == 1 and proof.get('status') == 'ci_build_verified'
+    isolation.schema_gate(proof)
+    require(proof.get('status') == 'ci_build_verified'
             and proof.get('correspondenceVerified') is True, 'unverified build provenance')
     require(proof['sourceCommit'] == COMMIT and proof['sourceArchiveSha256'] == SOURCE_SHA
             and proof['ortArchiveSha256'] == ORT_SHA and proof['eigenVersion'] == '5.0.1', 'artifact pin drift')
     require(proof['staticLibraries'] == LIBRARIES and proof['cApiHeaderSha256'] == HEADER_SHA, 'archive/header drift')
     require(proof['runtimeTested'] is False and proof['releaseReady'] is False, 'static build cannot prove runtime/release')
+    authored = ['scripts/build_minisight_keyword_runtime_20261116.sh',
+        'scripts/test_minisight_keyword_provenance_20261116.py','scripts/test_minisight_keyword_isolation_20261117.py',
+        'scripts/fixtures/minisight_runtime_isolation_20261117/vad-preserved-sections.json',
+        'scripts/minisight_vad_identity_20261117.py',
+        'scripts/test_minisight_vad_identity_20261117.py',
+        'scripts/fixtures/minisight_runtime_isolation_20261117/vad-loader-identity.json',
+        'src/ios/Packages/MiniSightKeywordRuntime/Package.swift',
+        'src/ios/Packages/MiniSightKeywordRuntime/Sources/Version.swift']
+    build_identity = json.loads(proof['buildIdentity'])
+    require(build_identity.get('schema') == isolation.SCHEMA and
+            build_identity.get('binaryKind') == 'private-dynamic-framework' and
+            build_identity.get('installName') == isolation.INSTALL_NAME and
+            build_identity.get('target') == 'arm64-apple-ios15.5' and
+            build_identity.get('scripts') == {p:sha(ROOT/p) for p in authored}, 'build/cache script or dynamic identity changed')
     if identity is not None: require(proof['buildIdentity'] == identity.read_text(), 'cache identity changed')
     files = {str(p.relative_to(ARTIFACTS)):sha(p) for p in ARTIFACTS.rglob('*') if p.is_file() and p.name != 'provenance.json'}
     require(files == proof['filesSha256'], 'artifact or proof file SHA mismatch')
@@ -423,7 +469,9 @@ def artifact_gate(identity=None, candidate=None):
     require((fw/'Modules/module.modulemap').read_text() == MODULE, 'SherpaOnnxC module changed')
     require(sha(fw/'Headers/sherpa-onnx/c-api/c-api.h') == HEADER_SHA, 'public C API header changed')
     require(plistlib.loads((fw/'Info.plist').read_bytes())['MinimumOSVersion'] == '15.5', 'framework minOS drift')
-    require(macho_archive(fw/'SherpaOnnxC') == proof['target']['objects'], 'native object count drift')
+    require(proof['target'] == {'platform':'iOS','architecture':'arm64','minimumOS':'15.5',
+            'filetype':'MH_DYLIB','inputObjects':proof['target']['inputObjects']}, 'native dynamic target identity drift')
+    isolation.framework_gate(isolation.Image((fw/'SherpaOnnxC').read_bytes()))
     trees = json.loads((ARTIFACTS/'Proof/source-trees.json').read_text())
     headers = json.loads((ARTIFACTS/'Proof/headers.json').read_text())
     expected = {'sherpa':SOURCE_SHA,'onnxruntime':ORT_SHA, **{r[0]:r[4] for r in DEPS}}
@@ -453,7 +501,7 @@ def artifact_gate(identity=None, candidate=None):
     require(proof['sourceBytes'] <= 50*1024*1024, 'source download budget drift')
     library_proof = json.loads((ARTIFACTS/'Proof/static-library-inputs.json').read_text())
     require([r['name'] for r in library_proof] == LIBRARIES
-            and sum(r['objects'] for r in library_proof) == proof['target']['objects']
+            and sum(r['objects'] for r in library_proof) == proof['target']['inputObjects']
             and all(re.fullmatch('[0-9a-f]{64}', r['sha256']) for r in library_proof), 'exact ten-library input proof missing')
     trace = (ARTIFACTS/'Proof/cmake-trace.jsonl').read_text()
     require('/source/cmake/eigen.cmake' in trace and '5.0.1' in trace
@@ -462,19 +510,28 @@ def artifact_gate(identity=None, candidate=None):
     require(link['forceLoadAllSherpaObjects'] is True and link['run'] is False and link['linkedOrtVersion'] == '1.28.2', 'native static link proof missing')
     symbols = (ARTIFACTS/'Proof/defined-symbols.txt').read_text()
     for name in FUNCTIONS: require(re.search(r'\b_'+name+r'$', symbols, re.M), 'C API symbol missing '+name)
-    print('PASS artifact SHA, device arm64/minOS15.5, C API and pristine Eigen/JSON source correspondence')
+    isolation.isolation_proof_gate(ARTIFACTS,proof)
+    print('PASS artifact SHA, private dynamic device arm64/minOS15.5, C API and pristine Eigen/JSON source correspondence')
 
 
 def static_gate():
     package = (PACKAGE/'Package.swift').read_text(); version = (PACKAGE/'Sources/Version.swift').read_text()
     require('name: "SherpaOnnxC", path: "Artifacts/SherpaOnnxC.xcframework"' in package, 'Sherpa must be local controlled artifact')
     require('sherpa-onnx-v2.0.1-ios-static.xcframework.zip' not in package, 'remote prebuilt Sherpa still selected')
-    require(ORT_URL in package and ORT_SHA in package and COMMIT in version, 'fixed ORT/source marker drift')
+    require(package.count('.binaryTarget(') == 1 and 'dependencies: ["SherpaOnnxC"]' in package
+            and 'name: "onnxruntime"' not in package and 'onnxruntime-ios-static' not in package
+            and 'import onnxruntime' not in version, 'ORT static target/module still exposed to App')
+    require(COMMIT in version and 'ci-private-dynamic-arm64-ios15.5-20261117-schema2' in version,
+            'fixed source/private dynamic marker drift')
+    require(ORT_URL.endswith('/v1.28.2/onnxruntime-ios-static-xcframework-1.28.2.xcframework.zip')
+            and ORT_SHA == '2c2299acbb461d26d4bac4bc85985d40e7c7177ed6072703ae0846d88b0b4599', 'fixed private ORT input drift')
     script = ROOT/'scripts/build_minisight_keyword_runtime_20261116.sh'
     text = script.read_text()
     for token in ['GITHUB_ACTIONS', 'Darwin', '-DCMAKE_SYSTEM_NAME=iOS', '-DCMAKE_OSX_ARCHITECTURES=arm64',
                   '-DCMAKE_OSX_DEPLOYMENT_TARGET=15.5', '--target sherpa-onnx-c-api', '-create-xcframework',
-                  '--prepare', '--finalize', '-force_load', '--cache-valid']:
+                  '--prepare', '--finalize', '-force_load', '--cache-valid', '-dynamiclib',
+                  '-twolevel_namespace', '-undefined,error', '-no_weak_exports', '-exported_symbols_list',
+                  'isolation.archive_exports', 'isolation.BRIDGE_SOURCE', 'isolation.framework_gate']:
         require(token in text, 'build contract missing '+token)
     require('libsherpa-onnx-cxx-api.a' not in LIBRARIES and len(LIBRARIES) == 10, 'exact official archive closure drift')
     for name in FUNCTIONS: require(name in (ROOT/'src/ios/MiniSightWakeEngine.swift').read_text(), 'engine C API contract drift')

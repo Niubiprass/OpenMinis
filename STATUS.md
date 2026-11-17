@@ -1,4 +1,17 @@
-# 当前：App304／MiniSight0.8.44 回归修复，本地0.8.45候选（2026-11-16）
+# 当前：build316 ORT隔离修复候选，本地门槛闭合待冻结（2026-11-17）
+
+- 根因以三份IPS与发布build316/UUID精确对应为准：名字Sherpa请求ORT API28，实际主程序的OrtGetApiBase却绑定旧VAD，仅支持1–20，空接口后Env+24崩溃。没有再查设备、复现或重启。
+- 生产候选采用固定ORT1.28.2私有动态Sherpa框架和构造前兼容预检；不改旧VAD、手动语音、后台名字、OFF/锁屏/取消、歌词动作、额度消费或设置持久化。
+- B1实际绑定复核：checker SHA `a0104d5b0e15e434a9726d2adaeb587a0dde3bc92935ab5fbe0c7d79343c72fe`；父与独立审计各自重跑133便携例，非零加数、同槽覆盖和部分覆盖均拒绝。独立77次自造检查39接受/38拒绝；不含Apple/dyld或真机证明。
+- B2固定旧VAD loader基线从真实build316 VAD生成，SHA `6bedabc71b689910bb12918561483ee3edd26c74507809c25d7571cb8d310aac`。真实库42项静态/便携检查通过；成品门槛用真实旧VAD配合合成新App入口，原库通过，libc++依赖、实际malloc链及OrtGetApiBase地址三种改动均拒绝。不是最终App。
+- 最新回归矩阵24普通入口全通过；7严格入口均按预期拒绝缺少Apple工具或产物。Apple复制/移除签名/重签、host dyld、完整iOS编译和真机尚未执行；Release VAD strip阶段及PBX文件保持未改，签名无关身份检查要求经过strip后的旧库与固定基线一致。
+- 生产保护路径和项目工程文件哈希均与基线一致；完整结果及日志在 `shared/openminis/local-reviews/wake-ort-crash-20261117/checks/`。本地门槛完成后按用户本批“修复好了就推送，然后监控”授权推送App并监控CI；未stage/commit/push。无安装、开麦、注销、重启或整IPA下载授权。
+- 根因与验收分层见 `docs/minisight-316-wake-runtime-crash-20261117.md`；长期证据目录 `shared/openminis/local-reviews/wake-ort-crash-20261117/`。
+
+---
+以下保留上一批记录，不是当前实装版本或本批授权。
+
+# 历史：App304／MiniSight0.8.44 回归修复，本地0.8.45候选（2026-11-16）
 
 - 用户最新“推送”已独立批准本批App／插件分别提交、推送与GitHub CI；不沿用下方旧授权。当前准备提交，尚无新CI结果；**未安装、开麦、设备设置、注销或重启**。App用GITHUB_TOKEN到Niubiprass/OpenMinis的ios15-160652-four-features，插件另用GITHUB_TOKEN_QQ到HGFdel-dav/theos-ci的minisight-0.8.45-20261116。基线b0bec05／8d433c1；此前已实装304／0.8.44并出现名字/余额/歌词反馈。
 - 名字：生产BOOL writer与真实Swift reader严格旧整数兼容；缺失/过期状态不报假锁屏，可信锁/OFF仍立即停。原后台、有界3秒已授权被动交接、正常语音草稿和手动流程保留，不改音频生产源码。

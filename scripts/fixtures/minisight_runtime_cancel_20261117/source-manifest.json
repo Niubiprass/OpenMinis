@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "sourceRoot": "src/ios",
+  "capturedHead": "573d7145ee0088650f29a1d67545bdab60888b1a",
+  "scope": "Full working-tree production Engine, Name and Assets; not a clean-HEAD claim or an entire app/source-tree attestation.",
+  "sources": {
+    "src/ios/MiniSightWakeEngine.swift": "bf753fd09b5d72862f18d574d2b4c482f639d7b460236a164f6a7fa48094cbf8",
+    "src/ios/MiniSightWakeName.swift": "fd23294e3cd808b1ff9ca64221324a053a17fe96320718da0959454728eb6275",
+    "src/ios/MiniSightWakeAssets.swift": "85ff4f51c1f370a46c8eec43e3499e36048e023dd52d1444b337a1acec3a16ba"
+  },
+  "fixtures": {
+    "mock.h": "818ce5ec9ba4f586ae1d0cf6982991f2773a479cad689ed23c20dc32de79bd4e",
+    "mock.c": "e3a438bfb38d0223812b8a4e8ac3b8fa9077f0386a00adef1f6e3aa49007852d",
+    "harness.swift": "da158e7e6c6d08150d01edb46b1a59b207172c68599f09ee2cb125c372ce12f5"
+  }
+}

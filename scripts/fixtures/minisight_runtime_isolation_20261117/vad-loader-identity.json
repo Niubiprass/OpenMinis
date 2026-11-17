@@ -1,0 +1,167 @@
+{
+  "identity": {
+    "commandsSha256": "04dc0dd21078edc29fc3163c458f0ca041a55ac006fa76b4db472a09de0c79c1",
+    "dependencies": [
+      {
+        "command": 12,
+        "compatibilityVersion": 9830400,
+        "currentVersion": 224329728,
+        "name": "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+        "timestamp": 2
+      },
+      {
+        "command": 12,
+        "compatibilityVersion": 19660800,
+        "currentVersion": 224329728,
+        "name": "/System/Library/Frameworks/Foundation.framework/Foundation",
+        "timestamp": 2
+      },
+      {
+        "command": 12,
+        "compatibilityVersion": 65536,
+        "currentVersion": 124563968,
+        "name": "/usr/lib/libc++.1.dylib",
+        "timestamp": 2
+      },
+      {
+        "command": 12,
+        "compatibilityVersion": 65536,
+        "currentVersion": 88539136,
+        "name": "/usr/lib/libSystem.B.dylib",
+        "timestamp": 2
+      },
+      {
+        "command": 12,
+        "compatibilityVersion": 65536,
+        "currentVersion": 65536,
+        "name": "/System/Library/Frameworks/CoreML.framework/CoreML",
+        "timestamp": 2
+      },
+      {
+        "command": 12,
+        "compatibilityVersion": 65536,
+        "currentVersion": 14942208,
+        "name": "/usr/lib/libobjc.A.dylib",
+        "timestamp": 2
+      }
+    ],
+    "exports": {
+      "OrtGetApiBase": {
+        "address": 10761684,
+        "flags": 0,
+        "kind": 0,
+        "name": "_OrtGetApiBase",
+        "targetVMAddress": 10761684
+      },
+      "count": 3115,
+      "sha256": "6aa9de70f9302fd06c56f86817f1db3ebe8afd83291fbd6fc2cc7b559384c3dd"
+    },
+    "header": {
+      "cpu": 16777228,
+      "filetype": 6,
+      "flags": 9535621,
+      "reserved": 0,
+      "subtype": 0
+    },
+    "immutableEnd": 17712976,
+    "immutablePayloadSha256": "a7a24fe7fcec14d4f93643448e566fc2ce111d789f93ba92bb457642e142c03f",
+    "install": {
+      "command": 13,
+      "compatibilityVersion": 65536,
+      "currentVersion": 65536,
+      "name": "@rpath/RealTimeCutVADCXXLibrary.framework/RealTimeCutVADCXXLibrary",
+      "timestamp": 1
+    },
+    "linkeditReferences": [
+      {
+        "bytes": 35624,
+        "label": "0x80000034",
+        "offset": 17252352,
+        "sha256": "aed33ebd15f5649fec2dba74524f6dabaed041f925a3bb3ebb4bea7692756888"
+      },
+      {
+        "bytes": 117544,
+        "label": "0x80000033",
+        "offset": 17287976,
+        "sha256": "ac73f5f9c9f70e8a3d2b989277573779ae8706b8d90daa5dc53096e5b5f32692"
+      },
+      {
+        "bytes": 57776,
+        "label": "nlist64",
+        "offset": 17477328,
+        "sha256": "b0dcb150ec9a18c96f49ec6c0592ab7f3122f3e99f90ca12cdb840fb8fd621e1"
+      },
+      {
+        "bytes": 174240,
+        "label": "strings",
+        "offset": 17538736,
+        "sha256": "56430ed09a9ebf8460ba0b2178499d0f9646d1edf468a27316ee8c1a89a4d8bd"
+      },
+      {
+        "bytes": 3632,
+        "label": "indirect-symbols",
+        "offset": 17535104,
+        "sha256": "5d7831ac0df526a19fb7792be341c3dff9f9a75c6e07409aed2a54fefe27c82c"
+      },
+      {
+        "bytes": 71808,
+        "label": "0x26",
+        "offset": 17405520,
+        "sha256": "9500b0aafadfdea68e02d78155e38668493a4716b1b0611f128ba3b0e3d46bf8"
+      }
+    ],
+    "linkeditSha256": "0cbf1ff425c2e39e354670f120c80ba1955a79bd88e5bf3f01742534dc9d0651",
+    "payloadStart": 16384,
+    "schema": "minisight-vad-loader-identity-v1",
+    "segments": [
+      {
+        "fileOffset": 0,
+        "fileSize": 16777216,
+        "flags": 0,
+        "initialProtection": 5,
+        "maxProtection": 5,
+        "name": "__TEXT",
+        "vmAddress": 0,
+        "vmSize": 16777216
+      },
+      {
+        "fileOffset": 16777216,
+        "fileSize": 442368,
+        "flags": 16,
+        "initialProtection": 3,
+        "maxProtection": 3,
+        "name": "__DATA_CONST",
+        "vmAddress": 16777216,
+        "vmSize": 442368
+      },
+      {
+        "fileOffset": 17219584,
+        "fileSize": 32768,
+        "flags": 0,
+        "initialProtection": 3,
+        "maxProtection": 3,
+        "name": "__DATA",
+        "vmAddress": 17219584,
+        "vmSize": 81920
+      },
+      {
+        "fileOffset": 17252352,
+        "fileSize": 460624,
+        "flags": 0,
+        "initialProtection": 1,
+        "maxProtection": 1,
+        "name": "__LINKEDIT",
+        "vmAddress": 17301504,
+        "vmSize": 475136
+      }
+    ],
+    "uuid": "67b203bff9a332989482b6e4458f4d49",
+    "versionCommands": [
+      "32000000200000000200000000060f0000041200010000000300000001048f04"
+    ]
+  },
+  "policy": "codesign/re-sign only; no local-symbol stripping or table relocation",
+  "schema": "minisight-vad-loader-identity-v1",
+  "source": "build316 read-only evidence RealTimeCutVADCXXLibrary",
+  "sourceSha256": "664bcfc9be9280db493d3c28fa67ff8beebab63f22787dd992037aebb297410f"
+}

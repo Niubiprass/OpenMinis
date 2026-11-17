@@ -1,5 +1,13 @@
 # MiniSight keyword runtime: controlled CI source rebuild (2026-11-16)
 
+## 2026-11-17 build316 真机崩溃修订（本地候选）
+
+下文 2026-11-16 的静态 framework / standalone link probe 是旧封装记录，不再作为安全发布依据。匹配三份 IPS 与正式 build316 主程序后，已证新 Sherpa 请求 ORT API28，却从旧语音 VAD 动态库导入只支持 API1–20 的 `OrtGetApiBase`；初始化返回空接口，随后整个 App 崩溃。
+
+本次保留所有固定版本与许可来源，将 Sherpa＋ORT 静态实现封装进一个真正的私有动态 `SherpaOnnxC.framework`，只暴露 Sherpa C 接口及专属运行前预检，ORT/MLAS/内部 C++ 不跨框架公开。SPM 不再让 ORT 独立进入 App。旧 VAD 代码与手动语音、名字 OFF/锁屏/取消、歌词动作余额均保留。源码构建完成必须检查真实动态类型、导出与绑定；完整 App 和最终 IPA 解压后二次验证新框架对应受控产物、旧 VAD 执行/数据 section 对应原基线。
+
+这仍是本地修复候选：本地源码检查不等于 Apple 原生运行、CI 编译或 iOS15.5 真机验收。详见 `minisight-316-wake-runtime-crash-20261117.md`；旧 `standalone_link_probe.run=false` 不能再用来表示运行通过。
+
 ## Scope and status
 
 Only the new build/checker scripts, the local `MiniSightKeywordRuntime` package manifest/version markers and this source note are changed. No app/project/workflow/model-resource manifest, feature/lifecycle policy, installer or device/microphone operation is changed. No native compilation is performed on iSH. Local static checks do not constitute a completed build, source-correspondence closure or runtime proof. The older licence agent's `FINAL.json` (`ready:false`), app closure notices and release blockers are deliberately retained.
