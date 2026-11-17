@@ -1523,7 +1523,7 @@ private let logger = AppLogger(category: "ModelUseOffload")
 
         let overridesCredential = spec.headers.keys.contains {
             ["authorization", "api-key", "x-api-key", "x-goog-api-key", "cookie"].contains($0.lowercased())
-        } || URLComponents(string: spec.endpoint)?.queryItems?.contains(where: {
+        } || spec.endpoint.flatMap { URLComponents(string: $0) }?.queryItems?.contains(where: {
             ["key", "api_key", "api-key", "token", "access_token"].contains($0.name.lowercased())
         }) == true
         let requestConsumption = overridesCredential ? nil : consumption?.started()

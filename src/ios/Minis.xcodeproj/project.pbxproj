@@ -592,6 +592,7 @@
 		RCL000119 /* BackupHistoryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000219 /* BackupHistoryDetailView.swift */; };
 		RCL000120 /* BackupCategoryIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000220 /* BackupCategoryIcon.swift */; };
 		RCL000121 /* BackupHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = RCL000221 /* BackupHUD.swift */; };
+		BE1711170000000000000001 /* MiniSightResources.m in Sources */ = {isa = PBXBuildFile; fileRef = BE1711170000000000000002 /* MiniSightResources.m */; };
 		C0FFEE000000000000000001 /* MiniSightPet.m in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE000000000000000002 /* MiniSightPet.m */; };
 		BE1611160000000000000001 /* MiniSightPetEffects.m in Sources */ = {isa = PBXBuildFile; fileRef = BE1611160000000000000002 /* MiniSightPetEffects.m */; };
 		BE1611160000000000000004 /* MiniSightActionLibrary.m in Sources */ = {isa = PBXBuildFile; fileRef = BE1611160000000000000005 /* MiniSightActionLibrary.m */; };
@@ -1383,6 +1384,8 @@
 		RCL000219 /* BackupHistoryDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupHistoryDetailView.swift; sourceTree = "<group>"; };
 		RCL000220 /* BackupCategoryIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupCategoryIcon.swift; sourceTree = "<group>"; };
 		RCL000221 /* BackupHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupHUD.swift; sourceTree = "<group>"; };
+		BE1711170000000000000002 /* MiniSightResources.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightResources.m; sourceTree = "<group>"; };
+		BE1711170000000000000003 /* MiniSightResources.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightResources.h; sourceTree = "<group>"; };
 		C0FFEE000000000000000002 /* MiniSightPet.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightPet.m; sourceTree = "<group>"; };
 		BE1611160000000000000002 /* MiniSightPetEffects.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightPetEffects.m; sourceTree = "<group>"; };
 		BE1611160000000000000003 /* MiniSightPetEffects.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightPetEffects.h; sourceTree = "<group>"; };
@@ -1676,6 +1679,8 @@
 		C0FFEE900000000000000001 /* MiniSightCore */ = {
 			isa = PBXGroup;
 			children = (
+				BE1711170000000000000002 /* MiniSightResources.m */,
+				BE1711170000000000000003 /* MiniSightResources.h */,
 				C0FFEE000000000000000002 /* MiniSightPet.m */,
 				BE1611160000000000000002 /* MiniSightPetEffects.m */,
 				BE1611160000000000000003 /* MiniSightPetEffects.h */,
@@ -3195,6 +3200,7 @@
 				E0DA0E4E0EC597E37519FDBF /* MiniSightAIPage.swift in Sources */,
 				5A4318BD2D1F837735FAA183 /* MiniSightHomePage.swift in Sources */,
 				F1MCF001 /* MiniSightConfirm.swift in Sources */,
+				BE1711170000000000000001 /* MiniSightResources.m in Sources */,
 				C0FFEE000000000000000001 /* MiniSightPet.m in Sources */,
 				BE1611160000000000000001 /* MiniSightPetEffects.m in Sources */,
 				BE1611160000000000000004 /* MiniSightActionLibrary.m in Sources */,

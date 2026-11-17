@@ -177,14 +177,14 @@ struct SyntheticMedia { enum Kind { case image }; let type = Kind.image; let dat
 extension LLMResponse { var mediaAttachments: [SyntheticMedia] { [SyntheticMedia()] } }
 extension SyntheticResult { static func image(_ value: Data) -> SyntheticResult { .text("image") } }
 enum QuickTestError: Error { case unsupported(String), noOutput(String) }
-struct SyntheticRawSpec { var endpoint = "/v1/chat"; var method = "POST"; var headers: [String: String] = [:] }
+struct SyntheticRawSpec { var endpoint: String? = nil; var method = "POST"; var headers: [String: String] = [:] }
 struct SyntheticRawResult { let status: Int }
 extension OpenAIProvider {
     func generateImage(prompt: String, n: Int, size: String, quality: String?) async throws -> LLMResponse {
         try await sendMessage(messages: [], systemPrompt: nil, maxTokens: 128, temperature: nil)
     }
-    func rawPassthroughRequest(endpoint: String, method: String, headers: [String: String], bodyObject: [String: Any]?) async throws -> SyntheticRawResult {
+    func rawPassthroughRequest(endpoint: String?, method: String, headers: [String: String], bodyObject: [String: Any]?) async throws -> SyntheticRawResult {
         _ = try await sendMessage(messages: [], systemPrompt: nil, maxTokens: 128, temperature: nil)
-        return SyntheticRawResult(status: endpoint.contains("fail") ? 500 : 200)
+        return SyntheticRawResult(status: endpoint?.contains("fail") == true ? 500 : 200)
     }
 }

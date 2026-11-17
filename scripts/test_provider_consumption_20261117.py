@@ -139,6 +139,15 @@ class SourceContracts(unittest.TestCase):
         self.assertEqual(text.count('func consumptionEpoch('), 1)
         self.assertEqual(text.count('struct ProviderConsumptionReporter:'), 1)
 
+    def test_raw_optional_endpoint_matches_production_and_covers_nil(self):
+        self.assertIn('var endpoint: String? = nil', top(O, 'private struct PassthroughSpec'))
+        self.assertIn('var endpoint: String? = nil', top(support(), 'struct SyntheticRawSpec'))
+        self.assertIn('func rawPassthroughRequest(endpoint: String?', support())
+        text = harness()
+        self.assertIn('spec.endpoint.flatMap { URLComponents(string: $0) }', text)
+        for scenario in ('raw-success', 'raw-explicit-endpoint', 'raw-nil-auth-override', 'raw-http-failure', 'raw-auth-override', 'raw-query-override'):
+            self.assertIn('"' + scenario + '"', text)
+
     def test_frozen_identity_epoch_date_and_monotonic_last_used(self):
         single = boundary(A, '        if let consumption {', '        let manager = ProviderMultiKeyManager.shared')
         self.assertLess(single.index('consumption.started()'), single.index('baseline.streamAgentMessageClamped('))

@@ -202,6 +202,8 @@ final class ConsumptionEvents: @unchecked Sendable {
         await settle(); checkAsync(events.get("quick-image-failure").isEmpty, "quick image failure no event")
         for (id, spec, success) in [
             ("raw-success", SyntheticRawSpec(), true),
+            ("raw-explicit-endpoint", SyntheticRawSpec(endpoint: "/v1/chat"), true),
+            ("raw-nil-auth-override", SyntheticRawSpec(endpoint: nil, headers: ["Authorization": "synthetic-other"]), false),
             ("raw-http-failure", SyntheticRawSpec(endpoint: "/fail"), false),
             ("raw-auth-override", SyntheticRawSpec(headers: ["Authorization": "synthetic-other"]), false),
             ("raw-query-override", SyntheticRawSpec(endpoint: "/v1/chat?key=synthetic-other"), false)
