@@ -184,18 +184,24 @@ def native_apple(data, cases, required):
         def run(*args):
             return subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
         run(tools[0], str(source), str(copied))
-        v.verify_vad_identity(copied.read_bytes())
-        cases.append(dict(name='apple-ditto-copy', status='PASS', layout=layout(copied.read_bytes())))
+        print('INFO APPLE VAD stage=ditto-copy layout='+json.dumps(layout(copied.read_bytes()),sort_keys=True))
+        copied_id = v.verify_vad_identity(copied.read_bytes())
+        cases.append(dict(name='apple-ditto-copy', status='PASS', identity=copied_id,
+                          layout=layout(copied.read_bytes())))
         # The Release build gate intentionally runs before the final bundle
         # signing pass, so the input may be unsigned or have a stale signature.
         # Seed a known-valid ad-hoc signature before exercising removal.
         run(tools[1], '--force', '--sign', '-', '--timestamp=none', '--identifier', 'b2.vad.seed', str(copied))
         run(tools[1], '--verify', '--strict', str(copied))
-        v.verify_vad_identity(copied.read_bytes())
-        cases.append(dict(name='apple-seed-valid-signature', status='PASS', layout=layout(copied.read_bytes())))
+        print('INFO APPLE VAD stage=seed-signed layout='+json.dumps(layout(copied.read_bytes()),sort_keys=True))
+        seed_id = v.verify_vad_identity(copied.read_bytes())
+        cases.append(dict(name='apple-seed-valid-signature', status='PASS', identity=seed_id,
+                          layout=layout(copied.read_bytes())))
         run(tools[1], '--remove-signature', str(copied))
-        v.verify_vad_identity(copied.read_bytes())
-        cases.append(dict(name='apple-remove-signature', status='PASS', layout=layout(copied.read_bytes())))
+        print('INFO APPLE VAD stage=signature-removed layout='+json.dumps(layout(copied.read_bytes()),sort_keys=True))
+        removed_id = v.verify_vad_identity(copied.read_bytes())
+        cases.append(dict(name='apple-remove-signature', status='PASS', identity=removed_id,
+                          layout=layout(copied.read_bytes())))
         for label in ('b2.vad.adhoc', 'b2.vad.resign.changed.identifier'):
             run(tools[1], '--force', '--sign', '-', '--timestamp=none', '--identifier', label, str(copied))
             run(tools[1], '--verify', '--strict', str(copied))
@@ -389,6 +395,9 @@ def main():
     bad = bytearray(data); old_vm = struct.unpack_from('<Q', bad, linkcmd + 24)[0]
     struct.pack_into('<Q', bad, linkcmd + 24, old_vm + 16384)
     negative('segment-VM-mapping', bad, True)
+    link_vm_bad=bytearray(data); link_cmd=next(p for p,c,_ in commands(link_vm_bad) if c==v.SEGMENT and link_vm_bad[p+8:p+24].rstrip(b'\0')==b'__LINKEDIT')
+    struct.pack_into('<Q',link_vm_bad,link_cmd+32,700000)
+    negative('LINKEDIT-arbitrary-VM-size-not-baseline-or-page-aligned',link_vm_bad,True)
     text = next(p for p, c, _ in commands(data) if c == v.SEGMENT)
     negative('segment-initial-protection', change(text + 60, 2), True)
     build = next(p for p, c, _ in commands(data) if c == 0x32)
