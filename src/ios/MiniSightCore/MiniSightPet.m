@@ -131,6 +131,8 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
     UILabel *_sleepBadge;
     BOOL _reconcilingPlayback;
     BOOL _reconcileAgain;
+    NSInteger _landingRecoveryStage;
+    CFTimeInterval _landingRecoveryBegan, _landingRecoveryUntil;
     double _roamPace;
     NSInteger _preferredFPS;
     void (^_onGeometryChanged)(void);
@@ -167,6 +169,8 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
 - (void)startMotionTo:(CGPoint)target jump:(BOOL)jump rest:(NSTimeInterval)rest;
 - (void)ensureMotionLink;
 - (void)finishMotion;
+- (void)beginLandingRecoveryWithImpact:(CGFloat)impact;
+- (void)clearLandingRecovery;
 - (void)cancelMotion;
 - (void)motionTick:(CADisplayLink *)link;
 - (void)ensureGravityLayer;
@@ -333,6 +337,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     NSUInteger next = locked ? (_motionLockReasons | mask) : (_motionLockReasons & ~mask);
     if (!mask || next == _motionLockReasons) return;
     _motionLockReasons = next;
+    if (locked) [self clearLandingRecovery];
     // Approval/editor ownership wakes the visual pose but never cancels a user
     // drag or active trajectory; owner locks remain independently scoped.
     if (locked) [self wakeForInteraction];
@@ -351,7 +356,8 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     NSAssert([NSThread isMainThread], @"Pet UI must be used on the main thread");
     if (_activityActive == active) return;
     _activityActive = active;
-    // Activity boundaries reset inactivity; repeated frame/settings refreshes do not.
+    if (active) [self clearLandingRecovery];
+    // Activity boundaries reset inactivity; repeated frame/settings refreshes do not;
     [self wakeForInteraction];
     [self invalidateRoamTimer];
     [self reconcilePlayback];
@@ -600,7 +606,16 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (timer != _frameTimer) return;
     if (![self shouldAnimate]) { [self reconcilePlayback]; return; }
     CFTimeInterval now = CACurrentMediaTime();
-    if (_stateHoldUntil > 0. && now >= _stateHoldUntil) {
+    if (_landingRecoveryStage && now >= _landingRecoveryUntil) {
+        if (_landingRecoveryStage == 1) {
+            _landingRecoveryStage = 2;
+            _landingRecoveryUntil = now + .82;
+            [_effects setLandingRecoveryStage:2];
+        } else {
+            [self clearLandingRecovery];
+        }
+    }
+    if (_stateHoldUntil > 0. && now >= _stateHoldUntil && !_landingRecoveryStage) {
         _stateHoldUntil = 0.;
         [self setSpriteState:MiniSightPetStateIdle];
     }
@@ -643,8 +658,14 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (_state == MiniSightPetStateSleeping || _state == MiniSightPetStateIdle) {
         NSInteger next;
         if (_state == MiniSightPetStateSleeping) {
-            next = _resident.waking ? MSPetResidentWakeColumn(now - _resident.wakeBegan)
-                                    : MSPetResidentSleepColumn(now - _resident.sleepBegan);
+            if (_landingRecoveryStage >= 2) {
+                next = MSPetResidentWakeColumn(fmax(0., now - (_landingRecoveryBegan + .72)));
+            } else if (_landingRecoveryStage == 1) {
+                next = MSPetResidentSleepColumn(fmax(0., now - _landingRecoveryBegan));
+            } else {
+                next = _resident.waking ? MSPetResidentWakeColumn(now - _resident.wakeBegan)
+                                        : MSPetResidentSleepColumn(now - _resident.sleepBegan);
+            }
         } else {
             BOOL needsDelay = _resident.nextBlinkAt <= 0. ||
                 (_resident.blinking && now - _resident.blinkBegan >= 6. * kMiniSightIdleSpriteInterval);
@@ -1005,7 +1026,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (_effects.musicPlaying || _effects.autonomyHeld) { [self invalidateRoamTimer]; return; }
     // A state hold (waving) owns the sprite state: frameTick arms the next roam.
     // A running motion arms the next roam itself, in finishMotion.
-    if (_stateHoldUntil > 0. || _motionActive || ![self mayRoam]) {
+    if (_landingRecoveryStage || _stateHoldUntil > 0. || _motionActive || ![self mayRoam]) {
         [self invalidateRoamTimer];
         return;
     }
@@ -1275,14 +1296,34 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     [self advanceSpriteAtTime:CACurrentMediaTime()];
 }
 
+- (void)beginLandingRecoveryWithImpact:(CGFloat)impact {
+    if (!(impact >= 720.) || ![self shouldAnimate] || _dragging || _interactionActive || _motionLockReasons) return;
+    [self clearLandingRecovery];
+    _landingRecoveryStage = 1;
+    _landingRecoveryBegan = CACurrentMediaTime();
+    _landingRecoveryUntil = _landingRecoveryBegan + .72;
+    [self setSpriteState:MiniSightPetStateSleeping];
+    [_effects setLandingRecoveryStage:1];
+    [self invalidateRoamTimer];
+}
+- (void)clearLandingRecovery {
+    if (!_landingRecoveryStage && !_landingRecoveryUntil) return;
+    _landingRecoveryStage = 0; _landingRecoveryBegan = 0.; _landingRecoveryUntil = 0.;
+    [_effects setLandingRecoveryStage:0];
+    if (!_resident.sleeping && !_resident.waking && _state == MiniSightPetStateSleeping)
+        [self setSpriteState:MiniSightPetStateIdle];
+}
 - (void)finishMotion {
     BOOL landed = _physicsMotion || _jumpHeight > 0.;
     NSUInteger generation = _motionGeneration;
     CGPoint end = _physicsMotion ? MSPetCGPoint(_gravityBody.position) : MSPetCGPoint(_motionEnd);
     self.center = [self clampedCenter:end];
     if (!_motionActive || generation != _motionGeneration) return;
+    CGFloat floorImpact = (landed && _physicsMotion) ? (CGFloat)_gravityBody.floorImpactVelocity : 0.;
     [_effects setFlightAngle:0 squash:0 active:NO];
+    [_effects setFloorImpactVelocity:floorImpact];
     if (landed) [_effects land];
+    BOOL heavyLanding = floorImpact >= 720.;
     _motionActive = NO;
     _physicsMotion = NO;
     _activeMotionGeneration = 0;
@@ -1291,12 +1332,14 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     MSGravityBodyCancel(&_gravityBody);
     [_motionLink invalidate];
     _motionLink = nil;
-    [self setSpriteState:MiniSightPetStateIdle];
+    if (heavyLanding) [self beginLandingRecoveryWithImpact:floorImpact];
+    else [self setSpriteState:MiniSightPetStateIdle];
     [self applyGravityTransformAtTime:CACurrentMediaTime()];
     [self reconcilePlayback]; // Restarts sprite clock; never invents a rebound target.
 }
 
 - (void)cancelMotion {
+    [self clearLandingRecovery];
     [_effects setFlightAngle:0 squash:0 active:NO];
     ++_motionGeneration; // Fence any already-delivered callback before it can rearm.
     _motionActive = NO;

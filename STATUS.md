@@ -1,4 +1,16 @@
-# 当前：MiniSight0.8.47 本地整合通过，待授权推送执行（2026-11-18）
+# 当前：App 0.8.48-local.1 本地候选，待推送与 CI（2026-11-19）
+
+- 基于已验 build325 的 96dfff6c7b07dc4a21d624a8b4ff76c5377d4495，当前本地候选加入歌词阶段诊断、真实触地速度与重摔坐稳/起身恢复；候选版本 `0.8.48-local.1`。
+- 本地静态/便携检查已通过；Apple Foundation/UIKit/ImageIO、完整 App、IPA、真机、安装尚未验证。本次用户已明确授权推送与 CI；不包含安装、注销、重启或设备操作。
+
+- App最终HEAD96dfff6c7b07dc4a21d624a8b4ff76c5377d4495；GitHub run44231683296/build325 attempt2 completed success。四项生产补修在b429e958，随后仅补原生host测试CoreGraphics导入。原324测试导入失败、325attempt1后续AlpineDNS失败均有完整CRC日志；同SHA重跑成功，不换runner/SDK/门槛。
+- 新旧严格原生实际运行、完整App BUILD SUCCEEDED、最终IPA解包deep/strict签名、两次隔离/旧VAD身份门槛、VAD5签名用例及发布元数据均通过。IPA111513734B SHAabefadf4ed00e1981f387cffa3b949d5a815d5d01beeae858e015f86160b2ca1。未下载整IPA，不冒称本地整包hash重算。
+- 配套P c1f0e656a180e26574f6d9837c9f0deb13059365/0.8.47 run127双scheme已成功静态验包交付，父独立全前置重验和attachments SHA通过。P的Swift host夹具只携带未执行，App唯一导入修订不更改两端生产核心。
+- 用户本批推送授权已用于上述版本；未安装/MCP/device/mic/注销/重启/真实曲目/余额存储。四项手机实际效果尚未验收，旧VADmin15.6在15.5仍原未验例外，不以CI成功代替。证据`../releases/Minis-0.8.47-20261118/app/VERIFIED.md`与PLUGIN-HANDOFF.md。
+- 本终态STATUS只本地更新，不再提交触发新构建。以下是本地冻结前历史，不代表仍未推送。
+
+---
+# 历史：MiniSight0.8.47 本地整合通过，待授权推送执行（2026-11-18）
 
 - 本轮用户问答卡 `local_repair: 可以`，批准本地处理歌词、名字唤醒、重启后素材整图背景及贴边活动范围；`storage_scan: 暂时不用`，余额/10.58GB均暂停。用户随后另行明确“这几个问题修复了，就推送”，批准本批完成本地检查后的双端提交/推送/CI，不再重复询问本批推送。设备/MCP、开麦、安装、注销、重启及整IPA下载仍未授权。
 - 实际源码基线 `a9e3d7e833aa1377b0ef34a5fc97e704a950904d`；对应 build323 attempt2 已完整CI、最终IPA门槛与发布成功，证据见 `../local-reviews/wake-ort-crash-20261117/FINAL-CI-EVIDENCE.json`。下方旧“没有新包/未CI”记录已是历史。本轮实装 App/插件版本未补读，不能把323当手机实装或功能验收。

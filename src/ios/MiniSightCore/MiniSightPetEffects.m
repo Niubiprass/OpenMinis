@@ -32,7 +32,7 @@
     NSUInteger _frameFailures;
     MSPetDamped _pivotX, _pivotY;
     NSString *_transientRole;
-    CGFloat _tilt, _sway, _flightAngle, _impact, _grabX, _grabY, _shakeStrength, _shakeDirection;
+    CGFloat _tilt, _sway, _flightAngle, _impact, _landImpact, _grabX, _grabY, _shakeStrength, _shakeDirection;
     double _phase, _musicAmplitude;
     MSPetDamped _angle, _offsetX, _offsetY, _scaleX, _scaleY, _dragX, _dragY;
     MSPetDragTrail _trail;
@@ -125,13 +125,13 @@
     if ([self presentationBlocked]) return @"idle";
     if (now < _shakeUntil) return _shakeStrength >= .55 ? @"shakeHard" : @"shakeSoft";
     if (_flying) return @"flight";
+    if (_transientRole && now < _transientUntil) return _transientRole;
     if (now < _landUntil) return @"land";
     if (_state == 0 && [_role isEqualToString:@"tap"] &&
         (_clipStart > 0 ? now - _clipStart < _clip.duration : now - _selectionBegan < 2.))
         return @"tap"; // Count the clip from its prepared first frame, not the input event.
     if (_waking) return @"wake";
     if (_state == 5) return @"sleep";
-    if (_transientRole && now < _transientUntil) return _transientRole;
     if (_state == 1) return @"walkRight";
     if (_state == 2) return @"walkLeft";
     if (_state == 3) return @"tap";
@@ -273,7 +273,24 @@
     BOOL begins = active && !_flying;
     _flightAngle = MSPetFiniteClamp(angle, -.35, .35);
     _impact = MSPetFiniteClamp(squash, 0, 1); _flying = active;
-    if (begins) { _wantedRole = nil; [self chooseRole]; }
+    if (begins) { _landImpact = 0.; _wantedRole = nil; [self chooseRole]; }
+}
+- (void)setFloorImpactVelocity:(CGFloat)velocity {
+    CGFloat bounded = MSPetFiniteClamp(velocity, 0., 1800.);
+    _landImpact = MSPetFiniteClamp((bounded - 360.) / 840., 0., 1.);
+}
+- (void)setLandingRecoveryStage:(NSInteger)stage {
+    if (stage <= 0) {
+        _transientRole = nil; _transientUntil = 0.; _wantedRole = nil;
+        [self chooseRole];
+        return;
+    }
+    NSString *role = stage >= 2 ? @"wake" : @"sleep";
+    if (!_library.roles[role].count) role = stage >= 2 ? @"idle" : @"land";
+    _transientRole = role;
+    _transientUntil = CACurrentMediaTime() + (stage >= 2 ? .8 : .65);
+    _wantedRole = nil;
+    [self chooseRole];
 }
 - (void)beginDragAt:(CGPoint)localPoint {
     if (_dragging) return;
@@ -312,7 +329,8 @@
 }
 - (void)land {
     _landBegan = CACurrentMediaTime();
-    _landUntil = _landBegan + .5; _flying = NO; _shakeUntil = 0; _wantedRole = nil;
+    // _landImpact comes only from setFloorImpactVelocity:, never from visual squash.
+    _landUntil = _landBegan + .5 + .28 * _landImpact; _flying = NO; _shakeUntil = 0; _wantedRole = nil;
     [self chooseRole];
 }
 - (NSTimeInterval)performIdleAction {

@@ -66,7 +66,9 @@ static inline double MSGravityShakeStrength(double magnitude) {
 enum { MSGravityHitLeft=1, MSGravityHitRight=2, MSGravityHitCeiling=4, MSGravityHitFloor=8 };
 typedef struct {
     MSPoint position, velocity;
-    double age;
+    // Peak downward speed immediately before a floor collision in this flight.
+    // It is diagnostic/visual input only; rebound physics remains unchanged.
+    double age, floorImpactVelocity;
     uint64_t generation, activeGeneration;
     unsigned impacts;
     int active;
@@ -88,6 +90,7 @@ static inline void MSGravityBodyCancel(MSGravityBody *b) {
     b->activeGeneration = 0;
     b->active = 0;
     b->velocity = (MSPoint){0., 0.};
+    b->floorImpactVelocity = 0.;
 }
 static inline uint64_t MSGravityBodyLaunch(MSGravityBody *b, MSRect range,
                                           MSPoint position, MSPoint velocity) {
@@ -97,6 +100,7 @@ static inline uint64_t MSGravityBodyLaunch(MSGravityBody *b, MSRect range,
     b->velocity = (MSPoint){range.w > 0. ? MSClamp(velocity.x, -1800., 1800.) : 0.,
                             range.h > 0. ? MSClamp(velocity.y, -1800., 1800.) : 0.};
     b->age = 0.;
+    b->floorImpactVelocity = 0.;
     b->impacts = 0;
     b->active = range.w > 0. || range.h > 0.;
     b->activeGeneration = b->active ? b->generation : 0;
@@ -143,7 +147,10 @@ static inline unsigned MSGravityBodyStep(MSGravityBody *b, MSRect range, double 
         else if (b->position.y < range.y && b->velocity.y < 0.) {
             b->position.y = range.y; b->velocity.y = MSGravityImpactVelocity(b->velocity.y, b->impacts++, 0); hits |= MSGravityHitCeiling;
         } else if (b->position.y >= range.y + range.h && b->velocity.y > 0.) {
-            b->position.y = range.y + range.h; b->velocity.y = -MSGravityImpactVelocity(b->velocity.y, b->impacts++, 1); b->velocity.x *= .92; hits |= MSGravityHitFloor;
+            b->position.y = range.y + range.h;
+            b->floorImpactVelocity = fmax(b->floorImpactVelocity, fmin(1800., b->velocity.y));
+            b->velocity.y = -MSGravityImpactVelocity(b->velocity.y, b->impacts++, 1);
+            b->velocity.x *= .92; hits |= MSGravityHitFloor;
         }
         b->position = MSClampCenter(range, b->position);
         b->age += h;

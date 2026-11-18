@@ -8,6 +8,7 @@
 #import <mach-o/loader.h>
 #import <mach/vm_prot.h>
 #import <string.h>
+#import <stdbool.h>
 #if __has_feature(ptrauth_calls)
 #import <ptrauth.h>
 #endif
@@ -104,6 +105,39 @@ static double MSMusicNumber(id value, double fallback) {
     double v = [value doubleValue]; return isfinite(v) ? v : fallback;
 }
 
+// Fixed-vocabulary evidence only; never used to admit reads, fetches or rendering.
+// This C-only block is also compiled verbatim by the portable regression fixture.
+// BEGIN MUSIC DIAGNOSTIC STAGES
+typedef struct {
+    const char *player, *metadata, *progress, *lyrics;
+} MSMusicDiagnosticStages;
+static MSMusicDiagnosticStages MSMusicDiagnose(bool active, bool mediaAvailable,
+    bool playerIdentified, bool awaitingFreshInfo, bool trackAvailable, bool progressAvailable,
+    bool lyricsEnabled, bool playing, bool fetching, bool lyricsAwaitingFreshInfo,
+    bool lyricsRequestFinished, bool timelineAvailable, bool lineReady) {
+    MSMusicDiagnosticStages s = {"not_applicable", "not_applicable", "not_applicable", "inactive"};
+    if (!active) return s;
+    if (!mediaAvailable) { s.player = "unavailable"; s.lyrics = "media_api_unavailable"; return s; }
+    s.player = playerIdentified ? "selected" : "none";
+    s.metadata = !playerIdentified ? "not_applicable" : awaitingFreshInfo ? "awaiting_fresh_info"
+        : trackAvailable ? "coherent" : "missing";
+    s.progress = !playerIdentified || awaitingFreshInfo || !trackAvailable ? "not_applicable"
+        : progressAvailable ? "available" : "missing";
+    s.lyrics = !lyricsEnabled ? "disabled"
+        : !playerIdentified ? "no_supported_player"
+        : awaitingFreshInfo ? "awaiting_fresh_identity"
+        : !trackAvailable ? "metadata_missing"
+        : !progressAvailable ? "progress_missing"
+        : !playing ? "not_playing"
+        : fetching ? "fetching"
+        : lyricsAwaitingFreshInfo ? "awaiting_fresh_identity"
+        : !timelineAvailable && !lyricsRequestFinished ? "awaiting_fetch"
+        : !timelineAvailable ? "no_synced_lyrics"
+        : !lineReady ? "no_current_line" : "current_line";
+    return s;
+}
+// END MUSIC DIAGNOSTIC STAGES
+
 @interface MiniSightMusicMonitor () {
     NSTimer *_timer;
     MiniSightLyricsClient *_client;
@@ -112,6 +146,7 @@ static double MSMusicNumber(id value, double fallback) {
     NSString *_identity, *_source, *_container;
     NSDictionary *_snapshot;
     BOOL _allowed, _lyrics, _motion, _playing, _reading, _eventQueued, _springBoard;
+    BOOL _playerIdentified, _progressAvailable, _lyricsRequestFinished;
     NSUInteger _readGeneration, _trackGeneration, _readTicket, _readStage;
     NSTimeInterval _pollAt, _readAt, _elapsed, _stamp, _rate, _validAt, _writeAt;
     BOOL _fetching, _awaitingFreshInfo, _lyricsAwaitingFreshInfo, _readTimedOut;
@@ -151,7 +186,9 @@ static double MSMusicNumber(id value, double fallback) {
 - (instancetype)init {
     if ((self = [super init])) {
         _client = [MiniSightLyricsClient new];
-        _snapshot = @{@"version": @1, @"line": @"", @"playing": @NO, @"source": @"", @"time": @0};
+        _snapshot = @{ @"version": @1, @"line": @"", @"playing": @NO, @"source": @"", @"time": @0,
+            @"diagnostics": @{ @"version": @1, @"player": @"not_applicable", @"metadata": @"not_applicable",
+                @"progress": @"not_applicable", @"lyrics": @"not_applicable" } };
         _retryTimes = [NSMutableDictionary dictionary];
         _bridgeQueue = dispatch_queue_create("com.openminis.minisight.music.bridge", DISPATCH_QUEUE_SERIAL);
         _springBoard = [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"];
@@ -217,6 +254,8 @@ static double MSMusicNumber(id value, double fallback) {
     ++_readGeneration; ++_trackGeneration; _fetching = NO;
     [_client cancel]; _timeline = nil; _track = nil; _identity = nil; _source = nil;
     _playing = NO; _validAt = 0; _awaitingFreshInfo = YES;
+    _playerIdentified = NO; _progressAvailable = NO; _lyricsRequestFinished = NO;
+    _lyricsAwaitingFreshInfo = NO;
     [_timer invalidate]; _timer = nil;
     [self publishLine:nil playing:NO force:YES];
     if (!_allowed || (!_lyrics && !_motion) || !_container.length || !MSMusicInfo || !MSMusicIsPlaying) return;
@@ -244,9 +283,11 @@ static double MSMusicNumber(id value, double fallback) {
     _pollAt = fmax(_readAt + 0.5, MSMusicNow() + 0.15);
     _awaitingFreshInfo = YES; _playing = NO;
     NSString *source = MSMusicPlayer();
+    _playerIdentified = source.length > 0;
     if (![_source isEqualToString:source]) {
         ++_trackGeneration; [_client cancel]; _fetching = NO; _timeline = nil;
         _identity = nil; _track = nil; _source = [source copy];
+        _lyricsRequestFinished = NO; _progressAvailable = NO;
     }
     [self publishLine:nil playing:NO force:NO];
 }
@@ -349,6 +390,7 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
     _pollAt = now + 2.;
     NSString *player = MSMusicPlayer();
     if (!player.length) {
+        _playerIdentified = NO; _progressAvailable = NO; _lyricsRequestFinished = NO;
         if (_source || _track) {
             ++_trackGeneration; [_client cancel]; _timeline = nil; _track = nil;
             _identity = nil; _source = nil; _fetching = NO;
@@ -372,11 +414,14 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
                     if (!self || ![self acceptRead:ticket generation:request stage:3 player:player]) return;
                     self->_reading = NO;
                     NSString *lastIdentity = MSMusicIdentity(last, player);
-                    if (!firstIdentity || ![firstIdentity isEqualToString:lastIdentity]) {
+                    if ((firstIdentity || lastIdentity) && ![firstIdentity isEqualToString:lastIdentity]) {
                         ++self->_trackGeneration; [self->_client cancel]; self->_fetching = NO;
                         self->_timeline = nil; self->_track = nil; self->_identity = nil;
                         [self handleMediaChange]; return;
                     }
+                    // A selected player with stable but incomplete metadata is a
+                    // valid sample for motion diagnostics; applyInfo will leave
+                    // track nil and fail closed for lyrics only.
                     [self applyInfo:last playing:playing player:player];
                 }];
             });
@@ -411,6 +456,9 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
                 elapsed + fmax(0., age) * rate <= track.duration + .1);
             self->_playing = playing == 1 && [info isKindOfClass:NSDictionary.class] &&
                 isfinite(rate) && rate > 0 && rate <= 4 && timing;
+            self->_playerIdentified = player.length > 0;
+            self->_progressAvailable = track && isfinite(elapsed) && elapsed >= 0. &&
+                isfinite(track.duration) && track.duration > 0. && elapsed <= track.duration + .1;
             self->_elapsed = elapsed; self->_rate = self->_playing ? rate : 0;
             self->_stamp = received - fmax(0., age);
             NSString *retryKey = self->_track.cacheKey;
@@ -420,13 +468,14 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
                     if ([self->_retryTimes[key] doubleValue] <= received) [self->_retryTimes removeObjectForKey:key];
                 // Strictly bounded, fail closed if 16 distinct signatures are cooling down.
                 if (self->_retryTimes.count >= 16 && !self->_retryTimes[retryKey]) { [self tick]; return; }
-                self->_fetching = YES; self->_retryTimes[retryKey] = @(received + 60.);
+                self->_fetching = YES; self->_lyricsRequestFinished = NO;
+                self->_retryTimes[retryKey] = @(received + 60.);
                 NSUInteger generation = self->_trackGeneration;
                 [self->_client fetchTrack:self->_track completion:^(MiniSightLyricsTimeline *timeline) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         typeof(self) self = weakSelf;
                         if (!self || !self->_allowed || !self->_lyrics || generation != self->_trackGeneration) return;
-                        self->_fetching = NO; self->_timeline = timeline;
+                        self->_fetching = NO; self->_lyricsRequestFinished = YES; self->_timeline = timeline;
                         if (![player isEqualToString:MSMusicPlayer()]) { [self handleMediaChange]; return; }
                         // A result never publishes against the old sample: force a fresh
                         // identity sandwich, also covering same-player changes without a note.
@@ -456,9 +505,19 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
         : _fetching ? @"lyrics_pending"
         : !_timeline ? @"no_synced_lyrics"
         : !safeLine.length ? @"no_current_line" : @"current_line";
+    MSMusicDiagnosticStages stages = MSMusicDiagnose(_allowed && (_lyrics || _motion),
+        (bool)(MSMusicInfo && MSMusicIsPlaying), _playerIdentified, _awaitingFreshInfo,
+        _track != nil, _progressAvailable, _lyrics, playing, _fetching,
+        _lyricsAwaitingFreshInfo, _lyricsRequestFinished, _timeline != nil, safeLine.length > 0);
+    NSDictionary *diagnostics = @{@"version": @1,
+        @"player": [NSString stringWithUTF8String:stages.player] ?: @"",
+        @"metadata": [NSString stringWithUTF8String:stages.metadata] ?: @"",
+        @"progress": [NSString stringWithUTF8String:stages.progress] ?: @"",
+        @"lyrics": [NSString stringWithUTF8String:stages.lyrics] ?: @""};
     BOOL changed = ![_snapshot[@"line"] isEqual:safeLine] || [_snapshot[@"playing"] boolValue] != playing ||
         ![_snapshot[@"source"] isEqual:source] || [_snapshot[@"lyricsEnabled"] boolValue] != (_allowed && _lyrics) ||
         [_snapshot[@"motionEnabled"] boolValue] != (_allowed && _motion) ||
+        ![_snapshot[@"diagnostics"] isEqual:diagnostics] ||
         [_snapshot[@"allowed"] boolValue] != _allowed || ![_snapshot[@"reason"] isEqual:reason] ||
         ![_snapshot[@"stopReason"] isEqual:stopReason];
     if (!changed && !force && MSMusicNow() - _writeAt < 2.) return;
@@ -470,7 +529,7 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
         @"lyricsEnabled": @((BOOL)(_allowed && _lyrics)),
         @"motionEnabled": @((BOOL)(_allowed && _motion)),
         @"requestedLyrics": @((BOOL)_lyrics), @"requestedMotion": @((BOOL)_motion),
-        @"presentation": _presentation ?: @{}, @"stopReason": stopReason,
+        @"diagnostics": diagnostics, @"presentation": _presentation ?: @{}, @"stopReason": stopReason,
         @"time": @(now), @"generation": @(_trackGeneration), @"reason": reason};
     if (_updateHandler) _updateHandler(_snapshot);
     if (!_springBoard) return;

@@ -18,6 +18,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setLegacyState:(NSInteger)state waking:(BOOL)waking;
 - (void)setTilt:(CGFloat)angle sway:(CGFloat)sway;
 - (void)setFlightAngle:(CGFloat)angle squash:(CGFloat)squash active:(BOOL)active;
+/// Records the solver's downward speed immediately before a floor hit.
+/// This is separate from visual squash and drag impulse state.
+- (void)setFloorImpactVelocity:(CGFloat)velocity;
+/// Selects existing sleep/wake action roles for a non-resident landing recovery.
+/// 0 clears the recovery owner; 1 settles; 2 stands up.
+- (void)setLandingRecoveryStage:(NSInteger)stage;
 - (void)beginDragAt:(CGPoint)localPoint;
 - (void)dragTo:(CGPoint)center;
 - (CGPoint)endDragCancelled:(BOOL)cancelled;

@@ -58,6 +58,12 @@ def errors(source):
         'lock ABI': "(type[0] != 'B' && type[0] != 'c')",
         'reference time': 'age <= track.duration + 3.',
         'real readback': 'MSBridgeRead(container, @"music-state.json", 16384)',
+        'diagnostic helper': 'MSMusicDiagnose(',
+        'diagnostic snapshot': '@"diagnostics": diagnostics',
+        'selected player tracking': '_playerIdentified',
+        'progress stage tracking': '_progressAvailable',
+        'request completion tracking': '_lyricsRequestFinished',
+        'stable incomplete metadata': '(firstIdentity || lastIdentity)',
     }
     result = [label for label, text in required.items() if text not in source]
     for forbidden in ('MRMediaRemoteSendCommand', 'MRMediaRemoteSetElapsedTime', 'NSLog(', '/api/get', 'AVAudioRecorder'):
