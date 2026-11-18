@@ -1,6 +1,7 @@
 // Actual production code in this translation unit; only dependency shims below.
 #import "support.h"
 #import "MiniSightPetEffects.m"
+#import "pet_atlas_excerpt.inc" // Generated verbatim from the current MiniSightPet.m.
 #import "MiniSightLyrics.m" // Only timeline/track methods run. No client/session.
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,7 @@ BOOL UIAccessibilityIsReduceMotionEnabled(void) { return NO; }
     UIImage *value = [self new]; value->_backing = CGImageRetain(image); return value;
 }
 - (CGImageRef)CGImage { return _backing; }
+- (CGFloat)scale { return 1.; }
 - (void)dealloc { if (_backing) CGImageRelease(_backing); }
 @end
 @implementation UIView {
@@ -27,6 +29,10 @@ BOOL UIAccessibilityIsReduceMotionEnabled(void) { return NO; }
 }
 - (instancetype)init {
     if ((self = [super init])) { _alpha = 1.; _layer = [CALayer layer]; _children = [NSMutableArray new]; }
+    return self;
+}
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [self init])) self.frame = frame;
     return self;
 }
 - (CGRect)frame { return _frame; }
@@ -66,6 +72,7 @@ BOOL UIAccessibilityIsReduceMotionEnabled(void) { return NO; }
 - (instancetype)init { if ((self = [super init])) _backing = CGColorCreateGenericRGB(1., 1., 1., 1.); return self; }
 + (instancetype)secondarySystemBackgroundColor { return [self new]; }
 + (instancetype)labelColor { return [self new]; }
++ (instancetype)systemBlueColor { return [self new]; }
 - (UIColor *)resolvedColorWithTraitCollection:(id)traits { return self; }
 - (CGColorRef)CGColor { return _backing; }
 - (void)dealloc { if (_backing) CGColorRelease(_backing); }
@@ -183,7 +190,8 @@ static BOOL BubbleHidden(MiniSightPetEffects *effects) {
 }
 @interface MSRig : NSObject
 @property(nonatomic, strong) UIWindow *root;
-@property(nonatomic, strong) UIImageView *pet;
+@property(nonatomic, strong) MiniSightPetView *pet;
+@property(nonatomic, strong) CALayer *sprite;
 @property(nonatomic, strong) UIImage *poster;
 @property(nonatomic, strong) MiniSightPetEffects *effects;
 @property(nonatomic, strong) MiniSightActionLibrary *library;
@@ -191,15 +199,17 @@ static BOOL BubbleHidden(MiniSightPetEffects *effects) {
 @implementation MSRig
 - (void)dealloc { [_effects invalidate]; }
 @end
+static BOOL MatchesPoster(MSRig *r);
 static MSRig *Rig(NSDictionary *roles) {
     CHECK(!Loads.count); Now = 100.; [MiniSightChatPanel fixtureSetVisible:NO];
     MSRig *rig = [MSRig new]; rig.root = [UIWindow new]; rig.root.frame = CGRectMake(0, 0, 360, 780);
-    rig.root.safeAreaInsets = (UIEdgeInsets){20, 8, 20, 8}; rig.pet = [UIImageView new];
-    rig.pet.frame = CGRectMake(140, 400, 80, 90); [rig.root addSubview:rig.pet]; rig.poster = Pixel(15);
-    rig.pet.image = rig.poster; rig.pet.layer.contents = (__bridge id)rig.poster.CGImage;
-    // Production effects only require UIImageView/UIView host behavior. Pet.m is
-    // NOT copied or executed, and no host roaming/gesture/geometry is fabricated.
-    rig.effects = [[MiniSightPetEffects alloc] initWithPet:(MiniSightPetView *)rig.pet layer:rig.pet.layer];
+    rig.root.safeAreaInsets = (UIEdgeInsets){20, 8, 20, 8}; rig.poster = Pixel(15);
+    rig.pet = [[MiniSightPetView alloc] initWithSprite:rig.poster displaySize:CGSizeMake(80, 90)];
+    rig.pet.spriteLayout = 1;
+    rig.pet.frame = CGRectMake(140, 400, 80, 90); [rig.root addSubview:rig.pet];
+    rig.sprite = [rig.pet valueForKey:@"gravityLayer"];
+    rig.effects = [rig.pet valueForKey:@"effects"];
+    CHECK(rig.pet.image == nil && rig.pet.layer.contents == nil);
     rig.library = [[MiniSightActionLibrary alloc] initFixtureRoles:roles];
     rig.effects.actionManifestPath = @"fixture-only/no-file-read"; [rig.effects setRunning:YES];
     CHECK(!rig.effects.hasActions && Loads.count == 1); Load(Loads.lastObject, rig.library);
@@ -208,26 +218,26 @@ static MSRig *Rig(NSDictionary *roles) {
 
 static void FirstFrame(void) {
     MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@1.])});
-    CHECK(r.pet.layer.contents == (__bridge id)r.poster.CGImage && !r.effects.hasActions);
+    CHECK(MatchesPoster(r) && !r.effects.hasActions);
     Finish(r.library, nil); CHECK(!r.effects.hasActions && !Pending(r.effects));
     Tick(r.effects, 100.49); CHECK(r.library.requests.count == 1);
     Tick(r.effects, 100.51); CHECK(Pending(r.effects));
     UIImage *ready = Pixel(210); Finish(r.library, ready);
     CHECK(r.effects.hasActions && !Pending(r.effects) && Start(r.effects) == Now);
-    CHECK(r.pet.layer.contents == (__bridge id)ready.CGImage);
+    CHECK(r.sprite.contents == (__bridge id)ready.CGImage);
 }
 static void ThreeBadFrames(void) {
     MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@.1, @5.])});
     UIImage *good = Pixel(180); Finish(r.library, good); Tick(r.effects, 100.2);
     CHECK(r.library.pending.index == 1); Finish(r.library, nil);
-    CHECK(r.effects.hasActions && r.pet.layer.contents == (__bridge id)good.CGImage);
+    CHECK(r.effects.hasActions && r.sprite.contents == (__bridge id)good.CGImage);
     Tick(r.effects, 100.69); CHECK(r.library.requests.count == 2);
     Tick(r.effects, 100.71); CHECK(Pending(r.effects)); Finish(r.library, [UIImage new]);
     CHECK(r.effects.hasActions); Tick(r.effects, 101.70); CHECK(r.library.requests.count == 3);
     Tick(r.effects, 101.72); Finish(r.library, nil);
     CHECK(!r.effects.hasActions && !Pending(r.effects));
     CHECK([[r.effects valueForKey:@"failedClips"] containsObject:@"fixture-idle"]);
-    CHECK(![r.effects valueForKey:@"clip"] && r.pet.layer.contents == (__bridge id)r.poster.CGImage);
+    CHECK(![r.effects valueForKey:@"clip"] && MatchesPoster(r));
     Tick(r.effects, 150.); CHECK(r.library.requests.count == 4); // No hot retry/reselection.
 }
 static void SupersededRoleAndManifest(void) {
@@ -240,7 +250,7 @@ static void SupersededRoleAndManifest(void) {
     CHECK(Pending(r.effects) && !r.effects.hasActions && Start(r.effects) == 0.);
     Finish(r.library, fresh); double start = Start(r.effects);
     OnMain(^{ stale(old); });
-    CHECK(Start(r.effects) == start && r.pet.layer.contents == (__bridge id)fresh.CGImage);
+    CHECK(Start(r.effects) == start && r.sprite.contents == (__bridge id)fresh.CGImage);
 
     // Load completion generation and frame generation are independently fenced.
     [r.effects setLegacyState:0 waking:NO]; Tick(r.effects, 102.);
@@ -252,7 +262,7 @@ static void SupersededRoleAndManifest(void) {
     CHECK([r.effects valueForKey:@"library"] == newLibrary && newLibrary.requests.count == 1);
     OnMain(^{ oldGeneration(old); }); CHECK(Pending(r.effects) && !r.effects.hasActions);
     Finish(newLibrary, fresh); OnMain(^{ oldGeneration(old); });
-    CHECK(r.effects.hasActions && r.pet.layer.contents == (__bridge id)fresh.CGImage);
+    CHECK(r.effects.hasActions && r.sprite.contents == (__bridge id)fresh.CGImage);
 }
 static void MissingDragAndChanged(void) {
     MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@5.]), @"walkRight": Clip(@"walkRight", @[@5.])});
@@ -325,7 +335,7 @@ static void TapAndIdleAltFinish(void) {
     UIImage *tapEnd = Pixel(202); Finish(r.library, tapEnd);
     CHECK([Role(r.effects) isEqual:@"tap"] && r.effects.autonomyHeld && Start(r.effects) == start);
     Tick(r.effects, 101.51); CHECK([Role(r.effects) isEqual:@"idle"] && !r.effects.autonomyHeld);
-    CHECK(r.pet.layer.contents == (__bridge id)tapEnd.CGImage); Finish(r.library, Pixel(100));
+    CHECK(r.sprite.contents == (__bridge id)tapEnd.CGImage); Finish(r.library, Pixel(100));
 
     CHECK(fabs([r.effects performIdleAction] - 1.3) < .00001 && r.effects.autonomyHeld);
     Now = 101.91; Finish(r.library, Pixel(210)); start = Start(r.effects); NSUInteger token = Epoch(r.effects);
@@ -409,7 +419,24 @@ static void LyricsOnly(void) {
     r.effects.lyricsLine = [@"" stringByPaddingToLength:241 withString:@"x" startingAtIndex:0];
     Tick(r.effects, Now + .02); CHECK(!r.effects.lyricsLine && BubbleHidden(r.effects));
     CHECK(track && r.effects.hasActions);
+    // Exercise the actual Effects tick with actual CoreGraphics transformed
+    // corners. Edge fitting must not move the host/hit target or break lyrics.
+    [r.effects setTilt:.22 sway:5.];
+    for (int edge = 0; edge < 4; ++edge) {
+        r.pet.center = CGPointMake((edge & 1) ? 318. : 42., (edge & 2) ? 733. : 47.);
+        CGPoint fixedCenter = r.pet.center;
+        for (int frame = 0; frame < 30; ++frame) {
+            Tick(r.effects, Now + .02);
+            CGRect visual = CGRectApplyAffineTransform(CGRectMake(-40., -45., 80., 90.), r.sprite.affineTransform);
+            visual.origin.x += r.pet.center.x; visual.origin.y += r.pet.center.y;
+            CHECK(CGRectGetMinX(visual) >= 2. - .001 && CGRectGetMaxX(visual) <= 358. + .001);
+            CHECK(CGRectGetMinY(visual) >= 2. - .001 && CGRectGetMaxY(visual) <= 778. + .001);
+            CHECK(CGPointEqualToPoint(fixedCenter, r.pet.center));
+        }
+    }
 }
+
+#import "atlas_cases.inc"
 
 int main(void) { @autoreleasepool {
     CHECK(NSThread.isMainThread);
@@ -418,7 +445,10 @@ int main(void) { @autoreleasepool {
         {"superseded-role-and-manifest", SupersededRoleAndManifest}, {"missing-drag-and-changed", MissingDragAndChanged},
         {"cancel-and-release-velocity", CancelAndVelocity}, {"stop-purge-parent-pending", StopAndPurge},
         {"tap-idleAlt-finish", TapAndIdleAltFinish}, {"delayed-first-tap", DelayedTapFirstFrame},
-        {"short-tap-no-loop", ShortTapDoesNotLoop}, {"busy-chat-retreat", BusyRetreat}, {"lyrics-never-title", LyricsOnly}
+        {"short-tap-no-loop", ShortTapDoesNotLoop}, {"busy-chat-retreat", BusyRetreat}, {"lyrics-never-title", LyricsOnly},
+        {"atlas-layouts-first-frame", AtlasLayouts}, {"atlas-repaint-same-image", AtlasRepaintAndSameImage},
+        {"atlas-crop-failure-retry", AtlasCropFailureRetry}, {"atlas-action-poster-metadata", AtlasActionPosterMetadata},
+        {"atlas-effects-failure-stop", AtlasEffectsFailureStop}, {"atlas-manifest-swap", AtlasManifestSwap}
     };
     @try {
         for (NSUInteger i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
@@ -429,6 +459,6 @@ int main(void) { @autoreleasepool {
         fprintf(stderr, "FAIL: %s exception: %s\n", Case, error.name.UTF8String); return 1;
     }
     CHECK(!Loads.count);
-    puts("NATIVE PASS: 11 PetEffects production behavior groups; no iOS/visual/network/device execution");
+    puts("NATIVE PASS: 11 original PetEffects + 6 production-excerpt atlas groups; no iOS/visual/network/device execution");
     return 0;
 } }

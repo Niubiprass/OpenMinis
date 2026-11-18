@@ -214,10 +214,10 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 @synthesize roamInterval = _roamInterval, gravityStrength = _gravityStrength;
 @synthesize soundEnabled = _soundEnabled;
 
-- (UIImage *)image { return _sheet; }
 - (void)setImage:(UIImage *)image {
     NSAssert([NSThread isMainThread], @"Pet UI must be used on the main thread");
-    if (!image.CGImage || _sheet == image) return;
+    // Reassigning the same source must also repair a cleared/repainted layer.
+    if (!image.CGImage) return;
     _sheet = image;
     _lastSpriteRect = CGRectNull;
     [super setImage:nil];
@@ -225,7 +225,6 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     [self ensureGravityLayer];
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    if (!_effects.hasActions) _gravityLayer.contents = (__bridge id)image.CGImage;
     _gravityLayer.contentsScale = image.scale;
     _gravityLayer.contentsRect = CGRectMake(0, 0, 1, 1);
     [CATransaction commit];
@@ -239,6 +238,8 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     self = [super initWithFrame:(CGRect){CGPointZero, size}];
     if (self) {
         _sheet = sprite;
+        _lastSpriteRect = CGRectNull;
+        [super setImage:nil];
         _longPressEnabled = YES; // Configuration storage; the host owns gestures.
         _roamPace = 1.;
         self.contentMode = UIViewContentModeScaleAspectFit;
@@ -677,12 +678,6 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 
 - (void)applySpriteFrame {
     if (!_sheet.CGImage || !_gravityLayer || _effects.hasActions) return;
-    if (_effects.actionManifestPath.length) {
-        [CATransaction begin]; [CATransaction setDisableActions:YES];
-        _gravityLayer.contents = (__bridge id)_sheet.CGImage;
-        _gravityLayer.contentsRect = CGRectMake(0, 0, 1, 1);
-        [CATransaction commit]; return;
-    }
     // 0 is a 72-pet pack (each outer cell has its own 8x9 frames).
     // 3 is ONE character's 8x9 sheet: row = action, column = frame.
     // 4 is a static contact sheet, one outer cell per pose.
@@ -693,7 +688,11 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     // the startup path failed to read pet.json (layout 0/1).
     NSInteger effectiveLayout = _spriteLayout;
     CGFloat sw = (CGFloat)CGImageGetWidth(_sheet.CGImage), sh = (CGFloat)CGImageGetHeight(_sheet.CGImage);
-    if (effectiveLayout <= 1 && sw > 0 && sh > 0 && fabs(sw / sh - 768.0 / 936.0) < 0.03) effectiveLayout = 3;
+    // Import validates actionPack + singleImage/layoutVersion 1 as a poster.
+    // Its aspect ratio may match an atlas; never apply the legacy guess to it.
+    // A stale manifest must NOT turn an explicit sheet/pack into a whole image.
+    BOOL actionPoster = effectiveLayout == 1 && _effects.actionManifestPath.length > 0;
+    if (!actionPoster && effectiveLayout <= 1 && sw > 0 && sh > 0 && fabs(sw / sh - 768.0 / 936.0) < 0.03) effectiveLayout = 3;
     CGRect rect;
     if (effectiveLayout == 1) {
         rect = CGRectMake(0, 0, 1, 1);
@@ -720,15 +719,23 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     CGFloat w = (CGFloat)CGImageGetWidth(_sheet.CGImage), h = (CGFloat)CGImageGetHeight(_sheet.CGImage);
     CGRect pixels = CGRectMake(floor(rect.origin.x * w), floor(rect.origin.y * h),
                                MAX(1., floor(rect.size.width * w)), MAX(1., floor(rect.size.height * h)));
-    if (CGRectEqualToRect(pixels, _lastSpriteRect)) return;
-    _lastSpriteRect = pixels;
+    if (CGRectEqualToRect(pixels, _lastSpriteRect) && _gravityLayer.contents) return;
     CGImageRef cell = CGImageCreateWithImageInRect(_sheet.CGImage, pixels);
+    _lastSpriteRect = cell ? pixels : CGRectNull; // A failed crop must be retryable.
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     _gravityLayer.contentsRect = CGRectMake(0, 0, 1, 1);
     _gravityLayer.contents = (__bridge id)cell;
     [CATransaction commit];
     if (cell) CGImageRelease(cell);
+}
+
+- (void)restorePosterFrame {
+    NSAssert([NSThread isMainThread], @"Pet UI must be used on the main thread");
+    [super setImage:nil];
+    self.layer.contents = nil;
+    _lastSpriteRect = CGRectNull;
+    [self applySpriteFrame];
 }
 
 #pragma mark - Gravity visual layer
@@ -746,8 +753,8 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     layer.contentsScale = _sheet.scale;
     layer.minificationFilter = kCAFilterLinear;
     layer.magnificationFilter = kCAFilterLinear;
-    // Host guarantees an upright, already decoded/downsampled atlas.
-    layer.contents = (__bridge id)_sheet.CGImage;
+    // Only applySpriteFrame may publish the poster, after physical cropping.
+    layer.contents = nil;
     [self.layer addSublayer:layer];
     _gravityLayer = layer;
     _effects = [[MiniSightPetEffects alloc] initWithPet:self layer:layer];

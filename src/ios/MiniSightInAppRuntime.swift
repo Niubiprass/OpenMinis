@@ -995,12 +995,12 @@ private final class MiniSightPassthroughView: UIView {
         super.layoutSubviews()
         guard let pet else { return }
         let body = pet.gravitySafeSize
-        let left = safeAreaInsets.left + body.width / 2
-        let right = bounds.width - safeAreaInsets.right - body.width / 2
-        let top = safeAreaInsets.top + body.height / 2 + 24
-        let bottom = bounds.height - safeAreaInsets.bottom - body.height / 2
-        pet.centerBounds = CGRect(x: min(left, right), y: min(top, bottom),
-                                  width: max(0, right - left), height: max(0, bottom - top))
+        // The display bounds constrain the body; controls and bubbles keep
+        // their own layout. Do not permanently reserve space above the pet.
+        let centers = MSBodyCenterBounds(Double(bounds.width), Double(bounds.height),
+            MSSize(w: Double(body.width), h: Double(body.height)), 2.0)
+        pet.centerBounds = CGRect(x: centers.x, y: centers.y,
+                                  width: centers.w, height: centers.h)
         if !didPlaceInitialCenter {
             let target = CGPoint(x: bounds.width * min(1, max(0, normalizedCenter.x)),
                                  y: bounds.height * min(1, max(0, normalizedCenter.y)))

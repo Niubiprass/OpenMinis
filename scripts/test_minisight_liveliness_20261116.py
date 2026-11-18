@@ -34,7 +34,12 @@ class Integration(unittest.TestCase):
         self.assertIn('[self setSpriteState:MiniSightPetStateIdle];', pet.split('- (void)finishMotion {', 1)[1])
         self.assertIn('for (NSUInteger pass = 0; pass < 2;', pet)
         self.assertIn('_lastSpriteRect = CGRectNull', pet)
-        self.assertIn('_effects.actionManifestPath.length', pet)
+        from test_minisight_atlas_restore_20261118 import validate
+        validate(pet, effects, (CORE / 'MiniSightPet.h').read_text())
+        if PLUGIN.is_dir():
+            validate((PLUGIN / 'MiniSightPet.m').read_text(),
+                     (PLUGIN / 'MiniSightPetEffects.m').read_text(),
+                     (PLUGIN / 'MiniSightPet.h').read_text())
         self.assertIn('if ([self presentationBlocked]) return @"idle";', effects)
         self.assertIn('fabs(_measurementWidth - available)', effects)
         self.assertIn('!CGSizeEqualToSize(_lastTailSize, _bubbleSize)', effects)

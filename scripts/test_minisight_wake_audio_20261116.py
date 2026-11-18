@@ -66,6 +66,26 @@ def baseline(path):
     return subprocess.check_output(["git", "show", f"82f9fb1:{path}"], cwd=ROOT, text=True)
 
 
+def strip_permission_cancellation_guards(method):
+    """Undo ONLY the three sanctioned cooperative-cancel lines, at exact sites.
+    The P mirror may still contain the untouched legacy permission function.
+    Every other byte must still compare equal to the historical implementation.
+    """
+    line = "        guard !Task.isCancelled else { return false }\n"
+    if line not in method:
+        return method
+    assert method.count(line) == 3, "permission guard count changed"
+    for before, after in (
+        ("func requestPermissions() async -> Bool {\n", "        let speechStatus"),
+        ("        }\n", "        guard speechStatus == .authorized else {"),
+        ("        }\n", "        guard audioStatus else {"),
+    ):
+        exact = before + line + after
+        assert method.count(exact) == 1, "permission guard site changed: " + after
+        method = method.replace(exact, before + after, 1)
+    return method
+
+
 def recording_start(source=SPEECH):
     # Both current named-entry and the preserveDraft public-wrapper layout use
     # this REAL shared implementation. Never look for the obsolete no-arg body.
@@ -269,7 +289,10 @@ class SourceContracts(unittest.TestCase):
         old = baseline(SPEECH_PATH)
         for marker in ("var permissionsAlreadyGranted", "func requestPermissions()",
                        "func restartRecordingIfPending()"):
-            self.assertEqual(block(SPEECH, marker), block(old, marker))
+            current = block(SPEECH, marker)
+            if marker == "func requestPermissions()":
+                current = strip_permission_cancellation_guards(current)
+            self.assertEqual(current, block(old, marker))
         # The ONLY sanctioned language/provider delta is the named-input branch:
         # ordinary capture still has precisely the historical control flow.
         # Compare the complete blocks after undoing just that explicit delta.

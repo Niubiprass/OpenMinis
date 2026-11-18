@@ -118,6 +118,12 @@ jobs:
           python3 scripts/test_minisight_action_library_20261116.py --ci
           python3 scripts/test_minisight_lyrics_20261116.py --require-native
           python3 scripts/test_minisight_music_monitor_20261116.py --require-native
+          python3 scripts/test_minisight_music_symbols_20261118.py --require-native
+          python3 scripts/test_minisight_atlas_restore_20261118.py
+          python3 scripts/test_minisight_pet_bounds_20261118.py --require-native
+          python3 scripts/test_minisight_bubble_edge_20261118.py --require-native
+          python3 scripts/test_minisight_wake_enable_20261118.py --require-native
+          python3 scripts/test_minisight_permissions_20261118.py --require-native
           python3 scripts/test_minisight_presentation_readback_20261116.py --require-native
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_quota_current_key_20261116.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_consumption_20261117.py

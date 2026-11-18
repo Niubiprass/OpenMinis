@@ -31,7 +31,13 @@ static void *MSMusicSymbol(void *handle, const char *name, BOOL function) {
         if (lc->cmdsize < sizeof(*lc) || lc->cmdsize > (size_t)(end - p)) return NULL;
         if (lc->cmd == LC_SEGMENT_64 && lc->cmdsize >= sizeof(struct segment_command_64)) {
             const struct segment_command_64 *seg = (const void *)p;
-            if (seg->fileoff == 0 && seg->filesize) { slide = (intptr_t)header - (intptr_t)seg->vmaddr; found = YES; }
+            // dyld rewrites fileoff to a cache-wide offset for shared-cache
+            // images. Like MachOLoaded::getSlide(), anchor to __TEXT.vmaddr,
+            // not an on-disk file offset. Keep the section/protection checks.
+            if (strncmp(seg->segname, SEG_TEXT, sizeof(seg->segname)) == 0) {
+                if (found) return NULL;
+                slide = (intptr_t)header - (intptr_t)seg->vmaddr; found = YES;
+            }
         }
         p += lc->cmdsize;
     }

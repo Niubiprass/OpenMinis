@@ -2,6 +2,7 @@
 #import "MiniSightPet.h"
 #import "MiniSightActionLibrary.h"
 #import "MiniSightLiveliness.h"
+#import "MiniSightGeometry.h"
 #import "MiniSightChatPanel.h"
 #import <QuartzCore/QuartzCore.h>
 
@@ -71,6 +72,7 @@
     _clip = nil; _role = nil; _wantedRole = nil; _displayedFrame = NSNotFound;
     _ownsSprite = NO; _manifestRetries = 0; _failedClips = [NSSet set];
     [_library purgeFrames]; _library = nil;
+    [self restorePoster]; // Retire the previous clip even if the new manifest fails.
     if (path.length) [self loadManifestGeneration:_generation];
 }
 - (void)loadManifestGeneration:(NSUInteger)generation {
@@ -104,11 +106,7 @@
 }
 - (void)restorePoster {
     _ownsSprite = NO;
-    UIImage *poster = _pet.image;
-    if (!poster.CGImage) return;
-    [CATransaction begin]; [CATransaction setDisableActions:YES];
-    _sprite.contents = (__bridge id)poster.CGImage; _sprite.contentsGravity = kCAGravityResizeAspect;
-    _sprite.contentsRect = CGRectMake(0, 0, 1, 1); [CATransaction commit];
+    [_pet restorePosterFrame];
 }
 - (CGPoint)visualOffset { return _visualOffset; }
 - (void)setLegacyState:(NSInteger)state waking:(BOOL)waking {
@@ -251,7 +249,7 @@
         _shakeUntil = 0; _landUntil = 0; _musicAmplitude = 0;
         memset(&_trail, 0, sizeof(_trail));
         [_library purgeFrames];
-        _ownsSprite = NO;
+        [self restorePoster];
         _angle = (MSPetDamped){0,0}; _offsetX = (MSPetDamped){0,0}; _offsetY = (MSPetDamped){0,0};
         _scaleX = (MSPetDamped){1,0}; _scaleY = (MSPetDamped){1,0}; _visualOffset = CGPointZero;
         [_sprite removeAnimationForKey:@"minisight.clip.transition"];
@@ -377,6 +375,18 @@
     transform = CGAffineTransformRotate(transform, _angle.value);
     transform = CGAffineTransformScale(transform, _scaleX.value, _scaleY.value);
     transform = CGAffineTransformTranslate(transform, -pivot.x, -pivot.y);
+    UIView *viewport = pet.superview;
+    if (viewport && viewport.bounds.size.width > 0 && viewport.bounds.size.height > 0) {
+        MSVisualTransform fitted = MSPetFitVisualTransform(
+            (MSRect){viewport.bounds.origin.x, viewport.bounds.origin.y,
+                     viewport.bounds.size.width, viewport.bounds.size.height},
+            (MSPoint){pet.center.x, pet.center.y},
+            (MSSize){pet.bounds.size.width, pet.bounds.size.height},
+            (MSVisualTransform){transform.a, transform.b, transform.c, transform.d, transform.tx, transform.ty});
+        _visualOffset.x += fitted.tx - transform.tx;
+        _visualOffset.y += fitted.ty - transform.ty;
+        transform = CGAffineTransformMake(fitted.a, fitted.b, fitted.c, fitted.d, fitted.tx, fitted.ty);
+    }
     if (!CGAffineTransformEqualToTransform(_sprite.affineTransform, transform)) {
         [CATransaction begin]; [CATransaction setDisableActions:YES]; _sprite.affineTransform = transform; [CATransaction commit];
     }

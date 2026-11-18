@@ -21,8 +21,11 @@ typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
 };
 
 @interface MiniSightPetView : UIImageView
-/// Current atlas or costume bitmap (tint is baked in).
+/// Write-only atlas/costume source (tint is baked in); inherited getter stays nil.
+/// Keeping UIImageView empty prevents UIKit from repainting the whole atlas.
 @property (nonatomic, strong, null_resettable) UIImage *image;
+/// Restore the poster through the active sprite layout, never by displaying the full atlas.
+- (void)restorePosterFrame;
 /// 0..71: outer pet in an 8x9 pack. Each outer cell contains its own 8x9 frames.
 @property (nonatomic) NSInteger variantIndex;
 /// 0 = 64x81 pack, 1 = whole static image, 2 = legacy outer cell,

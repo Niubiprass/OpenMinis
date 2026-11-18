@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "source_repository": "MiniSight-complete-20261105",
+  "source_path": "debs/MiniSight/Tweak.xm",
+  "source_base_head": "9fbc15d8669d91997c059c1ecedc6cf3e5a16070",
+  "source_state": "HEAD plus uncommitted local repairs; exact excerpt hashes below, NOT a committed revision",
+  "source_file_sha256": "e4ef9d723be016c2122ceba1d57aeb7613e32c80bc797a18b5b2c30777413f29",
+  "source_before_sha256": "32293c2ee93eee3ddbda85a8bd25855f10fd8607d773bbaa8129aff081b5adf6",
+  "snapshot_sha256": "d84fc217698d431d50a500eb729d555e5ebfcc2163edbaca5161d531f290be26",
+  "piece_sha256": {
+    "body": "27aa1ff167460dae26c241013c484a3e733a6bf975ac9b9fcbab5b8c60016fb1",
+    "reserve": "02d3d65ea38b7068bd911f92568458ec54dbf70b0b4b610c47fb31f38b6510ef",
+    "layout": "a71a17e5bee40c4b09c6ae545b9e79eab142c6d6e60f4f4be3111562f9cf685b",
+    "hide": "5dbc2aa0c92d25c14bed7f76ac346c82b9aedcc6136b83db69936f58aa01f7e5",
+    "place": "9a8ecdc2a46b666d6f03e062c21000db41ef3c3c2836c910680124017a56d6ec",
+    "show": "c6f567a2966495a167237b2d20c8ee1950fe4a9bc40da5b5b51f2e6c516d0cf3",
+    "follow": "1e4530ff7522695ca7d4112f1bcc827c8978f48f463520a867b51695865f9e16",
+    "cancel": "8e0eff007d2fcf23095c73aaa19a4304b41e4f58014a149eb27ce24dc1f21522",
+    "answer": "81da7dfbe70b79f51b824c125283e245e95de37b97e7dbb4d0fa86aab7bf07ba",
+    "confirm": "9152e1bb6500f23ca53a6bc274f26dc16eacfeaa4d223b40f68442efc176d6b9",
+    "writer": "2eb1618b643d7a478893b58039d442619844dffd27a1f3453c55ca8ffa43a0f3",
+    "globals": "219d3f44414b017e24c94472c8e4c0259f49cb52971dadf7b8065070720874e1",
+    "constants": "9387308b28d230593dcdf40f1b27eb23a19ddc9c2e914f96aec0bf0ee331d7fd",
+    "tap": "0a6c7952b321318e8e3b1cb01f4d5f162474bb464389148e518f65fbc89185c4",
+    "target": "846ed944533e67f11c82ea0919016b6bed6ea360ef96fcf843d913c13c56da33",
+    "reset": "7ecf81fde600dbef6697534a27dfca0d33236df383cbfad8e008eee2848fd6ff",
+    "timeout": "4f4830504d0a4840d00b303a1041bc67bb3c38e67593a46427466dea971a18e0"
+  },
+  "layout_sha256": "d645bfad4124e25dbdab1d386ed7f5851e56f58c3485616c98bee807de92e25e",
+  "geometry_sha256": "6b0fa72b356c09eca2020bbb4e7e877f89bcf8870fc9af983f07fe8fa1e5c2ec",
+  "approval_before_sha256": {
+    "confirm": "9152e1bb6500f23ca53a6bc274f26dc16eacfeaa4d223b40f68442efc176d6b9",
+    "writer": "2eb1618b643d7a478893b58039d442619844dffd27a1f3453c55ca8ffa43a0f3",
+    "answer": "81da7dfbe70b79f51b824c125283e245e95de37b97e7dbb4d0fa86aab7bf07ba",
+    "cancel": "8e0eff007d2fcf23095c73aaa19a4304b41e4f58014a149eb27ce24dc1f21522"
+  },
+  "show_before_sha256": "72f7631ec0a65016f697c85096c50ddf51f81cd306fa4d32cfc036b1ae3de143"
+}

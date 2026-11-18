@@ -223,11 +223,13 @@ final class SpeechRecognitionManager: ObservableObject {
     // MARK: - Permissions
 
     func requestPermissions() async -> Bool {
+        guard !Task.isCancelled else { return false }
         let speechStatus = await withCheckedContinuation { cont in
             SFSpeechRecognizer.requestAuthorization { status in
                 cont.resume(returning: status)
             }
         }
+        guard !Task.isCancelled else { return false }
         guard speechStatus == .authorized else {
             logger.warning("Speech recognition not authorized: \(String(describing: speechStatus))")
             return false
@@ -243,6 +245,7 @@ final class SpeechRecognitionManager: ObservableObject {
                 }
             }
         }
+        guard !Task.isCancelled else { return false }
         guard audioStatus else {
             logger.warning("Microphone permission not granted")
             return false

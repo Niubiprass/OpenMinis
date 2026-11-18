@@ -86,12 +86,13 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
         remote.onReply = { [weak self] reply in self?.receivedReply(reply) }
         remote.install()
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
-            .receive(on: DispatchQueue.main).sink { [weak self] _ in self?.applicationChanged(active: false) }.store(in: &bag)
+            .receive(on: DispatchQueue.main).sink { [weak self] _ in self?.applicationDidEnterBackground() }.store(in: &bag)
         NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
             .receive(on: DispatchQueue.main).sink { [weak self] _ in self?.applicationChanged(active: true) }.store(in: &bag)
         NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)
             .receive(on: DispatchQueue.main).sink { [weak self] _ in
                 self?.protectedDataUnavailable = true
+                self?.invalidatePendingEnableIfUnsafe()
                 self?.pause(reason: MiniSightWakePolicy.Decision.locked.message)
             }.store(in: &bag)
         NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)
@@ -161,6 +162,26 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
         }
         // Do not pretend the user disabled the pet or locked the phone merely
         // because SwiftUI dismantled a foreground view.
+    }
+    private func invalidatePendingEnable() {
+        guard permissionPending else { return }
+        enableGeneration &+= 1
+        permissionTask?.cancel(); permissionTask = nil; permissionPending = false
+        status = "请回到未锁定的桌宠 App 再开启"
+    }
+    private func invalidatePendingEnableIfUnsafe() {
+        if UIApplication.shared.applicationState == .background || appLocked || protectedDataUnavailable ||
+            !UIApplication.shared.isProtectedDataAvailable ||
+            UserDefaults.standard.integer(forKey: MiniSightSettingKey.style) != 1 {
+            invalidatePendingEnable()
+        }
+    }
+    private func applicationDidEnterBackground() {
+        // scenePhase.inactive also renders foreground=false (e.g. permission UI).
+        // Only a real background event invalidates an otherwise safe transaction.
+        // Cancelling a NEW enable never tears down already-authorised background audio.
+        invalidatePendingEnable()
+        applicationChanged(active: false)
     }
     private func applicationChanged(active: Bool) {
         let wasActive = foreground
@@ -251,6 +272,7 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
         updateTimer(); pollRemoteState(); refresh()
     }
     private func refresh() {
+        invalidatePendingEnableIfUnsafe()
         guard installed, !savingIdentity, !endingCycle else { return }
         let c = context(), decision = MiniSightWakePolicy.decision(c)
         if isUsingCompanion && MiniSightWakePolicy.mayHoldCompanionTransition(c,
@@ -751,7 +773,7 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
     func requestEnabled(_ enabled: Bool) {
         install()
         enableGeneration &+= 1; let request = enableGeneration
-        permissionTask?.cancel(); permissionTask = nil
+        permissionTask?.cancel(); permissionTask = nil; permissionPending = false
         if !enabled {
             armed = false
             permissionPending = false
@@ -777,22 +799,44 @@ final class MiniSightWakeController: NSObject, ObservableObject, AVSpeechSynthes
                 self.phase = .failed; self.failureLatched = true
             case .success(let name):
                 guard UIApplication.shared.applicationState == .active, !self.appLocked else {
-                    self.permissionPending = false; self.status = "请回到未锁定的 App 再开启"; return
+                    self.invalidatePendingEnable(); self.status = "请回到未锁定的 App 再开启"; return
                 }
                 self.resolvedPronunciation = name.pronunciation
                 self.permissionTask = Task { [weak self] in
-                    // This task is started ONLY by the user's disclosed toggle.
-                    // Background hits later probe already-granted permissions and
-                    // never foreground the App merely to display a permission UI.
+                    // Task.cancel() is cooperative: a cancelled queued task can
+                    // still begin executing. Fence BEFORE any permission API,
+                    // just as the named voice start fences its queued lease.
+                    guard let self, self.enableGeneration == request, !Task.isCancelled else { return }
+                    guard UIApplication.shared.applicationState == .active, !self.appLocked,
+                          !self.protectedDataUnavailable, UIApplication.shared.isProtectedDataAvailable,
+                          UserDefaults.standard.integer(forKey: MiniSightSettingKey.style) == 1 else {
+                        self.invalidatePendingEnable()
+                        self.status = "请回到未锁定的桌宠 App 再开启"; return
+                    }
+                    // Only the user's disclosed toggle can reach this call;
+                    // background hits continue to probe existing grants only.
                     let manager = SpeechRecognitionManager.shared
                     let granted = manager.permissionsAlreadyGranted
                         ? true : await manager.requestPermissions()
-                    guard let self, self.enableGeneration == request, !Task.isCancelled else { return }
-                    self.permissionPending = false; self.permissionTask = nil
+                    guard self.enableGeneration == request, !Task.isCancelled else { return }
                     guard granted else {
+                        self.permissionPending = false; self.permissionTask = nil
                         self.status = "麦克风权限未允许，名字监听未启动"; self.phase = .stopped; return
                     }
-                    self.failureLatched = false; self.armed = true
+                    // Permission UI may temporarily make the App inactive. Do
+                    // not reject that normal grant, but never arm a NEW session
+                    // after a background/lock/style change during the await.
+                    guard UIApplication.shared.applicationState != .background,
+                          !self.appLocked, !self.protectedDataUnavailable,
+                          UIApplication.shared.isProtectedDataAvailable,
+                          UserDefaults.standard.integer(forKey: MiniSightSettingKey.style) == 1 else {
+                        self.invalidatePendingEnable(); self.phase = .stopped; return
+                    }
+                    self.permissionPending = false; self.permissionTask = nil
+                    self.failureLatched = false
+                    // Commit consent during a normal inactive permission sheet,
+                    // but let the existing active/policy chain arm actual listening.
+                    self.armed = self.foreground && UIApplication.shared.applicationState == .active
                     MiniSightConfigStore.shared.wakeEnabled = true
                     self.updatePresentation(foreground: self.foreground, shown: self.shown,
                                             hasAsset: self.hasAsset, appLocked: self.appLocked)

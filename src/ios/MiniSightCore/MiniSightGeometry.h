@@ -16,9 +16,49 @@ static inline MSRect MSSafeRect(double w, double h, double top, double bottom, d
     top = MSClamp(top, 0., h * .45); bottom = MSClamp(bottom, 0., h * .45);
     return (MSRect){left, top, fmax(1., w-left-right), fmax(1., h-top-bottom)};
 }
-// Reserve headroom ABOVE the entire body, so speech never flips below its feet.
-// If the viewport is too small, return a collapsed center range; callers scale
-// the pet/bubble down or hide speech rather than overflowing or swapping sides.
+// Pet movement bounds keep the full body on-screen but do not reserve bubble
+// space or the device safe area. A small visual inset still lets the pet reach
+// the screen edges; callers position or hide bubbles independently.
+static inline MSRect MSBodyCenterBounds(double width, double height, MSSize body, double inset) {
+    width = fmax(1., MSFinite(width, 1.));
+    height = fmax(1., MSFinite(height, 1.));
+    double halfW = fmax(0., MSFinite(body.w, 0.)) * .5;
+    double halfH = fmax(0., MSFinite(body.h, 0.)) * .5;
+    double edge = MSClamp(inset, 0., 2.);
+    double left = edge + halfW, right = width - edge - halfW;
+    double top = edge + halfH, bottom = height - edge - halfH;
+    if (right < left) left = right = width * .5;
+    if (bottom < top) top = bottom = height * .5;
+    return (MSRect){left, top, fmax(0., right - left), fmax(0., bottom - top)};
+}
+// Constrain only the rendered sprite at an edge, without shrinking its roam
+// range or moving its untransformed hit target. Interior transforms are unchanged.
+typedef struct { double a, b, c, d, tx, ty; } MSVisualTransform;
+static inline MSVisualTransform MSPetFitVisualTransform(MSRect viewport, MSPoint center,
+                                                       MSSize body, MSVisualTransform t) {
+    viewport.x = MSFinite(viewport.x, 0.); viewport.y = MSFinite(viewport.y, 0.);
+    viewport.w = fmax(1., MSFinite(viewport.w, 1.));
+    viewport.h = fmax(1., MSFinite(viewport.h, 1.));
+    center.x = MSFinite(center.x, viewport.x + viewport.w * .5);
+    center.y = MSFinite(center.y, viewport.y + viewport.h * .5);
+    body.w = fmax(1., MSFinite(body.w, 1.)); body.h = fmax(1., MSFinite(body.h, 1.));
+    if (!isfinite(t.a) || !isfinite(t.b) || !isfinite(t.c) || !isfinite(t.d) ||
+        !isfinite(t.tx) || !isfinite(t.ty)) t = (MSVisualTransform){1,0,0,1,0,0};
+    double edge = fmin(2., fmin(viewport.w, viewport.h) * .1);
+    double width = fabs(t.a) * body.w + fabs(t.c) * body.h;
+    double height = fabs(t.b) * body.w + fabs(t.d) * body.h;
+    double scale = fmin(1., fmin((viewport.w - 2. * edge) / fmax(1., width),
+                                (viewport.h - 2. * edge) / fmax(1., height)));
+    t.a *= scale; t.b *= scale; t.c *= scale; t.d *= scale;
+    t.tx *= scale; t.ty *= scale; width *= scale; height *= scale;
+    t.tx = MSClamp(center.x + t.tx, viewport.x + edge + width * .5,
+        viewport.x + viewport.w - edge - width * .5) - center.x;
+    t.ty = MSClamp(center.y + t.ty, viewport.y + edge + height * .5,
+        viewport.y + viewport.h - edge - height * .5) - center.y;
+    return t;
+}
+// Bubble placement may temporarily move the pet down, but ordinary roaming
+// never reserves bubble headroom.
 static inline MSRect MSCenterBounds(MSRect safe, MSSize body, double headroom) {
     double hw = fmax(0., MSFinite(body.w, 0.))*.5;
     double hh = fmax(0., MSFinite(body.h, 0.))*.5;

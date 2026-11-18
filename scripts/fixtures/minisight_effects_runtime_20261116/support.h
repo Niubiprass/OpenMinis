@@ -14,13 +14,21 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 #define NSTextAlignmentCenter 1
 #define NSLineBreakByTruncatingTail 4
 #define UIFontWeightMedium ((CGFloat).23)
+#define UIFontWeightBold ((CGFloat).4)
+#define UIViewContentModeScaleAspectFit 1
+#define UIWindowDidBecomeHiddenNotification @"fixture.window.hidden"
+#define UIWindowDidBecomeVisibleNotification @"fixture.window.visible"
 @class UIColor, UIFont, UIWindow;
 
 @interface UIImage : NSObject
 @property(nonatomic, readonly) CGImageRef CGImage;
+@property(nonatomic, readonly) CGFloat scale;
 + (instancetype)imageWithCGImage:(CGImageRef)image;
 @end
 @interface UIView : NSObject
+- (instancetype)initWithFrame:(CGRect)frame;
+@property(nonatomic) NSInteger contentMode;
+@property(nonatomic) BOOL isAccessibilityElement;
 @property(nonatomic) CGRect frame;
 @property(nonatomic) CGRect bounds;
 @property(nonatomic) CGPoint center;
@@ -57,6 +65,7 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic, readonly) CGColorRef CGColor;
 + (instancetype)secondarySystemBackgroundColor;
 + (instancetype)labelColor;
++ (instancetype)systemBlueColor;
 - (UIColor *)resolvedColorWithTraitCollection:(id)traits;
 @end
 @interface UIBezierPath : NSObject
