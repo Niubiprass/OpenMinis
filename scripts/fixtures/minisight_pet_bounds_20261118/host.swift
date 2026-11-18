@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 // Only UIKit hosting is stubbed. The method inserted at the marker below is
 // the exact current production layoutSubviews, not a rewritten geometry rule.
