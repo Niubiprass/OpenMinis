@@ -211,7 +211,7 @@ struct UIColor {
         expect(absent(key), "cancelled mutation leaves no journal")
         stage("after-explicit-cancel")
         CheckinTransport.cancelClaim = false
-        let queryInstance = ProviderInstance(id: "query-failure-provider")
+        var queryInstance = ProviderInstance(id: "query-failure-provider")
         queryInstance.subscriptionAccountSlots = ["query-failure"]
         ProviderConfigStore.shared.instances = [queryInstance]
         ProviderKeychainHelper.accessBySlot["query-failure"] = "query-failure-account"
