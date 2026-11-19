@@ -23,8 +23,10 @@ struct SubscriptionCheckinRecord: Codable, Equatable {
     var eligibleDay: String?
     var claimDay: String?
     var failedClaimDay: String?
-    /// Opt-in evidence, not a classification inferred from arbitrary codes.
-    /// Old JSON defaults to false and must never keep nagging after upgrade.
+    /// A definite service refusal after eligible qualification and claim dispatch.
+    /// Uncertain writes are never recorded here.
+    var definitiveClaimFailure: Bool = false
+    /// Verified retryable service result; old JSON defaults to false.
     var verifiedRetryableFailure: Bool = false
 }
 
@@ -32,7 +34,7 @@ extension SubscriptionCheckinRecord {
     enum CodingKeys: String, CodingKey {
         case completedDay, notifiedDay, attemptDay, attemptedAt, reminderDay, remindedAt
         case blockedDay, blockedNote, receiptDay, eligibleDay, claimDay, failedClaimDay
-        case verifiedRetryableFailure
+        case definitiveClaimFailure, verifiedRetryableFailure
     }
 
     init(from decoder: Decoder) throws {
@@ -49,6 +51,7 @@ extension SubscriptionCheckinRecord {
         eligibleDay = try c.decodeIfPresent(String.self, forKey: .eligibleDay)
         claimDay = try c.decodeIfPresent(String.self, forKey: .claimDay)
         failedClaimDay = try c.decodeIfPresent(String.self, forKey: .failedClaimDay)
+        definitiveClaimFailure = try c.decodeIfPresent(Bool.self, forKey: .definitiveClaimFailure) ?? false
         verifiedRetryableFailure = try c.decodeIfPresent(Bool.self, forKey: .verifiedRetryableFailure) ?? false
     }
 }
@@ -75,17 +78,18 @@ enum SubscriptionCheckinPolicy {
         record.completedDay == day(now) && record.receiptDay == day(now) && record.notifiedDay != day(now)
     }
 
+    static func needsOutcomeNotice(_ record: SubscriptionCheckinRecord, now: Date) -> Bool {
+        let today = day(now)
+        return record.completedDay != today && record.blockedDay != today && record.reminderDay != today
+    }
+
     static func needsReminder(_ record: SubscriptionCheckinRecord, now: Date) -> Bool {
         let today = day(now)
-        guard record.completedDay != today else { return false }
-        // Legacy exclusions never produce a popup or reminder; new excluded
-        // accounts show no check-in control/note and have only memory state.
-        if record.blockedDay == today { return false }
-        guard record.verifiedRetryableFailure,
+        guard needsOutcomeNotice(record, now: now),
               record.eligibleDay == today, record.claimDay == today,
-              record.failedClaimDay == today else { return false }
-        guard record.reminderDay == today, let last = record.remindedAt else { return true }
-        return now.timeIntervalSince(last) >= retryInterval
+              record.failedClaimDay == today,
+              record.definitiveClaimFailure || record.verifiedRetryableFailure else { return false }
+        return true
     }
 
     static func isBlocked(_ record: SubscriptionCheckinRecord, now: Date) -> Bool {
@@ -104,6 +108,7 @@ enum SubscriptionCheckinLedger {
         var retryAt: Date?
         var stopForDay = false
         var dispatched = false
+        var failureNoticePending = false
     }
     private static let memoryLimit = 128
     private static var participation: [String: Participation] = [:]
@@ -148,7 +153,7 @@ enum SubscriptionCheckinLedger {
         else { return SubscriptionCheckinRecord() }
         let today = SubscriptionCheckinPolicy.day(now)
         let legacyBlocked = value.blockedDay != nil
-        let legacyFailure = value.failedClaimDay != nil && !value.verifiedRetryableFailure
+        let legacyFailure = value.failedClaimDay != nil && !value.verifiedRetryableFailure && !value.definitiveClaimFailure
         if value.completedDay != today {
             if value.blockedDay == today {
                 keep(Participation(day: today, status: .init(checkedIn: false,
@@ -165,8 +170,11 @@ enum SubscriptionCheckinLedger {
                     retryAt: last.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval)), key: key, now: now)
             }
         }
-        if value.completedDay == nil && !value.verifiedRetryableFailure {
-            // Only this identity's obsolete, uncompleted check-in key is removed.
+        if value.completedDay == nil && !value.verifiedRetryableFailure && !value.definitiveClaimFailure
+           && value.reminderDay != SubscriptionCheckinPolicy.day(now) {
+            // Preserve today's one-time notice marker even while retrying a failed claim.
+            // Uncompleted records without a verified failure or today's reminder
+            // marker are still retired rather than kept as stale journals.
             UserDefaults.standard.removeObject(forKey: prefix + key)
             return SubscriptionCheckinRecord()
         }
@@ -213,19 +221,25 @@ enum SubscriptionCheckinLedger {
         var value = record(key, now: now)
         guard value.completedDay != requestDay else { return }
         if value.completedDay == nil {
-            if UserDefaults.standard.data(forKey: prefix + key) != nil {
+            let today = SubscriptionCheckinPolicy.day(now)
+            if value.reminderDay == today {
+                let previous = value
+                value.eligibleDay = nil; value.claimDay = nil; value.failedClaimDay = nil
+                value.definitiveClaimFailure = false; value.verifiedRetryableFailure = false
+                value.blockedDay = nil; value.blockedNote = nil
+                if value != previous { write(key, value) }
+            } else if UserDefaults.standard.data(forKey: prefix + key) != nil {
                 UserDefaults.standard.removeObject(forKey: prefix + key)
             }
         } else {
             let previous = value
             value.eligibleDay = nil; value.claimDay = nil; value.failedClaimDay = nil
-            value.verifiedRetryableFailure = false
+            value.definitiveClaimFailure = false; value.verifiedRetryableFailure = false
             value.blockedDay = nil; value.blockedNote = nil
             if value != previous { write(key, value) }
         }
     }
 
-    @discardableResult
     static func beginClaim(_ key: String, requestDay: String, now: Date = Date()) -> Bool {
         guard requestDay == SubscriptionCheckinPolicy.day(now), !completed(key, now: now),
               var state = transient(key, now: now), state.status.canClaim,
@@ -235,32 +249,83 @@ enum SubscriptionCheckinLedger {
         return true
     }
 
-    static func failedClaim(_ key: String, requestDay: String,
-                            verifiedRetryableFailure: Bool = false, now: Date = Date()) {
-        guard verifiedRetryableFailure, requestDay == SubscriptionCheckinPolicy.day(now),
-              let state = transient(key, now: now), state.status.canClaim,
+    static func uncertainClaim(_ key: String, requestDay: String, now: Date = Date()) {
+        guard requestDay == SubscriptionCheckinPolicy.day(now), !completed(key, now: now),
+              var state = transient(key, now: now), state.status.canClaim,
               state.dispatched, !state.stopForDay else { return }
+        state.dispatched = false
+        state.retryAt = now.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval)
+        state.failureNoticePending = record(key, now: now).reminderDay != requestDay
+        keep(state, key: key, now: now)
+    }
+
+    static func queueUnconfirmedOutcomeNotice(_ key: String, now: Date = Date()) {
+        guard !completed(key, now: now),
+              cachedStatus(key, now: now)?.eligibility != .ineligible,
+              !SubscriptionCheckinPolicy.needsReminder(record(key, now: now), now: now) else { return }
+        let today = SubscriptionCheckinPolicy.day(now)
+        var state = transient(key, now: now) ?? Participation(day: today,
+            status: .init(checkedIn: false, eligibility: .unknown, reward: nil), updatedAt: now,
+            retryAt: now.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval))
+        guard !state.stopForDay else { return }
+        state.failureNoticePending = record(key, now: now).reminderDay != today
+        keep(state, key: key, now: now)
+    }
+
+    static func hasPendingFailureNotice(_ key: String, now: Date = Date()) -> Bool {
+        transient(key, now: now)?.failureNoticePending == true
+    }
+
+    static func markUncertainFailureNoticeShown(_ key: String, now: Date = Date()) {
+        guard var state = transient(key, now: now), state.failureNoticePending else { return }
+        state.failureNoticePending = false
+        keep(state, key: key, now: now)
         var value = record(key, now: now)
-        guard value.completedDay != requestDay else { return }
-        value.attemptDay = requestDay; value.attemptedAt = state.updatedAt
-        value.eligibleDay = requestDay; value.claimDay = requestDay
-        value.failedClaimDay = requestDay
-        value.verifiedRetryableFailure = true
+        guard value.reminderDay != SubscriptionCheckinPolicy.day(now) else { return }
+        value.reminderDay = SubscriptionCheckinPolicy.day(now)
+        value.remindedAt = now
+        value.attemptDay = state.day
+        value.attemptedAt = state.updatedAt
         write(key, value)
     }
 
-    /// Unknown qualifications/replies never create a durable failure or attempt.
+    static func failedClaim(_ key: String, requestDay: String,
+                            definitiveFailure: Bool = false,
+                            verifiedRetryableFailure: Bool = false, now: Date = Date()) -> Bool {
+        guard definitiveFailure || verifiedRetryableFailure,
+              requestDay == SubscriptionCheckinPolicy.day(now),
+              let state = transient(key, now: now), state.status.canClaim,
+              state.dispatched, !state.stopForDay else { return false }
+        var value = record(key, now: now)
+        guard value.completedDay != requestDay else { return false }
+        value.attemptDay = requestDay; value.attemptedAt = state.updatedAt
+        value.eligibleDay = requestDay; value.claimDay = requestDay
+        value.failedClaimDay = requestDay
+        value.definitiveClaimFailure = definitiveFailure
+        value.verifiedRetryableFailure = verifiedRetryableFailure
+        write(key, value)
+        state.dispatched = false
+        state.retryAt = state.updatedAt.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval)
+        keep(state, key: key, now: now)
+        return true
+    }
+
     static func unknown(_ key: String, requestDay: String, expected: SubscriptionCheckinRecord? = nil,
                         now: Date = Date()) {
         guard requestDay == SubscriptionCheckinPolicy.day(now) else { return }
         let value = record(key, now: now)
         if let expected, value != expected { return }
         guard value.completedDay != requestDay else { return }
-        if let state = transient(key, now: now), state.stopForDay || (expected != nil && state.dispatched) { return }
+        let previous = transient(key, now: now)
+        if previous?.stopForDay == true || (expected != nil && previous?.dispatched == true) { return }
+        let claimWasDispatched = previous?.dispatched == true
+        let noticePending = (previous?.failureNoticePending == true || claimWasDispatched)
+            && value.reminderDay != requestDay
         discardUncompleted(key, requestDay: requestDay, now: now)
         keep(Participation(day: requestDay, status: .init(checkedIn: false,
             eligibility: .unknown, reward: nil), updatedAt: now,
-            retryAt: now.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval)), key: key, now: now)
+            retryAt: now.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval),
+            failureNoticePending: noticePending), key: key, now: now)
     }
 
     /// Unmapped refusal: quiet for today, NOT labelled unsupported/ineligible.
@@ -282,6 +347,7 @@ enum SubscriptionCheckinLedger {
         value.eligibleDay = nil
         value.failedClaimDay = nil
         value.verifiedRetryableFailure = false
+        value.definitiveClaimFailure = false
         participation.removeValue(forKey: key)
         // A repeated status read must not consume a concurrent new receipt's
         // pending notice. Discovering an existing check-in is otherwise silent.
@@ -391,6 +457,7 @@ enum SubscriptionAutoCheckin {
         var visited = Set<String>()
         var noticeKeys: [String] = []
         var reminderKeys: [String] = []
+        var unconfirmedKeys: [String] = []
         for snapshot in store.instances where snapshot.providerType.isDomesticSubscription {
             for slot in snapshot.subscriptionAccountSlots {
                 guard !Task.isCancelled, UIApplication.shared.applicationState == .active else { return }
@@ -432,6 +499,8 @@ enum SubscriptionAutoCheckin {
                     noticeKeys.append(key)
                 } else if SubscriptionCheckinPolicy.needsReminder(record, now: Date()) {
                     reminderKeys.append(key)
+                } else if SubscriptionCheckinLedger.hasPendingFailureNotice(key) {
+                    unconfirmedKeys.append(key)
                 }
             }
         }
@@ -444,25 +513,37 @@ enum SubscriptionAutoCheckin {
         reminderKeys = reminderKeys.filter {
             SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record($0), now: Date())
         }
-        // One combined toast: never stack a success and failure popup on launch.
-        if !noticeKeys.isEmpty {
-            noticeKeys.forEach { SubscriptionCheckinLedger.markNotified($0) }
-            reminderKeys.forEach { SubscriptionCheckinLedger.markReminded($0) }
-            // Only accounts that can check in appear here; blocked ones were
-            // skipped above and are never counted.
-            // Colour + 3s: a white one-second pill could not be told apart from
-            // a failure. Green = all good, red = anything failed.
-            if reminderKeys.isEmpty {
-                MinisToast.show("\(noticeKeys.count) 个账号已签到", duration: 3.0,
-                                systemImage: "checkmark.circle.fill", tint: .systemGreen)
-            } else {
-                MinisToast.show("\(noticeKeys.count) 个账号已签到，\(reminderKeys.count) 个签到失败",
-                                duration: 3.6, systemImage: "exclamationmark.circle.fill", tint: .systemRed)
+        unconfirmedKeys = unconfirmedKeys.filter { SubscriptionCheckinLedger.hasPendingFailureNotice($0) }
+        // One combined toast: never stack success and failure notices.
+        guard !noticeKeys.isEmpty || !reminderKeys.isEmpty || !unconfirmedKeys.isEmpty else { return }
+        let message: String
+        let failedCount = reminderKeys.count
+        let unconfirmedCount = unconfirmedKeys.count
+        let duration: TimeInterval
+        let symbol: String
+        let tint: UIColor
+        if failedCount == 0 && unconfirmedCount == 0 {
+            message = "\(noticeKeys.count) 个账号已签到"
+            duration = 3.0
+            symbol = "checkmark.circle.fill"
+            tint = .systemGreen
+        } else {
+            var parts: [String] = []
+            if noticeKeys.isEmpty == false { parts.append("\(noticeKeys.count) 个账号已签到") }
+            if failedCount > 0 { parts.append("\(failedCount) 个账号签到失败") }
+            if unconfirmedCount > 0 { parts.append("\(unconfirmedCount) 个账号签到结果未确认") }
+            message = parts.joined(separator: "，")
+            duration = 3.6
+            symbol = "exclamationmark.circle.fill"
+            tint = .systemRed
+        }
+        MinisToast.show(message, duration: duration, systemImage: symbol, tint: tint) { shown in
+            guard shown else { return }
+            Task { @MainActor in
+                noticeKeys.forEach { SubscriptionCheckinLedger.markNotified($0) }
+                reminderKeys.forEach { SubscriptionCheckinLedger.markReminded($0) }
+                unconfirmedKeys.forEach { SubscriptionCheckinLedger.markUncertainFailureNoticeShown($0) }
             }
-        } else if !reminderKeys.isEmpty {
-            reminderKeys.forEach { SubscriptionCheckinLedger.markReminded($0) }
-            MinisToast.show("\(reminderKeys.count) 个账号签到失败", duration: 3.6,
-                            systemImage: "exclamationmark.circle.fill", tint: .systemRed)
         }
     }
 }

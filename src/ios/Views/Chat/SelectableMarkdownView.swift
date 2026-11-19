@@ -80,18 +80,25 @@ enum MinisToast {
     /// a glance — a one-second white pill could not be read either way.
     static func show(_ message: String, duration: TimeInterval = 1.6,
                      systemImage: String = "checkmark.circle.fill",
-                     tint: UIColor? = nil) {
+                     tint: UIColor? = nil,
+                     completion: ((Bool) -> Void)? = nil) {
         if Thread.isMainThread {
-            present(message, duration: duration, systemImage: systemImage, tint: tint)
+            present(message, duration: duration, systemImage: systemImage, tint: tint, completion: completion)
         } else {
-            DispatchQueue.main.async { present(message, duration: duration, systemImage: systemImage, tint: tint) }
+            DispatchQueue.main.async {
+                present(message, duration: duration, systemImage: systemImage, tint: tint, completion: completion)
+            }
         }
     }
 
     private static func present(_ message: String, duration: TimeInterval,
                                 systemImage: String = "checkmark.circle.fill",
-                                tint: UIColor? = nil) {
-        guard let window = keyWindow() else { return }
+                                tint: UIColor? = nil,
+                                completion: ((Bool) -> Void)? = nil) {
+        guard let window = keyWindow() else {
+            completion?(false)
+            return
+        }
 
         let label = UILabel()
         label.text = message
@@ -134,11 +141,13 @@ enum MinisToast {
             capsule.trailingAnchor.constraint(lessThanOrEqualTo: window.trailingAnchor, constant: -24),
         ])
 
-        UIView.animate(withDuration: 0.25) { capsule.alpha = 1 }
-        UIView.animate(withDuration: 0.3, delay: duration, options: [.curveEaseIn]) {
-            capsule.alpha = 0
-        } completion: { _ in
-            capsule.removeFromSuperview()
+        UIView.animate(withDuration: 0.25, animations: { capsule.alpha = 1 }) { finished in
+            completion?(finished && capsule.superview === window && capsule.window === window)
+            UIView.animate(withDuration: 0.3, delay: duration, options: [.curveEaseIn]) {
+                capsule.alpha = 0
+            } completion: { _ in
+                capsule.removeFromSuperview()
+            }
         }
     }
 

@@ -310,11 +310,15 @@ private struct SubscriptionAccountRow: View {
                 checkin = SubscriptionCheckin(checkedIn: true, canClaim: false, reward: nil)
                 let key = SubscriptionCheckinLedger.key(ctx)
                 if SubscriptionCheckinPolicy.needsSuccessNotice(SubscriptionCheckinLedger.record(key), now: Date()) {
-                    SubscriptionCheckinLedger.markNotified(key)
+                    let message: String
                     switch result {
-                    case .alreadyCheckedIn: MinisToast.show("今日已签到")
+                    case .alreadyCheckedIn: message = "今日已签到"
                     case .accepted(let receipt):
-                        MinisToast.show(receipt.granted.map { "签到成功，领到 \(SubscriptionCredit.text($0)) 积分" } ?? "签到成功")
+                        message = receipt.granted.map { "签到成功，领到 \(SubscriptionCredit.text($0)) 积分" } ?? "签到成功"
+                    }
+                    MinisToast.show(message) { shown in
+                        guard shown else { return }
+                        Task { @MainActor in SubscriptionCheckinLedger.markNotified(key) }
                     }
                 }
                 // Refresh only the balance; completion is already confirmed.

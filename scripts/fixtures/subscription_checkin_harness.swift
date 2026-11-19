@@ -61,13 +61,12 @@ record.claimDay = "2026-01-02"
 expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon), "dispatch alone is not failure")
 record.failedClaimDay = "2026-01-02"
 expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon), "unclassified business refusal cannot remind")
-record.verifiedRetryableFailure = true
-expect(SubscriptionCheckinPolicy.needsReminder(record, now: noon), "specifically verified retryable claim failure can remind")
+record.definitiveClaimFailure = true
+expect(SubscriptionCheckinPolicy.needsReminder(record, now: noon), "qualified definite claim failure can remind")
 record.reminderDay = "2026-01-02"
 record.remindedAt = noon
-expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon.addingTimeInterval(3600)), "reminder throttled 1h")
-expect(SubscriptionCheckinPolicy.needsReminder(record, now: noon.addingTimeInterval(2 * 3600)), "reminder at 2h")
-expect(SubscriptionCheckinPolicy.canAttempt(record, now: noon), "reminder does not consume attempt")
+expect(!SubscriptionCheckinPolicy.needsReminder(record, now: noon.addingTimeInterval(2 * 3600)), "failure notice is once per day")
+expect(SubscriptionCheckinPolicy.canAttempt(record, now: noon.addingTimeInterval(2 * 3600)), "claim still retries after two hours")
 
 // Definite ineligibility is never a daily reminder either.
 record = SubscriptionCheckinRecord()

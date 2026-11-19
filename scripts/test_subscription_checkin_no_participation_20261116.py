@@ -23,7 +23,7 @@ class NoParticipationContracts(unittest.TestCase):
     def test_exclusion_unknown_and_attempts_never_create_journal(self):
         text = checkin.COORD.read_text()
         for begin, end in [('    static func beginAttempt(', '    /// Caller owns'),
-                           ('    static func beginClaim(', '    static func failedClaim('),
+                           ('    static func beginClaim(', '    static func uncertainClaim('),
                            ('    static func unknown(', '    /// Unmapped refusal'),
                            ('    static func blocked(', '    static func cachedStatus(')]:
             body = checkin.section(text, begin, end)
@@ -37,13 +37,14 @@ class NoParticipationContracts(unittest.TestCase):
     def test_old_failure_migration_is_identity_scoped(self):
         text = checkin.COORD.read_text()
         read = checkin.section(text, '    static func record(', '    private static func write(')
-        self.assertIn('value.completedDay == nil && !value.verifiedRetryableFailure', read)
+        self.assertIn('value.completedDay == nil && !value.verifiedRetryableFailure && !value.definitiveClaimFailure', read)
+        self.assertIn('value.reminderDay != SubscriptionCheckinPolicy.day(now)', read)
         self.assertIn('UserDefaults.standard.removeObject(forKey: prefix + key)', read)
         self.assertNotIn('dictionaryRepresentation', read)
         self.assertIn('legacyFailure && value.failedClaimDay == today', read)
         self.assertIn('eligibility: .unknown', read)
         self.assertIn('forKey: .verifiedRetryableFailure) ?? false', text)
-        cleanup = checkin.section(text, '    private static func discardUncompleted(', '    @discardableResult\n    static func beginClaim(')
+        cleanup = checkin.section(text, '    private static func discardUncompleted(', '    static func beginClaim(')
         self.assertIn('guard value.completedDay != requestDay', cleanup)
         self.assertIn('if value.completedDay == nil', cleanup)
         self.assertNotIn('value.completedDay = nil', text)
@@ -54,11 +55,18 @@ class NoParticipationContracts(unittest.TestCase):
         self.assertIn('error.code == 9095', parser)
         self.assertNotIn('9004', parser)
         claim = checkin.section(text, '    static func claim(', '    private static func post(')
-        self.assertIn('if billing.verifiedRetryableFailure', claim)
-        self.assertIn('SubscriptionCheckinLedger.quietRefusal', claim)
+        self.assertIn('billing.businessRefusal', claim)
+        self.assertIn('definitiveFailure: true', claim)
+        self.assertIn('SubscriptionCheckinLedger.failedClaim(key', claim)
         pure = checkin.section(text, '// BEGIN SUBSCRIPTION_BILLING_PURE', '// END SUBSCRIPTION_BILLING_PURE')
         self.assertNotIn('verifiedRetryableFailure: true', pure)
-        self.assertIn('guard record.verifiedRetryableFailure', checkin.COORD.read_text())
+        self.assertIn('record.definitiveClaimFailure', checkin.COORD.read_text())
+        self.assertIn('definitiveFailure: true', text)
+        self.assertIn('needsOutcomeNotice(record, now: now)', checkin.COORD.read_text())
+        self.assertIn('record.reminderDay != today', checkin.COORD.read_text())
+        self.assertIn('return record.completedDay != today && record.blockedDay != today && record.reminderDay != today', checkin.COORD.read_text())
+        self.assertIn('unconfirmedKeys.forEach', checkin.COORD.read_text())
+        self.assertIn('markUncertainFailureNoticeShown', checkin.COORD.read_text())
 
     def test_row_exclusion_hides_note_and_button_without_touching_balance(self):
         text = checkin.ACCOUNTS.read_text()
@@ -73,9 +81,10 @@ class NoParticipationContracts(unittest.TestCase):
     def test_runtime_fixture_asserts_absent_defaults_not_empty_policy(self):
         fixture = (checkin.ROOT / 'scripts/fixtures/subscription_checkin_runtime_harness.swift').read_text()
         for evidence in ['func expectThreeOnly(', 'absent(fourthKey())', 'savedKeys.count == 3',
-                         'for code in [9095, 9004, 701]', 'old refusal not automatically reattempted today',
                          'cancelled mutation leaves no journal', 'late query preserves pending receipt bytes',
-                         'concurrent claims dispatch one mutation', 'memory entries expire at day boundary']:
+                         'concurrent claims dispatch one mutation', 'memory entries expire at day boundary',
+                         'eligible definite claim failure includes one notice', 'Toast deduplicated after presentation',
+                         'failed Toast presentation should not show']:
             self.assertIn(evidence, fixture)
 
     def test_actual_production_swift_runtime(self):

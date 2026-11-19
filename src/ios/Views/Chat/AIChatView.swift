@@ -2669,6 +2669,13 @@ _ios15Seg7
                                 .padding(.bottom, legacyLayout ? 1 : 4)
                         }
                     }
+                    .frame(height: legacyLayout ? 14 : nil, alignment: .center)
+                } else if legacyLayout {
+                    // Keep the principal toolbar's row height stable when the
+                    // provider detail is unresolved or temporarily unavailable.
+                    Color.clear
+                        .frame(height: 14)
+                        .accessibilityHidden(true)
                 }
             }
             .padding(.horizontal, 8)
@@ -2691,7 +2698,8 @@ _ios15Seg7
         // resizing any individual row. iOS 26 leaves at 0 (liquid
         // glass centers correctly).
         .padding(.top, legacyLayout ? 6 : 0)
-        // iOS 26+: fix height to match liquid-glass navbar; older OS: let it size naturally
+        // Preserve the three-row title's natural height on legacy iOS; a fixed
+        // detail-row slot below prevents the principal item from jumping.
         .modifier(NavTitleFrameModifier())
         // [T-navbar-title-fontsize] Lock the entire principal-toolbar
         // title stack to the standard (.large) Dynamic Type size. Users
@@ -3767,6 +3775,11 @@ _ios15Seg7
                     // gets; the voice panel renders it in its status line.
                     contextUsageHint: vm.contextUsageHint
                 )
+                .background {
+                    ComposerRainbowWave(levels: voiceVM.waveformLevels, opacity: 0.28)
+                        .padding(.horizontal, 24)
+                        .clipped()
+                }
             )
         }
         if speechManager.state == .recording {
@@ -3777,8 +3790,9 @@ _ios15Seg7
             // min(measured, cap).
             let transcriptMaxHeight: CGFloat = 100
             let waveform = VStack(spacing: 6) {
-                AudioWaveformView(levels: speechManager.audioLevels)
+                ComposerRainbowWave(levels: speechManager.audioLevels, opacity: 0.34)
                     .frame(maxWidth: .infinity)
+                    .frame(height: 32)
                     .padding(.horizontal, 8)
                 if !speechManager.recognizedText.isEmpty {
                     ScrollViewReader { proxy in
@@ -3908,6 +3922,13 @@ _ios15Seg7
         .padding(.horizontal, 16)
         .padding(.top, topPadding)
         .padding(.bottom, 10)
+        .background {
+            GeometryReader { geometry in
+                ComposerRainbowWave(opacity: 0.32)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+            }
+        }
         .overlay(alignment: .top) {
             if composerResizeEnabled { composerResizeHandle }
         }

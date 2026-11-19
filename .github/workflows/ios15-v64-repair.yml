@@ -94,6 +94,8 @@ jobs:
           python3 scripts/test_error_copy_l10n_160651.py
           python3 scripts/test_friendly_error_text_behavior_160651.py
           python3 scripts/test_minisight_local_repairs_20261107.py
+          python3 scripts/test_chat_nav_title_stability_20261120.py
+          python3 scripts/test_composer_rainbow_wave_20261120.py
           # The cross-tree settings audit runs locally with both repositories;
           # this independent runner checks the new settings in the liveliness gate.
           python3 scripts/test_minisight_action_import.py --require-native

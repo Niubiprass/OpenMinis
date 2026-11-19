@@ -370,7 +370,12 @@ enum SubscriptionCreditAPI {
         // action may requalify, but cannot bypass the actual qualification flags.
         let current: SubscriptionCheckin
         if automatic {
-            current = try await checkin(context)
+            do {
+                current = try await checkin(context)
+            } catch {
+                if !(error is CancellationError) { SubscriptionCheckinLedger.queueUnconfirmedOutcomeNotice(key) }
+                throw error
+            }
         } else {
             current = try await checkin(context, forceRefresh: true)
         }
@@ -436,14 +441,12 @@ enum SubscriptionCreditAPI {
                 throw SubscriptionBillingError(message: note, terminal: true)
             }
             if let billing = error as? SubscriptionBillingError, billing.businessRefusal {
-                if billing.verifiedRetryableFailure {
-                    SubscriptionCheckinLedger.failedClaim(key, requestDay: requestDay,
-                        verifiedRetryableFailure: true)
-                } else {
-                    // Generic/9004 refusals are NOT unsupported-account proof.
-                    // Drop uncompleted provisional state and do not auto claim again today.
-                    SubscriptionCheckinLedger.quietRefusal(key, requestDay: requestDay)
-                }
+                // Qualification was confirmed and the claim was dispatched. A
+                // definite non-9095 refusal is a failed claim, not proof that
+                // the account is ineligible; remind once and retain 2 h retry.
+                SubscriptionCheckinLedger.failedClaim(key, requestDay: requestDay,
+                    definitiveFailure: true,
+                    verifiedRetryableFailure: billing.verifiedRetryableFailure)
             } else {
                 SubscriptionCheckinLedger.unknown(key, requestDay: requestDay)
             }

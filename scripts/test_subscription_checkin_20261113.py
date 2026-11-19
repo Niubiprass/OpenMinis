@@ -85,10 +85,18 @@ class CheckinSourceContracts(unittest.TestCase):
         claim = section(credit, '    static func claim(', '    private static func post(')
         self.assertLess(claim.index('guard current.eligibility != .unknown'), claim.index('daily-checkin'))
         self.assertIn('billing.businessRefusal', claim)
-        self.assertIn('if billing.verifiedRetryableFailure', claim)
+        self.assertIn('definitiveFailure: true', claim)
         self.assertIn('SubscriptionCheckinLedger.failedClaim(key', claim)
-        self.assertIn('SubscriptionCheckinLedger.quietRefusal(key', claim)
+        self.assertIn('SubscriptionCheckinLedger.unknown(key, requestDay: requestDay)', claim)
+        self.assertIn('record.definitiveClaimFailure', policy)
         self.assertIn('record.verifiedRetryableFailure', policy)
+        self.assertIn('needsOutcomeNotice', coord)
+        self.assertIn('unconfirmedKeys.forEach', coord)
+        self.assertIn('markUncertainFailureNoticeShown', coord)
+        self.assertIn('definitiveFailure: Bool = false', coord)
+        self.assertIn('needsReminder', policy)
+        self.assertIn('needsOutcomeNotice(record, now: now)', policy)
+        self.assertIn('record.reminderDay != today', COORD.read_text())
         post = section(credit, '    private static func post(', '\n}')
         self.assertLess(post.index('SubscriptionCheckinLedger.beginClaim'), post.index('client.request'))
         read = section(credit, '    static func checkin(', '    private static func queryCheckin(')
@@ -135,11 +143,16 @@ class CheckinSourceContracts(unittest.TestCase):
         coord, credit = COORD.read_text(), CREDIT.read_text()
         policy = section(coord, 'enum SubscriptionCheckinPolicy', '// END SUBSCRIPTION_CHECKIN_POLICY_PURE')
         self.assertIn('record.receiptDay == day(now)', policy)
-        self.assertEqual(policy.count('if record.blockedDay == today { return false }'), 2)
+        self.assertEqual(policy.count('if record.blockedDay == today { return false }'), 1)
         self.assertIn('notify: Bool = false', coord)
         self.assertIn('notify: false, now: now', coord)
         self.assertIn('noticeKeys = noticeKeys.filter', coord)
         self.assertIn('reminderKeys = reminderKeys.filter', coord)
+        self.assertIn('unconfirmedKeys = unconfirmedKeys.filter', coord)
+        self.assertIn('billing.businessRefusal', credit)
+        self.assertIn('definitiveFailure: true', credit)
+        self.assertIn('markReminded($0)', coord)
+        self.assertIn('markUncertainFailureNoticeShown($0)', coord)
         read = section(credit, '    static func checkin(', '    private static func queryCheckin(')
         for required in ['SubscriptionCheckinLedger.cachedStatus(key)', 'running.day == requestDay',
                          'SubscriptionCheckinLedger.remember(value', 'try requireCurrent(context)',
@@ -151,8 +164,12 @@ class CheckinSourceContracts(unittest.TestCase):
         self.assertLess(catch.index('try requireCurrent(context)'), catch.index('SubscriptionCheckinLedger.blocked'))
         self.assertIn('notify: true', claim)
         accounts = section(ACCOUNTS.read_text(), '    private func claim()', '\n}')
-        self.assertLess(accounts.index('needsSuccessNotice'), accounts.index('markNotified'))
-        self.assertLess(accounts.index('markNotified'), accounts.index('MinisToast.show'))
+        self.assertLess(accounts.index('needsSuccessNotice'), accounts.index('MinisToast.show'))
+        self.assertLess(accounts.index('MinisToast.show'), accounts.index('markNotified'))
+        self.assertIn('completion: ((Bool) -> Void)? = nil', self._toast_source())
+
+    def _toast_source(self):
+        return (ROOT / 'src/ios/Views/Chat/SelectableMarkdownView.swift').read_text()
 
 
 class CheckinSwiftContract(unittest.TestCase):
