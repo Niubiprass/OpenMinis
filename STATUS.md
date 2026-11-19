@@ -1,13 +1,9 @@
-# 当前：App 0.8.48-local.1 本地候选，待推送与 CI（2026-11-19）
+# 当前：App 0.8.49 双端修复候选，本地检查完成待推送（2026-11-19）
 
-- 基于已验 build325 的 96dfff6c7b07dc4a21d624a8b4ff76c5377d4495，当前本地候选加入歌词阶段诊断、真实触地速度与重摔坐稳/起身恢复；候选版本 `0.8.48-local.1`。
-- 本地静态/便携检查已通过；Apple Foundation/UIKit/ImageIO、完整 App、IPA、真机、安装尚未验证。本次用户已明确授权推送与 CI；不包含安装、注销、重启或设备操作。
-
-- App最终HEAD96dfff6c7b07dc4a21d624a8b4ff76c5377d4495；GitHub run44231683296/build325 attempt2 completed success。四项生产补修在b429e958，随后仅补原生host测试CoreGraphics导入。原324测试导入失败、325attempt1后续AlpineDNS失败均有完整CRC日志；同SHA重跑成功，不换runner/SDK/门槛。
-- 新旧严格原生实际运行、完整App BUILD SUCCEEDED、最终IPA解包deep/strict签名、两次隔离/旧VAD身份门槛、VAD5签名用例及发布元数据均通过。IPA111513734B SHAabefadf4ed00e1981f387cffa3b949d5a815d5d01beeae858e015f86160b2ca1。未下载整IPA，不冒称本地整包hash重算。
-- 配套P c1f0e656a180e26574f6d9837c9f0deb13059365/0.8.47 run127双scheme已成功静态验包交付，父独立全前置重验和attachments SHA通过。P的Swift host夹具只携带未执行，App唯一导入修订不更改两端生产核心。
-- 用户本批推送授权已用于上述版本；未安装/MCP/device/mic/注销/重启/真实曲目/余额存储。四项手机实际效果尚未验收，旧VADmin15.6在15.5仍原未验例外，不以CI成功代替。证据`../releases/Minis-0.8.47-20261118/app/VERIFIED.md`与PLUGIN-HANDOFF.md。
-- 本终态STATUS只本地更新，不再提交触发新构建。以下是本地冻结前历史，不代表仍未推送。
+- 基于本地 App HEAD `57b62fbdede841798f01607946b58d64c2d3d019`，候选版本 `0.8.49`；目标远端分支 `ios15-160652-four-features` 当前指向此前已发布 `96dfff6c7b07dc4a21d624a8b4ff76c5377d4495`。
+- 本地验证通过：媒体姿态/物理 C 实际策略与三个编译负例，音乐轨道身份/回调源码契约，唤醒退役与手动语音保护，歌词/atlas/effects/liveliness/settings/shown/permissions 源码或便携检查，集成检查 `ISSUES 0`，共享文件和 `git diff --check` 一致通过。
+- 原生限制：当前 Linux/iSH 无 `xcrun`、`xcodebuild`、`swiftc`。Foundation 日志读写、UIKit/ImageIO 行为、App 编译、最终 IPA 与真机均未验证；严格 CI 原生门槛保留，结果待 CI。音乐反馈是 verified sprite row 的 2.5D，不是 3D；仓库无可用三维模型资产。
+- 待推送差异含跨进程歌词阶段脱敏日志、媒体身份冲突切歌保护、重落地分阶段姿态与硬冲击吸收、受限音乐姿态/2.5D、退役名字监听与 Sherpa target。手动 ChatPanel 录音入口保留；无安装、开麦、设备操作、注销或重启授权。推送需使用 `$GITHUB_TOKEN`，CI 后另行报告。
 
 ---
 # 历史：MiniSight0.8.47 本地整合通过，待授权推送执行（2026-11-18）

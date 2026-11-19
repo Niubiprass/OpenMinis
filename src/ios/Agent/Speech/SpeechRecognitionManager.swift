@@ -257,6 +257,10 @@ final class SpeechRecognitionManager: ObservableObject {
     // MARK: - Recording
 
     func startRecording(nameWake: Bool = false) throws {
+        guard !nameWake else {
+            throw NSError(domain: "SpeechRecognition", code: -6,
+                          userInfo: [NSLocalizedDescriptionKey: "Background name wake is disabled"])
+        }
         if nameWake {
             // Named input must never prompt or borrow an existing recorder.
             guard permissionsAlreadyGranted, state != .recording,

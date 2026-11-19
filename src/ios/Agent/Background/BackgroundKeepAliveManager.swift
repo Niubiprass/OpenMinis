@@ -108,9 +108,7 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
         guard let applied = coordinator.appliedIntent else { return false }
         switch applied {
         case .wakeWord, .nameWakeDictation:
-            // Bare intents/enabled flags do not back execution. MAIN includes
-            // its genuine input engine, response TTS and token-confirmed ASR.
-            return MiniSightWakeController.shared.backgroundAudioIsLive
+            return false
         case .capture:
             return VoiceModePreference.shared.isCapturing
         case .mediaAttachment:
@@ -249,8 +247,6 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
     private var silentAudioWanted: Bool {
         isActive && enhancedBackgroundEnabled && backgroundSpeakEnabled
             && appIsInBackground && silentAudioSuspendCount == 0
-            && !AudioSessionCoordinator.shared.hasNameWakeInputIntent
-            && !MiniSightWakeController.shared.backgroundAudioIsLive
     }
 
     /// Coordinator calls this synchronously after inserting the real input
@@ -1230,12 +1226,6 @@ final class BackgroundKeepAliveManager: NSObject, ObservableObject, CLLocationMa
             // and a successful session apply after rapid foreground/background.
             startSilentAudio()
         } else if hasAudioWork {
-            if AudioSessionCoordinator.shared.hasNameWakeInputIntent,
-               isActive && enhancedBackgroundEnabled && backgroundSpeakEnabled
-                   && appIsInBackground && silentAudioSuspendCount == 0 {
-                yieldSilentAudioToNameInput()
-                return
-            }
             // [T-ios-bg-idle-grace] Split the single "should stop" branch by WHY.
             // Only the pure-idle transition (isActive went false while every other
             // condition still says "keep playing") gets the 60s grace window.

@@ -1,6 +1,7 @@
 #import "MiniSightMusicMonitor.h"
 #import "MiniSightLyrics.h"
 #import "MiniSightBridgeIO.h"
+#import "MiniSightLog.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/message.h>
 #import <dlfcn.h>
@@ -80,6 +81,8 @@ static NSString *MSMusicKey(const char *symbol) {
     return value && CFGetTypeID(value) == CFStringGetTypeID() ? [(__bridge NSString *)value copy] : nil;
 #endif
 }
+static NSString *MSMusicKey(const char *symbol);
+static double MSMusicNumber(id value, double fallback);
 static id MSMusicObject(id receiver, NSString *selector) {
     SEL sel = NSSelectorFromString(selector);
     if (!receiver || ![receiver respondsToSelector:sel]) return nil;
@@ -103,6 +106,87 @@ static NSString *MSMusicPlayer(void) {
 static double MSMusicNumber(id value, double fallback) {
     if (![value isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) return fallback;
     double v = [value doubleValue]; return isfinite(v) ? v : fallback;
+}
+
+static id MSMusicField(NSDictionary *info, const char *symbol);
+static NSString *MSMusicIdentifier(NSDictionary *info) {
+    id value = MSMusicField(info, "kMRMediaRemoteNowPlayingInfoUniqueIdentifier");
+    if ([value isKindOfClass:NSNumber.class]) value = [value stringValue];
+    return [value isKindOfClass:NSString.class] && [value length] <= 256 ? value : @"";
+}
+static MiniSightLyricsTrack *MSMusicTrack(NSDictionary *info) {
+    return [[MiniSightLyricsTrack alloc]
+        initWithTitle:MSMusicField(info, "kMRMediaRemoteNowPlayingInfoTitle")
+        artist:MSMusicField(info, "kMRMediaRemoteNowPlayingInfoArtist")
+        duration:MSMusicNumber(MSMusicField(info, "kMRMediaRemoteNowPlayingInfoDuration"), NAN)];
+}
+static BOOL MSMusicTracksCompatible(MiniSightLyricsTrack *firstTrack, NSString *firstID,
+    MiniSightLyricsTrack *lastTrack, NSString *lastID) {
+    if (firstTrack && lastTrack) return [firstTrack.cacheKey isEqualToString:lastTrack.cacheKey];
+    return !(firstID.length && lastID.length && ![firstID isEqualToString:lastID]);
+}
+static BOOL MSMusicTrackIdentityCompatible(NSDictionary *first, NSDictionary *last, NSString *player) {
+    if (!player.length) return NO;
+    MiniSightLyricsTrack *firstTrack = MSMusicTrack(first), *lastTrack = MSMusicTrack(last);
+    if (firstTrack && lastTrack) return [firstTrack.cacheKey isEqualToString:lastTrack.cacheKey];
+    for (NSString *field in @[@"Title", @"Artist"]) {
+        NSString *key = MSMusicKey([[ @"kMRMediaRemoteNowPlayingInfo" stringByAppendingString:field] UTF8String]);
+        id a = key ? first[key] : nil, b = key ? last[key] : nil;
+        if ([a isKindOfClass:NSString.class] && [b isKindOfClass:NSString.class] &&
+            ![[a precomposedStringWithCanonicalMapping] isEqualToString:[b precomposedStringWithCanonicalMapping]]) return NO;
+    }
+    NSString *durationKey = MSMusicKey("kMRMediaRemoteNowPlayingInfoDuration");
+    double a = durationKey ? MSMusicNumber(first[durationKey], NAN) : NAN;
+    double b = durationKey ? MSMusicNumber(last[durationKey], NAN) : NAN;
+    if (isfinite(a) && isfinite(b) && fabs(a-b) > .001) return NO;
+    NSString *firstID = MSMusicIdentifier(first), *lastID = MSMusicIdentifier(last);
+    if (firstID.length && lastID.length && ![firstID isEqualToString:lastID]) return NO;
+    if ((firstTrack || lastTrack) && !firstID.length && !lastID.length) {
+        // No shared title/artist/duration/identifier contradicted the sample;
+        // allow this player to populate fields on its next poll.
+        return YES;
+    }
+    return MSMusicTracksCompatible(firstTrack, firstID, lastTrack, lastID);
+}
+static NSDictionary *MSMusicResolvedInfo(NSDictionary *first, NSDictionary *last, NSString *player) {
+    if (![last isKindOfClass:NSDictionary.class] || !MSMusicTrackIdentityCompatible(first ?: @{}, last, player)) return last;
+    NSMutableDictionary *resolved = [last mutableCopy];
+    for (NSString *field in @[@"Title", @"Artist", @"Duration", @"UniqueIdentifier"]) {
+        NSString *key = MSMusicKey([[ @"kMRMediaRemoteNowPlayingInfo" stringByAppendingString:field] UTF8String]);
+        if (key && !resolved[key] && first[key]) resolved[key] = first[key];
+    }
+    return [resolved copy];
+}
+static BOOL MSMusicPartialConflicts(NSDictionary *info, MiniSightLyricsTrack *current, NSString *currentID) {
+    if (!current) return NO;
+    NSString *identifier = MSMusicIdentifier(info);
+    if (identifier.length && currentID.length && ![identifier isEqualToString:currentID]) return YES;
+    NSString *titleKey = MSMusicKey("kMRMediaRemoteNowPlayingInfoTitle");
+    id title = titleKey ? info[titleKey] : nil;
+    if ([title isKindOfClass:NSString.class]) {
+        MiniSightLyricsTrack *candidate = [[MiniSightLyricsTrack alloc] initWithTitle:title artist:current.artist duration:current.duration];
+        if (!candidate || ![candidate.cacheKey isEqualToString:current.cacheKey]) return YES;
+    }
+    NSString *artistKey = MSMusicKey("kMRMediaRemoteNowPlayingInfoArtist");
+    id artist = artistKey ? info[artistKey] : nil;
+    if ([artist isKindOfClass:NSString.class]) {
+        MiniSightLyricsTrack *candidate = [[MiniSightLyricsTrack alloc] initWithTitle:current.title artist:artist duration:current.duration];
+        if (!candidate || ![candidate.cacheKey isEqualToString:current.cacheKey]) return YES;
+    }
+    NSString *durationKey = MSMusicKey("kMRMediaRemoteNowPlayingInfoDuration");
+    double duration = durationKey ? MSMusicNumber(info[durationKey], NAN) : NAN;
+    return isfinite(duration) && fabs(duration-current.duration) > .001;
+}
+static BOOL MSMusicProgressValid(NSDictionary *info, MiniSightLyricsTrack *track) {
+    double elapsed = MSMusicNumber(MSMusicField(info, "kMRMediaRemoteNowPlayingInfoElapsedTime"), NAN);
+    return track && isfinite(elapsed) && elapsed >= 0. && elapsed <= track.duration + .1;
+}
+static NSTimeInterval MSMusicLastSampleLogAt;
+static void MSMusicEvidence(NSString *stage, NSString *result, NSUInteger generation, NSString *reason,
+    BOOL valid, BOOL present, BOOL readback, BOOL enabled) {
+    MSDiagEvent(@"music", stage, result, @{@"source": @"plugin", @"generation": @(generation),
+        @"reason": reason, @"valid": @((BOOL)valid), @"present": @((BOOL)present),
+        @"readback": @((BOOL)readback), @"enabled": @((BOOL)enabled)});
 }
 
 // Fixed-vocabulary evidence only; never used to admit reads, fetches or rendering.
@@ -143,7 +227,7 @@ static MSMusicDiagnosticStages MSMusicDiagnose(bool active, bool mediaAvailable,
     MiniSightLyricsClient *_client;
     MiniSightLyricsTimeline *_timeline;
     MiniSightLyricsTrack *_track;
-    NSString *_identity, *_source, *_container;
+    NSString *_identity, *_identifier, *_source, *_container;
     NSDictionary *_snapshot;
     BOOL _allowed, _lyrics, _motion, _playing, _reading, _eventQueued, _springBoard;
     BOOL _playerIdentified, _progressAvailable, _lyricsRequestFinished;
@@ -258,7 +342,10 @@ static MSMusicDiagnosticStages MSMusicDiagnose(bool active, bool mediaAvailable,
     _lyricsAwaitingFreshInfo = NO;
     [_timer invalidate]; _timer = nil;
     [self publishLine:nil playing:NO force:YES];
-    if (!_allowed || (!_lyrics && !_motion) || !_container.length || !MSMusicInfo || !MSMusicIsPlaying) return;
+    if (!_allowed || (!_lyrics && !_motion) || !_container.length || !MSMusicInfo || !MSMusicIsPlaying) {
+        MSMusicEvidence(@"stop", @"skipped", _readGeneration, !_allowed ? @"not_visible_or_disabled" : @"media_api_unavailable", NO, NO, NO, (_lyrics || _motion));
+        return;
+    }
     __weak typeof(self) weakSelf = self;
     _timer = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
         (void)timer; [weakSelf tick];
@@ -390,6 +477,10 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
     _pollAt = now + 2.;
     NSString *player = MSMusicPlayer();
     if (!player.length) {
+        if (!MSMusicLastSampleLogAt || now - MSMusicLastSampleLogAt >= 10.) {
+            MSMusicLastSampleLogAt = now;
+            MSMusicEvidence(@"sample", @"skipped", _readGeneration, @"no_supported_player", NO, NO, NO, (_lyrics || _motion));
+        }
         _playerIdentified = NO; _progressAvailable = NO; _lyricsRequestFinished = NO;
         if (_source || _track) {
             ++_trackGeneration; [_client cancel]; _timeline = nil; _track = nil;
@@ -400,11 +491,14 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
     }
     _reading = YES; _readTimedOut = NO; _readAt = now; _readStage = 1;
     NSUInteger request = ++_readGeneration, ticket = ++_readTicket;
+    if (!MSMusicLastSampleLogAt || now - MSMusicLastSampleLogAt >= 10.) {
+        MSMusicLastSampleLogAt = now;
+        MSMusicEvidence(@"request", @"pending", request, @"media_sample", NO, NO, NO, (_lyrics || _motion));
+    }
     __weak typeof(self) weakSelf = self;
     [self readInfo:^(NSDictionary *first) {
         typeof(self) self = weakSelf;
         if (!self || ![self acceptRead:ticket generation:request stage:1 player:player]) return;
-        NSString *firstIdentity = MSMusicIdentity(first, player);
         MSMusicIsPlaying(dispatch_get_main_queue(), ^(Boolean playing) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 typeof(self) self = weakSelf;
@@ -413,16 +507,16 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
                     typeof(self) self = weakSelf;
                     if (!self || ![self acceptRead:ticket generation:request stage:3 player:player]) return;
                     self->_reading = NO;
-                    NSString *lastIdentity = MSMusicIdentity(last, player);
-                    if ((firstIdentity || lastIdentity) && ![firstIdentity isEqualToString:lastIdentity]) {
+                    BOOL compatible = MSMusicTrackIdentityCompatible(first, last, player);
+                    if (!compatible) {
                         ++self->_trackGeneration; [self->_client cancel]; self->_fetching = NO;
-                        self->_timeline = nil; self->_track = nil; self->_identity = nil;
+                        self->_timeline = nil; self->_track = nil; self->_identity = nil; self->_identifier = nil;
                         [self handleMediaChange]; return;
                     }
-                    // A selected player with stable but incomplete metadata is a
-                    // valid sample for motion diagnostics; applyInfo will leave
-                    // track nil and fail closed for lyrics only.
-                    [self applyInfo:last playing:playing player:player];
+                    // A stable player may fill metadata between reads. Use the
+                    // complete side if present, while preserving strict conflict checks.
+                    NSDictionary *resolved = MSMusicResolvedInfo(first, last, player);
+                    [self applyInfo:resolved playing:playing player:player];
                 }];
             });
         });
@@ -441,14 +535,31 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
             double stamp = [timestamp isKindOfClass:NSDate.class] ? [timestamp timeIntervalSince1970] : wall;
             double age = wall - stamp;
             MiniSightLyricsTrack *track = [[MiniSightLyricsTrack alloc] initWithTitle:title artist:artist duration:duration];
+            NSString *identifier = MSMusicIdentifier(info);
+            BOOL sourceChanged = self->_source.length && ![self->_source isEqualToString:player];
+            BOOL conflictingPartial = !track && MSMusicPartialConflicts(info, self->_track, self->_identifier);
+            BOOL conflictingIdentifier = identifier.length && self->_identifier.length &&
+                ![identifier isEqualToString:self->_identifier] &&
+                (!track || !self->_track || ![track.cacheKey isEqualToString:self->_track.cacheKey]);
+            BOOL changedTrack = sourceChanged || conflictingIdentifier ||
+                (track && self->_track && ![track.cacheKey isEqualToString:self->_track.cacheKey]) || conflictingPartial;
             NSString *identity = MSMusicIdentity(info, player);
-            if (!((identity == self->_identity) || [identity isEqualToString:self->_identity])) {
+            if (changedTrack) {
                 ++self->_trackGeneration; [self->_client cancel]; self->_fetching = NO;
-                self->_timeline = nil; self->_track = track; self->_identity = identity;
+                self->_timeline = nil; self->_track = nil; self->_identity = nil; self->_identifier = nil;
                 [self publishLine:nil playing:NO force:YES];
             }
+            if (track) {
+                if (!self->_track) {
+                    self->_track = track; self->_timeline = nil; self->_lyricsRequestFinished = NO;
+                    if (!changedTrack) ++self->_trackGeneration;
+                }
+                self->_identity = identity;
+                if (identifier.length) self->_identifier = [identifier copy];
+            }
             self->_source = player; self->_validAt = received; self->_awaitingFreshInfo = NO;
-            self->_lyricsAwaitingFreshInfo = NO;
+            // Missing metadata can keep motion alive, but never reuse a lyric line.
+            self->_lyricsAwaitingFreshInfo = !track;
             BOOL timing = !track || (isfinite(elapsed) && elapsed >= 0 && elapsed <= track.duration &&
                 // Timestamp is the elapsed-time reference, not the date of this reply.
                 // Many players keep it unchanged while the track plays normally.
@@ -457,18 +568,23 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
             self->_playing = playing == 1 && [info isKindOfClass:NSDictionary.class] &&
                 isfinite(rate) && rate > 0 && rate <= 4 && timing;
             self->_playerIdentified = player.length > 0;
-            self->_progressAvailable = track && isfinite(elapsed) && elapsed >= 0. &&
-                isfinite(track.duration) && track.duration > 0. && elapsed <= track.duration + .1;
+            self->_progressAvailable = MSMusicProgressValid(info, track);
+            if (!MSMusicLastSampleLogAt || received - MSMusicLastSampleLogAt >= 10.) {
+                MSMusicLastSampleLogAt = received;
+                MSMusicEvidence(@"sample", @"ok", self->_trackGeneration, track ? @"track_valid" : @"metadata_missing",
+                    track != nil, self->_progressAvailable, NO, (self->_lyrics || self->_motion));
+            }
             self->_elapsed = elapsed; self->_rate = self->_playing ? rate : 0;
             self->_stamp = received - fmax(0., age);
             NSString *retryKey = self->_track.cacheKey;
-            if (self->_playing && self->_lyrics && self->_track && !self->_timeline &&
+            if (self->_playing && self->_lyrics && track && self->_track && self->_progressAvailable && !self->_timeline &&
                 !self->_fetching && received >= [self->_retryTimes[retryKey] doubleValue]) {
                 for (NSString *key in [self->_retryTimes.allKeys copy])
                     if ([self->_retryTimes[key] doubleValue] <= received) [self->_retryTimes removeObjectForKey:key];
                 // Strictly bounded, fail closed if 16 distinct signatures are cooling down.
                 if (self->_retryTimes.count >= 16 && !self->_retryTimes[retryKey]) { [self tick]; return; }
                 self->_fetching = YES; self->_lyricsRequestFinished = NO;
+                MSMusicEvidence(@"request", @"pending", self->_trackGeneration, @"lyrics_fetch", YES, NO, NO, YES);
                 self->_retryTimes[retryKey] = @(received + 60.);
                 NSUInteger generation = self->_trackGeneration;
                 [self->_client fetchTrack:self->_track completion:^(MiniSightLyricsTimeline *timeline) {
@@ -476,6 +592,8 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
                         typeof(self) self = weakSelf;
                         if (!self || !self->_allowed || !self->_lyrics || generation != self->_trackGeneration) return;
                         self->_fetching = NO; self->_lyricsRequestFinished = YES; self->_timeline = timeline;
+                        MSMusicEvidence(@"finish", timeline ? @"ok" : @"skipped", generation,
+                            timeline ? @"lyrics_timeline" : @"no_synced_lyrics", YES, timeline != nil, NO, YES);
                         if (![player isEqualToString:MSMusicPlayer()]) { [self handleMediaChange]; return; }
                         // A result never publishes against the old sample: force a fresh
                         // identity sandwich, also covering same-player changes without a note.
@@ -522,6 +640,8 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
         ![_snapshot[@"stopReason"] isEqual:stopReason];
     if (!changed && !force && MSMusicNow() - _writeAt < 2.) return;
     _writeAt = MSMusicNow();
+    if (changed) MSMusicEvidence(@"publish", @"ok", _trackGeneration,
+        safeLine.length ? @"lyrics_line" : @"empty_line", YES, safeLine.length > 0, NO, _lyrics);
     // Explicit BOOL casts prevent logical/conditional expressions boxing as int.
     // Keep v1 envelope for installed readers; evidence is additive and separately versioned.
     _snapshot = @{@"version": @1, @"evidenceVersion": @1, @"line": safeLine, @"playing": @((BOOL)(_allowed && playing)),
@@ -566,10 +686,18 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
         _writtenContainer = container;
         BOOL verified = MSBridgeWrite(container, @"music-state.json", snapshot) &&
             [MSBridgeRead(container, @"music-state.json", 16384) isEqualToDictionary:snapshot];
+        MSMusicEvidence(@"readback", verified ? @"ok" : @"failed", [snapshot[@"generation"] unsignedIntegerValue],
+            verified ? @"snapshot_verified" : @"snapshot_write_failed", YES,
+            [snapshot[@"line"] length] > 0, verified, [snapshot[@"lyricsEnabled"] boolValue]);
         @synchronized (self) {
             // If invalidated during I/O, don't announce it; immediately drain the
             // latest clear/state. An already-running atomic write cannot be cancelled.
-            if (verified && version == _bridgeVersion) MSBridgePost(@"com.openminis.minisight.music");
+            if (verified && version == _bridgeVersion) {
+                MSBridgePost(@"com.openminis.minisight.music");
+                MSMusicEvidence(@"deliver", @"ok", [snapshot[@"generation"] unsignedIntegerValue],
+                    @"darwin_notification", YES, [snapshot[@"line"] length] > 0, YES,
+                    [snapshot[@"lyricsEnabled"] boolValue]);
+            }
         }
     } }
 }

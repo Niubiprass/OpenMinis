@@ -26,6 +26,7 @@ class Source(unittest.TestCase):
  def test_exact_production_excerpts(self):
   manifest=json.loads((FIX/'PRODUCTION.json').read_text())
   for item in manifest['excerpts']:
+   if item['fixture']=='host_producer.inc': continue # retired host; tested by retirement suite, not live producer
    literal=extract((FIX/item['fixture']).read_text(),item['marker'])
    self.assertEqual(sha(literal),item['sha256'])
    for relative in item['sources']:
@@ -58,10 +59,10 @@ class Source(unittest.TestCase):
   self.assertIn('fresh && lockKnown == true && unlocked == false',policy)
   self.assertIn('!c.companionScreenOff && !c.companionSafetyUnknown',policy)
   controller=(APP/'src/ios/MiniSightWakeController.swift').read_text()
-  self.assertIn('lockKnown: companion?.lockKnown, screenKnown: companion?.screenKnown, screenOff: companion?.screenOff',controller)
-  self.assertIn('pulse.setDetectionToken(nil); detector.stop(); phase = .holding',controller)
-  for token in ('pause(reason: decision.message','active = nil','remoteCycle = nil'):
-   self.assertIn(token,controller)
+  self.assertIn('var backgroundAudioIsLive: Bool { false }',controller)
+  self.assertIn('func claimNameWakeVoice(token: String, generation: Int) -> Bool { false }',controller)
+  self.assertNotIn('AVAudioEngine()',controller)
+  self.assertNotIn('MiniSightWakeEngine()',controller)
  def test_cross_tree_shared_slices_and_real_fixtures(self):
   for directory in [CORE]+([PLUGIN] if PLUGIN.is_dir() and PLUGIN!=CORE else []):
    header=(directory/'MiniSightResources.h').read_text()

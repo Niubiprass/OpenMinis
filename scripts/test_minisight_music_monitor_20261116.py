@@ -40,7 +40,12 @@ def errors(source):
         'physical slot': 'if (!_reading && now >= _pollAt)',
         'timeout slot retained': '_readTimedOut = YES; ++_readGeneration;',
         'callback stage': 'stage != _readStage',
-        'snapshot sandwich': '[firstIdentity isEqualToString:lastIdentity]',
+        'track compatibility sandwich': 'MSMusicTrackIdentityCompatible(first, last, player)',
+        'timer invalidation retained': '[_timer invalidate]; _timer = nil;',
+        'exact track signature': '[firstTrack.cacheKey isEqualToString:lastTrack.cacheKey]',
+        'stable cached lyrics survive missing ID': 'if (identifier.length) self->_identifier = [identifier copy];',
+        'partial metadata does not fetch old track': 'self->_lyrics && track && self->_track && self->_progressAvailable',
+        'request requires current metadata': 'self->_lyrics && track && self->_track && self->_progressAvailable',
         'event coalescing': 'if (_eventQueued) return;',
         'single song cooldown': 'self->_retryTimes[retryKey] = @(received + 60.);',
         'bounded cooldown': 'self->_retryTimes.count >= 16',
@@ -63,7 +68,7 @@ def errors(source):
         'selected player tracking': '_playerIdentified',
         'progress stage tracking': '_progressAvailable',
         'request completion tracking': '_lyricsRequestFinished',
-        'stable incomplete metadata': '(firstIdentity || lastIdentity)',
+        'stable incomplete metadata': 'MSMusicTrackIdentityCompatible(first, last, player)',
     }
     result = [label for label, text in required.items() if text not in source]
     for forbidden in ('MRMediaRemoteSendCommand', 'MRMediaRemoteSetElapsedTime', 'NSLog(', '/api/get', 'AVAudioRecorder'):
@@ -86,7 +91,9 @@ class SourceTests(unittest.TestCase):
         source = (plugin() / 'MiniSightMusicMonitor.m').read_text()
         for old, new in (
             ('stage != _readStage', 'NO'),
-            ('[firstIdentity isEqualToString:lastIdentity]', 'YES'),
+            ('[_timer invalidate]; _timer = nil;', '_timer = nil;'),
+            ('[firstTrack.cacheKey isEqualToString:lastTrack.cacheKey]', 'YES'),
+            ('MSMusicTrackIdentityCompatible(first, last, player)', 'NO'),
             ('verified && version == _bridgeVersion', 'verified'),
             ('self->_retryTimes[retryKey] = @(received + 60.);', ''),
             ('_readTimedOut = YES; ++_readGeneration;', '_readTimedOut = YES; _reading = NO;'),
@@ -135,7 +142,7 @@ class NativeFoundationTests(unittest.TestCase):
             binary = Path(tmp) / 'runtime'
             result = subprocess.run([clang, '-isysroot', sdk, '-fobjc-arc', '-fblocks', '-Wall', '-Wextra',
                 '-Werror=return-type', '-Wno-unused-parameter', '-I', str(plugin()), str(FIXTURE),
-                str(plugin() / 'MiniSightLyrics.m'), '-framework', 'Foundation', '-o', str(binary)],
+                str(plugin() / 'MiniSightLyrics.m'), str(plugin() / 'MiniSightLog.m'), '-framework', 'Foundation', '-o', str(binary)],
                 text=True, capture_output=True, timeout=90)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=45)

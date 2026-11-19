@@ -50,4 +50,41 @@ static inline double MSPetMusicAmplitude(double previous, bool playing, double d
     double alpha = 1. - exp(-MSPetFiniteClamp(dt, 0., .05) / (playing ? .35 : .25));
     return value + ((playing ? 1. : 0.) - value) * alpha;
 }
+
+typedef enum {
+    MSPetPoseIdle=0, MSPetPoseWalkRight=1, MSPetPoseWalkLeft=2,
+    MSPetPoseWave=3, MSPetPoseJump=4, MSPetPoseSleep=5,
+    MSPetPoseWake=6, MSPetPoseDrag=7, MSPetPoseMusic=8
+} MSPetPose;
+static inline unsigned MSPetPoseRoleCode(MSPetPose pose) {
+    return pose >= MSPetPoseIdle && pose <= MSPetPoseMusic ? (unsigned)pose : 0u;
+}
+static inline int MSPetPoseAtlasRow(int pose) {
+    static const int rows[9] = {0,1,2,3,4,5,5,3,0};
+    return rows[MSPetPoseRoleCode((MSPetPose)pose)];
+}
+// Uses only verified idle and raised-hand rows; this is not beat tracking.
+static inline int MSPetPoseAtlasRowAt(int pose, double elapsed) {
+    if (pose != MSPetPoseMusic) return MSPetPoseAtlasRow(pose);
+    double t = fmod(fmax(0., isfinite(elapsed) ? elapsed : 0.), 2.2);
+    return t < 1.1 ? 3 : 0;
+}
+static inline int MSPetPoseColumnAt(int pose, double elapsed) {
+    double t = fmax(0., isfinite(elapsed) ? elapsed : 0.);
+    if (pose == MSPetPoseDrag) return (int)fmod(floor(t / .12), 4.);
+    if (pose != MSPetPoseMusic) return 0;
+    t = fmod(t, 2.2);
+    if (t < 1.1) return (int)fmin(3., floor(t / .275));
+    return (int)fmod(floor((t - 1.1) / (1.1 / 6.)), 6.);
+}
+static inline bool MSPetPoseIsTransient(MSPetPose pose) {
+    return pose == MSPetPoseWave || pose == MSPetPoseJump || pose == MSPetPoseWake;
+}
+static inline MSPetPose MSPetPoseRestore(MSPetPose previous, bool music, bool sleeping, bool waking) {
+    if (sleeping) return MSPetPoseSleep;
+    if (waking) return MSPetPoseWake;
+    if (music) return MSPetPoseMusic;
+    if (previous == MSPetPoseDrag || previous == MSPetPoseMusic || MSPetPoseIsTransient(previous)) return MSPetPoseIdle;
+    return (MSPetPose)MSPetPoseRoleCode(previous);
+}
 #endif

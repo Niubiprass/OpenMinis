@@ -112,7 +112,7 @@ class NativeRealImageTests(unittest.TestCase):
                 exe = Path(tmp) / label
                 built = run([compiler, '-isysroot', sdk, '-fobjc-arc', '-fblocks', '-Wall', '-Wextra',
                     '-Werror=return-type', '-Wno-unused-parameter', '-I', tmp, '-I', str(CORE),
-                    str(FIXTURES / 'native.m'), str(CORE / 'MiniSightLyrics.m'), '-framework', 'Foundation', '-o', str(exe)])
+                    str(FIXTURES / 'native.m'), str(CORE / 'MiniSightLyrics.m'), str(CORE / 'MiniSightLog.m'), '-framework', 'Foundation', '-o', str(exe)])
                 self.assertEqual(built.returncode, 0, label + ': ' + built.stdout + built.stderr)
                 result = run([str(exe)], timeout=20)
                 if label == 'baseline' and result.returncode == 77:

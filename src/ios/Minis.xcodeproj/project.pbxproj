@@ -7,16 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		BE1611162000000000000001 /* MiniSightWakeRemote.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE1611162000000000000002 /* MiniSightWakeRemote.swift */; };
-		BE1611162000000000000003 /* MiniSightWakeAudioPulse.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE1611162000000000000004 /* MiniSightWakeAudioPulse.swift */; };
 		BE1611161000000000000001 /* MiniSightWakeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE1611161000000000000002 /* MiniSightWakeController.swift */; };
-		BE1611161000000000000003 /* MiniSightWakeEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE1611161000000000000004 /* MiniSightWakeEngine.swift */; };
-		BE1611161000000000000005 /* MiniSightWakeAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE1611161000000000000006 /* MiniSightWakeAssets.swift */; };
-		BE1611161000000000000007 /* MiniSightWakeName.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE1611161000000000000008 /* MiniSightWakeName.swift */; };
-		BE1611161000000000000009 /* MiniSightWakePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE161116100000000000000A /* MiniSightWakePolicy.swift */; };
-		BE161116100000000000000B /* MiniSightWakePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE161116100000000000000C /* MiniSightWakePage.swift */; };
-		BE161116100000000000000D /* MiniSightWake in Resources */ = {isa = PBXBuildFile; fileRef = BE161116100000000000000E /* MiniSightWake */; };
-		BE161116100000000000000F /* MiniSightKeywordRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = BE1611161000000000000010 /* MiniSightKeywordRuntime */; };
 		E5MPG001 /* ModelPagination.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5MPG002 /* ModelPagination.swift */; };
 		160649A00000000000000001 /* MemoryDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 160649A00000000000000002 /* MemoryDocumentStore.swift */; };
 		160649A00000000000000003 /* ScopedMemoryLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 160649A00000000000000004 /* ScopedMemoryLibraryView.swift */; };
@@ -715,15 +706,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		BE1611162000000000000002 /* MiniSightWakeRemote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightWakeRemote.swift; sourceTree = "<group>"; };
-		BE1611162000000000000004 /* MiniSightWakeAudioPulse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightWakeAudioPulse.swift; sourceTree = "<group>"; };
 		BE1611161000000000000002 /* MiniSightWakeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightWakeController.swift; sourceTree = "<group>"; };
-		BE1611161000000000000004 /* MiniSightWakeEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightWakeEngine.swift; sourceTree = "<group>"; };
-		BE1611161000000000000006 /* MiniSightWakeAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightWakeAssets.swift; sourceTree = "<group>"; };
-		BE1611161000000000000008 /* MiniSightWakeName.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightWakeName.swift; sourceTree = "<group>"; };
-		BE161116100000000000000A /* MiniSightWakePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightWakePolicy.swift; sourceTree = "<group>"; };
-		BE161116100000000000000C /* MiniSightWakePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightWakePage.swift; sourceTree = "<group>"; };
-		BE161116100000000000000E /* MiniSightWake */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/MiniSightWake; sourceTree = "<group>"; };
 		E5MPG002 /* ModelPagination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPagination.swift; sourceTree = "<group>"; };
 		160649A00000000000000002 /* MemoryDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDocumentStore.swift; sourceTree = "<group>"; };
 		E5QSRCH01R /* ChatSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChatSearchView.swift; path = Views/Chat/ChatSearchView.swift; sourceTree = SOURCE_ROOT; };
@@ -1510,7 +1493,6 @@
 				891443CAA4679D09A6D32AE4 /* RealTimeCutVADLibrary in Frameworks */,
 				D12AB000000000000000001 /* KWWKAI in Frameworks */,
 				D12AB000000000000000004 /* NIOCore in Frameworks */,
-				BE161116100000000000000F /* MiniSightKeywordRuntime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1735,13 +1717,6 @@
 				C0FFEE900000000000000001 /* MiniSightCore */,
 				C0FFEE900000000000000006 /* MiniSightInAppRuntime.swift */,
 				BE1611161000000000000002 /* MiniSightWakeController.swift */,
-				BE1611161000000000000004 /* MiniSightWakeEngine.swift */,
-				BE1611161000000000000006 /* MiniSightWakeAssets.swift */,
-				BE1611161000000000000008 /* MiniSightWakeName.swift */,
-				BE161116100000000000000A /* MiniSightWakePolicy.swift */,
-				BE1611162000000000000002 /* MiniSightWakeRemote.swift */,
-				BE1611162000000000000004 /* MiniSightWakeAudioPulse.swift */,
-				BE161116100000000000000E /* MiniSightWake */,
 				03083761BE7ABA94B4DD74A4 /* MiniSightVoiceBridge.swift */,
 				4D6DE242CC618A8346E99F28 /* MiniSightConfigStore.swift */,
 				F9CE2D5AF8B57EEC1795081D /* MiniSightSettings.swift */,
@@ -2578,7 +2553,6 @@
 				24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */,
 				98EA448072951D8177A4F8BD /* MiniSightAIPage.swift */,
 				6E68D884EB9F8A75C624AD5E /* MiniSightHomePage.swift */,
-				BE161116100000000000000C /* MiniSightWakePage.swift */,
 				F1MCF002 /* MiniSightConfirm.swift */,
 				E5S000014 /* CloudSyncSettingsView.swift */,
 				E5G000013 /* EnhancedBackgroundSettingsView.swift */,
@@ -2768,7 +2742,6 @@
 				C42120806C66A2C804F89620 /* RealTimeCutVADLibrary */,
 				D12AB000000000000000003 /* KWWKAI */,
 				D12AB000000000000000006 /* NIOCore */,
-				BE1611161000000000000010 /* MiniSightKeywordRuntime */,
 			);
 			productName = Minis;
 			productReference = E51000010 /* Minis.app */;
@@ -2883,7 +2856,6 @@
 				B318C2F47DB3F301A17E49BE /* XCRemoteSwiftPackageReference "RealTimeCutVADLibrary" */,
 				D12AB000000000000000002 /* XCRemoteSwiftPackageReference "kwwk" */,
 				D12AB000000000000000005 /* XCRemoteSwiftPackageReference "swift-nio" */,
-				BE1611161000000000000011 /* XCLocalSwiftPackageReference "MiniSightKeywordRuntime" */,
 			);
 			productRefGroup = E51000032 /* Products */;
 			projectDirPath = "";
@@ -2942,7 +2914,6 @@
 				E5JB00003 /* jieba.dict.utf8 in Resources */,
 				E5VC0000C /* zh_background_wordfreq.txt in Resources */,
 				E5JB00004 /* hmm_model.utf8 in Resources */,
-				BE161116100000000000000D /* MiniSightWake in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -3214,13 +3185,6 @@
 				A15E9A180000000000000001 /* MSApprovalSummaryBridge.m in Sources */,
 				C0FFEE900000000000000005 /* MiniSightInAppRuntime.swift in Sources */,
 				BE1611161000000000000001 /* MiniSightWakeController.swift in Sources */,
-				BE1611161000000000000003 /* MiniSightWakeEngine.swift in Sources */,
-				BE1611161000000000000005 /* MiniSightWakeAssets.swift in Sources */,
-				BE1611161000000000000007 /* MiniSightWakeName.swift in Sources */,
-				BE1611161000000000000009 /* MiniSightWakePolicy.swift in Sources */,
-				BE1611162000000000000001 /* MiniSightWakeRemote.swift in Sources */,
-				BE1611162000000000000003 /* MiniSightWakeAudioPulse.swift in Sources */,
-				BE161116100000000000000B /* MiniSightWakePage.swift in Sources */,
 				20176A14369C3E928DDE3B4C /* MiniSightVoiceBridge.swift in Sources */,
 				FCA41672E4F16454494A6D8B /* MiniSightConfigStore.swift in Sources */,
 				CDFCA385BE20F6A4103D888D /* MiniSightSettings.swift in Sources */,
@@ -4280,10 +4244,6 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		BE1611161000000000000011 /* XCLocalSwiftPackageReference "MiniSightKeywordRuntime" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = Packages/MiniSightKeywordRuntime;
-		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -4332,11 +4292,7 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		BE1611161000000000000010 /* MiniSightKeywordRuntime */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = BE1611161000000000000011 /* XCLocalSwiftPackageReference "MiniSightKeywordRuntime" */;
-			productName = MiniSightKeywordRuntime;
-		};
+
 		C42120806C66A2C804F89620 /* RealTimeCutVADLibrary */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B318C2F47DB3F301A17E49BE /* XCRemoteSwiftPackageReference "RealTimeCutVADLibrary" */;

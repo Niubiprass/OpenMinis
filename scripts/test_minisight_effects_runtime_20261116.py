@@ -82,7 +82,7 @@ def main(argv=None):
                        "-Werror=return-type", "-Werror=objc-method-access",
                        "-Werror=implicit-function-declaration", "-Wno-unused-parameter",
                        "-I", str(work), "-I", str(FIXTURE), "-I", str(core),
-                       str(FIXTURE / "runtime.m"), "-framework", "Foundation",
+                       str(FIXTURE / "runtime.m"), str(core / "MiniSightLog.m"), "-framework", "Foundation",
                        "-framework", "CoreGraphics", "-framework", "QuartzCore",
                        "-o", str(binary)]
             pet = (core / 'MiniSightPet.m').read_text()

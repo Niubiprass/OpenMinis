@@ -29,7 +29,7 @@ final class MiniSightConfigStore: ObservableObject {
     @Published var petSound: Bool { didSet { publish(MiniSightSettingKey.petSound) } }
     @Published var lyricsEnabled: Bool { didSet { publish(MiniSightSettingKey.lyricsEnabled) } }
     @Published var musicMotion: Bool { didSet { publish(MiniSightSettingKey.musicMotion) } }
-    @Published var wakeEnabled: Bool { didSet { publish(MiniSightSettingKey.wakeEnabled) } }
+    @Published private(set) var wakeEnabled: Bool = false
     @Published var wakeName: String { didSet { publish(MiniSightSettingKey.wakeName) } }
     @Published var wakePronunciation: String { didSet { publish(MiniSightSettingKey.wakePronunciation) } }
     @Published var bottomGap: Double { didSet { publish(MiniSightSettingKey.bottomGap) } }
@@ -94,7 +94,8 @@ final class MiniSightConfigStore: ObservableObject {
         petSound = MiniSightConfig.bool(MiniSightSettingKey.petSound, false)
         lyricsEnabled = MiniSightConfig.bool(MiniSightSettingKey.lyricsEnabled, false)
         musicMotion = MiniSightConfig.bool(MiniSightSettingKey.musicMotion, false)
-        wakeEnabled = MiniSightConfig.bool(MiniSightSettingKey.wakeEnabled, false)
+        wakeEnabled = false
+        UserDefaults.standard.set(false, forKey: MiniSightSettingKey.wakeEnabled)
         wakeName = MiniSightConfig.string(MiniSightSettingKey.wakeName, "")
         wakePronunciation = MiniSightConfig.string(MiniSightSettingKey.wakePronunciation, "")
         bottomGap = MiniSightConfig.double(MiniSightSettingKey.bottomGap, 12)
@@ -301,32 +302,6 @@ final class MiniSightConfigStore: ObservableObject {
         publishGeneration &+= 1
         deliver(generation: publishGeneration,
                 revision: d.string(forKey: MiniSightSettingKey.shownRevision) ?? "", attempt: 0)
-    }
-
-    /// Name and reading are one identity. Do not publish an intermediate name
-    /// paired with the previous pronunciation during an enabled rename.
-    func saveWakeIdentity(_ prepared: MiniSightWakeName.Prepared) {
-        let wasLoaded = loaded
-        loaded = false
-        wakeName = prepared.name
-        wakePronunciation = prepared.pronunciation
-        loaded = wasLoaded
-        let d = UserDefaults.standard
-        d.set(wakeName, forKey: MiniSightSettingKey.wakeName)
-        d.set(wakePronunciation, forKey: MiniSightSettingKey.wakePronunciation)
-        publish(MiniSightSettingKey.wakePronunciation)
-    }
-
-    /// Snapshot for the existing panel. Wake does not fork chat storage or UI.
-    var appearancePreferencesForWake: [String: Any] {
-        var result: [String: Any] = [:]
-        for (key, alias) in MiniSightConfig.runtimeFields { result[alias] = raw(key) }
-        let defaults = UserDefaults.standard
-        for key in ["minisight.chat.height", "minisight.chat.theme", "minisight.chat.tintHex", "minisight.chat.tintAlpha"] {
-            result[key] = defaults.object(forKey: key)
-        }
-        result["minisight.settings.revision"] = defaults.string(forKey: MiniSightSettingKey.shownRevision) ?? "legacy"
-        return result
     }
 
     func setPermission(_ permission: MiniSightAIPermission, allowed: Bool) {

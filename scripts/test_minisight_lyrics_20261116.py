@@ -126,7 +126,7 @@ class NativeFoundationTests(unittest.TestCase):
         binary = cls.directory / name
         command = [cls.clang, "-isysroot", cls.sdk, "-fobjc-arc", "-fblocks", "-Wall", "-Wextra",
                    "-Werror=return-type", "-Wno-unused-parameter", "-I", str(CORE),
-                   str(source), str(NATIVE), "-framework", "Foundation", "-o", str(binary)]
+                   str(source), str(NATIVE), str(CORE / "MiniSightLog.m"), "-framework", "Foundation", "-o", str(binary)]
         result = subprocess.run(command, text=True, capture_output=True, timeout=90)
         if result.returncode:
             raise AssertionError("Native compilation failed (not skipped):\n" + result.stdout + result.stderr)

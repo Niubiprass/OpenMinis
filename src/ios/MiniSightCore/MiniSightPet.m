@@ -20,6 +20,8 @@
 #import "MiniSightBlip.h"
 #import "MiniSightPetBehavior.h"
 #import "MiniSightPetEffects.h"
+#import "MiniSightLiveliness.h"
+#import "MiniSightLog.h"
 
 typedef NS_ENUM(NSInteger, MiniSightPetState) {
     MiniSightPetStateIdle = 0,
@@ -30,6 +32,9 @@ typedef NS_ENUM(NSInteger, MiniSightPetState) {
     MiniSightPetStateWaving = 3,
     MiniSightPetStateJumping = 4,
     MiniSightPetStateSleeping = 5,
+    MiniSightPetStateWaking = 6,
+    MiniSightPetStateDragging = 7,
+    MiniSightPetStateMusic = 8,
 };
 
 static const NSInteger kMiniSightPetRows = 9;
@@ -101,6 +106,7 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
     CGFloat _flingSpin;
     CGFloat _flingSpinVelocity;
     CGFloat _flingSquash;
+    CFTimeInterval _poseBegan;
     CFTimeInterval _lastSpriteTime;
     CGRect _lastSpriteRect;
     BOOL _wantsPlaying, _suspended, _hasCenterBounds;
@@ -149,6 +155,8 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
 - (void)applyResidentTransition:(MSPetResidentTransition)transition atTime:(CFTimeInterval)now;
 - (void)clearResidentForPlayback;
 - (void)updateSleepBadge;
+- (void)beginLandingRecoveryWithImpact:(CGFloat)impact;
+- (void)clearLandingRecovery;
 - (BOOL)consumeAttentionAtTime:(CFTimeInterval)now;
 - (void)invalidateFrameTimer;
 - (void)invalidateRoamTimer;
@@ -383,7 +391,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     return (MSPetResidentContext){
         .running = [self shouldAnimate], .activity = _activityActive || _effects.musicPlaying,
         .interaction = _interactionActive, .paused = _roamingPaused,
-        .moving = _motionActive, .holding = _stateHoldUntil > 0. || _effects.autonomyHeld,
+        .moving = _motionActive, .holding = _landingRecoveryStage != 0 || _stateHoldUntil > 0. || _effects.autonomyHeld,
         .locks = (unsigned)_motionLockReasons
     };
 }
@@ -606,10 +614,13 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (timer != _frameTimer) return;
     if (![self shouldAnimate]) { [self reconcilePlayback]; return; }
     CFTimeInterval now = CACurrentMediaTime();
+    if (_landingRecoveryStage && (_activityActive || _lyricsSuppressed || _motionLockReasons || _roamingPaused ||
+        _interactionActive || UIAccessibilityIsReduceMotionEnabled())) [self clearLandingRecovery];
     if (_landingRecoveryStage && now >= _landingRecoveryUntil) {
         if (_landingRecoveryStage == 1) {
             _landingRecoveryStage = 2;
             _landingRecoveryUntil = now + .82;
+            MSDiagEvent(@"pet", @"state", @"ok", @{@"source": @"app", @"value": @2, @"reason": @"landing_stand"});
             [_effects setLandingRecoveryStage:2];
         } else {
             [self clearLandingRecovery];
@@ -627,14 +638,16 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 
 - (NSInteger)frameCountForRow:(NSInteger)row {
     static const NSInteger counts[9] = {6, 8, 8, 4, 5, 8, 6, 6, 6};
-    return (row >= 0 && row < kMiniSightPetRows) ? counts[row] : 1;
+    return counts[MSPetPoseAtlasRowAt((int)row, CACurrentMediaTime() - _poseBegan)];
 }
 
 - (void)setSpriteState:(MiniSightPetState)state {
     [_effects setLegacyState:state waking:_resident.waking];
     if (_state == state) return;
     _state = state;
+    _poseBegan = CACurrentMediaTime();
     _column = 0;
+    MSDiagEvent(@"pet", @"state", @"ok", @{@"source": @"app", @"value": @((NSInteger)state), @"reason": @"pose_selected"});
     MSPetResidentResetBlink(&_resident);
     _lastSpriteTime = CACurrentMediaTime();
     [self applySpriteFrame];
@@ -648,13 +661,24 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
         case MiniSightPetStateSleeping: return kMiniSightSleepSpriteInterval;
         case MiniSightPetStateWaving: return 1.0 / 7.0;
         case MiniSightPetStateJumping: return 1.0 / 11.0;
+        case MiniSightPetStateMusic: return .82 / 6.;
         default: return kMiniSightSpriteInterval;
     }
 }
 
 - (void)advanceSpriteAtTime:(CFTimeInterval)now {
+    BOOL poseFree = !_motionActive && !_dragging && !_landingRecoveryStage && _stateHoldUntil <= 0. &&
+        !_resident.sleeping && !_resident.waking && !_activityActive && !_motionLockReasons && !_lyricsSuppressed;
+    if (poseFree && _effects.musicPlaying && _state == MiniSightPetStateIdle)
+        [self setSpriteState:MiniSightPetStateMusic];
+    else if (_state == MiniSightPetStateMusic && (!_effects.musicPlaying || !poseFree))
+        [self setSpriteState:MiniSightPetStateIdle];
     [_effects setLegacyState:_state waking:_resident.waking];
     if (_effects.hasActions) return;
+    if (_dragging || _state == MiniSightPetStateMusic) {
+        _column = MSPetPoseColumnAt((int)_state, now - _poseBegan);
+        [self applySpriteFrame]; return;
+    }
     if (_state == MiniSightPetStateSleeping || _state == MiniSightPetStateIdle) {
         NSInteger next;
         if (_state == MiniSightPetStateSleeping) {
@@ -725,14 +749,14 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
         NSInteger maxCol = [self frameCountForRow:_state];
         NSInteger col = MIN(MAX(0, _column), MAX(0, maxCol - 1));
         rect = CGRectMake((CGFloat)col / packCols,
-                          (CGFloat)_state / packRows,
+                          (CGFloat)MSPetPoseAtlasRowAt((int)_state, CACurrentMediaTime() - _poseBegan) / packRows,
                           1.0 / packCols, 1.0 / packRows);
     } else {
         NSInteger maxCol = [self frameCountForRow:_state];
         NSInteger col = MIN(MAX(0, _column), MAX(0, maxCol - 1));
         NSInteger totalCols = packCols * innerCols, totalRows = packRows * innerRows;
         rect = CGRectMake((CGFloat)((v % packCols) * innerCols + col) / totalCols,
-                          (CGFloat)((v / packCols) * innerRows + _state) / totalRows,
+                          (CGFloat)((v / packCols) * innerRows + MSPetPoseAtlasRowAt((int)_state, CACurrentMediaTime() - _poseBegan)) / totalRows,
                           1.0 / totalCols, 1.0 / totalRows);
     }
     // Crop the frame out of the sheet instead of relying on contentsRect:
@@ -1117,6 +1141,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 - (void)setMusicPlaying:(BOOL)playing {
     if (_effects.musicPlaying == playing) return;
     _effects.musicPlaying = playing;
+    MSDiagEvent(@"pet", @"state", @"ok", @{@"source": @"app", @"active": @((BOOL)playing), @"reason": @"music_state"});
     if (playing) { [self invalidateRoamTimer]; [self wakeForInteraction]; }
     else [self scheduleRoam];
 }
@@ -1137,9 +1162,10 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (_dragging || ![self shouldAnimate]) return;
     [self wakeForInteraction];
     _dragging = YES; _interactionActive = YES;
+    MSDiagEvent(@"drag", @"begin", @"ok", @{@"source": @"app", @"reason": @"pet_drag"});
     MSPetResidentCancelWakePose(&_resident);
     [self cancelMotion]; [self cancelGravityImpulse];
-    [self setSpriteState:MiniSightPetStateIdle];
+    [self setSpriteState:MiniSightPetStateDragging];
     _stateHoldUntil = DBL_MAX;
     [self invalidateRoamTimer];
     [_effects beginDragAt:localPoint];
@@ -1154,6 +1180,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (!_dragging) return;
     CGPoint velocity = [_effects endDragCancelled:cancelled];
     _dragging = NO; _interactionActive = NO;
+    MSDiagEvent(@"drag", @"end", @"ok", @{@"source": @"app", @"reason": cancelled ? @"cancelled" : (hypot(velocity.x, velocity.y)>0.?@"released_with_velocity":@"released_static")});
     if (![self shouldAnimate]) { [self reconcilePlayback]; return; }
     MSPetResidentTouch(&_resident, CACurrentMediaTime());
     MSPetResidentCancelWakePose(&_resident);
@@ -1165,6 +1192,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
         _activeMotionGeneration = ++_motionGeneration;
         _lastMotionTick = CACurrentMediaTime(); _stateHoldUntil = 0.;
         _flingSpin = 0.; _flingSpinVelocity = (velocity.x < 0 ? -1. : 1.) * 2.; _flingSquash = 0.;
+        if (_physicsMotion) [self setSpriteState:MiniSightPetStateJumping];
         [_effects setFlightAngle:0 squash:0 active:_physicsMotion];
         [self invalidateFrameTimer]; [self invalidateRoamTimer]; [self ensureMotionLink];
     }
@@ -1263,6 +1291,8 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
         double elapsed = now - _lastMotionTick;
         _lastMotionTick = now;
         unsigned hits = MSGravityBodyStep(&_gravityBody, [self feasibleCenters], _gravityRoll, elapsed, token);
+        BOOL absorbed = MSGravityBodyAbsorbHardFloor(&_gravityBody, [self feasibleCenters], hits);
+        if (hits & MSGravityHitFloor) MSDiagEvent(@"pet", @"state", @"ok", @{@"source": @"app", @"reason": @"floor_contact", @"value": @(absorbed ? 2 : 1), @"generation": @(generation)});
         self.center = MSPetCGPoint(_gravityBody.position);
         // Geometry callbacks may hide, replace, resize, or lock this pet.
         if (!_motionActive || generation != _motionGeneration || !_physicsMotion) return;
@@ -1297,11 +1327,13 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 }
 
 - (void)beginLandingRecoveryWithImpact:(CGFloat)impact {
-    if (!(impact >= 720.) || ![self shouldAnimate] || _dragging || _interactionActive || _motionLockReasons) return;
+    if (!(impact >= 720.) || ![self shouldAnimate] || _dragging || _interactionActive || _motionLockReasons ||
+        _activityActive || _lyricsSuppressed || _roamingPaused || UIAccessibilityIsReduceMotionEnabled()) return;
     [self clearLandingRecovery];
     _landingRecoveryStage = 1;
     _landingRecoveryBegan = CACurrentMediaTime();
     _landingRecoveryUntil = _landingRecoveryBegan + .72;
+    MSDiagEvent(@"pet", @"state", @"ok", @{@"source": @"app", @"value": @1, @"reason": @"landing_settle"});
     [self setSpriteState:MiniSightPetStateSleeping];
     [_effects setLandingRecoveryStage:1];
     [self invalidateRoamTimer];
@@ -1309,9 +1341,10 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 - (void)clearLandingRecovery {
     if (!_landingRecoveryStage && !_landingRecoveryUntil) return;
     _landingRecoveryStage = 0; _landingRecoveryBegan = 0.; _landingRecoveryUntil = 0.;
+    MSDiagEvent(@"pet", @"finish", @"ok", @{@"source": @"app", @"reason": @"landing_clear"});
     [_effects setLandingRecoveryStage:0];
     if (!_resident.sleeping && !_resident.waking && _state == MiniSightPetStateSleeping)
-        [self setSpriteState:MiniSightPetStateIdle];
+        [self setSpriteState:_effects.musicPlaying ? MiniSightPetStateMusic : MiniSightPetStateIdle];
 }
 - (void)finishMotion {
     BOOL landed = _physicsMotion || _jumpHeight > 0.;

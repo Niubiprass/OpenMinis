@@ -42,7 +42,6 @@ struct MiniSightInAppRuntime: View {
     @State private var petIdentity = ""
     @State private var actionManifestPath: String?
     @StateObject private var music = MiniSightMusicBridge()
-    @StateObject private var wake = MiniSightWakeController.shared
     @State private var preferencesLoaded = false
     @State private var toast: String?
     @State private var proactiveClient: MiniSightAI?
@@ -51,7 +50,7 @@ struct MiniSightInAppRuntime: View {
 
     private var visible: Bool {
         preferencesLoaded && renderer == 1 && style == 1 && activity.shown && petImage != nil && scenePhase == .active
-            && !lockStore.appIsLocked && (mode == 1 || activity.active || wake.responseActive)
+            && !lockStore.appIsLocked && (mode == 1 || activity.active)
     }
 
     var body: some View {
@@ -65,7 +64,6 @@ struct MiniSightInAppRuntime: View {
                                  roll: motion.roll,
                                  activityActive: activity.active, gravityEnabled: gravityEnabled, gravityStrength: gravityStrength,
                                  activityMode: activityMode, activityInterval: activityInterval,
-                                 wakeSequence: wake.responseSequence,
                                  shakeGeneration: motion.shakeGeneration,
                                  shakeDirection: motion.shakeDirection, shakeStrength: motion.shakeStrength,
                                  longPressEnabled: longPressEnabled, interactionEnabled: interactionEnabled,
@@ -94,7 +92,6 @@ struct MiniSightInAppRuntime: View {
             MiniSightAssetCatalog.io.async { _ = try? MiniSightAssetCatalog.snapshot() }
             activity.refresh()
             preferencesLoaded = true
-            updateWakePresentation()
             setAppForeground(scenePhase == .active)
             motion.shakeEnabled = gravityShakeEnabled
             motion.configureDiagnostics(diagnosticsEnabled)
@@ -110,8 +107,6 @@ struct MiniSightInAppRuntime: View {
         }
         .onChange(of: scenePhase) { phase in
             let active = phase == .active
-            wake.updatePresentation(foreground: active, shown: preferencesLoaded && activity.shown,
-                                    hasAsset: petImage != nil, appLocked: lockStore.appIsLocked)
             setAppForeground(active)
             motion.setEnabled(gravityEnabled && visible)
             if active { activity.refresh() } else { recorder.stopIfNeeded() }
@@ -120,11 +115,9 @@ struct MiniSightInAppRuntime: View {
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
             traceReceivedSettings()
             music.setVisible(visible)
-            updateWakePresentation()
         }
         .onDisappear {
             music.setVisible(false)
-            wake.presentationDetached()
         }
         .onChange(of: style) { _ in updateOwnershipMarker() }
         .onChange(of: mode) { _ in updateOwnershipMarker() }
@@ -147,7 +140,6 @@ struct MiniSightInAppRuntime: View {
         .onChange(of: chatTintHex) { _ in refreshChatPanelAppearance() }
         .onChange(of: chatTintAlpha) { _ in refreshChatPanelAppearance() }
         .onChange(of: lockStore.appIsLocked) { locked in
-            updateWakePresentation()
             if locked { MiniSightChatPanel.existing()?.close() }
         }
         .onReceive(NotificationCenter.default.publisher(for: MiniSightAssetCatalog.didChange)) { _ in
@@ -247,12 +239,6 @@ struct MiniSightInAppRuntime: View {
 
     private func updateOwnershipMarker() {
         MiniSightAppFiles.postForegroundChanged()
-        updateWakePresentation()
-    }
-    private func updateWakePresentation() {
-        wake.updatePresentation(foreground: scenePhase == .active,
-            shown: preferencesLoaded && activity.shown, hasAsset: petImage != nil,
-            appLocked: lockStore.appIsLocked)
     }
 
     private func refreshChatPanelAppearance() {
@@ -437,13 +423,21 @@ private final class MiniSightMusicBridge: ObservableObject {
     private var visible = false
     private var lastValidAt: TimeInterval = 0
     private var lastReadAt: TimeInterval = 0
+    private var lastEvidence: String?
+    private func evidence(_ reason: String, valid: Bool, present: Bool) {
+        let key = "\(reason):\(valid):\(present):\(generation)"
+        guard lastEvidence != key else { return }
+        lastEvidence = key
+        MSDiagEvent("music", "readback", valid ? "ok" : "skipped", ["source": "app", "generation": generation,
+            "reason": reason, "valid": valid, "present": present, "readback": valid])
+    }
     func setVisible(_ on: Bool) {
         let defaults = UserDefaults.standard
         let wanted = on && (defaults.bool(forKey: "minisight.music.lyrics") || defaults.bool(forKey: "minisight.music.motion"))
         guard visible != wanted else { if wanted { refresh() }; return }
         visible = wanted; generation &+= 1
         timer?.invalidate(); timer = nil
-        if !wanted { line = nil; playing = false; return }
+        if !wanted { line = nil; playing = false; evidence("gate_closed", valid: false, present: false); return }
         // The visible-only 250ms read is also the lost-notification fallback.
         // No raw observer pointer is registered across this view's lifetime.
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -454,7 +448,7 @@ private final class MiniSightMusicBridge: ObservableObject {
     private func refresh() {
         guard visible else { return }
         let now = Date().timeIntervalSince1970
-        if now - lastValidAt > 5 || now < lastValidAt - 1 { line = nil; playing = false }
+        if now - lastValidAt > 5 || now < lastValidAt - 1 { line = nil; playing = false; evidence("music_stale", valid: false, present: false) }
         guard !inFlight else { return } // Never queue another disk read behind a stalled one.
         inFlight = true; lastReadAt = now
         let token = generation
@@ -473,12 +467,17 @@ private final class MiniSightMusicBridge: ObservableObject {
                 guard self.visible, self.generation == token else { return }
                 let now = Date().timeIntervalSince1970
                 guard time.isFinite, now >= time - 1, now - time <= 5,
-                      (value?["version"] as? Int) == 1 else { self.line = nil; self.playing = false; return }
+                      (value?["version"] as? Int) == 1 else { self.line = nil; self.playing = false; self.evidence("music_stale", valid: false, present: false); return }
                 self.lastValidAt = time
                 let defaults = UserDefaults.standard
                 let nextLine = state && lyrics && defaults.bool(forKey: "minisight.music.lyrics") && (line?.count ?? 0) <= 240 ? line : nil
                 let nextPlaying = state && motion && defaults.bool(forKey: "minisight.music.motion")
-                if self.line != nextLine { self.line = nextLine }
+                self.evidence("music_readback", valid: true, present: !(nextLine?.isEmpty ?? true))
+                if self.line != nextLine {
+                    self.line = nextLine
+                    MSDiagEvent("music", "receive", "ok", ["source": "app", "generation": token,
+                        "present": !(nextLine?.isEmpty ?? true), "reason": "lyrics_received"])
+                }
                 if self.playing != nextPlaying { self.playing = nextPlaying }
             }
         }
@@ -750,7 +749,6 @@ private struct MiniSightPetHost: UIViewRepresentable {
     let gravityStrength: Double
     let activityMode: Int
     let activityInterval: Double
-    let wakeSequence: Int
     let shakeGeneration: Int
     let shakeDirection: Double
     let shakeStrength: Double
@@ -790,7 +788,6 @@ private struct MiniSightPetHost: UIViewRepresentable {
         private var petWindow: UIWindow?
         private var panStart = CGPoint.zero
         private var handledShakeGeneration = 0
-        private var handledWakeSequence = 0
         private var lastConfigured = ""
         private var lastDeliveredTime: CFTimeInterval = 0
 
@@ -844,11 +841,6 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.startPlaying()
             window.isHidden = false
             root.setNeedsLayout(); root.layoutIfNeeded()
-            MiniSightWakeController.shared.registerPetAnchor(pet)
-            handledWakeSequence = parent.wakeSequence
-            if parent.wakeSequence > 0 && MiniSightWakeController.shared.responseActive {
-                pet.requestAttentionResponse()
-            }
             refreshChatAnchor()
             MSDiagEvent("runtime", "show", "ok", ["source": "app", "visible": true])
         }
@@ -873,10 +865,6 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.gravityRoll = roll
             pet.activityActive = active
             pet.reducedWork = ProcessInfo.processInfo.isLowPowerModeEnabled
-            if parent.wakeSequence != handledWakeSequence {
-                handledWakeSequence = parent.wakeSequence
-                pet.requestAttentionResponse()
-            }
             if parent.shakeGeneration != handledShakeGeneration {
                 handledShakeGeneration = parent.shakeGeneration
                 if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
@@ -929,7 +917,6 @@ private struct MiniSightPetHost: UIViewRepresentable {
             guard let host, let pet, parent.interactionEnabled else { return }
             switch gesture.state {
             case .began:
-                MiniSightWakeController.shared.setPetInteractionBusy(true)
                 panStart = pet.center
                 if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
                 pet.beginDragging(at: gesture.location(in: pet))
@@ -951,21 +938,17 @@ private struct MiniSightPetHost: UIViewRepresentable {
                     x: min(bounds.maxX, max(bounds.minX, panStart.x + delta.x * parent.dragGain)),
                     y: min(bounds.maxY, max(bounds.minY, panStart.y + delta.y * parent.dragGain))))
                 pet.endDraggingCancelled(false)
-                MiniSightWakeController.shared.setPetInteractionBusy(false)
                 let width = max(host.bounds.width, 1), height = max(host.bounds.height, 1)
                 parent.centerX = Double(pet.center.x / width)
                 parent.centerY = Double(pet.center.y / height)
                 MSDiagEvent("drag", "end", "ok", ["source": "app", "x": pet.center.x, "y": pet.center.y])
             case .cancelled, .failed:
                 pet.endDraggingCancelled(true)
-                MiniSightWakeController.shared.setPetInteractionBusy(false)
             default: break
             }
         }
 
         func teardown() {
-            MiniSightWakeController.shared.unregisterPetAnchor(pet)
-            MiniSightWakeController.shared.setPetInteractionBusy(false)
             if let panel = MiniSightChatPanel.existing(), panel.anchorView === pet {
                 panel.hideWithoutKey()
                 panel.anchorView = nil

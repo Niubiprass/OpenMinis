@@ -137,9 +137,10 @@ struct MinisApp: App {
             .deletingLastPathComponent().path
         MSDiagConfigure(UserDefaults.standard.bool(forKey: "minisight.diagnostics"), sightContainer)
         MSDiagEvent("runtime", "begin", "ok", ["source": "app", "version": MiniSightModule.version])
+        UserDefaults.standard.set(false, forKey: MiniSightSettingKey.wakeEnabled)
+        MSDiagEvent("name_wake", "stop", "ok", ["source": "app", "reason": "feature_removed", "active": false])
         Task { @MainActor in
             MiniSightVoiceBridge.shared.install()
-            MiniSightWakeController.shared.install()
         }
         // [T-auto-grouping-default-on] Auto-grouping ships ON. `bool(forKey:)`
         // returns false for an unregistered key, so the default has to be

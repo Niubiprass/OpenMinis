@@ -160,4 +160,14 @@ static inline unsigned MSGravityBodyStep(MSGravityBody *b, MSRect range, double 
     }
     return hits;
 }
+// A high-velocity floor hit is a deliberate landing, not a springboard.
+// Sub-threshold impacts retain the original damped bounce verbatim.
+static inline int MSGravityBodyAbsorbHardFloor(MSGravityBody *body, MSRect range, unsigned hits) {
+    if (!body || !(hits & MSGravityHitFloor) || body->floorImpactVelocity < 720.) return 0;
+    range = MSGravityCenterRange(range);
+    body->position.y = range.y + range.h;
+    body->velocity = (MSPoint){0.,0.};
+    body->active = 0;
+    return 1;
+}
 #endif

@@ -97,14 +97,6 @@ struct MiniSightHomeView: View {
             }
 
             Section {
-                NavigationLink(config.wakeName.isEmpty ? "设置唤醒名字" : "名字唤醒：\(config.wakeName)") {
-                    MiniSightWakePage()
-                }
-            } header: { Text("名字唤醒") } footer: {
-                Text("直接喊你设置的名字，不用“嘿 Siri”。后台名字唤醒默认关闭；开启后回主屏幕或打开其他 App 仍可唤醒，需要 App 与越狱插件配套。进入后可确认读音并主动允许权限。")
-            }
-
-            Section {
                 LabeledContent("角色大小 \(Int(config.petSize))") {
                     Slider(value: $config.petSize, in: 36...140, step: 2)
                 }

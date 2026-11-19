@@ -375,9 +375,9 @@ enum MiniSightSettingsDiagnostics {
         return String(decoding: data, as: UTF8.self)
     }
 
-    static let features: Set<String> = ["activity", "ai", "ai_test", "approval", "assets", "bubble", "chat", "drag", "gesture", "gravity", "ownership", "recording", "runtime", "screen", "settings", "voice"]
+    static let features: Set<String> = ["activity", "ai", "ai_test", "approval", "assets", "bubble", "chat", "drag", "gesture", "gravity", "ownership", "recording", "runtime", "screen", "settings", "voice", "music", "lyrics", "pet", "name_wake"]
     static let stages: Set<String> = ["apply", "begin", "build", "callback", "cancel", "change", "click", "close", "composer", "config", "configure", "deliver", "display", "editor", "end", "entry", "error", "finish", "hide", "identity", "interruption", "keyboard", "layout", "load", "network", "parse", "publish", "readback", "ready", "receive", "reload", "reply", "request", "response", "rotate", "sample", "save", "send", "show", "skip", "start", "state", "stop", "visibility"]
-    static let allowed: Set<String> = ["active", "below", "bytes", "chars", "code", "count", "domain", "duration_ms", "enabled", "executing", "field", "finish", "generation", "h", "http", "issue", "keyboard", "mode", "present", "readback", "reason", "reasoning", "renderer", "request", "revision", "roll", "samples", "saved", "sending", "sequence", "setting", "source", "style", "valid", "value", "version", "visible", "w", "x", "y"]
+    static let allowed: Set<String> = ["active", "below", "bytes", "chars", "code", "count", "domain", "duration_ms", "enabled", "executing", "field", "finish", "generation", "h", "http", "issue", "keyboard", "mode", "present", "readback", "reason", "reasoning", "renderer", "request", "revision", "roll", "samples", "saved", "sending", "sequence", "setting", "source", "style", "valid", "value", "version", "visible", "w", "x", "y", "received", "published", "written", "notified", "stale", "status", "phase"]
 
     static func asciiToken(_ value: String, limit: Int = 80) -> Bool {
         guard !value.isEmpty, value.utf8.count <= limit, value.utf8.allSatisfy({

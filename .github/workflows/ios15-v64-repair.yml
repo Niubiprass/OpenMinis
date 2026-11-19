@@ -31,24 +31,6 @@ jobs:
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
-      - name: Cache controlled keyword runtime
-        id: keyword_cache
-        uses: actions/cache/restore@v4
-        with:
-          path: src/ios/Packages/MiniSightKeywordRuntime/Artifacts
-          key: minisight-keyword-ios15.5-${{ runner.arch }}-${{ hashFiles('scripts/build_minisight_keyword_runtime_20261116.sh', 'scripts/test_minisight_keyword_provenance_20261116.py', 'scripts/test_minisight_keyword_isolation_20261117.py', 'scripts/minisight_vad_identity_20261117.py', 'scripts/test_minisight_vad_identity_20261117.py', 'scripts/fixtures/minisight_runtime_isolation_20261117/*.json', 'src/ios/Packages/MiniSightKeywordRuntime/Package.swift', 'src/ios/Packages/MiniSightKeywordRuntime/Sources/Version.swift') }}
-      - name: Build pinned keyword dependency from pristine source
-        run: |
-          set -euo pipefail
-          brew install cmake ninja
-          bash scripts/build_minisight_keyword_runtime_20261116.sh
-          python3 scripts/test_minisight_keyword_provenance_20261116.py --artifact
-      - name: Save verified keyword runtime cache
-        if: steps.keyword_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: src/ios/Packages/MiniSightKeywordRuntime/Artifacts
-          key: ${{ steps.keyword_cache.outputs.cache-primary-key }}
       - name: Verify fixed source (never fetch or re-port upstream)
         id: source_gate
         # The current full App baseline has compiled. Fail early on a native
@@ -118,32 +100,23 @@ jobs:
           python3 scripts/test_minisight_action_library_20261116.py --ci
           python3 scripts/test_minisight_lyrics_20261116.py --require-native
           python3 scripts/test_minisight_music_monitor_20261116.py --require-native
+          python3 scripts/test_minisight_media_repair_20261119.py --require-native
+          python3 scripts/test_minisight_wake_retirement_20261119.py --require-native
           python3 scripts/test_minisight_music_symbols_20261118.py --require-native
           python3 scripts/test_minisight_atlas_restore_20261118.py
           python3 scripts/test_minisight_pet_bounds_20261118.py --require-native
           python3 scripts/test_minisight_bubble_edge_20261118.py --require-native
-          python3 scripts/test_minisight_wake_enable_20261118.py --require-native
           python3 scripts/test_minisight_permissions_20261118.py --require-native
           python3 scripts/test_minisight_presentation_readback_20261116.py --require-native
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_quota_current_key_20261116.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_consumption_20261117.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_quota_detail_repair_20261117.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_minisight_shown_name_20261117.py
-          python3 scripts/test_minisight_name_roundtrip_20261116.py --require-native
           python3 scripts/test_minisight_liveliness_20261116.py --require-ios
           python3 scripts/test_minisight_effects_runtime_20261116.py --require-native
-          python3 scripts/test_minisight_wake_name_20261116.py --require-native
-          python3 scripts/test_minisight_name_background_audio_20261116.py --require-native
-          python3 scripts/test_minisight_wake_audio_20261116.py --require-native
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_checkin_no_participation_20261116.py
           python3 scripts/test_queued_video_preview_20261116.py --require-native
           python3 scripts/test_minisight_vad_identity_20261117.py --portable-only
-          python3 scripts/test_minisight_keyword_isolation_20261117.py --require-native
-          python3 scripts/test_minisight_keyword_isolation_20261117.py --native-host-fixture --require-native
-          python3 scripts/test_minisight_keyword_isolation_20261117.py --artifact --require-native
-          python3 scripts/test_minisight_runtime_preflight_20261117.py --require-native
-          python3 scripts/test_minisight_runtime_cancel_20261117.py --require-native
-          python3 scripts/test_minisight_wake_20261116.py --require-native --require-ios
           python3 scripts/test_multikey_160651.py
           python3 scripts/test_multikey_persistence_160651.py
           python3 scripts/test_multikey_freeze_20261101.py
@@ -211,11 +184,8 @@ jobs:
           fi
           # Native dependency notices/source obligations must be closed before
           # any IPA artifact/release publication. Compilation is not this gate.
-          python3 scripts/test_minisight_wake_20261116.py --require-release-license
           APP=DerivedData/Build/Products/Release-iphoneos/Minis.app
           test -f "$APP/Info.plist"
-          # Final-image binding must match the private runtime, not VAD's older ORT.
-          python3 scripts/test_minisight_keyword_isolation_20261117.py --app "$APP" --require-native
           python3 scripts/test_minisight_vad_identity_20261117.py \
             --vad "$APP/Frameworks/RealTimeCutVADCXXLibrary.framework/RealTimeCutVADCXXLibrary" \
             --native-apple --require-native --json-output vad-signing-identity.json
@@ -238,7 +208,6 @@ jobs:
           trap 'rm -rf "$IPA_VERIFY_DIR"' EXIT
           unzip -q Minis-160652-FourFeatures-iOS15.5.ipa -d "$IPA_VERIFY_DIR"
           codesign --verify --deep --strict "$IPA_VERIFY_DIR/Payload/Minis.app"
-          python3 scripts/test_minisight_keyword_isolation_20261117.py --app "$IPA_VERIFY_DIR/Payload/Minis.app" --require-native
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinisBuildNumber' "$IPA_VERIFY_DIR/Payload/Minis.app/Info.plist")" = "${{ github.run_number }}"
           shasum -a 256 Minis-160652-FourFeatures-iOS15.5.ipa > SHA256SUMS
       - name: Upload IPA
@@ -259,8 +228,6 @@ jobs:
             build-v64r.log
             minos-v64r.txt
             vad-signing-identity.json
-            src/ios/Packages/MiniSightKeywordRuntime/Artifacts/provenance.json
-            src/ios/Packages/MiniSightKeywordRuntime/Artifacts/Proof
           if-no-files-found: ignore
           retention-days: 14
       # [T-inapp-update-beta] Feed for the in-app updater. A fixed tag is

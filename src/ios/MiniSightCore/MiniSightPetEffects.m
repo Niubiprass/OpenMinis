@@ -2,6 +2,7 @@
 #import "MiniSightPet.h"
 #import "MiniSightActionLibrary.h"
 #import "MiniSightLiveliness.h"
+#import "MiniSightLog.h"
 #import "MiniSightGeometry.h"
 #import "MiniSightChatPanel.h"
 #import <QuartzCore/QuartzCore.h>
@@ -39,6 +40,8 @@
     CGPoint _dragTarget, _visualOffset;
     CGSize _bubbleSize, _lastTailSize;
     CGFloat _lastTailX, _measurementWidth;
+    BOOL _lyricsVisibleEvidence, _lyricsHadTextEvidence;
+    NSString *_lyricsReasonEvidence;
 }
 - (void)tick:(CADisplayLink *)link;
 - (void)chooseRole;
@@ -360,7 +363,7 @@
     BOOL reduce = UIAccessibilityIsReduceMotionEnabled();
     BOOL dance = _musicPlaying && !blocked && !_dragging && !_flying && _state != 5 && !reduce;
     _musicAmplitude = MSPetMusicAmplitude(_musicAmplitude, dance, dt);
-    _phase = fmod(_phase + dt * (2. * M_PI / 1.4), 2. * M_PI);
+    _phase = fmod(_phase + dt * (2. * M_PI / 2.2), 2. * M_PI);
     double angle = blocked || reduce ? 0. : MSPetFiniteClamp(_tilt, -.22, .22);
     double x = blocked || reduce ? 0. : MSPetFiniteClamp(_sway, -5., 5.);
     double y = 0., sx = 1., sy = 1.;
@@ -378,8 +381,11 @@
         double elapsed = fmax(0., now - _shakeBegan);
         angle += _shakeDirection * (.06 + .09 * _shakeStrength) * sin(elapsed * 8.) * exp(-elapsed * 4.);
     }
-    angle += .035 * _musicAmplitude * sin(_phase);
-    y -= pet.bounds.size.height * .018 * _musicAmplitude * (1. - cos(_phase * 2.)) * .5;
+    if (dance) {
+        angle += .15 * _musicAmplitude * sin(_phase);
+        x += 5. * _musicAmplitude * sin(_phase * .5);
+        y -= pet.bounds.size.height * .06 * _musicAmplitude * (1. - cos(_phase * 2.)) * .5;
+    }
     MSPetDampedStep(&_angle, angle, dt, 20.);
     MSPetDampedStep(&_offsetX, x, dt, 22.); MSPetDampedStep(&_offsetY, y, dt, 22.);
     MSPetDampedStep(&_scaleX, sx, dt, 25.); MSPetDampedStep(&_scaleY, sy, dt, 25.);
@@ -415,13 +421,25 @@
     NSString *text = [line isKindOfClass:NSString.class] && line.length <= 240 ? line : nil;
     if ((_lyricsLine == text) || [_lyricsLine isEqualToString:text]) return;
     _lyricsLine = [text copy];
-    if (!text.length) _bubble.hidden = YES;
+    if (!text.length) { [self recordLyricsVisible:NO reason:@"empty_line"]; _bubble.hidden = YES; }
     _bubbleSize = CGSizeZero;
+}
+- (void)recordLyricsVisible:(BOOL)visible reason:(NSString *)reason {
+    BOOL text = _lyricsLine.length > 0;
+    if (_lyricsReasonEvidence && _lyricsVisibleEvidence == visible && _lyricsHadTextEvidence == text &&
+        [_lyricsReasonEvidence isEqualToString:reason]) return;
+    _lyricsVisibleEvidence = visible; _lyricsHadTextEvidence = text; _lyricsReasonEvidence = [reason copy];
+    NSString *source = [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"] ? @"plugin" : @"app";
+    MSDiagEvent(@"music", @"display", visible ? @"ok" : @"skipped", @{@"source": source,
+        @"visible": @((BOOL)visible), @"present": @((BOOL)text), @"reason": reason});
 }
 - (void)placeLyricsBlocked:(BOOL)blocked {
     MiniSightPetView *pet = _pet;
     UIView *root = pet.superview;
-    if (!_running || blocked || !_lyricsLine.length || !root || pet.window.hidden) { _bubble.hidden = YES; return; }
+    if (!_running || blocked || !_lyricsLine.length || !root || pet.window.hidden) {
+        [self recordLyricsVisible:NO reason:blocked ? @"blocked" : (_lyricsLine.length ? @"hidden" : @"empty_line")];
+        _bubble.hidden = YES; return;
+    }
     if (!_bubble) {
         _bubble = [UIView new]; _bubble.userInteractionEnabled = NO;
         _bubble.accessibilityElementsHidden = YES;
@@ -435,7 +453,7 @@
     }
     if (_bubble.superview != root) { [_bubble removeFromSuperview]; [root addSubview:_bubble]; }
     CGFloat available = MIN(240., root.bounds.size.width - root.safeAreaInsets.left - root.safeAreaInsets.right - 16.);
-    if (available < 36.) { _bubble.hidden = YES; return; }
+    if (available < 36.) { [self recordLyricsVisible:NO reason:@"lyrics_no_space"]; _bubble.hidden = YES; return; }
     if (_bubbleSize.width == 0 || ![_label.text isEqual:_lyricsLine] || fabs(_measurementWidth - available) > .5) {
         _measurementWidth = available; _label.text = _lyricsLine;
         CGSize size = [_label sizeThatFits:CGSizeMake(available - 20., 58.)];
@@ -446,6 +464,7 @@
     CGFloat y = pet.center.y + _visualOffset.y - pet.bounds.size.height * .5 - 10. - _bubbleSize.height;
     y = MAX(root.safeAreaInsets.top + 4., y);
     if (y + _bubbleSize.height > pet.center.y - pet.bounds.size.height * .5 - 5.) {
+        [self recordLyricsVisible:NO reason:@"lyrics_no_space"];
         _bubble.hidden = YES; return; // No room: never move the pet or cover its face just for lyrics.
     }
     [CATransaction begin]; [CATransaction setDisableActions:YES];
@@ -461,6 +480,7 @@
     }
     _tail.fillColor = [UIColor.secondarySystemBackgroundColor resolvedColorWithTraitCollection:pet.traitCollection].CGColor;
     _bubble.hidden = NO;
+    [self recordLyricsVisible:YES reason:@"lyrics_line"];
     [CATransaction commit];
 }
 - (void)invalidate {

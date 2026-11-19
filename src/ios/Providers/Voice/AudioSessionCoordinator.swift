@@ -132,31 +132,9 @@ final class AudioSessionCoordinator {
         return hit && appliedIntent == intent
     }
 
-    /// FIFO acknowledgement only; this never starts an engine or requests
-    /// permission. The foreground/asset gates belong to the wake controller.
+    /// Legacy callers are denied without acquiring an audio-session lease.
     func beginWakeWordListening(completion: @escaping (Bool) -> Void) {
-        guard canBeginWakeWordListening else {
-            Task { @MainActor in completion(false) }
-            return
-        }
-        wakeWordGeneration &+= 1
-        let generation = wakeWordGeneration
-        beginInternal(.wakeWord)
-        let revision = Self.applyStateLock.withLock { Self.applyRevision }
-        Self.sessionQueue.async {
-            Task { @MainActor in
-                let current = Self.applyStateLock.withLock { Self.applyRevision == revision }
-                let granted = generation == self.wakeWordGeneration && current
-                    && self.canBeginWakeWordListening && self.hasIntent(.wakeWord)
-                    && self.appliedIntent == .wakeWord
-                // Failed initialization must not leave a passive session lease.
-                // An obsolete acknowledgement never ends a newer owner's lease.
-                if !granted, generation == self.wakeWordGeneration {
-                    self.end(.wakeWord)
-                }
-                completion(granted)
-            }
-        }
+        Task { @MainActor in completion(false) }
     }
 
     private func preemptWakeWord() {
@@ -177,6 +155,7 @@ final class AudioSessionCoordinator {
     }
 
     private func beginInternal(_ intent: Intent) {
+        guard !intent.isNameWakeInput else { return }
         guard intent != .wakeWord || canBeginWakeWordListening else { return }
         guard intent != .nameWakeDictation || canBeginNameWakeDictation else { return }
         if intent.isNameWakeInput {
@@ -257,7 +236,7 @@ final class AudioSessionCoordinator {
         return top
     }
 
-    var keepAlivePlaybackBlocked: Bool { interrupted || isCapturing || hasNameWakeInputIntent }
+    var keepAlivePlaybackBlocked: Bool { interrupted || isCapturing }
 
     var keepAlivePlaybackApplied: Bool {
         guard hasIntent(.backgroundKeepAlive), let top = appliedIntent else { return false }
@@ -489,11 +468,6 @@ final class AudioSessionCoordinator {
         // both fire) must not clear an already-recorded pause intent.
         guard !pausedByExternalAudio else { return }
         pausedByExternalAudio = true
-        if hasNameWakeInputIntent {
-            preemptWakeWord()
-            preemptNameWakeDictation()
-            apply(reason: "wake-external-audio")
-        }
         VoiceOutputPlayer.shared.pause()
         logger.info("[AudioSession] \(reason) → TTS paused (external audio)")
     }

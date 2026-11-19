@@ -31,7 +31,21 @@ def permission_contract(source):
     assert current.count(CANCEL) == 3, "requires all three cancellation fences"
     old = subprocess.check_output(["git", "show", f"{BASELINE}:{PATH}"], cwd=ROOT, text=True)
     assert strip_permission_cancellation_guards(current) == block(old, MARKER), "permission semantics changed"
-    assert source.replace(current, block(old, MARKER)) == old, "non-permission Speech method changed"
+    candidate = source.replace(current, block(old, MARKER), 1)
+    # The only additional change outside permission flow is the retired name-input
+    # guard; it must remain before beginAndWait while manual capture is unchanged.
+    marker = "func startRecording(nameWake: Bool = false) throws"
+    guard = '''        guard !nameWake else {
+            throw NSError(domain: "SpeechRecognition", code: -6,
+                          userInfo: [NSLocalizedDescriptionKey: "Background name wake is disabled"])
+        }
+'''
+    start = block(candidate, marker)
+    assert start.count(guard) == 1, "legacy name-wake microphone guard missing or duplicated"
+    assert start.index(guard) < start.index("beginAndWait(intent)"), "legacy name-wake must be rejected before audio ownership"
+    start_without_retired_guard = start.replace(guard, "", 1)
+    candidate = candidate.replace(start, start_without_retired_guard, 1)
+    assert candidate == old, "unrelated Speech manager bytes changed"
 
 
 def permission_sources(source=SOURCE, availability_adapter=False):
