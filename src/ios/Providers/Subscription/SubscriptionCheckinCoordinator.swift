@@ -294,7 +294,7 @@ enum SubscriptionCheckinLedger {
                             verifiedRetryableFailure: Bool = false, now: Date = Date()) -> Bool {
         guard definitiveFailure || verifiedRetryableFailure,
               requestDay == SubscriptionCheckinPolicy.day(now),
-              let state = transient(key, now: now), state.status.canClaim,
+              var state = transient(key, now: now), state.status.canClaim,
               state.dispatched, !state.stopForDay else { return false }
         var value = record(key, now: now)
         guard value.completedDay != requestDay else { return false }

@@ -46,12 +46,15 @@ struct TraeCredential { init(_ credentials: KWWKAI.OAuthCredentials) {}; var dev
     var applicationState = State.active
     var isProtectedDataAvailable = true
 }
-enum TestTint { case systemGreen, systemRed }
+struct UIColor {
+    static let systemGreen = UIColor()
+    static let systemRed = UIColor()
+}
 @MainActor enum MinisToast {
     static var notices: [String] = []
     static var shouldPresent = true
     static func show(_ text: String, duration: Double = 3, systemImage: String = "",
-                     tint: TestTint = .systemGreen, completion: ((Bool) -> Void)? = nil) {
+                     tint: UIColor? = nil, completion: ((Bool) -> Void)? = nil) {
         if shouldPresent { notices.append(text) }
         completion?(shouldPresent)
     }
