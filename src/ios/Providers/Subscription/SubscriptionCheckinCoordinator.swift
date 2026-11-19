@@ -432,6 +432,7 @@ enum SubscriptionAutoCheckin {
     private static var timer: Timer?
     private static var running = false
     private static var task: Task<Void, Never>?
+    private static var noticePresentationInFlight = false
 
     static func activate() {
         guard UIApplication.shared.applicationState == .active else { return }
@@ -449,7 +450,8 @@ enum SubscriptionAutoCheckin {
     }
 
     static func runIfNeeded() {
-        guard !running, UIApplication.shared.applicationState == .active,
+        guard !running, !noticePresentationInFlight,
+              UIApplication.shared.applicationState == .active,
               UIApplication.shared.isProtectedDataAvailable else { return }
         running = true
         task = Task { @MainActor in
@@ -544,9 +546,11 @@ enum SubscriptionAutoCheckin {
             symbol = "exclamationmark.circle.fill"
             tint = .systemRed
         }
+        noticePresentationInFlight = true
         MinisToast.show(message, duration: duration, systemImage: symbol, tint: tint) { shown in
-            guard shown else { return }
             Task { @MainActor in
+                defer { noticePresentationInFlight = false }
+                guard shown else { return }
                 noticeKeys.forEach { SubscriptionCheckinLedger.markNotified($0) }
                 reminderKeys.forEach { SubscriptionCheckinLedger.markReminded($0) }
                 unconfirmedKeys.forEach { SubscriptionCheckinLedger.markUncertainFailureNoticeShown($0) }

@@ -335,6 +335,7 @@ struct UIColor {
             CheckinTransport.statusBySlot["four"] = fourth
             await SubscriptionAutoCheckin.run()
             expectThreeOnly("three successes plus unqualified fourth has no failure")
+            try await Task.sleep(nanoseconds: 50_000_000)
             expect(CheckinTransport.writesBySlot["four", default: 0] == 0, "fourth never receives claim")
             expect(CheckinTransport.writesBySlot.values.reduce(0, +) == 3, "only three eligible claims")
             let readsAfter = CheckinTransport.reads
