@@ -334,6 +334,7 @@ struct UIColor {
             resetFourAccounts()
             CheckinTransport.statusBySlot["four"] = fourth
             await SubscriptionAutoCheckin.run()
+            try await Task.sleep(nanoseconds: 50_000_000)
             expectThreeOnly("three successes plus unqualified fourth has no failure")
             try await Task.sleep(nanoseconds: 50_000_000)
             expect(CheckinTransport.writesBySlot["four", default: 0] == 0, "fourth never receives claim")
@@ -346,6 +347,7 @@ struct UIColor {
         resetFourAccounts()
         CheckinTransport.responseBySlot["four"] = ["code": 9095]
         await SubscriptionAutoCheckin.run()
+        try await Task.sleep(nanoseconds: 50_000_000)
         expectThreeOnly("server-confirmed ineligible fourth account is excluded")
         expect(CheckinTransport.writesBySlot["four", default: 0] == 1, "ineligible claim attempt is not replayed today")
         expect(SubscriptionCheckinLedger.cachedStatus(fourthKey())?.eligibility == .ineligible, "9095 is explicit ineligible proof")
@@ -378,6 +380,7 @@ struct UIColor {
         let old = Data("{\"eligibleDay\":\"\(day)\",\"claimDay\":\"\(day)\",\"failedClaimDay\":\"\(day)\"}".utf8)
         defaults.set(old, forKey: "subscription.checkin.v2." + fourthKey())
         await SubscriptionAutoCheckin.run()
+        try await Task.sleep(nanoseconds: 50_000_000)
         expectThreeOnly("legacy unverified failure migrated without nagging")
         expect(CheckinTransport.writesBySlot["four", default: 0] == 0, "old refusal not automatically reattempted today")
         MinisToast.notices = []
