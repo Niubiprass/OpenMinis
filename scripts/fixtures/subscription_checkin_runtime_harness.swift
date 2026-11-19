@@ -323,7 +323,7 @@ struct UIColor {
                 credentials: .init(access: "synthetic-four"), loginAccount: nil), slot: "four")
         }
         func expectThreeOnly(_ label: String) {
-            expect(MinisToast.notices == ["3 个账号已签到"], label)
+            expect(MinisToast.notices == ["3 个账号已签到"], label + " notices=\(MinisToast.notices)")
             expect(absent(fourthKey()), "fourth UserDefaults key must be ABSENT: " + label)
             let savedKeys = defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("subscription.checkin.v2.") }
             expect(savedKeys.count == 3, "only three confirmed success journals saved")
