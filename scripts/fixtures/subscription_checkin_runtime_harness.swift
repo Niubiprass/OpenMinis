@@ -173,7 +173,7 @@ struct UIColor {
         expect(SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "undelivered failure reminder remains pending")
         MinisToast.shouldPresent = true
         await SubscriptionAutoCheckin.run()
-        await Task.yield()
+        try await Task.sleep(nanoseconds: 50_000_000)
         expect(MinisToast.notices == ["1 个账号签到失败"], "failure Toast shown on next foreground report: \(MinisToast.notices)")
         expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "failure Toast deduplicated after presentation")
         clear()
