@@ -16,16 +16,17 @@ need(c.index('Self.post(Self.note)') < c.index('while Date() < deadline'), 'noti
 need('parts.count == 2' in c and 'parts[0] == Substring(id)' in c, 'result is filtered by request id')
 need('no_visible_ack' in c and 'cancelPet(id' in c, 'missing pet ack falls back and cancels')
 
-# Voice: installed independently of switch, acknowledged, final emitted first.
+# Voice: manual entry remains, while retired name requests cannot record.
 bridge = read(ROOT / 'MiniSightVoiceBridge.swift')
 app = read(ROOT / 'MinisApp.swift')
 need('MiniSightVoiceBridge.shared.install()' in app, 'voice bridge installed at launch')
 idle = bridge[bridge.index('    private func recordingBecameIdle('):bridge.index('    private func handleRequest(')]
 need('emit(manager.recognizedText, final: true' in idle and
      idle.index('emit(manager.recognizedText, final: true') < idle.index('listening = false'), 'manual final emitted before state clear')
-need('finishNameWake(generation:' in idle and 'result: manager.recognizedText' in idle,
-     'named final uses the real transcript before terminal cleanup')
-need('"starting"' in bridge and 'generation' in bridge, 'voice has startup ack and generation')
+retired = bridge[bridge.index('if object["source"] as? String == "nameWake" {'):bridge.index('\n        }', bridge.index('if object["source"] as? String == "nameWake" {'))]
+need('legacy_request_rejected' in retired and 'return' in retired and 'startListening' not in retired,
+     'retired name request is rejected before the manual recorder')
+need('"starting"' in bridge and 'generation' in bridge, 'manual voice has startup ack and generation')
 need('url.host == "minisight"' in app and 'url.path == "/voice"' in app, 'voice can wake a suspended App')
 need('reason: "stopped"' in bridge or 'reason: "stopped"' in bridge.replace('"', '"'), 'pending start can be stopped')
 need('empty_transcript' in bridge, 'empty final is explicit')
@@ -76,7 +77,7 @@ need('gridLooksLikePets' in cat and 'packShaped' in cat, 'sheet shape is checked
 need('migrateSheet' in cat and 'fresh.sourceKind = ImportKind.singleImage.rawValue' in cat, '245 pack records migrate to one animated character')
 need('if lv == 3' in cat and 'let fw = cg.width / 8' in cat, 'header preview crops one frame, not the whole sheet')
 petm = read(ROOT / 'MiniSightCore/MiniSightPet.m')
-need('effectiveLayout == 3' in petm and '(CGFloat)col / packCols' in petm and '(CGFloat)_state / packRows' in petm, 'sheet plays row/column animation frames')
+need('effectiveLayout == 3' in petm and '(CGFloat)col / packCols' in petm and 'MSPetPoseAtlasRowAt((int)_state' in petm, 'sheet uses verified atlas rows and pose frames')
 need('layout == 3 { return 3 }' in runtime, 'runtime maps layout 3 to animation')
 need('if layout == 2 { return 2 }' in runtime and 'return 1' in runtime, 'photo maps to the whole image')
 need('MiniSightTintPage()' not in home and '配色与服装' not in home, 'pet colour entry removed')

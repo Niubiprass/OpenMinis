@@ -1,7 +1,7 @@
 # 当前：App 0.8.49 双端修复候选，本地检查完成待推送（2026-11-19）
 
 - 基于本地 App HEAD `57b62fbdede841798f01607946b58d64c2d3d019`，候选版本 `0.8.49`；目标远端分支 `ios15-160652-four-features` 当前指向此前已发布 `96dfff6c7b07dc4a21d624a8b4ff76c5377d4495`。
-- 本地验证通过：媒体姿态/物理 C 实际策略与三个编译负例，音乐轨道身份/回调源码契约，唤醒退役与手动语音保护，歌词/atlas/effects/liveliness/settings/shown/permissions 源码或便携检查，集成检查 `ISSUES 0`，共享文件和 `git diff --check` 一致通过。
+- 本地验证通过：媒体姿态/物理 C 实际策略与三个编译负例，音乐轨道身份/回调源码契约，唤醒退役与手动语音保护，歌词/atlas/effects/liveliness/settings/shown/permissions 源码或便携检查，集成检查 `ISSUES 0`，共享文件和 `git diff --check` 一致通过。App 首轮 CI `44556127300` 在 `test_minisight_local_repairs_20261107.py` 因两条过时断言失败，未开始编译；更新为检查手动语音保留、旧名字请求拒绝及映射姿态行后，单项与完整本地 source/portable 矩阵均通过，追加修正待推送并由 CI 重验。
 - 原生限制：当前 Linux/iSH 无 `xcrun`、`xcodebuild`、`swiftc`。Foundation 日志读写、UIKit/ImageIO 行为、App 编译、最终 IPA 与真机均未验证；严格 CI 原生门槛保留，结果待 CI。音乐反馈是 verified sprite row 的 2.5D，不是 3D；仓库无可用三维模型资产。
 - 待推送差异含跨进程歌词阶段脱敏日志、媒体身份冲突切歌保护、重落地分阶段姿态与硬冲击吸收、受限音乐姿态/2.5D、退役名字监听与 Sherpa target。手动 ChatPanel 录音入口保留；无安装、开麦、设备操作、注销或重启授权。推送需使用 `$GITHUB_TOKEN`，CI 后另行报告。
 
