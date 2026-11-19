@@ -91,7 +91,9 @@ struct UIColor {
         let defaults = UserDefaults.standard
         // The runner supplies a temporary HOME and process; never touches real account state.
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("subscription.checkin.v2.") { defaults.removeObject(forKey: key) }
+        func stage(_ value: String) { FileHandle.standardError.write(Data(("[checkin-stage] " + value + "\n").utf8)) }
         let now = Date(), day = SubscriptionCheckinPolicy.day(now)
+        stage("runtime-start")
         let ctx = SubscriptionCreditAPI.Context(instanceId: "a", parentId: "p", type: .traeCN, epoch: SubscriptionOAuthManager.shared.epoch, credentials: .init(access: "fake-account"))
         let duplicate = SubscriptionCreditAPI.Context(instanceId: "b", parentId: "p", type: .traeCN, epoch: ctx.epoch, credentials: ctx.credentials)
         let key = SubscriptionCheckinLedger.key(ctx)
@@ -102,6 +104,7 @@ struct UIColor {
             _ = SubscriptionCheckinLedger.cachedStatus(key, now: now.addingTimeInterval(86400))
         }
         func absent(_ identity: String) -> Bool { defaults.data(forKey: "subscription.checkin.v2." + identity) == nil }
+        print("stage: initial status")
         clear()
         _ = try await SubscriptionCreditAPI.checkin(ctx)
         expect(SubscriptionCheckinLedger.completed(key), "status persisted")
@@ -148,6 +151,7 @@ struct UIColor {
             clear()
         }
         CheckinTransport.status = ["code": 0, "checked_in": false, "enable": true]
+        stage("qualified-business-refusal")
         CheckinTransport.response = ["code": 9004]
         MinisToast.shouldPresent = false
         do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("definite refusal must fail") }
@@ -176,6 +180,7 @@ struct UIColor {
         try await Task.sleep(nanoseconds: 50_000_000)
         expect(MinisToast.notices == ["1 个账号签到失败"], "failure Toast shown on next foreground report: \(MinisToast.notices)")
         expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "failure Toast deduplicated after presentation")
+        stage("failure-toast-verified")
         clear()
         CheckinTransport.claimError = SubscriptionBillingError(message: "specifically verified retry fixture",
             businessRefusal: true, verifiedRetryableFailure: true)
