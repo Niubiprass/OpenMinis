@@ -373,7 +373,10 @@ enum SubscriptionCreditAPI {
             do {
                 current = try await checkin(context)
             } catch {
-                if !(error is CancellationError) { SubscriptionCheckinLedger.queueUnconfirmedOutcomeNotice(key) }
+                let businessRefusal = (error as? SubscriptionBillingError)?.businessRefusal == true
+                if !(error is CancellationError), !businessRefusal {
+                    SubscriptionCheckinLedger.queueUnconfirmedOutcomeNotice(key)
+                }
                 throw error
             }
         } else {
