@@ -184,8 +184,11 @@ struct UIColor {
         clear()
         CheckinTransport.claimError = SubscriptionBillingError(message: "specifically verified retry fixture",
             businessRefusal: true, verifiedRetryableFailure: true)
+        stage("before-verified-claim")
         do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("verified fixture must fail") }
+        catch is CancellationError { fatalError("verified fixture unexpectedly cancelled") }
         catch is SubscriptionBillingError { }
+        stage("after-verified-claim")
         let verified = SubscriptionCheckinLedger.record(key)
         expect(verified.verifiedRetryableFailure && SubscriptionCheckinPolicy.needsReminder(verified, now: now), "separate verified evidence can remind")
         let persistedFailure = defaults.data(forKey: "subscription.checkin.v2." + key)!
