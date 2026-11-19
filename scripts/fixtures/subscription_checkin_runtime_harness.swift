@@ -163,13 +163,17 @@ struct UIColor {
         do { _ = try await SubscriptionCreditAPI.claim(ctx, automatic: true); fatalError("2-hour retry guard must hold") }
         catch is SubscriptionBillingError { }
         expect(CheckinTransport.writes == refusedWrites, "automatic refusal retries only after two hours")
+        var autoProvider = ProviderInstance(id: "p")
+        autoProvider.subscriptionAccountSlots = ["a"]
+        ProviderConfigStore.shared.instances = [autoProvider]
+        ProviderKeychainHelper.accessBySlot = ["a": "fake-account"]
         // Simulate a failed window presentation. The report must remain pending.
         await SubscriptionAutoCheckin.run()
         expect(MinisToast.notices.isEmpty, "failed Toast presentation should not show")
         expect(SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "undelivered failure reminder remains pending")
         MinisToast.shouldPresent = true
         await SubscriptionAutoCheckin.run()
-        expect(MinisToast.notices == ["1 个账号签到失败"], "failure Toast shown on next foreground report")
+        expect(MinisToast.notices == ["1 个账号签到失败"], "failure Toast shown on next foreground report: \(MinisToast.notices)")
         expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "failure Toast deduplicated after presentation")
         clear()
         CheckinTransport.claimError = SubscriptionBillingError(message: "specifically verified retry fixture",
