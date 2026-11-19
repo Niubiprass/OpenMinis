@@ -200,16 +200,20 @@ struct UIColor {
         catch is SubscriptionBillingError { }
         stage("after-lost-reply-claim")
         expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "uncertain next claim cannot reuse old failure")
+        stage("after-lost-reply-assertions")
         CheckinTransport.claimError = nil
         clear()
         CheckinTransport.cancelClaim = true
+        stage("before-explicit-cancel")
         do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("cancel must abort") }
         catch is CancellationError { }
         expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "cancel has no failure")
         expect(absent(key), "cancelled mutation leaves no journal")
+        stage("after-explicit-cancel")
         CheckinTransport.cancelClaim = false
         clear()
         CheckinTransport.statusError = SubscriptionBillingError(message: "fixture query failed")
+        stage("before-query-failure")
         do { _ = try await SubscriptionCreditAPI.checkin(ctx); fatalError("query must fail") }
         catch is SubscriptionBillingError { }
         expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "qualification error is not claim failure")
