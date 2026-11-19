@@ -211,17 +211,24 @@ struct UIColor {
         expect(absent(key), "cancelled mutation leaves no journal")
         stage("after-explicit-cancel")
         CheckinTransport.cancelClaim = false
-        clear()
+        let queryInstance = ProviderInstance(id: "query-failure-provider")
+        queryInstance.subscriptionAccountSlots = ["query-failure"]
+        ProviderConfigStore.shared.instances = [queryInstance]
+        ProviderKeychainHelper.accessBySlot["query-failure"] = "query-failure-account"
+        let queryContext = SubscriptionCreditAPI.Context(instanceId: "query-failure", parentId: queryInstance.id,
+            type: .traeCN, epoch: SubscriptionOAuthManager.shared.epoch,
+            credentials: .init(access: "query-failure-account"))
+        let queryKey = SubscriptionCheckinLedger.key(queryContext)
         CheckinTransport.statusError = SubscriptionBillingError(message: "fixture query failed")
         stage("before-query-require-current")
-        try SubscriptionCreditAPI.requireCurrent(ctx)
+        try SubscriptionCreditAPI.requireCurrent(queryContext)
         stage("after-query-require-current")
         stage("before-query-failure")
-        do { _ = try await SubscriptionCreditAPI.checkin(ctx); fatalError("query must fail") }
+        do { _ = try await SubscriptionCreditAPI.checkin(queryContext); fatalError("query must fail") }
         catch is CancellationError { fatalError("query failure path unexpectedly cancelled") }
         catch is SubscriptionBillingError { }
-        expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "qualification error is not claim failure")
-        expect(absent(key), "qualification transport error creates no journal")
+        expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(queryKey), now: now), "qualification error is not claim failure")
+        expect(absent(queryKey), "qualification transport error creates no journal")
         CheckinTransport.statusError = nil
         clear()
         let expected = SubscriptionCheckinLedger.record(key)
