@@ -213,8 +213,12 @@ struct UIColor {
         CheckinTransport.cancelClaim = false
         clear()
         CheckinTransport.statusError = SubscriptionBillingError(message: "fixture query failed")
+        stage("before-query-require-current")
+        try SubscriptionCreditAPI.requireCurrent(ctx)
+        stage("after-query-require-current")
         stage("before-query-failure")
         do { _ = try await SubscriptionCreditAPI.checkin(ctx); fatalError("query must fail") }
+        catch is CancellationError { fatalError("query failure path unexpectedly cancelled") }
         catch is SubscriptionBillingError { }
         expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "qualification error is not claim failure")
         expect(absent(key), "qualification transport error creates no journal")
