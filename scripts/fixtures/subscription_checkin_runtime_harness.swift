@@ -194,8 +194,11 @@ struct UIColor {
         let persistedFailure = defaults.data(forKey: "subscription.checkin.v2." + key)!
         expect(try JSONDecoder().decode(SubscriptionCheckinRecord.self, from: persistedFailure) == verified, "verified failure roundtrip")
         CheckinTransport.claimError = SubscriptionBillingError(message: "fixture reply lost")
+        stage("before-lost-reply-claim")
         do { _ = try await SubscriptionCreditAPI.claim(ctx); fatalError("lost reply must not succeed") }
+        catch is CancellationError { fatalError("lost-reply path unexpectedly cancelled") }
         catch is SubscriptionBillingError { }
+        stage("after-lost-reply-claim")
         expect(!SubscriptionCheckinPolicy.needsReminder(SubscriptionCheckinLedger.record(key), now: now), "uncertain next claim cannot reuse old failure")
         CheckinTransport.claimError = nil
         clear()
