@@ -155,7 +155,10 @@ struct UIColor {
         let rejected = SubscriptionCheckinLedger.record(key)
         expect(rejected.definitiveClaimFailure && SubscriptionCheckinPolicy.needsReminder(rejected, now: now), "eligible 9004 claim failure requires one notice")
         expect(!rejected.verifiedRetryableFailure, "9004 is definite failure, not verified retry classification")
-        expect(SubscriptionCheckinLedger.cachedStatus(key) == nil, "eligible failed claim remains eligible rather than blocked")
+        let retryStatus = SubscriptionCheckinLedger.cachedStatus(key)
+        expect(retryStatus?.eligibility == .eligible, "eligible failed claim remains eligible rather than blocked")
+        expect(!SubscriptionCheckinLedger.canAttempt(key, now: now.addingTimeInterval(7199)), "restored failed claim still waits two hours")
+        expect(SubscriptionCheckinLedger.canAttempt(key, now: now.addingTimeInterval(7200)), "restored failed claim retries after two hours")
         let refusedWrites = CheckinTransport.writes
         do { _ = try await SubscriptionCreditAPI.claim(ctx, automatic: true); fatalError("2-hour retry guard must hold") }
         catch is SubscriptionBillingError { }

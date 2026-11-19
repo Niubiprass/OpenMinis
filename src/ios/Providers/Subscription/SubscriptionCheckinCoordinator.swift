@@ -163,8 +163,15 @@ enum SubscriptionCheckinLedger {
                 // Quiet for this process/day, without replaying that old refusal.
                 keep(Participation(day: today, status: .init(checkedIn: false,
                     eligibility: .unknown, reward: nil), updatedAt: now, stopForDay: true), key: key, now: now)
+            } else if value.completedDay == nil,
+                      (value.definitiveClaimFailure || value.verifiedRetryableFailure),
+                      value.failedClaimDay == today, let last = value.attemptedAt {
+                keep(Participation(day: today, status: .init(checkedIn: false,
+                    eligibility: .eligible, reward: nil), updatedAt: last,
+                    retryAt: last.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval)), key: key, now: now)
             } else if value.completedDay == nil, !value.verifiedRetryableFailure,
-                      value.attemptDay == today, let last = value.attemptedAt {
+                      !value.definitiveClaimFailure, value.attemptDay == today,
+                      let last = value.attemptedAt {
                 keep(Participation(day: today, status: .init(checkedIn: false,
                     eligibility: .unknown, reward: nil), updatedAt: now,
                     retryAt: last.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval)), key: key, now: now)
