@@ -213,6 +213,14 @@ class CheckinSwiftContract(unittest.TestCase):
         auto = coord[coord.index('@MainActor\nenum SubscriptionAutoCheckin'):]
         auto = auto.replace('private static func run() async', 'static func run() async', 1)
         fixture = (ROOT / 'scripts/fixtures/subscription_checkin_runtime_harness.swift').read_text()
+        exclusion = section(ACCOUNTS.read_text(),
+            '    /// This Trae identity requires participation from multiple devices, so it',
+            '    /// Stable vendor identity, not the access token')
+        accounts_stub = '@MainActor enum SubscriptionAccounts { static func identity(_ token: SubscriptionTokenStorage) -> String? { token.provider + ":" + token.credentials.access } }'
+        self.assertEqual(fixture.count(accounts_stub), 1, 'runtime fixture account helper seam changed')
+        fixture = fixture.replace(accounts_stub,
+            '@MainActor enum SubscriptionAccounts {\n' + exclusion
+            + '    static func identity(_ token: SubscriptionTokenStorage) -> String? { token.provider + ":" + token.credentials.access }\n}')
         # [T-subscription-log] The API logs through the production AppLogger, which is
         # outside this harness's compile unit; fail here with a clear message instead of
         # letting swiftc report "cannot find 'AppLogger' in scope".
