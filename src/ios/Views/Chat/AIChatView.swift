@@ -3922,12 +3922,11 @@ _ios15Seg7
         .padding(.horizontal, 16)
         .padding(.top, topPadding)
         .padding(.bottom, 10)
-        .background {
-            GeometryReader { geometry in
-                ComposerRainbowWave(opacity: 0.32)
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .clipped()
-            }
+        .background(alignment: .bottom) {
+            ComposerRainbowWave(opacity: 0.48)
+                .frame(height: 22)
+                .padding(.horizontal, 22)
+                .padding(.bottom, 2)
         }
         .overlay(alignment: .top) {
             if composerResizeEnabled { composerResizeHandle }

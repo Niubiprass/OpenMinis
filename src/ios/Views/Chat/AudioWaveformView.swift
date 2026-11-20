@@ -40,7 +40,7 @@ struct AudioWaveformView: View {
 /// TimelineView redraws only this decorative Canvas, not the text input state.
 struct ComposerRainbowWave: View {
     var levels: [Float] = []
-    var opacity: Double = 0.34
+    var opacity: Double = 0.58
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let colors: [Color] = [
@@ -58,26 +58,34 @@ struct ComposerRainbowWave: View {
             Canvas(opaque: false, colorMode: .linear) { context, size in
                 guard size.width > 0, size.height > 0 else { return }
                 let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
-                let center = size.height * 0.5
-                let scale = size.height * 0.38
-                let count = max(32, min(120, Int(size.width / 4)))
+                let baseline = size.height - 2
+                let envelope = min(size.height * 0.92, 30)
+                let count = max(36, min(160, Int(size.width / 4)))
                 let phase = time * 0.34
+                let dotStep: CGFloat = 4.0
+                let dotSize: CGFloat = 2.1
 
-                for band in colors.indices {
-                    var path = Path()
-                    for index in 0...count {
-                        let x = size.width * CGFloat(index) / CGFloat(count)
-                        let unit = Double(index) / Double(count)
-                        let audio = sampledLevel(at: unit)
-                        let drift = smoothNoise(position: unit * 5.0 + phase + Double(band) * 7.13) * 0.34
-                            + smoothNoise(position: unit * 11.0 - phase * 0.63 + Double(band) * 3.71) * 0.13
-                        let amplitude = (drift + Double(audio) * 0.52) * Double(scale)
-                        let y = center + CGFloat(amplitude) + CGFloat(band - colors.count / 2) * 1.45
-                        if index == 0 { path.move(to: CGPoint(x: x, y: y)) }
-                        else { path.addLine(to: CGPoint(x: x, y: y)) }
+                for index in 0..<count {
+                    let unit = Double(index) / Double(max(1, count - 1))
+                    let x = size.width * CGFloat(unit)
+                    let audio = sampledLevel(at: unit)
+                    let slowNoise = smoothNoise(position: unit * 4.2 + phase)
+                    let detailNoise = smoothNoise(position: unit * 9.0 - phase * 0.72 + 13.7)
+                    let profile = min(1, max(0, 0.16 + abs(slowNoise) * 0.64
+                        + abs(detailNoise) * 0.18 + Double(audio) * 0.5))
+                    let peak = CGFloat(profile) * envelope
+                    let rows = max(1, Int(peak / dotStep))
+                    let colorIndex = min(colors.count - 1, Int(unit * Double(colors.count)))
+                    let color = colors[colorIndex]
+
+                    for row in 0...rows {
+                        let y = baseline - CGFloat(row) * dotStep
+                        let waveEnvelope = CGFloat(exp(-pow(Double(row) * dotStep / max(peak, 1), 2) * 1.8))
+                        let edgeFade = min(1, max(0.22, Double(waveEnvelope)))
+                        let dot = Path(CGRect(x: x - dotSize * 0.5, y: y - dotSize * 0.5,
+                                              width: dotSize, height: dotSize))
+                        context.fill(dot, with: .color(color.opacity(opacity * edgeFade)))
                     }
-                    context.stroke(path, with: .color(colors[band].opacity(opacity)),
-                                   style: StrokeStyle(lineWidth: 2.1, lineCap: .round, lineJoin: .round))
                 }
             }
         }
