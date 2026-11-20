@@ -374,7 +374,7 @@ struct UIColor {
         await SubscriptionAutoCheckin.run()
         try await Task.sleep(nanoseconds: 50_000_000)
         let verifiedAutoRecord = SubscriptionCheckinLedger.record(fourthKey())
-        expect(MinisToast.notices == ["3 个账号已签到，1 个签到失败"], "verified retry auto notice notices=\(MinisToast.notices) record=\(verifiedAutoRecord)")
+        expect(MinisToast.notices == ["3 个账号已签到，1 个账号签到失败"], "verified retry auto notice notices=\(MinisToast.notices) record=\(verifiedAutoRecord)")
         expect(verifiedAutoRecord.verifiedRetryableFailure && verifiedAutoRecord.definitiveClaimFailure,
             "verified refusal is also a definite failed claim")
         stage("after-verified-auto-loop")
