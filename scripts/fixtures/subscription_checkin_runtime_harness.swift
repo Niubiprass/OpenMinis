@@ -371,6 +371,7 @@ struct UIColor {
         CheckinTransport.claimErrorBySlot["four"] = SubscriptionBillingError(message: "verified retry fixture only",
             businessRefusal: true, verifiedRetryableFailure: true)
         await SubscriptionAutoCheckin.run()
+        try await Task.sleep(nanoseconds: 50_000_000)
         expect(MinisToast.notices == ["3 个账号已签到，1 个签到失败"], "specifically verified retryable failure still reminds in production loop")
         expect(SubscriptionCheckinLedger.record(fourthKey()).verifiedRetryableFailure, "verified-only durable failure evidence saved")
         let verifiedWrites = CheckinTransport.writes
