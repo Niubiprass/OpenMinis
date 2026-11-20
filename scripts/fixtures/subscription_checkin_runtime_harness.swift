@@ -370,10 +370,13 @@ struct UIColor {
         resetFourAccounts()
         CheckinTransport.claimErrorBySlot["four"] = SubscriptionBillingError(message: "verified retry fixture only",
             businessRefusal: true, verifiedRetryableFailure: true)
+        stage("before-verified-auto-loop")
         await SubscriptionAutoCheckin.run()
         try await Task.sleep(nanoseconds: 50_000_000)
-        expect(MinisToast.notices == ["3 个账号已签到，1 个签到失败"], "specifically verified retryable failure still reminds in production loop")
-        expect(SubscriptionCheckinLedger.record(fourthKey()).verifiedRetryableFailure, "verified-only durable failure evidence saved")
+        let verifiedAutoRecord = SubscriptionCheckinLedger.record(fourthKey())
+        expect(MinisToast.notices == ["3 个账号已签到，1 个签到失败"], "verified retry auto notice notices=\(MinisToast.notices) record=\(verifiedAutoRecord)")
+        expect(verifiedAutoRecord.verifiedRetryableFailure, "verified-only durable failure evidence saved")
+        stage("after-verified-auto-loop")
         let verifiedWrites = CheckinTransport.writes
         MinisToast.notices = []
         await SubscriptionAutoCheckin.run()
