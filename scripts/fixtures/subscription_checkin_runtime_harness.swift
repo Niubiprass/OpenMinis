@@ -364,7 +364,8 @@ struct UIColor {
             MinisToast.notices = []
             await SubscriptionAutoCheckin.run()
             expect(MinisToast.notices.isEmpty && CheckinTransport.writes == writes, "same-day repeated auto pass neither repeats toast nor retries early")
-            expect(SubscriptionCheckinLedger.canAttempt(fourthKey(), now: now.addingTimeInterval(7200)), "two-hour automatic retry remains available")
+            let attemptAt = SubscriptionCheckinLedger.record(fourthKey()).attemptedAt!
+            expect(SubscriptionCheckinLedger.canAttempt(fourthKey(), now: attemptAt.addingTimeInterval(7200)), "two-hour automatic retry remains available")
         }
         resetFourAccounts()
         CheckinTransport.claimErrorBySlot["four"] = SubscriptionBillingError(message: "verified retry fixture only",
