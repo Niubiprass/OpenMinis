@@ -42,6 +42,7 @@ typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
 @property (nonatomic, copy, nullable) NSString *actionManifestPath;
 @property (nonatomic, copy, nullable) NSString *lyricsLine;
 @property (nonatomic) BOOL musicPlaying;
+@property (nonatomic) NSTimeInterval musicPosition;
 @property (nonatomic) BOOL lyricsSuppressed;
 
 /// Main-thread API, like UIView. sprite is an already decoded/downsampled,

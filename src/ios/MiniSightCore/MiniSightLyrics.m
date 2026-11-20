@@ -159,18 +159,19 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url) {
 @end
 
 @interface MiniSightLyricsClient ()
++ (nullable MiniSightLyricsTimeline *)timelineForResponseData:(NSData *)data response:(NSHTTPURLResponse *)response track:(MiniSightLyricsTrack *)track reason:(NSString **)reason;
 @property(nonatomic, strong) NSURLSession *session;
 @property(nonatomic, strong) NSCache<NSString *, MSLyricsCacheEntry *> *cache;
 @property(nonatomic, strong, nullable) NSURLSessionDataTask *task;
 @property(nonatomic, strong, nullable) NSMutableData *body;
 @property(nonatomic, strong, nullable) NSHTTPURLResponse *response;
 @property(nonatomic, strong, nullable) MiniSightLyricsTrack *track;
-@property(nonatomic, copy, nullable) MiniSightLyricsCompletion completion;
+@property(nonatomic, copy, nullable) MiniSightLyricsResult completion;
 @property(atomic) NSUInteger generation; // Ticket invalidation is immediate, even off-main.
 @property(nonatomic) NSUInteger activeGeneration;
 @property(nonatomic) NSUInteger rateAttempt;
 @property(nonatomic) NSTimeInterval notBefore;
-- (void)startTrack:(MiniSightLyricsTrack *)track generation:(NSUInteger)generation completion:(MiniSightLyricsCompletion)completion;
+- (void)startTrack:(MiniSightLyricsTrack *)track generation:(NSUInteger)generation completion:(MiniSightLyricsResult)completion;
 - (void)receivedResponse:(NSURLResponse *)response task:(NSURLSessionDataTask *)task completion:(void (^)(NSURLSessionResponseDisposition))completion;
 - (void)receivedData:(NSData *)data task:(NSURLSessionDataTask *)task;
 - (void)finishedTask:(NSURLSessionTask *)task error:(nullable NSError *)error;
@@ -203,6 +204,11 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url) {
 - (void)dealloc { [_session invalidateAndCancel]; }
 
 + (nullable MiniSightLyricsTimeline *)timelineForResponseData:(NSData *)data response:(NSHTTPURLResponse *)response track:(MiniSightLyricsTrack *)track {
+    NSString *reason;
+    return [self timelineForResponseData:data response:response track:track reason:&reason];
+}
++ (nullable MiniSightLyricsTimeline *)timelineForResponseData:(NSData *)data response:(NSHTTPURLResponse *)response track:(MiniSightLyricsTrack *)track reason:(NSString **)reason {
+    *reason = @"lyrics_response_rejected";
     if (![track isKindOfClass:MiniSightLyricsTrack.class] || ![response isKindOfClass:NSHTTPURLResponse.class] ||
         response.statusCode != 200 || !MSLyricsAllowedURL(response.URL) ||
         ![response.MIMEType.lowercaseString isEqualToString:@"application/json"] ||
@@ -211,12 +217,18 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url) {
     if (![record isKindOfClass:NSDictionary.class]) return nil;
     NSString *title = MSLyricsNormalize(record[@"trackName"]), *artist = MSLyricsNormalize(record[@"artistName"]);
     id duration = record[@"duration"], instrumental = record[@"instrumental"], lrc = record[@"syncedLyrics"];
-    if (![title isEqualToString:track.title] || ![artist isEqualToString:track.artist] ||
-        ![duration isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)duration) == CFBooleanGetTypeID() ||
-        !MSLyricsDurationOK([duration doubleValue]) || fabs([duration doubleValue] - track.duration) > 2.0 ||
-        ![instrumental isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)instrumental) != CFBooleanGetTypeID() ||
-        [instrumental boolValue] || ![lrc isKindOfClass:NSString.class]) return nil;
-    return [MiniSightLyricsTimeline timelineWithLRC:lrc duration:track.duration];
+    if (!title.length || !artist.length || ![duration isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)duration) == CFBooleanGetTypeID() ||
+        !MSLyricsDurationOK([duration doubleValue]) ||
+        ![instrumental isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)instrumental) != CFBooleanGetTypeID()) return nil;
+    if (![title isEqualToString:track.title] || ![artist isEqualToString:track.artist] || fabs([duration doubleValue] - track.duration) > 2.0) {
+        *reason = @"lyrics_track_mismatch"; return nil;
+    }
+    if ([instrumental boolValue]) { *reason = @"lyrics_instrumental"; return nil; }
+    if (!lrc || lrc == NSNull.null || ([lrc isKindOfClass:NSString.class] && ![lrc length])) { *reason = @"no_synced_lyrics"; return nil; }
+    if (![lrc isKindOfClass:NSString.class]) return nil;
+    MiniSightLyricsTimeline *timeline = [MiniSightLyricsTimeline timelineWithLRC:lrc duration:track.duration];
+    *reason = timeline ? @"lyrics_timeline" : @"lyrics_invalid_lrc";
+    return timeline;
 }
 + (NSTimeInterval)retryDelayForResponse:(NSHTTPURLResponse *)response now:(NSDate *)now attempt:(NSUInteger)attempt {
     if (response.statusCode != 429 && response.statusCode != 503) return 0;
@@ -241,11 +253,11 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url) {
     NSDate *date = [formatter dateFromString:header];
     return date ? MAX(fallback, [date timeIntervalSinceDate:now]) : fallback;
 }
-- (void)deliver:(MiniSightLyricsTimeline * _Nullable)timeline generation:(NSUInteger)generation completion:(MiniSightLyricsCompletion _Nullable)completion {
+- (void)deliver:(MiniSightLyricsTimeline * _Nullable)timeline reason:(NSString *)reason generation:(NSUInteger)generation completion:(MiniSightLyricsResult _Nullable)completion {
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         MiniSightLyricsClient *owner = weakSelf;
-        if (owner && owner.generation == generation && completion) completion(timeline);
+        if (owner && owner.generation == generation && completion) completion(timeline, reason);
     });
 }
 - (NSUInteger)nextGeneration {
@@ -265,28 +277,33 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url) {
     if (NSThread.isMainThread) clear(); else dispatch_async(dispatch_get_main_queue(), clear);
 }
 - (void)fetchTrack:(MiniSightLyricsTrack *)track completion:(MiniSightLyricsCompletion)completion {
+    [self fetchTrack:track result:^(MiniSightLyricsTimeline *timeline, NSString *reason) {
+        if (completion) completion(timeline);
+    }];
+}
+- (void)fetchTrack:(MiniSightLyricsTrack *)track result:(MiniSightLyricsResult)completion {
     NSUInteger generation = [self nextGeneration];
     void (^start)(void) = ^{
         if (self.generation == generation) [self startTrack:track generation:generation completion:completion];
     };
     if (NSThread.isMainThread) start(); else dispatch_async(dispatch_get_main_queue(), start);
 }
-- (void)startTrack:(MiniSightLyricsTrack *)track generation:(NSUInteger)generation completion:(MiniSightLyricsCompletion)completion {
+- (void)startTrack:(MiniSightLyricsTrack *)track generation:(NSUInteger)generation completion:(MiniSightLyricsResult)completion {
     [self clearActive];
     _activeGeneration = generation;
     if (![track isKindOfClass:MiniSightLyricsTrack.class]) {
-        [self deliver:nil generation:generation completion:completion];
+        [self deliver:nil reason:@"metadata_missing" generation:generation completion:completion];
         return;
     }
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
     MSLyricsCacheEntry *entry = [_cache objectForKey:track.cacheKey];
     if (entry && entry.expires > now) {
-        [self deliver:entry.timeline generation:generation completion:completion];
+        [self deliver:entry.timeline reason:(entry.timeline ? @"lyrics_timeline" : @"lyrics_not_found") generation:generation completion:completion];
         return;
     }
     if (entry) [_cache removeObjectForKey:track.cacheKey];
     if (now < _notBefore) {
-        [self deliver:nil generation:generation completion:completion];
+        [self deliver:nil reason:@"lyrics_cooldown" generation:generation completion:completion];
         return;
     }
     NSURLComponents *url = [NSURLComponents componentsWithString:@"https://lrclib.net/api/get"];
@@ -323,8 +340,12 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url) {
         [self finishedTask:task error:nil]; // Status/header only; never buffer an error page.
         return;
     }
-    if (response.expectedContentLength > (int64_t)MSLyricsMaxBytes ||
-        ![response.MIMEType.lowercaseString isEqualToString:@"application/json"]) {
+    if (![response.MIMEType.lowercaseString isEqualToString:@"application/json"]) {
+        completion(NSURLSessionResponseCancel);
+        [self finishedTask:task error:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorBadServerResponse userInfo:nil]];
+        return;
+    }
+    if (response.expectedContentLength > (int64_t)MSLyricsMaxBytes) {
         completion(NSURLSessionResponseCancel);
         [self finishedTask:task error:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorDataLengthExceedsMaximum userInfo:nil]];
         return;
@@ -345,7 +366,17 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url) {
     if (task != _task) return;
     if (_activeGeneration != self.generation) return;
     MiniSightLyricsTimeline *timeline = nil;
-    if (!error && _response.statusCode == 200) timeline = [MiniSightLyricsClient timelineForResponseData:_body response:_response track:_track];
+    NSInteger status = _response.statusCode;
+    NSString *reason = @"lyrics_http";
+    if (error) {
+        BOOL urlError = [error.domain isEqualToString:NSURLErrorDomain];
+        reason = urlError && error.code == NSURLErrorTimedOut ? @"lyrics_timeout"
+            : urlError && error.code == NSURLErrorDataLengthExceedsMaximum ? @"lyrics_oversized"
+            : urlError && error.code == NSURLErrorBadServerResponse ? @"lyrics_response_rejected" : @"lyrics_network_error";
+    } else if (status == 404) reason = @"lyrics_not_found";
+    else if (status == 429) reason = @"lyrics_rate_limited";
+    else if (status == 503) reason = @"lyrics_service_unavailable";
+    else if (status == 200) timeline = [MiniSightLyricsClient timelineForResponseData:_body response:_response track:_track reason:&reason];
     if (!error && (timeline || _response.statusCode == 404)) {
         MSLyricsCacheEntry *entry = [[MSLyricsCacheEntry alloc] init];
         entry.timeline = timeline;
@@ -355,10 +386,10 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url) {
     if (!error && (_response.statusCode == 200 || _response.statusCode == 404)) _rateAttempt = 0;
     if (error || (_response.statusCode >= 500 && _response.statusCode != 503))
         _notBefore = MAX(_notBefore, NSProcessInfo.processInfo.systemUptime + 5.0);
-    MiniSightLyricsCompletion completion = _completion;
+    MiniSightLyricsResult completion = _completion;
     NSUInteger generation = _activeGeneration;
     _task = nil; _body = nil; _response = nil; _track = nil; _completion = nil;
-    [self deliver:timeline generation:generation completion:completion];
+    [self deliver:timeline reason:reason generation:generation completion:completion];
 }
 @end
 

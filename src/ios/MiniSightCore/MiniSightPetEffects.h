@@ -7,7 +7,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSString *actionManifestPath;
 @property (nonatomic, copy, nullable) NSString *lyricsLine;
 @property (nonatomic) BOOL musicPlaying;
+@property (nonatomic) NSTimeInterval musicPosition;
 @property (nonatomic) BOOL busy;
+@property (nonatomic, readonly) BOOL presentationBlocked;
 @property (nonatomic) NSInteger preferredFPS;
 @property (nonatomic, readonly) BOOL hasActions;
 @property (nonatomic, readonly) BOOL isDragging;
@@ -22,7 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// This is separate from visual squash and drag impulse state.
 - (void)setFloorImpactVelocity:(CGFloat)velocity;
 /// Selects existing sleep/wake action roles for a non-resident landing recovery.
-/// 0 clears the recovery owner; 1 settles; 2 stands up.
+/// 0 clears; 1 falls, 2 wobbles, 3 sits, 4 rises.
 - (void)setLandingRecoveryStage:(NSInteger)stage;
 - (void)beginDragAt:(CGPoint)localPoint;
 - (void)dragTo:(CGPoint)center;

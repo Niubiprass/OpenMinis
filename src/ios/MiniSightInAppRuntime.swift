@@ -59,7 +59,7 @@ struct MiniSightInAppRuntime: View {
                 MiniSightPetHost(image: petImage, displaySize: CGFloat(petSize), variant: MiniSightAppFiles.variantIndex,
                                  spriteLayout: MiniSightAppFiles.spriteLayout,
                                  actionManifestPath: actionManifestPath,
-                                 lyricsLine: music.line, musicPlaying: music.playing,
+                                 lyricsLine: music.line, musicPlaying: music.playing, musicAnchor: music.anchor,
                                  dragGain: dragResponse ? 1.0 : 0.20, soundEnabled: petSoundEnabled,
                                  roll: motion.roll,
                                  activityActive: activity.active, gravityEnabled: gravityEnabled, gravityStrength: gravityStrength,
@@ -410,12 +410,18 @@ private enum MiniSightAppFiles {
     }
 }
 
+private struct MiniSightMusicAnchor: Equatable {
+    let position: Double, stamp: Double
+    var current: Double { position + min(5, max(0, Date().timeIntervalSince1970 - stamp)) }
+}
+
 /// Reads the tweak's already-synchronized CURRENT line; never fetches music
 /// credentials or lyrics itself. Without the tweak the snapshot expires silently.
 @MainActor
 private final class MiniSightMusicBridge: ObservableObject {
     @Published private(set) var line: String?
     @Published private(set) var playing = false
+    @Published private(set) var anchor: MiniSightMusicAnchor?
     private var timer: Timer?
     private let io = DispatchQueue(label: "com.openminis.minisight.music.read", qos: .utility)
     private var generation = 0
@@ -478,6 +484,9 @@ private final class MiniSightMusicBridge: ObservableObject {
                     MSDiagEvent("music", "receive", "ok", ["source": "app", "generation": token,
                         "present": !(nextLine?.isEmpty ?? true), "reason": "lyrics_received"])
                 }
+                let position = (value?["motionTime"] as? NSNumber)?.doubleValue
+                let anchor = position.flatMap { nextPlaying && $0.isFinite && $0 >= 0 ? MiniSightMusicAnchor(position: $0, stamp: time) : nil }
+                if self.anchor != anchor { self.anchor = anchor }
                 if self.playing != nextPlaying { self.playing = nextPlaying }
             }
         }
@@ -741,6 +750,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
     let actionManifestPath: String?
     let lyricsLine: String?
     let musicPlaying: Bool
+    let musicAnchor: MiniSightMusicAnchor?
     let dragGain: CGFloat
     let soundEnabled: Bool
     let roll: Double
@@ -822,6 +832,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.spriteLayout = parent.spriteLayout
             pet.actionManifestPath = parent.actionManifestPath
             pet.lyricsLine = parent.lyricsLine
+            pet.musicPosition = parent.musicAnchor?.current ?? 0
             pet.musicPlaying = parent.musicPlaying
             pet.activityActive = parent.activityActive
             root.pet = pet
@@ -861,6 +872,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.actionManifestPath = parent.actionManifestPath
             pet.image = image
             pet.lyricsLine = parent.lyricsLine
+            pet.musicPosition = parent.musicAnchor?.current ?? 0
             pet.musicPlaying = parent.musicPlaying
             pet.gravityRoll = roll
             pet.activityActive = active

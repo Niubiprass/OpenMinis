@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
               container:(nullable NSString *)container presentation:(NSDictionary *)presentation;
 @property (nonatomic, copy, nullable) void (^updateHandler)(NSDictionary<NSString *, id> *snapshot);
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, id> *snapshot;
+@property (nonatomic, readonly) NSTimeInterval motionPosition;
 /// allowed describes actual presentation eligibility (including App-owned mode).
 - (void)configureAllowed:(BOOL)allowed lyrics:(BOOL)lyrics motion:(BOOL)motion
               container:(nullable NSString *)container;

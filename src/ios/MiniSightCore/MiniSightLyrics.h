@@ -36,7 +36,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 typedef void (^MiniSightLyricsCompletion)(MiniSightLyricsTimeline * _Nullable timeline);
 
+typedef void (^MiniSightLyricsResult)(MiniSightLyricsTimeline * _Nullable timeline, NSString *reason);
+
 @interface MiniSightLyricsClient : NSObject
+/// Fixed-vocabulary result, never server text, URL, metadata, or lyric content.
+- (void)fetchTrack:(MiniSightLyricsTrack *)track result:(MiniSightLyricsResult)completion;
 /// Any queue: generation invalidation is immediate; I/O state/completions use MAIN.
 /// A new fetch cancels the previous fetch, including any queued completion.
 /// No automatic retry. A cache miss during cooldown completes nil; no UI text/logging.

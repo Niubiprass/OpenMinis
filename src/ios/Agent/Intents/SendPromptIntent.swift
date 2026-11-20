@@ -549,6 +549,11 @@ final class ShortcutNotificationDelegate: NSObject, UNUserNotificationCenterDele
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
+        let logger = AppLogger(category: "AskAlert")
+        let isQuestionAlert = userInfo["questionToolUseId"] != nil
+        if isQuestionAlert {
+            logger.info("[AskAlert] notification tapped hasSession=\((userInfo["sessionId"] as? String)?.isEmpty == false)")
+        }
         if let sessionId = userInfo["sessionId"] as? String, !sessionId.isEmpty {
             DispatchQueue.main.async {
                 // Buffer first (cold-launch consumer), then post (warm-path
@@ -572,6 +577,8 @@ final class ShortcutNotificationDelegate: NSObject, UNUserNotificationCenterDele
                     }
                 }
             }
+        } else if isQuestionAlert {
+            logger.warning("[AskAlert] tapped notification missing session")
         }
         completionHandler()
     }

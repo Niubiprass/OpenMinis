@@ -36,56 +36,85 @@ struct AudioWaveformView: View {
     }
 }
 
-/// Low-cost rainbow wave shared by text and voice composer modes.
-/// TimelineView redraws only this decorative Canvas, not the text input state.
+/// Dense square-particle cloud matching the reference composer wave.
+/// The shared surface clips it; foreground controls naturally mask its peaks.
 struct ComposerRainbowWave: View {
     var levels: [Float] = []
-    var opacity: Double = 0.58
+    var opacity: Double = 0.86
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let colors: [Color] = [
-        Color(red: 0.98, green: 0.32, blue: 0.49),
-        Color(red: 1.00, green: 0.55, blue: 0.31),
-        Color(red: 0.98, green: 0.78, blue: 0.28),
-        Color(red: 0.30, green: 0.82, blue: 0.61),
-        Color(red: 0.20, green: 0.73, blue: 0.93),
-        Color(red: 0.48, green: 0.49, blue: 0.96),
-        Color(red: 0.78, green: 0.40, blue: 0.91)
+    private let colorStops: [(Double, Double, Double)] = [
+        (0.96, 0.48, 0.49), (0.88, 0.39, 0.72), (0.56, 0.43, 0.88),
+        (0.34, 0.60, 0.94), (0.24, 0.79, 0.90), (0.32, 0.82, 0.68),
+        (0.88, 0.77, 0.40)
     ]
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: reduceMotion)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 18.0, paused: reduceMotion)) { timeline in
             Canvas(opaque: false, colorMode: .linear) { context, size in
                 guard size.width > 0, size.height > 0 else { return }
                 let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
-                let baseline = size.height - 2
-                let envelope = min(size.height * 0.92, 30)
-                let count = max(36, min(160, Int(size.width / 4)))
-                let phase = time * 0.34
-                let dotStep: CGFloat = 4.0
-                let dotSize: CGFloat = 2.1
+                let root = size.height - 1.5
+                let maxRise = min(size.height - 2, 54)
+                let xStep: CGFloat = 2.35
+                let yStep: CGFloat = 2.55
+                let dot: CGFloat = 1.75
+                let colorBucketCount = 28
+                let columns = max(2, Int(ceil(size.width / xStep)))
+                let rows = max(1, Int(maxRise / yStep))
+                var particlePaths = Array(repeating: Path(), count: colorBucketCount)
+                var highlightPaths = Array(repeating: Path(), count: colorBucketCount)
 
-                for index in 0..<count {
-                    let unit = Double(index) / Double(max(1, count - 1))
-                    let x = size.width * CGFloat(unit)
-                    let audio = sampledLevel(at: unit)
-                    let slowNoise = smoothNoise(position: unit * 4.2 + phase)
-                    let detailNoise = smoothNoise(position: unit * 9.0 - phase * 0.72 + 13.7)
-                    let profile = min(1, max(0, 0.16 + abs(slowNoise) * 0.64
-                        + abs(detailNoise) * 0.18 + Double(audio) * 0.5))
-                    let peak = CGFloat(profile) * envelope
-                    let rows = max(1, Int(peak / dotStep))
-                    let colorIndex = min(colors.count - 1, Int(unit * Double(colors.count)))
-                    let color = colors[colorIndex]
+                let audio = sampledAudioEnergy()
+                let centerA = 0.43 + 0.19 * sin(time * 0.43 + 0.35)
+                let centerB = 0.73 + 0.12 * sin(time * 0.36 + 1.9)
+                let centerC = 0.16 + 0.075 * cos(time * 0.51 + 0.8)
+                let breath = 0.88 + 0.12 * sin(time * 1.35)
 
-                    for row in 0...rows {
-                        let y = baseline - CGFloat(row) * dotStep
-                        let waveEnvelope = CGFloat(exp(-pow(Double(row) * dotStep / max(peak, 1), 2) * 1.8))
-                        let edgeFade = min(1, max(0.22, Double(waveEnvelope)))
-                        let dot = Path(CGRect(x: x - dotSize * 0.5, y: y - dotSize * 0.5,
-                                              width: dotSize, height: dotSize))
-                        context.fill(dot, with: .color(color.opacity(opacity * edgeFade)))
+                for layer in 0..<2 {
+                    let offset = layer == 0 ? 0.0 : xStep * 0.48
+                    for column in 0..<columns {
+                        let x = CGFloat(column) * xStep + offset
+                        let u = min(1, max(0, Double(x / size.width)))
+                        let edge = min(1.0, min(u / 0.022, (1 - u) / 0.022))
+                        let broad = 0.20
+                            + 0.92 * gaussian(u, centerA, 0.17)
+                            + 0.83 * gaussian(u, centerB, 0.16)
+                            + 0.66 * gaussian(u, centerC, 0.09)
+                        let drift = 0.10 * (smoothNoise(position: u * 5.2 - time * 0.27) + 1)
+                            + 0.05 * (smoothNoise(position: u * 10.6 + time * 0.19 + Double(layer) * 3.7) + 1)
+                        let audioLift = Double(audio) * (0.42 + 0.58 * abs(sin(u * .pi * 2.4 + time * 1.8)))
+                        let profile = min(1.0, max(0, (broad + drift + audioLift) * breath)) * edge
+                        let peak = min(maxRise, max(yStep * 1.5, maxRise * CGFloat(profile)))
+                        let bucket = min(colorBucketCount - 1, Int(u * Double(colorBucketCount)))
+
+                        for row in 0...rows {
+                            let distance = CGFloat(row) * yStep + CGFloat(layer) * 1.35
+                            if distance > peak + 2 { continue }
+                            let heightRatio = Double(distance / max(peak, 1))
+                            let occupancy = min(1, max(0.16, 0.96 - heightRatio * 0.61))
+                            let chance = hash(column: column + layer * 173, row: row + layer * 29)
+                            if row > 1 && chance > occupancy { continue }
+
+                            let ripple = sin(u * .pi * 7.5 - time * 1.35) * 1.25
+                                + sin(u * .pi * 15.0 + time * 0.87 + Double(layer)) * 0.65
+                            let y = root - distance + CGFloat(ripple)
+                            let rect = CGRect(x: x - dot * 0.5, y: y - dot * 0.5, width: dot, height: dot)
+                            particlePaths[bucket].addRect(rect)
+                            if row < 4 && ((column + row + layer) % 4 == 0) {
+                                let spark = CGRect(x: rect.midX - 0.55, y: rect.midY - 0.55, width: 1.1, height: 1.1)
+                                highlightPaths[bucket].addRect(spark)
+                            }
+                        }
                     }
+                }
+
+                for index in 0..<colorBucketCount {
+                    let unit = Double(index) / Double(colorBucketCount - 1)
+                    let current = colorStop(at: unit + 0.003 * sin(time * 0.24 + unit * 3))
+                    let color = Color(red: current.0, green: current.1, blue: current.2).opacity(opacity)
+                    context.fill(particlePaths[index], with: .color(color))
+                    context.fill(highlightPaths[index], with: .color(.white.opacity(opacity * 0.42)))
                 }
             }
         }
@@ -93,23 +122,43 @@ struct ComposerRainbowWave: View {
         .allowsHitTesting(false)
     }
 
+    private func gaussian(_ value: Double, _ center: Double, _ width: Double) -> Double {
+        let distance = (value - center) / width
+        return exp(-0.5 * distance * distance)
+    }
+
+    private func hash(column: Int, row: Int) -> Double {
+        let raw = sin(Double(column) * 127.1 + Double(row) * 311.7) * 43758.5453123
+        return raw - floor(raw)
+    }
+
     private func smoothNoise(position: Double) -> Double {
         let cell = floor(position)
         let fraction = position - cell
-        let eased = fraction * fraction * (3.0 - 2.0 * fraction)
-        let lower = latticeNoise(cell)
-        let upper = latticeNoise(cell + 1.0)
-        return lower + (upper - lower) * eased
+        let eased = fraction * fraction * (3 - 2 * fraction)
+        let a = hash(column: Int(cell), row: 911)
+        let b = hash(column: Int(cell) + 1, row: 911)
+        return (a + (b - a) * eased) * 2 - 1
     }
 
-    private func latticeNoise(_ value: Double) -> Double {
-        let seed = sin(value * 127.1 + 311.7) * 43758.5453123
-        return (seed - floor(seed)) * 2.0 - 1.0
-    }
-
-    private func sampledLevel(at position: Double) -> Double {
+    private func sampledAudioEnergy() -> Double {
         guard !levels.isEmpty else { return 0 }
-        let index = min(levels.count - 1, max(0, Int(position * Double(levels.count))))
-        return min(1, max(0, Double(levels[index])))
+        let values = levels.suffix(12).map { min(1, max(0, Double($0))) }
+        guard !values.isEmpty else { return 0 }
+        let mean = values.reduce(0, +) / Double(values.count)
+        return min(1, max(0, mean * 1.65))
+    }
+
+    private func colorStop(at position: Double) -> (Double, Double, Double) {
+        let x = min(1, max(0, position)) * Double(colorStops.count - 1)
+        let lower = min(colorStops.count - 2, Int(x))
+        let fraction = x - Double(lower)
+        let a = colorStops[lower]
+        let b = colorStops[lower + 1]
+        return (
+            a.0 + (b.0 - a.0) * fraction,
+            a.1 + (b.1 - a.1) * fraction,
+            a.2 + (b.2 - a.2) * fraction
+        )
     }
 }

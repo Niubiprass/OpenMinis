@@ -34,7 +34,9 @@
     MSPetDamped _pivotX, _pivotY;
     NSString *_transientRole;
     CGFloat _tilt, _sway, _flightAngle, _impact, _landImpact, _grabX, _grabY, _shakeStrength, _shakeDirection;
-    double _phase, _musicAmplitude;
+    double _musicAnchor, _musicAnchorAt, _musicAmplitude, _recoveryBegan;
+    NSInteger _recoveryStage;
+    unsigned _musicEvidenceBudget, _lastMusicCue;
     MSPetDamped _angle, _offsetX, _offsetY, _scaleX, _scaleY, _dragX, _dragY;
     MSPetDragTrail _trail;
     CGPoint _dragTarget, _visualOffset;
@@ -100,6 +102,20 @@
 - (BOOL)hasActions { return _ownsSprite; }
 - (BOOL)isDragging { return _dragging; }
 - (BOOL)presentationBlocked { return _busy || MiniSightChatPanel.existingPanel.isVisible; }
+- (BOOL)musicPlaying { return _musicPlaying; }
+- (void)setMusicPlaying:(BOOL)playing {
+    if (_musicPlaying == playing) return;
+    if (!playing) _musicAnchor = self.musicPosition; // Freeze the render clock on pause.
+    _musicAnchorAt = CACurrentMediaTime();
+    _musicPlaying = playing; _musicEvidenceBudget = playing ? 3 : 0; _lastMusicCue = 8;
+}
+- (NSTimeInterval)musicPosition {
+    return MSPetMusicInterpolate(_musicAnchor, CACurrentMediaTime() - _musicAnchorAt, _musicPlaying);
+}
+- (void)setMusicPosition:(NSTimeInterval)position {
+    _musicAnchor = isfinite(position) ? fmax(0., position) : 0.;
+    _musicAnchorAt = CACurrentMediaTime();
+}
 - (BOOL)autonomyHeld {
     if (!_running || [self presentationBlocked] || _dragging) return NO;
     double now = CACurrentMediaTime();
@@ -128,8 +144,12 @@
     if ([self presentationBlocked]) return @"idle";
     if (now < _shakeUntil) return _shakeStrength >= .55 ? @"shakeHard" : @"shakeSoft";
     if (_flying) return @"flight";
+    if (_recoveryStage && !UIAccessibilityIsReduceMotionEnabled()) {
+        NSString *role = _recoveryStage == 1 ? @"land" : _recoveryStage == 4 ? @"wake" : @"sleep";
+        return _library.roles[role].count ? role : @"idle";
+    }
     if (_transientRole && now < _transientUntil) return _transientRole;
-    if (now < _landUntil) return @"land";
+    if (now < _landUntil && !UIAccessibilityIsReduceMotionEnabled()) return @"land";
     if (_state == 0 && [_role isEqualToString:@"tap"] &&
         (_clipStart > 0 ? now - _clipStart < _clip.duration : now - _selectionBegan < 2.))
         return @"tap"; // Count the clip from its prepared first frame, not the input event.
@@ -139,7 +159,7 @@
     if (_state == 2) return @"walkLeft";
     if (_state == 3) return @"tap";
     if (_state == 4) return @"jump";
-    if (_musicPlaying && !_busy) return @"music";
+    if (_state == 8 && _musicPlaying && !_busy && !UIAccessibilityIsReduceMotionEnabled()) return @"music";
     return @"idle";
 }
 - (void)chooseRole {
@@ -206,7 +226,7 @@
         self->_displayedFrame = index;
         if (first) {
             self->_clipStart = CACurrentMediaTime();
-            if ([self->_role isEqualToString:@"land"]) self->_landUntil = self->_clipStart + clip.duration;
+            if (!self->_recoveryStage && [self->_role isEqualToString:@"land"]) self->_landUntil = self->_clipStart + clip.duration;
             if ([self->_role isEqualToString:@"shakeSoft"] || [self->_role isEqualToString:@"shakeHard"])
                 self->_shakeUntil = self->_clipStart + clip.duration;
             if ([self->_role isEqualToString:self->_transientRole]) self->_transientUntil = self->_clipStart + clip.duration;
@@ -223,7 +243,7 @@
     if (_clipStart <= 0) { [self requestFrame:0]; return; }
     double duration = _clip.duration;
     if (!(duration > 0)) return;
-    double elapsed = fmax(0., now - _clipStart);
+    double elapsed = [_role isEqualToString:@"music"] ? self.musicPosition : fmax(0., now - _clipStart);
     if (elapsed >= duration && [_role isEqualToString:@"idle"] && _library.roles[@"idle"].count > 1) {
         _role = nil; _wantedRole = nil; [self chooseRole]; return;
     }
@@ -249,7 +269,7 @@
         ++_frameRequest; _framePending = NO; _frameRetryAt = 0; _frameFailures = 0;
         [_link invalidate]; _link = nil;
         _dragging = NO; _flying = NO; _waking = NO; _state = 0; _transientRole = nil;
-        _shakeUntil = 0; _landUntil = 0; _musicAmplitude = 0;
+        _shakeUntil = 0; _landUntil = 0; _musicAmplitude = 0; _recoveryStage = 0;
         memset(&_trail, 0, sizeof(_trail));
         [_library purgeFrames];
         [self restorePoster];
@@ -283,16 +303,9 @@
     _landImpact = MSPetFiniteClamp((bounded - 360.) / 840., 0., 1.);
 }
 - (void)setLandingRecoveryStage:(NSInteger)stage {
-    if (stage <= 0) {
-        _transientRole = nil; _transientUntil = 0.; _wantedRole = nil;
-        [self chooseRole];
-        return;
-    }
-    NSString *role = stage >= 2 ? @"wake" : @"sleep";
-    if (!_library.roles[role].count) role = stage >= 2 ? @"idle" : @"land";
-    _transientRole = role;
-    _transientUntil = CACurrentMediaTime() + (stage >= 2 ? .8 : .65);
-    _wantedRole = nil;
+    if (stage == 1) _recoveryBegan = CACurrentMediaTime();
+    _recoveryStage = stage;
+    _transientRole = nil; _transientUntil = 0.; _landUntil = 0.; _wantedRole = nil;
     [self chooseRole];
 }
 - (void)beginDragAt:(CGPoint)localPoint {
@@ -361,9 +374,9 @@
     }
     [self advanceActions:now];
     BOOL reduce = UIAccessibilityIsReduceMotionEnabled();
-    BOOL dance = _musicPlaying && !blocked && !_dragging && !_flying && _state != 5 && !reduce;
-    _musicAmplitude = MSPetMusicAmplitude(_musicAmplitude, dance, dt);
-    _phase = fmod(_phase + dt * (2. * M_PI / 2.2), 2. * M_PI);
+    BOOL dance = _musicPlaying && !blocked && !_dragging && !_flying && _state == 8 && !_recoveryStage && now >= _landUntil && now >= _shakeUntil && !reduce;
+    MSPetMusicCue cue = MSPetMusicCueAt(dance ? self.musicPosition : -1.);
+    _musicAmplitude = MSPetMusicAmplitude(_musicAmplitude, dance ? cue.pulse : 0., dt);
     double angle = blocked || reduce ? 0. : MSPetFiniteClamp(_tilt, -.22, .22);
     double x = blocked || reduce ? 0. : MSPetFiniteClamp(_sway, -5., 5.);
     double y = 0., sx = 1., sy = 1.;
@@ -374,6 +387,12 @@
         sy = 1. + fmin(.035, hypot(_dragX.velocity, _dragY.velocity) / 40000.);
     } else if (_flying && !blocked && !reduce) {
         angle += _flightAngle; sx += .07 * _impact; sy -= .09 * _impact;
+    } else if (_recoveryStage && !blocked && !reduce) {
+        double age = fmax(0., now - _recoveryBegan);
+        if (_recoveryStage == 1) { angle += .96; sx += .14; sy -= .30; }
+        if (_recoveryStage == 2) { angle += .48 + .32 * sin((age - .38) * 24.); sy -= .19; }
+        if (_recoveryStage == 3) { angle += .07; sx += .12; sy -= .22; }
+        if (_recoveryStage == 4) { sy -= .22 * MSPetFiniteClamp((2.16 - age) / .68, 0., 1.); }
     } else if (now < _landUntil && !blocked && !reduce) {
         double t = MSPetFiniteClamp((now - _landBegan) / .5, 0., 1.);
         sy -= .065 * sin(M_PI * t); sx += .035 * sin(M_PI * t);
@@ -382,9 +401,18 @@
         angle += _shakeDirection * (.06 + .09 * _shakeStrength) * sin(elapsed * 8.) * exp(-elapsed * 4.);
     }
     if (dance) {
-        angle += .15 * _musicAmplitude * sin(_phase);
-        x += 5. * _musicAmplitude * sin(_phase * .5);
-        y -= pet.bounds.size.height * .06 * _musicAmplitude * (1. - cos(_phase * 2.)) * .5;
+        double position = self.musicPosition, phase = 2. * M_PI * fmod(position, .6) / .6;
+        if (_musicEvidenceBudget && cue.cue != _lastMusicCue) {
+            --_musicEvidenceBudget; _lastMusicCue = cue.cue;
+            NSString *source = [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"] ? @"plugin" : @"app";
+            MSDiagEvent(@"pet", @"state", @"ok", @{@"source":source, @"reason":@"pose_selected", @"value":@(80 + cue.cue)});
+        }
+        double a = _musicAmplitude, h = pet.bounds.size.height;
+        if (cue.pose == MSPetPoseJump) { y -= .15*h*a*(1.-cos(phase))*.5; sy += .08*a*sin(phase); }
+        else if (cue.pose == MSPetPoseWave) { angle += .26*a*sin(phase); sy -= .09*a*cue.pulse; }
+        else if (cue.pose == MSPetPoseIdle) { sy -= .075*a*cue.pulse; sx += .05*a*cue.pulse; }
+        else { double sign = cue.pose == MSPetPoseWalkLeft ? -1. : 1.;
+            x += sign*.12*h*a*(1.-cos(phase))*.5; angle += sign*.18*a; y -= .035*h*a*cue.pulse; }
     }
     MSPetDampedStep(&_angle, angle, dt, 20.);
     MSPetDampedStep(&_offsetX, x, dt, 22.); MSPetDampedStep(&_offsetY, y, dt, 22.);

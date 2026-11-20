@@ -36,9 +36,17 @@ static BOOL fixtureLocked;
 @end
 @implementation SBMediaController
 + (instancetype)sharedInstance { static id obj; if (!obj) obj = [self new]; return obj; }
-- (id)nowPlayingApplication { return self; }
+- (id)nowPlayingApplication { return fixturePlayer ? self : nil; }
 - (NSString *)bundleIdentifier { return fixturePlayer; }
 @end
+@interface SBApplicationController : NSObject
+@end
+@implementation SBApplicationController
++ (instancetype)sharedInstance { return [self new]; }
+- (id)applicationWithPid:(NSInteger)pid { return pid == 123 ? @"com.netease.cloudmusic" : @"com.not.allowed"; }
+@end
+static int secondPID; static NSUInteger pidCalls;
+static void GetPID(dispatch_queue_t q, void (^cb)(int)) { cb(++pidCalls == 1 ? 123 : secondPID); }
 @interface WrongReturn : NSObject
 - (double)bad;
 @end
@@ -52,8 +60,8 @@ static BOOL fixtureLocked;
 @end
 @implementation FakeClient
 - (void)cancel { ++_cancels; }
-- (void)fetchTrack:(MiniSightLyricsTrack *)track completion:(MiniSightLyricsCompletion)completion {
-    ++_requests; self.completion = completion;
+- (void)fetchTrack:(MiniSightLyricsTrack *)track result:(MiniSightLyricsResult)completion {
+    ++_requests; self.completion = ^(MiniSightLyricsTimeline *t){ completion(t,t ? @"lyrics_timeline" : @"lyrics_not_found"); };
 }
 @end
 static NSMutableArray *infos, *states;
@@ -104,10 +112,16 @@ int main(void) { @autoreleasepool {
     disk = [NSMutableDictionary dictionary]; infos = [NSMutableArray array]; states = [NSMutableArray array];
     MSMusicInfo = GetInfo; MSMusicIsPlaying = GetState;
     Check(MSMusicObject([WrongReturn new], @"bad") == nil, "reject scalar ObjC return ABI");
-    for (NSString *p in @[@"com.netease.cloudmusic", @"com.tencent.QQMusic", @"com.kugou.kugou1002", @"com.yeelion.kwplayer", @"com.apple.Music"]) {
-        fixturePlayer = p; Check([MSMusicPlayer() isEqual:p], "five allowlisted players");
+    NSString *playerReason = nil;
+    fixturePlayer = @"com.netease.cloudmusic";
+    Check([MSMusicResolvePlayer(&playerReason) isEqual:@"com.netease.cloudmusic"] &&
+          [playerReason isEqual:@"netease_player_selected"], "identify NetEase Music with fixed reason");
+    fixturePlayer = @"fixture.unsupported";
+    Check(MSMusicResolvePlayer(&playerReason) == nil && [playerReason isEqual:@"unsupported_player"],
+          "identify unsupported player without logging its bundle ID");
+    for (NSString *p in @[@"com.tencent.QQMusic", @"com.kugou.kugou1002", @"com.yeelion.kwplayer", @"com.apple.Music"]) {
+        fixturePlayer = p; Check([MSMusicResolvePlayer(NULL) isEqual:p], "supported player allowlist remains intact");
     }
-    fixturePlayer = @"fixture.unsupported"; Check(MSMusicPlayer() == nil, "deny unsupported player");
     Check([MiniSightMusicMonitor deviceIsUnlocked], "explicit unlocked lock-state ABI");
     fixtureLocked = YES; Check(![MiniSightMusicMonitor deviceIsUnlocked], "lock is not the same as a lit screen");
     fixtureLocked = NO;
@@ -221,6 +235,7 @@ int main(void) { @autoreleasepool {
     Check(maxPending <= 1, "at most one pending native API callback");
     m = NewMonitor(&c); Song(@"Recovery", @"recovery");
     c.completion(nil); Pump();
+    Check([m.snapshot[@"diagnostics"][@"lyricsDetail"] isEqual:@"lyrics_not_found"], "fixed lyric failure code survives snapshot");
     Check([m.snapshot[@"playing"] boolValue], "no LRC/network failure cannot stop motion");
     [m configureAllowed:NO lyrics:YES motion:YES container:@"fixture-A"];
     [m configureAllowed:YES lyrics:NO motion:YES container:@"fixture-A"];
@@ -247,6 +262,29 @@ int main(void) { @autoreleasepool {
     GiveInfo(unknown, NO); GiveState(YES); GiveInfo(unknown, NO);
     Check([m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"line"] length] && c.requests == 0, "unknown track allows motion but never lyrics/status text");
     Stop(m);
+    for (int changed=0; changed<2; changed++) {
+        [infos removeAllObjects];
+        m = [MiniSightMusicMonitor new]; c = [FakeClient new]; [m setValue:c forKey:@"client"];
+        m.presentationHandler = ^{return @{@"allowed": @YES};}; fixturePlayer=nil;
+        MSMusicPID = GetPID; pidCalls=0; secondPID=changed?456:123;
+        [m configureAllowed:YES lyrics:YES motion:YES container:@"fixture-A"]; Pump();
+        Song(@"Fixture", @"123"); Pump();
+        Check(pidCalls == 2 && c.requests == (changed ? 0 : 1), "fresh PID sandwich, no stale track on PID switch");
+        if (!changed) {
+            Check([m.snapshot[@"source"] isEqual:@"com.netease.cloudmusic"], "exact PID source published");
+            [m handleMediaChange];
+            Check(![m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"line"] length], "PID candidate cannot display unverified state");
+            Kick(m); Pump(); Song(@"Fixture", @"123"); Pump();
+            Check(c.requests == 1 && [m.snapshot[@"playing"] boolValue], "stable reverified PID retains pending lookup");
+        }
+        Stop(m); MSMusicPID=NULL;
+    }
+    fixturePlayer = @"com.netease.cloudmusic.extra"; MSMusicPID = GetPID; pidCalls = 0;
+    m = [MiniSightMusicMonitor new]; m.presentationHandler = ^{return @{@"allowed": @YES};};
+    [m configureAllowed:YES lyrics:YES motion:YES container:@"fixture-A"]; Pump();
+    Check(pidCalls == 0 && ![m.snapshot[@"playing"] boolValue] &&
+        [m.snapshot[@"diagnostics"][@"playerDetail"] isEqual:@"unsupported_player"], "explicitly unsupported never falls back to PID");
+    Stop(m); MSMusicPID=NULL;
     puts("NATIVE PASS: ABI, five players, CF copy, main callbacks, storm, timeout/reopen, sandwich, late lyrics, cooldown, pause/stale, bridge mailbox/privacy, recovery/switches, unknown gate, no-LRC motion, real JSON booleans");
     return 0;
 } }

@@ -3753,6 +3753,12 @@ _ios15Seg7
     /// decoder doesn't recurse past its stack limit (see crash 2026-04-17
     /// where `AIChatView.inputBar.getter` blew the stack via
     /// `__swift_instantiateConcreteTypeFromMangledNameV2`).
+    private var composerWaveLevels: [Float] {
+        if voiceInputActive { return voiceVM.waveformLevels }
+        if speechManager.state == .recording { return speechManager.audioLevels }
+        return []
+    }
+
     private var inputFieldOrWaveform: AnyView {
         let topPadding: CGFloat = (vm.attachments.isEmpty && vm.loadingVideoCount == 0) ? 16 : 11
         if voiceInputActive {
@@ -3775,11 +3781,6 @@ _ios15Seg7
                     // gets; the voice panel renders it in its status line.
                     contextUsageHint: vm.contextUsageHint
                 )
-                .background {
-                    ComposerRainbowWave(levels: voiceVM.waveformLevels, opacity: 0.28)
-                        .padding(.horizontal, 24)
-                        .clipped()
-                }
             )
         }
         if speechManager.state == .recording {
@@ -3790,10 +3791,10 @@ _ios15Seg7
             // min(measured, cap).
             let transcriptMaxHeight: CGFloat = 100
             let waveform = VStack(spacing: 6) {
-                ComposerRainbowWave(levels: speechManager.audioLevels, opacity: 0.34)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 32)
-                    .padding(.horizontal, 8)
+                // The colored cloud is drawn once behind the whole composer.
+                // Keep this original band height so the recording controls and
+                // transcript do not jump when level data is temporarily empty.
+                Color.clear.frame(height: 32)
                 if !speechManager.recognizedText.isEmpty {
                     ScrollViewReader { proxy in
                         ScrollView(.vertical, showsIndicators: true) {
@@ -3922,12 +3923,6 @@ _ios15Seg7
         .padding(.horizontal, 16)
         .padding(.top, topPadding)
         .padding(.bottom, 10)
-        .background(alignment: .bottom) {
-            ComposerRainbowWave(opacity: 0.48)
-                .frame(height: 22)
-                .padding(.horizontal, 22)
-                .padding(.bottom, 2)
-        }
         .overlay(alignment: .top) {
             if composerResizeEnabled { composerResizeHandle }
         }
@@ -4129,7 +4124,7 @@ _ios15Seg7
                     .padding(.trailing, 10)
                 }
             }
-            .modifier(ComposerSurface())
+            .modifier(ComposerSurface(waveLevels: composerWaveLevels))
             // [T-ios-context-usage-hint] Inner glow along the glass wall.
             // An overlay ABOVE the material (so the Liquid Glass backdrop
             // sampler never sees it) that clips itself to the same shape, so
@@ -5224,17 +5219,34 @@ struct FloatingCircleButtonSurface: ViewModifier {
 /// fill and BOTH shadows byte-for-byte, including the dark-mode-only top shadow
 /// that lifts the bar off the message list.
 private struct ComposerSurface: ViewModifier {
+    var waveLevels: [Float] = []
+
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 20, style: .continuous)
     }
 
+    private var wave: some View {
+        ComposerRainbowWave(levels: waveLevels, opacity: 0.72)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 2)
+    }
+
     func body(content: Content) -> some View {
+        let foreground = content
+            .background(alignment: .bottom) {
+                wave
+                    .frame(height: 100)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 2)
+            }
+            .clipShape(shape)
         if #available(iOS 26.0, *) {
-            content
-                .glassEffect(.regular, in: shape)
+            foreground
+                .background { shape.glassEffect(.regular, in: shape) }
                 .clipShape(shape)
         } else {
-            content
+            foreground
                 .background(shape.fill(ChatColors.inputBg))
                 .clipShape(shape)
                 .shadow(color: Color.black.opacity(0.12), radius: 8, x: 0, y: 2)

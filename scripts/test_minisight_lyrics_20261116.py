@@ -87,6 +87,16 @@ class SourceContractTests(unittest.TestCase):
                 self.assertIn(old, source)
                 self.assertTrue(contract_errors(source.replace(old, new), header))
 
+    def test_detail_codes_are_bounded_and_log_allowlisted(self):
+        import re
+        src = SOURCE.read_text()
+        log = (CORE / 'MiniSightLog.m').read_text()
+        codes = set(re.findall(r'@"(lyrics_[a-z_]+|no_synced_lyrics)"',src))
+        self.assertEqual(codes, set('lyrics_http lyrics_cooldown lyrics_network_error lyrics_response_rejected lyrics_not_found lyrics_rate_limited lyrics_timeout lyrics_service_unavailable lyrics_oversized lyrics_track_mismatch lyrics_instrumental lyrics_invalid_lrc lyrics_timeline no_synced_lyrics'.split()))
+        for code in codes: self.assertIn('@"'+code+'"',log)
+        self.assertNotIn('localizedDescription',src)
+        self.assertNotIn('MSDiagEvent',src)
+
     def test_fixture_calls_production_not_a_port(self):
         fixture = json.loads(DATA.read_text())
         self.assertEqual(fixture["track"]["title"].strip(), "Fixture  Song")

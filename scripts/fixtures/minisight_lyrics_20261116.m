@@ -69,10 +69,12 @@ static void Emit(FixtureProtocol *protocol, NSInteger status, NSData *data, NSDi
 static MiniSightLyricsClient *Client(void) {
     return [[MiniSightLyricsClient alloc] initWithProtocolClasses:@[FixtureProtocol.class]];
 }
+static NSString *lastReason;
 static MiniSightLyricsTimeline *Fetch(MiniSightLyricsClient *client, MiniSightLyricsTrack *track) {
     __block NSUInteger completed = 0;
     __block MiniSightLyricsTimeline *result;
-    [client fetchTrack:track completion:^(MiniSightLyricsTimeline *timeline) {
+    [client fetchTrack:track result:^(MiniSightLyricsTimeline *timeline, NSString *reason) {
+        lastReason = reason;
         CHECK(NSThread.isMainThread, "completion on main"); completed++; result = timeline;
     }];
     Wait(^BOOL{ return completed > 0; }, "completion arrived");
@@ -188,9 +190,9 @@ static void TransportTests(MiniSightLyricsTrack *track) {
 
     handler = ^(FixtureProtocol *p) { Emit(p, 404, nil, nil); };
     client = Client(); before = starts;
-    CHECK(Fetch(client, track) == nil && starts == before + 1, "404 yields nil");
+    CHECK(Fetch(client, track) == nil && starts == before + 1 && [lastReason isEqual:@"lyrics_not_found"], "404 yields nil");
     Pump(0.36); before = starts;
-    CHECK(Fetch(client, track) == nil && starts == before, "404 negative cache beyond request gap");
+    CHECK(Fetch(client, track) == nil && starts == before && [lastReason isEqual:@"lyrics_not_found"], "404 negative cache beyond request gap");
     id entry = [[client valueForKey:@"cache"] objectForKey:track.cacheKey];
     CHECK(entry != nil, "negative cache entry exists");
     [entry setValue:@0 forKey:@"expires"];
@@ -199,12 +201,12 @@ static void TransportTests(MiniSightLyricsTrack *track) {
 
     handler = ^(FixtureProtocol *p) { Emit(p, 429, [@"not JSON" dataUsingEncoding:NSUTF8StringEncoding], @{@"Retry-After": @"120"}); };
     client = Client();
-    CHECK(Fetch(client, track) == nil, "429 non JSON body");
+    CHECK(Fetch(client, track) == nil && [lastReason isEqual:@"lyrics_rate_limited"], "429 non JSON body");
     NSTimeInterval wait = [[client valueForKey:@"notBefore"] doubleValue] - NSProcessInfo.processInfo.systemUptime;
     CHECK(wait > 119 && wait <= 125, "429 cooldown and bounded positive jitter");
     before = starts; Pump(0.36);
     MiniSightLyricsTrack *other = [[MiniSightLyricsTrack alloc] initWithTitle:@"Fixture B" artist:track.artist duration:60];
-    CHECK(Fetch(client, other) == nil && starts == before, "429 cooldown also gates other tracks");
+    CHECK(Fetch(client, other) == nil && starts == before && [lastReason isEqual:@"lyrics_cooldown"], "429 cooldown also gates other tracks");
     Pump(0.05); CHECK(starts == before, "no automatic retry loop");
     [client cancel];
 
@@ -213,15 +215,15 @@ static void TransportTests(MiniSightLyricsTrack *track) {
     NSData *oversized = JSON(big);
     handler = ^(FixtureProtocol *p) { Emit(p, 200, oversized, nil); };
     client = Client();
-    CHECK(Fetch(client, track) == nil, "streaming unknown-length body cap");
+    CHECK(Fetch(client, track) == nil && [lastReason isEqual:@"lyrics_oversized"], "streaming unknown-length body cap");
     [client cancel];
     handler = ^(FixtureProtocol *p) { Emit(p, 200, JSON(Record(track)), @{@"Content-Type": @"application/json", @"Content-Length": @"1048577"}); };
     client = Client();
-    CHECK(Fetch(client, track) == nil, "declared-length body cap");
+    CHECK(Fetch(client, track) == nil && [lastReason isEqual:@"lyrics_oversized"], "declared-length body cap");
     [client cancel];
     handler = ^(FixtureProtocol *p) { Emit(p, 200, JSON(Record(other)), nil); };
     client = Client();
-    CHECK(Fetch(client, track) == nil, "fake transport mismatched track rejected");
+    CHECK(Fetch(client, track) == nil && [lastReason isEqual:@"lyrics_track_mismatch"], "fake transport mismatched track rejected");
     [client cancel];
 }
 

@@ -102,11 +102,34 @@ class SourceTests(unittest.TestCase):
                 self.assertIn(old, source)
                 self.assertTrue(errors(source.replace(old, new)))
 
+    def test_pid_and_snapshot_production_policy(self):
+        source = (plugin() / 'MiniSightMusicMonitor.m').read_text()
+        self.assertNotIn('MSMusicAppIDFn', source)
+        self.assertEqual(source.count('static NSString *MSMusicResolvePlayer('), 1)
+        self.assertNotIn('static NSString *MSMusicPlayer(', source)
+        self.assertIn('!player && MSMusicMissingSource(playerReason) && MSMusicPID', source)
+        self.assertIn('!MSMusicPIDMatches(self->_pidRead, pid, [player isEqual:MSMusicPIDPlayer(pid, NULL)])', source)
+        self.assertIn('!MSMusicPublishDue(changed, force, MSMusicNow(), _writeAt)', source)
+        self.assertIn('@"motionTime": @(motionPosition)', source)
+        self.assertNotIn('_motionLogAt', source)
+        body = source.split('// BEGIN MUSIC SAMPLE POLICY',1)[1].split('\n',1)[1].split('// END MUSIC SAMPLE POLICY',1)[0]
+        cases = """int main(void){
+            assert(MSMusicPIDMatches(5,5,true)); assert(!MSMusicPIDMatches(5,6,true));
+            assert(!MSMusicPIDMatches(5,5,false)); assert(!MSMusicPIDMatches(0,0,true));
+            for(int i=0;i<8;++i) assert(!MSMusicPublishDue(false,false,100+i*.25,100));
+            assert(MSMusicPublishDue(false,false,102,100)); assert(MSMusicPublishDue(true,false,100,100));
+            assert(MSMusicPublishDue(false,true,100,100)); }"""
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp)/'cases'
+            subprocess.run(['cc','-x','c','-Wall','-Werror','-o',str(binary),'-'],input='#include <assert.h>\n#include <stdbool.h>\n'+body+cases,text=True,check=True)
+            subprocess.run([str(binary)],check=True)
+
     def test_real_harness_is_not_python_model(self):
         native = FIXTURE.read_text()
         self.assertIn('#import "MiniSightMusicMonitor.m"', native)
         self.assertIn('#define MINISIGHT_MUSIC_MONITOR_TEST 1', native)
         self.assertIn('MSMusicInfo = GetInfo; MSMusicIsPlaying = GetState;', native)
+        self.assertIn('MSMusicPID = GetPID', native)
         self.assertIn('maxPending <= 1', native)
         self.assertIn('writes - before <= 2', native)
         self.assertNotIn('https://', native)

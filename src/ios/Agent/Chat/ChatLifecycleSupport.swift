@@ -1006,6 +1006,10 @@ final class QuestionAlertCenter: ObservableObject {
 
     private var backgroundObserver: NSObjectProtocol?
     private var activeObserver: NSObjectProtocol?
+    private var notificationTaskID: UIBackgroundTaskIdentifier = .invalid
+    private var notificationTaskOwnerID: String?
+    private var notificationDeliveryID: String?
+    private let logger = AppLogger(category: "AskAlert")
 
     private init() {}
 
@@ -1031,12 +1035,20 @@ final class QuestionAlertCenter: ObservableObject {
     }
 
     func questionAppeared(sessionId: String?, toolUseId: String, question: String) {
-        guard let sessionId, !sessionId.isEmpty else { return }
+        guard let sessionId, !sessionId.isEmpty else {
+            logger.warning("[AskAlert] question rejected reason=missing_session")
+            return
+        }
         if pending?.id == toolUseId { return }
         if let old = pending { removeNotification(id: old.id) }
+        if notificationTaskOwnerID != nil, notificationTaskOwnerID != toolUseId,
+           let oldID = notificationTaskOwnerID {
+            finishNotificationTask(for: oldID, reason: "question_replaced")
+        }
         pending = Pending(id: toolUseId, sessionId: sessionId,
                           question: question.trimmingCharacters(in: .whitespacesAndNewlines))
         bannerDismissed = false
+        logger.info("[AskAlert] question appeared inBackground=\(UIApplication.shared.applicationState != .active)")
         installObserversIfNeeded()
         if UIApplication.shared.applicationState != .active, let pending {
             postNotification(for: pending)
@@ -1066,7 +1078,14 @@ final class QuestionAlertCenter: ObservableObject {
                 forName: UIApplication.didEnterBackgroundNotification,
                 object: nil, queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in self?.postIfNeeded() }
+                MainActor.assumeIsolated {
+                    guard let self, let pending = self.pending else {
+                        self?.logger.info("[AskAlert] background event skipped reason=no_pending_question")
+                        return
+                    }
+                    self.logger.info("[AskAlert] background event received hasPending=true")
+                    self.postIfNeeded()
+                }
             }
         }
         if activeObserver == nil {
@@ -1075,10 +1094,9 @@ final class QuestionAlertCenter: ObservableObject {
                 object: nil, queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in
-                    if let self, let id = self.pending?.id {
-                        self.removeNotification(id: id)
-                    }
-                    self?.objectWillChange.send()
+                    guard let self else { return }
+                    if let id = self.pending?.id { self.removeNotification(id: id) }
+                    self.objectWillChange.send()
                 }
             }
         }
@@ -1092,6 +1110,7 @@ final class QuestionAlertCenter: ObservableObject {
     private static func identifier(_ id: String) -> String { "ask-user-\(id)" }
 
     private func removeNotification(id: String) {
+        if notificationDeliveryID == id { finishNotificationTask(for: id, reason: "question_ended") }
         let center = UNUserNotificationCenter.current()
         let ids = [Self.identifier(id)]
         center.removeDeliveredNotifications(withIdentifiers: ids)
@@ -1099,32 +1118,123 @@ final class QuestionAlertCenter: ObservableObject {
     }
 
     private func postNotification(for item: Pending) {
+        guard UIApplication.shared.applicationState != .active else {
+            logger.info("[AskAlert] request skipped reason=foreground")
+            return
+        }
+        if notificationDeliveryID == item.id {
+            logger.info("[AskAlert] request coalesced reason=already_in_flight")
+            return
+        } else {
+            notificationDeliveryID = item.id
+        }
+        let taskItemID = item.id
+        if notificationTaskID != .invalid, notificationTaskOwnerID != item.id,
+           let oldID = notificationTaskOwnerID {
+            finishNotificationTask(for: oldID, reason: "question_replaced")
+        }
+        if notificationTaskID == .invalid {
+            notificationTaskOwnerID = item.id
+            notificationTaskID = UIApplication.shared.beginBackgroundTask(withName: "AskUserNotification") { [weak self] in
+                MainActor.assumeIsolated { self?.finishNotificationTask(for: taskItemID, reason: "expired") }
+            }
+            logger.info("[AskAlert] background task started valid=\(notificationTaskID != .invalid)")
+        }
         let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
-        center.setNotificationCategories([
-            UNNotificationCategory(identifier: "QUESTION_WAITING", actions: [], intentIdentifiers: [])
-        ])
-        let content = UNMutableNotificationContent()
-        content.title = AppLocalized("有问题等你回答")
-        // Deliberately no question text: the notification can be seen on a
-        // lock screen. The card remains the place where the question is read.
-        content.body = AppLocalized("打开 Minis 查看并回答，任务正在等待。")
-        content.sound = .default
-        content.categoryIdentifier = "QUESTION_WAITING"
-        content.userInfo = [
-            "sessionId": item.sessionId,
-            "questionToolUseId": item.id,
-        ]
-        let request = UNNotificationRequest(
-            identifier: Self.identifier(item.id),
-            content: content,
-            trigger: nil
-        )
-        center.add(request) { error in
-            if let error {
-                AppLogger(category: "AskAlert").error("[AskAlert] notification failed: \(error.localizedDescription)")
+        center.getNotificationSettings { [weak self] settings in
+            DispatchQueue.main.async {
+                guard let self, self.notificationDeliveryID == item.id else {
+                    self?.logger.info("[AskAlert] request cancelled reason=question_ended")
+                    return
+                }
+                guard UIApplication.shared.applicationState != .active else {
+                    self.finishNotificationTask(for: item.id, reason: "foreground_before_submission")
+                    return
+                }
+                if settings.authorizationStatus == .notDetermined {
+                    self.logger.info("[AskAlert] authorization request started")
+                    center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+                        DispatchQueue.main.async {
+                            guard self.notificationDeliveryID == item.id else { return }
+                            if let error {
+                                self.logger.error("[AskAlert] authorization request failed code=\((error as NSError).code)")
+                                self.finishNotificationTask(for: item.id, reason: "authorization_failed")
+                            } else if !granted {
+                                self.logger.warning("[AskAlert] authorization denied")
+                                self.finishNotificationTask(for: item.id, reason: "authorization_denied")
+                            } else {
+                                self.logger.info("[AskAlert] authorization granted")
+                                center.getNotificationSettings { refreshed in
+                                    DispatchQueue.main.async {
+                                        guard self.notificationDeliveryID == item.id else { return }
+                                        self.submitNotification(for: item, settings: refreshed)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return
+                }
+                self.submitNotification(for: item, settings: settings)
             }
         }
+    }
+
+    private func submitNotification(for item: Pending, settings: UNNotificationSettings) {
+        guard notificationDeliveryID == item.id else { return }
+        guard UIApplication.shared.applicationState != .active else {
+            finishNotificationTask(for: item.id, reason: "foreground_before_submission")
+            return
+        }
+        let status = settings.authorizationStatus.rawValue
+        let alert = settings.alertSetting.rawValue
+        let alertStyle = settings.alertStyle.rawValue
+        logger.info("[AskAlert] settings status=\(status) alert=\(alert) style=\(alertStyle)")
+        guard settings.authorizationStatus == .authorized,
+              settings.alertSetting == .enabled,
+              settings.alertStyle != .none else {
+            logger.warning("[AskAlert] request rejected reason=notification_not_authorized")
+            finishNotificationTask(for: item.id, reason: "not_authorized")
+            return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = AppLocalized("有问题等你回答")
+        content.body = AppLocalized("打开 Minis 查看并回答，任务正在等待。")
+        content.sound = .default
+        content.userInfo = ["sessionId": item.sessionId, "questionToolUseId": item.id]
+        let request = UNNotificationRequest(
+            identifier: Self.identifier(item.id), content: content, trigger: nil)
+        logger.info("[AskAlert] submitting questionIdLength=\(item.id.count)")
+        UNUserNotificationCenter.current().add(request) { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.notificationDeliveryID == item.id else {
+                    self.logger.info("[AskAlert] submission callback ignored reason=question_ended")
+                    UNUserNotificationCenter.current().removePendingNotificationRequests(
+                        withIdentifiers: [Self.identifier(item.id)])
+                    UNUserNotificationCenter.current().removeDeliveredNotifications(
+                        withIdentifiers: [Self.identifier(item.id)])
+                    return
+                }
+                if let error {
+                    self.logger.error("[AskAlert] submission failed code=\((error as NSError).code)")
+                    self.finishNotificationTask(for: item.id, reason: "submission_failed")
+                } else {
+                    self.logger.info("[AskAlert] submission accepted")
+                    self.finishNotificationTask(for: item.id, reason: "submitted")
+                }
+            }
+        }
+    }
+
+    private func finishNotificationTask(for id: String, reason: String) {
+        guard notificationDeliveryID == id else { return }
+        notificationDeliveryID = nil
+        let taskID = notificationTaskID
+        notificationTaskID = .invalid
+        notificationTaskOwnerID = nil
+        if taskID != .invalid { UIApplication.shared.endBackgroundTask(taskID) }
+        logger.info("[AskAlert] delivery finished reason=\(reason)")
     }
 }
 

@@ -40,6 +40,17 @@ int main(void) {
         CHECK(next <= amplitude && next >= 0.); amplitude = next;
     }
     CHECK(amplitude < .02);
+    double pulseAmplitude = 0.;
+    for (int i = 0; i < 60; ++i) {
+        double next = MSPetMusicAmplitude(pulseAmplitude, .35, 1./60.);
+        CHECK(next >= pulseAmplitude && next <= .35); pulseAmplitude = next;
+    }
+    CHECK(pulseAmplitude > .34 && pulseAmplitude <= .35);
+    for (int i = 0; i < 60; ++i) {
+        double next = MSPetMusicAmplitude(pulseAmplitude, 0., 1./60.);
+        CHECK(next <= pulseAmplitude && next >= 0.); pulseAmplitude = next;
+    }
+    CHECK(pulseAmplitude < .01);
     MSPetDragTrail trail = {0}; double vx, vy;
     CHECK(!MSPetReleaseVelocity(&trail, 1., &vx, &vy) && vx == 0 && vy == 0);
     for (int i = 0; i < 10; ++i) MSPetDragRemember(&trail, .01 * i, 600. * .01 * i, -300. * .01 * i);

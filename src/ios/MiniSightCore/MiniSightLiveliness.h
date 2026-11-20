@@ -45,10 +45,12 @@ static inline bool MSPetReleaseVelocity(const MSPetDragTrail *trail, double now,
     *vx = x * limit / speed; *vy = y * limit / speed;
     return true;
 }
-static inline double MSPetMusicAmplitude(double previous, bool playing, double dt) {
+static inline double MSPetMusicAmplitude(double previous, double target, double dt) {
     double value = MSPetFiniteClamp(previous, 0., 1.);
-    double alpha = 1. - exp(-MSPetFiniteClamp(dt, 0., .05) / (playing ? .35 : .25));
-    return value + ((playing ? 1. : 0.) - value) * alpha;
+    target = MSPetFiniteClamp(target, 0., 1.);
+    double timeConstant = target > value ? .12 : .25;
+    double alpha = 1. - exp(-MSPetFiniteClamp(dt, 0., .05) / timeConstant);
+    return value + (target - value) * alpha;
 }
 
 typedef enum {
@@ -63,19 +65,53 @@ static inline int MSPetPoseAtlasRow(int pose) {
     static const int rows[9] = {0,1,2,3,4,5,5,3,0};
     return rows[MSPetPoseRoleCode((MSPetPose)pose)];
 }
-// Uses only verified idle and raised-hand rows; this is not beat tracking.
+typedef struct { MSPetPose pose; unsigned cue; double pulse; } MSPetMusicCue;
+
+// Between snapshot deliveries only the monotonic render clock advances.
+static inline double MSPetMusicInterpolate(double position, double age, bool playing) {
+    return fmax(0., isfinite(position) ? position : 0.) + (playing ? MSPetFiniteClamp(age, 0., 5.) : 0.);
+}
+// Heavy floor contact only: collapsed, dizzy, seated, rise, release.
+static inline int MSPetLandingStageAt(double elapsed) {
+    if (!isfinite(elapsed) || elapsed < 0.) return 0;
+    return elapsed < .38 ? 1 : elapsed < .94 ? 2 : elapsed < 1.48 ? 3 : elapsed < 2.16 ? 4 : 0;
+}
+static inline int MSPetLandingColumn(int stage, double age) {
+    double t = MSPetFiniteClamp(age, 0., 2.16);
+    if (stage == 1) return 1;
+    if (stage == 2) return 4 + (int)fmod(floor(t * 9.), 2.);
+    if (stage == 3) return 3;
+    return 5 + (int)MSPetFiniteClamp(floor((t - 1.48) / .22), 0., 2.);
+}
+// Repeatable playback-position choreography. This is not audio beat detection.
+static inline MSPetMusicCue MSPetMusicCueAt(double position) {
+    MSPetMusicCue cue = {MSPetPoseIdle, 0u, 0.};
+    if (!isfinite(position) || position < 0.) return cue;
+    static const MSPetPose poses[8] = {
+        MSPetPoseWave, MSPetPoseWalkRight, MSPetPoseJump, MSPetPoseWalkLeft,
+        MSPetPoseIdle, MSPetPoseJump, MSPetPoseWalkLeft, MSPetPoseWalkRight
+    };
+    double cycle = fmod(position, 4.8);
+    cue.cue = (unsigned)fmin(7., floor(cycle / .6));
+    cue.pose = poses[cue.cue];
+    cue.pulse = MSPetFiniteClamp(exp(-6.5 * fmod(cycle, .6) / .6), 0., 1.);
+    return cue;
+}
+
 static inline int MSPetPoseAtlasRowAt(int pose, double elapsed) {
     if (pose != MSPetPoseMusic) return MSPetPoseAtlasRow(pose);
-    double t = fmod(fmax(0., isfinite(elapsed) ? elapsed : 0.), 2.2);
-    return t < 1.1 ? 3 : 0;
+    MSPetMusicCue cue = MSPetMusicCueAt(elapsed);
+    return MSPetPoseAtlasRow((int)cue.pose);
 }
 static inline int MSPetPoseColumnAt(int pose, double elapsed) {
     double t = fmax(0., isfinite(elapsed) ? elapsed : 0.);
     if (pose == MSPetPoseDrag) return (int)fmod(floor(t / .12), 4.);
     if (pose != MSPetPoseMusic) return 0;
-    t = fmod(t, 2.2);
-    if (t < 1.1) return (int)fmin(3., floor(t / .275));
-    return (int)fmod(floor((t - 1.1) / (1.1 / 6.)), 6.);
+    MSPetMusicCue cue = MSPetMusicCueAt(t);
+    if (cue.pose == MSPetPoseWave) return (int)fmin(3., floor(fmod(t, .6) / .15));
+    if (cue.pose == MSPetPoseWalkLeft || cue.pose == MSPetPoseWalkRight) return (int)fmod(floor(t / .075), 8.);
+    if (cue.pose == MSPetPoseJump) return (int)fmin(4., floor(fmod(t, .6) / .12));
+    return (int)fmod(floor(t / .1), 6.);
 }
 static inline bool MSPetPoseIsTransient(MSPetPose pose) {
     return pose == MSPetPoseWave || pose == MSPetPoseJump || pose == MSPetPoseWake;

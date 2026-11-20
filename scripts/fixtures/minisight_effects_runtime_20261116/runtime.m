@@ -10,7 +10,8 @@ static const char *Case = "setup";
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL: %s line %d: %s\n", Case, __LINE__, #x); exit(1); } } while (0)
 static double Now = 100.;
 CFTimeInterval MSFixtureClock(void) { return Now; }
-BOOL UIAccessibilityIsReduceMotionEnabled(void) { return NO; }
+static BOOL FixtureReduceMotion;
+BOOL UIAccessibilityIsReduceMotionEnabled(void) { return FixtureReduceMotion; }
 
 @implementation UIImage { CGImageRef _backing; }
 + (instancetype)imageWithCGImage:(CGImageRef)image {
@@ -421,6 +422,7 @@ static void LyricsOnly(void) {
     CHECK(track && r.effects.hasActions);
     // Exercise the actual Effects tick with actual CoreGraphics transformed
     // corners. Edge fitting must not move the host/hit target or break lyrics.
+    [r.effects setLegacyState:8 waking:NO]; r.effects.musicPosition = 0.;
     [r.effects setTilt:.22 sway:5.];
     for (int edge = 0; edge < 4; ++edge) {
         r.pet.center = CGPointMake((edge & 1) ? 318. : 42., (edge & 2) ? 733. : 47.);
@@ -434,6 +436,30 @@ static void LyricsOnly(void) {
             CHECK(CGPointEqualToPoint(fixedCenter, r.pet.center));
         }
     }
+    // Distinguish all recovery transforms from light compression on the same sprite.
+    [r.effects setTilt:0 sway:0]; r.effects.musicPlaying = NO;
+    r.pet.center = CGPointMake(180,390);
+    [r.effects setFloorImpactVelocity:220]; [r.effects land];
+    for (int i=0;i<10;++i) Tick(r.effects,Now+.02);
+    CHECK(r.sprite.affineTransform.d > .85);
+    [r.effects setFloorImpactVelocity:950]; [r.effects land];
+    [r.effects setLandingRecoveryStage:1];
+    for (int i=0;i<16;++i) Tick(r.effects,Now+.02);
+    CHECK(r.sprite.affineTransform.b > .65);
+    [r.effects setLandingRecoveryStage:2]; double low=2.,high=-2.;
+    for (int i=0;i<30;++i) { Tick(r.effects,Now+.02); low=fmin(low,r.sprite.affineTransform.b); high=fmax(high,r.sprite.affineTransform.b); }
+    CHECK(high-low > .16);
+    [r.effects setLandingRecoveryStage:3];
+    for (int i=0;i<28;++i) Tick(r.effects,Now+.02);
+    CHECK(fabs(r.sprite.affineTransform.b)<.14 && r.sprite.affineTransform.d<.85);
+    [r.effects setLandingRecoveryStage:4];
+    for (int i=0;i<35;++i) Tick(r.effects,Now+.02);
+    CHECK(r.sprite.affineTransform.d>.94);
+    [r.effects setLandingRecoveryStage:0];
+    FixtureReduceMotion=YES; r.effects.musicPlaying=YES;
+    for (int i=0;i<40;++i) Tick(r.effects,Now+.02);
+    CHECK(fabs(r.sprite.affineTransform.b)<.001 && fabs(r.sprite.affineTransform.d-1.)<.001);
+    FixtureReduceMotion=NO;
 }
 
 #import "atlas_cases.inc"

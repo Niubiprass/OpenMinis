@@ -116,8 +116,29 @@ life = read("src/ios/Agent/Chat/ChatLifecycleSupport.swift")
 check("alert center exists", "final class QuestionAlertCenter" in life)
 check("alert registers the waiting card", "func questionAppeared(sessionId: String?, toolUseId: String" in life)
 check("alert clears on answer/cancel/timeout", "func questionEnded(toolUseId: String)" in life)
+background_observer = life.split("private func installObserversIfNeeded()", 1)[1].split("private func postIfNeeded()", 1)[0]
+check("background event uses main callback without deferred Task hop",
+      "forName: UIApplication.didEnterBackgroundNotification" in background_observer
+      and "queue: .main" in background_observer
+      and "MainActor.assumeIsolated" in background_observer
+      and "self.postIfNeeded()" in background_observer
+      and "Task { @MainActor in self?.postIfNeeded() }" not in background_observer)
+check("notification delivery acquires a bounded background task", 'beginBackgroundTask(withName: "AskUserNotification")' in life and "endBackgroundTask(taskID)" in life)
+check("permission state is checked before submission", "getNotificationSettings" in life and "settings.alertSetting == .enabled" in life and "settings.alertStyle != .none" in life)
+check("first-run authorization result is handled", "authorization granted" in life and "authorization denied" in life)
+check("system notification submission result is recorded", "submission accepted" in life and "submission failed code=" in life)
+check("expired task is tied to its question ID", 'finishNotificationTask(for: taskItemID, reason: "expired")' in life)
 check("alert posts a local notification", "UNNotificationRequest(" in life and '"sessionId": item.sessionId' in life)
 check("alert notification does not expose the question", 'content.body = AppLocalized("打开 Minis 查看并回答，任务正在等待。")' in life)
+check("alert diagnostic logs never contain question content", "question appeared" in life and "questionPrefix" not in life and "sessionPrefix" not in life)
+check("question cleanup removes matching pending and delivered request", "removeDeliveredNotifications(withIdentifiers: ids)" in life and "removePendingNotificationRequests(withIdentifiers: ids)" in life)
+check("question requests do not replace global notification categories", "setNotificationCategories([" not in life and "QUESTION_WAITING" not in life)
+check("late submission callback cannot resurrect an ended question", "submission callback ignored reason=question_ended" in life and "removePendingNotificationRequests(" in life)
+click = read("src/ios/Agent/Intents/SendPromptIntent.swift")
+check("question notification click routes to its session", 'if let sessionId = userInfo["sessionId"] as? String, !sessionId.isEmpty' in click and 'logger.info("[AskAlert] notification tapped' in click)
+check("notification delegate is registered during app launch", "ShortcutNotificationDelegate.shared.register()" in read("src/ios/AppDelegate.swift"))
+check("foreground notifications preserve banner and sound", "completionHandler([.banner, .sound])" in click)
+check("cold-start notification tap is buffered before navigation", "NotificationNavigationStore.shared.setPending(sessionId)" in click and 'name: Notification.Name("openSessionFromIntent")' in click)
 check("alert has an in-app banner", "struct QuestionAlertBanner" in life)
 check("handler registers alert when card appears", "QuestionAlertCenter.shared.questionAppeared(" in ct)
 check("submit clears alert", "QuestionAlertCenter.shared.questionEnded(toolUseId: card.toolUseId)" in vm)

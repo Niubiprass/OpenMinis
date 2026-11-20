@@ -31,25 +31,32 @@ int main(void) {
     CHECK(MSPetPoseAtlasRow(MSPetPoseWake)==5);
     CHECK(MSPetPoseAtlasRow(MSPetPoseDrag)==3);
     CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,.1)==3);
-    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,1.1)==0);
-    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,2.1)==0);
-    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,2.2)==3);
+    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,1.1)==1);
+    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,2.1)==2);
+    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,2.65)==0 && MSPetPoseColumnAt(MSPetPoseMusic,2.65)==2);
     CHECK(MSPetPoseColumnAt(MSPetPoseMusic,.1)==0);
     CHECK(MSPetPoseColumnAt(MSPetPoseMusic,.8)==2);
     CHECK(MSPetPoseColumnAt(MSPetPoseMusic,1.2)==0);
-    CHECK(MSPetPoseColumnAt(MSPetPoseMusic,1.9)==4);
+    CHECK(MSPetPoseColumnAt(MSPetPoseMusic,1.9)==1);
     unsigned rows=0;
     const int counts[9]={6,8,8,4,5,8,6,6,6};
     for(int i=0;i<6400;i++) {
         double t=i/1000.;int row=MSPetPoseAtlasRowAt(MSPetPoseMusic,t),col=MSPetPoseColumnAt(MSPetPoseMusic,t);
         CHECK(row>=0 && row<9 && col>=0 && col<counts[row]);rows|=1u<<row;
     }
-    CHECK(rows==((1u<<0)|(1u<<3)));
+    CHECK(rows==((1u<<0)|(1u<<1)|(1u<<2)|(1u<<3)|(1u<<4)));
+    CHECK(MSPetMusicInterpolate(12,.25,true)==12.25 && MSPetMusicInterpolate(12,.25,false)==12);
+    CHECK(MSPetMusicInterpolate(1,-1,true)==1 && MSPetMusicInterpolate(1,300,true)==6);
+    double ages[]={0.,.379,.38,.939,.94,1.479,1.48,2.159,2.16,NAN};
+    int stages[]={1,1,2,2,3,3,4,4,0,0};
+    for(unsigned i=0;i<10;i++) CHECK(MSPetLandingStageAt(ages[i])==stages[i]);
+    CHECK(MSPetLandingColumn(1,0)==1 && MSPetLandingColumn(2,.4)!=MSPetLandingColumn(2,.5));
+    CHECK(MSPetLandingColumn(3,1)==3 && MSPetLandingColumn(4,1.5)==5 && MSPetLandingColumn(4,2.1)==7);
     CHECK(MSPetPoseRestore(MSPetPoseDrag,1,0,0)==MSPetPoseMusic);
     CHECK(MSPetPoseRestore(MSPetPoseMusic,0,0,0)==MSPetPoseIdle);
     CHECK(MSPetPoseRestore(MSPetPoseWave,1,1,0)==MSPetPoseSleep);
     CHECK(MSPetPoseRestore(MSPetPoseWave,1,0,1)==MSPetPoseWake);
-    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,NAN)==3);
+    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,NAN)==0);
     CHECK(MSPetPoseAtlasRow(-12)==0 && MSPetPoseAtlasRow(900)==0);
     MSGravityBody body={0};MSRect bounds={0,0,500,600};
     uint64_t token=MSGravityBodyLaunch(&body,bounds,(MSPoint){250,599.9},(MSPoint){30,1100});
@@ -77,6 +84,15 @@ class Source(unittest.TestCase):
           'self->_lyrics && track && self->_track && self->_progressAvailable', '[_timer invalidate]; _timer = nil;',
           'MSMusicEvidence(@"request"', 'MSMusicEvidence(@"finish"', 'MSMusicEvidence(@"readback"', 'MSMusicEvidence(@"deliver"'):
             self.assertIn(marker, monitor)
+        for reason in ('media_controller_unavailable', 'no_active_player', 'player_bundle_missing',
+                       'unsupported_player', 'netease_player_selected', 'supported_player_selected'):
+            self.assertIn('@"' + reason + '"', monitor)
+        resolver=re.search(r'static NSString \*(MSMusic\w+)\(NSString \*\*reason\)', monitor)
+        self.assertIsNotNone(resolver)
+        name=resolver.group(1)
+        self.assertIn(name+'(&playerReason)', monitor)
+        self.assertNotRegex(monitor, r'static NSString \*'+name+r'\(void\)')
+        self.assertIn('[app isKindOfClass:NSString.class] ? app : MSMusicObject(app, @"bundleIdentifier")', monitor)
         for marker in ('recordLyricsVisible:YES', 'recordLyricsVisible:NO', '@"lyrics_no_space"', '@"empty_line"', '_lyricsReasonEvidence'):
             self.assertIn(marker,effects)
         self.assertNotIn('static BOOL lastVisible',effects)
@@ -102,6 +118,18 @@ class Source(unittest.TestCase):
         self.assertIn('MiniSightPetStateDragging',definition(s,'- (void)beginDraggingAtPoint:'))
         self.assertIn('MiniSightPetStateJumping',definition(s,'- (void)endDraggingCancelled:'))
         self.assertIn('MSPetPoseColumnAt',definition(s,'- (void)advanceSpriteAtTime:'))
+        renderer=definition(s,'- (void)applySpriteFrame')
+        for marker in ('_effects.musicPosition','MSPetPoseAtlasRowAt((int)_state, position)', 'MSPetPoseColumnAt((int)_state, position)'):
+            self.assertIn(marker,renderer)
+        effects=(CORE/'MiniSightPetEffects.m').read_text()
+        tick=definition(effects.split('@implementation MiniSightPetEffects',1)[1],'- (void)tick:')
+        for marker in ('MSPetMusicCueAt(dance ? self.musicPosition : -1.)', '_recoveryStage == 1','_recoveryStage == 2','_recoveryStage == 3','_recoveryStage == 4','MSPetFitVisualTransform'):
+            self.assertIn(marker,tick)
+        self.assertIn('MSPetMusicInterpolate',definition(effects,'- (NSTimeInterval)musicPosition'))
+        self.assertIn('MSPetLandingStageAt',definition(s,'- (void)frameTick:'))
+        host=(CORE/'Tweak.xm' if ROOT==CORE else ROOT/'src/ios/MiniSightInAppRuntime.swift').read_text()
+        self.assertIn('motionTime',host)
+        self.assertEqual(host.count('Pet.musicPosition = MiniSightSnapshotMotionPosition(snapshot)' if ROOT==CORE else 'pet.musicPosition = parent.musicAnchor?.current'),2)
         self.assertNotIn('saveShown',definition(s,'- (void)beginLandingRecoveryWithImpact:'))
 
 class Portable(unittest.TestCase):
@@ -109,7 +137,9 @@ class Portable(unittest.TestCase):
         compiler=shutil.which('cc') or shutil.which('clang');self.assertIsNotNone(compiler)
         live=(CORE/'MiniSightLiveliness.h').read_text(); gravity=(CORE/'MiniSightGravity.h').read_text()
         variants={'baseline':(live,gravity),
-          'single-pose':(live.replace('return t < 1.1 ? 3 : 0;', '(void)t; return 0;'),gravity),
+          'single-pose':(live.replace('return MSPetPoseAtlasRow((int)cue.pose);', '(void)cue; return 0;'),gravity),
+          'frozen-clock':(live.replace('playing ? MSPetFiniteClamp(age, 0., 5.)', 'playing ? 0.*age'),gravity),
+          'skip-dizzy':(live.replace('elapsed < .94 ? 2', 'elapsed < .94 ? 3'),gravity),
           'hard-floor-keeps-bounce':(live,gravity.replace('body->velocity = (MSPoint){0.,0.};\n    body->active = 0;', 'body->velocity = (MSPoint){0.,-1.};\n    body->active = 1;')),
           'light-floor-absorbed':(live,gravity.replace('body->floorImpactVelocity < 720.','body->floorImpactVelocity < -1.'))}
         with tempfile.TemporaryDirectory(prefix='ms-media-policy-') as tmp:
