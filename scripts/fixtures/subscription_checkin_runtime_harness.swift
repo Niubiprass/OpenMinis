@@ -356,7 +356,7 @@ struct UIColor {
             resetFourAccounts()
             CheckinTransport.responseBySlot["four"] = ["code": code]
             await SubscriptionAutoCheckin.run()
-            await Task.yield()
+            try await Task.sleep(nanoseconds: 50_000_000)
             expect(MinisToast.notices == ["3 个账号已签到，1 个账号签到失败"], "eligible definite claim failure includes one notice")
             let failedRecord = SubscriptionCheckinLedger.record(fourthKey())
             expect(failedRecord.definitiveClaimFailure && !SubscriptionCheckinPolicy.needsReminder(failedRecord, now: now), "explicit rejection persists one daily failure marker")
