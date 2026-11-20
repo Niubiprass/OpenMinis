@@ -39,6 +39,19 @@ class CheckinSourceContracts(unittest.TestCase):
         self.assertIn('verifiedRetryableFailure: Bool = false', ledger)
         self.assertNotIn('completedDay = SubscriptionCheckinPolicy.day(now)', ledger)
 
+    def test_confirmed_multidevice_trae_account_is_excluded_by_exact_saved_label(self):
+        accounts = ACCOUNTS.read_text()
+        self.assertIn('checkinExcludedLabels: Set<String> = ["23281446883729475"]', accounts)
+        exclusion = section(accounts, '    static func isExcludedFromAutomaticCheckin(', '    /// Stable vendor identity')
+        self.assertIn('token.provider == ProviderType.traeCN.rawValue', exclusion)
+        self.assertIn('token.loginAccount?.trimmingCharacters', exclusion)
+        self.assertIn('token.credentials.extras["userId"]', exclusion)
+        self.assertIn('checkinExcludedLabels.contains($0)', exclusion)
+        auto = section(COORD.read_text(), '    private static func run() async {', '\n}')
+        skip = auto.index('SubscriptionAccounts.isExcludedFromAutomaticCheckin(token)')
+        self.assertLess(skip, auto.index('SubscriptionCheckinLedger.key(token: token, slot: slot)'))
+        self.assertIn('auto check-in excluded by confirmed multi-device account policy', auto)
+
     def test_only_confirmed_completion_stops_queries(self):
         text = CREDIT.read_text()
         claim = section(text, '    static func claim(', '    private static func post(')

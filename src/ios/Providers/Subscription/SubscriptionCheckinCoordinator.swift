@@ -433,6 +433,7 @@ enum SubscriptionAutoCheckin {
     private static var running = false
     private static var task: Task<Void, Never>?
     private static var noticePresentationInFlight = false
+    private static let logger = AppLogger(category: "SubscriptionCheckin")
 
     static func activate() {
         guard UIApplication.shared.applicationState == .active else { return }
@@ -474,6 +475,10 @@ enum SubscriptionAutoCheckin {
                       current.subscriptionAutoCheckin, current.subscriptionAccountSlots.contains(slot),
                       let token = ProviderKeychainHelper.loadOAuthToken(instanceId: slot, as: SubscriptionTokenStorage.self),
                       token.provider == current.providerType.rawValue, !token.accessToken.isEmpty else { continue }
+                if SubscriptionAccounts.isExcludedFromAutomaticCheckin(token) {
+                    logger.info("auto check-in excluded by confirmed multi-device account policy")
+                    continue
+                }
                 let key = SubscriptionCheckinLedger.key(token: token, slot: slot)
                 guard visited.insert(key).inserted else { continue }
                 let now = Date()

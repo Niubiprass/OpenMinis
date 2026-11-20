@@ -23,6 +23,20 @@ struct SubscriptionAccountDescriptor: Identifiable, Hashable {
 }
 
 enum SubscriptionAccounts {
+    /// This Trae identity requires participation from multiple devices, so it
+    /// cannot complete check-in on this device and is omitted from auto reports.
+    private static let checkinExcludedLabels: Set<String> = ["23281446883729475"]
+
+    static func isExcludedFromAutomaticCheckin(_ token: SubscriptionTokenStorage) -> Bool {
+        guard token.provider == ProviderType.traeCN.rawValue else { return false }
+        let savedLabel = token.loginAccount?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let savedUserID: String? = {
+            guard case .string(let value)? = token.credentials.extras["userId"] else { return nil }
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }()
+        return [savedLabel, savedUserID].compactMap { $0 }.contains { checkinExcludedLabels.contains($0) }
+    }
+
     /// Stable vendor identity, not the access token (which rotates on renewal).
     /// Unknown identity remains slot-scoped; never merge by a display nickname.
     static func identity(_ token: SubscriptionTokenStorage) -> String? {

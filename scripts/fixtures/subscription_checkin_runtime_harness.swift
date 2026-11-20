@@ -11,7 +11,14 @@ struct AppLogger {
     func error(_ message: @autoclosure () -> String) { }
 }
 enum ProviderType: String, Sendable { case workBuddy, traeCN; var isDomesticSubscription: Bool { true } }
-enum KWWKAI { struct OAuthCredentials: Equatable, Sendable { let access: String } }
+enum KWWKAI {
+    enum JSONValue: Sendable { case string(String); case null }
+    struct OAuthCredentials: Equatable, Sendable {
+        let access: String
+        var extras: [String: JSONValue] = [:]
+        static func == (lhs: Self, rhs: Self) -> Bool { lhs.access == rhs.access }
+    }
+}
 struct SubscriptionTokenStorage { let provider: String; let credentials: KWWKAI.OAuthCredentials; let loginAccount: String?; var accessToken: String { credentials.access } }
 struct ProviderInstance { let id: String; var providerType: ProviderType = .traeCN; let credentialType = "oauth"; var subscriptionAccountSlots = ["a", "b"]; var subscriptionActiveSlot: String? { "a" }; var isEnabled = true; var subscriptionAutoCheckin = true }
 extension String { static let oauth = "oauth" }
@@ -34,9 +41,15 @@ enum SHA256 { static func hash(data: Data) -> [UInt8] { Array(data) } }
 }
 @MainActor enum ProviderKeychainHelper {
     static var accessBySlot: [String: String] = [:]
+    static var loginLabelBySlot: [String: String] = [:]
+    static var extraUserIDBySlot: [String: String] = [:]
     static func oauthNeedsReauth(instanceId: String) -> Bool { false }
     static func loadOAuthToken(instanceId: String, as: SubscriptionTokenStorage.Type) -> SubscriptionTokenStorage? {
-        SubscriptionTokenStorage(provider: "traeCN", credentials: .init(access: accessBySlot[instanceId] ?? "fake-account"), loginAccount: nil)
+        var extras: [String: KWWKAI.JSONValue] = [:]
+        if let userID = extraUserIDBySlot[instanceId] { extras["userId"] = .string(userID) }
+        return SubscriptionTokenStorage(provider: "traeCN",
+            credentials: .init(access: accessBySlot[instanceId] ?? "fake-account", extras: extras),
+            loginAccount: loginLabelBySlot[instanceId])
     }
 }
 struct TraeCredential { init(_ credentials: KWWKAI.OAuthCredentials) {}; var deviceID: String? { "fixture-device" } }
@@ -310,6 +323,8 @@ struct UIColor {
             provider.subscriptionAccountSlots = slots
             ProviderConfigStore.shared.instances = [provider]
             ProviderKeychainHelper.accessBySlot = Dictionary(uniqueKeysWithValues: slots.map { ($0, "synthetic-" + $0) })
+            ProviderKeychainHelper.loginLabelBySlot = [:]
+            ProviderKeychainHelper.extraUserIDBySlot = [:]
             CheckinTransport.status = ["code": 0, "checked_in": false, "enable": true]
             CheckinTransport.response = ["code": 0]
             CheckinTransport.statusBySlot = [:]; CheckinTransport.responseBySlot = [:]
@@ -344,6 +359,27 @@ struct UIColor {
             await SubscriptionAutoCheckin.run()
             expect(MinisToast.notices.isEmpty && CheckinTransport.reads == readsAfter, "same-day repeated pass is silent and cached")
         }
+        resetFourAccounts()
+        ProviderKeychainHelper.loginLabelBySlot["one"] = "4456799194062906"
+        ProviderKeychainHelper.loginLabelBySlot["four"] = "23281446883729475"
+        let excludedReadsBefore = CheckinTransport.reads
+        await SubscriptionAutoCheckin.run()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        expectThreeOnly("the identified multi-device Trae account is excluded")
+        expect(CheckinTransport.reads - excludedReadsBefore == 3, "only the three eligible accounts receive a status query")
+        expect(CheckinTransport.writesBySlot["one", default: 0] == 1, "other Trae account still checks in")
+        expect(CheckinTransport.writesBySlot["four", default: 0] == 0, "excluded account receives no claim")
+        expect(absent(fourthKey()), "excluded account creates no journal")
+        resetFourAccounts()
+        ProviderKeychainHelper.extraUserIDBySlot["four"] = "23281446883729475"
+        let excludedByStableIDReads = CheckinTransport.reads
+        await SubscriptionAutoCheckin.run()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        expectThreeOnly("the multi-device Trae userId is excluded")
+        expect(CheckinTransport.reads - excludedByStableIDReads == 3, "saved Trae userId is matched before status query")
+        let nonTrae = SubscriptionTokenStorage(provider: "workBuddy", credentials: .init(access: "other", extras: ["userId": .string("23281446883729475")]), loginAccount: nil)
+        expect(!SubscriptionAccounts.isExcludedFromAutomaticCheckin(nonTrae), "matching ID on another provider remains included")
+
         resetFourAccounts()
         CheckinTransport.responseBySlot["four"] = ["code": 9095]
         await SubscriptionAutoCheckin.run()
