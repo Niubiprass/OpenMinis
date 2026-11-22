@@ -644,7 +644,8 @@ struct ProviderInstanceDetailView: View {
                                 imageEndpointMode: instance.imageEndpointMode,
                                 imageEndpointResolved: instance.imageEndpointResolved,
                                 customUserAgent: instance.customUserAgent,
-                                azureMode: instance.azureMode
+                                azureMode: instance.azureMode,
+                                codexClientMask: instance.codexClientMask
                             )
                             store.updateInstance(newInstance)
                         }
@@ -657,6 +658,14 @@ struct ProviderInstanceDetailView: View {
                         ? "Uses /v1/responses endpoint format."
                         : "Standard /v1/chat/completions format.")
                 }
+            }
+
+            // MARK: Codex Client Mask [T-codex-client-mask]
+            // Only Responses-API instances can carry it: the mask exists to get
+            // past relays that admit only the Codex CLI, and those speak
+            // /v1/responses. Chat Completions instances have no such path.
+            if instance.providerType == .openAIResponses {
+                codexClientMaskSection(instance)
             }
 
             // MARK: Azure OpenAI [T-ios-azure-openai]
@@ -1358,6 +1367,24 @@ struct ProviderInstanceDetailView: View {
             ))
         } footer: {
             Text(AppLocalized("Use Azure OpenAI authentication (api-key header). Paste your full Azure endpoint into Custom API Base above, including the ?api-version=… query. Works with both API formats."))
+        }
+    }
+
+    private func codexClientMaskSection(_ instance: ProviderInstance) -> some View {
+        Section {
+            Toggle(AppLocalized("伪装 Codex 端"), isOn: Binding(
+                get: { instance.codexClientMask },
+                set: { on in
+                    var updated = instance
+                    updated.codexClientMask = on
+                    store.updateInstance(updated)
+                    // Diagnostics only: never log ids or the key.
+                    AppLogger(category: "Provider").info(
+                        "codexClientMask instanceId=\(instance.id.prefix(8)) new=\(on)")
+                }
+            ))
+        } footer: {
+            Text(AppLocalized("为 Responses 请求改用 Codex 客户端标识，适配仅允许 Codex 的中转。开启后会覆盖该供应商的自定义 User-Agent；官方 ChatGPT/Codex 登录不受影响。"))
         }
     }
 

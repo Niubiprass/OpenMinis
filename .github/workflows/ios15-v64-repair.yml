@@ -91,6 +91,7 @@ jobs:
           python3 scripts/test_minisight_live_settings_20261106.py
           python3 scripts/test_friendly_error_text_160651.py
           python3 scripts/test_provider_digest_160651.py
+          python3 scripts/test_codex_client_mask_20261122.py
           python3 scripts/test_error_copy_l10n_160651.py
           python3 scripts/test_friendly_error_text_behavior_160651.py
           python3 scripts/test_minisight_local_repairs_20261107.py

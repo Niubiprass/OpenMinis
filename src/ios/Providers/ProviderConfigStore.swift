@@ -1451,13 +1451,17 @@ final class ProviderConfigStore: ObservableObject {
         let appendV1 = dict["appendV1Suffix"] as? Bool ?? true
         // [T-provider-custom-user-agent] Optional; absent in old exports → nil (default UA).
         let customUserAgent = dict["customUserAgent"] as? String
+        // [T-codex-client-mask] Optional; absent in old exports → off, so an
+        // older backup restores exactly the behavior it was taken with.
+        let codexClientMask = dict["codexClientMask"] as? Bool ?? false
         var instance = ProviderInstance(
             label: resolvedLabel,
             providerType: providerType,
             credentialType: credentialType,
             customBaseURL: customBaseURL,
             appendV1Suffix: appendV1,
-            customUserAgent: customUserAgent
+            customUserAgent: customUserAgent,
+            codexClientMask: codexClientMask
         )
         var importedSubscriptionSlots: [String] = []
         var subscriptionPublished = false

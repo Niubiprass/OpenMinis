@@ -329,6 +329,14 @@ enum LLMProviderFactory {
     static func makeOpenAIResponsesProvider(instance: ProviderInstance, model: LLMModel, apiKeyOverride: String? = nil) -> OpenAIProvider {
         let customBase = instance.effectiveCustomBaseURL
         let appendV1 = instance.appendV1Suffix
+        // [T-codex-client-mask] Identity + mask for every branch below. The
+        // instance id seeds the mask's stable installation id, and the toggle
+        // rides the provider so both Responses builders see it.
+        func configure(_ p: OpenAIProvider) -> OpenAIProvider {
+            p.providerInstanceId = instance.id
+            p.codexClientMask = instance.codexClientMask
+            return p
+        }
         // Both credential types are valid for Responses API instances
         // (e.g. an OpenAI2 instance configured with the user's Codex
         // OAuth login). Previously this branch only loaded an API key
@@ -340,12 +348,12 @@ enum LLMProviderFactory {
             let key = apiKeyOverride ?? ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
             let provider = OpenAIProvider(apiKey: key, model: model, customBaseURL: customBase, appendV1Suffix: appendV1)
             provider.forceResponsesAPI = true
-            return applyAzure(applyCustomUserAgent(provider, instance: instance), instance: instance)
+            return configure(applyAzure(applyCustomUserAgent(provider, instance: instance), instance: instance))
         case .oauth:
             if let manualToken = ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") {
                 let provider = OpenAIProvider(apiKey: manualToken, model: model, customBaseURL: customBase, appendV1Suffix: appendV1)
                 provider.forceResponsesAPI = true
-                return applyCustomUserAgent(provider, instance: instance)
+                return configure(applyCustomUserAgent(provider, instance: instance))
             }
             let iid = instance.id
             let provider = OpenAIProvider(
@@ -356,7 +364,7 @@ enum LLMProviderFactory {
             provider.appendV1Suffix = appendV1
             provider.forceResponsesAPI = true
             provider.codexAccountId = CodexOAuthManager.shared.accountId(instanceId: iid)
-            return provider
+            return configure(provider)
         }
     }
 

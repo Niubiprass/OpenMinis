@@ -67,6 +67,13 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
     /// itself is guarded by a per-account daily marker, so repeated launches
     /// cost at most one status read per account per day.
     var subscriptionAutoCheckin: Bool
+    /// [T-codex-client-mask] "Pretend to be the Codex CLI" for openAIResponses
+    /// instances. Relays that admit only genuine Codex clients reject our normal
+    /// request shape with 403; turning this on adds the Codex client headers and
+    /// the body-level `client_metadata` block those relays check for. Off means
+    /// byte-identical prior behavior, and it never applies to the official
+    /// ChatGPT/Codex OAuth backend (that one already speaks the real protocol).
+    var codexClientMask: Bool
 
     init(
         id: String = UUID().uuidString,
@@ -85,7 +92,8 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         subscriptionAccountIds: [String]? = nil,
         subscriptionActiveAccountId: String? = nil,
         subscriptionAutoFailover: Bool = true,
-        subscriptionAutoCheckin: Bool = true
+        subscriptionAutoCheckin: Bool = true,
+        codexClientMask: Bool = false
     ) {
         self.id = id
         self.label = label
@@ -104,6 +112,7 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         self.subscriptionActiveAccountId = providerType.isDomesticSubscription ? subscriptionActiveAccountId : nil
         self.subscriptionAutoFailover = subscriptionAutoFailover
         self.subscriptionAutoCheckin = subscriptionAutoCheckin
+        self.codexClientMask = codexClientMask
     }
 
     // MARK: - Codable (manual, for backwards compatibility)
@@ -113,6 +122,7 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         case imageEndpointMode, imageEndpointResolved, customUserAgent, azureMode
         case subscriptionAccountIds, subscriptionActiveAccountId, subscriptionAutoFailover
         case subscriptionAutoCheckin
+        case codexClientMask
     }
 
     init(from decoder: Decoder) throws {
@@ -152,6 +162,9 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         subscriptionAutoFailover = (try? c.decodeIfPresent(Bool.self, forKey: .subscriptionAutoFailover)) ?? true
         // User-approved default: automatic check-in is on for domestic accounts.
         subscriptionAutoCheckin = try c.decodeIfPresent(Bool.self, forKey: .subscriptionAutoCheckin) ?? true
+        // [T-codex-client-mask] Additive + optional: old data has no key → off,
+        // so every existing instance keeps its exact prior request shape.
+        codexClientMask = (try? c.decodeIfPresent(Bool.self, forKey: .codexClientMask)) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -172,6 +185,9 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         // [T-ios-azure-openai] Only encode when on, so off-instances serialize
         // byte-identically to before this field existed (no diff/churn, no LWW noise).
         if azureMode { try c.encode(azureMode, forKey: .azureMode) }
+        // [T-codex-client-mask] Same discipline: only write the key when on, so
+        // off-instances and their backups stay byte-identical to pre-change blobs.
+        if codexClientMask { try c.encode(codexClientMask, forKey: .codexClientMask) }
         // [T-subscription-multi-account] Only serialize for subscriptions that
         // actually use the list, so existing single-account blobs keep their
         // exact previous shape (no sync churn, no last-writer-wins noise).

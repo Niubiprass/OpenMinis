@@ -267,6 +267,28 @@ final class OpenAIProvider: LLMProvider {
     /// Used by the "Responses API" provider type for third-party Responses-compatible endpoints.
     var forceResponsesAPI: Bool = false
 
+    /// [T-codex-client-mask] When true, add the Codex client identity (headers +
+    /// body `client_metadata`) to Responses requests, for relays that only admit
+    /// genuine Codex clients. Set from `ProviderInstance.codexClientMask`.
+    /// Ignored on the official ChatGPT/Codex OAuth backend, which already speaks
+    /// the real protocol and must not be given a fabricated identity.
+    var codexClientMask: Bool = false
+
+    /// Whether a request about to be built should carry the Codex mask.
+    /// Both Responses builders share this so they cannot drift apart.
+    private func shouldApplyCodexClientMask(isResponsesAPI: Bool, isCodexOAuth: Bool) -> Bool {
+        codexClientMask && isResponsesAPI && !isCodexOAuth
+    }
+
+    /// Mutates `body` and returns the headers to set. One entry point so the
+    /// agent stream path and the offload path produce identical identities.
+    private func applyCodexClientMask(to body: inout [String: Any], streaming: Bool) -> [String: String] {
+        let id = providerInstanceId ?? "unscoped"
+        let ctx = CodexClientMask.context(providerId: id, body: body)
+        body = ctx.apply(to: body)
+        return ctx.headers(streaming: streaming)
+    }
+
     /// [T-ios-azure-openai] Azure OpenAI mode. When true:
     ///   • auth uses the `api-key:` header instead of `Authorization: Bearer`;
     ///   • the request URL is built from the user-supplied Azure base URL, which
@@ -945,6 +967,9 @@ final class OpenAIProvider: LLMProvider {
         body: [String: Any],
         isResponsesAPI: Bool
     ) async throws -> (AsyncThrowingStream<String, Error>, Int) {
+        // [T-codex-client-mask] Shadowed so the mask can rewrite the body
+        // (adds `client_metadata`) the same way the offload builder does.
+        var body = body
         let url: URL
         var request: URLRequest
 
@@ -1017,6 +1042,14 @@ final class OpenAIProvider: LLMProvider {
         // this is where `X-Initiator: agent` actually matters.
         for (key, value) in perRequestHeaders?(body) ?? [:] {
             request.setValue(value, forHTTPHeaderField: key)
+        }
+        // [T-codex-client-mask] Applied after extraHeaders/perRequestHeaders so
+        // the Codex identity wins — that is the whole point of the toggle, and a
+        // relay that gates on the client must not see a user UA instead.
+        if shouldApplyCodexClientMask(isResponsesAPI: isResponsesAPI, isCodexOAuth: isCodexOAuth) {
+            for (key, value) in applyCodexClientMask(to: &body, streaming: true) {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
         }
         // [T-ios-openai-body-oom] Must run BEFORE serializing: an out-of-memory
         // inside JSONSerialization aborts the process and cannot be caught. This
@@ -1351,6 +1384,15 @@ final class OpenAIProvider: LLMProvider {
         if !chatExtraBody.isEmpty && !isCodexOAuth {
             for (k, v) in chatExtraBody { body[k] = v }
             body["model"] = model.id
+        }
+
+        // [T-codex-client-mask] Same identity as the agent stream path. Placed
+        // last so a user-supplied extra-body cannot leave a half-filled
+        // `client_metadata` behind, and before serialization so it is on the wire.
+        if shouldApplyCodexClientMask(isResponsesAPI: true, isCodexOAuth: isCodexOAuth) {
+            for (key, value) in applyCodexClientMask(to: &body, streaming: stream) {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
         }
 
         // [T-ios-openai-body-oom] See streamRaw — carries the conversation too.
@@ -2291,5 +2333,199 @@ final class OpenAIProvider: LLMProvider {
         // relay billing errors and 503 routing errors). No error reason is
         // discarded before the request-scoped key classifier sees it.
         return ProviderServiceError.httpError(statusCode: statusCode, body: body)
+    }
+}
+
+// MARK: - Codex client mask ("伪装 Codex 端") [T-codex-client-mask]
+//
+// Why this exists: some relays forward only to the official Codex backend and
+// gate access on the caller looking like the real Codex client. A normal
+// Responses request from this app is rejected with `403 codex_access_restricted`
+// even with a valid API key.
+//
+// What the gate actually checks (measured 2026-11-22 against
+// new.sharedchat.cc/codex, replaying a real codex 0.171.0 capture):
+//   • body `client_metadata` — REQUIRED. Absent → 403; an empty object → 403;
+//     three keys were already enough. Everything else was tested and is NOT
+//     checked: our own tools, a tool set with no Codex tools at all, no tools,
+//     a one-line developer message instead of the 20 KB base instructions, and
+//     a body with none of the Codex message scaffolding all returned 200 with
+//     a real model reply. The header subset barely matters either — only
+//     User-Agent + originator was still accepted.
+//
+// So this deliberately does NOT replace the caller's tools, instructions or
+// message list: that would break this app's agent loop (the model would call
+// `exec_command`, which we cannot run) for no benefit. We add the identity
+// fields only, and send the full header set anyway so the mask keeps working
+// if the relay tightens its check later.
+//
+// Deliberately no embedded base_instructions / Codex toolset: ~39 KB of Swift
+// string constants that would have to track a moving CLI, and the measurement
+// above shows it buys nothing.
+
+/// Builds the Codex client identity for one request, used when the user turned
+/// on "伪装 Codex 端" for an openAIResponses instance.
+enum CodexClientMask {
+
+    /// Wire version the capture came from. Kept separate from
+    /// `OpenAIProvider.codexClientVersion` (the ChatGPT-OAuth client version),
+    /// which tracks a different upstream.
+    static let clientVersion = "0.171.0"
+    static let userAgent = "codex_exec/\(clientVersion) (Ubuntu 24.04.3 LTS; x86_64) xterm-256color"
+    static let originator = "codex_exec"
+
+    /// Everything that varies per request. Built once per request so headers and
+    /// the body `client_metadata` carry identical ids — the real client derives
+    /// both from the same turn.
+    struct Context {
+        let installationId: String
+        let threadId: String
+        let turnId: String
+        let contextWindowId: String
+        let model: String
+        let startedAtMillis: Int
+
+        var windowId: String { "\(threadId):0" }
+
+        /// The JSON string real Codex duplicates into both the
+        /// `x-codex-turn-metadata` header and `client_metadata`.
+        var turnMetadataJSON: String {
+            let dict: [String: Any] = [
+                "installation_id": installationId,
+                "session_id": threadId,
+                "thread_id": threadId,
+                "agent_name": "/root",
+                "turn_id": turnId,
+                "window_id": windowId,
+                "window_number": 0,
+                "context_window_id": contextWindowId,
+                "request_kind": "turn",
+                "history_initialization": "new",
+                "root_turn_id": turnId,
+                "thread_source": "user",
+                "turn_trigger": "exec",
+                "sandbox": "seccomp",
+                "sandbox_mode": "read-only",
+                "auto_review_enabled": false,
+                "node_repl_auto_review_required": false,
+                "node_repl_disabled": false,
+                "turn_started_at_unix_ms": startedAtMillis,
+                "analytics_enabled": true,
+                "model": model,
+            ]
+            guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
+                  let json = String(data: data, encoding: .utf8) else { return "{}" }
+            return json
+        }
+
+        /// Headers to add. Never includes Authorization — that stays on the
+        /// normal key/OAuth path.
+        func headers(streaming: Bool) -> [String: String] {
+            [
+                "originator": CodexClientMask.originator,
+                "User-Agent": CodexClientMask.userAgent,
+                "session-id": threadId,
+                "thread-id": threadId,
+                "x-client-request-id": turnId,
+                "x-codex-window-id": windowId,
+                "x-codex-turn-metadata": turnMetadataJSON,
+                "x-codex-installation-id": installationId,
+                "Accept": streaming ? "text/event-stream" : "application/json",
+            ]
+        }
+
+        /// Adds the body-level identity block. Always replaces an existing one:
+        /// a stale `client_metadata` would desync from the headers.
+        func apply(to body: [String: Any]) -> [String: Any] {
+            var out = body
+            out["client_metadata"] = [
+                "session_id": threadId,
+                "thread_id": threadId,
+                "turn_id": turnId,
+                "root_turn_id": turnId,
+                "x-codex-window-id": windowId,
+                "x-codex-turn-metadata": turnMetadataJSON,
+                "x-codex-installation-id": installationId,
+            ]
+            // Real Codex keys its server-side prompt cache on the thread id.
+            // Only filled in when the caller has no key of its own, so the
+            // conversation-stable key derived by the agent path always wins.
+            if (out["prompt_cache_key"] as? String)?.isEmpty ?? true {
+                out["prompt_cache_key"] = threadId
+            }
+            return out
+        }
+    }
+
+    /// Builds the per-request context.
+    ///
+    /// `installationId` is stable per provider instance (persisted), like a real
+    /// install that keeps one id across sessions. The thread id comes from the
+    /// caller's `prompt_cache_key` when it is UUID-shaped — that value is
+    /// already stable per conversation, so thread identity and the prompt cache
+    /// agree, exactly like the real client. Anything else gets a deterministic
+    /// UUID derived from it, so two turns of one conversation still land on one
+    /// thread.
+    static func context(providerId: String, body: [String: Any]) -> Context {
+        let model = body["model"] as? String ?? ""
+        let seed = (body["prompt_cache_key"] as? String) ?? ""
+        let threadId = uuidShaped(seed)
+            ? seed.lowercased()
+            : derivedUUID(from: "thread:" + (seed.isEmpty ? providerId : seed))
+        return Context(
+            installationId: installationId(providerId: providerId),
+            threadId: threadId,
+            turnId: UUID().uuidString.lowercased(),
+            contextWindowId: derivedUUID(from: "ctx:" + threadId),
+            model: model,
+            startedAtMillis: Int(Date().timeIntervalSince1970 * 1000)
+        )
+    }
+
+    // MARK: Identity persistence
+
+    private static let installationKeyPrefix = "codexClientMask.installationId."
+
+    /// One installation id per provider instance, created on the first masked
+    /// request and reused afterwards. Scoped by instance id, so deleting and
+    /// re-adding a provider starts a clean identity.
+    static func installationId(providerId: String) -> String {
+        let key = installationKeyPrefix + providerId
+        if let existing = UserDefaults.standard.string(forKey: key), uuidShaped(existing) {
+            return existing
+        }
+        let fresh = UUID().uuidString.lowercased()
+        UserDefaults.standard.set(fresh, forKey: key)
+        return fresh
+    }
+
+    // MARK: UUID helpers
+
+    static func uuidShaped(_ s: String) -> Bool {
+        let parts = s.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.map({ $0.count }) == [8, 4, 4, 4, 12] else { return false }
+        return parts.allSatisfy { $0.allSatisfy { $0.isHexDigit } }
+    }
+
+    /// Deterministic UUID-shaped id. Nothing security-sensitive: it only has to
+    /// look like a UUID and stay stable for the same seed, so a dependency-free
+    /// FNV-style mix is enough (and avoids pulling CryptoKit in for a cosmetic
+    /// field). Kept in-tree because the file list is explicit — see the note at
+    /// the top of this section.
+    static func derivedUUID(from seed: String) -> String {
+        var h1: UInt64 = 0xcbf2_9ce4_8422_2325
+        var h2: UInt64 = 0x9e37_79b9_7f4a_7c15
+        for byte in seed.utf8 {
+            h1 = (h1 ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
+            h2 = (h2 &+ UInt64(byte)) &* 0x0000_0100_0000_01b3 ^ (h2 >> 29)
+        }
+        var bytes = [UInt8]()
+        for shift in stride(from: 56, through: 0, by: -8) { bytes.append(UInt8((h1 >> UInt64(shift)) & 0xff)) }
+        for shift in stride(from: 56, through: 0, by: -8) { bytes.append(UInt8((h2 >> UInt64(shift)) & 0xff)) }
+        bytes[6] = (bytes[6] & 0x0f) | 0x70   // version 7, like the captured ids
+        bytes[8] = (bytes[8] & 0x3f) | 0x80   // RFC 4122 variant
+        let chars = Array(bytes.map { String(format: "%02x", $0) }.joined())
+        func slice(_ from: Int, _ to: Int) -> String { String(chars[from..<to]) }
+        return "\(slice(0, 8))-\(slice(8, 12))-\(slice(12, 16))-\(slice(16, 20))-\(slice(20, 32))"
     }
 }

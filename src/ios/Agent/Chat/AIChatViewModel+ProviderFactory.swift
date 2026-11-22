@@ -308,6 +308,12 @@ extension AIChatViewModel {
             // /v1/responses with a real bearer token instead of the
             // empty-auth header the apiKey-only path produced
             // (T-model-use-codex-responses-api-34889).
+            // [T-codex-client-mask] Identity + mask for every branch below.
+            func configure(_ p: OpenAIProvider) -> OpenAIProvider {
+                p.providerInstanceId = instance.id
+                p.codexClientMask = instance.codexClientMask
+                return p
+            }
             switch instance.credentialType {
             case .apiKey:
                 guard let key = await ProviderMultiKeyManager.shared.effectiveKeyAsync(for: instance.id) else {
@@ -315,12 +321,12 @@ extension AIChatViewModel {
                 }
                 let respProvider = OpenAIProvider(apiKey: key, model: entry.model, customBaseURL: customBase, appendV1Suffix: appendV1)
                 respProvider.forceResponsesAPI = true
-                return LLMProviderFactory.applyCustomUserAgent(respProvider, instance: instance)
+                return configure(LLMProviderFactory.applyCustomUserAgent(respProvider, instance: instance))
             case .oauth:
                 if let manualToken = ProviderKeychainHelper.loadOAuthString(instanceId: instance.id, account: "manual-oauth-token") {
                     let respProvider = OpenAIProvider(apiKey: manualToken, model: entry.model, customBaseURL: customBase, appendV1Suffix: appendV1)
                     respProvider.forceResponsesAPI = true
-                    return LLMProviderFactory.applyCustomUserAgent(respProvider, instance: instance)
+                    return configure(LLMProviderFactory.applyCustomUserAgent(respProvider, instance: instance))
                 }
                 let iid = instance.id
                 let respProvider = OpenAIProvider(
@@ -331,7 +337,7 @@ extension AIChatViewModel {
                 respProvider.appendV1Suffix = appendV1
                 respProvider.forceResponsesAPI = true
                 respProvider.codexAccountId = CodexOAuthManager.shared.accountId(instanceId: iid)
-                return respProvider
+                return configure(respProvider)
             }
         case .xAI:
             let xaiBase = customBase ?? "https://api.x.ai/v1"
