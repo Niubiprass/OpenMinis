@@ -10,6 +10,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 static const NSUInteger MSLyricsMaxBytes = 1024 * 1024;
+static const NSTimeInterval MSLyricsMaxDisplay = 12.0;
 
 // BEGIN LYRICS PORTABLE POLICY
 // Compiled verbatim on the host; Foundation parsing/transport are tested separately.
@@ -156,6 +157,9 @@ static double MSLyricsMarkerTime(const void *context, size_t index) {
     if (index == SIZE_MAX) return nil;
     MiniSightLyricLine *line = _lines[index];
     if (!line.text.length) return nil;
+    // A line only stays on screen for a bounded window; a long instrumental gap
+    // must clear the bubble instead of holding the previous line forever.
+    if (time - line.time >= MSLyricsMaxDisplay) return nil;
     return line.text;
 }
 @end
