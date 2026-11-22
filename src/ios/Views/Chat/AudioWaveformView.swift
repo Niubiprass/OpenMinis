@@ -44,12 +44,13 @@ struct ComposerRainbowWave: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static let canvasHeight: CGFloat = 74
-    private static let dotSize: CGFloat = 1.15
-    private static let columnPitch: CGFloat = 1.24
-    private static let rowPitch: CGFloat = 1.46
+    private static let dotSize: CGFloat = 1.55
+    private static let columnPitch: CGFloat = 2.57
+    private static let rowPitch: CGFloat = 2.39
     private static let edgeInset: CGFloat = 1.15
-    private static let maxRows = 18
-    private static let maxColumns = 260
+    private static let maxRows = 15
+    private static let maxColumns = 180
+    private static let peakHeight: CGFloat = 34.4
     private static let transitionLife = 0.48
     @State private var transitionBeganAt: TimeInterval = -1
     var voiceActive: Bool = false
@@ -108,7 +109,7 @@ struct ComposerRainbowWave: View {
                     let unit = Double(index) / Double(columns - 1)
                     let audio = reduceMotion ? 0 : sampledLevel(at: unit)
                     let height = waveHeight(at: unit, time: time, audio: audio)
-                    let rows = rowCount(for: height)
+                    let rows = height > 0 ? rowCount(for: height) : 0
                     let baseX = columnCenter(at: unit, width: size.width)
                     for row in 0..<rows {
                         let remainder = height - Double(row) * Double(Self.rowPitch)
@@ -118,7 +119,10 @@ struct ComposerRainbowWave: View {
                         let yNoise = smoothNoise(position: unit * 12.0 + time * 0.28 + Double(row) * 6.1)
                         let y = min(baseline, max(0, baseline - CGFloat(row) * Self.rowPitch + CGFloat(yNoise) * 0.48))
                         let shimmer = 0.92 + 0.08 * (0.5 + 0.5 * sin(time * 2.1 + Double(index) * 1.7 + Double(row)))
-                        let diameter = Self.dotSize * CGFloat(shimmer * topScale)
+                        // Grain: individual beads differ in size, which is what
+                        // gives the reference its speckled look rather than a grid.
+                        let grain = 0.72 + 0.55 * (0.5 + 0.5 * smoothNoise(position: Double(index) * 2.31 + Double(row) * 5.17))
+                        let diameter = Self.dotSize * CGFloat(shimmer * topScale * grain)
                         let dot = CGRect(x: x - diameter * 0.5, y: y - diameter * 0.5,
                                          width: diameter, height: diameter)
                         switch row {
@@ -193,23 +197,33 @@ struct ComposerRainbowWave: View {
         return min(Self.maxRows, max(1, Int(ceil(height / Double(Self.rowPitch)))))
     }
 
+    // Silhouette measured from the reference frame: a broad mound peaking at
+    // ~55% width with a slightly flattened crown, tapering to nothing at both
+    // edges. Values are the normalized height sampled across the composer.
+    private static let profile: [Double] = [0.0, 0.0, 0.117, 0.402, 0.556, 0.571,
+                                            0.784, 0.789, 0.923, 0.981, 0.929, 0.989,
+                                            0.962, 0.925, 0.865, 0.791, 0.703, 0.474,
+                                            0.417, 0.0, 0.0]
+
+    private func profileUnit(_ unit: Double) -> Double {
+        let inside = unit > 0 && unit < 1
+        let scaled = inside ? unit * Double(Self.profile.count - 1) : 0
+        let index = Int(scaled)
+        let valid = inside && index < Self.profile.count - 1
+        let frac = scaled - Double(index)
+        let lower = valid ? Self.profile[index] : 0
+        let upper = valid ? Self.profile[index + 1] : 0
+        return lower * (1 - frac) + upper * frac
+    }
+
     private func waveHeight(at unit: Double, time: Double, audio: Double) -> Double {
-        // The composer wave undulates on its own; it does not depend on the
-        // microphone. Three narrow crests drift at different speeds so the
-        // surface keeps moving instead of sitting as one fixed mound.
-        let p1 = 0.46 + 0.26 * sin(time * 0.31)
-        let p2 = 0.24 + 0.20 * sin(time * 0.23 + 1.7)
-        let p3 = 0.72 + 0.18 * sin(time * 0.27 + 3.4)
-        let d1 = (unit - p1) / 0.085
-        let d2 = (unit - p2) / 0.070
-        let d3 = (unit - p3) / 0.075
-        let c1 = exp(-d1 * d1)
-        let c2 = exp(-d2 * d2) * 0.55
-        let c3 = exp(-d3 * d3) * 0.62
-        let ripple = 0.5 + 0.5 * sin(unit * .pi * 9.0 - time * 1.1)
-        let grain = smoothNoise(position: unit * 16.0 + time * 0.6)
-        let profile = min(1, max(0, 0.10 + max(c1, max(c2, c3)) * 0.82 + ripple * 0.06 + grain * 0.05))
-        return 2.4 + profile * 40.0
+        // The reference composer wave undulates by itself; it never reads the
+        // microphone. The whole silhouette drifts slowly so it keeps moving,
+        // and each column gets a small breathing offset.
+        let drift = 0.012 * sin(time * 0.6)
+        let shape = profileUnit(unit + drift)
+        let breath = 0.97 + 0.06 * smoothNoise(position: unit * 7.0 + time * 0.8)
+        return shape > 0.001 ? Double(Self.peakHeight) * shape * breath : 0
     }
 
     private func smoothNoise(position: Double) -> Double {

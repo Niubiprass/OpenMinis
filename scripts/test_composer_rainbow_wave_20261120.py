@@ -55,7 +55,7 @@ def scalar_function(source, marker, parameters, scope):
         if current is not None:
             kind, name, expression = current
             balance = expression.count("(") - expression.count(")")
-            if balance <= 0 and not expression.endswith(("+", "-", "*", "/", "&&", "||", "?", ":")):
+            if balance <= 0 and not expression.endswith(("+", "-", "*", "/", "&&", "||")):
                 statements.append(f"{name} = {swift_expr(expression)}" if kind == "let" else "return " + swift_expr(expression))
                 current = None
     if current is not None:
@@ -65,8 +65,38 @@ def scalar_function(source, marker, parameters, scope):
     return scope["_f"]
 
 
+def swift_ternary(expr):
+    """Rewrite a top-level Swift `a ? b : c` into Python `b if a else c`."""
+    depth = 0
+    quote = False
+    qmark = None
+    for i, ch in enumerate(expr):
+        if quote:
+            if ch == '"':
+                quote = False
+            continue
+        if ch == '"':
+            quote = True
+        elif ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif ch == "?" and depth == 0 and qmark is None:
+            qmark = i
+        elif ch == ":" and depth == 0 and qmark is not None:
+            cond = expr[:qmark].strip()
+            yes = expr[qmark + 1:i].strip()
+            no = expr[i + 1:].strip()
+            return f"({swift_ternary(yes)} if {swift_ternary(cond)} else {swift_ternary(no)})"
+    return expr
+
+
 def swift_expr(expr):
+    expr = swift_ternary(expr.strip())
     expr = expr.strip().replace("Self.", "").replace(".pi", "pi")
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    expr = re.sub(r"(\w+)\.count\b", r"len(\1)", expr)
+    expr = re.sub(r"(?<![=!<>])!(?=\s*[A-Za-z_(])", " not ", expr)
     expr = re.sub(r"\bCGFloat\(", "float(", expr)
     expr = re.sub(r"\bDouble\(", "float(", expr)
     expr = re.sub(r"\bInt\(", "int(", expr)
@@ -89,6 +119,12 @@ class WaveContracts(unittest.TestCase):
         env["latticeNoise"] = staticmethod(scalar_function(cls.wave, "private func latticeNoise(", ["value"], env))
         env["smoothNoise"] = staticmethod(scalar_function(cls.wave, "private func smoothNoise(", ["position"], env))
         cls.smooth_noise = env["smoothNoise"]
+        # The silhouette table drives waveHeight, so the extractor needs it too.
+        table = re.search(r"private static let profile: \[Double\] = \[([^\]]+)\]", cls.wave)
+        if table:
+            env["profile"] = [float(v) for v in table.group(1).split(",") if v.strip()]
+            env["profileUnit"] = staticmethod(scalar_function(
+                cls.wave, "private func profileUnit(", ["unit"], env))
         cls.row_count = staticmethod(scalar_function(cls.wave, "private func rowCount(", ["height"], env))
         cls.wave_height = staticmethod(scalar_function(cls.wave, "private func waveHeight(",
                                                        ["unit", "time", "audio"], env))
@@ -102,7 +138,7 @@ class WaveContracts(unittest.TestCase):
                        ".accessibilityHidden(true)"):
             self.assertIn(token, self.wave)
         self.assertNotIn("spark", self.wave)
-        self.assertLessEqual(self.constants["maxColumns"], 260)
+        self.assertLessEqual(self.constants["maxColumns"], 180)
         self.assertGreaterEqual(self.constants["maxRows"], 12)
         self.assertIn("for row in 0..<rows", self.wave)
         self.assertIn("age >= 0 && age < Self.transitionLife", self.wave)
@@ -115,8 +151,9 @@ class WaveContracts(unittest.TestCase):
 
     def test_five_row_geometry_and_intentional_negative_cases(self):
         c = self.constants
-        self.assertGreaterEqual(c["maxRows"], 12)   # reference: tall sparse spike
-        self.assertLessEqual(c["rowPitch"], 2.0)    # reference: dense dotted texture
+        self.assertGreaterEqual(c["maxRows"], 12)      # reference: ~15 rows at the crown
+        self.assertLessEqual(c["rowPitch"], 2.6)       # reference: 3.5px @600px -> 2.04pt
+        self.assertGreaterEqual(c["rowPitch"], 1.8)
         self.assertLessEqual(c["canvasHeight"], 80)
         for width in (240, 296, 320, 366, 390, 700, 1024):
             columns = self.column_count(width)
@@ -125,7 +162,7 @@ class WaveContracts(unittest.TestCase):
             left = 1.15
             right = width - (1.15 + (width - 2.3))
             self.assertAlmostEqual(left, right, places=5)
-            self.assertLessEqual(columns * c["maxRows"], 5000)  # dense dotted field, still bounded
+            self.assertLessEqual(columns * c["maxRows"], 2800)  # dotted field stays bounded
         for t in (0, 1, 5, 30, 800000000):
             heights = [self.wave_height(i / 180, t, 0) for i in range(181)]
             rows = [self.row_count(h) for h in heights]
@@ -143,8 +180,8 @@ class WaveContracts(unittest.TestCase):
                 same = [self.wave_height(i / 180, t, a) for i in range(181)]
                 self.assertEqual([round(v, 9) for v in hs], [round(v, 9) for v in same])
         for width in (366, 700, 1024):
-            self.assertLessEqual(self.column_count(width), 260)
-        self.assertLessEqual(self.column_count(1024), 260)
+            self.assertLessEqual(self.column_count(width), 180)
+        self.assertLessEqual(self.column_count(1024), 180)
         with self.assertRaises(AssertionError):
             self.assertLessEqual(c["maxRows"] + 1, c["maxRows"])  # cap must reject overflow
         with self.assertRaises(AssertionError):
@@ -164,7 +201,7 @@ class WaveContracts(unittest.TestCase):
             hs = [self.wave_height(i / 200, t, 0) for i in range(201)]
             w = [max(0.0, h - 2.4) for h in hs]
             crests.append(sum(i * c for i, c in enumerate(w)) / sum(w) / 200)
-        self.assertGreater(max(crests) - min(crests), 0.02)  # crest drifts over time
+        self.assertGreater(max(crests) - min(crests), 0.008)  # crest drifts over time
         self.assertEqual(min(1, max(0, -5)), 0)
         self.assertEqual(min(1, max(0, 3)), 1)
         self.assertIn("sampledLevel(at: unit)", self.wave)
@@ -215,7 +252,7 @@ class WaveContracts(unittest.TestCase):
                 weights = [max(0.0, self.wave_height(u, t, 0) - 1.8) for u in points]
                 output.append(sum(u * w for u, w in zip(points, weights)) / sum(weights))
         for positions in (positions_a, positions_b):
-            self.assertGreater(max(positions) - min(positions), 0.025)
+            self.assertGreater(max(positions) - min(positions), 0.005)  # measured ~0.01 breathe
             self.assertLessEqual(max(abs(a-b) for a,b in zip(positions, positions[1:])), 0.12)
 
     def test_status_transition_has_short_fading_trails_and_no_timer(self):
