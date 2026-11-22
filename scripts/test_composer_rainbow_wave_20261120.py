@@ -14,7 +14,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 CHAT = ROOT / "src/ios/Views/Chat/AIChatView.swift"
 WAVE = ROOT / "src/ios/Views/Chat/AudioWaveformView.swift"
-BASELINE = Path("/var/minis/shared/openminis/local-reviews/three-repairs-20261121/baseline")
+BASELINE = ROOT / "scripts/fixtures/composer_wave_baseline_20261120"
 
 
 def block(source, marker):
