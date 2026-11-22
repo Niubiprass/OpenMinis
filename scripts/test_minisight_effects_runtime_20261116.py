@@ -16,6 +16,7 @@ import argparse
 from pathlib import Path
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -107,8 +108,28 @@ def main(argv=None):
                     print(result.stdout, end='')
                     if result.returncode:
                         raise RuntimeError('baseline runtime failed: ' + result.stderr)
-                    if result.stdout.count('NATIVE PASS: ') != 18:
-                        raise RuntimeError('missing original 11 / new 6 native groups')
+                    # The fixture prints one `NATIVE PASS: <case>` line per case
+                    # and a FINAL SUMMARY LINE that starts with the same prefix
+                    # ("NATIVE PASS: 11 original … + 6 … groups; …"). Counting the
+                    # raw prefix therefore always came out one too high, and the
+                    # hardcoded 18 drifted out of sync the moment a case was
+                    # added (b429e95 wrote 18 against 16 cases + summary = 17).
+                    # Compare against the fixture's own case table instead, so the
+                    # expectation follows the fixture and the summary line cannot
+                    # be mistaken for a case.
+                    expected = re.findall(
+                        r'\{"([A-Za-z0-9-]+)",\s*[A-Za-z]',
+                        (FIXTURE / 'runtime.m').read_text())
+                    reported = [line[len('NATIVE PASS: '):].strip()
+                                for line in result.stdout.splitlines()
+                                if line.startswith('NATIVE PASS: ')]
+                    seen = [name for name in reported if name in set(expected)]
+                    if sorted(seen) != sorted(expected):
+                        missing = sorted(set(expected) - set(seen))
+                        extra = sorted(set(seen) - set(expected))
+                        raise RuntimeError(
+                            'native groups did not match the fixture case table: '
+                            'missing=%s extra=%s' % (missing, extra))
                 elif result.returncode != 1 or 'FAIL:' not in result.stderr:
                     raise RuntimeError(name + ' did not fail by a runtime assertion: ' + result.stderr)
                 else:
