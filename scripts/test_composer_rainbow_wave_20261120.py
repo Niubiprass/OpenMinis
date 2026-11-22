@@ -277,6 +277,27 @@ class WaveContracts(unittest.TestCase):
         base = [self.wave_height(i / 100, 0) for i in range(101)]
         self.assertEqual(base, [self.wave_height(i / 100, 0) for i in range(101)])
 
+    def test_row_light_thread_matches_measurements(self):
+        # Measured from the reference: row 4 (0 = bottom) carries a near-white
+        # stretch, centre 0.52-0.61 of the width, length pulsing 20-50%.
+        c = self.constants
+        self.assertAlmostEqual(c["rowLightIndex"], 4.0, places=2)
+        self.assertAlmostEqual(c["rowLightSigma"], 1.1, places=2)
+        self.assertAlmostEqual(c["rowLightCentre"], 0.56, places=2)
+        self.assertAlmostEqual(c["rowLightLength"], 0.32, places=2)
+        self.assertGreaterEqual(c["rowLightWhite"], 0.7)
+        self.assertIn("private func rowLight(", self.wave)
+        self.assertIn("exp(-rowDistance * rowDistance)", self.wave)
+        self.assertIn("whiten: Self.rowLightWhite * light", self.wave)
+        # Near-white on purpose: the measured stretch is V 0.94 / S 0.18.
+        self.assertIn("private static func color(hue: Double, sat: Double, val: Double, whiten: Double = 0)",
+                      self.wave)
+
+    def test_vertical_three_stage_wash(self):
+        # Bottom rows deep/saturated, upper rows pale — measured, not taste.
+        self.assertIn("let vertical = rows > 1 ? Double(row) / Double(rows - 1) : 0", self.wave)
+        self.assertIn("0.88 - 0.42 * pow(vertical, 0.85)", self.wave)
+
     def test_transition_trails_remain(self):
         self.assertIn(".onChange(of: voiceActive)", self.wave)
         self.assertIn("transitionBeganAt = timeline.date.timeIntervalSinceReferenceDate", self.wave)

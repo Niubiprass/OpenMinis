@@ -94,6 +94,23 @@ struct ComposerRainbowWave: View {
     /// Median hue at the top of a crest in the reference: orange.
     private static let crestHue = 0.105
 
+    // MARK: Row light
+    //
+    // Measured from the reference frame by frame: one row near the fourth from
+    // the bottom carries a near-white stretch that reads as a thread of light
+    // running through the grid. Numbers below are the measurements, not taste:
+    //   * row index 4 (0 = bottom), sigma ~1.1 rows
+    //   * that stretch is V 0.94 / S 0.18 — near white, not coloured
+    //   * its centre sits at 0.52-0.61 of the width and drifts slowly
+    //   * its length pulses between ~20% and ~50% of the width
+    private static let rowLightIndex = 4.0
+    private static let rowLightSigma = 1.1
+    private static let rowLightCentre = 0.56
+    private static let rowLightCentreDrift = 0.04
+    private static let rowLightLength = 0.32
+    private static let rowLightLengthPulse = 0.10
+    private static let rowLightWhite = 0.85
+
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
             Canvas(opaque: false, colorMode: .linear) { context, size in
@@ -164,11 +181,19 @@ struct ComposerRainbowWave: View {
                         let warmth = warmAmount(row: row, rows: rows, height: height)
                         let brightness = 0.80 + 0.20 * smoothNoise(
                             position: Double(index) * 1.7 + Double(row) * 3.9 + time * 0.7)
+                        // Vertical three-stage wash, as in the reference: the
+                        // bottom rows are deep and saturated, the top rows pale.
+                        let vertical = rows > 1 ? Double(row) / Double(rows - 1) : 0
+                        let sat = (0.88 - 0.42 * pow(vertical, 0.85)) + 0.10 * warmth
+                        let val = (0.74 + 0.18 * vertical) * brightness * (1.0 + 0.10 * warmth)
+                        // Thread of light: rows near `rowLightIndex` wash toward
+                        // white inside a travelling span.
+                        let light = rowLight(unit: unit, row: row, time: time)
                         context.fill(Path(rect),
                                      with: .color(Self.color(hue: hue,
-                                                             sat: 0.78 + 0.10 * warmth,
-                                                             val: min(1.0, 0.86 + 0.14 * warmth)
-                                                                  * brightness)))
+                                                             sat: min(1.0, sat),
+                                                             val: min(1.0, val),
+                                                             whiten: Self.rowLightWhite * light)))
                     }
                 }
 
@@ -310,6 +335,20 @@ struct ComposerRainbowWave: View {
         return cycle[0].hue
     }
 
+    /// 0...1 weight of the "thread of light" at this dot.
+    private func rowLight(unit: Double, row: Int, time: Double) -> Double {
+        let rowDistance = (Double(row) - Self.rowLightIndex) / Self.rowLightSigma
+        let rowWeight = exp(-rowDistance * rowDistance)
+        guard rowWeight > 0.02 else { return 0 }
+        let centre = Self.rowLightCentre
+            + Self.rowLightCentreDrift * sin(2 * .pi * 0.11 * time)
+        let halfLength = Self.rowLightLength
+            + Self.rowLightLengthPulse * sin(2 * .pi * 0.17 * time + 0.9)
+        let distance = abs(unit - centre) / max(0.02, halfLength)
+        let span = exp(-distance * distance * 1.6)
+        return rowWeight * span
+    }
+
     /// How warm (crest-orange) this dot should be: only the top row or two of
     /// a genuinely tall column. A gradual blend would sweep the hue through
     /// green on its way from cyan to orange, which the reference lacks.
@@ -333,7 +372,7 @@ struct ComposerRainbowWave: View {
     }
 
     /// HSV → RGB, kept local so no UIKit import is needed.
-    private static func color(hue: Double, sat: Double, val: Double) -> Color {
+    private static func color(hue: Double, sat: Double, val: Double, whiten: Double = 0) -> Color {
         let h = (hue - floor(hue)) * 6
         let sector = Int(h) % 6
         let f = h - floor(h)
@@ -349,7 +388,12 @@ struct ComposerRainbowWave: View {
         case 4: rgb = (t, p, val)
         default: rgb = (val, p, q)
         }
-        return Color(red: rgb.0, green: rgb.1, blue: rgb.2)
+        // `whiten` is the measured near-white thread of light: it lifts the
+        // channel values toward 1 without touching the hue.
+        let mix = min(1.0, max(0.0, whiten))
+        return Color(red: rgb.0 + (1 - rgb.0) * mix,
+                     green: rgb.1 + (1 - rgb.1) * mix,
+                     blue: rgb.2 + (1 - rgb.2) * mix)
     }
 
     // MARK: - Noise
