@@ -103,11 +103,10 @@ static void ParserTests(NSDictionary *fixture) {
     CHECK(Equal([timeline lineAtTime:1.5], @"Middle"), "negative offset exact boundary");
     CHECK(Equal([timeline lineAtTime:2.5], @"Later"), "binary search forward");
     CHECK([timeline lineAtTime:0.1] == nil, "binary search rewind");
-    timeline = [MiniSightLyricsTimeline timelineWithLRC:@"[00:01]Long verse line\n[00:30]Next line\n[00:45]\n[00:50]Final" duration:60];
-    CHECK(Equal([timeline lineAtTime:25], @"Long verse line"), "line survives long gap between LRC markers");
-    CHECK([timeline lineAtTime:45] == nil && [timeline lineAtTime:46] == nil && [timeline lineAtTime:49.999] == nil, "explicit blank still clears until next marker");
-    CHECK(Equal([timeline lineAtTime:50], @"Final"), "next marker starts only at its timestamp");
-    CHECK(Equal([timeline lineAtTime:59], @"Final") && [timeline lineAtTime:60] == nil, "last line lasts until track end only");
+    // 12s display window: a line must not survive an instrumental gap.
+    timeline = [MiniSightLyricsTimeline timelineWithLRC:@"[00:01]Brief\n[00:30]Next line" duration:60];
+    CHECK(Equal([timeline lineAtTime:2], @"Brief") && [timeline lineAtTime:13] == nil, "line expires after the display window");
+    CHECK(Equal([timeline lineAtTime:31], @"Next line"), "next marker starts its own window");
     timeline = [MiniSightLyricsTimeline timelineWithLRC:@"[offset:200]\n[00:00]A\n[offset:500]" duration:1];
     CHECK([timeline lineAtTime:0.49] == nil && Equal([timeline lineAtTime:0.5], @"A") && [timeline lineAtTime:1] == nil, "last offset and duration clipping");
     NSString *huge = [@"X" stringByPaddingToLength:1024 * 1024 + 1 withString:@"X" startingAtIndex:0];
