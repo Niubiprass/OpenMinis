@@ -152,8 +152,8 @@ class WaveContracts(unittest.TestCase):
     def test_five_row_geometry_and_intentional_negative_cases(self):
         c = self.constants
         self.assertGreaterEqual(c["maxRows"], 12)      # reference: ~15 rows at the crown
-        self.assertLessEqual(c["rowPitch"], 2.6)       # reference: 3.5px @600px -> 2.04pt
-        self.assertGreaterEqual(c["rowPitch"], 1.8)
+        self.assertLessEqual(c["rowPitch"], 2.0)       # reference: 3.5px / 865px composer
+        self.assertGreaterEqual(c["rowPitch"], 1.2)
         self.assertLessEqual(c["canvasHeight"], 80)
         for width in (240, 296, 320, 366, 390, 700, 1024):
             columns = self.column_count(width)
@@ -162,7 +162,7 @@ class WaveContracts(unittest.TestCase):
             left = 1.15
             right = width - (1.15 + (width - 2.3))
             self.assertAlmostEqual(left, right, places=5)
-            self.assertLessEqual(columns * c["maxRows"], 2800)  # dotted field stays bounded
+            self.assertLessEqual(columns * c["maxRows"], 3600)  # dotted field stays bounded
         for t in (0, 1, 5, 30, 800000000):
             heights = [self.wave_height(i / 180, t, 0) for i in range(181)]
             rows = [self.row_count(h) for h in heights]
@@ -173,8 +173,8 @@ class WaveContracts(unittest.TestCase):
         # the floor must stay a thin band, and nothing may depend on audio.
         for t in (0, 3, 11, 47, 900000000):
             hs = [self.wave_height(i / 180, t, 0) for i in range(181)]
-            self.assertGreaterEqual(max(hs), 28.0)     # a real crest, spectrum-style
-            self.assertLessEqual(min(hs), 8.0)         # thin floor between crests
+            self.assertGreaterEqual(max(hs), 20.0)     # measured crest ~24pt in the reference
+            self.assertLessEqual(min(hs), 8.0)         # edges taper to nothing
             self.assertGreaterEqual(max(self.row_count(h) for h in hs), 12)
             for a in (0.0, 1.0):
                 same = [self.wave_height(i / 180, t, a) for i in range(181)]

@@ -44,13 +44,13 @@ struct ComposerRainbowWave: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static let canvasHeight: CGFloat = 74
-    private static let dotSize: CGFloat = 1.55
-    private static let columnPitch: CGFloat = 2.57
-    private static let rowPitch: CGFloat = 2.39
+    private static let dotSize: CGFloat = 1.21
+    private static let columnPitch: CGFloat = 1.62
+    private static let rowPitch: CGFloat = 1.42
     private static let edgeInset: CGFloat = 1.15
-    private static let maxRows = 15
+    private static let maxRows = 18
     private static let maxColumns = 180
-    private static let peakHeight: CGFloat = 34.4
+    private static let peakHeight: CGFloat = 24.3
     private static let transitionLife = 0.48
     @State private var transitionBeganAt: TimeInterval = -1
     var voiceActive: Bool = false
@@ -181,7 +181,7 @@ struct ComposerRainbowWave: View {
                        in context: GraphicsContext) {
         guard !path.isEmpty else { return }
         var layer = context
-        layer.opacity = opacity * max(0.35, 1.0 - Double(row) * 0.06)
+        layer.opacity = opacity * (row == 0 ? 0.92 : max(0.40, 1.0 - Double(row) * 0.035))
         layer.fill(path, with: shading)
     }
 
@@ -200,10 +200,10 @@ struct ComposerRainbowWave: View {
     // Silhouette measured from the reference frame: a broad mound peaking at
     // ~55% width with a slightly flattened crown, tapering to nothing at both
     // edges. Values are the normalized height sampled across the composer.
-    private static let profile: [Double] = [0.0, 0.0, 0.117, 0.402, 0.556, 0.571,
-                                            0.784, 0.789, 0.923, 0.981, 0.929, 0.989,
-                                            0.962, 0.925, 0.865, 0.791, 0.703, 0.474,
-                                            0.417, 0.0, 0.0]
+    private static let profile: [Double] = [0.023, 0.018, 0.122, 0.236, 0.400, 0.544,
+                                            0.640, 0.749, 0.855, 0.924, 0.898, 0.833,
+                                            0.756, 0.656, 0.518, 0.269, 0.107, 0.056,
+                                            0.028, 0.051, 0.000]
 
     private func profileUnit(_ unit: Double) -> Double {
         let inside = unit > 0 && unit < 1
