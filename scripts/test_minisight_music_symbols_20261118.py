@@ -60,7 +60,8 @@ class SourceGuards(unittest.TestCase):
         if bridge_path.exists():
             bridge = bridge_path.read_text().split('private final class MiniSightMusicBridge:', 1)[1].split('private final class MiniSightAppActivity:', 1)[0]
             self.assertIn('Date().timeIntervalSince1970', bridge)
-            self.assertIn('now - time <= 5', bridge)
+            self.assertIn('now - lastValidAt > 5', bridge)
+            self.assertIn('RunLoop.main.add(polling, forMode: .common)', bridge)
 
     def test_real_image_fixture_not_private_abi_substitute(self):
         fixture = (FIXTURES / 'native.m').read_text()
