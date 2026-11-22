@@ -38,32 +38,61 @@ struct AudioWaveformView: View {
 
 /// Animated, bottom-anchored spectral particles for the composer background.
 /// Canvas owns the redraw; it never invalidates the text field or controls.
+///
+/// Geometry is taken from the reference recording rather than invented: in the
+/// reference the composer card is 913 px wide with a 12 px dot pitch and 6 px
+/// dots, i.e. dots/pitch = 0.5 and ~76 dots across. The previous build used a
+/// 1.62 pt pitch (up to 180 columns) which read as a fine mesh instead of
+/// grain. [T-composer-wave-video-match]
 struct ComposerRainbowWave: View {
     var levels: [Float] = []
     var opacity: Double = 0.58
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static let canvasHeight: CGFloat = 74
-    private static let dotSize: CGFloat = 1.21
-    private static let columnPitch: CGFloat = 1.62
-    private static let rowPitch: CGFloat = 1.42
-    private static let edgeInset: CGFloat = 1.15
-    private static let maxRows = 18
-    private static let maxColumns = 180
-    private static let peakHeight: CGFloat = 24.3
+    // Video-matched grid (350 pt box → 76 dots across).
+    private static let dotSize: CGFloat = 2.30
+    private static let columnPitch: CGFloat = 4.60
+    private static let rowPitch: CGFloat = 4.60
+    private static let edgeInset: CGFloat = 2.0
+    private static let maxRows = 8
+    private static let maxColumns = 96
+    private static let peakHeight: CGFloat = 26.0
     private static let transitionLife = 0.48
     @State private var transitionBeganAt: TimeInterval = -1
     var voiceActive: Bool = false
 
-    private static let spectrum = Gradient(colors: [
-        Color(red: 0.98, green: 0.27, blue: 0.51),
-        Color(red: 1.00, green: 0.48, blue: 0.28),
-        Color(red: 0.99, green: 0.76, blue: 0.27),
-        Color(red: 0.35, green: 0.84, blue: 0.55),
-        Color(red: 0.18, green: 0.76, blue: 0.94),
-        Color(red: 0.38, green: 0.54, blue: 0.99),
-        Color(red: 0.77, green: 0.39, blue: 0.94)
-    ])
+    // MARK: Flow
+    //
+    // Measured from the reference at 10 fps: the ridge height swings ~±20% and
+    // the crest wanders ~10% of the width within a second, i.e. a few pixels of
+    // change per frame. Three travelling waves at different speeds and
+    // directions produce that: the surface churns instead of pulsing in place.
+    // (wavelengths across the width, cycles/second, amplitude)
+    private static let flow: [(Double, Double, Double)] = [
+        (1.00, 0.640, 0.480),
+        (2.20, -0.470, 0.240),
+        (4.00, 0.980, 0.100)
+    ]
+
+    // MARK: Colour
+    //
+    // The reference is NOT a uniform rainbow. Measured share of dots by hue:
+    // magenta 27.5%, red 16.2%, cyan-blue 23.5%, green-cyan 13.0%, orange 9.1%,
+    // blue-violet 5.4%, violet 4.1%, yellow-green only 1.2%. A uniform spectrum
+    // spends far too much on yellow-green and violet. These weights reproduce
+    // the measured proportions.
+    private static let cycle: [(hue: Double, weight: Double)] = [
+        (0.94, 27.5), (0.02, 16.2), (0.12, 9.1),
+        (0.43, 13.0), (0.55, 23.5), (0.68, 5.4), (0.82, 4.1)
+    ]
+    /// Palette cycles across the box. The reference pattern is roughly one
+    /// cycle wide and slides sideways, which is what makes the colour read as
+    /// flowing water rather than a painted gradient.
+    private static let cycleSpan = 1.15
+    private static let cycleSpeed = 0.20      // cycles per second
+    /// Median hue at the top of a crest in the reference: orange.
+    private static let crestHue = 0.105
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
@@ -72,73 +101,76 @@ struct ComposerRainbowWave: View {
                 let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
                 let baseline = size.height - Self.dotSize * 0.5
                 let columns = columnCount(in: size.width)
-                let motionTime = reduceMotion ? 0 : time
-                let paletteTravel = CGFloat(sin(motionTime * 0.10)) * size.width * 0.065
-                let gradient = GraphicsContext.Shading.linearGradient(
-                    Self.spectrum,
-                    startPoint: CGPoint(x: size.width * 0.18 - paletteTravel, y: 0),
-                    endPoint: CGPoint(x: size.width * 1.18 - paletteTravel, y: 0)
-                )
+                guard columns > 1 else { return }
 
-                var ridge = Path()
+                // Height/envelope for every column, computed once and reused by
+                // the bloom pass and the sharp pass.
+                var xs = [CGFloat](repeating: 0, count: columns)
+                var heights = [Double](repeating: 0, count: columns)
                 for index in 0..<columns {
                     let unit = Double(index) / Double(columns - 1)
-                    let audio = reduceMotion ? 0 : sampledLevel(at: unit)
-                    let height = waveHeight(at: unit, time: time, audio: audio)
-                    let point = CGPoint(x: columnCenter(at: unit, width: size.width),
-                                        y: baseline - CGFloat(height))
-                    if index == 0 { ridge.move(to: point) }
-                    else { ridge.addLine(to: point) }
+                    xs[index] = columnCenter(at: unit, width: size.width)
+                    heights[index] = waveHeight(at: unit, time: time)
                 }
 
-                context.drawLayer { glow in
-                    glow.addFilter(.blur(radius: 5.0))
-                    glow.opacity = opacity * 0.52
-                    glow.stroke(ridge, with: gradient,
-                                style: StrokeStyle(lineWidth: 5.0, lineCap: .round, lineJoin: .round))
-                }
-                context.stroke(ridge, with: .color(Color.white.opacity(opacity * 0.17)),
-                               style: StrokeStyle(lineWidth: 0.7, lineCap: .round, lineJoin: .round))
-
-                var row0 = Path()
-                var row1 = Path()
-                var row2 = Path()
-                var row3 = Path()
-                var row4 = Path()
+                // Bloom: six hue sextants so the glow keeps the colour of the
+                // dots underneath it. A single-colour bloom looked grey.
+                var buckets = [Path](repeating: Path(), count: 6)
                 for index in 0..<columns {
                     let unit = Double(index) / Double(columns - 1)
-                    let audio = reduceMotion ? 0 : sampledLevel(at: unit)
-                    let height = waveHeight(at: unit, time: time, audio: audio)
-                    let rows = height > 0 ? rowCount(for: height) : 0
-                    let baseX = columnCenter(at: unit, width: size.width)
+                    let height = heights[index]
+                    guard height > 0 else { continue }
+                    let rows = rowCount(for: height)
                     for row in 0..<rows {
-                        let remainder = height - Double(row) * Double(Self.rowPitch)
-                        let topScale = row == rows - 1 ? min(1, max(0.58, remainder / Double(Self.rowPitch))) : 1
-                        let jitter = smoothNoise(position: Double(index) * 0.73 + time * 0.24 + Double(row) * 4.7)
-                        let x = baseX + CGFloat(jitter) * 0.70
-                        let yNoise = smoothNoise(position: unit * 12.0 + time * 0.28 + Double(row) * 6.1)
-                        let y = min(baseline, max(0, baseline - CGFloat(row) * Self.rowPitch + CGFloat(yNoise) * 0.48))
-                        let shimmer = 0.92 + 0.08 * (0.5 + 0.5 * sin(time * 2.1 + Double(index) * 1.7 + Double(row)))
-                        // Grain: individual beads differ in size, which is what
-                        // gives the reference its speckled look rather than a grid.
-                        let grain = 0.72 + 0.55 * (0.5 + 0.5 * smoothNoise(position: Double(index) * 2.31 + Double(row) * 5.17))
-                        let diameter = Self.dotSize * CGFloat(shimmer * topScale * grain)
-                        let dot = CGRect(x: x - diameter * 0.5, y: y - diameter * 0.5,
-                                         width: diameter, height: diameter)
-                        switch row {
-                        case 0: row0.addRect(dot)
-                        case 1: row1.addRect(dot)
-                        case 2: row2.addRect(dot)
-                        case 3: row3.addRect(dot)
-                        default: row4.addRect(dot)
-                        }
+                        let centre = dotCenter(x: xs[index], baseline: baseline,
+                                               unit: unit, row: row, height: height, time: time)
+                        let diameter = Self.dotSize * 1.5
+                        let rect = CGRect(x: centre.x - diameter * 0.5, y: centre.y - diameter * 0.5,
+                                          width: diameter, height: diameter)
+                        let hue = dotHue(unit: unit, row: row, rows: rows, height: height, time: time)
+                        buckets[Int(hue * 6) % 6].addRect(rect)
                     }
                 }
-                paint(row0, row: 0, shading: gradient, in: context)
-                paint(row1, row: 1, shading: gradient, in: context)
-                paint(row2, row: 2, shading: gradient, in: context)
-                paint(row3, row: 3, shading: gradient, in: context)
-                paint(row4, row: 4, shading: gradient, in: context)
+                context.drawLayer { glow in
+                    glow.addFilter(.blur(radius: 3.4))
+                    glow.opacity = opacity * 0.42
+                    for sector in 0..<6 {
+                        guard !buckets[sector].isEmpty else { continue }
+                        let hue = (Double(sector) + 0.5) / 6.0
+                        glow.fill(buckets[sector],
+                                  with: .color(Self.color(hue: hue, sat: 0.80, val: 0.92)))
+                    }
+                }
+
+                // Sharp grain.
+                for index in 0..<columns {
+                    let unit = Double(index) / Double(columns - 1)
+                    let height = heights[index]
+                    guard height > 0 else { continue }
+                    let rows = rowCount(for: height)
+                    for row in 0..<rows {
+                        let centre = dotCenter(x: xs[index], baseline: baseline,
+                                               unit: unit, row: row, height: height, time: time)
+                        let remainder = height - Double(row) * Double(Self.rowPitch)
+                        let topScale = row == rows - 1 ? min(1, max(0.58, remainder / Double(Self.rowPitch))) : 1
+                        // Grain: individual beads differ in size and brightness,
+                        // which is what gives the reference its speckled look.
+                        let grain = 0.74 + 0.52 * (0.5 + 0.5 * smoothNoise(
+                            position: Double(index) * 2.31 + Double(row) * 5.17))
+                        let diameter = Self.dotSize * CGFloat(topScale * grain)
+                        let rect = CGRect(x: centre.x - diameter * 0.5, y: centre.y - diameter * 0.5,
+                                          width: diameter, height: diameter)
+                        let hue = dotHue(unit: unit, row: row, rows: rows, height: height, time: time)
+                        let warmth = warmAmount(row: row, rows: rows, height: height)
+                        let brightness = 0.80 + 0.20 * smoothNoise(
+                            position: Double(index) * 1.7 + Double(row) * 3.9 + time * 0.7)
+                        context.fill(Path(rect),
+                                     with: .color(Self.color(hue: hue,
+                                                             sat: 0.78 + 0.10 * warmth,
+                                                             val: min(1.0, 0.86 + 0.14 * warmth)
+                                                                  * brightness)))
+                    }
+                }
 
                 if !reduceMotion {
                     let age = time - transitionBeganAt
@@ -148,7 +180,7 @@ struct ComposerRainbowWave: View {
                         for streak in 0..<3 {
                             let unit = min(0.94, max(0.06, 0.18 + progress * 0.62 + Double(streak) * 0.035))
                             let x = columnCenter(at: unit, width: size.width)
-                            let height = waveHeight(at: unit, time: time, audio: 0)
+                            let height = waveHeight(at: unit, time: time)
                             let y = baseline - CGFloat(height) - CGFloat(progress * 3.5)
                             let length = CGFloat(5.0 + Double(streak) * 1.2)
                             trace.move(to: CGPoint(x: x - length, y: y + 2.0))
@@ -158,12 +190,12 @@ struct ComposerRainbowWave: View {
                         context.drawLayer { glow in
                             glow.addFilter(.blur(radius: 3.0))
                             glow.opacity = opacity * (1.0 - progress) * 0.68
-                            glow.stroke(trace, with: gradient,
+                            glow.stroke(trace, with: .color(Self.color(hue: Self.crestHue, sat: 0.85, val: 0.98)),
                                         style: StrokeStyle(lineWidth: 2.8, lineCap: .round))
                         }
                         var traceContext = context
                         traceContext.opacity = opacity * (1.0 - progress)
-                        traceContext.stroke(trace, with: gradient,
+                        traceContext.stroke(trace, with: .color(Self.color(hue: Self.crestHue, sat: 0.85, val: 0.98)),
                                             style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
                     }
                 }
@@ -177,13 +209,7 @@ struct ComposerRainbowWave: View {
         .allowsHitTesting(false)
     }
 
-    private func paint(_ path: Path, row: Int, shading: GraphicsContext.Shading,
-                       in context: GraphicsContext) {
-        guard !path.isEmpty else { return }
-        var layer = context
-        layer.opacity = opacity * (row == 0 ? 0.92 : max(0.40, 1.0 - Double(row) * 0.035))
-        layer.fill(path, with: shading)
-    }
+    // MARK: - Grid
 
     private func columnCount(in width: CGFloat) -> Int {
         return max(2, min(Self.maxColumns, Int(floor((width - Self.edgeInset * 2) / Self.columnPitch)) + 1))
@@ -197,9 +223,21 @@ struct ComposerRainbowWave: View {
         return min(Self.maxRows, max(1, Int(ceil(height / Double(Self.rowPitch)))))
     }
 
-    // Silhouette measured from the reference frame: a broad mound peaking at
-    // ~55% width with a slightly flattened crown, tapering to nothing at both
-    // edges. Values are the normalized height sampled across the composer.
+    /// Dot position with a small grain jitter. Kept tiny on purpose: the
+    /// reference grid is regular, only the bead sizes vary.
+    private func dotCenter(x: CGFloat, baseline: CGFloat, unit: Double, row: Int,
+                           height: Double, time: Double) -> CGPoint {
+        let jx = smoothNoise(position: unit * 41.0 + Double(row) * 7.3 + time * 0.6) * 0.28
+        let jy = smoothNoise(position: unit * 37.0 + Double(row) * 9.1 - time * 0.5) * 0.26
+        let y = baseline - CGFloat(row) * Self.rowPitch + CGFloat(jy)
+        return CGPoint(x: x + CGFloat(jx), y: max(Self.dotSize * 0.5, min(baseline, y)))
+    }
+
+    // MARK: - Shape
+
+    // Silhouette measured from the reference frame: a broad mound peaking just
+    // past half width with a slightly flattened crown, tapering to nothing at
+    // both edges. Values are the normalized height sampled across the composer.
     private static let profile: [Double] = [0.023, 0.018, 0.122, 0.236, 0.400, 0.544,
                                             0.640, 0.749, 0.855, 0.924, 0.898, 0.833,
                                             0.756, 0.656, 0.518, 0.269, 0.107, 0.056,
@@ -216,15 +254,105 @@ struct ComposerRainbowWave: View {
         return lower * (1 - frac) + upper * frac
     }
 
-    private func waveHeight(at unit: Double, time: Double, audio: Double) -> Double {
-        // The reference composer wave undulates by itself; it never reads the
-        // microphone. The whole silhouette drifts slowly so it keeps moving,
-        // and each column gets a small breathing offset.
-        let drift = 0.012 * sin(time * 0.6)
-        let shape = profileUnit(unit + drift)
-        let breath = 0.97 + 0.06 * smoothNoise(position: unit * 7.0 + time * 0.8)
-        return shape > 0.001 ? Double(Self.peakHeight) * shape * breath : 0
+    /// Whole-surface sway: the crest (and the colour riding on it) travels
+    /// across the box instead of breathing in place.
+    private func drift(_ time: Double) -> Double {
+        return 0.062 * sin(2 * .pi * 0.30 * time) + 0.022 * sin(2 * .pi * 0.64 * time + 1.1)
     }
+
+    /// Multiplier on the fixed silhouette from the travelling waves. Never
+    /// negative: the surface may rise and fall but must not open holes.
+    private func flowScale(unit: Double, time: Double) -> Double {
+        var amount = 0.0
+        for (wavelengths, speed, amplitude) in Self.flow {
+            amount += amplitude * sin(2 * .pi * (wavelengths * unit - speed * time))
+        }
+        let edge = min(1.0, min(unit, 1 - unit) / 0.16)
+        return max(0.22, 1.0 + amount * edge)
+    }
+
+    private func waveHeight(at unit: Double, time: Double) -> Double {
+        let shifted = min(0.999, max(0.001, unit + drift(time)))
+        let shape = profileUnit(shifted)
+        let scale = flowScale(unit: unit, time: time)
+        let breath = 0.97 + 0.06 * smoothNoise(position: unit * 7.0 + time * 0.8)
+        return shape > 0.001 ? Double(Self.peakHeight) * shape * scale * breath : 0
+    }
+
+    // MARK: - Colour
+
+    /// Position inside the scrolling palette cycle.
+    private func phase(unit: Double, time: Double) -> Double {
+        var value = (unit * Self.cycleSpan - time * Self.cycleSpeed)
+        value = value - floor(value)
+        return value
+    }
+
+    /// Base hue from the measured cycle weights.
+    private static func paletteHue(_ phase: Double) -> Double {
+        let total = cycle.reduce(0) { $0 + $1.weight }
+        var travelled = 0.0
+        let target = (phase - floor(phase)) * total
+        for index in 0..<cycle.count {
+            let current = cycle[index]
+            let next = cycle[(index + 1) % cycle.count]
+            if travelled + current.weight >= target {
+                let local = current.weight > 0 ? (target - travelled) / current.weight : 0
+                var delta = (next.hue - current.hue).truncatingRemainder(dividingBy: 1)
+                if delta > 0.5 { delta -= 1 }
+                if delta < -0.5 { delta += 1 }
+                var hue = current.hue + delta * local
+                hue = hue - floor(hue)
+                return hue
+            }
+            travelled += current.weight
+        }
+        return cycle[0].hue
+    }
+
+    /// How warm (crest-orange) this dot should be: only the top row or two of
+    /// a genuinely tall column. A gradual blend would sweep the hue through
+    /// green on its way from cyan to orange, which the reference lacks.
+    private func warmAmount(row: Int, rows: Int, height: Double) -> Double {
+        guard rows > 1 else { return 0 }
+        // Only genuinely tall columns warm up: below ~60% of the peak the band
+        // stays cool, which is what the reference does.
+        let crest = max(0.0, min(1.0, (height / Double(Self.peakHeight) - 0.60) / 0.40))
+        let vertical = pow(Double(row) / Double(rows - 1), 3.2)
+        return min(1.0, vertical * crest)
+    }
+
+    private func dotHue(unit: Double, row: Int, rows: Int, height: Double, time: Double) -> Double {
+        var hue = Self.paletteHue(phase(unit: unit, time: time))
+        let warmth = warmAmount(row: row, rows: rows, height: height)
+        var delta = (Self.crestHue - hue).truncatingRemainder(dividingBy: 1)
+        if delta > 0.5 { delta -= 1 }
+        if delta < -0.5 { delta += 1 }
+        hue += delta * min(1.0, warmth * 1.15)
+        return hue - floor(hue)
+    }
+
+    /// HSV → RGB, kept local so no UIKit import is needed.
+    private static func color(hue: Double, sat: Double, val: Double) -> Color {
+        let h = (hue - floor(hue)) * 6
+        let sector = Int(h) % 6
+        let f = h - floor(h)
+        let p = val * (1 - sat)
+        let q = val * (1 - sat * f)
+        let t = val * (1 - sat * (1 - f))
+        let rgb: (Double, Double, Double)
+        switch sector {
+        case 0: rgb = (val, t, p)
+        case 1: rgb = (q, val, p)
+        case 2: rgb = (p, val, t)
+        case 3: rgb = (p, q, val)
+        case 4: rgb = (t, p, val)
+        default: rgb = (val, p, q)
+        }
+        return Color(red: rgb.0, green: rgb.1, blue: rgb.2)
+    }
+
+    // MARK: - Noise
 
     private func smoothNoise(position: Double) -> Double {
         let cell = floor(position)

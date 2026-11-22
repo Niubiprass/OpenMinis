@@ -11,6 +11,8 @@ import UniformTypeIdentifiers
 import WebKit
 
 private let minisLogger = AppLogger(category: "MinisURL")
+/// [T-browser-download-panel-handoff] Download panel hand-off diagnostics.
+private let downloadLogger = AppLogger(category: "Downloads")
 
 /// Wrapper that resolves an AIChatViewModel from the cache.
 /// Used as @StateObject so SwiftUI creates it once per AIChatView lifetime,
@@ -512,6 +514,17 @@ struct AIChatView: View {
     @State private var showFileBrowser = false
     // [T-browser-download-ux-v2] Downloads panel + "Show in Files" locate target.
     @State private var showDownloadsPanel = false
+    /// [T-browser-download-panel-handoff] Filename chosen in the downloads
+    /// panel, remembered until that panel has FINISHED dismissing.
+    ///
+    /// The panel used to set `showDownloadsPanel = false` and assign
+    /// `locateDownloadTarget` in the same runloop turn. iOS 15 then tried to
+    /// present the file browser inside a container that was still being torn
+    /// down by the downloads panel's own dismissal: the sheet bounced
+    /// open/closed in a loop and only killing the app cleared it. Park the
+    /// target here and hand it off from `onDismiss` instead — the same pattern
+    /// the chat-search sheet already uses (see `pendingSearchJump`).
+    @State private var pendingDownloadLocate: String?
     @State private var locateDownloadTarget: DownloadLocateTarget?
     /// Total session count snapshot (persisted in DB) — used to decide
     /// whether to show the New-Chat onboarding directory grid. Only the
@@ -1022,10 +1035,17 @@ struct AIChatView: View {
         // download button (mounted next to the scroll buttons, see
         // downloadFloatingButton). Completed rows jump to the file browser
         // located at the downloaded file in the session workspace.
-        .sheet(isPresented: $showDownloadsPanel) {
+        .sheet(isPresented: $showDownloadsPanel, onDismiss: {
+            // Only open the file browser once the downloads panel is gone.
+            guard let filename = pendingDownloadLocate else { return }
+            pendingDownloadLocate = nil
+            downloadLogger.info("[Downloads] panel dismissed, locating \(filename)")
+            locateDownloadTarget = DownloadLocateTarget(filename: filename)
+        }) {
             BrowserDownloadPanelSheet(sessionId: vm.sessionId ?? "") { filename in
+                downloadLogger.info("[Downloads] row tapped: \(filename)")
+                pendingDownloadLocate = filename
                 showDownloadsPanel = false
-                locateDownloadTarget = DownloadLocateTarget(filename: filename)
             }
         }
         .sheet(item: $locateDownloadTarget) { target in

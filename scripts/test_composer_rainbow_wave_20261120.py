@@ -2,19 +2,28 @@
 """Source contracts and numeric bounds for the composer rainbow wave.
 
 This is a static/numeric test, not a SwiftUI renderer or native iOS build.
+
+The contract changed on 2026-11-22: the wave is now matched to the reference
+recording (dot pitch / dot size / travelling flow / measured hue proportions)
+instead of the earlier dense design. The bounds below encode THAT target.
 """
 from pathlib import Path
+import difflib
 import hashlib
 import math
 import re
-import subprocess
-import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 CHAT = ROOT / "src/ios/Views/Chat/AIChatView.swift"
 WAVE = ROOT / "src/ios/Views/Chat/AudioWaveformView.swift"
 BASELINE = ROOT / "scripts/fixtures/composer_wave_baseline_20261120"
+
+# Hue shares measured from the reference (bottom band, 9 frames).
+MEASURED_SHARES = {
+    "red": 16.2, "orange": 9.1, "yellow-green": 1.2, "green-cyan": 13.0,
+    "cyan-blue": 23.5, "blue-violet": 5.4, "violet": 4.1, "magenta": 27.5,
+}
 
 
 def block(source, marker):
@@ -30,6 +39,44 @@ def block(source, marker):
 
 def baseline_file(path):
     return BASELINE / "app" / path.relative_to(ROOT)
+
+
+def swift_ternary(expr):
+    depth = 0
+    quote = False
+    qmark = None
+    for i, ch in enumerate(expr):
+        if quote:
+            if ch == '"':
+                quote = False
+            continue
+        if ch == '"':
+            quote = True
+        elif ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif ch == "?" and depth == 0 and qmark is None:
+            qmark = i
+        elif ch == ":" and depth == 0 and qmark is not None:
+            cond = expr[:qmark].strip()
+            yes = expr[qmark + 1:i].strip()
+            no = expr[i + 1:].strip()
+            return f"({swift_ternary(yes)} if {swift_ternary(cond)} else {swift_ternary(no)})"
+    return expr
+
+
+def swift_expr(expr):
+    expr = swift_ternary(expr.strip())
+    expr = expr.strip().replace("Self.", "").replace(".pi", "pi")
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    expr = re.sub(r"(\w+)\.count\b", r"len(\1)", expr)
+    expr = re.sub(r"(?<![=!<>])!(?=\s*[A-Za-z_(])", " not ", expr)
+    expr = re.sub(r"\bDouble\(", "float(", expr)
+    expr = re.sub(r"\bCGFloat\(", "float(", expr)
+    expr = re.sub(r"\bInt\(", "int(", expr)
+    expr = re.sub(r"\b\w+:\s*", "", expr)
+    return expr
 
 
 def scalar_function(source, marker, parameters, scope):
@@ -65,45 +112,6 @@ def scalar_function(source, marker, parameters, scope):
     return scope["_f"]
 
 
-def swift_ternary(expr):
-    """Rewrite a top-level Swift `a ? b : c` into Python `b if a else c`."""
-    depth = 0
-    quote = False
-    qmark = None
-    for i, ch in enumerate(expr):
-        if quote:
-            if ch == '"':
-                quote = False
-            continue
-        if ch == '"':
-            quote = True
-        elif ch in "([":
-            depth += 1
-        elif ch in ")]":
-            depth -= 1
-        elif ch == "?" and depth == 0 and qmark is None:
-            qmark = i
-        elif ch == ":" and depth == 0 and qmark is not None:
-            cond = expr[:qmark].strip()
-            yes = expr[qmark + 1:i].strip()
-            no = expr[i + 1:].strip()
-            return f"({swift_ternary(yes)} if {swift_ternary(cond)} else {swift_ternary(no)})"
-    return expr
-
-
-def swift_expr(expr):
-    expr = swift_ternary(expr.strip())
-    expr = expr.strip().replace("Self.", "").replace(".pi", "pi")
-    expr = expr.replace("&&", " and ").replace("||", " or ")
-    expr = re.sub(r"(\w+)\.count\b", r"len(\1)", expr)
-    expr = re.sub(r"(?<![=!<>])!(?=\s*[A-Za-z_(])", " not ", expr)
-    expr = re.sub(r"\bCGFloat\(", "float(", expr)
-    expr = re.sub(r"\bDouble\(", "float(", expr)
-    expr = re.sub(r"\bInt\(", "int(", expr)
-    expr = re.sub(r"\b\w+:\s*", "", expr)
-    return expr
-
-
 class WaveContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -113,156 +121,195 @@ class WaveContracts(unittest.TestCase):
         cls.surface = block(cls.chat, "private struct ComposerSurface: ViewModifier")
         cls.constants = {k: float(v) if "." in v else int(v) for k, v in
                          re.findall(r"static let (\w+)(?:: \w+)? = ([\d.]+)", cls.wave)}
+
         env = {"min": min, "max": max, "int": int, "float": float,
-               "floor": math.floor, "ceil": math.ceil, "sin": math.sin,
-               "cos": math.cos, "exp": math.exp, "pi": math.pi, **cls.constants}
+               "floor": math.floor, "ceil": math.ceil,
+               "sin": math.sin, "cos": math.cos, "exp": math.exp, "pi": math.pi,
+               **cls.constants}
         env["latticeNoise"] = staticmethod(scalar_function(cls.wave, "private func latticeNoise(", ["value"], env))
         env["smoothNoise"] = staticmethod(scalar_function(cls.wave, "private func smoothNoise(", ["position"], env))
-        cls.smooth_noise = env["smoothNoise"]
-        # The silhouette table drives waveHeight, so the extractor needs it too.
+
         table = re.search(r"private static let profile: \[Double\] = \[([^\]]+)\]", cls.wave)
-        if table:
-            env["profile"] = [float(v) for v in table.group(1).split(",") if v.strip()]
-            env["profileUnit"] = staticmethod(scalar_function(
-                cls.wave, "private func profileUnit(", ["unit"], env))
+        assert table, "profile table missing"
+        env["profile"] = [float(v) for v in table.group(1).split(",") if v.strip()]
+        env["profileUnit"] = staticmethod(scalar_function(cls.wave, "private func profileUnit(", ["unit"], env))
+
+        # Travelling-wave table, rebuilt with the same formula in Python so the
+        # loop in flowScale does not have to be transpiled.
+        flow = re.findall(r"\(\s*([\d.]+),\s*(-?[\d.]+),\s*([\d.]+)\s*\)",
+                          block(cls.wave, "private static let flow:"))
+        assert len(flow) == 3, f"expected 3 flow components, got {flow}"
+        env["flow"] = [tuple(float(v) for v in row) for row in flow]
+
+        def flowScale(unit, time):
+            amount = 0.0
+            for wavelengths, speed, amplitude in env["flow"]:
+                amount += amplitude * math.sin(2 * math.pi * (wavelengths * unit - speed * time))
+            edge = min(1.0, min(unit, 1 - unit) / 0.16)
+            return max(0.22, 1.0 + amount * edge)
+        env["flowScale"] = staticmethod(flowScale)
+
+        env["drift"] = staticmethod(scalar_function(cls.wave, "private func drift(", ["time"], env))
         cls.row_count = staticmethod(scalar_function(cls.wave, "private func rowCount(", ["height"], env))
-        cls.wave_height = staticmethod(scalar_function(cls.wave, "private func waveHeight(",
-                                                       ["unit", "time", "audio"], env))
         cls.column_count = staticmethod(scalar_function(cls.wave, "private func columnCount(", ["width"], env))
+        cls.wave_height = staticmethod(scalar_function(cls.wave, "private func waveHeight(",
+                                                       ["unit", "time"], env))
 
-    def test_wave_is_animated_colored_bounded_and_accessibility_safe(self):
-        for token in ("TimelineView(.animation(minimumInterval: 1.0 / 30.0",
-                       "paused: reduceMotion", "Canvas(opaque: false", "Gradient(colors:",
-                       "glow.addFilter(.blur",
-                       "transitionLife", "waveHeight", ".allowsHitTesting(false)",
-                       ".accessibilityHidden(true)"):
-            self.assertIn(token, self.wave)
-        self.assertNotIn("spark", self.wave)
-        self.assertLessEqual(self.constants["maxColumns"], 180)
-        self.assertGreaterEqual(self.constants["maxRows"], 12)
-        self.assertIn("for row in 0..<rows", self.wave)
-        self.assertIn("age >= 0 && age < Self.transitionLife", self.wave)
-        self.assertNotIn("Timer.publish", self.wave)
-        self.assertNotIn("DispatchQueue.main.asyncAfter", self.wave)
-        self.assertNotIn("drawingGroup()", self.wave)
-        self.assertNotIn("Path(CGRect", self.wave)
-        self.assertIn("row0.addRect(dot)", self.wave)
-        self.assertIn("row4.addRect(dot)", self.wave)
+    # ---- geometry: matched to the reference recording -------------------
 
-    def test_five_row_geometry_and_intentional_negative_cases(self):
+    def test_geometry_matches_reference_grid(self):
         c = self.constants
-        self.assertGreaterEqual(c["maxRows"], 12)      # reference: ~15 rows at the crown
-        self.assertLessEqual(c["rowPitch"], 2.0)       # reference: 3.5px / 865px composer
-        self.assertGreaterEqual(c["rowPitch"], 1.2)
+        # 913 px card / 12 px pitch = 76 dots; 6 px dots → dot/pitch = 0.5.
+        ratio = c["dotSize"] / c["columnPitch"]
+        self.assertGreaterEqual(ratio, 0.42)
+        self.assertLessEqual(ratio, 0.58)
+        self.assertAlmostEqual(c["columnPitch"], c["rowPitch"], places=6)  # square grid
+        self.assertGreaterEqual(c["columnPitch"], 4.0)
+        self.assertLessEqual(c["columnPitch"], 5.2)
+        self.assertLessEqual(c["maxRows"], 10)
+        self.assertGreaterEqual(c["peakHeight"], 24.0)
+        self.assertLessEqual(c["peakHeight"], 28.0)
         self.assertLessEqual(c["canvasHeight"], 80)
-        for width in (240, 296, 320, 366, 390, 700, 1024):
+        for width in (296, 320, 350, 366, 390):
             columns = self.column_count(width)
-            self.assertGreaterEqual(columns, 2)
-            self.assertLessEqual(columns, 260)
-            left = 1.15
-            right = width - (1.15 + (width - 2.3))
-            self.assertAlmostEqual(left, right, places=5)
-            self.assertLessEqual(columns * c["maxRows"], 3600)  # dotted field stays bounded
-        for t in (0, 1, 5, 30, 800000000):
-            heights = [self.wave_height(i / 180, t, 0) for i in range(181)]
-            rows = [self.row_count(h) for h in heights]
-            self.assertGreaterEqual(min(rows), 1)
-            self.assertLessEqual(max(rows), c["maxRows"])
-            self.assertGreaterEqual(len(set(rows)), 1)
-        # the surface undulates on its own: a tall crest must always exist,
-        # the floor must stay a thin band, and nothing may depend on audio.
-        for t in (0, 3, 11, 47, 900000000):
-            hs = [self.wave_height(i / 180, t, 0) for i in range(181)]
-            self.assertGreaterEqual(max(hs), 20.0)     # measured crest ~24pt in the reference
-            self.assertLessEqual(min(hs), 8.0)         # edges taper to nothing
-            self.assertGreaterEqual(max(self.row_count(h) for h in hs), 12)
-            for a in (0.0, 1.0):
-                same = [self.wave_height(i / 180, t, a) for i in range(181)]
-                self.assertEqual([round(v, 9) for v in hs], [round(v, 9) for v in same])
-        for width in (366, 700, 1024):
-            self.assertLessEqual(self.column_count(width), 180)
-        self.assertLessEqual(self.column_count(1024), 180)
-        with self.assertRaises(AssertionError):
-            self.assertLessEqual(c["maxRows"] + 1, c["maxRows"])  # cap must reject overflow
-        with self.assertRaises(AssertionError):
-            self.assertGreaterEqual(c["rowPitch"], 9.0)  # coarse 5-row band must fail
-        with self.assertRaises(AssertionError):
-            self.assertLessEqual(100, c["canvasHeight"])  # rectangle-height regression
+            self.assertGreaterEqual(columns, 60)
+            self.assertLessEqual(columns, 96)
+        self.assertLessEqual(self.column_count(1024), c["maxColumns"])
 
-    def test_wave_undulates_on_its_own_and_ignores_levels(self):
-        # The reference composer wave is an idle animation: it must move by
-        # itself and must NOT change shape with microphone levels.
-        for t in (0, 2, 8):
-            quiet = [self.wave_height(i / 60, t, 0) for i in range(61)]
-            loud = [self.wave_height(i / 60, t, 1) for i in range(61)]
-            self.assertEqual([round(v, 9) for v in quiet], [round(v, 9) for v in loud])
-        crests = []
-        for t in (0, 2, 4, 8, 16):
-            hs = [self.wave_height(i / 200, t, 0) for i in range(201)]
-            w = [max(0.0, h - 2.4) for h in hs]
-            crests.append(sum(i * c for i, c in enumerate(w)) / sum(w) / 200)
-        self.assertGreater(max(crests) - min(crests), 0.008)  # crest drifts over time
-        self.assertEqual(min(1, max(0, -5)), 0)
-        self.assertEqual(min(1, max(0, 3)), 1)
-        self.assertIn("sampledLevel(at: unit)", self.wave)
-        self.assertIn("return min(1, max(0, Double(levels[index])))", self.wave_source)
+    def test_heights_bounded_and_rows_capped(self):
+        c = self.constants
+        peak_over_time = 0.0
+        for t in (0, 1, 5, 30, 800000000, 3.3, 7.7, 11.1, 21.5):
+            hs = [self.wave_height(i / 200, t) for i in range(201)]
+            self.assertGreaterEqual(min(hs), 0.0)
+            self.assertLessEqual(max(hs), c["peakHeight"] * 1.9)
+            self.assertGreaterEqual(max(hs), 15.0)   # a crest always exists
+            peak_over_time = max(peak_over_time, max(hs))
+            for h in hs:
+                rows = self.row_count(h)
+                self.assertGreaterEqual(rows, 1)
+                self.assertLessEqual(rows, c["maxRows"])
+
+    # ---- flow: the surface must travel, not pulse ----------------------
+
+    def test_surface_travels_like_water(self):
+        def crest(t):
+            samples = [i / 400 for i in range(401)]
+            weights = [max(0.0, self.wave_height(u, t) - 2.0) for u in samples]
+            total = sum(weights)
+            self.assertGreater(total, 0.0)
+            return sum(u * w for u, w in zip(samples, weights)) / total
+
+        positions = [crest(t) for t in (0, 0.25, 0.5, 1.0, 2.0)]
+        self.assertGreater(max(positions) - min(positions), 0.03)   # crest wanders
+        self.assertLess(max(positions) - min(positions), 0.40)      # but stays a wave
+
+        # Frame-to-frame change at 30 fps: visible, yet not jitter.
+        deltas = []
+        for t in (0.0, 1.0, 2.5):
+            a = [self.wave_height(i / 200, t) for i in range(201)]
+            b = [self.wave_height(i / 200, t + 1.0 / 30.0) for i in range(201)]
+            deltas.append(sum(abs(x - y) for x, y in zip(a, b)) / len(a))
+        mean_delta = sum(deltas) / len(deltas)
+        self.assertGreater(mean_delta, 0.25)    # reference: ~0.43 pt per frame
+        self.assertLess(mean_delta, 2.0)
+
+    def test_wave_ignores_microphone_levels(self):
+        # The composer wave is an idle animation; it must not read `levels`.
+        height_block = block(self.wave, "private func waveHeight(")
+        self.assertNotIn("sampledLevel", height_block)
+        self.assertNotIn("audio", height_block)
+        self.assertIn("private func sampledLevel(at position: Double)", self.wave_source)
         self.assertIn("if voiceInputActive { return voiceVM.waveformLevels }", self.chat)
-        self.assertIn("speechManager.audioLevels", self.chat)
 
-    def test_reduce_motion_freezes_time_audio_palette_and_disables_sparks(self):
+    # ---- colour: measured proportions ---------------------------------
+
+    def test_palette_reproduces_measured_hue_shares(self):
+        cycle_src = block(self.wave, "private static let cycle:")
+        weights = [(float(h), float(w)) for h, w in
+                   re.findall(r"\(\s*([\d.]+),\s*([\d.]+)\s*\)", cycle_src)]
+        self.assertEqual(len(weights), 7, f"expected 7 hue anchors, got {weights}")
+        total = sum(w for _, w in weights)
+        self.assertAlmostEqual(total, 100.0, delta=1.5)   # measured shares, not arbitrary weights
+
+        def share(lo, hi):
+            return sum(w for h, w in weights if lo <= h < hi) / total * 100.0
+
+        got = {
+            "red": share(0.0, 0.08),
+            "orange": share(0.08, 0.20),
+            "yellow-green": share(0.20, 0.35),
+            "green-cyan": share(0.35, 0.50),
+            "cyan-blue": share(0.50, 0.62),
+            "blue-violet": share(0.62, 0.75),
+            "violet": share(0.75, 0.88),
+            "magenta": share(0.88, 1.0),
+        }
+        for name, target in MEASURED_SHARES.items():
+            self.assertLessEqual(abs(got[name] - target), 6.0,
+                                 f"{name}: {got[name]:.1f}% vs measured {target}%")
+
+    def test_colour_scrolls_and_warms_only_at_crests(self):
+        # The band travels sideways; a static gradient cannot match the video.
+        self.assertIn("time * Self.cycleSpeed", self.wave)
+        self.assertIn("private static let cycleSpeed", self.wave)
+        self.assertIn("private static let cycleSpan", self.wave)
+        # Warmth is gated by height and steep in the vertical direction, so the
+        # hue does not sweep through green on its way to orange.
+        self.assertIn("pow(Double(row) / Double(rows - 1), 3.2)", self.wave)
+        self.assertIn("private static let crestHue", self.wave)
+        warm = block(self.wave, "private func warmAmount(")
+        self.assertIn("/ 0.40", warm)
+        self.assertNotIn("Gradient(colors:", self.wave)   # per-dot colour, not a painted ramp
+
+    # ---- unchanged behaviour ------------------------------------------
+
+    def test_reduce_motion_and_accessibility(self):
         self.assertIn("let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate", self.wave)
-        self.assertIn("let motionTime = reduceMotion ? 0 : time", self.wave)
-        self.assertIn("let audio = reduceMotion ? 0 : sampledLevel(at: unit)", self.wave)
+        self.assertIn("paused: reduceMotion", self.wave)
         self.assertIn("if !reduceMotion", self.wave)
         self.assertIn("guard !reduceMotion else { return }", self.wave)
-        base = [self.wave_height(i / 100, 0, 0) for i in range(101)]
-        self.assertEqual(base, [self.wave_height(i / 100, 0, 0) for i in range(101)])
+        self.assertIn(".accessibilityHidden(true)", self.wave)
+        self.assertIn(".allowsHitTesting(false)", self.wave)
+        self.assertIn("Canvas(opaque: false", self.wave)
+        self.assertNotIn("Timer.publish", self.wave)
+        self.assertNotIn("drawingGroup()", self.wave)
+        base = [self.wave_height(i / 100, 0) for i in range(101)]
+        self.assertEqual(base, [self.wave_height(i / 100, 0) for i in range(101)])
 
-    def test_composer_layout_is_only_background_and_preserves_controls_byte_for_byte(self):
-        old_chat = baseline_file(CHAT).read_text()
-        old_surface = block(old_chat, "private struct ComposerSurface: ViewModifier")
-        new_without = self.chat.replace(self.surface, "SURFACE")
-        old_without = old_chat.replace(old_surface, "SURFACE")
-        for a, b in ((new_without, old_without),):
-            self.assertEqual(a, b)
-        self.assertIn(".background(alignment: .bottom) { wave }", self.surface)
-        self.assertIn(".clipShape(shape)", self.surface)
-        self.assertIn("RoundedRectangle(cornerRadius: 20, style: .continuous)", self.surface)
-        self.assertIn(".frame(height: ComposerRainbowWave.canvasHeight)", self.surface)
-        self.assertNotIn(".padding(", self.surface)
-        self.assertNotIn(".offset(", self.surface)
-        self.assertIn("allowsHitTesting(false)", self.wave)
-        self.assertIn("Color.clear.frame(height: 32)", self.chat)
-
-    def test_audio_waveform_view_and_all_unrelated_chat_source_match_frozen_baseline(self):
-        old_wave = baseline_file(WAVE).read_text()
-        self.assertEqual(block(self.wave_source, "struct AudioWaveformView: View"),
-                         block(old_wave, "struct AudioWaveformView: View"))
-        self.assertEqual(hashlib.sha256(baseline_file(CHAT).read_bytes()).hexdigest(),
-                         "9947d06e164bacd373295271bdc5113f4639c8ba356376f365f0367436ef47dd")
-        self.assertIn("inputFieldOrWaveform", self.chat)
-        self.assertIn("inputBottomRow", self.chat)
-
-    def test_crests_translate_slowly_and_peak_groups_are_distinct(self):
-        positions_a, positions_b = [], []
-        samples = [i / 1000 for i in range(1001)]
-        for t in (0, 2, 4, 8):
-            for lo, hi, output in ((0.08, 0.48, positions_a), (0.52, 0.92, positions_b)):
-                points = [u for u in samples if lo <= u <= hi]
-                weights = [max(0.0, self.wave_height(u, t, 0) - 1.8) for u in points]
-                output.append(sum(u * w for u, w in zip(points, weights)) / sum(weights))
-        for positions in (positions_a, positions_b):
-            self.assertGreater(max(positions) - min(positions), 0.005)  # measured ~0.01 breathe
-            self.assertLessEqual(max(abs(a-b) for a,b in zip(positions, positions[1:])), 0.12)
-
-    def test_status_transition_has_short_fading_trails_and_no_timer(self):
+    def test_transition_trails_remain(self):
         self.assertIn(".onChange(of: voiceActive)", self.wave)
         self.assertIn("transitionBeganAt = timeline.date.timeIntervalSinceReferenceDate", self.wave)
         self.assertIn("private static let transitionLife = 0.48", self.wave)
         self.assertIn("traceContext.opacity = opacity * (1.0 - progress)", self.wave)
-        self.assertIn("traceContext.stroke(trace", self.wave)
         self.assertIn("trace.addQuadCurve", self.wave)
-        self.assertNotIn("spark", self.wave)
+
+    def test_composer_surface_only_hosts_the_background(self):
+        self.assertIn(".background(alignment: .bottom) { wave }", self.surface)
+        self.assertIn(".clipShape(shape)", self.surface)
+        self.assertIn(".frame(height: ComposerRainbowWave.canvasHeight)", self.surface)
+        self.assertNotIn(".padding(", self.surface)
+        self.assertNotIn(".offset(", self.surface)
+
+    def test_unrelated_sources_unchanged(self):
+        # AudioWaveformView (the level meter above the composer) must not move.
+        self.assertEqual(block(self.wave_source, "struct AudioWaveformView: View"),
+                         block(baseline_file(WAVE).read_text(), "struct AudioWaveformView: View"))
+
+        # AIChatView gained the download-panel hand-off on 2026-11-22. Every
+        # changed hunk must belong to that feature; anything else is drift.
+        allowed = ("showDownloadsPanel", "pendingDownloadLocate", "locateDownloadTarget",
+                   "DownloadLocateTarget", "downloadLogger", "[Downloads]", "Downloads",
+                   # wave batch: the composer call site gained voiceActive earlier
+                   "ComposerRainbowWave", "waveLevels", "voiceActive", "opacity")
+        old = baseline_file(CHAT).read_text().splitlines()
+        new = self.chat.splitlines()
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new).get_opcodes():
+            if tag == "equal":
+                continue
+            chunk = "\n".join(old[i1:i2] + new[j1:j2])
+            self.assertTrue(any(token in chunk for token in allowed),
+                            f"unrelated change in AIChatView: {chunk[:400]}")
 
 
 if __name__ == "__main__":

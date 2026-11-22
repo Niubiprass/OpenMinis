@@ -148,6 +148,7 @@ actor ProviderConfigDB {
                     image_endpoint_resolved  TEXT,
                     custom_user_agent        TEXT,
                     azure_mode               INTEGER NOT NULL DEFAULT 0,
+                    codex_client_mask        INTEGER NOT NULL DEFAULT 0,
                     is_enabled               INTEGER NOT NULL DEFAULT 1,
                     sort_order               INTEGER NOT NULL DEFAULT 0,
                     secret_blob              TEXT,
@@ -290,6 +291,14 @@ actor ProviderConfigDB {
             exec(db: db, "ALTER TABLE provider_instances ADD COLUMN azure_mode INTEGER NOT NULL DEFAULT 0")
             logger.info("[v3] schema repair: added missing column azure_mode")
         }
+        // [T-codex-client-mask-persist] Same backstop for the Codex mask flag.
+        // Without this column the toggle only lived in the JSON mirror and the
+        // in-memory instance, so the V3 DB (authoritative on the next launch)
+        // read it back as false — the switch turned itself off after a restart.
+        if !existing.contains("codex_client_mask") {
+            exec(db: db, "ALTER TABLE provider_instances ADD COLUMN codex_client_mask INTEGER NOT NULL DEFAULT 0")
+            logger.info("[v3] schema repair: added missing column codex_client_mask")
+        }
     }
 
     /// Add `removed_members_json` / `added_members_json` to provider_model_groups
@@ -381,7 +390,7 @@ actor ProviderConfigDB {
                    append_v1_suffix, image_endpoint_mode, image_endpoint_resolved,
                    is_enabled, sort_order, secret_blob, secret_kind,
                    secret_updated_at, created_at, updated_at, extras_json,
-                   custom_user_agent, azure_mode
+                   custom_user_agent, azure_mode, codex_client_mask
             FROM provider_instances
             ORDER BY sort_order ASC, created_at ASC
         """
@@ -407,6 +416,7 @@ actor ProviderConfigDB {
                 "extras_json": Self.optText(stmt, 15) as Any,
                 "custom_user_agent": Self.optText(stmt, 16) as Any,
                 "azure_mode": sqlite3_column_int(stmt, 17) != 0,
+                "codex_client_mask": sqlite3_column_int(stmt, 18) != 0,
             ])
         }
         return rows
@@ -678,7 +688,8 @@ actor ProviderConfigDB {
                ((r["is_enabled"] as? Int) ?? ((r["is_enabled"] as? Bool) == true ? 1 : 0)) == (inst.isEnabled ? 1 : 0),
                (r["sort_order"] as? Int) == idx,
                (r["custom_user_agent"] as? String) == inst.customUserAgent,
-               ((r["azure_mode"] as? Int) ?? ((r["azure_mode"] as? Bool) == true ? 1 : 0)) == (inst.azureMode ? 1 : 0) {
+               ((r["azure_mode"] as? Int) ?? ((r["azure_mode"] as? Bool) == true ? 1 : 0)) == (inst.azureMode ? 1 : 0),
+               ((r["codex_client_mask"] as? Int) ?? ((r["codex_client_mask"] as? Bool) == true ? 1 : 0)) == (inst.codexClientMask ? 1 : 0) {
                 continue   // identical — keep the stored row and its updated_at
             }
             instChanged += 1
@@ -700,7 +711,8 @@ actor ProviderConfigDB {
                 updatedAt: now,
                 extrasJson: subscriptionExtras,
                 customUserAgent: inst.customUserAgent,
-                azureMode: inst.azureMode
+                azureMode: inst.azureMode,
+                codexClientMask: inst.codexClientMask
             )
         }
         let keepInst = Set(config.instances.map(\.id))
@@ -889,7 +901,8 @@ actor ProviderConfigDB {
                 imageEndpointResolved: imageResolved,
                 customUserAgent: row["custom_user_agent"] as? String,
                 azureMode: (row["azure_mode"] as? Bool) ?? false,
-                unknownProviderTypeRaw: unknownTypeRaw
+                unknownProviderTypeRaw: unknownTypeRaw,
+                codexClientMask: (row["codex_client_mask"] as? Bool) ?? false
             )
             do {
                 instances.append(try SubscriptionConfigurationStorage.applying(row["extras_json"] as? String, to: inst))
@@ -1058,15 +1071,21 @@ actor ProviderConfigDB {
         secretBlob: String?, secretKind: String?, secretUpdatedAt: Double?,
         createdAt: Double, updatedAt: Double, extrasJson: String?,
         customUserAgent: String?,
-        azureMode: Bool = false
+        azureMode: Bool = false,
+        codexClientMask: Bool? = nil
     ) -> Bool {
         guard let db else { return false }
         // LWW: skip if local row has updated_at >= incoming.
         var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, "SELECT updated_at FROM provider_instances WHERE id = ?", -1, &stmt, nil) == SQLITE_OK {
+        // Read the local mask alongside the timestamp: when the inbound record
+        // does not carry this field we must preserve what the user set here,
+        // not silently reset it to false.
+        var localCodexMask = false
+        if sqlite3_prepare_v2(db, "SELECT updated_at, codex_client_mask FROM provider_instances WHERE id = ?", -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_text(stmt, 1, id, -1, Self.SQLITE_TRANSIENT)
             if sqlite3_step(stmt) == SQLITE_ROW {
                 let localTs = sqlite3_column_double(stmt, 0)
+                localCodexMask = sqlite3_column_int(stmt, 1) != 0
                 sqlite3_finalize(stmt)
                 if localTs >= updatedAt {
                     return false
@@ -1084,7 +1103,8 @@ actor ProviderConfigDB {
             secretBlob: secretBlob, secretKind: secretKind, secretUpdatedAt: secretUpdatedAt,
             createdAt: createdAt, updatedAt: updatedAt, extrasJson: extrasJson,
             customUserAgent: customUserAgent,
-            azureMode: azureMode
+            azureMode: azureMode,
+            codexClientMask: codexClientMask ?? localCodexMask
         )
         return true
     }
@@ -1359,7 +1379,8 @@ actor ProviderConfigDB {
         secretBlob: String?, secretKind: String?, secretUpdatedAt: Double?,
         createdAt: Double, updatedAt: Double, extrasJson: String?,
         customUserAgent: String?,
-        azureMode: Bool = false
+        azureMode: Bool = false,
+        codexClientMask: Bool = false
     ) {
         guard let db else { return }
         let sql = """
@@ -1367,8 +1388,9 @@ actor ProviderConfigDB {
             (id, label, provider_type, credential_type, custom_base_url,
              append_v1_suffix, image_endpoint_mode, image_endpoint_resolved,
              is_enabled, sort_order, secret_blob, secret_kind, secret_updated_at,
-             created_at, updated_at, extras_json, custom_user_agent, azure_mode)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             created_at, updated_at, extras_json, custom_user_agent, azure_mode,
+             codex_client_mask)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 label=excluded.label, provider_type=excluded.provider_type,
                 credential_type=excluded.credential_type, custom_base_url=excluded.custom_base_url,
@@ -1377,7 +1399,8 @@ actor ProviderConfigDB {
                 sort_order=excluded.sort_order, secret_blob=excluded.secret_blob, secret_kind=excluded.secret_kind,
                 secret_updated_at=excluded.secret_updated_at, created_at=excluded.created_at,
                 updated_at=excluded.updated_at, extras_json=excluded.extras_json,
-                custom_user_agent=excluded.custom_user_agent, azure_mode=excluded.azure_mode
+                custom_user_agent=excluded.custom_user_agent, azure_mode=excluded.azure_mode,
+                codex_client_mask=excluded.codex_client_mask
         """
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }
@@ -1400,6 +1423,7 @@ actor ProviderConfigDB {
         Self.bindOpt(stmt, 16, extrasJson)
         Self.bindOpt(stmt, 17, customUserAgent)
         sqlite3_bind_int(stmt, 18, azureMode ? 1 : 0)
+        sqlite3_bind_int(stmt, 19, codexClientMask ? 1 : 0)
         sqlite3_step(stmt)
     }
 
