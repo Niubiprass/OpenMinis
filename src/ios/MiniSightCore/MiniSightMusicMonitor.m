@@ -149,6 +149,12 @@ static bool MSMusicPublishDue(bool changed, bool force, double now, double previ
     return changed || force || now - previous >= 2.;
 }
 // END MUSIC SAMPLE POLICY
+// BEGIN MUSIC PROGRESS POLICY
+static bool MSMusicUseFirstProgress(bool sameTrack, bool lastElapsedMissing,
+                                    bool firstProgressValid, bool firstTimestampValid) {
+    return sameTrack && lastElapsedMissing && firstProgressValid && firstTimestampValid;
+}
+// END MUSIC PROGRESS POLICY
 static BOOL MSMusicMissingSource(NSString *reason) {
     return [reason isEqual:@"no_active_player"] || [reason isEqual:@"player_bundle_missing"] ||
         [reason isEqual:@"media_controller_unavailable"];
@@ -182,8 +188,12 @@ static BOOL MSMusicTrackIdentityCompatible(NSDictionary *first, NSDictionary *la
     for (NSString *field in @[@"Title", @"Artist"]) {
         NSString *key = MSMusicKey([[ @"kMRMediaRemoteNowPlayingInfo" stringByAppendingString:field] UTF8String]);
         id a = key ? first[key] : nil, b = key ? last[key] : nil;
-        if ([a isKindOfClass:NSString.class] && [b isKindOfClass:NSString.class] &&
-            ![[a precomposedStringWithCanonicalMapping] isEqualToString:[b precomposedStringWithCanonicalMapping]]) return NO;
+        if ([a isKindOfClass:NSString.class] && [b isKindOfClass:NSString.class]) {
+            NSString *normalizedA = MSLyricsNormalize(a), *normalizedB = MSLyricsNormalize(b);
+            BOOL equal = normalizedA && normalizedB ? [normalizedA isEqualToString:normalizedB]
+                : [[a precomposedStringWithCanonicalMapping] isEqualToString:[b precomposedStringWithCanonicalMapping]];
+            if (!equal) return NO;
+        }
     }
     NSString *durationKey = MSMusicKey("kMRMediaRemoteNowPlayingInfoDuration");
     double a = durationKey ? MSMusicNumber(first[durationKey], NAN) : NAN;
@@ -198,12 +208,28 @@ static BOOL MSMusicTrackIdentityCompatible(NSDictionary *first, NSDictionary *la
     }
     return MSMusicTracksCompatible(firstTrack, firstID, lastTrack, lastID);
 }
+static BOOL MSMusicProgressValid(NSDictionary *info, MiniSightLyricsTrack *track);
 static NSDictionary *MSMusicResolvedInfo(NSDictionary *first, NSDictionary *last, NSString *player) {
     if (![last isKindOfClass:NSDictionary.class] || !MSMusicTrackIdentityCompatible(first ?: @{}, last, player)) return last;
     NSMutableDictionary *resolved = [last mutableCopy];
     for (NSString *field in @[@"Title", @"Artist", @"Duration", @"UniqueIdentifier"]) {
         NSString *key = MSMusicKey([[ @"kMRMediaRemoteNowPlayingInfo" stringByAppendingString:field] UTF8String]);
         if (key && !resolved[key] && first[key]) resolved[key] = first[key];
+    }
+    MiniSightLyricsTrack *firstTrack = MSMusicTrack(first), *resolvedTrack = MSMusicTrack(resolved);
+    NSString *elapsedKey = MSMusicKey("kMRMediaRemoteNowPlayingInfoElapsedTime");
+    NSString *timestampKey = MSMusicKey("kMRMediaRemoteNowPlayingInfoTimestamp");
+    BOOL sameTrack = firstTrack && resolvedTrack && [firstTrack.cacheKey isEqualToString:resolvedTrack.cacheKey];
+    if (MSMusicUseFirstProgress(sameTrack, elapsedKey && !last[elapsedKey],
+        MSMusicProgressValid(first, firstTrack), timestampKey && [first[timestampKey] isKindOfClass:NSDate.class])) {
+        // Preserve a real same-track sample as a GROUP. An elapsed value from
+        // the first read must never acquire the last read's newer timestamp/rate.
+        // Explicit invalid last progress is not "missing" and is never rescued.
+        for (NSString *field in @[@"ElapsedTime", @"PlaybackRate", @"Timestamp"]) {
+            NSString *key = MSMusicKey([[ @"kMRMediaRemoteNowPlayingInfo" stringByAppendingString:field] UTF8String]);
+            if (!key) continue;
+            if (first[key]) resolved[key] = first[key]; else [resolved removeObjectForKey:key];
+        }
     }
     return [resolved copy];
 }

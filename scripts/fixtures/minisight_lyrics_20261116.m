@@ -11,15 +11,19 @@ static NSUInteger checks = 0;
 
 // Private transport callbacks are exercised directly for a deterministic late-callback race.
 @interface MiniSightLyricsClient (FixtureAccess)
++ (MiniSightLyricsTimeline *)timelineForSearchResponseData:(NSData *)data response:(NSHTTPURLResponse *)response track:(MiniSightLyricsTrack *)track reason:(NSString **)reason;
 - (void)receivedResponse:(NSURLResponse *)response task:(NSURLSessionDataTask *)task completion:(void (^)(NSURLSessionResponseDisposition))completion;
 - (void)receivedData:(NSData *)data task:(NSURLSessionDataTask *)task;
 - (void)finishedTask:(NSURLSessionTask *)task error:(NSError *)error;
 @end
 
 static BOOL Equal(id a, id b) { return a == b || [a isEqual:b]; }
-static NSData *JSON(id value) { return [NSJSONSerialization dataWithJSONObject:value options:0 error:NULL]; }
+static NSData *JSON(id value) { return [NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingFragmentsAllowed error:NULL]; }
+static NSHTTPURLResponse *ResponseAt(NSInteger status, NSDictionary *headers, NSURL *url) {
+    return [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:headers ?: @{@"Content-Type": @"application/json"}];
+}
 static NSHTTPURLResponse *Response(NSInteger status, NSDictionary *headers) {
-    return [[NSHTTPURLResponse alloc] initWithURL:[NSURL URLWithString:@"https://lrclib.net/api/get"] statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:headers ?: @{@"Content-Type": @"application/json"}];
+    return ResponseAt(status, headers, [NSURL URLWithString:@"https://lrclib.net/api/get"]);
 }
 static NSMutableDictionary *Record(MiniSightLyricsTrack *track) {
     return [@{@"trackName": track.title, @"artistName": track.artist, @"duration": @(track.duration),
@@ -58,7 +62,7 @@ static NSURLRequest *lastRequest;
 
 static void Emit(FixtureProtocol *protocol, NSInteger status, NSData *data, NSDictionary *headers) {
     if (protocol.stopped) return;
-    [protocol.client URLProtocol:protocol didReceiveResponse:Response(status, headers) cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+    [protocol.client URLProtocol:protocol didReceiveResponse:ResponseAt(status, headers, protocol.request.URL) cacheStoragePolicy:NSURLCacheStorageNotAllowed];
     if (data.length) {
         NSUInteger half = data.length / 2;
         [protocol.client URLProtocol:protocol didLoadData:[data subdataWithRange:NSMakeRange(0, half)]];
@@ -99,6 +103,11 @@ static void ParserTests(NSDictionary *fixture) {
     CHECK(Equal([timeline lineAtTime:1.5], @"Middle"), "negative offset exact boundary");
     CHECK(Equal([timeline lineAtTime:2.5], @"Later"), "binary search forward");
     CHECK([timeline lineAtTime:0.1] == nil, "binary search rewind");
+    timeline = [MiniSightLyricsTimeline timelineWithLRC:@"[00:01]Long verse line\n[00:30]Next line\n[00:45]\n[00:50]Final" duration:60];
+    CHECK(Equal([timeline lineAtTime:25], @"Long verse line"), "line survives long gap between LRC markers");
+    CHECK([timeline lineAtTime:45] == nil && [timeline lineAtTime:46] == nil && [timeline lineAtTime:49.999] == nil, "explicit blank still clears until next marker");
+    CHECK(Equal([timeline lineAtTime:50], @"Final"), "next marker starts only at its timestamp");
+    CHECK(Equal([timeline lineAtTime:59], @"Final") && [timeline lineAtTime:60] == nil, "last line lasts until track end only");
     timeline = [MiniSightLyricsTimeline timelineWithLRC:@"[offset:200]\n[00:00]A\n[offset:500]" duration:1];
     CHECK([timeline lineAtTime:0.49] == nil && Equal([timeline lineAtTime:0.5], @"A") && [timeline lineAtTime:1] == nil, "last offset and duration clipping");
     NSString *huge = [@"X" stringByPaddingToLength:1024 * 1024 + 1 withString:@"X" startingAtIndex:0];
@@ -142,6 +151,55 @@ static void EvaluatorTests(MiniSightLyricsTrack *track) {
         NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:[NSURL URLWithString:url] statusCode:200 HTTPVersion:nil headerFields:@{@"Content-Type": @"application/json"}];
         CHECK([MiniSightLyricsClient timelineForResponseData:JSON(Record(track)) response:response track:track] == nil, "foreign endpoint rejected");
     }
+}
+
+static void SearchEvaluatorTests(NSDictionary *fixture, MiniSightLyricsTrack *track) {
+    NSString *reason = nil;
+    NSURL *searchURL = [NSURL URLWithString:@"https://lrclib.net/api/search?q=fixture"];
+    NSArray *records = fixture[@"search_records"];
+    MiniSightLyricsTimeline *timeline = [MiniSightLyricsClient timelineForSearchResponseData:JSON(records) response:ResponseAt(200, nil, searchURL) track:track reason:&reason];
+    CHECK(timeline != nil && Equal(reason, @"lyrics_timeline") && Equal([timeline lineAtTime:2], @"Nearest exact song"), "normalized exact metadata picks closest valid synced lyrics");
+    NSArray *badRecords = @[
+        @{@"trackName": @"Different Song", @"artistName": track.artist, @"duration": @60, @"instrumental": @NO, @"syncedLyrics": @"[00:01]Wrong title"},
+        @{@"trackName": track.title, @"artistName": @"Different Artist", @"duration": @60, @"instrumental": @NO, @"syncedLyrics": @"[00:01]Wrong artist"},
+        @{@"trackName": track.title, @"artistName": track.artist, @"duration": @62.001, @"instrumental": @NO, @"syncedLyrics": @"[00:01]Wrong duration"},
+        @{@"trackName": track.title, @"artistName": track.artist, @"duration": @60, @"instrumental": @YES, @"syncedLyrics": NSNull.null},
+        @{@"trackName": track.title, @"artistName": track.artist, @"duration": @60, @"instrumental": @NO, @"syncedLyrics": @""},
+        @{@"trackName": track.title, @"artistName": track.artist, @"duration": @60, @"instrumental": @NO, @"syncedLyrics": @"plain text"}
+    ];
+    for (NSDictionary *record in badRecords) CHECK([MiniSightLyricsClient timelineForSearchResponseData:JSON(@[record]) response:ResponseAt(200, nil, searchURL) track:track reason:&reason] == nil, "wrong metadata, instrumental or missing synced LRC rejected");
+    NSArray *ambiguous = @[
+        @{@"trackName": track.title, @"artistName": track.artist, @"duration": @59, @"instrumental": @NO, @"syncedLyrics": @"[00:02]Conflicting A"},
+        @{@"trackName": track.title, @"artistName": track.artist, @"duration": @61, @"instrumental": @NO, @"syncedLyrics": @"[00:02]Conflicting B"}
+    ];
+    CHECK([MiniSightLyricsClient timelineForSearchResponseData:JSON(ambiguous) response:ResponseAt(200, nil, searchURL) track:track reason:&reason] == nil, "equidistant conflicting candidates rejected");
+    for (id malformed in @[@{}, @"bad", @[@{}], @[@{@"trackName": track.title, @"artistName": track.artist, @"duration": @60, @"instrumental": @NO, @"syncedLyrics": @"[00:01]A"}, @42]])
+        CHECK([MiniSightLyricsClient timelineForSearchResponseData:JSON(malformed) response:ResponseAt(200, nil, searchURL) track:track reason:&reason] == nil, "malformed search structure rejected");
+    for (NSString *url in @[@"https://lrclib.net/api/get", @"https://example.invalid/api/search", @"http://lrclib.net/api/search", @"https://lrclib.net/api/search/extra"]) {
+        NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:[NSURL URLWithString:url] statusCode:200 HTTPVersion:nil headerFields:@{@"Content-Type": @"application/json"}];
+        CHECK([MiniSightLyricsClient timelineForSearchResponseData:JSON(records) response:response track:track reason:&reason] == nil, "search response requires pinned HTTPS endpoint");
+    }
+    NSMutableArray *tooMany = [NSMutableArray array]; for (NSUInteger i = 0; i < 21; i++) [tooMany addObject:records[0]];
+    CHECK([MiniSightLyricsClient timelineForSearchResponseData:JSON(tooMany) response:ResponseAt(200, nil, searchURL) track:track reason:&reason] == nil, "candidate count bounded");
+}
+static void SearchOrderAndDetailTests(NSDictionary *fixture, MiniSightLyricsTrack *track) {
+    NSURL *url = [NSURL URLWithString:@"https://lrclib.net/api/search?q=fixture"];
+    NSArray *records = fixture[@"search_late_closest"];
+    NSString *reason = nil;
+    for (NSUInteger a = 0; a < 3; ++a) for (NSUInteger b = 0; b < 3; ++b) if (a != b) {
+        NSUInteger c = 3 - a - b;
+        MiniSightLyricsTimeline *t = [MiniSightLyricsClient timelineForSearchResponseData:JSON(@[records[a], records[b], records[c]]) response:ResponseAt(200, nil, url) track:track reason:&reason];
+        CHECK(t != nil && Equal([t lineAtTime:2], @"Unique closest") && Equal(reason, @"lyrics_timeline"), "all six orders choose unique global closest despite farther tie");
+    }
+    CHECK([MiniSightLyricsClient timelineForSearchResponseData:JSON(@[records[2], records[2]]) response:ResponseAt(200, nil, url) track:track reason:&reason] != nil, "identical duration and LRC duplicates are not ambiguous");
+    NSArray *values = @[NSNull.null, @"", @"untimed synthetic"];
+    NSArray *reasons = @[@"no_synced_lyrics", @"no_synced_lyrics", @"lyrics_invalid_lrc"];
+    for (NSUInteger i = 0; i < values.count; ++i) {
+        NSMutableDictionary *record = Record(track); record[@"syncedLyrics"] = values[i];
+        CHECK([MiniSightLyricsClient timelineForSearchResponseData:JSON(@[record]) response:ResponseAt(200, nil, url) track:track reason:&reason] == nil && Equal(reason, reasons[i]), "exact candidate failure retains no-synced/invalid reason");
+    }
+    NSMutableDictionary *record = Record(track); record[@"instrumental"] = @YES; record[@"syncedLyrics"] = NSNull.null;
+    CHECK([MiniSightLyricsClient timelineForSearchResponseData:JSON(@[record]) response:ResponseAt(200, nil, url) track:track reason:&reason] == nil && Equal(reason, @"lyrics_instrumental"), "exact instrumental reason is distinct from not-found");
 }
 
 static void BackoffTests(void) {
@@ -188,15 +246,43 @@ static void TransportTests(MiniSightLyricsTrack *track) {
     CHECK(cache.countLimit == 16 && cache.totalCostLimit == 4 * 1024 * 1024, "small cache limits");
     [client cancel];
 
-    handler = ^(FixtureProtocol *p) { Emit(p, 404, nil, nil); };
+    __block NSMutableArray<NSURLRequest *> *requests = [NSMutableArray array];
+    NSArray *searchCandidates = @[
+        @{@"trackName": @"Other Title", @"artistName": track.artist, @"duration": @60, @"instrumental": @NO, @"syncedLyrics": @"[00:01]wrong title"},
+        @{@"trackName": track.title, @"artistName": track.artist, @"duration": @60.5, @"instrumental": @NO, @"syncedLyrics": @"[00:01]Fallback success"}
+    ];
+    handler = ^(FixtureProtocol *p) {
+        [requests addObject:p.request];
+        if ([p.request.URL.path isEqual:@"/api/get"]) Emit(p, 404, nil, nil);
+        else Emit(p, 200, JSON(searchCandidates), nil);
+    };
     client = Client(); before = starts;
-    CHECK(Fetch(client, track) == nil && starts == before + 1 && [lastReason isEqual:@"lyrics_not_found"], "404 yields nil");
+    CHECK(Fetch(client, track) != nil && Equal(lastReason, @"lyrics_timeline"), "exact 404 falls back to exact search match");
+    CHECK(starts == before + 2 && requests.count == 2, "maximum two requests for one track");
+    CHECK(Equal(requests[0].URL.path, @"/api/get") && Equal(requests[1].URL.path, @"/api/search"), "exact request precedes search once");
+    CHECK([requests[1].HTTPMethod isEqual:@"GET"] && !requests[1].HTTPBody && !requests[1].HTTPShouldHandleCookies, "search is credentialless GET");
+    CHECK(Equal([requests[1] valueForHTTPHeaderField:@"User-Agent"], @"MiniSight-Lyrics/1.0 (+https://openminis.app)"), "same identified user agent on search");
+    NSURLComponents *searchComponents = [NSURLComponents componentsWithURL:requests[1].URL resolvingAgainstBaseURL:NO];
+    CHECK(Equal(searchComponents.scheme, @"https") && Equal(searchComponents.host, @"lrclib.net") && Equal(searchComponents.path, @"/api/search"), "fixed HTTPS search host and path");
+    CHECK(searchComponents.queryItems.count == 1 && Equal(searchComponents.queryItems[0].name, @"q") && [searchComponents.queryItems[0].value containsString:track.title] && [searchComponents.queryItems[0].value containsString:track.artist], "encoded title and artist search query");
     Pump(0.36); before = starts;
-    CHECK(Fetch(client, track) == nil && starts == before && [lastReason isEqual:@"lyrics_not_found"], "404 negative cache beyond request gap");
+    CHECK(Fetch(client, track) != nil && starts == before, "search success memory cache");
+    [client cancel];
+
+    handler = ^(FixtureProtocol *p) {
+        if ([p.request.URL.path isEqual:@"/api/get"]) Emit(p, 404, nil, nil);
+        else Emit(p, 200, JSON(@[
+            @{@"trackName": @"Wrong Title", @"artistName": track.artist, @"duration": @60, @"instrumental": @NO, @"syncedLyrics": @"[00:01]Wrong"},
+            @{@"trackName": track.title, @"artistName": track.artist, @"duration": @63, @"instrumental": @NO, @"syncedLyrics": @"[00:01]Wrong duration"}
+        ]), nil);
+    };
+    client = Client(); before = starts;
+    CHECK(Fetch(client, track) == nil && Equal(lastReason, @"lyrics_not_found") && starts == before + 2, "search with no exact candidate safely misses");
     id entry = [[client valueForKey:@"cache"] objectForKey:track.cacheKey];
-    CHECK(entry != nil, "negative cache entry exists");
+    CHECK(entry != nil, "search no-match negative cache exists");
     [entry setValue:@0 forKey:@"expires"];
-    CHECK(Fetch(client, track) == nil && starts == before + 1, "negative cache expiry");
+    Pump(0.36); before = starts;
+    CHECK(Fetch(client, track) == nil && starts == before + 2, "expired miss still does exact then at most one search");
     [client cancel];
 
     handler = ^(FixtureProtocol *p) { Emit(p, 429, [@"not JSON" dataUsingEncoding:NSUTF8StringEncoding], @{@"Retry-After": @"120"}); };
@@ -289,6 +375,8 @@ static void CancellationTests(MiniSightLyricsTrack *track) {
     Pump(0.05); CHECK(weakClient == nil, "delegate does not retain client");
 }
 
+#include "minisight_lyrics_20261122/native_client.inc"
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         CHECK(argc == 2, "fixture path argument");
@@ -297,8 +385,9 @@ int main(int argc, const char *argv[]) {
         NSDictionary *meta = fixture[@"track"];
         MiniSightLyricsTrack *track = [[MiniSightLyricsTrack alloc] initWithTitle:meta[@"title"] artist:meta[@"artist"] duration:[meta[@"duration"] doubleValue]];
         CHECK(track != nil, "synthetic track valid");
-        ParserTests(fixture); EvaluatorTests(track); BackoffTests();
-        TransportTests(track); CancellationTests(track);
+        ParserTests(fixture); EvaluatorTests(track); SearchEvaluatorTests(fixture, track);
+        SearchOrderAndDetailTests(fixture, track); BackoffTests();
+        TransportTests(track); CacheDeadlineAndPendingCancelTests(track); CancellationTests(track);
         handler = nil; lastRequest = nil;
         printf("NATIVE PASS: %lu checks; synthetic Fake NSURLProtocol only\n", (unsigned long)checks);
     }

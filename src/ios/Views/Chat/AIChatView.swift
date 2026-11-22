@@ -4124,7 +4124,7 @@ _ios15Seg7
                     .padding(.trailing, 10)
                 }
             }
-            .modifier(ComposerSurface(waveLevels: composerWaveLevels))
+            .modifier(ComposerSurface(waveLevels: composerWaveLevels, voiceActive: voiceInputActive || speechManager.state == .recording))
             // [T-ios-context-usage-hint] Inner glow along the glass wall.
             // An overlay ABOVE the material (so the Liquid Glass backdrop
             // sampler never sees it) that clips itself to the same shape, so
@@ -5220,26 +5220,24 @@ struct FloatingCircleButtonSurface: ViewModifier {
 /// that lifts the bar off the message list.
 private struct ComposerSurface: ViewModifier {
     var waveLevels: [Float] = []
+    var voiceActive: Bool = false
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 20, style: .continuous)
     }
 
+    // A background receives the complete composer's proposed width without
+    // participating in its layout. Do not inset it by the text/button padding:
+    // the shared rounded clip supplies the only curved-edge trimming.
     private var wave: some View {
-        ComposerRainbowWave(levels: waveLevels, opacity: 0.72)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 2)
+        ComposerRainbowWave(levels: waveLevels, opacity: 0.86, voiceActive: voiceActive)
+            .frame(height: ComposerRainbowWave.canvasHeight)
+            .frame(maxWidth: .infinity)
     }
 
     func body(content: Content) -> some View {
         let foreground = content
-            .background(alignment: .bottom) {
-                wave
-                    .frame(height: 100)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 2)
-            }
+            .background(alignment: .bottom) { wave }
             .clipShape(shape)
         if #available(iOS 26.0, *) {
             foreground

@@ -23,9 +23,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// Records the solver's downward speed immediately before a floor hit.
 /// This is separate from visual squash and drag impulse state.
 - (void)setFloorImpactVelocity:(CGFloat)velocity;
-/// Selects existing sleep/wake action roles for a non-resident landing recovery.
-/// 0 clears; 1 falls, 2 wobbles, 3 sits, 4 rises.
+/// Uses an explicit land clip continuously when supplied; otherwise a neutral
+/// sprite with a bounded presentation fallback. These are not new art frames.
+/// 0 clears; 1 topples, 2 pauses, 3 collects, 4 returns upright.
 - (void)setLandingRecoveryStage:(NSInteger)stage;
+/// Keeps the host from cutting a real land clip off at the fallback deadline.
+@property (nonatomic, readonly) BOOL landingRecoveryHeld;
 - (void)beginDragAt:(CGPoint)localPoint;
 - (void)dragTo:(CGPoint)center;
 - (CGPoint)endDragCancelled:(BOOL)cancelled;

@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+"""Local production-path regression, no network/device/iOS compilation.
+Executes current Pet/Effects method bodies translated to C ONLY at UIKit/ObjC
+message/property seams. Foundation/QuartzCore decoding/delivery/timer scheduling
+are fixture dependencies, NOT claimed to execute on Linux. Native runner keeps
+its original Apple/authorized-CI gates; --require-native fails closed.
+"""
+from pathlib import Path
+import argparse, hashlib, json, re, shutil, subprocess, sys, tempfile
+HERE=Path(__file__).resolve().parent
+FIX=HERE/'fixtures/minisight_pet_paths_20261122'
+
+# Fail-closed extraction of DEFINITIONS, not a snapshot of old policy.
+def method(text, signature):
+    m=re.search(r'^'+re.escape(signature)+r'[^\n{;]*\{',text,re.M)
+    if not m: raise AssertionError('missing definition '+signature)
+    start=text.index('{',m.start()); i=start+1; depth=1
+    while depth:
+        if text[i]=='{': depth+=1
+        elif text[i]=='}': depth-=1
+        i+=1
+    return text[m.start():i]
+
+def strip_call(s,name):
+    # Only diagnostics/assertions are removed. No behavioral call is skipped.
+    while True:
+        m=re.search(r'\b'+re.escape(name)+r'\s*\(',s)
+        if not m: return s
+        i=m.end(); depth=1; quote=False; escape=False
+        while depth:
+            c=s[i]
+            if quote:
+                if escape: escape=False
+                elif c=='\\': escape=True
+                elif c=='"': quote=False
+            elif c=='"': quote=True
+            elif c=='(': depth+=1
+            elif c==')': depth-=1
+            i+=1
+        end=s.index(';',i)+1; s=s[:m.start()]+s[end:]
+
+P_METHODS={
+ 'shouldAnimate':('bool','void'), 'mayRoam':('bool','void'),
+ 'feasibleCenters':('MSRect','void'), 'clampedCenter:':('CGPoint','CGPoint point'),
+ 'setSpriteState:':('void','int state'), 'currentSpriteInterval':('double','void'),
+ 'frameCountForRow:':('int','int row'), 'applySpriteFrame':('void','void'),
+ 'restorePosterFrame':('void','void'), 'advanceSpriteAtTime:':('void','double now'),
+ 'frameTick:':('void','int timer'), 'setMusicPlaying:':('void','bool playing'),
+ 'startMotionTo:jump:rest:':('void','CGPoint target, bool jump, double rest'),
+ 'beginDraggingAtPoint:':('void','CGPoint localPoint'),
+ 'updateDraggingTarget:':('void','CGPoint center'), 'endDraggingCancelled:':('void','bool cancelled'),
+ 'startMotionTo:jump:rest:':('void','CGPoint target, bool jump, double rest'),
+ 'motionTick:':('void','int link'), 'finishMotion':('void','void'),
+ 'beginLandingRecoveryWithImpact:':('void','double impact'),
+ 'clearLandingRecovery':('void','void'), 'cancelMotion':('void','void'),
+ 'scheduleRoam':('void','void'), 'reconcilePlaybackOnce':('void','void'),
+ 'gravityAngleAtTime:':('double','double now'),
+ 'setGravityLayerAngle:animated:':('void','double angle, bool animated'),
+ 'applyGravityTransformAtTime:':('void','double now'),
+}
+E_METHODS={
+ 'musicPosition':('double','void'), 'setMusicPosition:':('void','double position'),
+ 'setMusicPlaying:':('void','bool playing'), 'currentRole':('const char *','void'),
+ 'autonomyHeld':('bool','void'), 'landingRecoveryHeld':('bool','void'),
+ 'setLegacyState:waking:':('void','int state, bool waking'),
+ 'setFlightAngle:squash:active:':('void','double angle, double squash, bool active'),
+ 'setFloorImpactVelocity:':('void','double velocity'), 'setLandingRecoveryStage:':('void','int stage'),
+ 'beginDragAt:':('void','CGPoint localPoint'), 'dragTo:':('void','CGPoint center'),
+ 'endDragCancelled:':('CGPoint','bool cancelled'), 'land':('void','void'), 'setRunning:':('void','bool running'),
+ 'tick:':('void','int link'), 'resetRigidPresentation':('void','void'),
+}
+P_SHIMS={'isActuallyVisible':'FixtureVisible','wakeForInteraction':'FixtureWake',
+ 'invalidateRoamTimer':'FixtureInvalidateRoam','invalidateFrameTimer':'FixtureInvalidateFrame',
+ 'ensureFrameTimer':'FixtureEnsureFrame','ensureMotionLink':'FixtureEnsureMotion',
+ 'cancelGravityImpulse':'FixtureCancelGravity','updateResidentAtTime:':'FixtureUpdateResident',
+ 'consumeAttentionAtTime:':'FixtureConsumeAttention','clearResidentForPlayback':'FixtureClearResident',
+ 'armRoamTimerWithDelay:':'FixtureArmRoam','reconcilePlayback':'P_reconcilePlaybackOnce'}
+E_SHIMS={'chooseRole':'FixtureChooseRole','advanceActions:':'FixtureAdvanceActions',
+ 'presentationBlocked':'FixtureBlocked','setRunning:':'FixtureSetRunning',
+ 'restorePoster':'FixtureRestorePoster','placeLyricsBlocked:':'FixtureLyrics',
+ 'requestFrame:':'FixtureRequestFrame',
+ 'setTilt:sway:':'FixtureTilt'}
+
+def cname(owner,key): return owner+'_'+key.split(':')[0]
+
+def message(content,owner):
+    receiver,rest=content.split(None,1)
+    # Selector boundaries are top-level: a colon inside a nested call is not a selector.
+    cuts=[]; depth=0; quoted=False
+    for match in re.finditer(r'[()"]|\b(\w+):',rest):
+        token=match.group(0)
+        if token=='"': quoted=not quoted
+        elif not quoted:
+            if token=='(': depth+=1
+            elif token==')': depth-=1
+            elif depth==0: cuts.append((match.start(),match.end(),match.group(1)))
+    if cuts:
+        key=''.join(c[2]+':' for c in cuts)
+        args=[rest[c[1]:(cuts[j+1][0] if j+1<len(cuts) else len(rest))].strip() for j,c in enumerate(cuts)]
+    else: key=rest.strip(); args=[]
+    if receiver=='self': target=owner
+    elif receiver=='_effects': target='E'
+    else: target=None
+    if target:
+        known=P_METHODS if target=='P' else E_METHODS
+        shims=P_SHIMS if target=='P' else E_SHIMS
+        if key in known: return cname(target,key)+'('+', '.join(args)+')'
+        if key in shims: return shims[key]+'('+', '.join(args)+')'
+    fixed={('CATransaction','begin'):'((void)0)',('CATransaction','commit'):'((void)0)',
+      ('CATransaction','setDisableActions:'):'((void)0)',
+      ('_motionLink','invalidate'):'FixtureInvalidateMotion()',
+      ('_link','invalidate'):'FixtureEffectLinkStop()',
+      ('_link','addToRunLoop:forMode:'):'FixtureEffectLinkStart()',
+      ('CADisplayLink','displayLinkWithTarget:selector:'):'FixtureEffectLinkCreate()',
+      ('_sprite','removeAnimationForKey:'):'((void)0)',
+      ('_library','purgeFrames'):'FixturePurgeFrames()',
+      ('super','setImage:'):'FixtureClearHostImage()',
+      ('CAShapeLayer','layer'):'true',('UIBezierPath','bezierPath'):'FixturePath()',
+      ('stars','moveToPoint:'):'FixtureMove(stars, '+', '.join(args)+')',
+      ('stars','addLineToPoint:'):'FixtureLine(stars, '+', '.join(args)+')',
+      ('stars','closePath'):'FixtureClose(stars)',
+      ('_sprite','addSublayer:'):'((void)0)'}
+    if (receiver,key) in fixed: return fixed[(receiver,key)]
+    raise AssertionError('unmapped Objective-C seam: ['+content+']')
+
+def definition(text,key):
+    m=re.search(r'^- \([^)]+\)'+re.escape(key.split(':')[0])+r'\b[^\n;{]*\{',text,re.M)
+    if not m: raise AssertionError('missing production selector '+key)
+    sig=text[m.start():text.index('{',m.start())].rstrip()
+    return method(text,sig)
+
+def translate(raw,owner):
+    s=raw[raw.index('{')+1:-1].replace('self->','')
+    s=re.sub(r'//[^\n]*|/\*.*?\*/','',s,flags=re.S)
+    s=strip_call(strip_call(s,'MSDiagEvent'),'NSAssert')
+    s=re.sub(r'NSString \*source = [^\n]*;','',s)
+    # ObjC object reads have controllable fixture metadata, not fake asset decoding.
+    s=s.replace('_library.roles[@"land"].count','E.hasLand')
+    s=s.replace('_effects.actionManifestPath.length','E.manifestPresent')
+    s=re.sub(r'\[_role isEqualToString:@"(\w+)"\]',r'FixtureRole(E.role, "\1")',s)
+    s=s.replace('[self->_role isEqualToString:self->_transientRole]','FixtureRole(E.role, E.transientRole)')
+    s=s.replace('[@[@"tap", @"idleAlt", @"land", @"shakeSoft", @"shakeHard", @"wake"] containsObject:_role]','FixtureTransient(E.role)')
+    s=s.replace('_clip.duration','E.clipDuration')
+    s=s.replace('_link.preferredFramesPerSecond','E.linkFPS')
+    s=s.replace('_bubble.hidden','E.bubbleHidden')
+    s=s.replace('_preferredFPS','E.preferredFPS')
+    s=s.replace('_dizzyStars.frame','D.frame').replace('_dizzyStars.path','D.path')
+    s=s.replace('_dizzyStars.opacity','D.opacity').replace('_dizzyStars.hidden','D.hidden')
+    s=s.replace('_dizzyStars.fillColor','D.fillColor').replace('_dizzyStars.strokeColor','D.strokeColor')
+    s=s.replace('_dizzyStars.lineWidth','D.lineWidth').replace('_dizzyStars','E.starsExists')
+    s=s.replace('_sprite.affineTransform','S.transform')
+    s=s.replace('_gravityLayer.contentsRect','S.contentsRect').replace('_gravityLayer.contents','S.contents')
+    s=s.replace('_sheet.CGImage','P.sheetExists').replace('_gravityLayer','P.layerExists')
+    s=s.replace('self.layer.contents','P.hostContents')
+    s=s.replace('UIColor.systemYellowColor.CGColor','1').replace('UIColor.labelColor.CGColor','2')
+    s=s.replace('stars.CGPath','stars')
+    s=s.replace('MiniSightPetView *pet = _pet;','void *pet = P.hasPet ? (void *)1 : NULL;')
+    s=s.replace('UIView *viewport = pet.superview;','FixtureViewport *viewport = &Viewport;')
+    s=s.replace('viewport.bounds','viewport->bounds')
+    s=s.replace('UIBezierPath *stars','FixturePathData *stars')
+    # Assignments still dispatch the real production setter/body where necessary.
+    s=re.sub(r'_effects.musicPlaying = ([^;]+);',r'E_setMusicPlaying(\1);',s)
+    s=re.sub(r'(?:self|pet).center = ([^;]+);',r'FixtureSetCenter(\1);',s)
+    reads={'_effects.presentationBlocked':'FixtureBlocked()', '_effects.autonomyHeld':'E_autonomyHeld()',
+      '_effects.landingRecoveryHeld':'E_landingRecoveryHeld()', '_effects.hasActions':'E.ownsSprite',
+      '_effects.musicPosition':'E_musicPosition()', '_effects.musicPlaying':'E.musicPlaying',
+      '_effects.visualOffset':'E.visualOffset', '_effects.busy':'E.busy',
+      'self.musicPosition':'E_musicPosition()', 'self.transform':'P.transform',
+      'self.center':'P.center','self.bounds':'P.bounds',
+      'pet.window.hidden':'P.windowHidden','pet.window':'P.windowExists',
+      'pet.hidden':'P.hidden','pet.alpha':'P.alpha','pet.center':'P.center','pet.bounds':'P.bounds'}
+    for old,new in reads.items(): s=s.replace(old,new)
+    # Innermost message first. Array subscripts are C and stay untouched.
+    while True:
+        m=re.search(r'\[([A-Za-z_]\w*)\s+',s)
+        if not m: break
+        start=m.start(); depth=1; i=m.end(); quoted=False
+        while depth:
+            c=s[i]
+            if c=='"' and s[i-1]!='\\': quoted=not quoted
+            if not quoted:
+                if c=='[': depth+=1
+                elif c==']': depth-=1
+            i+=1
+        content=s[start+1:i-1]
+        inner=re.search(r'\[([A-Za-z_]\w*)\s+',content)
+        if inner:
+            a=start+1+inner.start(); j=a+1; d=1
+            while d:
+                if s[j]=='[': d+=1
+                elif s[j]==']': d-=1
+                j+=1
+            s=s[:a]+message(s[a+1:j-1],owner)+s[j:]
+        else: s=s[:start]+message(content,owner)+s[i:]
+    s=re.sub(r'\b(_[a-zA-Z]\w*)\b',lambda m:owner+'.'+m[1][1:],s)
+    s=s.replace('(__bridge id)','').replace('@"','"')
+    s=re.sub(r'\bnil\b','0',s)
+    # Fixture types, without Objective-C ABI/code generation.
+    for a,b in [('CFTimeInterval','double'),('NSTimeInterval','double'),('CGFloat','double'),
+      ('NSInteger','int'),('NSUInteger','unsigned'),('BOOL','bool')]: s=re.sub(r'\b'+a+r'\b',b,s)
+    if '@' in s or re.search(r'\b(?:self|pet)\.|\[[A-Za-z_]\w*\s+',s):
+        raise AssertionError('untranslated production behavior in '+owner+': '+s)
+    return s
+
+def generate(pet,effects):
+    effects=effects.split('@implementation MiniSightPetEffects',1)[1]
+    declarations=[]; bodies=[]; evidence=[]
+    state=re.search(r'typedef NS_ENUM\(NSInteger, MiniSightPetState\) \{.*?\};',pet,re.S).group(0)
+    state=re.sub(r'//[^\n]*','',state).replace('typedef NS_ENUM(NSInteger, MiniSightPetState)','enum')
+    constants=[]
+    names=['kMiniSightPetRows','kMiniSightPetMaxCols','kMiniSightSpriteInterval',
+      'kMiniSightIdleSpriteInterval','kMiniSightSleepSpriteInterval',
+      'kMiniSightRoamActiveLo','kMiniSightRoamActiveHi','kMiniSightRoamIdleLo','kMiniSightRoamIdleHi',
+      'kMiniSightWalkSpeed','kMiniSightWalkMinDuration','kMiniSightWalkMaxDuration',
+      'kMiniSightJumpDuration','kMiniSightJumpDesiredHeight','kMiniSightJumpMinHeight']
+    for name in names:
+        line=re.search(r'^static const \w+ '+name+r' = [^;]+;',pet,re.M).group(0)
+        constants.append(re.sub(r'const (NSInteger|NSTimeInterval)','const double' if 'Interval' in name or 'Roam' in name else 'const int',line))
+    for owner,text,table in [('P',pet,P_METHODS),('E',effects,E_METHODS)]:
+        for key,(kind,args) in table.items():
+            raw=definition(text,key); translated=translate(raw,owner)
+            if owner=='E' and key=='setFloorImpactVelocity:': translated='ObservedImpact = velocity; /* read-only entry instrumentation */\n'+translated
+            name=cname(owner,key); declarations.append('static '+kind+' '+name+'('+args+');')
+            bodies.append('/* Production selector '+key+' */\nstatic '+kind+' '+name+'('+args+') {\n'+translated+'\n}')
+            evidence.append({'owner':owner,'selector':key,'raw_sha256':hashlib.sha256(raw.encode()).hexdigest(),
+              'translated_sha256':hashlib.sha256(translated.encode()).hexdigest(),'raw':raw})
+    callback=definition(effects,'requestFrame:')
+    m=re.search(r'if \(first && self->_recoveryStage && \[self->_role isEqualToString:@"land"\]\) \{',callback)
+    assert m, 'prepared land frame handoff removed'
+    i=m.end();depth=1
+    while depth:
+        if callback[i]=='{':depth+=1
+        elif callback[i]=='}':depth-=1
+        i+=1
+    raw=callback[m.start():i]
+    translated=translate('{'+raw+'}','E')
+    declarations.append('static void FixturePreparedFrame(bool first);')
+    bodies.append('static void FixturePreparedFrame(bool first) {\n'+translated+'\n}')
+    evidence.append({'owner':'E','selector':'requestFrame: prepared-land fragment',
+      'raw_sha256':hashlib.sha256(raw.encode()).hexdigest(),'raw':raw})
+    return state+'\n'+'\n'.join(constants+declarations+bodies)+'\n',evidence
+
+
+def source_guards(pet,effects):
+    effects=effects.split('@implementation MiniSightPetEffects',1)[1]
+    advancing=definition(pet,'advanceSpriteAtTime:')
+    assert advancing.index('BOOL poseFree') < advancing.index('if (_effects.hasActions) return;')
+    assert '_effects.autonomyHeld' in advancing, 'music interrupts supplied tap/land action'
+    dance=definition(effects,'tick:').split('    if (dance) {',1)[1].split('    MSPetLandingPresentation recoveryMark',1)[0]
+    assert 'pet.center =' not in dance and 'sx = 1.; sy = 1.;' in dance and 'x = 0.;' in dance
+    assert '_displayedFrame != NSNotFound' in definition(effects,'tick:')
+    assert 'MSGravityBodyAbsorbHardFloor' in definition(pet,'motionTick:')
+    assert '[self clearLandingRecovery]' in definition(pet,'cancelMotion')
+    assert '[_effects land]' in definition(pet,'finishMotion')
+    assert 'UIAccessibilityIsReduceMotionEnabled' in definition(pet,'frameTick:')
+    assert '_dizzyStars.hidden = YES' in definition(effects,'setRunning:')
+    assert '[_dizzyStars removeFromSuperlayer]' in effects or '[_dizzyStars removeFromSuperlayer]' in definition(effects,'invalidate') or '[_dizzyStars removeFromSuperlayer]' in effects.replace('removeFromSuperlayer','removeFromSuperlayer')
+
+
+def main(argv=None):
+    ap=argparse.ArgumentParser(description='Pet/Effects production-path host C regression')
+    ap.add_argument('--trace',default=None,help='write JSON frame trace to this path')
+    ap.add_argument('--require-native',action='store_true',help='fail if Apple native runtime cannot run')
+    args=ap.parse_args(argv)
+    root=HERE.parent
+    pet=(root/'src/ios/MiniSightCore/MiniSightPet.m').read_text()
+    effects=(root/'src/ios/MiniSightCore/MiniSightPetEffects.m').read_text()
+    header,evidence=generate(pet,effects)
+    source_guards(pet,effects)
+    print('source guards PASS; %d production method bodies extracted'%len(evidence))
+    cc=shutil.which('clang') or shutil.which('gcc')
+    if not cc:
+        print('SKIP: no host C compiler; production-path control flow NOT executed')
+        if args.require_native:
+            print('FAIL: --require-native requested but Apple runtime and host C are unavailable')
+            return 1
+        return 0
+    with tempfile.TemporaryDirectory() as tmp:
+        td=Path(tmp)
+        (td/'production-paths.h').write_text(header)
+        shutil.copy(str(FIX/'driver.c'),str(td/'driver.c'))
+        for name in ('MiniSightGeometry.h','MiniSightGravity.h','MiniSightLiveliness.h','MiniSightPetBehavior.h'):
+            shutil.copy(str(root/'src/ios/MiniSightCore'/name),str(td/name))
+        exe=td/'pet_paths'
+        build=subprocess.run([cc,'-std=c99','-O1','-Wall','-Wno-unused-function','-I',str(td),
+                              str(td/'driver.c'),'-lm','-o',str(exe)],capture_output=True,text=True)
+        if build.returncode!=0:
+            print(build.stdout);print(build.stderr)
+            print('FAIL: host C compile failed')
+            return 1
+        run=[str(exe)]+((['--trace',args.trace]) if args.trace else [])
+        result=subprocess.run(run,capture_output=True,text=True)
+        print(result.stdout,end='')
+        if result.returncode!=0:
+            print(result.stderr,end='')
+            print('FAIL: production-path scenarios failed')
+            return 1
+    print('PASS: Pet/Effects production control flow executed on host C')
+    print('SKIP: UIKit/QuartzCore/Foundation native behavior not executed on Linux')
+    if args.require_native:
+        print('FAIL: --require-native requested but Apple native runtime is unavailable')
+        return 1
+    return 0
+
+
+if __name__=='__main__':
+    raise SystemExit(main())

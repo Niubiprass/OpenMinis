@@ -410,10 +410,61 @@ private enum MiniSightAppFiles {
     }
 }
 
+// BEGIN MUSIC READER POLICY
 private struct MiniSightMusicAnchor: Equatable {
     let position: Double, stamp: Double
     var current: Double { position + min(5, max(0, Date().timeIntervalSince1970 - stamp)) }
 }
+
+private enum MiniSightMusicDiagnosticCodes {
+    static let player: Set<String> = ["unknown", "not_applicable", "unavailable", "selected", "none"]
+    static let playerDetail: Set<String> = ["unknown", "not_applicable", "no_active_player", "no_supported_player", "media_controller_unavailable", "player_bundle_missing", "unsupported_player", "player_pid_unresolved", "netease_player_selected", "supported_player_selected", "netease_pid_selected", "supported_pid_selected"]
+    static let metadata: Set<String> = ["unknown", "not_applicable", "awaiting_fresh_info", "coherent", "missing"]
+    static let progress: Set<String> = ["unknown", "not_applicable", "available", "missing"]
+    static let lyrics: Set<String> = ["unknown", "inactive", "media_api_unavailable", "disabled", "no_supported_player", "awaiting_fresh_identity", "metadata_missing", "progress_missing", "not_playing", "fetching", "awaiting_fetch", "no_synced_lyrics", "no_current_line", "current_line"]
+    static let detail: Set<String> = ["unknown", "not_applicable", "lyrics_http", "lyrics_cooldown", "lyrics_network_error", "lyrics_response_rejected", "lyrics_not_found", "lyrics_rate_limited", "lyrics_service_unavailable", "lyrics_timeout", "lyrics_oversized", "lyrics_track_mismatch", "lyrics_instrumental", "lyrics_invalid_lrc", "lyrics_timeline", "no_synced_lyrics"]
+
+    static func value(_ raw: Any?, allowed: Set<String>) -> String {
+        guard let value = raw as? String, allowed.contains(value) else { return "unknown" }
+        return value
+    }
+}
+
+/// v1 writer/reader contract. JSON booleans are not interchangeable with 0/1;
+/// a closed snapshot cannot paint even when inconsistent flags claim playing.
+private struct MiniSightMusicSnapshot {
+    let time: Double
+    let allowed: Bool
+    let playing: Bool
+    let lyricsEnabled: Bool
+    let motionEnabled: Bool
+    let line: String?
+    let motionTime: Double?
+
+    static func number(_ raw: Any?) -> Double? {
+        guard let value = raw as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(),
+              value.doubleValue.isFinite else { return nil }
+        return value.doubleValue
+    }
+    static func flag(_ raw: Any?) -> Bool? {
+        guard let value = raw as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() else { return nil }
+        return value.boolValue
+    }
+    static func decode(_ raw: [String: Any]?) -> MiniSightMusicSnapshot? {
+        guard let raw, number(raw["version"]) == 1, let time = number(raw["time"]),
+              let allowed = flag(raw["allowed"]), let playing = flag(raw["playing"]),
+              let lyrics = flag(raw["lyricsEnabled"]), let motion = flag(raw["motionEnabled"]),
+              let line = raw["line"] as? String, line.utf16.count <= 240,
+              line.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else { return nil }
+        let position = number(raw["motionTime"]).flatMap { $0 >= 0 ? $0 : nil }
+        return MiniSightMusicSnapshot(time: time, allowed: allowed, playing: allowed && playing,
+            lyricsEnabled: lyrics, motionEnabled: motion, line: line.isEmpty ? nil : line, motionTime: position)
+    }
+    func fresh(at now: Double) -> Bool {
+        now.isFinite && now >= time - 1 && now - time <= 5
+    }
+}
+// END MUSIC READER POLICY
 
 /// Reads the tweak's already-synchronized CURRENT line; never fetches music
 /// credentials or lyrics itself. Without the tweak the snapshot expires silently.
@@ -430,6 +481,7 @@ private final class MiniSightMusicBridge: ObservableObject {
     private var lastValidAt: TimeInterval = 0
     private var lastReadAt: TimeInterval = 0
     private var lastEvidence: String?
+    private var lastMusicDiagnostics: String?
     private func evidence(_ reason: String, valid: Bool, present: Bool) {
         let key = "\(reason):\(valid):\(present):\(generation)"
         guard lastEvidence != key else { return }
@@ -443,18 +495,20 @@ private final class MiniSightMusicBridge: ObservableObject {
         guard visible != wanted else { if wanted { refresh() }; return }
         visible = wanted; generation &+= 1
         timer?.invalidate(); timer = nil
-        if !wanted { line = nil; playing = false; evidence("gate_closed", valid: false, present: false); return }
+        if !wanted { line = nil; playing = false; anchor = nil; evidence("gate_closed", valid: false, present: false); return }
         // The visible-only 250ms read is also the lost-notification fallback.
-        // No raw observer pointer is registered across this view's lifetime.
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        // Common modes keep expiration/OFF reads running during UI tracking.
+        let polling = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+        timer = polling
+        RunLoop.main.add(polling, forMode: .common)
         refresh()
     }
     private func refresh() {
         guard visible else { return }
         let now = Date().timeIntervalSince1970
-        if now - lastValidAt > 5 || now < lastValidAt - 1 { line = nil; playing = false; evidence("music_stale", valid: false, present: false) }
+        if now - lastValidAt > 5 || now < lastValidAt - 1 { line = nil; playing = false; anchor = nil; evidence("music_stale", valid: false, present: false) }
         guard !inFlight else { return } // Never queue another disk read behind a stalled one.
         inFlight = true; lastReadAt = now
         let token = generation
@@ -462,30 +516,41 @@ private final class MiniSightMusicBridge: ObservableObject {
         io.async { [weak self] in
             let data = try? MiniSightAssetCatalog.boundedData(file, limit: 16 * 1024)
             let value = data.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
-            let time = (value?["time"] as? NSNumber)?.doubleValue ?? 0
-            let line = value?["line"] as? String
-            let state = (value?["playing"] as? Bool) == true
-            let lyrics = (value?["lyricsEnabled"] as? Bool) == true
-            let motion = (value?["motionEnabled"] as? Bool) == true
+            let snapshot = MiniSightMusicSnapshot.decode(value)
+            let diagnosticsRaw = (value?["diagnostics"] as? [String: Any]) ?? [:]
+            let diagnostics = MiniSightMusicSnapshot.number(diagnosticsRaw["version"]) == 1 ? diagnosticsRaw : [:]
+            let playerStage = MiniSightMusicDiagnosticCodes.value(diagnostics["player"], allowed: MiniSightMusicDiagnosticCodes.player)
+            let playerDetail = MiniSightMusicDiagnosticCodes.value(diagnostics["playerDetail"], allowed: MiniSightMusicDiagnosticCodes.playerDetail)
+            let metadataStage = MiniSightMusicDiagnosticCodes.value(diagnostics["metadata"], allowed: MiniSightMusicDiagnosticCodes.metadata)
+            let progressStage = MiniSightMusicDiagnosticCodes.value(diagnostics["progress"], allowed: MiniSightMusicDiagnosticCodes.progress)
+            let lyricsStage = MiniSightMusicDiagnosticCodes.value(diagnostics["lyrics"], allowed: MiniSightMusicDiagnosticCodes.lyrics)
+            let lyricsDetail = MiniSightMusicDiagnosticCodes.value(diagnostics["lyricsDetail"], allowed: MiniSightMusicDiagnosticCodes.detail)
+            let diagnosticToken = [playerStage, playerDetail, metadataStage, progressStage, lyricsStage, lyricsDetail].joined(separator: "|")
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.inFlight = false
                 guard self.visible, self.generation == token else { return }
                 let now = Date().timeIntervalSince1970
-                guard time.isFinite, now >= time - 1, now - time <= 5,
-                      (value?["version"] as? Int) == 1 else { self.line = nil; self.playing = false; self.evidence("music_stale", valid: false, present: false); return }
-                self.lastValidAt = time
+                guard let snapshot, snapshot.fresh(at: now) else { self.line = nil; self.playing = false; self.anchor = nil; self.evidence("music_stale", valid: false, present: false); return }
+                self.lastValidAt = snapshot.time
                 let defaults = UserDefaults.standard
-                let nextLine = state && lyrics && defaults.bool(forKey: "minisight.music.lyrics") && (line?.count ?? 0) <= 240 ? line : nil
-                let nextPlaying = state && motion && defaults.bool(forKey: "minisight.music.motion")
-                self.evidence("music_readback", valid: true, present: !(nextLine?.isEmpty ?? true))
+                let nextLine = snapshot.playing && snapshot.lyricsEnabled && defaults.bool(forKey: "minisight.music.lyrics") ? snapshot.line : nil
+                let nextPlaying = snapshot.playing && snapshot.motionEnabled && defaults.bool(forKey: "minisight.music.motion")
+                if self.lastMusicDiagnostics != diagnosticToken {
+                    self.lastMusicDiagnostics = diagnosticToken
+                    MSDiagEvent("music", "readback", "ok", ["source": "app", "generation": token,
+                        "reason": "music_state", "reason_detail": ["unknown", "not_applicable"].contains(lyricsDetail) ? lyricsStage : lyricsDetail,
+                        "player_stage": playerStage, "player_detail": playerDetail,
+                        "metadata_stage": metadataStage, "progress_stage": progressStage,
+                        "lyrics_stage": lyricsStage, "lyrics_detail": lyricsDetail,
+                        "present": !(nextLine?.isEmpty ?? true), "enabled": snapshot.lyricsEnabled])
+                }
                 if self.line != nextLine {
                     self.line = nextLine
                     MSDiagEvent("music", "receive", "ok", ["source": "app", "generation": token,
                         "present": !(nextLine?.isEmpty ?? true), "reason": "lyrics_received"])
                 }
-                let position = (value?["motionTime"] as? NSNumber)?.doubleValue
-                let anchor = position.flatMap { nextPlaying && $0.isFinite && $0 >= 0 ? MiniSightMusicAnchor(position: $0, stamp: time) : nil }
+                let anchor = snapshot.motionTime.flatMap { nextPlaying ? MiniSightMusicAnchor(position: $0, stamp: snapshot.time) : nil }
                 if self.anchor != anchor { self.anchor = anchor }
                 if self.playing != nextPlaying { self.playing = nextPlaying }
             }

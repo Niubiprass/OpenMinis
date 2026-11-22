@@ -22,7 +22,7 @@
     NSString *_actionManifestPath, *_lyricsLine, *_role, *_wantedRole, *_lastClip;
     UIView *_bubble;
     UILabel *_label;
-    CAShapeLayer *_tail;
+    CAShapeLayer *_tail, *_dizzyStars;
     BOOL _running, _busy, _musicPlaying, _dragging, _flying, _waking, _framePending, _ownsSprite;
     NSUInteger _manifestRetries;
     CFTimeInterval _selectionBegan;
@@ -49,6 +49,7 @@
 - (void)chooseRole;
 - (void)loadManifestGeneration:(NSUInteger)generation;
 - (void)restorePoster;
+- (void)resetRigidPresentation;
 - (BOOL)presentationBlocked;
 - (void)requestFrame:(NSUInteger)index;
 - (void)advanceActions:(double)now;
@@ -116,6 +117,14 @@
     _musicAnchor = isfinite(position) ? fmax(0., position) : 0.;
     _musicAnchorAt = CACurrentMediaTime();
 }
+- (BOOL)landingRecoveryHeld {
+    if (!_running || !_recoveryStage || [self presentationBlocked] || _dragging || _flying ||
+        UIAccessibilityIsReduceMotionEnabled() || ![_role isEqualToString:@"land"] || !_clip) return NO;
+    double now = CACurrentMediaTime();
+    // The real clip begins with its first decoded frame, not its request time.
+    // A missing first frame may wait only within the existing bounded window.
+    return _clipStart > 0 ? now - _clipStart < _clip.duration : now - _selectionBegan < 2.;
+}
 - (BOOL)autonomyHeld {
     if (!_running || [self presentationBlocked] || _dragging) return NO;
     double now = CACurrentMediaTime();
@@ -145,8 +154,9 @@
     if (now < _shakeUntil) return _shakeStrength >= .55 ? @"shakeHard" : @"shakeSoft";
     if (_flying) return @"flight";
     if (_recoveryStage && !UIAccessibilityIsReduceMotionEnabled()) {
-        NSString *role = _recoveryStage == 1 ? @"land" : _recoveryStage == 4 ? @"wake" : @"sleep";
-        return _library.roles[role].count ? role : @"idle";
+        // An explicit user-supplied land clip owns the WHOLE recovery.
+        // Never restart it or substitute sleep/wake as the phases advance.
+        return _library.roles[@"land"].count ? @"land" : @"idle";
     }
     if (_transientRole && now < _transientUntil) return _transientRole;
     if (now < _landUntil && !UIAccessibilityIsReduceMotionEnabled()) return @"land";
@@ -159,7 +169,9 @@
     if (_state == 2) return @"walkLeft";
     if (_state == 3) return @"tap";
     if (_state == 4) return @"jump";
-    if (_state == 8 && _musicPlaying && !_busy && !UIAccessibilityIsReduceMotionEnabled()) return @"music";
+    // Automatic music playback adds in-place sway to idle art only. A legacy
+    // music clip can contain travelling/jumping frames, so do not auto-select it.
+    if (_state == 8 && _musicPlaying) return @"idle";
     return @"idle";
 }
 - (void)chooseRole {
@@ -217,6 +229,10 @@
         }
         self->_frameFailures = 0; self->_frameRetryAt = 0;
         BOOL first = self->_clipStart == 0;
+        if (first && self->_recoveryStage && [self->_role isEqualToString:@"land"]) {
+            // A delayed real land frame must not inherit fallback rotation/stars.
+            [self resetRigidPresentation]; self->_dizzyStars.hidden = YES;
+        }
         self->_ownsSprite = YES;
         [CATransaction begin]; [CATransaction setDisableActions:YES];
         self->_sprite.contents = (__bridge id)image.CGImage;
@@ -278,6 +294,7 @@
         [_sprite removeAnimationForKey:@"minisight.clip.transition"];
         [CATransaction begin]; [CATransaction setDisableActions:YES]; _sprite.affineTransform = CGAffineTransformIdentity; [CATransaction commit];
         _bubble.hidden = YES;
+        _dizzyStars.hidden = YES; _dizzyStars.path = nil;
         return;
     }
     _lastTime = CACurrentMediaTime(); _clipStart = 0; _displayedFrame = NSNotFound;
@@ -302,16 +319,36 @@
     CGFloat bounded = MSPetFiniteClamp(velocity, 0., 1800.);
     _landImpact = MSPetFiniteClamp((bounded - 360.) / 840., 0., 1.);
 }
+- (void)resetRigidPresentation {
+    _angle = (MSPetDamped){0,0}; _offsetX = (MSPetDamped){0,0}; _offsetY = (MSPetDamped){0,0};
+    _scaleX = (MSPetDamped){1,0}; _scaleY = (MSPetDamped){1,0}; _visualOffset = CGPointZero;
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    _sprite.affineTransform = CGAffineTransformIdentity; [CATransaction commit];
+}
 - (void)setLandingRecoveryStage:(NSInteger)stage {
+    stage = MIN(4, MAX(0, stage));
+    if (_recoveryStage == stage) return;
     if (stage == 1) _recoveryBegan = CACurrentMediaTime();
+    if (stage == 1 || !stage) {
+        // Retire flight squash/tilt at contact, and retire recovery on cancellation.
+        // Whole-body recovery must never inherit a flattened flight presentation.
+        [self resetRigidPresentation];
+    }
     _recoveryStage = stage;
-    _transientRole = nil; _transientUntil = 0.; _landUntil = 0.; _wantedRole = nil;
+    _transientRole = nil; _transientUntil = 0.; _landUntil = 0.; _shakeUntil = 0.;
+    if (!stage) {
+        _recoveryBegan = 0.; _dizzyStars.hidden = YES;
+        ++_frameRequest; _framePending = NO; // Fence a cancelled land's late frame.
+        _clip = nil; _role = nil; _wantedRole = nil;
+        [self restorePoster];
+    } else if (stage == 1) { _wantedRole = nil; }
     [self chooseRole];
 }
 - (void)beginDragAt:(CGPoint)localPoint {
     if (_dragging) return;
     MiniSightPetView *pet = _pet;
     _dragging = YES; _flying = NO; _landUntil = 0; _shakeUntil = 0;
+    _landImpact = 0.; // A new gentle placement cannot reuse an earlier hard contact.
     _transientRole = nil; _transientUntil = 0;
     _dragTarget = pet.center; _dragX = (MSPetDamped){pet.center.x, 0}; _dragY = (MSPetDamped){pet.center.y, 0};
     _grabX = MSPetFiniteClamp(localPoint.x / fmax(1., pet.bounds.size.width), 0., 1.);
@@ -376,7 +413,7 @@
     BOOL reduce = UIAccessibilityIsReduceMotionEnabled();
     BOOL dance = _musicPlaying && !blocked && !_dragging && !_flying && _state == 8 && !_recoveryStage && now >= _landUntil && now >= _shakeUntil && !reduce;
     MSPetMusicCue cue = MSPetMusicCueAt(dance ? self.musicPosition : -1.);
-    _musicAmplitude = MSPetMusicAmplitude(_musicAmplitude, dance ? cue.pulse : 0., dt);
+    _musicAmplitude = MSPetMusicAmplitude(_musicAmplitude, dance ? 1. : 0., dt);
     double angle = blocked || reduce ? 0. : MSPetFiniteClamp(_tilt, -.22, .22);
     double x = blocked || reduce ? 0. : MSPetFiniteClamp(_sway, -5., 5.);
     double y = 0., sx = 1., sy = 1.;
@@ -388,31 +425,70 @@
     } else if (_flying && !blocked && !reduce) {
         angle += _flightAngle; sx += .07 * _impact; sy -= .09 * _impact;
     } else if (_recoveryStage && !blocked && !reduce) {
-        double age = fmax(0., now - _recoveryBegan);
-        if (_recoveryStage == 1) { angle += .96; sx += .14; sy -= .30; }
-        if (_recoveryStage == 2) { angle += .48 + .32 * sin((age - .38) * 24.); sy -= .19; }
-        if (_recoveryStage == 3) { angle += .07; sx += .12; sy -= .22; }
-        if (_recoveryStage == 4) { sy -= .22 * MSPetFiniteClamp((2.16 - age) / .68, 0., 1.); }
+        // Do not bend, flatten or rotate actual land artwork a second time.
+        BOOL hasLandArt = _ownsSprite && _displayedFrame != NSNotFound && [_role isEqualToString:@"land"];
+        MSPetLandingPresentation recovery = MSPetLandingPresentationAt(now - _recoveryBegan);
+        angle = hasLandArt ? 0. : recovery.angle;
+        x = 0.;
     } else if (now < _landUntil && !blocked && !reduce) {
         double t = MSPetFiniteClamp((now - _landBegan) / .5, 0., 1.);
-        sy -= .065 * sin(M_PI * t); sx += .035 * sin(M_PI * t);
+        double rebound = .018 + .017 * _landImpact;
+        // A small whole-body rebound distinguishes a gentle set-down without flattening the sprite.
+        y -= pet.bounds.size.height * rebound * sin(M_PI * t);
+        angle += .035 * sin(M_PI * t);
     } else if (now < _shakeUntil && !blocked && !reduce) {
         double elapsed = fmax(0., now - _shakeBegan);
         angle += _shakeDirection * (.06 + .09 * _shakeStrength) * sin(elapsed * 8.) * exp(-elapsed * 4.);
     }
     if (dance) {
-        double position = self.musicPosition, phase = 2. * M_PI * fmod(position, .6) / .6;
+        double position = self.musicPosition;
         if (_musicEvidenceBudget && cue.cue != _lastMusicCue) {
             --_musicEvidenceBudget; _lastMusicCue = cue.cue;
             NSString *source = [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"] ? @"plugin" : @"app";
             MSDiagEvent(@"pet", @"state", @"ok", @{@"source":source, @"reason":@"pose_selected", @"value":@(80 + cue.cue)});
         }
-        double a = _musicAmplitude, h = pet.bounds.size.height;
-        if (cue.pose == MSPetPoseJump) { y -= .15*h*a*(1.-cos(phase))*.5; sy += .08*a*sin(phase); }
-        else if (cue.pose == MSPetPoseWave) { angle += .26*a*sin(phase); sy -= .09*a*cue.pulse; }
-        else if (cue.pose == MSPetPoseIdle) { sy -= .075*a*cue.pulse; sx += .05*a*cue.pulse; }
-        else { double sign = cue.pose == MSPetPoseWalkLeft ? -1. : 1.;
-            x += sign*.12*h*a*(1.-cos(phase))*.5; angle += sign*.18*a; y -= .035*h*a*cue.pulse; }
+        MSPetMusicPresentation sway = MSPetMusicPresentationAt(position);
+        // No x translation, walk/jump pose, scale squash, or host-center write.
+        angle = _musicAmplitude * sway.angle;
+        x = 0.; y = pet.bounds.size.height * _musicAmplitude * sway.bob;
+        sx = 1.; sy = 1.;
+    }
+    MSPetLandingPresentation recoveryMark = MSPetLandingPresentationAt(now - _recoveryBegan);
+    BOOL showDizzy = _recoveryStage && !blocked && !reduce && !_dragging && !_flying &&
+        !(_ownsSprite && _displayedFrame != NSNotFound && [_role isEqualToString:@"land"]) && recoveryMark.dizzy > .01;
+    if (showDizzy) {
+        if (!_dizzyStars) {
+            _dizzyStars = [CAShapeLayer layer];
+            _dizzyStars.fillColor = UIColor.systemYellowColor.CGColor;
+            _dizzyStars.strokeColor = UIColor.labelColor.CGColor;
+            _dizzyStars.lineWidth = .5;
+            [_sprite addSublayer:_dizzyStars]; // Follows the transformed sprite; no view/hit target.
+        }
+        UIBezierPath *stars = [UIBezierPath bezierPath];
+        double orbit = (now - _recoveryBegan) * 6.;
+        for (int i = 0; i < 3; i++) {
+            double phase = orbit + i * 2. * M_PI / 3.;
+            CGPoint center = CGPointMake(pet.bounds.size.width * (.5 + .24 * cos(phase)),
+                                        pet.bounds.size.height * (.15 + .070 * sin(phase)));
+            CGFloat radius = MIN(pet.bounds.size.width, pet.bounds.size.height) * .045;
+            for (int point = 0; point < 8; point++) {
+                double a = point * M_PI / 4. - M_PI_2;
+                CGFloat r = radius * (point % 2 ? .34 : 1.);
+                CGPoint p = CGPointMake(center.x + r * cos(a), center.y + r * sin(a));
+                if (point == 0) [stars moveToPoint:p]; else [stars addLineToPoint:p];
+            }
+            [stars closePath];
+        }
+        [CATransaction begin]; [CATransaction setDisableActions:YES];
+        _dizzyStars.frame = pet.bounds; _dizzyStars.path = stars.CGPath;
+        _dizzyStars.opacity = recoveryMark.dizzy; _dizzyStars.hidden = NO;
+        [CATransaction commit];
+    } else _dizzyStars.hidden = YES;
+    // Owner/accessibility gates retire residual motion in this very tick.
+    // A drag keeps its center owner, but cannot smuggle tilt through busy.
+    if (blocked || reduce) { angle = 0.; x = 0.; y = 0.; sx = 1.; sy = 1.;
+        _angle = (MSPetDamped){0,0}; _offsetX = (MSPetDamped){0,0}; _offsetY = (MSPetDamped){0,0};
+        _scaleX = (MSPetDamped){1,0}; _scaleY = (MSPetDamped){1,0}; _musicAmplitude = 0.;
     }
     MSPetDampedStep(&_angle, angle, dt, 20.);
     MSPetDampedStep(&_offsetX, x, dt, 22.); MSPetDampedStep(&_offsetY, y, dt, 22.);
@@ -513,7 +589,8 @@
 }
 - (void)invalidate {
     [self setRunning:NO]; ++_generation; ++_frameRequest; [_library purgeFrames];
+    [_dizzyStars removeFromSuperlayer]; _dizzyStars = nil;
     [_bubble removeFromSuperview]; _bubble = nil; _label = nil; _tail = nil;
 }
-- (void)dealloc { [_link invalidate]; [_bubble removeFromSuperview]; }
+- (void)dealloc { [_link invalidate]; [_dizzyStars removeFromSuperlayer]; [_bubble removeFromSuperview]; }
 @end

@@ -71,31 +71,52 @@ typedef struct { MSPetPose pose; unsigned cue; double pulse; } MSPetMusicCue;
 static inline double MSPetMusicInterpolate(double position, double age, bool playing) {
     return fmax(0., isfinite(position) ? position : 0.) + (playing ? MSPetFiniteClamp(age, 0., 5.) : 0.);
 }
-// Heavy floor contact only: collapsed, dizzy, seated, rise, release.
+// Heavy floor contact only: topple, dizzy pause, collect, rise, release.
+// These are presentation phases, NOT a claim of four real atlas animations.
 static inline int MSPetLandingStageAt(double elapsed) {
     if (!isfinite(elapsed) || elapsed < 0.) return 0;
     return elapsed < .38 ? 1 : elapsed < .94 ? 2 : elapsed < 1.48 ? 3 : elapsed < 2.16 ? 4 : 0;
 }
 static inline int MSPetLandingColumn(int stage, double age) {
-    double t = MSPetFiniteClamp(age, 0., 2.16);
-    if (stage == 1) return 1;
-    if (stage == 2) return 4 + (int)fmod(floor(t * 9.), 2.);
-    if (stage == 3) return 3;
-    return 5 + (int)MSPetFiniteClamp(floor((t - 1.48) / .22), 0., 2.);
+    // No verified prone/dizzy/rise frames in the accessible user asset.
+    // Keep the neutral frame rather than mislabeling sleep as a fall.
+    (void)stage; (void)age; return 0;
 }
-// Repeatable playback-position choreography. This is not audio beat detection.
+// Playback-linked, in-place sway; never claims to detect the audio beat.
+// Only idle/blink frames are safe without a separately verified dance asset.
 static inline MSPetMusicCue MSPetMusicCueAt(double position) {
     MSPetMusicCue cue = {MSPetPoseIdle, 0u, 0.};
     if (!isfinite(position) || position < 0.) return cue;
-    static const MSPetPose poses[8] = {
-        MSPetPoseWave, MSPetPoseWalkRight, MSPetPoseJump, MSPetPoseWalkLeft,
-        MSPetPoseIdle, MSPetPoseJump, MSPetPoseWalkLeft, MSPetPoseWalkRight
-    };
-    double cycle = fmod(position, 4.8);
-    cue.cue = (unsigned)fmin(7., floor(cycle / .6));
-    cue.pose = poses[cue.cue];
-    cue.pulse = MSPetFiniteClamp(exp(-6.5 * fmod(cycle, .6) / .6), 0., 1.);
+    double phase = 2. * 3.141592653589793 * fmod(position, 1.2) / 1.2;
+    cue.cue = (unsigned)(fmod(position, 1.2) >= .6);
+    cue.pulse = .5 - .5 * cos(2. * phase);
     return cue;
+}
+typedef struct { double angle, bob; } MSPetMusicPresentation;
+static inline MSPetMusicPresentation MSPetMusicPresentationAt(double position) {
+    MSPetMusicPresentation p = {0., 0.};
+    if (!isfinite(position) || position < 0.) return p;
+    double phase = 2. * 3.141592653589793 * fmod(position, 1.2) / 1.2;
+    // Slow side sway + a distinct twice-per-cycle whole-body nod cue. No new head art.
+    p.angle = .085 * sin(phase) + .045 * sin(2. * phase);
+    p.bob = -.018 * (.5 - .5 * cos(2. * phase)); // <=1.8% height, in place; not a jump.
+    return p;
+}
+static inline double MSPetSmoothUnit(double t) {
+    t = MSPetFiniteClamp(t, 0., 1.); return t * t * (3. - 2. * t);
+}
+typedef struct { double angle, dizzy; } MSPetLandingPresentation;
+// Honest rigid-sprite fallback, not new prone/seated/get-up artwork.
+// A continuous topple, pause with stars, then recovery; NO anisotropic squash.
+static inline MSPetLandingPresentation MSPetLandingPresentationAt(double age) {
+    MSPetLandingPresentation p = {0., 0.};
+    if (!isfinite(age) || age < 0. || age >= 2.16) return p;
+    if (age < .38) p.angle = 1.18 * MSPetSmoothUnit(age / .27);
+    else if (age < .94) p.angle = 1.18;
+    else if (age < 1.48) p.angle = 1.18 - .76 * MSPetSmoothUnit((age - .94) / .54);
+    else p.angle = .42 * (1. - MSPetSmoothUnit((age - 1.48) / .68));
+    p.dizzy = MSPetSmoothUnit((age - .32) / .12) * (1. - MSPetSmoothUnit((age - 1.06) / .24));
+    return p;
 }
 
 static inline int MSPetPoseAtlasRowAt(int pose, double elapsed) {
@@ -107,11 +128,9 @@ static inline int MSPetPoseColumnAt(int pose, double elapsed) {
     double t = fmax(0., isfinite(elapsed) ? elapsed : 0.);
     if (pose == MSPetPoseDrag) return (int)fmod(floor(t / .12), 4.);
     if (pose != MSPetPoseMusic) return 0;
-    MSPetMusicCue cue = MSPetMusicCueAt(t);
-    if (cue.pose == MSPetPoseWave) return (int)fmin(3., floor(fmod(t, .6) / .15));
-    if (cue.pose == MSPetPoseWalkLeft || cue.pose == MSPetPoseWalkRight) return (int)fmod(floor(t / .075), 8.);
-    if (cue.pose == MSPetPoseJump) return (int)fmin(4., floor(fmod(t, .6) / .12));
-    return (int)fmod(floor(t / .1), 6.);
+    // One occasional neutral-row blink, not incessant row switching.
+    double blink = fmod(t, 4.2);
+    return blink < 3.6 ? 0 : (int)fmin(5., floor((blink - 3.6) / .1));
 }
 static inline bool MSPetPoseIsTransient(MSPetPose pose) {
     return pose == MSPetPoseWave || pose == MSPetPoseJump || pose == MSPetPoseWake;

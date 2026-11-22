@@ -30,28 +30,46 @@ C_MAIN=r'''
 int main(void) {
     CHECK(MSPetPoseAtlasRow(MSPetPoseWake)==5);
     CHECK(MSPetPoseAtlasRow(MSPetPoseDrag)==3);
-    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,.1)==3);
-    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,1.1)==1);
-    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,2.1)==2);
-    CHECK(MSPetPoseAtlasRowAt(MSPetPoseMusic,2.65)==0 && MSPetPoseColumnAt(MSPetPoseMusic,2.65)==2);
-    CHECK(MSPetPoseColumnAt(MSPetPoseMusic,.1)==0);
-    CHECK(MSPetPoseColumnAt(MSPetPoseMusic,.8)==2);
-    CHECK(MSPetPoseColumnAt(MSPetPoseMusic,1.2)==0);
-    CHECK(MSPetPoseColumnAt(MSPetPoseMusic,1.9)==1);
-    unsigned rows=0;
-    const int counts[9]={6,8,8,4,5,8,6,6,6};
+    double low=1.,high=-1.;
     for(int i=0;i<6400;i++) {
-        double t=i/1000.;int row=MSPetPoseAtlasRowAt(MSPetPoseMusic,t),col=MSPetPoseColumnAt(MSPetPoseMusic,t);
-        CHECK(row>=0 && row<9 && col>=0 && col<counts[row]);rows|=1u<<row;
+        double t=i/1000.;
+        MSPetMusicCue cue=MSPetMusicCueAt(t);
+        int row=MSPetPoseAtlasRowAt(MSPetPoseMusic,t),col=MSPetPoseColumnAt(MSPetPoseMusic,t);
+        CHECK(cue.pose==MSPetPoseIdle && row==0 && col>=0 && col<6);
+        CHECK(cue.pulse>=0. && cue.pulse<=1.);
+        MSPetMusicPresentation p=MSPetMusicPresentationAt(t);
+        CHECK(isfinite(p.angle) && fabs(p.angle)<=.125 && p.bob>=-.018-1e-12 && p.bob<=0.);
+        low=fmin(low,p.angle);high=fmax(high,p.angle);
+        MSPetMusicPresentation repeat=MSPetMusicPresentationAt(t+1.2);
+        CHECK(fabs(p.angle-repeat.angle)<1e-10 && fabs(p.bob-repeat.bob)<1e-10);
+        MSPetMusicPresentation next=MSPetMusicPresentationAt(t+.001);
+        CHECK(fabs(next.angle-p.angle)<.001 && fabs(next.bob-p.bob)<.001);
     }
-    CHECK(rows==((1u<<0)|(1u<<1)|(1u<<2)|(1u<<3)|(1u<<4)));
+    CHECK(low<-.09 && high>.09); // No walk/jump; not a frozen replacement either.
+    CHECK(MSPetPoseColumnAt(MSPetPoseMusic,3.85)>0);
+    CHECK(MSPetPoseColumnAt(MSPetPoseMusic,.8)==0);
     CHECK(MSPetMusicInterpolate(12,.25,true)==12.25 && MSPetMusicInterpolate(12,.25,false)==12);
     CHECK(MSPetMusicInterpolate(1,-1,true)==1 && MSPetMusicInterpolate(1,300,true)==6);
     double ages[]={0.,.379,.38,.939,.94,1.479,1.48,2.159,2.16,NAN};
     int stages[]={1,1,2,2,3,3,4,4,0,0};
     for(unsigned i=0;i<10;i++) CHECK(MSPetLandingStageAt(ages[i])==stages[i]);
-    CHECK(MSPetLandingColumn(1,0)==1 && MSPetLandingColumn(2,.4)!=MSPetLandingColumn(2,.5));
-    CHECK(MSPetLandingColumn(3,1)==3 && MSPetLandingColumn(4,1.5)==5 && MSPetLandingColumn(4,2.1)==7);
+    for(int stage=0;stage<=4;stage++) CHECK(MSPetLandingColumn(stage,.5)==0);
+    double dizzyMax=0.;
+    CHECK(MSPetLandingPresentationAt(0.).angle==0.);
+    for(int i=0;i<2160;i++) {
+        double t=i/1000.;
+        MSPetLandingPresentation p=MSPetLandingPresentationAt(t),next=MSPetLandingPresentationAt(t+.001);
+        CHECK(isfinite(p.angle) && p.angle>=0. && p.angle<=1.18+1e-12);
+        CHECK(p.dizzy>=0. && p.dizzy<=1. && fabs(next.angle-p.angle)<.007);
+        dizzyMax=fmax(dizzyMax,p.dizzy);
+    }
+    CHECK(dizzyMax>.99 && MSPetLandingPresentationAt(.6).angle>1.17);
+    CHECK(MSPetLandingPresentationAt(2.16).angle==0. && MSPetLandingPresentationAt(2.16).dizzy==0.);
+    double invalid[]={NAN,INFINITY,-1.};
+    for(unsigned i=0;i<3;i++) {
+        CHECK(MSPetMusicPresentationAt(invalid[i]).angle==0. && MSPetMusicPresentationAt(invalid[i]).bob==0.);
+        CHECK(MSPetLandingPresentationAt(invalid[i]).angle==0. && MSPetLandingPresentationAt(invalid[i]).dizzy==0.);
+    }
     CHECK(MSPetPoseRestore(MSPetPoseDrag,1,0,0)==MSPetPoseMusic);
     CHECK(MSPetPoseRestore(MSPetPoseMusic,0,0,0)==MSPetPoseIdle);
     CHECK(MSPetPoseRestore(MSPetPoseWave,1,1,0)==MSPetPoseSleep);
@@ -72,7 +90,7 @@ int main(void) {
     CHECK(hits&MSGravityHitFloor);CHECK(!MSGravityBodyAbsorbHardFloor(&body,bounds,hits));
     CHECK(!memcmp(&before,&body,sizeof(body))); // light rebound is unchanged
     CHECK(!MSGravityBodyAbsorbHardFloor(&body,bounds,MSGravityHitCeiling));
-    puts("PASS actual C: 6400 pose frames, distinct posture rows, heavy/light contact and cancel");
+    puts("PASS actual C: 6400 in-place music frames, continuous recovery, heavy/light contact and cancel");
     return 0;
 }
 '''
@@ -98,7 +116,7 @@ class Source(unittest.TestCase):
         self.assertNotIn('static BOOL lastVisible',effects)
         if ROOT!=CORE:
             reader=(ROOT/'src/ios/MiniSightInAppRuntime.swift').read_text()
-            for marker in ('music_readback','music_stale','lyrics_received','self.line = nextLine','pet.lyricsLine = parent.lyricsLine'):
+            for marker in ('player_stage', 'reason_detail', 'lyrics_received','self.line = nextLine','pet.lyricsLine = parent.lyricsLine'):
                 self.assertIn(marker,reader)
     def test_log_vocab_and_privacy(self):
         log=(CORE/'MiniSightLog.m').read_text()
@@ -121,10 +139,35 @@ class Source(unittest.TestCase):
         renderer=definition(s,'- (void)applySpriteFrame')
         for marker in ('_effects.musicPosition','MSPetPoseAtlasRowAt((int)_state, position)', 'MSPetPoseColumnAt((int)_state, position)'):
             self.assertIn(marker,renderer)
+        live=(CORE/'MiniSightLiveliness.h').read_text(); gravity=(CORE/'MiniSightGravity.h').read_text()
+        pet_header=CORE/'MiniSightPet.h'
+        self.assertNotIn('sit/sleep/wake',pet_header.read_text().lower())
+        self.assertIn('failed',pet_header.read_text().lower())
+        self.assertIn('(void)stage; (void)age; return 0;', live)
+        self.assertIn('p.angle = .085 * sin(phase) + .045 * sin(2. * phase);',live)
+        self.assertIn('p.bob = -.018 *',live)
         effects=(CORE/'MiniSightPetEffects.m').read_text()
         tick=definition(effects.split('@implementation MiniSightPetEffects',1)[1],'- (void)tick:')
-        for marker in ('MSPetMusicCueAt(dance ? self.musicPosition : -1.)', '_recoveryStage == 1','_recoveryStage == 2','_recoveryStage == 3','_recoveryStage == 4','MSPetFitVisualTransform'):
+        for marker in ('MSPetMusicCueAt(dance ? self.musicPosition : -1.)', 'MSPetMusicPresentationAt(position)', 'MSPetLandingPresentationAt(now - _recoveryBegan)', 'MSPetFitVisualTransform'):
             self.assertIn(marker,tick)
+        dance=tick.split('    if (dance) {',1)[1].split('    MSPetLandingPresentation recoveryMark',1)[0]
+        self.assertIn('x = 0.;',dance)
+        self.assertIn('sx = 1.; sy = 1.;',dance)
+        self.assertNotIn('pet.center =',dance)
+        self.assertNotIn('MSPetPoseJump',dance)
+        self.assertNotIn('MSPetPoseWalk',dance)
+        self.assertNotIn('return @"music";',definition(effects,'- (NSString *)currentRole'))
+        playing=definition(s,'- (void)setMusicPlaying:')
+        self.assertIn('_motionActive && !_physicsMotion && !_dragging',playing)
+        self.assertIn('[self cancelMotion]',playing)
+        self.assertIn('[self scheduleRoam]',playing)
+        recovery=definition(s,'- (void)beginLandingRecoveryWithImpact:')
+        self.assertIn('[self setSpriteState:MiniSightPetStateIdle]',recovery)
+        self.assertNotIn('MiniSightPetStateSleeping',recovery)
+        self.assertIn('_effects.landingRecoveryHeld',definition(s,'- (void)frameTick:'))
+        self.assertIn('_dizzyStars.hidden = YES',definition(effects,'- (void)setRunning:'))
+        self.assertIn('[_dizzyStars removeFromSuperlayer]',definition(effects,'- (void)invalidate'))
+        self.assertIn('++_frameRequest',definition(effects,'- (void)setLandingRecoveryStage:'))
         self.assertIn('MSPetMusicInterpolate',definition(effects,'- (NSTimeInterval)musicPosition'))
         self.assertIn('MSPetLandingStageAt',definition(s,'- (void)frameTick:'))
         host=(CORE/'Tweak.xm' if ROOT==CORE else ROOT/'src/ios/MiniSightInAppRuntime.swift').read_text()
@@ -137,15 +180,18 @@ class Portable(unittest.TestCase):
         compiler=shutil.which('cc') or shutil.which('clang');self.assertIsNotNone(compiler)
         live=(CORE/'MiniSightLiveliness.h').read_text(); gravity=(CORE/'MiniSightGravity.h').read_text()
         variants={'baseline':(live,gravity),
-          'single-pose':(live.replace('return MSPetPoseAtlasRow((int)cue.pose);', '(void)cue; return 0;'),gravity),
+          'music-walk-row':(live.replace('MSPetMusicCue cue = {MSPetPoseIdle, 0u, 0.};','MSPetMusicCue cue = {MSPetPoseWalkRight, 0u, 0.};'),gravity),
+          'music-frozen-sway':(live.replace('p.angle = .085 * sin(phase) + .045 * sin(2. * phase);','p.angle = 0.;'),gravity),
           'frozen-clock':(live.replace('playing ? MSPetFiniteClamp(age, 0., 5.)', 'playing ? 0.*age'),gravity),
           'skip-dizzy':(live.replace('elapsed < .94 ? 2', 'elapsed < .94 ? 3'),gravity),
+          'stepped-topple':(live.replace('p.angle = 1.18 * MSPetSmoothUnit(age / .27);','p.angle = 1.18;'),gravity),
           'hard-floor-keeps-bounce':(live,gravity.replace('body->velocity = (MSPoint){0.,0.};\n    body->active = 0;', 'body->velocity = (MSPoint){0.,-1.};\n    body->active = 1;')),
           'light-floor-absorbed':(live,gravity.replace('body->floorImpactVelocity < 720.','body->floorImpactVelocity < -1.'))}
         with tempfile.TemporaryDirectory(prefix='ms-media-policy-') as tmp:
             tmp=Path(tmp);(tmp/'main.c').write_text(C_MAIN)
             shutil.copyfile(CORE/'MiniSightGeometry.h',tmp/'MiniSightGeometry.h')
             for name,(l,g) in variants.items():
+                if name!='baseline': self.assertNotEqual((l,g),(live,gravity),name+' did not change production')
                 (tmp/'MiniSightLiveliness.h').write_text(l);(tmp/'MiniSightGravity.h').write_text(g)
                 b=run([compiler,'-std=c11','-Wall','-Wextra','-Werror','-pedantic','-I',tmp,tmp/'main.c','-lm','-o',tmp/'case'])
                 self.assertEqual(b.returncode,0,name+b.stderr)

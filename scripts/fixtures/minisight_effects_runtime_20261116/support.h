@@ -66,6 +66,7 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 + (instancetype)secondarySystemBackgroundColor;
 + (instancetype)labelColor;
 + (instancetype)systemBlueColor;
++ (instancetype)systemYellowColor;
 - (UIColor *)resolvedColorWithTraitCollection:(id)traits;
 @end
 @interface UIBezierPath : NSObject

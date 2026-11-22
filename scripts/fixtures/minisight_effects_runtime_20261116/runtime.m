@@ -74,6 +74,7 @@ BOOL UIAccessibilityIsReduceMotionEnabled(void) { return FixtureReduceMotion; }
 + (instancetype)secondarySystemBackgroundColor { return [self new]; }
 + (instancetype)labelColor { return [self new]; }
 + (instancetype)systemBlueColor { return [self new]; }
++ (instancetype)systemYellowColor { return [self new]; }
 - (UIColor *)resolvedColorWithTraitCollection:(id)traits { return self; }
 - (CGColorRef)CGColor { return _backing; }
 - (void)dealloc { if (_backing) CGColorRelease(_backing); }
@@ -436,30 +437,83 @@ static void LyricsOnly(void) {
             CHECK(CGPointEqualToPoint(fixedCenter, r.pet.center));
         }
     }
-    // Distinguish all recovery transforms from light compression on the same sprite.
+    // Exercise the continuous, ratio-preserving fallback. These checks do NOT
+    // certify new character artwork; the rig's art is deliberately synthetic.
     [r.effects setTilt:0 sway:0]; r.effects.musicPlaying = NO;
     r.pet.center = CGPointMake(180,390);
     [r.effects setFloorImpactVelocity:220]; [r.effects land];
     for (int i=0;i<10;++i) Tick(r.effects,Now+.02);
-    CHECK(r.sprite.affineTransform.d > .85);
+    CHECK(r.sprite.affineTransform.d > .85); // Ordinary light landing preserved.
     [r.effects setFloorImpactVelocity:950]; [r.effects land];
     [r.effects setLandingRecoveryStage:1];
     for (int i=0;i<16;++i) Tick(r.effects,Now+.02);
-    CHECK(r.sprite.affineTransform.b > .65);
-    [r.effects setLandingRecoveryStage:2]; double low=2.,high=-2.;
-    for (int i=0;i<30;++i) { Tick(r.effects,Now+.02); low=fmin(low,r.sprite.affineTransform.b); high=fmax(high,r.sprite.affineTransform.b); }
-    CHECK(high-low > .16);
+    CHECK(r.sprite.affineTransform.b > .35);
+    [r.effects setLandingRecoveryStage:2];
+    for (int i=0;i<18;++i) Tick(r.effects,Now+.02);
+    CAShapeLayer *stars = [r.effects valueForKey:@"dizzyStars"];
+    CHECK(stars && !stars.hidden && stars.path && stars.opacity > .5);
+    CGAffineTransform t = r.sprite.affineTransform;
+    CHECK(fabs(hypot(t.a,t.b)-1.)<.002 && fabs(hypot(t.c,t.d)-1.)<.002);
     [r.effects setLandingRecoveryStage:3];
-    for (int i=0;i<28;++i) Tick(r.effects,Now+.02);
-    CHECK(fabs(r.sprite.affineTransform.b)<.14 && r.sprite.affineTransform.d<.85);
+    for (int i=0;i<40;++i) Tick(r.effects,Now+.02);
+    t = r.sprite.affineTransform;
+    CHECK(fabs(hypot(t.a,t.b)-1.)<.002 && fabs(hypot(t.c,t.d)-1.)<.002);
     [r.effects setLandingRecoveryStage:4];
     for (int i=0;i<35;++i) Tick(r.effects,Now+.02);
     CHECK(r.sprite.affineTransform.d>.94);
-    [r.effects setLandingRecoveryStage:0];
+    [r.effects setLandingRecoveryStage:0]; CHECK(stars.hidden);
     FixtureReduceMotion=YES; r.effects.musicPlaying=YES;
     for (int i=0;i<40;++i) Tick(r.effects,Now+.02);
-    CHECK(fabs(r.sprite.affineTransform.b)<.001 && fabs(r.sprite.affineTransform.d-1.)<.001);
+    CHECK(stars.hidden && fabs(r.sprite.affineTransform.b)<.001 && fabs(r.sprite.affineTransform.d-1.)<.001);
     FixtureReduceMotion=NO;
+}
+
+static void InPlaceMusicAndLandOwnership(void) {
+    @autoreleasepool {
+        MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@5.]), @"music": Clip(@"music", @[@.2,@.2])});
+        Finish(r.library, Pixel(100));
+        CGPoint fixed = r.pet.center; CGRect bounds = r.pet.bounds;
+        [r.effects setLegacyState:8 waking:NO]; r.effects.musicPlaying = YES;
+        double low=1.,high=-1.;
+        for (int i=0;i<240;i++) {
+            r.effects.musicPosition = i*.02; Tick(r.effects, Now+.02);
+            CHECK([Role(r.effects) isEqual:@"idle"]);
+            CHECK(CGPointEqualToPoint(fixed,r.pet.center) && CGRectEqualToRect(bounds,r.pet.bounds));
+            CGAffineTransform t = r.sprite.affineTransform;
+            CHECK(fabs(hypot(t.a,t.b)-1.)<.001 && fabs(hypot(t.c,t.d)-1.)<.001);
+            CHECK(fabs(t.b)<.13);
+            low=fmin(low,t.b);high=fmax(high,t.b);
+        }
+        CHECK(low<-.04 && high>.04); // Sway, not walking, jumping or flattening.
+        for (MSFrameJob *job in r.library.requests) CHECK(![job.clip.role isEqual:@"music"]);
+        r.effects.musicPlaying=NO; [r.effects setLegacyState:0 waking:NO];
+        [r.effects setLandingRecoveryStage:1];
+        for(int i=0;i<30;i++) Tick(r.effects,Now+.02);
+        CAShapeLayer *stars=[r.effects valueForKey:@"dizzyStars"];
+        CHECK(stars && !stars.hidden);
+        r.effects.busy=YES;Tick(r.effects,Now+.02);CHECK(stars.hidden);
+        r.effects.busy=NO;[r.effects setLandingRecoveryStage:0];
+        [r.effects setLandingRecoveryStage:1];
+        for(int i=0;i<30;i++) Tick(r.effects,Now+.02);
+        CHECK(!stars.hidden); [r.effects setRunning:NO]; CHECK(stars.hidden && !stars.path);
+        [r.effects invalidate]; CHECK(!stars.superlayer);
+    }
+    @autoreleasepool {
+        MSRig *r=Rig(@{@"idle":Clip(@"idle",@[@5.]),@"land":Clip(@"land",@[@3.])});
+        Finish(r.library,Pixel(100)); [r.effects setLandingRecoveryStage:1];
+        CHECK([Role(r.effects) isEqual:@"land"] && r.effects.landingRecoveryHeld);
+        FrameReply stale=[r.library.pending.reply copy]; CHECK(stale);
+        Now+=1.; Finish(r.library,Pixel(120)); double start=Start(r.effects);
+        Now+=2.3; [r.effects setLandingRecoveryStage:4];
+        CHECK(r.effects.landingRecoveryHeld && Start(r.effects)==start);
+        Tick(r.effects,Now+.01);
+        CHECK(fabs(r.sprite.affineTransform.b)<.001); // No second rotation of real art.
+        Now+=.8;CHECK(!r.effects.landingRecoveryHeld);
+        [r.effects setLandingRecoveryStage:0];CHECK(!r.effects.landingRecoveryHeld);
+        CHECK(Pending(r.effects));UIImage *fresh=Pixel(130);Finish(r.library,fresh);
+        OnMain(^{stale(Pixel(240));});
+        CHECK(r.sprite.contents==(__bridge id)fresh.CGImage && [Role(r.effects) isEqual:@"idle"]);
+    }
 }
 
 #import "atlas_cases.inc"
@@ -472,6 +526,7 @@ int main(void) { @autoreleasepool {
         {"cancel-and-release-velocity", CancelAndVelocity}, {"stop-purge-parent-pending", StopAndPurge},
         {"tap-idleAlt-finish", TapAndIdleAltFinish}, {"delayed-first-tap", DelayedTapFirstFrame},
         {"short-tap-no-loop", ShortTapDoesNotLoop}, {"busy-chat-retreat", BusyRetreat}, {"lyrics-never-title", LyricsOnly},
+        {"in-place-music-land-ownership", InPlaceMusicAndLandOwnership},
         {"atlas-layouts-first-frame", AtlasLayouts}, {"atlas-repaint-same-image", AtlasRepaintAndSameImage},
         {"atlas-crop-failure-retry", AtlasCropFailureRetry}, {"atlas-action-poster-metadata", AtlasActionPosterMetadata},
         {"atlas-effects-failure-stop", AtlasEffectsFailureStop}, {"atlas-manifest-swap", AtlasManifestSwap}
@@ -485,6 +540,6 @@ int main(void) { @autoreleasepool {
         fprintf(stderr, "FAIL: %s exception: %s\n", Case, error.name.UTF8String); return 1;
     }
     CHECK(!Loads.count);
-    puts("NATIVE PASS: 11 original PetEffects + 6 production-excerpt atlas groups; no iOS/visual/network/device execution");
+    puts("NATIVE PASS: 11 original PetEffects + 6 production-excerpt atlas + 1 in-place/land ownership groups; no iOS/visual/network/device execution");
     return 0;
 } }

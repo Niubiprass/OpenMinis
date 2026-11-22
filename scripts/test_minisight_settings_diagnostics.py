@@ -65,6 +65,35 @@ class SettingsArchitecture(unittest.TestCase):
         self.assertIn("read(upToCount: tailBytes)", reader)
         self.assertIn("for (key, value) in input where allowed.contains(key)", reader)
 
+    def test_music_diagnostic_status_round_trips_without_track_text(self):
+        monitor = (IOS / "MiniSightCore/MiniSightMusicMonitor.m").read_text()
+        logger = (IOS / "MiniSightCore/MiniSightLog.m").read_text()
+        bridge = (IOS / "MiniSightInAppRuntime.swift").read_text()
+        values = ["player_stage", "player_detail", "metadata_stage", "progress_stage", "lyrics_stage", "lyrics_detail"]
+        for value in values:
+            with self.subTest(value=value):
+                monitor_key = value.replace("_stage", "").replace("_detail", "Detail")
+                self.assertIn('@"' + monitor_key + '"', monitor)
+                self.assertIn('@"' + value + '"', logger)
+                self.assertIn('"' + value + '"', bridge)
+                self.assertIn('"' + value + '"', VIEW)
+        self.assertIn('@"diagnostics": diagnostics', monitor)
+        self.assertIn('@"playerDetail": _playerDetail ?: @"not_applicable"', monitor)
+        self.assertIn('MSDiagEvent("music", "readback", "ok"', bridge)
+        self.assertIn('self.lastMusicDiagnostics != diagnosticToken', bridge)
+        self.assertIn('MSDiagEnum(key, value)', logger)
+        self.assertIn('diagnosticEnums[field]', VIEW)
+        self.assertIn('values.contains(text)', VIEW)
+        self.assertIn('player_detail', VIEW)
+        self.assertIn('"reason_detail"', VIEW)
+        self.assertIn('@"reason_detail": [NSSet setWithArray:', logger)
+        self.assertIn('"reason": "music_state"', bridge)
+        self.assertIn('"reason_detail":', bridge)
+        self.assertNotIn('track_name', bridge)
+        self.assertNotIn('artist_name', bridge)
+        self.assertNotIn('syncedLyrics', bridge)
+        self.assertNotIn('diagnostic_detail_text', logger)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

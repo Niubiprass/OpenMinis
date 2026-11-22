@@ -36,7 +36,13 @@ def contract_errors(source, header):
         if "@interface " + symbol not in header:
             errors.append("API:" + symbol)
     required = {
-        "HTTPS endpoint": 'componentsWithString:@"https://lrclib.net/api/get"',
+        "HTTPS exact endpoint": 'componentsWithString:@"https://lrclib.net/api/get"',
+        "HTTPS fallback endpoint": 'componentsWithString:@"https://lrclib.net/api/search"',
+        "strict endpoint path": 'MSLyricsAllowedURL(response.URL, @"/api/search")',
+        "search attempt fence": "_searchAttempted",
+        "search query item": 'queryItemWithName:@"q"',
+        "bounded search candidates": '[payload count] > 20',
+        "search body parser": "timelineForSearchResponseData:",
         "generation fence": "owner.generation == generation",
         "task identity fence": "if (task != _task)",
         "stream cap": "data.length > MSLyricsMaxBytes - _body.length",
@@ -58,12 +64,12 @@ def contract_errors(source, header):
         "weak delegate owner": "@property(nonatomic, weak, nullable) MiniSightLyricsClient *owner;",
         "no redirects": "completionHandler(nil);",
         "honor server wait": "MAX(fallback, seconds)",
-        "blank clearing": "if (!line.text.length || time - line.time >= MSLyricsMaxDisplay) return nil;",
+        "explicit blank clearing without a timed expiry": "if (!line.text.length) return nil;",
     }
     for label, needle in required.items():
         if needle not in source:
             errors.append(label)
-    for forbidden in ("UIKit", "MediaRemote", "AVFoundation", "/api/search", "plainLyrics", "NSLog(", "Authorization", "album_name", "HTTPBody ="):
+    for forbidden in ("UIKit", "MediaRemote", "AVFoundation", "plainLyrics", "NSLog(", "Authorization", "album_name", "HTTPBody ="):
         if forbidden in source:
             errors.append("forbidden:" + forbidden)
     return errors
@@ -111,7 +117,8 @@ class SourceContractTests(unittest.TestCase):
     def test_plugin_byte_identical(self):
         if not OPTIONS.plugin_root:
             self.skipTest("plugin tree not supplied/present; use --plugin-root for parity check")
-        plugin = Path(OPTIONS.plugin_root) / "debs/MiniSight"
+        root = Path(OPTIONS.plugin_root)
+        plugin = root if (root / "MiniSightLyrics.m").is_file() else root / "debs/MiniSight"
         for name in ("MiniSightLyrics.h", "MiniSightLyrics.m"):
             self.assertEqual((CORE / name).read_bytes(), (plugin / name).read_bytes(), name)
 
@@ -159,8 +166,7 @@ class NativeFoundationTests(unittest.TestCase):
             "generation": ("owner.generation == generation", "YES"),
             "late_task": ("if (task != _task)", "if (NO)"),
             "retry_after": ("return isfinite(seconds) ? MAX(fallback, seconds) : DBL_MAX;", "return fallback;"),
-            "blank": ("if (!line.text.length || time - line.time >= MSLyricsMaxDisplay) return nil;",
-                      "if (time - line.time >= MSLyricsMaxDisplay) return nil;"),
+            "blank": ("if (!line.text.length) return nil;", "return line.text;"),
             "body_cap": ("MSLyricsMaxBytes = 1024 * 1024;", "MSLyricsMaxBytes = 2 * 1024 * 1024;"),
         }
         # Baseline must succeed before a failing mutant is counted as detected.

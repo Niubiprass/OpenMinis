@@ -552,10 +552,17 @@ enum SubscriptionAutoCheckin {
             tint = .systemRed
         }
         noticePresentationInFlight = true
+        logger.info("check-in notice success=\(noticeKeys.count) failed=\(reminderKeys.count) unconfirmed=\(unconfirmedKeys.count)")
         MinisToast.show(message, duration: duration, systemImage: symbol, tint: tint) { shown in
             Task { @MainActor in
                 defer { noticePresentationInFlight = false }
-                guard shown else { return }
+                // A capsule dropped by a backgrounding or non-visible window must
+                // not consume the day's only notice: leave it unmarked so the
+                // next foreground tick can present it again.
+                guard shown, UIApplication.shared.applicationState == .active else {
+                    logger.info("check-in notice not presented; kept pending for retry")
+                    return
+                }
                 noticeKeys.forEach { SubscriptionCheckinLedger.markNotified($0) }
                 reminderKeys.forEach { SubscriptionCheckinLedger.markReminded($0) }
                 unconfirmedKeys.forEach { SubscriptionCheckinLedger.markUncertainFailureNoticeShown($0) }

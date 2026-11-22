@@ -2,6 +2,18 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// One conservative identity normalizer for LRCLIB and partial MediaRemote
+// comparisons. Header-local only: no exported symbol or selector/ABI change.
+static inline NSString * _Nullable MSLyricsNormalize(id _Nullable value) {
+    if (![value isKindOfClass:NSString.class] || [value length] > 512 || ![value canBeConvertedToEncoding:NSUTF8StringEncoding]) return nil;
+    NSArray *parts = [value componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSMutableArray *words = [NSMutableArray array];
+    for (NSString *part in parts) if (part.length) [words addObject:part];
+    NSString *text = [[words componentsJoinedByString:@" "] precomposedStringWithCanonicalMapping];
+    if (!text.length || [text rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) return nil;
+    return [text lowercaseStringWithLocale:[NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]];
+}
+
 /// Immutable, line-level LRC marker. Empty text explicitly clears the bubble.
 @interface MiniSightLyricLine : NSObject
 @property(nonatomic, readonly) NSTimeInterval time;
@@ -15,7 +27,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// Strict timed LRC; nil for malformed/untimed/oversized input. Duration: 1...3600s.
 /// Global offset is milliseconds (last valid offset wins); negative times clamp to 0.
 + (nullable instancetype)timelineWithLRC:(NSString *)lrc duration:(NSTimeInterval)duration;
-/// Nil before first marker, at a blank, after 12s without a new line, or at track end.
+/// Nil before the first marker, at an explicit blank marker, or at track end.
 - (nullable NSString *)lineAtTime:(NSTimeInterval)time;
 - (instancetype)init NS_UNAVAILABLE;
 + (instancetype)new NS_UNAVAILABLE;

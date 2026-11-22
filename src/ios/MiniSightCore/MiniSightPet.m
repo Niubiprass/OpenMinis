@@ -619,6 +619,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
         _interactionActive || UIAccessibilityIsReduceMotionEnabled())) [self clearLandingRecovery];
     if (_landingRecoveryStage) {
         NSInteger stage = MSPetLandingStageAt(now - _landingRecoveryBegan);
+        if (!stage && _effects.landingRecoveryHeld) stage = 4;
         if (!stage) [self clearLandingRecovery];
         else if (stage != _landingRecoveryStage) {
             _landingRecoveryStage = stage;
@@ -670,13 +671,18 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 - (void)advanceSpriteAtTime:(CFTimeInterval)now {
     BOOL poseFree = !_motionActive && !_dragging && !_landingRecoveryStage && _stateHoldUntil <= 0. &&
         !_resident.sleeping && !_resident.waking && !_activityActive && !_motionLockReasons && !_lyricsSuppressed &&
-        !_roamingPaused && !_interactionActive && !_effects.presentationBlocked && !UIAccessibilityIsReduceMotionEnabled();
+        !_roamingPaused && !_interactionActive && !_effects.presentationBlocked && !_effects.autonomyHeld && !UIAccessibilityIsReduceMotionEnabled();
     if (poseFree && _effects.musicPlaying && _state == MiniSightPetStateIdle)
         [self setSpriteState:MiniSightPetStateMusic];
     else if (_state == MiniSightPetStateMusic && (!_effects.musicPlaying || !poseFree))
         [self setSpriteState:MiniSightPetStateIdle];
     [_effects setLegacyState:_state waking:_resident.waking];
     if (_effects.hasActions) return;
+    if (_landingRecoveryStage) {
+        if (_state != MiniSightPetStateIdle) [self setSpriteState:MiniSightPetStateIdle];
+        _column = MSPetLandingColumn((int)_landingRecoveryStage, now - _landingRecoveryBegan);
+        [self applySpriteFrame]; return;
+    }
     if (_dragging || _state == MiniSightPetStateMusic) {
         if (_state == MiniSightPetStateDragging) _column = MSPetPoseColumnAt((int)_state, now - _poseBegan);
         [self applySpriteFrame]; return;
@@ -684,12 +690,8 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (_state == MiniSightPetStateSleeping || _state == MiniSightPetStateIdle) {
         NSInteger next;
         if (_state == MiniSightPetStateSleeping) {
-            if (_landingRecoveryStage) {
-                next = MSPetLandingColumn((int)_landingRecoveryStage, now - _landingRecoveryBegan);
-            } else {
-                next = _resident.waking ? MSPetResidentWakeColumn(now - _resident.wakeBegan)
-                                        : MSPetResidentSleepColumn(now - _resident.sleepBegan);
-            }
+            next = _resident.waking ? MSPetResidentWakeColumn(now - _resident.wakeBegan)
+                                    : MSPetResidentSleepColumn(now - _resident.sleepBegan);
         } else {
             BOOL needsDelay = _resident.nextBlinkAt <= 0. ||
                 (_resident.blinking && now - _resident.blinkBegan >= 6. * kMiniSightIdleSpriteInterval);
@@ -1147,8 +1149,18 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (_effects.musicPlaying == playing) return;
     _effects.musicPlaying = playing;
     MSDiagEvent(@"pet", @"state", @"ok", @{@"source": @"app", @"active": @((BOOL)playing), @"reason": @"music_state"});
-    if (playing) { [self invalidateRoamTimer]; [self wakeForInteraction]; }
-    else [self scheduleRoam];
+    if (playing) {
+        [self invalidateRoamTimer];
+        // Keep this host's gesture/physics ownership; music only retires an
+        // automatic route so its first visible action is in-place sway.
+        if (_motionActive && !_physicsMotion && !_dragging) [self cancelMotion];
+        [self wakeForInteraction];
+        if ([self shouldAnimate]) [self reconcilePlayback];
+    }
+    else {
+        if (_state == MiniSightPetStateMusic) [self setSpriteState:MiniSightPetStateIdle];
+        [self scheduleRoam];
+    }
 }
 - (BOOL)lyricsSuppressed { return _lyricsSuppressed; }
 - (void)setLyricsSuppressed:(BOOL)suppressed {
@@ -1343,7 +1355,9 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     _landingRecoveryStage = 1;
     _landingRecoveryBegan = CACurrentMediaTime();
     MSDiagEvent(@"pet", @"state", @"ok", @{@"source": @"app", @"value": @1, @"reason": @"landing_settle"});
-    [self setSpriteState:MiniSightPetStateSleeping];
+    // Unverified atlas art is not a new sleep/fall sequence. Use the neutral
+    // row for the presentation fallback; a real land clip owns its own frames.
+    [self setSpriteState:MiniSightPetStateIdle];
     [_effects setLandingRecoveryStage:1];
     [self invalidateRoamTimer];
 }

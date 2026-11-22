@@ -36,129 +36,199 @@ struct AudioWaveformView: View {
     }
 }
 
-/// Dense square-particle cloud matching the reference composer wave.
-/// The shared surface clips it; foreground controls naturally mask its peaks.
+/// Animated, bottom-anchored spectral particles for the composer background.
+/// Canvas owns the redraw; it never invalidates the text field or controls.
 struct ComposerRainbowWave: View {
     var levels: [Float] = []
-    var opacity: Double = 0.86
+    var opacity: Double = 0.58
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let colorStops: [(Double, Double, Double)] = [
-        (0.96, 0.48, 0.49), (0.88, 0.39, 0.72), (0.56, 0.43, 0.88),
-        (0.34, 0.60, 0.94), (0.24, 0.79, 0.90), (0.32, 0.82, 0.68),
-        (0.88, 0.77, 0.40)
-    ]
+    static let canvasHeight: CGFloat = 74
+    private static let dotSize: CGFloat = 1.15
+    private static let columnPitch: CGFloat = 1.24
+    private static let rowPitch: CGFloat = 1.46
+    private static let edgeInset: CGFloat = 1.15
+    private static let maxRows = 18
+    private static let maxColumns = 260
+    private static let transitionLife = 0.48
+    @State private var transitionBeganAt: TimeInterval = -1
+    var voiceActive: Bool = false
+
+    private static let spectrum = Gradient(colors: [
+        Color(red: 0.98, green: 0.27, blue: 0.51),
+        Color(red: 1.00, green: 0.48, blue: 0.28),
+        Color(red: 0.99, green: 0.76, blue: 0.27),
+        Color(red: 0.35, green: 0.84, blue: 0.55),
+        Color(red: 0.18, green: 0.76, blue: 0.94),
+        Color(red: 0.38, green: 0.54, blue: 0.99),
+        Color(red: 0.77, green: 0.39, blue: 0.94)
+    ])
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 18.0, paused: reduceMotion)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
             Canvas(opaque: false, colorMode: .linear) { context, size in
                 guard size.width > 0, size.height > 0 else { return }
                 let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
-                let root = size.height - 1.5
-                let maxRise = min(size.height - 2, 54)
-                let xStep: CGFloat = 2.35
-                let yStep: CGFloat = 2.55
-                let dot: CGFloat = 1.75
-                let colorBucketCount = 28
-                let columns = max(2, Int(ceil(size.width / xStep)))
-                let rows = max(1, Int(maxRise / yStep))
-                var particlePaths = Array(repeating: Path(), count: colorBucketCount)
-                var highlightPaths = Array(repeating: Path(), count: colorBucketCount)
+                let baseline = size.height - Self.dotSize * 0.5
+                let columns = columnCount(in: size.width)
+                let motionTime = reduceMotion ? 0 : time
+                let paletteTravel = CGFloat(sin(motionTime * 0.10)) * size.width * 0.065
+                let gradient = GraphicsContext.Shading.linearGradient(
+                    Self.spectrum,
+                    startPoint: CGPoint(x: size.width * 0.18 - paletteTravel, y: 0),
+                    endPoint: CGPoint(x: size.width * 1.18 - paletteTravel, y: 0)
+                )
 
-                let audio = sampledAudioEnergy()
-                let centerA = 0.43 + 0.19 * sin(time * 0.43 + 0.35)
-                let centerB = 0.73 + 0.12 * sin(time * 0.36 + 1.9)
-                let centerC = 0.16 + 0.075 * cos(time * 0.51 + 0.8)
-                let breath = 0.88 + 0.12 * sin(time * 1.35)
+                var ridge = Path()
+                for index in 0..<columns {
+                    let unit = Double(index) / Double(columns - 1)
+                    let audio = reduceMotion ? 0 : sampledLevel(at: unit)
+                    let height = waveHeight(at: unit, time: time, audio: audio)
+                    let point = CGPoint(x: columnCenter(at: unit, width: size.width),
+                                        y: baseline - CGFloat(height))
+                    if index == 0 { ridge.move(to: point) }
+                    else { ridge.addLine(to: point) }
+                }
 
-                for layer in 0..<2 {
-                    let offset = layer == 0 ? 0.0 : xStep * 0.48
-                    for column in 0..<columns {
-                        let x = CGFloat(column) * xStep + offset
-                        let u = min(1, max(0, Double(x / size.width)))
-                        let edge = min(1.0, min(u / 0.022, (1 - u) / 0.022))
-                        let broad = 0.20
-                            + 0.92 * gaussian(u, centerA, 0.17)
-                            + 0.83 * gaussian(u, centerB, 0.16)
-                            + 0.66 * gaussian(u, centerC, 0.09)
-                        let drift = 0.10 * (smoothNoise(position: u * 5.2 - time * 0.27) + 1)
-                            + 0.05 * (smoothNoise(position: u * 10.6 + time * 0.19 + Double(layer) * 3.7) + 1)
-                        let audioLift = Double(audio) * (0.42 + 0.58 * abs(sin(u * .pi * 2.4 + time * 1.8)))
-                        let profile = min(1.0, max(0, (broad + drift + audioLift) * breath)) * edge
-                        let peak = min(maxRise, max(yStep * 1.5, maxRise * CGFloat(profile)))
-                        let bucket = min(colorBucketCount - 1, Int(u * Double(colorBucketCount)))
+                context.drawLayer { glow in
+                    glow.addFilter(.blur(radius: 5.0))
+                    glow.opacity = opacity * 0.52
+                    glow.stroke(ridge, with: gradient,
+                                style: StrokeStyle(lineWidth: 5.0, lineCap: .round, lineJoin: .round))
+                }
+                context.stroke(ridge, with: .color(Color.white.opacity(opacity * 0.17)),
+                               style: StrokeStyle(lineWidth: 0.7, lineCap: .round, lineJoin: .round))
 
-                        for row in 0...rows {
-                            let distance = CGFloat(row) * yStep + CGFloat(layer) * 1.35
-                            if distance > peak + 2 { continue }
-                            let heightRatio = Double(distance / max(peak, 1))
-                            let occupancy = min(1, max(0.16, 0.96 - heightRatio * 0.61))
-                            let chance = hash(column: column + layer * 173, row: row + layer * 29)
-                            if row > 1 && chance > occupancy { continue }
-
-                            let ripple = sin(u * .pi * 7.5 - time * 1.35) * 1.25
-                                + sin(u * .pi * 15.0 + time * 0.87 + Double(layer)) * 0.65
-                            let y = root - distance + CGFloat(ripple)
-                            let rect = CGRect(x: x - dot * 0.5, y: y - dot * 0.5, width: dot, height: dot)
-                            particlePaths[bucket].addRect(rect)
-                            if row < 4 && ((column + row + layer) % 4 == 0) {
-                                let spark = CGRect(x: rect.midX - 0.55, y: rect.midY - 0.55, width: 1.1, height: 1.1)
-                                highlightPaths[bucket].addRect(spark)
-                            }
+                var row0 = Path()
+                var row1 = Path()
+                var row2 = Path()
+                var row3 = Path()
+                var row4 = Path()
+                for index in 0..<columns {
+                    let unit = Double(index) / Double(columns - 1)
+                    let audio = reduceMotion ? 0 : sampledLevel(at: unit)
+                    let height = waveHeight(at: unit, time: time, audio: audio)
+                    let rows = rowCount(for: height)
+                    let baseX = columnCenter(at: unit, width: size.width)
+                    for row in 0..<rows {
+                        let remainder = height - Double(row) * Double(Self.rowPitch)
+                        let topScale = row == rows - 1 ? min(1, max(0.58, remainder / Double(Self.rowPitch))) : 1
+                        let jitter = smoothNoise(position: Double(index) * 0.73 + time * 0.24 + Double(row) * 4.7)
+                        let x = baseX + CGFloat(jitter) * 0.70
+                        let yNoise = smoothNoise(position: unit * 12.0 + time * 0.28 + Double(row) * 6.1)
+                        let y = min(baseline, max(0, baseline - CGFloat(row) * Self.rowPitch + CGFloat(yNoise) * 0.48))
+                        let shimmer = 0.92 + 0.08 * (0.5 + 0.5 * sin(time * 2.1 + Double(index) * 1.7 + Double(row)))
+                        let diameter = Self.dotSize * CGFloat(shimmer * topScale)
+                        let dot = CGRect(x: x - diameter * 0.5, y: y - diameter * 0.5,
+                                         width: diameter, height: diameter)
+                        switch row {
+                        case 0: row0.addRect(dot)
+                        case 1: row1.addRect(dot)
+                        case 2: row2.addRect(dot)
+                        case 3: row3.addRect(dot)
+                        default: row4.addRect(dot)
                         }
                     }
                 }
+                paint(row0, row: 0, shading: gradient, in: context)
+                paint(row1, row: 1, shading: gradient, in: context)
+                paint(row2, row: 2, shading: gradient, in: context)
+                paint(row3, row: 3, shading: gradient, in: context)
+                paint(row4, row: 4, shading: gradient, in: context)
 
-                for index in 0..<colorBucketCount {
-                    let unit = Double(index) / Double(colorBucketCount - 1)
-                    let current = colorStop(at: unit + 0.003 * sin(time * 0.24 + unit * 3))
-                    let color = Color(red: current.0, green: current.1, blue: current.2).opacity(opacity)
-                    context.fill(particlePaths[index], with: .color(color))
-                    context.fill(highlightPaths[index], with: .color(.white.opacity(opacity * 0.42)))
+                if !reduceMotion {
+                    let age = time - transitionBeganAt
+                    if age >= 0 && age < Self.transitionLife {
+                        let progress = age / Self.transitionLife
+                        var trace = Path()
+                        for streak in 0..<3 {
+                            let unit = min(0.94, max(0.06, 0.18 + progress * 0.62 + Double(streak) * 0.035))
+                            let x = columnCenter(at: unit, width: size.width)
+                            let height = waveHeight(at: unit, time: time, audio: 0)
+                            let y = baseline - CGFloat(height) - CGFloat(progress * 3.5)
+                            let length = CGFloat(5.0 + Double(streak) * 1.2)
+                            trace.move(to: CGPoint(x: x - length, y: y + 2.0))
+                            trace.addQuadCurve(to: CGPoint(x: x + 1.5, y: y),
+                                               control: CGPoint(x: x - 1.5, y: y - 3.2))
+                        }
+                        context.drawLayer { glow in
+                            glow.addFilter(.blur(radius: 3.0))
+                            glow.opacity = opacity * (1.0 - progress) * 0.68
+                            glow.stroke(trace, with: gradient,
+                                        style: StrokeStyle(lineWidth: 2.8, lineCap: .round))
+                        }
+                        var traceContext = context
+                        traceContext.opacity = opacity * (1.0 - progress)
+                        traceContext.stroke(trace, with: gradient,
+                                            style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
+                    }
                 }
+            }
+            .onChange(of: voiceActive) { _ in
+                guard !reduceMotion else { return }
+                transitionBeganAt = timeline.date.timeIntervalSinceReferenceDate
             }
         }
         .accessibilityHidden(true)
         .allowsHitTesting(false)
     }
 
-    private func gaussian(_ value: Double, _ center: Double, _ width: Double) -> Double {
-        let distance = (value - center) / width
-        return exp(-0.5 * distance * distance)
+    private func paint(_ path: Path, row: Int, shading: GraphicsContext.Shading,
+                       in context: GraphicsContext) {
+        guard !path.isEmpty else { return }
+        var layer = context
+        layer.opacity = opacity * max(0.35, 1.0 - Double(row) * 0.06)
+        layer.fill(path, with: shading)
     }
 
-    private func hash(column: Int, row: Int) -> Double {
-        let raw = sin(Double(column) * 127.1 + Double(row) * 311.7) * 43758.5453123
-        return raw - floor(raw)
+    private func columnCount(in width: CGFloat) -> Int {
+        return max(2, min(Self.maxColumns, Int(floor((width - Self.edgeInset * 2) / Self.columnPitch)) + 1))
+    }
+
+    private func columnCenter(at unit: Double, width: CGFloat) -> CGFloat {
+        return Self.edgeInset + (width - Self.edgeInset * 2) * CGFloat(unit)
+    }
+
+    private func rowCount(for height: Double) -> Int {
+        return min(Self.maxRows, max(1, Int(ceil(height / Double(Self.rowPitch)))))
+    }
+
+    private func waveHeight(at unit: Double, time: Double, audio: Double) -> Double {
+        // The composer wave undulates on its own; it does not depend on the
+        // microphone. Three narrow crests drift at different speeds so the
+        // surface keeps moving instead of sitting as one fixed mound.
+        let p1 = 0.46 + 0.26 * sin(time * 0.31)
+        let p2 = 0.24 + 0.20 * sin(time * 0.23 + 1.7)
+        let p3 = 0.72 + 0.18 * sin(time * 0.27 + 3.4)
+        let d1 = (unit - p1) / 0.085
+        let d2 = (unit - p2) / 0.070
+        let d3 = (unit - p3) / 0.075
+        let c1 = exp(-d1 * d1)
+        let c2 = exp(-d2 * d2) * 0.55
+        let c3 = exp(-d3 * d3) * 0.62
+        let ripple = 0.5 + 0.5 * sin(unit * .pi * 9.0 - time * 1.1)
+        let grain = smoothNoise(position: unit * 16.0 + time * 0.6)
+        let profile = min(1, max(0, 0.10 + max(c1, max(c2, c3)) * 0.82 + ripple * 0.06 + grain * 0.05))
+        return 2.4 + profile * 40.0
     }
 
     private func smoothNoise(position: Double) -> Double {
         let cell = floor(position)
         let fraction = position - cell
-        let eased = fraction * fraction * (3 - 2 * fraction)
-        let a = hash(column: Int(cell), row: 911)
-        let b = hash(column: Int(cell) + 1, row: 911)
-        return (a + (b - a) * eased) * 2 - 1
+        let eased = fraction * fraction * (3.0 - 2.0 * fraction)
+        let lower = latticeNoise(cell)
+        let upper = latticeNoise(cell + 1.0)
+        return lower + (upper - lower) * eased
     }
 
-    private func sampledAudioEnergy() -> Double {
+    private func latticeNoise(_ value: Double) -> Double {
+        let seed = sin(value * 127.1 + 311.7) * 43758.5453123
+        return (seed - floor(seed)) * 2.0 - 1.0
+    }
+
+    private func sampledLevel(at position: Double) -> Double {
         guard !levels.isEmpty else { return 0 }
-        let values = levels.suffix(12).map { min(1, max(0, Double($0))) }
-        guard !values.isEmpty else { return 0 }
-        let mean = values.reduce(0, +) / Double(values.count)
-        return min(1, max(0, mean * 1.65))
-    }
-
-    private func colorStop(at position: Double) -> (Double, Double, Double) {
-        let x = min(1, max(0, position)) * Double(colorStops.count - 1)
-        let lower = min(colorStops.count - 2, Int(x))
-        let fraction = x - Double(lower)
-        let a = colorStops[lower]
-        let b = colorStops[lower + 1]
-        return (
-            a.0 + (b.0 - a.0) * fraction,
-            a.1 + (b.1 - a.1) * fraction,
-            a.2 + (b.2 - a.2) * fraction
-        )
+        let index = min(levels.count - 1, max(0, Int(position * Double(levels.count))))
+        return min(1, max(0, Double(levels[index])))
     }
 }

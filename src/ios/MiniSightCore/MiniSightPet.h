@@ -2,9 +2,10 @@
 //  MiniSightPet.h
 //  MiniSight
 //
-//  Petdex-style animated pet. Post-loader 8x9 atlas: row 0 idle (6),
-//  1/2 walk (8 each), 3 wave (4), 4 jump (5), 5 seated/closed-eye sleep (8).
-//  Frame counts/timings follow crafter-station/petdex (MIT).
+//  Petdex-style animated pet. Post-loader 8x9 atlas: idle (6), left/right
+//  walk (8 each), wave (4), jump (5); upstream row 5 is named failed (8).
+//  Legacy sleep/wake names are policy labels, not verified new art sequences.
+//  Frame counts/timings follow crafter-station/petdex (MIT code; art separately licensed).
 //
 
 #import <UIKit/UIKit.h>
