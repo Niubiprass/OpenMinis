@@ -244,8 +244,16 @@ class Hygiene(unittest.TestCase):
             self.assertNotIn('sk-95d6', text)
 
     def test_version_bumped_for_this_feature(self):
-        self.assertIn('MARKETING_VERSION = 1.16;', PBX)
-        self.assertNotIn('MARKETING_VERSION = 1.15;', PBX)
+        # The mask shipped in 1.16. Assert "at least 1.16" instead of pinning
+        # the literal: an exact-string check failed the whole build the moment
+        # a later release bumped to 1.17 (2026-11-22).
+        versions = {tuple(int(part) for part in v.split('.'))
+                    for v in re.findall(r'MARKETING_VERSION = ([\d.]+);', PBX)}
+        self.assertTrue(versions, 'no MARKETING_VERSION found in the project')
+        # Test targets legitimately stay at 1.0; it is the app target that must
+        # have moved past the 1.15 that had no mask support.
+        self.assertGreaterEqual(max(versions), (1, 16))
+        self.assertNotIn((1, 15), versions)
 
 
 if __name__ == '__main__':
