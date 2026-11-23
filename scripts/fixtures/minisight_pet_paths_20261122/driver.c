@@ -47,7 +47,9 @@ static bool CGAffineTransformEqualToTransform(CGAffineTransform a,CGAffineTransf
 static MSPoint MSPetPoint(CGPoint p) {return p;}
 static CGPoint MSPetCGPoint(MSPoint p) {return p;}
 static unsigned RandomRoll=25;
-static unsigned arc4random_uniform(unsigned n) {return n?RandomRoll%n:0;}
+/* Fixture-only name: never redeclare the SDK's external arc4random_uniform. */
+#define arc4random_uniform MSPetFixtureRandomUniform
+static unsigned MSPetFixtureRandomUniform(unsigned n) {return n?RandomRoll%n:0;}
 static double MSPetRandomUnit(void) {return .5;}
 static double MSPetRandomRange(double a,double b) {return (a+b)*.5;}
 static double MSPetClampUnit(double x) {return MSPetFiniteClamp(x,-1,1);}

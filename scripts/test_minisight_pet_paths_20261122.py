@@ -222,7 +222,7 @@ def generate(pet,effects):
       'kMiniSightJumpDuration','kMiniSightJumpDesiredHeight','kMiniSightJumpMinHeight', 'kMiniSightWaveHold']
     for name in names:
         line=re.search(r'^static const \w+ '+name+r' = [^;]+;',pet,re.M).group(0)
-        constants.append(re.sub(r'const (NSInteger|NSTimeInterval)','const double' if 'Interval' in name or 'Roam' in name else 'const int',line))
+        constants.append(re.sub(r'const (NSInteger|NSTimeInterval)', lambda m: 'const double' if m[1] == 'NSTimeInterval' else 'const int', line))
     for owner,text,table in [('P',pet,P_METHODS),('E',effects,E_METHODS)]:
         for key,(kind,args) in table.items():
             raw=definition(text,key); translated=translate(raw,owner)
