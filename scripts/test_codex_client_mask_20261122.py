@@ -278,8 +278,9 @@ class IdentitySelfHeal(unittest.TestCase):
 
     def test_retry_happens_once_and_only_for_masked_responses_instances(self):
         self.assertIn("private static let identityRetryLimit = 1", PROVIDER)
-        self.assertIn("identityRetry < CodexClientMask.identityRetryLimit", PROVIDER)
-        retry = PROVIDER.split("identityRetry < CodexClientMask.identityRetryLimit", 1)[1][:800]
+        stream_raw = PROVIDER.split("func streamRaw(", 1)[1].split("// MARK: - Request Building", 1)[0]
+        self.assertIn("identityRetry < CodexClientMask.identityRetryLimit", stream_raw)
+        retry = stream_raw.split("identityRetry < CodexClientMask.identityRetryLimit", 1)[1][:800]
         # A non-masked provider must never reach the reset.
         self.assertIn("shouldApplyCodexClientMask(isResponsesAPI: isResponsesAPI", retry)
         self.assertIn("CodexClientMask.isIdentityRejection", retry)

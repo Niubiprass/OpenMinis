@@ -756,22 +756,6 @@ final class OpenAIProvider: LLMProvider {
             var body = ""
             for try await line in byteStream.lines { body += line }
             session.finishTasksAndInvalidate()
-            // [T-codex-identity-selfheal] Identity-level 403: the relay has
-            // blacklisted this installation id, so the same request can only
-            // fail again. Burn the id and re-issue ONCE with a fresh one. The
-            // whole build path re-runs, so headers and the body's
-            // client_metadata are regenerated from the same context and stay
-            // consistent with each other.
-            if identityRetry < CodexClientMask.identityRetryLimit,
-               shouldApplyCodexClientMask(isResponsesAPI: isResponsesAPI, isCodexOAuth: isCodexOAuth),
-               CodexClientMask.isIdentityRejection(statusCode: statusCode, body: body) {
-                let id = providerInstanceId ?? "unscoped"
-                CodexClientMask.resetInstallationId(providerId: id)
-                CodexClientMask.logOutgoingRequestRejectedIdentity(statusCode: statusCode)
-                return try await streamRaw(body: originalBody,
-                                           isResponsesAPI: isResponsesAPI,
-                                           identityRetry: identityRetry + 1)
-            }
             throw mapHTTPError(statusCode: statusCode, body: body)
         }
 
@@ -1129,6 +1113,22 @@ final class OpenAIProvider: LLMProvider {
             var body = ""
             for try await line in byteStream.lines { body += line }
             session.finishTasksAndInvalidate()
+            // [T-codex-identity-selfheal] Identity-level 403: the relay has
+            // blacklisted this installation id, so the same request can only
+            // fail again. Burn the id and re-issue ONCE with a fresh one. The
+            // whole build path re-runs, so headers and the body's
+            // client_metadata are regenerated from the same context and stay
+            // consistent with each other.
+            if identityRetry < CodexClientMask.identityRetryLimit,
+               shouldApplyCodexClientMask(isResponsesAPI: isResponsesAPI, isCodexOAuth: isCodexOAuth),
+               CodexClientMask.isIdentityRejection(statusCode: statusCode, body: body) {
+                let id = providerInstanceId ?? "unscoped"
+                CodexClientMask.resetInstallationId(providerId: id)
+                CodexClientMask.logOutgoingRequestRejectedIdentity(statusCode: statusCode)
+                return try await streamRaw(body: originalBody,
+                                           isResponsesAPI: isResponsesAPI,
+                                           identityRetry: identityRetry + 1)
+            }
             throw mapHTTPError(statusCode: statusCode, body: body)
         }
 
