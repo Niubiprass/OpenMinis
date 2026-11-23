@@ -281,6 +281,14 @@ class SourceContracts(unittest.TestCase):
                 # cooldown/selection/count/owner rule still matches baseline.
                 current = current.replace('list[index].lastUsed = max(list[index].lastUsed ?? now, now)\n                list[index].updatedAt',
                                           'list[index].lastUsed = now; list[index].updatedAt')
+                # Codex identity-rejection kind cannot rotate or cool a key;
+                # normalize ONLY its exhaustive switch arm inside cooldown().
+                self.assertIn('.identityRejected: return false', declaration(M, 'var mayTryAnotherKey: Bool'))
+                current = current.replace(
+                    '            // Nothing about the key is wrong, so do not park or cool it down.\n'
+                    '            case .identityRejected: return nil\n',
+                    '',
+                )
             self.assertEqual(current, declaration(old, marker))
         self.assertIn('func effectiveDisplayRate', Q)
         self.assertIn('func setCustomCurrency', Q)
