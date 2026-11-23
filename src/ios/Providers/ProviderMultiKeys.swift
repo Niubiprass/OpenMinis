@@ -60,13 +60,17 @@ struct ProviderConsumptionReporter: Sendable {
 }
 
 enum MultiKeyFailureKind: Sendable {
-    case credential, forbidden, quota, rateLimit, transient, gatewayTimeout, requestTooLarge, network, other
+    case credential, forbidden, identityRejected, quota, rateLimit, transient, gatewayTimeout, requestTooLarge, network, other
 
     var mayTryAnotherKey: Bool {
         switch self {
         // A transport failure says nothing about the credential. Retrying the
         // same key after the path recovers avoids shuffling keys pointlessly.
-        case .network, .other, .requestTooLarge: return false
+        //
+        // [T-codex-identity-selfheal] An identity-level 403 is about the
+        // client's installation id, not the key: rotating keys cannot fix it
+        // and every extra 403 feeds the relay's abuse scoring.
+        case .network, .other, .requestTooLarge, .identityRejected: return false
         default: return true
         }
     }
@@ -76,6 +80,7 @@ enum MultiKeyFailureKind: Sendable {
         switch self {
         case .credential: return AppLocalized("Invalid API key")
         case .forbidden: return AppLocalized("Access denied")
+        case .identityRejected: return AppLocalized("Access denied (client identity)")
         case .quota: return AppLocalized("Insufficient balance or quota")
         case .rateLimit: return AppLocalized("Rate limited")
         case .transient: return AppLocalized("Service temporarily unavailable")
@@ -167,7 +172,11 @@ enum MultiKeyFailureKind: Sendable {
             "model not found", "model_not_found", "no available channel", "无可用渠道"].contains(where: { message.contains($0) }) { return .other }
         switch status {
         case 401: return .credential
-        case 403: return .forbidden
+        case 403:
+            // `[403] identity rejected:` is emitted by the Codex mask path when
+            // the relay refuses this installation id.
+            if message.contains("identity rejected") { return .identityRejected }
+            return .forbidden
         case 402: return .quota
         case 524: return .gatewayTimeout
         case .some(500...599): return .transient
@@ -997,6 +1006,8 @@ final class ProviderMultiKeyManager: @unchecked Sendable {
             switch kind {
             case .credential, .quota: return Self.recoveryInterval
             case .forbidden: return nil
+            // Nothing about the key is wrong, so do not park or cool it down.
+            case .identityRejected: return nil
             case .rateLimit: return 60
             case .transient: return failures >= Self.maxConsecutiveFailures ? 30 : nil
             case .gatewayTimeout: return failures >= Self.maxConsecutiveFailures ? 30 : nil

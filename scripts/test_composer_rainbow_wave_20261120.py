@@ -123,7 +123,7 @@ class WaveContracts(unittest.TestCase):
                          re.findall(r"static let (\w+)(?:: \w+)? = ([\d.]+)", cls.wave)}
 
         env = {"min": min, "max": max, "int": int, "float": float,
-               "floor": math.floor, "ceil": math.ceil,
+               "floor": math.floor, "ceil": math.ceil, "pow": math.pow,
                "sin": math.sin, "cos": math.cos, "exp": math.exp, "pi": math.pi,
                **cls.constants}
         env["latticeNoise"] = staticmethod(scalar_function(cls.wave, "private func latticeNoise(", ["value"], env))
@@ -159,21 +159,23 @@ class WaveContracts(unittest.TestCase):
 
     def test_geometry_matches_reference_grid(self):
         c = self.constants
-        # 913 px card / 12 px pitch = 76 dots; 6 px dots → dot/pitch = 0.5.
-        ratio = c["dotSize"] / c["columnPitch"]
-        self.assertGreaterEqual(ratio, 0.42)
-        self.assertLessEqual(ratio, 0.58)
-        self.assertAlmostEqual(c["columnPitch"], c["rowPitch"], places=6)  # square grid
+        # Staggered half-column pitch (2.30 pt) & row pitch (2.35 pt) match
+        # the reference 6.17 px sub-grid (~152 staggered columns across 350 pt).
+        ratio = c["dotSize"] / (c["columnPitch"] * 0.5)
+        self.assertGreaterEqual(ratio, 0.78)
+        self.assertLessEqual(ratio, 0.96)
         self.assertGreaterEqual(c["columnPitch"], 4.0)
         self.assertLessEqual(c["columnPitch"], 5.2)
-        self.assertLessEqual(c["maxRows"], 10)
+        self.assertGreaterEqual(c["rowPitch"], 2.1)
+        self.assertLessEqual(c["rowPitch"], 2.7)
+        self.assertLessEqual(c["maxRows"], 12)
         self.assertGreaterEqual(c["peakHeight"], 24.0)
         self.assertLessEqual(c["peakHeight"], 28.0)
         self.assertLessEqual(c["canvasHeight"], 80)
         for width in (296, 320, 350, 366, 390):
             columns = self.column_count(width)
-            self.assertGreaterEqual(columns, 60)
-            self.assertLessEqual(columns, 96)
+            self.assertGreaterEqual(columns, 120)
+            self.assertLessEqual(columns, 180)
         self.assertLessEqual(self.column_count(1024), c["maxColumns"])
 
     def test_heights_bounded_and_rows_capped(self):
@@ -278,25 +280,28 @@ class WaveContracts(unittest.TestCase):
         self.assertEqual(base, [self.wave_height(i / 100, 0) for i in range(101)])
 
     def test_row_light_thread_matches_measurements(self):
-        # Measured from the reference: row 4 (0 = bottom) carries a near-white
-        # stretch, centre 0.52-0.61 of the width, length pulsing 20-50%.
+        # Travelling specular band ("亮面") along middle-lower rows (~36% height),
+        # keeping dots crisp & vivid with minimal white bleaching (<1% pure white core).
         c = self.constants
-        self.assertAlmostEqual(c["rowLightIndex"], 4.0, places=2)
-        self.assertAlmostEqual(c["rowLightSigma"], 1.1, places=2)
-        self.assertAlmostEqual(c["rowLightCentre"], 0.56, places=2)
-        self.assertAlmostEqual(c["rowLightLength"], 0.32, places=2)
-        self.assertGreaterEqual(c["rowLightWhite"], 0.7)
+        self.assertAlmostEqual(c["rowLightIndex"], 0.36, places=2)
+        self.assertAlmostEqual(c["rowLightSigma"], 1.45, places=2)
+        self.assertAlmostEqual(c["rowLightCentre"], 0.54, places=2)
+        self.assertAlmostEqual(c["rowLightLength"], 0.18, places=2)
+        self.assertLessEqual(c["rowLightWhite"], 0.25)
         self.assertIn("private func rowLight(", self.wave)
         self.assertIn("exp(-rowDistance * rowDistance)", self.wave)
-        self.assertIn("whiten: Self.rowLightWhite * light", self.wave)
-        # Near-white on purpose: the measured stretch is V 0.94 / S 0.18.
+        self.assertIn("let isPrimary = ((index + row) % 2 == 1)", self.wave)
+        self.assertIn("wash.blendMode = .plusLighter", self.wave)
+        self.assertIn("wash.addFilter(.blur(radius: 2.6))", self.wave)
+        self.assertIn("spec.blendMode = .plusLighter", self.wave)
+        self.assertIn("spec.addFilter(.blur(radius: 0.8))", self.wave)
         self.assertIn("private static func color(hue: Double, sat: Double, val: Double, whiten: Double = 0)",
                       self.wave)
 
     def test_vertical_three_stage_wash(self):
         # Bottom rows deep/saturated, upper rows pale — measured, not taste.
-        self.assertIn("let vertical = rows > 1 ? Double(row) / Double(rows - 1) : 0", self.wave)
-        self.assertIn("0.88 - 0.42 * pow(vertical, 0.85)", self.wave)
+        self.assertIn("let vertical = rows > 1 ? Double(row) / Double(rows - 1) : 0.0", self.wave)
+        self.assertIn("0.78 - 0.46 * pow(vertical, 0.80)", self.wave)
 
     def test_transition_trails_remain(self):
         self.assertIn(".onChange(of: voiceActive)", self.wave)

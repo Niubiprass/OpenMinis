@@ -466,6 +466,9 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                 var retryLease = takeNetworkRetryLease()
                 var sameKeyRetries = 0
                 var gatewayRetries = 0
+                /// [T-codex-identity-selfheal] Count of key rotations caused by
+                /// a forbidden response, used to space them out.
+                var forbiddenRotations = 0
                 for _ in 0..<budget {
                     do { try Task.checkCancellation() }
                     catch { continuation.finish(throwing: error); return }
@@ -586,6 +589,20 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                             continue
                         }
                         sameKeyRetries = 0
+                        // [T-codex-identity-selfheal] Back off before rotating on
+                        // a forbidden answer. The 2026-11-22 incident was a burst
+                        // of 352 forbidden responses in two minutes (five keys,
+                        // no delay), which is what got the installation id
+                        // blacklisted. 1s → 2s → 4s, capped at 5s.
+                        if kind == .forbidden {
+                            forbiddenRotations += 1
+                            let delay = min(5.0, pow(2.0, Double(forbiddenRotations - 1)))
+                            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                            if Task.isCancelled {
+                                continuation.finish(throwing: CancellationError())
+                                return
+                            }
+                        }
                         // No content or tool escaped: another key may safely serve this request.
                         await Task.yield()
                     }

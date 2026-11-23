@@ -31,6 +31,8 @@ FACTORY = (ROOT / 'src/ios/Providers/LLMProviderFactory.swift').read_text()
 CHAT_FACTORY = (ROOT / 'src/ios/Agent/Chat/AIChatViewModel+ProviderFactory.swift').read_text()
 DETAIL = (ROOT / 'src/ios/Views/Providers/ProviderInstanceDetailView.swift').read_text()
 STORE = (ROOT / 'src/ios/Providers/ProviderConfigStore.swift').read_text()
+AGENT = (ROOT / 'src/ios/Providers/AgentProvider.swift').read_text()
+MULTIKEYS = (ROOT / 'src/ios/Providers/ProviderMultiKeys.swift').read_text()
 PBX = (ROOT / 'src/ios/Minis.xcodeproj/project.pbxproj').read_text()
 
 CAPTURE = Path('/var/minis/shared/codex-fingerprint/codex_final_body.json')
@@ -254,6 +256,50 @@ class Hygiene(unittest.TestCase):
         # have moved past the 1.15 that had no mask support.
         self.assertGreaterEqual(max(versions), (1, 16))
         self.assertNotIn((1, 15), versions)
+
+
+class IdentitySelfHeal(unittest.TestCase):
+    """[T-codex-identity-selfheal] Ticket IMPROVE-IDENTITY-SELFHEAL.md."""
+
+    def test_identity_rejection_is_detected_from_the_measured_body(self):
+        self.assertIn("cannot be processed for this account", PROVIDER)
+        self.assertIn("static func isIdentityRejection(statusCode: Int, body: String) -> Bool", PROVIDER)
+        # Only a 403 counts, and only that wording.
+        self.assertIn("guard statusCode == 403 else { return false }", PROVIDER)
+        # The fingerprint-missing 403 must stay a different animal.
+        self.assertNotIn("请使用最新版", PROVIDER)
+
+    def test_reset_rotates_the_identity_instead_of_clearing_the_toggle(self):
+        self.assertIn("static func resetInstallationId(providerId: String) -> String", PROVIDER)
+        reset = PROVIDER.split("static func resetInstallationId", 1)[1][:900]
+        self.assertIn("removeObject(forKey: key)", reset)
+        self.assertIn("UUID().uuidString.lowercased()", reset)
+        self.assertIn("UserDefaults.standard.set(fresh, forKey: key)", reset)
+
+    def test_retry_happens_once_and_only_for_masked_responses_instances(self):
+        self.assertIn("private static let identityRetryLimit = 1", PROVIDER)
+        self.assertIn("identityRetry < CodexClientMask.identityRetryLimit", PROVIDER)
+        retry = PROVIDER.split("identityRetry < CodexClientMask.identityRetryLimit", 1)[1][:800]
+        # A non-masked provider must never reach the reset.
+        self.assertIn("shouldApplyCodexClientMask(isResponsesAPI: isResponsesAPI", retry)
+        self.assertIn("CodexClientMask.isIdentityRejection", retry)
+        self.assertIn("resetInstallationId(providerId: id)", retry)
+        self.assertIn("identityRetry: identityRetry + 1", retry)
+
+    def test_identity_rejection_has_its_own_marker_and_does_not_rotate_keys(self):
+        self.assertIn('"[403] identity rejected: ', PROVIDER)
+        self.assertIn("case credential, forbidden, identityRejected, quota", MULTIKEYS)
+        self.assertIn("case .network, .other, .requestTooLarge, .identityRejected: return false", MULTIKEYS)
+        self.assertIn('if message.contains("identity rejected") { return .identityRejected }', MULTIKEYS)
+        self.assertIn("case .identityRejected: return nil", MULTIKEYS)
+
+    def test_forbidden_key_rotation_is_backed_off(self):
+        self.assertIn("var forbiddenRotations = 0", AGENT)
+        self.assertIn("if kind == .forbidden {", AGENT)
+        self.assertIn("min(5.0, pow(2.0, Double(forbiddenRotations - 1)))", AGENT)
+        self.assertIn("UInt64(delay * 1_000_000_000)", AGENT)
+        # Cancellation must still win while sleeping.
+        self.assertIn("if Task.isCancelled {", AGENT)
 
 
 if __name__ == '__main__':

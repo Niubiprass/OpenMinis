@@ -756,6 +756,22 @@ final class OpenAIProvider: LLMProvider {
             var body = ""
             for try await line in byteStream.lines { body += line }
             session.finishTasksAndInvalidate()
+            // [T-codex-identity-selfheal] Identity-level 403: the relay has
+            // blacklisted this installation id, so the same request can only
+            // fail again. Burn the id and re-issue ONCE with a fresh one. The
+            // whole build path re-runs, so headers and the body's
+            // client_metadata are regenerated from the same context and stay
+            // consistent with each other.
+            if identityRetry < CodexClientMask.identityRetryLimit,
+               shouldApplyCodexClientMask(isResponsesAPI: isResponsesAPI, isCodexOAuth: isCodexOAuth),
+               CodexClientMask.isIdentityRejection(statusCode: statusCode, body: body) {
+                let id = providerInstanceId ?? "unscoped"
+                CodexClientMask.resetInstallationId(providerId: id)
+                CodexClientMask.logOutgoingRequestRejectedIdentity(statusCode: statusCode)
+                return try await streamRaw(body: originalBody,
+                                           isResponsesAPI: isResponsesAPI,
+                                           identityRetry: identityRetry + 1)
+            }
             throw mapHTTPError(statusCode: statusCode, body: body)
         }
 
@@ -965,10 +981,12 @@ final class OpenAIProvider: LLMProvider {
     /// Build and execute a streaming request, returning raw SSE lines for the agent provider to parse.
     func streamRaw(
         body: [String: Any],
-        isResponsesAPI: Bool
+        isResponsesAPI: Bool,
+        identityRetry: Int = 0
     ) async throws -> (AsyncThrowingStream<String, Error>, Int) {
         // [T-codex-client-mask] Shadowed so the mask can rewrite the body
         // (adds `client_metadata`) the same way the offload builder does.
+        let originalBody = body
         var body = body
         let url: URL
         var request: URLRequest
@@ -2312,6 +2330,13 @@ final class OpenAIProvider: LLMProvider {
             // 403 is used both for key permissions and for a blocked egress IP.
             // Keep the HTTP cause so MultiKey can try another key WITHOUT
             // parking this one for five minutes.
+            //
+            // [T-codex-identity-selfheal] A sub-case needs its own marker: when
+            // the relay refuses the *installation identity*, rotating keys is
+            // useless and only deepens its risk scoring.
+            if CodexClientMask.isIdentityRejection(statusCode: statusCode, body: body) {
+                return .providerError(message: "[403] identity rejected: \(body.prefix(200))")
+            }
             return .providerError(message: "[403] access denied: \(body.prefix(200))")
         }
         if statusCode == 429 { return ProviderServiceError.httpError(statusCode: statusCode, body: body) }
@@ -2482,9 +2507,42 @@ enum CodexClientMask {
         )
     }
 
+    /// At most one identity swap per user request: if a brand-new id is refused
+    /// straight away the relay is objecting to something else, and looping
+    /// would recreate the very retry storm this guard exists to prevent.
+    fileprivate static let identityRetryLimit = 1
+
+    fileprivate static func logOutgoingRequestRejectedIdentity(statusCode: Int) {
+        AppLogger(category: "Provider").info(
+            "codexClientMask identity rejected (status \(statusCode)); rotated installation id once and retrying")
+    }
+
     // MARK: Identity persistence
 
     private static let installationKeyPrefix = "codexClientMask.installationId."
+
+    /// True when a 403 says *this installation identity* is refused, as opposed
+    /// to the request merely lacking the Codex fingerprint. Measured on the
+    /// relay: the same key answers 200 from a fresh identity, 403 from a
+    /// blacklisted one.
+    static func isIdentityRejection(statusCode: Int, body: String) -> Bool {
+        guard statusCode == 403 else { return false }
+        return body.lowercased().contains("cannot be processed for this account")
+    }
+
+    /// Burn the current identity and start a fresh one.
+    ///
+    /// Deliberately does NOT keep the old value around: the whole point is that
+    /// the relay has refused it. A new UUID confirms the self-heal works while
+    /// leaving the user's toggle on.
+    @discardableResult
+    static func resetInstallationId(providerId: String) -> String {
+        let key = installationKeyPrefix + providerId
+        UserDefaults.standard.removeObject(forKey: key)
+        let fresh = UUID().uuidString.lowercased()
+        UserDefaults.standard.set(fresh, forKey: key)
+        return fresh
+    }
 
     /// One installation id per provider instance, created on the first masked
     /// request and reused afterwards. Scoped by instance id, so deleting and
