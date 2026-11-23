@@ -45,7 +45,7 @@ int main(void) {
         MSPetMusicPresentation next=MSPetMusicPresentationAt(t+.001);
         CHECK(fabs(next.angle-p.angle)<.001 && fabs(next.bob-p.bob)<.001);
     }
-    CHECK(low<-.09 && high>.09); // No walk/jump; not a frozen replacement either.
+    CHECK(low<-.09 && high>.09); // Rest-only presentation helper; real host walk/hop is covered by pet_paths.
     CHECK(MSPetPoseColumnAt(MSPetPoseMusic,3.85)>0);
     CHECK(MSPetPoseColumnAt(MSPetPoseMusic,.8)==0);
     CHECK(MSPetMusicInterpolate(12,.25,true)==12.25 && MSPetMusicInterpolate(12,.25,false)==12);
@@ -160,7 +160,12 @@ class Source(unittest.TestCase):
         playing=definition(s,'- (void)setMusicPlaying:')
         self.assertIn('_motionActive && !_physicsMotion && !_dragging',playing)
         self.assertIn('[self cancelMotion]',playing)
-        self.assertIn('[self scheduleRoam]',playing)
+        self.assertIn('[self reconcilePlayback]',playing)
+        roam=definition(s,'- (void)roamOnce')
+        self.assertIn('MSPetMusicTravelAt',roam)
+        self.assertIn('[self startMotionTo:MSPetCGPoint(travel.target) jump:travel.jump rest:.25]',roam)
+        self.assertIn('(_musicMotion && ![self mayPerformMusicMotion])',definition(s,'- (void)motionTick:'))
+        self.assertIn('_musicMotion = NO;',definition(s,'- (void)cancelMotion'))
         recovery=definition(s,'- (void)beginLandingRecoveryWithImpact:')
         self.assertIn('[self setSpriteState:MiniSightPetStateIdle]',recovery)
         self.assertNotIn('MiniSightPetStateSleeping',recovery)

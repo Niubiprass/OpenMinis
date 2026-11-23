@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -21,11 +22,14 @@ FIXTURES = ROOT / "scripts/fixtures"
 SOURCE = CORE / "MiniSightLyrics.m"
 HEADER = CORE / "MiniSightLyrics.h"
 NATIVE = FIXTURES / "minisight_lyrics_20261116.m"
+NATIVE22 = FIXTURES / "minisight_lyrics_20261122/native_client.inc"
+NATIVE23 = FIXTURES / "minisight_lyrics_20261123/native_client.inc"
+PORTABLE = FIXTURES / "minisight_lyrics_20261123/portable.c"
 DATA = FIXTURES / "minisight_lyrics_20261116.json"
 DEFAULT_PLUGIN = ROOT.parent.parent / "MiniSight-complete-20261105"
 OPTIONS = argparse.Namespace(
     plugin_root=os.environ.get("MINISIGHT_LYRICS_PLUGIN_ROOT") or (str(DEFAULT_PLUGIN) if DEFAULT_PLUGIN.is_dir() else None),
-    require_native=os.environ.get("MINISIGHT_LYRICS_REQUIRE_NATIVE") == "1",
+    require_native=os.environ.get("MINISIGHT_LYRICS_REQUIRE_NATIVE") == "1" or os.environ.get("CI", "").lower() == "true",
 )
 
 
@@ -43,6 +47,11 @@ def contract_errors(source, header):
         "search query item": 'queryItemWithName:@"q"',
         "bounded search candidates": '[payload count] > 20',
         "search body parser": "timelineForSearchResponseData:",
+        "explicit unsynced rescue only": 'status == 200 && validatedUnsynced',
+        "strict parser before rescue": '[reason isEqualToString:@"no_synced_lyrics"]',
+        "absent field is rejected": 'if (!lrc) return nil;',
+        "finished task shared deadline": '!MSLyricsDispatchReady(NSProcessInfo.processInfo.systemUptime, _deadline)',
+        "queued delivery shared deadline": 'MSLyricsDispatchReady(NSProcessInfo.processInfo.systemUptime, deadline)',
         "generation fence": "owner.generation == generation",
         "task identity fence": "if (task != _task)",
         "stream cap": "data.length > MSLyricsMaxBytes - _body.length",
@@ -87,6 +96,9 @@ class SourceContractTests(unittest.TestCase):
             ("config.URLCredentialStorage = nil;", ""),
             ("data.length > MSLyricsMaxBytes - _body.length", "NO"),
             ("MAX(fallback, seconds)", "fallback"),
+            ('status == 200 && validatedUnsynced', 'status == 200'),
+            ('if (!lrc) return nil;', ''),
+            ('!MSLyricsDispatchReady(NSProcessInfo.processInfo.systemUptime, _deadline)', 'NO'),
         ]
         for old, new in changes:
             with self.subTest(mutation=old):
@@ -97,11 +109,24 @@ class SourceContractTests(unittest.TestCase):
         import re
         src = SOURCE.read_text()
         log = (CORE / 'MiniSightLog.m').read_text()
-        codes = set(re.findall(r'@"(lyrics_[a-z_]+|no_synced_lyrics)"',src))
+        # Dictionary syntax, not a following ':' alone: ternary reason values
+        # also precede colons. Keep the expected result set unchanged.
+        keys = set(re.findall(r'(?:@\{|,)\s*@"(lyrics_[a-z_]+)"\s*:', src))
+        codes = set(re.findall(r'@"(lyrics_[a-z_]+|no_synced_lyrics)"', src)) - keys
         self.assertEqual(codes, set('lyrics_http lyrics_cooldown lyrics_network_error lyrics_response_rejected lyrics_not_found lyrics_rate_limited lyrics_timeout lyrics_service_unavailable lyrics_oversized lyrics_track_mismatch lyrics_instrumental lyrics_invalid_lrc lyrics_timeline no_synced_lyrics'.split()))
         for code in codes: self.assertIn('@"'+code+'"',log)
         self.assertNotIn('localizedDescription',src)
-        self.assertNotIn('MSDiagEvent',src)
+        evidence = src.split('static void MSLyricsEvidence(',1)[1].split('// BEGIN LYRICS PORTABLE POLICY',1)[0]
+        self.assertEqual(src.count('MSDiagEvent('), 1)
+        self.assertIn('MSDiagEvent(@"lyrics", stage, result', evidence)
+        self.assertIn('now - [times[slot] doubleValue] < 60.0', evidence)
+        self.assertIn('MIN((NSUInteger)21, candidates)', evidence)
+        self.assertIn('MIN(bytes, MSLyricsMaxBytes)', evidence)
+        self.assertIn('MIN(599, status)', evidence)
+        for field in ('title', 'artist', 'lyric', 'url', 'cookies', 'error'):
+            self.assertNotIn('@"' + field + '"', evidence)
+        self.assertIn('@"lyrics_route": [NSSet setWithArray:@[@"exact", @"search", @"positive_cache", @"negative_cache", @"cooldown"]]', log)
+        self.assertIn('@"0.8.50", @"0.8.51"', log)
 
     def test_fixture_calls_production_not_a_port(self):
         fixture = json.loads(DATA.read_text())
@@ -113,14 +138,68 @@ class SourceContractTests(unittest.TestCase):
         self.assertIn("+ (BOOL)canInitWithRequest:(NSURLRequest *)request { return YES; }", native)
         self.assertNotIn("@implementation MiniSightLyricsTimeline", native)
         self.assertNotIn("@implementation MiniSightLyricsClient", native)
+        self.assertIn('#include "minisight_lyrics_20261122/native_client.inc"', native)
+        self.assertIn('#include "minisight_lyrics_20261123/native_client.inc"', native)
+        self.assertTrue(NATIVE22.is_file(), "missing prior native include must fail locally, not await Apple CI")
+        self.assertIn('search_ambiguous', fixture)
+        added = NATIVE23.read_text()
+        for call in ('LyricsDiagnosticRoundtripTests', 'ExplicitUnsyncedFallbackTests', 'SearchBoundaryTransportTests', 'SearchCancelDeadlineTests', 'SearchSizeAndRedirectTests'):
+            self.assertIn(call + '(', native)
+            self.assertIn('static void ' + call + '(', added)
+        for needle in ('NSURLErrorTimedOut', 'NSURLErrorNotConnectedToInternet', '@503', '@429', '@302', 'searchPending', 'oldTask', '@"deadline"', 'get404/search404/cache'):
+            self.assertIn(needle, added)
+        self.assertNotIn('@implementation MiniSightLyrics', added)
 
     def test_plugin_byte_identical(self):
         if not OPTIONS.plugin_root:
             self.skipTest("plugin tree not supplied/present; use --plugin-root for parity check")
         root = Path(OPTIONS.plugin_root)
         plugin = root if (root / "MiniSightLyrics.m").is_file() else root / "debs/MiniSight"
-        for name in ("MiniSightLyrics.h", "MiniSightLyrics.m"):
+        for name in ("MiniSightLyrics.h", "MiniSightLyrics.m", "MiniSightLog.m"):
             self.assertEqual((CORE / name).read_bytes(), (plugin / name).read_bytes(), name)
+        for local in (NATIVE, NATIVE22, NATIVE23, DATA, PORTABLE, Path(__file__).resolve()):
+            relative = local.relative_to(ROOT)
+            self.assertEqual(local.read_bytes(), (plugin / relative).read_bytes(), str(relative))
+
+
+class PortableProductionPolicyTests(unittest.TestCase):
+    def test_verbatim_c_policy_and_compiled_mutants(self):
+        compiler = shutil.which('cc') or shutil.which('clang')
+        self.assertIsNotNone(compiler, 'a host C compiler is required for portable policy checks')
+        source = SOURCE.read_text()
+        policy = source.split('// BEGIN LYRICS PORTABLE POLICY', 1)[1].split('// END LYRICS PORTABLE POLICY', 1)[0]
+        prelude = '#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <math.h>\n#include <float.h>\n'
+        mutations = {
+            'network-may-search': ('return !failed && !search && !attempted', 'return (!failed || failed) && !search && !attempted'),
+            'recursive-search': ('!search && !attempted', '(!search || search) && (!attempted || attempted)'),
+            'no-unsynced-rescue': ('status == 200 && validatedUnsynced', 'status == 201 && validatedUnsynced'),
+            'all-200-may-search': ('status == 200 && validatedUnsynced', 'status == 200 && (validatedUnsynced || !validatedUnsynced)'),
+            'cache-rejected': ('status == 200 && !rejected', 'status == 200 && (!rejected || rejected)'),
+            'nearest-tie-accepted': ('equivalent[i] != equivalent[best]', 'equivalent[i] == equivalent[best]'),
+            'duration-too-loose': ('delta > 2.0', 'delta > 3.0'),
+            'deadline-inclusive': ('now < deadline', 'now <= deadline'),
+        }
+        with tempfile.TemporaryDirectory(prefix='minisight-lyrics-c-') as tmp:
+            directory = Path(tmp)
+            for name, mutation in [('production', None)] + list(mutations.items()):
+                text = policy
+                if mutation:
+                    old, new = mutation
+                    self.assertIn(old, text, name + ' must actually mutate production C')
+                    text = text.replace(old, new)
+                case = directory / (name + '.c')
+                case.write_text(prelude + text + PORTABLE.read_text())
+                binary = directory / name
+                compiled = subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', '-pedantic', str(case), '-lm', '-o', str(binary)], capture_output=True, text=True, timeout=60)
+                self.assertEqual(compiled.returncode, 0, name + compiled.stdout + compiled.stderr)
+                result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+                if not mutation:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    print(result.stdout.strip())
+                else:
+                    self.assertEqual(result.returncode, 1, name + result.stdout + result.stderr)
+                    self.assertIn('FAIL portable', result.stderr, 'crash is not an assertion-based mutation kill')
+                    print('REJECT compiled C mutant:', name)
 
 
 class NativeFoundationTests(unittest.TestCase):
@@ -168,6 +247,10 @@ class NativeFoundationTests(unittest.TestCase):
             "retry_after": ("return isfinite(seconds) ? MAX(fallback, seconds) : DBL_MAX;", "return fallback;"),
             "blank": ("if (!line.text.length) return nil;", "return line.text;"),
             "body_cap": ("MSLyricsMaxBytes = 1024 * 1024;", "MSLyricsMaxBytes = 2 * 1024 * 1024;"),
+            "unsynced_rescue": ('[reason isEqualToString:@"no_synced_lyrics"]', 'NO'),
+            "callback_deadline": ('!MSLyricsDispatchReady(NSProcessInfo.processInfo.systemUptime, _deadline)', 'NO'),
+            "search_artist": ('[artist isEqualToString:track.artist]', 'YES'),
+            "search_ambiguity": ('equivalent[i] != equivalent[best]', 'false'),
         }
         # Baseline must succeed before a failing mutant is counted as detected.
         baseline = self.run_fixture(self.baseline)
@@ -186,7 +269,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     default_plugin = ROOT.parent.parent / "MiniSight-complete-20261105"
     parser.add_argument("--plugin-root", default=os.environ.get("MINISIGHT_LYRICS_PLUGIN_ROOT") or (str(default_plugin) if default_plugin.is_dir() else None))
-    parser.add_argument("--require-native", action="store_true", default=os.environ.get("MINISIGHT_LYRICS_REQUIRE_NATIVE") == "1")
+    parser.add_argument("--require-native", action="store_true", default=OPTIONS.require_native)
     OPTIONS, remaining = parser.parse_known_args()
     print("Source checks are conformance only; native SKIP is NOT runtime success.", flush=True)
     unittest.main(argv=[__file__] + remaining, verbosity=2)

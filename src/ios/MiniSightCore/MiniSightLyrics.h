@@ -55,7 +55,9 @@ typedef void (^MiniSightLyricsResult)(MiniSightLyricsTimeline * _Nullable timeli
 - (void)fetchTrack:(MiniSightLyricsTrack *)track result:(MiniSightLyricsResult)completion;
 /// Any queue: generation invalidation is immediate; I/O state/completions use MAIN.
 /// A new fetch cancels the previous fetch, including any queued completion.
-/// No automatic retry. A cache miss during cooldown completes nil; no UI text/logging.
+/// No automatic retry. A cache miss during cooldown completes nil; no UI text.
+/// One exact GET plus at most one 404/validated-unsynced-200 search share a 15s deadline.
+/// Transport evidence is bounded fixed enums/counts only; never metadata or URLs.
 - (void)fetchTrack:(MiniSightLyricsTrack *)track completion:(MiniSightLyricsCompletion)completion;
 /// Suppresses callbacks, including already queued cache/network deliveries.
 - (void)cancel;

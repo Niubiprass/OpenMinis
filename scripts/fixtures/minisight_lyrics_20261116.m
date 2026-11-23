@@ -5,6 +5,7 @@
 #import <stdio.h>
 #import <dispatch/dispatch.h>
 #import "MiniSightLyrics.h"
+#import "MiniSightLog.h"
 
 static NSUInteger checks = 0;
 #define CHECK(c, label) do { checks++; if (!(c)) { fprintf(stderr, "FAIL: %s (line %d)\n", label, __LINE__); exit(1); } } while (0)
@@ -15,6 +16,7 @@ static NSUInteger checks = 0;
 - (void)receivedResponse:(NSURLResponse *)response task:(NSURLSessionDataTask *)task completion:(void (^)(NSURLSessionResponseDisposition))completion;
 - (void)receivedData:(NSData *)data task:(NSURLSessionDataTask *)task;
 - (void)finishedTask:(NSURLSessionTask *)task error:(NSError *)error;
+- (void)deliver:(MiniSightLyricsTimeline *)timeline reason:(NSString *)reason generation:(NSUInteger)generation completion:(MiniSightLyricsResult)completion;
 @end
 
 static BOOL Equal(id a, id b) { return a == b || [a isEqual:b]; }
@@ -107,6 +109,12 @@ static void ParserTests(NSDictionary *fixture) {
     timeline = [MiniSightLyricsTimeline timelineWithLRC:@"[00:01]Brief\n[00:30]Next line" duration:60];
     CHECK(Equal([timeline lineAtTime:2], @"Brief") && [timeline lineAtTime:13] == nil, "line expires after the display window");
     CHECK(Equal([timeline lineAtTime:31], @"Next line"), "next marker starts its own window");
+    NSDictionary *longGap = fixture[@"long_gap"];
+    timeline = [MiniSightLyricsTimeline timelineWithLRC:longGap[@"lrc"] duration:60];
+    for (NSArray *sample in longGap[@"samples"]) {
+        id expected = sample[1] == NSNull.null ? nil : sample[1];
+        CHECK(Equal([timeline lineAtTime:[sample[0] doubleValue]], expected), "merged long-gap fixture preserves blank/end and current 12s cap");
+    }
     timeline = [MiniSightLyricsTimeline timelineWithLRC:@"[offset:200]\n[00:00]A\n[offset:500]" duration:1];
     CHECK([timeline lineAtTime:0.49] == nil && Equal([timeline lineAtTime:0.5], @"A") && [timeline lineAtTime:1] == nil, "last offset and duration clipping");
     NSString *huge = [@"X" stringByPaddingToLength:1024 * 1024 + 1 withString:@"X" startingAtIndex:0];
@@ -185,10 +193,12 @@ static void SearchOrderAndDetailTests(NSDictionary *fixture, MiniSightLyricsTrac
     NSURL *url = [NSURL URLWithString:@"https://lrclib.net/api/search?q=fixture"];
     NSArray *records = fixture[@"search_late_closest"];
     NSString *reason = nil;
-    for (NSUInteger a = 0; a < 3; ++a) for (NSUInteger b = 0; b < 3; ++b) if (a != b) {
-        NSUInteger c = 3 - a - b;
-        MiniSightLyricsTimeline *t = [MiniSightLyricsClient timelineForSearchResponseData:JSON(@[records[a], records[b], records[c]]) response:ResponseAt(200, nil, url) track:track reason:&reason];
-        CHECK(t != nil && Equal([t lineAtTime:2], @"Unique closest") && Equal(reason, @"lyrics_timeline"), "all six orders choose unique global closest despite farther tie");
+    for (NSArray *orderRecords in @[records, fixture[@"search_inner_tie"]]) {
+        for (NSUInteger a = 0; a < 3; ++a) for (NSUInteger b = 0; b < 3; ++b) if (a != b) {
+            NSUInteger c = 3 - a - b;
+            MiniSightLyricsTimeline *t = [MiniSightLyricsClient timelineForSearchResponseData:JSON(@[orderRecords[a], orderRecords[b], orderRecords[c]]) response:ResponseAt(200, nil, url) track:track reason:&reason];
+            CHECK(t != nil && Equal([t lineAtTime:2], @"Unique closest") && Equal(reason, @"lyrics_timeline"), "both old fixture sets in all six orders choose unique global closest despite farther tie");
+        }
     }
     CHECK([MiniSightLyricsClient timelineForSearchResponseData:JSON(@[records[2], records[2]]) response:ResponseAt(200, nil, url) track:track reason:&reason] != nil, "identical duration and LRC duplicates are not ambiguous");
     NSArray *values = @[NSNull.null, @"", @"untimed synthetic"];
@@ -375,6 +385,7 @@ static void CancellationTests(MiniSightLyricsTrack *track) {
 }
 
 #include "minisight_lyrics_20261122/native_client.inc"
+#include "minisight_lyrics_20261123/native_client.inc"
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
@@ -386,7 +397,10 @@ int main(int argc, const char *argv[]) {
         CHECK(track != nil, "synthetic track valid");
         ParserTests(fixture); EvaluatorTests(track); SearchEvaluatorTests(fixture, track);
         SearchOrderAndDetailTests(fixture, track); BackoffTests();
+        LyricsDiagnosticRoundtripTests(track);
         TransportTests(track); CacheDeadlineAndPendingCancelTests(track); CancellationTests(track);
+        ExplicitUnsyncedFallbackTests(track); SearchBoundaryTransportTests(fixture, track);
+        SearchCancelDeadlineTests(track); SearchSizeAndRedirectTests(track);
         handler = nil; lastRequest = nil;
         printf("NATIVE PASS: %lu checks; synthetic Fake NSURLProtocol only\n", (unsigned long)checks);
     }

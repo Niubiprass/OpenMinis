@@ -24,10 +24,12 @@ static void CacheDeadlineAndPendingCancelTests(MiniSightLyricsTrack *track) {
     CHECK(Fetch(client, other) != nil && starts == before + 1, "negative cache for previous key does not hide new track");
     [client cancel];
 
-    // An HTTP 200 unsynced result is not a 404 and must NOT search.
-    handler = ^(FixtureProtocol *p) { Emit(p, 200, JSON(unsynced), nil); };
+    // A strictly validated empty 200 may search ONCE, never recurse on empty search.
+    handler = ^(FixtureProtocol *p) {
+        Emit(p, 200, JSON([p.request.URL.path isEqual:@"/api/get"] ? (id)unsynced : (id)@[unsynced]), nil);
+    };
     client = Client(); before = starts;
-    CHECK(Fetch(client, track) == nil && Equal(lastReason, @"no_synced_lyrics") && starts == before + 1, "no fallback after exact 200 with no synced lyrics");
+    CHECK(Fetch(client, track) == nil && Equal(lastReason, @"no_synced_lyrics") && starts == before + 2, "one fallback after exact 200 with explicit unsynced lyrics");
     [client cancel];
     for (NSNumber *code in @[@(NSURLErrorTimedOut), @(NSURLErrorNotConnectedToInternet)]) {
         handler = ^(FixtureProtocol *p) { [p.client URLProtocol:p didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:code.integerValue userInfo:nil]]; };

@@ -79,6 +79,55 @@
       "duration": 60,
       "instrumental": false,
       "syncedLyrics": "[00:01]Nearest exact song"
+    },
+    {
+      "trackName": "Different Song",
+      "artistName": "Example Artist",
+      "duration": 60,
+      "instrumental": false,
+      "syncedLyrics": "[00:01]Wrong title"
+    },
+    {
+      "trackName": "Fixture Song",
+      "artistName": "Different Artist",
+      "duration": 60,
+      "instrumental": false,
+      "syncedLyrics": "[00:01]Wrong artist"
+    },
+    {
+      "trackName": "Fixture Song",
+      "artistName": "Example Artist",
+      "duration": 62.001,
+      "instrumental": false,
+      "syncedLyrics": "[00:01]Wrong duration"
+    },
+    {
+      "trackName": "Fixture Song",
+      "artistName": "Example Artist",
+      "duration": 60,
+      "instrumental": true,
+      "syncedLyrics": null
+    },
+    {
+      "trackName": "Fixture Song",
+      "artistName": "Example Artist",
+      "duration": 60,
+      "instrumental": false,
+      "syncedLyrics": ""
+    },
+    {
+      "trackName": "Fixture Song",
+      "artistName": "Example Artist",
+      "duration": 60.25,
+      "instrumental": false,
+      "syncedLyrics": "[00:02]Nearest exact song"
+    },
+    {
+      "trackName": " FIXTURE\tSONG  ",
+      "artistName": " example\nARTIST ",
+      "duration": 59,
+      "instrumental": false,
+      "syncedLyrics": "[00:02]Farther exact song"
     }
   ],
   "search_late_closest": [
@@ -103,5 +152,117 @@
       "instrumental": false,
       "syncedLyrics": "[00:02]Unique closest"
     }
-  ]
+  ],
+  "search_inner_tie": [
+    {
+      "trackName": "Fixture Song",
+      "artistName": "Example Artist",
+      "duration": 59,
+      "instrumental": false,
+      "syncedLyrics": "[00:02]Far tie A"
+    },
+    {
+      "trackName": "Fixture Song",
+      "artistName": "Example Artist",
+      "duration": 61,
+      "instrumental": false,
+      "syncedLyrics": "[00:02]Far tie B"
+    },
+    {
+      "trackName": "Fixture Song",
+      "artistName": "Example Artist",
+      "duration": 60,
+      "instrumental": false,
+      "syncedLyrics": "[00:02]Unique closest"
+    }
+  ],
+  "search_ambiguous": [
+    {
+      "trackName": "Fixture Song",
+      "artistName": "Example Artist",
+      "duration": 59,
+      "instrumental": false,
+      "syncedLyrics": "[00:02]Conflicting A"
+    },
+    {
+      "trackName": "Fixture Song",
+      "artistName": "Example Artist",
+      "duration": 61,
+      "instrumental": false,
+      "syncedLyrics": "[00:02]Conflicting B"
+    }
+  ],
+  "long_gap": {
+    "lrc": "[00:01]Long verse line\n[00:30]Next line\n[00:45]\n[00:50]Final",
+    "markers": [
+      1,
+      30,
+      45,
+      50
+    ],
+    "texts": [
+      "Long verse line",
+      "Next line",
+      "",
+      "Final"
+    ],
+    "samples": [
+      [
+        0,
+        null
+      ],
+      [
+        1,
+        "Long verse line"
+      ],
+      [
+        12.999,
+        "Long verse line"
+      ],
+      [
+        13,
+        null
+      ],
+      [
+        25,
+        null
+      ],
+      [
+        30,
+        "Next line"
+      ],
+      [
+        41.999,
+        "Next line"
+      ],
+      [
+        42,
+        null
+      ],
+      [
+        45,
+        null
+      ],
+      [
+        46,
+        null
+      ],
+      [
+        49.999,
+        null
+      ],
+      [
+        50,
+        "Final"
+      ],
+      [
+        59,
+        "Final"
+      ],
+      [
+        60,
+        null
+      ]
+    ]
+  }
 }

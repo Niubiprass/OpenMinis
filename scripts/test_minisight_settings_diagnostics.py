@@ -94,6 +94,25 @@ class SettingsArchitecture(unittest.TestCase):
         self.assertNotIn('syncedLyrics', bridge)
         self.assertNotIn('diagnostic_detail_text', logger)
 
+    def test_lyric_lookup_route_survives_bounded_settings_reader(self):
+        # Mirror only fixed route labels, never a request URL/title/artist/LRC.
+        logger = (IOS / "MiniSightCore/MiniSightLog.m").read_text()
+        client = (IOS / "MiniSightCore/MiniSightLyrics.m").read_text()
+        route = re.search(r'"lyrics_route": \[([^\]]+)\]', VIEW)
+        self.assertIsNotNone(route)
+        values = set(re.findall(r'"([^"\n]+)"', route.group(1)))
+        self.assertEqual(values, {"exact", "search", "positive_cache", "negative_cache", "cooldown"})
+        self.assertIn('"lyrics_route"', VIEW[VIEW.index('static let allowed:'):VIEW.index('static let diagnosticEnums:')])
+        for value in values:
+            self.assertIn('@"' + value + '"', logger)
+            self.assertIn('@"' + value + '"', client)
+        self.assertIn('MAX(0, MIN(599, status))', client)
+        self.assertIn('MIN((NSUInteger)21, candidates)', client)
+        self.assertIn('diagnosticEnums[field]', VIEW)
+        helper = client[client.index('static void MSLyricsEvidence('):client.index('// BEGIN LYRICS PORTABLE POLICY')]
+        for word in ('track.title', 'track.artist', 'absoluteString', 'syncedLyrics', 'localizedDescription'):
+            self.assertNotIn(word, helper)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

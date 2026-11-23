@@ -41,6 +41,13 @@ def strip_call(s,name):
 
 P_METHODS={
  'shouldAnimate':('bool','void'), 'mayRoam':('bool','void'),
+ 'mayPerformMusicMotion':('bool','void'), 'roamOnce':('void','void'),
+ 'holdState:forDuration:':('void','int state, double duration'),
+ 'setRoamPace:':('void','double pace'), 'setSuspended:':('void','bool suspended'),
+ 'setRoamingPaused:':('void','bool paused'), 'setInteractionActive:':('void','bool active'),
+ 'setActivityActive:':('void','bool active'), 'setLyricsSuppressed:':('void','bool suppressed'),
+ 'setMotionLocked:forReason:':('void','bool locked, unsigned reason'), 'stopPlaying':('void','void'),
+ 'startPlaying':('void','void'), 'setCenterBounds:':('void','CGRect bounds'),
  'feasibleCenters':('MSRect','void'), 'clampedCenter:':('CGPoint','CGPoint point'),
  'setSpriteState:':('void','int state'), 'currentSpriteInterval':('double','void'),
  'frameCountForRow:':('int','int row'), 'applySpriteFrame':('void','void'),
@@ -79,7 +86,7 @@ E_SHIMS={'chooseRole':'FixtureChooseRole','advanceActions:':'FixtureAdvanceActio
  'presentationBlocked':'FixtureBlocked','setRunning:':'FixtureSetRunning',
  'restorePoster':'FixtureRestorePoster','placeLyricsBlocked:':'FixtureLyrics',
  'requestFrame:':'FixtureRequestFrame',
- 'setTilt:sway:':'FixtureTilt'}
+ 'setTilt:sway:':'FixtureTilt', 'performIdleAction':'FixtureIdleAction'}
 
 def cname(owner,key): return owner+'_'+key.split(':')[0]
 
@@ -212,7 +219,7 @@ def generate(pet,effects):
       'kMiniSightIdleSpriteInterval','kMiniSightSleepSpriteInterval',
       'kMiniSightRoamActiveLo','kMiniSightRoamActiveHi','kMiniSightRoamIdleLo','kMiniSightRoamIdleHi',
       'kMiniSightWalkSpeed','kMiniSightWalkMinDuration','kMiniSightWalkMaxDuration',
-      'kMiniSightJumpDuration','kMiniSightJumpDesiredHeight','kMiniSightJumpMinHeight']
+      'kMiniSightJumpDuration','kMiniSightJumpDesiredHeight','kMiniSightJumpMinHeight', 'kMiniSightWaveHold']
     for name in names:
         line=re.search(r'^static const \w+ '+name+r' = [^;]+;',pet,re.M).group(0)
         constants.append(re.sub(r'const (NSInteger|NSTimeInterval)','const double' if 'Interval' in name or 'Roam' in name else 'const int',line))
@@ -238,6 +245,12 @@ def generate(pet,effects):
     bodies.append('static void FixturePreparedFrame(bool first) {\n'+translated+'\n}')
     evidence.append({'owner':'E','selector':'requestFrame: prepared-land fragment',
       'raw_sha256':hashlib.sha256(raw.encode()).hexdigest(),'raw':raw})
+    timer=definition(pet,'armRoamTimerWithDelay:')
+    raw=re.search(r'if \(!strongSelf[^\n]+\n\s*\[strongSelf roamOnce\];',timer).group(0)
+    translated=translate('{'+raw.replace('strongSelf->_','_').replace('[strongSelf ','[self ')+'}','P')
+    bodies.append('static void FixtureRoamCallback(bool strongSelf, unsigned generation, int fired) {\n'+translated+'\n}')
+    evidence.append({'owner':'P','selector':'armRoamTimerWithDelay: captured callback guard',
+      'raw_sha256':hashlib.sha256(raw.encode()).hexdigest(),'raw':raw})
     return state+'\n'+'\n'.join(constants+declarations+bodies)+'\n',evidence
 
 
@@ -260,13 +273,20 @@ def source_guards(pet,effects):
 def main(argv=None):
     ap=argparse.ArgumentParser(description='Pet/Effects production-path host C regression')
     ap.add_argument('--trace',default=None,help='write JSON frame trace to this path')
+    ap.add_argument('--evidence',default=None,help='write extracted production method hashes and seam list')
+    ap.add_argument('--mutations',action='store_true',help='require compiled music behavior negatives to be rejected')
     ap.add_argument('--require-native',action='store_true',help='fail if Apple native runtime cannot run')
     args=ap.parse_args(argv)
     root=HERE.parent
-    pet=(root/'src/ios/MiniSightCore/MiniSightPet.m').read_text()
-    effects=(root/'src/ios/MiniSightCore/MiniSightPetEffects.m').read_text()
+    core=root/'src/ios/MiniSightCore' if (root/'src/ios/MiniSightCore/MiniSightPet.m').is_file() else root
+    pet=(core/'MiniSightPet.m').read_text()
+    effects=(core/'MiniSightPetEffects.m').read_text()
     header,evidence=generate(pet,effects)
     source_guards(pet,effects)
+    if args.evidence:
+        Path(args.evidence).write_text(json.dumps({'core':str(core),'methods':evidence,
+            'pet_shims':P_SHIMS,'effects_shims':E_SHIMS,
+            'limitations':'C translation only: no ObjC ABI, UIKit, QuartzCore, real NSTimer/CADisplayLink or ActionLibrary image decoding/delivery'},ensure_ascii=False,indent=2)+'\n')
     print('source guards PASS; %d production method bodies extracted'%len(evidence))
     cc=shutil.which('clang') or shutil.which('gcc')
     if not cc:
@@ -279,8 +299,8 @@ def main(argv=None):
         td=Path(tmp)
         (td/'production-paths.h').write_text(header)
         shutil.copy(str(FIX/'driver.c'),str(td/'driver.c'))
-        for name in ('MiniSightGeometry.h','MiniSightGravity.h','MiniSightLiveliness.h','MiniSightPetBehavior.h'):
-            shutil.copy(str(root/'src/ios/MiniSightCore'/name),str(td/name))
+        for name in ('MiniSightGeometry.h','MiniSightGravity.h','MiniSightLiveliness.h','MiniSightPetBehavior.h','MiniSightPetMusicMotion.h'):
+            shutil.copy(str(core/name),str(td/name))
         exe=td/'pet_paths'
         build=subprocess.run([cc,'-std=c99','-O1','-Wall','-Wno-unused-function','-I',str(td),
                               str(td/'driver.c'),'-lm','-o',str(exe)],capture_output=True,text=True)
@@ -295,6 +315,32 @@ def main(argv=None):
             print(result.stderr,end='')
             print('FAIL: production-path scenarios failed')
             return 1
+        if args.mutations:
+            music=(core/'MiniSightPetMusicMotion.h').read_text()
+            variants={
+              'music-host-starved':(pet.replace('    if (_effects.musicPlaying) {','    if (_effects.musicPlaying) { return;'),music),
+              'center-frozen-until-finish':(pet.replace('self.center = [self clampedCenter:MSPetCGPoint(sample)];','self.center = MSPetCGPoint(_motionStart);'),music),
+              'no-travelling-hops':(pet,re.sub(r'travel.jump = [^;]+;', 'travel.jump = false;',music)),
+              'no-music-motion-gate':(pet.replace('(_musicMotion && ![self mayPerformMusicMotion])','NO'),music),
+            }
+            playing=definition(pet,'setMusicPlaying:')
+            missing_cancel=playing.replace('if (_musicMotion && !_physicsMotion && !_dragging) [self cancelMotion];','if (_musicMotion) { /* deliberately broken stop */ }')
+            variants['stop-keeps-music-route']=(pet.replace(playing,missing_cancel),music)
+            for name,(mutated,policy) in variants.items():
+                assert (mutated,policy)!=(pet,music), 'no-op mutation '+name
+                generated,_=generate(mutated,effects)
+                (td/'production-paths.h').write_text(generated)
+                (td/'MiniSightPetMusicMotion.h').write_text(policy)
+                build=subprocess.run([cc,'-std=c99','-O1','-Wall','-Wno-unused-function','-I',str(td),
+                    str(td/'driver.c'),'-lm','-o',str(exe)],capture_output=True,text=True)
+                if build.returncode:
+                    print('FAIL: mutant must compile before runtime rejection: '+name+'\n'+build.stderr)
+                    return 1
+                rejected=subprocess.run([str(exe)],capture_output=True,text=True)
+                if rejected.returncode!=1 or 'FAIL:' not in rejected.stderr:
+                    print('FAIL: music mutant escaped: '+name+'\n'+rejected.stdout+rejected.stderr)
+                    return 1
+                print('REJECT compiled music mutant: '+name+' / '+rejected.stderr.strip())
     print('PASS: Pet/Effects production control flow executed on host C')
     print('SKIP: UIKit/QuartzCore/Foundation native behavior not executed on Linux')
     if args.require_native:
