@@ -343,16 +343,42 @@ final class ComposerBeamTrack {
             case .quadCurve(to: let p, control: let c):
                 let from = current
                 for step in 1...24 {
-                    let t = CGFloat(step) / 24, u = 1 - t
-                    append(CGPoint(x: u * u * from.x + 2 * u * t * c.x + t * t * p.x,
-                                   y: u * u * from.y + 2 * u * t * c.y + t * t * p.y))
+                    let t: CGFloat = CGFloat(step) / 24
+                    let u: CGFloat = 1 - t
+                    // Explicit scalar steps keep Swift's path closure cheap to type-check.
+                    let fromWeight: CGFloat = u * u
+                    let controlWeight: CGFloat = 2 * u * t
+                    let endWeight: CGFloat = t * t
+                    let fromX: CGFloat = fromWeight * from.x
+                    let controlX: CGFloat = controlWeight * c.x
+                    let endX: CGFloat = endWeight * p.x
+                    let x: CGFloat = fromX + controlX + endX
+                    let fromY: CGFloat = fromWeight * from.y
+                    let controlY: CGFloat = controlWeight * c.y
+                    let endY: CGFloat = endWeight * p.y
+                    let y: CGFloat = fromY + controlY + endY
+                    append(CGPoint(x: x, y: y))
                 }
             case .curve(to: let p, control1: let a, control2: let b):
                 let from = current
                 for step in 1...32 {
-                    let t = CGFloat(step) / 32, u = 1 - t
-                    append(CGPoint(x: u * u * u * from.x + 3 * u * u * t * a.x + 3 * u * t * t * b.x + t * t * t * p.x,
-                                   y: u * u * u * from.y + 3 * u * u * t * a.y + 3 * u * t * t * b.y + t * t * t * p.y))
+                    let t: CGFloat = CGFloat(step) / 32
+                    let u: CGFloat = 1 - t
+                    let fromWeight: CGFloat = u * u * u
+                    let firstWeight: CGFloat = 3 * u * u * t
+                    let secondWeight: CGFloat = 3 * u * t * t
+                    let endWeight: CGFloat = t * t * t
+                    let fromX: CGFloat = fromWeight * from.x
+                    let firstX: CGFloat = firstWeight * a.x
+                    let secondX: CGFloat = secondWeight * b.x
+                    let endX: CGFloat = endWeight * p.x
+                    let x: CGFloat = fromX + firstX + secondX + endX
+                    let fromY: CGFloat = fromWeight * from.y
+                    let firstY: CGFloat = firstWeight * a.y
+                    let secondY: CGFloat = secondWeight * b.y
+                    let endY: CGFloat = endWeight * p.y
+                    let y: CGFloat = fromY + firstY + secondY + endY
+                    append(CGPoint(x: x, y: y))
                 }
             case .closeSubpath: append(start)
             }
