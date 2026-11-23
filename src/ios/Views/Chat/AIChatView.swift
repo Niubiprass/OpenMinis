@@ -4144,7 +4144,9 @@ _ios15Seg7
                     .padding(.trailing, 10)
                 }
             }
-            .modifier(ComposerSurface(waveLevels: composerWaveLevels, voiceActive: voiceInputActive || speechManager.state == .recording))
+            .modifier(ComposerSurface(waveLevels: composerWaveLevels,
+                                      voiceActive: voiceInputActive || speechManager.state == .recording,
+                                      beamActive: (vm.contextUsage?.tier ?? .normal) == .normal))
             // [T-ios-context-usage-hint] Inner glow along the glass wall.
             // An overlay ABOVE the material (so the Liquid Glass backdrop
             // sampler never sees it) that clips itself to the same shape, so
@@ -5241,6 +5243,7 @@ struct FloatingCircleButtonSurface: ViewModifier {
 private struct ComposerSurface: ViewModifier {
     var waveLevels: [Float] = []
     var voiceActive: Bool = false
+    var beamActive: Bool = true
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -5250,23 +5253,36 @@ private struct ComposerSurface: ViewModifier {
     // participating in its layout. Do not inset it by the text/button padding:
     // the shared rounded clip supplies the only curved-edge trimming.
     private var wave: some View {
-        ComposerRainbowWave(levels: waveLevels, opacity: 0.86, voiceActive: voiceActive)
-            .frame(height: ComposerRainbowWave.canvasHeight)
+        ComposerFlowingWave(levels: waveLevels, voiceActive: voiceActive)
+            .frame(height: ComposerFlowingWave.canvasHeight)
             .frame(maxWidth: .infinity)
+    }
+
+    // Blend the wave's light buffers against the REAL surface first; then draw
+    // the border, with text/buttons above both. Neither effect paints a mock
+    // dark rectangle or changes the content's proposed frame.
+    @ViewBuilder private var decoratedSurface: some View {
+        if #available(iOS 26.0, *) {
+            shape.glassEffect(.regular, in: shape)
+                .overlay(alignment: .bottom) { wave }
+                .overlay { ComposerBorderBeam(active: beamActive) }
+                .clipShape(shape)
+        } else {
+            shape.fill(ChatColors.inputBg)
+                .overlay(alignment: .bottom) { wave }
+                .overlay { ComposerBorderBeam(active: beamActive) }
+                .clipShape(shape)
+        }
     }
 
     func body(content: Content) -> some View {
         let foreground = content
-            .background(alignment: .bottom) { wave }
+            .background { decoratedSurface }
             .clipShape(shape)
         if #available(iOS 26.0, *) {
             foreground
-                .background { shape.glassEffect(.regular, in: shape) }
-                .clipShape(shape)
         } else {
             foreground
-                .background(shape.fill(ChatColors.inputBg))
-                .clipShape(shape)
                 .shadow(color: Color.black.opacity(0.12), radius: 8, x: 0, y: 2)
                 .shadow(color: Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0, alpha: 0.5) : UIColor(white: 0, alpha: 0) }), radius: 8, x: 0, y: -4)
         }

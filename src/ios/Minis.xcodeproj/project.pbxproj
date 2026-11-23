@@ -284,6 +284,8 @@
 		E5HBV0001 /* HelperBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5HBV0011 /* HelperBlockView.swift */; };
 		E5I000001 /* SpeechRecognitionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5I000011 /* SpeechRecognitionManager.swift */; };
 		E5I000002 /* AudioWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5I000012 /* AudioWaveformView.swift */; };
+		BEA2026112300000000000001 /* ComposerEffects.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEA2026112300000000000002 /* ComposerEffects.swift */; };
+		BEA2026112300000000000003 /* BorderBeam-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = BEA2026112300000000000004 /* BorderBeam-LICENSE.txt */; };
 		E5IP00001 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = E5IP00010 /* InfoPlist.strings */; };
 		E5J000001 /* LoggingManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5J000011 /* LoggingManager.swift */; };
 		E5J000002 /* LogManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5J000012 /* LogManagementView.swift */; };
@@ -1041,6 +1043,8 @@
 		E5HBV0011 /* HelperBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperBlockView.swift; sourceTree = "<group>"; };
 		E5I000011 /* SpeechRecognitionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognitionManager.swift; sourceTree = "<group>"; };
 		E5I000012 /* AudioWaveformView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioWaveformView.swift; sourceTree = "<group>"; };
+		BEA2026112300000000000002 /* ComposerEffects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerEffects.swift; sourceTree = "<group>"; };
+		BEA2026112300000000000004 /* BorderBeam-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "BorderBeam-LICENSE.txt"; sourceTree = "<group>"; };
 		E5IP00011 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		E5IP00012 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
 		E5IP00013 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/InfoPlist.strings; sourceTree = "<group>"; };
@@ -2517,6 +2521,8 @@
 				E5F200015 /* ChatInputBar.swift */,
 				E5F2000FB /* TextFadeAnimator.swift */,
 				E5I000012 /* AudioWaveformView.swift */,
+				BEA2026112300000000000002 /* ComposerEffects.swift */,
+				BEA2026112300000000000004 /* BorderBeam-LICENSE.txt */,
 				E5M000017 /* MarkdownRenderView.swift */,
 				F1M00010 /* Media */,
 				F1W00010 /* MinisShareSheet.swift */,
@@ -2894,6 +2900,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E51000004 /* Preview Assets.xcassets in Resources */,
+				BEA2026112300000000000003 /* BorderBeam-LICENSE.txt in Resources */,
 				AA26CCB72F31067900AECF2D /* alpine-rootfs.zip in Resources */,
 				E5BSH0004 /* bashism_rules.json in Resources */,
 				E5BSH0005 /* bashism_test_vectors.json in Resources */,
@@ -3392,6 +3399,7 @@
 				E5AT00004 /* AudioTogglePlaybackIntent.swift in Sources */,
 				E5I000001 /* SpeechRecognitionManager.swift in Sources */,
 				E5I000002 /* AudioWaveformView.swift in Sources */,
+				BEA2026112300000000000001 /* ComposerEffects.swift in Sources */,
 				E5J000001 /* LoggingManager.swift in Sources */,
 				E5BADGE001 /* SessionBadgeStore.swift in Sources */,
 				E5J000002 /* LogManagementView.swift in Sources */,

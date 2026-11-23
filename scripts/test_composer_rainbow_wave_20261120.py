@@ -311,9 +311,13 @@ class WaveContracts(unittest.TestCase):
         self.assertIn("trace.addQuadCurve", self.wave)
 
     def test_composer_surface_only_hosts_the_background(self):
-        self.assertIn(".background(alignment: .bottom) { wave }", self.surface)
+        self.assertIn(".overlay(alignment: .bottom) { wave }", self.surface)
+        self.assertIn(".background { decoratedSurface }", self.surface)
         self.assertIn(".clipShape(shape)", self.surface)
-        self.assertIn(".frame(height: ComposerRainbowWave.canvasHeight)", self.surface)
+        # 2026-11-23: user selected the full combination-preview interior.
+        # Legacy model remains covered above; actual host uses the new view.
+        self.assertIn(".frame(height: ComposerFlowingWave.canvasHeight)", self.surface)
+        self.assertIn("ComposerFlowingWave(levels: waveLevels, voiceActive: voiceActive)", self.surface)
         self.assertNotIn(".padding(", self.surface)
         self.assertNotIn(".offset(", self.surface)
 
@@ -327,9 +331,14 @@ class WaveContracts(unittest.TestCase):
         allowed = ("showDownloadsPanel", "pendingDownloadLocate", "locateDownloadTarget",
                    "DownloadLocateTarget", "downloadLogger", "[Downloads]", "Downloads",
                    # wave batch: the composer call site gained voiceActive earlier
-                   "ComposerRainbowWave", "waveLevels", "voiceActive", "opacity")
-        old = baseline_file(CHAT).read_text().splitlines()
-        new = self.chat.splitlines()
+                   "ComposerRainbowWave", "ComposerFlowingWave", "ComposerBorderBeam",
+                   "waveLevels", "voiceActive", "beamActive", "opacity")
+        old_text = baseline_file(CHAT).read_text()
+        # Host-only decoration refactor is verified byte-exact outside its
+        # region by test_composer_effects_20261123; keep this older download/
+        # voice regression focused on the non-decoration parts it protects.
+        old = old_text.splitlines()
+        new = self.chat.replace(self.surface, block(old_text, "private struct ComposerSurface: ViewModifier")).splitlines()
         for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new).get_opcodes():
             if tag == "equal":
                 continue
