@@ -72,6 +72,20 @@ static void Emit(FixtureProtocol *protocol, NSInteger status, NSData *data, NSDi
     }
     [protocol.client URLProtocolDidFinishLoading:protocol];
 }
+// Pure synthetic replies for the QQ legs of old LRCLIB cache/diagnostic cases.
+static NSData *QQJSONPData(NSDictionary *dict);
+static BOOL QQEmptyReply(FixtureProtocol *p, MiniSightLyricsTrack *track, BOOL explicitUnsynced) {
+    if (![p.request.URL.host isEqual:@"c.y.qq.com"]) return NO;
+    if ([p.request.URL.path isEqual:@"/soso/fcgi-bin/client_search_cp"]) {
+        NSDictionary *song=@{@"songname":track.title,@"singer":@[@{@"name":track.artist}],@"interval":@(track.duration),@"songmid":@"abc123"};
+        NSArray *list=explicitUnsynced?@[song]:@[];
+        Emit(p,200,QQJSONPData(@{@"code":@0,@"data":@{@"song":@{@"list":list}}}),@{@"Content-Type":@"application/x-javascript"});
+    } else {
+        CHECK(explicitUnsynced && [p.request.URL.path isEqual:@"/lyric/fcgi-bin/fcg_query_lyric_new.fcg"],"never request QQ lyric on ambiguous or empty search");
+        Emit(p,200,QQJSONPData(@{@"code":@0,@"lyric":@""}),@{@"Content-Type":@"text/html"});
+    }
+    return YES;
+}
 static MiniSightLyricsClient *Client(void) {
     return [[MiniSightLyricsClient alloc] initWithProtocolClasses:@[FixtureProtocol.class]];
 }
@@ -280,18 +294,19 @@ static void TransportTests(MiniSightLyricsTrack *track) {
 
     handler = ^(FixtureProtocol *p) {
         if ([p.request.URL.path isEqual:@"/api/get"]) Emit(p, 404, nil, nil);
+        else if (QQEmptyReply(p, track, NO)) return;
         else Emit(p, 200, JSON(@[
             @{@"trackName": @"Wrong Title", @"artistName": track.artist, @"duration": @60, @"instrumental": @NO, @"syncedLyrics": @"[00:01]Wrong"},
             @{@"trackName": track.title, @"artistName": track.artist, @"duration": @63, @"instrumental": @NO, @"syncedLyrics": @"[00:01]Wrong duration"}
         ]), nil);
     };
     client = Client(); before = starts;
-    CHECK(Fetch(client, track) == nil && Equal(lastReason, @"lyrics_not_found") && starts == before + 2, "search with no exact candidate safely misses");
+    CHECK(Fetch(client, track) == nil && Equal(lastReason, @"lyrics_not_found") && starts == before + 3, "no exact candidates on either source safely misses");
     id entry = [[client valueForKey:@"cache"] objectForKey:track.cacheKey];
     CHECK(entry != nil, "search no-match negative cache exists");
     [entry setValue:@0 forKey:@"expires"];
     Pump(0.36); before = starts;
-    CHECK(Fetch(client, track) == nil && starts == before + 2, "expired miss still does exact then at most one search");
+    CHECK(Fetch(client, track) == nil && starts == before + 3, "expired miss repeats LRCLIB then one QQ search");
     [client cancel];
 
     handler = ^(FixtureProtocol *p) { Emit(p, 429, [@"not JSON" dataUsingEncoding:NSUTF8StringEncoding], @{@"Retry-After": @"120"}); };
@@ -400,7 +415,8 @@ int main(int argc, const char *argv[]) {
         LyricsDiagnosticRoundtripTests(track);
         TransportTests(track); CacheDeadlineAndPendingCancelTests(track); CancellationTests(track);
         ExplicitUnsyncedFallbackTests(track); SearchBoundaryTransportTests(fixture, track);
-        SearchCancelDeadlineTests(track); SearchSizeAndRedirectTests(track);
+        SearchCancelDeadlineTests(track); SearchSizeAndRedirectTests(track); QQFallbackNativeTests(track);
+        QQQueuedLifecycleTests(track); QQRejectedInputsTests(track);
         handler = nil; lastRequest = nil;
         printf("NATIVE PASS: %lu checks; synthetic Fake NSURLProtocol only\n", (unsigned long)checks);
     }

@@ -101,7 +101,7 @@ class SettingsArchitecture(unittest.TestCase):
         route = re.search(r'"lyrics_route": \[([^\]]+)\]', VIEW)
         self.assertIsNotNone(route)
         values = set(re.findall(r'"([^"\n]+)"', route.group(1)))
-        self.assertEqual(values, {"exact", "search", "positive_cache", "negative_cache", "cooldown"})
+        self.assertEqual(values, {"exact", "search", "qq_search", "qq_lyric", "positive_cache", "negative_cache", "cooldown"})
         self.assertIn('"lyrics_route"', VIEW[VIEW.index('static let allowed:'):VIEW.index('static let diagnosticEnums:')])
         for value in values:
             self.assertIn('@"' + value + '"', logger)
@@ -109,6 +109,10 @@ class SettingsArchitecture(unittest.TestCase):
         self.assertIn('MAX(0, MIN(599, status))', client)
         self.assertIn('MIN((NSUInteger)21, candidates)', client)
         self.assertIn('diagnosticEnums[field]', VIEW)
+        home = (IOS / 'Views/Settings/MiniSightHomePage.swift').read_text()
+        self.assertIn('先将歌名、歌手和时长发给 LRCLIB', home)
+        self.assertIn('才用歌名和歌手查 QQ 音乐（c.y.qq.com）', home)
+        self.assertIn('歌词查询不读取音乐账号、不录音', home)
         helper = client[client.index('static void MSLyricsEvidence('):client.index('// BEGIN LYRICS PORTABLE POLICY')]
         for word in ('track.title', 'track.artist', 'absoluteString', 'syncedLyrics', 'localizedDescription'):
             self.assertNotIn(word, helper)

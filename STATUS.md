@@ -1,3 +1,15 @@
+# Current: QQ lyrics scoped candidate / authorized push + CI (2026-11-24)
+
+- User explicitly approved only App/plugin lyrics-only push, CI, static packaging verification.
+- Native baseline and mutations remain mandatory; no new device, capture, install, respring or reboot authorization.
+- App 1.16/build382, independent artifact only; beta-latest and formal branch untouched.
+- Frozen authorized source: /var/minis/shared/openminis/local-reviews/lyrics-qq-local-20261124/FINAL-SCOPE.json.
+- Scope: strict LRCLIB->QQ, stale-track fence, bounded diagnostic routes; preserve old pet gestures, atlas, bounds, composer.
+- Stage: staged; new native execution/build/package not yet proven.
+
+---
+# Historical records (not current authorization)
+
 # 当前：桌宠歌词与音乐真实走跳本地修复（2026-11-23，未推送）
 
 - 当前App源码HEAD501c227、手机1.16/build378；本轮仅本地同步歌词及音乐身体移动必要共享实现。插件HEAD26bf301、实装0.8.50；新候选插件0.8.51。主版本继续1.16，build不手改。

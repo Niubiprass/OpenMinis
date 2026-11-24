@@ -3,11 +3,12 @@
 static void CacheDeadlineAndPendingCancelTests(MiniSightLyricsTrack *track) {
     NSMutableDictionary *unsynced = Record(track); unsynced[@"syncedLyrics"] = NSNull.null;
     handler = ^(FixtureProtocol *p) {
+        if (QQEmptyReply(p,track,YES)) return;
         if ([p.request.URL.path isEqual:@"/api/get"]) Emit(p, 404, nil, nil);
         else Emit(p, 200, JSON(@[unsynced]), nil);
     };
     MiniSightLyricsClient *client = Client(); NSUInteger before = starts;
-    CHECK(Fetch(client, track) == nil && Equal(lastReason, @"no_synced_lyrics") && starts == before + 2, "404 plus exact unsynced search preserves failure reason");
+    CHECK(Fetch(client, track) == nil && Equal(lastReason, @"no_synced_lyrics") && starts == before + 4, "both sources lack synced lyrics: retain the confirmed reason");
     id entry = [[client valueForKey:@"cache"] objectForKey:track.cacheKey];
     CHECK(entry && Equal([entry valueForKey:@"reason"], @"no_synced_lyrics"), "negative entry stores fixed original reason");
     double ttl = [[entry valueForKey:@"expires"] doubleValue] - NSProcessInfo.processInfo.systemUptime;
@@ -26,10 +27,11 @@ static void CacheDeadlineAndPendingCancelTests(MiniSightLyricsTrack *track) {
 
     // A strictly validated empty 200 may search ONCE, never recurse on empty search.
     handler = ^(FixtureProtocol *p) {
+        if (QQEmptyReply(p,track,YES)) return;
         Emit(p, 200, JSON([p.request.URL.path isEqual:@"/api/get"] ? (id)unsynced : (id)@[unsynced]), nil);
     };
     client = Client(); before = starts;
-    CHECK(Fetch(client, track) == nil && Equal(lastReason, @"no_synced_lyrics") && starts == before + 2, "one fallback after exact 200 with explicit unsynced lyrics");
+    CHECK(Fetch(client, track) == nil && Equal(lastReason, @"no_synced_lyrics") && starts == before + 4, "one search per provider, no recursion after explicit unsynced result");
     [client cancel];
     for (NSNumber *code in @[@(NSURLErrorTimedOut), @(NSURLErrorNotConnectedToInternet)]) {
         handler = ^(FixtureProtocol *p) { [p.client URLProtocol:p didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:code.integerValue userInfo:nil]]; };

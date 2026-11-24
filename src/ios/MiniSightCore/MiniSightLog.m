@@ -57,7 +57,7 @@ static BOOL MSDiagEnum(NSString *key, NSString *value) {
         @"metadata_stage": [NSSet setWithArray:@[@"unknown", @"not_applicable", @"awaiting_fresh_info", @"coherent", @"missing"]],
         @"progress_stage": [NSSet setWithArray:@[@"unknown", @"not_applicable", @"available", @"missing"]],
         @"lyrics_stage": [NSSet setWithArray:@[@"unknown", @"inactive", @"media_api_unavailable", @"disabled", @"no_supported_player", @"awaiting_fresh_identity", @"metadata_missing", @"progress_missing", @"not_playing", @"fetching", @"awaiting_fetch", @"no_synced_lyrics", @"no_current_line", @"current_line"]],
-        @"lyrics_route": [NSSet setWithArray:@[@"exact", @"search", @"positive_cache", @"negative_cache", @"cooldown"]],
+        @"lyrics_route": [NSSet setWithArray:@[@"exact", @"search", @"qq_search", @"qq_lyric", @"positive_cache", @"negative_cache", @"cooldown"]],
         @"lyrics_detail": [NSSet setWithArray:@[@"unknown", @"not_applicable", @"lyrics_http", @"lyrics_cooldown", @"lyrics_network_error", @"lyrics_response_rejected", @"lyrics_not_found", @"lyrics_rate_limited", @"lyrics_service_unavailable", @"lyrics_timeout", @"lyrics_oversized", @"lyrics_track_mismatch", @"lyrics_instrumental", @"lyrics_invalid_lrc", @"lyrics_timeline", @"no_synced_lyrics"]],
         @"reason_detail": [NSSet setWithArray:@[@"inactive", @"disabled", @"fetching", @"awaiting_fetch", @"awaiting_fresh_identity", @"music_state", @"not_applicable", @"no_active_player", @"no_supported_player", @"media_controller_unavailable", @"player_bundle_missing", @"unsupported_player", @"player_pid_unresolved", @"netease_player_selected", @"supported_player_selected", @"netease_pid_selected", @"supported_pid_selected", @"media_api_unavailable", @"metadata_missing", @"progress_missing", @"progress_invalid", @"not_playing", @"track_valid", @"lyrics_fetch", @"lyrics_timeline", @"lyrics_not_found", @"lyrics_http", @"lyrics_cooldown", @"lyrics_network_error", @"lyrics_response_rejected", @"lyrics_rate_limited", @"lyrics_service_unavailable", @"lyrics_timeout", @"lyrics_oversized", @"lyrics_track_mismatch", @"lyrics_instrumental", @"lyrics_invalid_lrc", @"no_synced_lyrics", @"no_current_line", @"lyrics_pending", @"lyrics_received", @"lyrics_no_space", @"current_line", @"awaiting_fresh_info", @"snapshot_verified", @"snapshot_write_failed", @"darwin_notification", @"container_changed", @"waiting_for_current_state", @"playing_without_lyrics_metadata", @"motion_only", @"device_locked", @"lock_state_unknown", @"not_visible_or_disabled", @"gate_closed", @"music_stale", @"blocked", @"hidden", @"unknown"]],
         @"action": [NSSet setWithArray:@[@"none", @"interact", @"input", @"voice", @"menu", @"record", @"conversation"]],
@@ -75,7 +75,7 @@ static BOOL MSDiagEnum(NSString *key, NSString *value) {
         @"domain": [NSSet setWithArray:@[@"chat", @"runtime", @"settings", @"voice"]],
         @"issue": [NSSet setWithArray:@[@"0", @"1", @"2", @"3", @"4", @"5", @"6", @"7", @"8", @"9"]],
         @"finish": [NSSet setWithArray:@[@"content_filter", @"error", @"function_call", @"length", @"none", @"other", @"stop", @"tool_calls", @"unknown"]],
-        @"version": [NSSet setWithArray:@[@"0.8.1", @"0.8.49", @"0.8.50", @"0.8.51"]]
+        @"version": [NSSet setWithArray:@[@"0.8.1", @"0.8.49", @"0.8.50", @"0.8.51", @"0.8.52"]]
     }; });
     return [allowed[key] containsObject:value];
 }

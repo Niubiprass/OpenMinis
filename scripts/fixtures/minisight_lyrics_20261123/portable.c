@@ -1,5 +1,6 @@
 /* The runner prepends the verbatim production C policy, not an ObjC port. */
 #include <stdio.h>
+#include <string.h>
 static unsigned checks;
 #define CHECK(x) do { ++checks; if (!(x)) { fprintf(stderr,"FAIL portable line %d: %s\n",__LINE__,#x); return 1; } } while (0)
 static double TimeAt(const void *p, size_t i) { return ((const double *)p)[i]; }
@@ -53,6 +54,31 @@ int main(void) {
     CHECK(MSLyricsDispatchReady(14.999,15));
     CHECK(!MSLyricsDispatchReady(15,15) && !MSLyricsDispatchReady(16,15));
     CHECK(!MSLyricsDispatchReady(NAN,15) && !MSLyricsDispatchReady(1,INFINITY));
+    const unsigned prior = checks;
+    for (size_t i=0;i<sizeof(statuses)/sizeof(*statuses);i++) for(unsigned bits=0;bits<32;bits++) {
+        bool want=(bits&15)==1 && (statuses[i]==404 || (statuses[i]==200 && (bits&16)));
+        CHECK(MSLyricsMayTryQQ(bits&1,bits&2,bits&4,bits&8,statuses[i],bits&16)==want);
+    }
+    for(size_t ticket=1;ticket<=3;ticket++) for(size_t current=1;current<=3;current++)
+        for(size_t active=1;active<=3;active++) for(unsigned bits=0;bits<8;bits++) {
+            CHECK(MSLyricsQQTicket(ticket,current,active,bits&1,bits&2,bits&4)==(ticket==current && ticket==active && bits==3));
+        }
+    for(unsigned i=0;i<=255;i++) {
+        uint8_t b=(uint8_t)i;
+        CHECK(MSLyricsQQMIDOK(&b,1)==((i>=48 && i<=57)||(i>=65 && i<=90)||(i>=97 && i<=122)));
+    }
+    uint8_t limit[65]; memset(limit,'A',sizeof(limit));
+    CHECK(MSLyricsQQMIDOK(limit,64) && !MSLyricsQQMIDOK(limit,65));
+    CHECK(!MSLyricsQQMIDOK(NULL,1) && !MSLyricsQQMIDOK(limit,0));
+    const char *ok[]={"MusicJsonCallback({\"a\":1});","  \xef\xbb\xbf  query.cb1 \t( {\"a\":1} )  ; \n", "_$.cb$({\"a\":1})"};
+    for(size_t i=0;i<sizeof(ok)/sizeof(*ok);i++) {size_t at,n;
+        CHECK(MSLyricsQQPayloadRange((const uint8_t*)ok[i],strlen(ok[i]),&at,&n));
+        CHECK(n==7 && !memcmp(ok[i]+at,"{\"a\":1}",7));
+    }
+    const char *badEnvelope[]={"", "{}", " ({});", "1a({})", "a..b({})", "a.b.c({})", "a-b({})", "a([])", "a({}", "a({}); extra()", "a({});;", "a()", "junk;a({})"};
+    for(size_t i=0;i<sizeof(badEnvelope)/sizeof(*badEnvelope);i++){size_t at,n;CHECK(!MSLyricsQQPayloadRange((const uint8_t*)badEnvelope[i],strlen(badEnvelope[i]),&at,&n));}
+    size_t at,n; CHECK(!MSLyricsQQPayloadRange(limit,1024u*1024u+1u,&at,&n));
+    printf("QQ POLICY PASS: %u checks; fallback, stale tickets, MID, JSONP envelope (not NSURLSession)\n",checks-prior);
     printf("PORTABLE PASS: %u checks; verbatim production C only (not Foundation transport)\n",checks);
     return 0;
 }

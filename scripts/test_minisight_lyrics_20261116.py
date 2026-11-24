@@ -42,7 +42,18 @@ def contract_errors(source, header):
     required = {
         "HTTPS exact endpoint": 'componentsWithString:@"https://lrclib.net/api/get"',
         "HTTPS fallback endpoint": 'componentsWithString:@"https://lrclib.net/api/search"',
-        "strict endpoint path": 'MSLyricsAllowedURL(response.URL, @"/api/search")',
+        "strict endpoint path": 'MSLyricsAllowedURL(response.URL, MSLyricsRouteLRCLibSearch)',
+        "QQ JSONP strict": "MSQQJSONP",
+        "QQ base64 canonical": "base64EncodedStringWithOptions:0",
+        "QQ exact source host": '@"c.y.qq.com"',
+        "QQ request bounded MID": 'MSLyricsQQMIDOK(midBytes.bytes, midBytes.length)',
+        "QQ delayed captured generation": 'MSLyricsQQTicket(ticket, owner.generation, owner.activeGeneration,',
+        "QQ only from LRCLIB search": 'MSLyricsMayTryQQ(!wasQQ && wasSearch, _qqSearchAttempted, error != nil, timeline != nil,',
+        "QQ validate response URL": '(_qqTask && ![response.URL isEqual:task.originalRequest.URL])',
+        "QQ optional response echo": 'obj[@"songmid"] && ![obj[@"songmid"] isEqual:_qqSongMID]',
+        "QQ parse actual envelope": 'MSLyricsQQPayloadRange(data.bytes, data.length, &at, &length)',
+        "QQ stage attempt fence": "_qqSearchAttempted",
+        "QQ lyrics timed parser": "timelineWithLRC:lrc duration:_track.duration",
         "search attempt fence": "_searchAttempted",
         "search query item": 'queryItemWithName:@"q"',
         "bounded search candidates": '[payload count] > 20',
@@ -125,8 +136,26 @@ class SourceContractTests(unittest.TestCase):
         self.assertIn('MIN(599, status)', evidence)
         for field in ('title', 'artist', 'lyric', 'url', 'cookies', 'error'):
             self.assertNotIn('@"' + field + '"', evidence)
-        self.assertIn('@"lyrics_route": [NSSet setWithArray:@[@"exact", @"search", @"positive_cache", @"negative_cache", @"cooldown"]]', log)
+        self.assertIn('@"lyrics_route": [NSSet setWithArray:@[@"exact", @"search", @"qq_search", @"qq_lyric", @"positive_cache", @"negative_cache", @"cooldown"]]', log)
+        self.assertIn('search ? @"qq_search" : @"qq_lyric"', src)
+        self.assertIn('wasQQ ? (qqSearch ? @"qq_search" : @"qq_lyric")', src)
+        self.assertIn('Seven fixed routes x two stages', src)
         self.assertIn('@"0.8.50", @"0.8.51"', log)
+
+    def test_qq_network_contract_is_exact_and_bounded(self):
+        src = SOURCE.read_text()
+        self.assertIn('https://c.y.qq.com/soso/fcgi-bin/client_search_cp', src)
+        self.assertIn('https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg', src)
+        self.assertIn('!url.user.length && !url.password.length && !url.fragment.length', src)
+        self.assertIn('application/x-javascript', src)
+        self.assertIn('@"text/html"', src)
+        self.assertIn('https://y.qq.com/portal/player.html', src)
+        self.assertIn('MSLyricsQQTicket(ticket, owner.generation, owner.activeGeneration,', src)
+        self.assertIn('owner.qqSearchPending', src)
+        self.assertIn('_qqSearchPending = YES;', src)
+        self.assertIn('finishQQTimeoutForRoute', src)
+        self.assertIn('r.HTTPShouldHandleCookies = NO', src)
+        self.assertIn('QQFallbackNativeTests', NATIVE23.read_text())
 
     def test_fixture_calls_production_not_a_port(self):
         fixture = json.loads(DATA.read_text())
@@ -143,11 +172,15 @@ class SourceContractTests(unittest.TestCase):
         self.assertTrue(NATIVE22.is_file(), "missing prior native include must fail locally, not await Apple CI")
         self.assertIn('search_ambiguous', fixture)
         added = NATIVE23.read_text()
-        for call in ('LyricsDiagnosticRoundtripTests', 'ExplicitUnsyncedFallbackTests', 'SearchBoundaryTransportTests', 'SearchCancelDeadlineTests', 'SearchSizeAndRedirectTests'):
-            self.assertIn(call + '(', native)
+        for call in ('LyricsDiagnosticRoundtripTests', 'ExplicitUnsyncedFallbackTests', 'SearchBoundaryTransportTests', 'SearchCancelDeadlineTests', 'SearchSizeAndRedirectTests', 'QQFallbackNativeTests', 'QQQueuedLifecycleTests', 'QQRejectedInputsTests'):
+            self.assertEqual(native.count(call+'('), 1)
             self.assertIn('static void ' + call + '(', added)
-        for needle in ('NSURLErrorTimedOut', 'NSURLErrorNotConnectedToInternet', '@503', '@429', '@302', 'searchPending', 'oldTask', '@"deadline"', 'get404/search404/cache'):
+        for needle in ('NSURLErrorTimedOut','NSURLErrorNotConnectedToInternet','@503','@429','@302','searchPending','oldTask','@"deadline"','get404/search404/cache'):
             self.assertIn(needle, added)
+        self.assertIn('searchPending', NATIVE22.read_text())
+        self.assertIn('songmid', added)
+        self.assertIn('abc123', added)
+        self.assertIn('QQ synthetic line', added)
         self.assertNotIn('@implementation MiniSightLyrics', added)
 
     def test_plugin_byte_identical(self):
@@ -156,7 +189,13 @@ class SourceContractTests(unittest.TestCase):
         root = Path(OPTIONS.plugin_root)
         plugin = root if (root / "MiniSightLyrics.m").is_file() else root / "debs/MiniSight"
         for name in ("MiniSightLyrics.h", "MiniSightLyrics.m", "MiniSightLog.m"):
-            self.assertEqual((CORE / name).read_bytes(), (plugin / name).read_bytes(), name)
+            app = (CORE / name).read_bytes(); other = (plugin / name).read_bytes()
+            # Version labels differ in independently released hosts. Only that one
+            # pre-existing, known enum delta is allowed; QQ routes must be identical.
+            if name == "MiniSightLog.m" and app != other:
+                label=b'@"0.8.51", @"0.8.52~rhythm-off1"]]'; self.assertEqual(other.count(label),1)
+                other = other.replace(label,b'@"0.8.51"]]')
+            self.assertEqual(app, other, name)
         for local in (NATIVE, NATIVE22, NATIVE23, DATA, PORTABLE, Path(__file__).resolve()):
             relative = local.relative_to(ROOT)
             self.assertEqual(local.read_bytes(), (plugin / relative).read_bytes(), str(relative))
@@ -178,6 +217,11 @@ class PortableProductionPolicyTests(unittest.TestCase):
             'nearest-tie-accepted': ('equivalent[i] != equivalent[best]', 'equivalent[i] == equivalent[best]'),
             'duration-too-loose': ('delta > 2.0', 'delta > 3.0'),
             'deadline-inclusive': ('now < deadline', 'now <= deadline'),
+            'qq-preempt-primary': ('return lrclibSearch && !attempted', 'return (lrclibSearch || !lrclibSearch) && !attempted'),
+            'qq-any-200': ('status == 200 && confirmedMissing', 'status == 200 && (confirmedMissing || !confirmedMissing)'),
+            'qq-old-ticket': ('captured == current && captured == active', 'current == active && captured != 0'),
+            'qq-mid-inversion': ('!MSLyricsASCIIAlpha(bytes[i]) && !MSLyricsASCIIDigit(bytes[i])', 'MSLyricsASCIIAlpha(bytes[i]) || MSLyricsASCIIDigit(bytes[i])'),
+            'qq-extra-separator': ("p[--end] != ')'", "p[--end] == ')'"),
         }
         with tempfile.TemporaryDirectory(prefix='minisight-lyrics-c-') as tmp:
             directory = Path(tmp)
@@ -229,7 +273,7 @@ class NativeFoundationTests(unittest.TestCase):
         return binary
 
     def run_fixture(self, binary):
-        return subprocess.run([str(binary), str(DATA)], capture_output=True, text=True, timeout=45)
+        return subprocess.run([str(binary), str(DATA)], capture_output=True, text=True, timeout=90)
 
     def test_real_production_foundation(self):
         result = self.run_fixture(self.baseline)
@@ -251,6 +295,9 @@ class NativeFoundationTests(unittest.TestCase):
             "callback_deadline": ('!MSLyricsDispatchReady(NSProcessInfo.processInfo.systemUptime, _deadline)', 'NO'),
             "search_artist": ('[artist isEqualToString:track.artist]', 'YES'),
             "search_ambiguity": ('equivalent[i] != equivalent[best]', 'false'),
+            "qq_old_song_timer": ('captured == current && captured == active', 'current == active && captured != 0'),
+            "qq_conflicting_echo": ('obj[@"songmid"] && ![obj[@"songmid"] isEqual:_qqSongMID]', 'obj[@"songmid"] && NO'),
+            "qq_fractional_service_code": ('[code isEqualToNumber:@0]', '[code integerValue] == 0'),
         }
         # Baseline must succeed before a failing mutant is counted as detected.
         baseline = self.run_fixture(self.baseline)
@@ -270,6 +317,12 @@ if __name__ == "__main__":
     default_plugin = ROOT.parent.parent / "MiniSight-complete-20261105"
     parser.add_argument("--plugin-root", default=os.environ.get("MINISIGHT_LYRICS_PLUGIN_ROOT") or (str(default_plugin) if default_plugin.is_dir() else None))
     parser.add_argument("--require-native", action="store_true", default=OPTIONS.require_native)
+    parser.add_argument("--portable-only", action="store_true", help="Run source and portable C checks only; do not attempt Foundation tests")
     OPTIONS, remaining = parser.parse_known_args()
+    if OPTIONS.portable_only and OPTIONS.require_native:
+        parser.error("portable-only cannot replace required native tests")
+    if OPTIONS.portable_only:
+        print("Apple Foundation explicitly NOT run (--portable-only)", flush=True)
+        del NativeFoundationTests
     print("Source checks are conformance only; native SKIP is NOT runtime success.", flush=True)
     unittest.main(argv=[__file__] + remaining, verbosity=2)

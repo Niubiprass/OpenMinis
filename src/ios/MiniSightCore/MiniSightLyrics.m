@@ -14,7 +14,7 @@ static const NSUInteger MSLyricsMaxBytes = 1024 * 1024;
 static const NSTimeInterval MSLyricsMaxDisplay = 12.0;
 
 // Fixed-vocabulary local evidence only: never metadata, URLs, errors or LRC.
-// Five routes x two stages bound the dedupe table; repeated facts emit at most
+// Seven fixed routes x two stages bound the dedupe table; repeated facts emit at most
 // once per minute. The shared writer also caps pending events and rotates files.
 static void MSLyricsEvidence(NSString *stage, NSString *result, NSString *route,
     NSString *reason, NSUInteger generation, NSInteger status, NSUInteger bytes, NSUInteger candidates) {
@@ -76,6 +76,52 @@ static bool MSLyricsShouldCache(bool failed, bool timeline, bool search, long st
 }
 static bool MSLyricsDispatchReady(double now, double deadline) {
     return isfinite(now) && isfinite(deadline) && now < deadline;
+}
+// QQ is a second source, not a retry for network or service failures.
+static bool MSLyricsMayTryQQ(bool lrclibSearch, bool attempted, bool failed, bool hasTimeline,
+                              long status, bool confirmedMissing) {
+    return lrclibSearch && !attempted && !failed && !hasTimeline &&
+        (status == 404 || (status == 200 && confirmedMissing));
+}
+static bool MSLyricsQQTicket(size_t captured, size_t current, size_t active,
+                             bool pending, bool hasTrack, bool hasTask) {
+    return captured == current && captured == active && pending && hasTrack && !hasTask;
+}
+static bool MSLyricsASCIIAlpha(uint8_t c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+static bool MSLyricsASCIIDigit(uint8_t c) { return c >= '0' && c <= '9'; }
+static bool MSLyricsQQMIDOK(const uint8_t *bytes, size_t n) {
+    if (!bytes || n == 0 || n > 64) return false;
+    for (size_t i = 0; i < n; ++i) if (!MSLyricsASCIIAlpha(bytes[i]) && !MSLyricsASCIIDigit(bytes[i])) return false;
+    return true;
+}
+static bool MSLyricsQQSpace(uint8_t c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+static bool MSLyricsQQNameStart(uint8_t c) { return MSLyricsASCIIAlpha(c) || c == '$' || c == '_'; }
+// Locate one JSONP argument, without executing or interpreting its contents.
+// Foundation still has to parse the ENTIRE extracted slice as a JSON dictionary.
+static bool MSLyricsQQPayloadRange(const uint8_t *p, size_t n, size_t *at, size_t *length) {
+    if (!p || !at || !length || !n || n > 1024u * 1024u) return false;
+    size_t i = 0, end = n;
+    while (i < end && MSLyricsQQSpace(p[i])) i++;
+    if (end - i >= 3 && p[i] == 0xef && p[i+1] == 0xbb && p[i+2] == 0xbf) i += 3;
+    while (i < end && MSLyricsQQSpace(p[i])) i++;
+    size_t name = i;
+    for (int part = 0; part < 2; ++part) {
+        if (i >= end || !MSLyricsQQNameStart(p[i++])) return false;
+        while (i < end && (MSLyricsQQNameStart(p[i]) || MSLyricsASCIIDigit(p[i]))) i++;
+        if (i >= end || p[i] != '.' || part == 1) break;
+        i++;
+    }
+    if (i - name > 128) return false;
+    while (i < end && MSLyricsQQSpace(p[i])) i++;
+    if (i >= end || p[i++] != '(') return false;
+    while (i < end && MSLyricsQQSpace(p[i])) i++;
+    while (end > i && MSLyricsQQSpace(p[end-1])) end--;
+    if (end > i && p[end-1] == ';') end--;
+    while (end > i && MSLyricsQQSpace(p[end-1])) end--;
+    if (end <= i || p[--end] != ')') return false;
+    while (end > i && MSLyricsQQSpace(p[end-1])) end--;
+    if (end - i < 2 || p[i] != '{' || p[end-1] != '}') return false;
+    *at = i; *length = end - i; return true;
 }
 // END LYRICS PORTABLE POLICY
 
@@ -200,11 +246,11 @@ static double MSLyricsMarkerTime(const void *context, size_t index) {
 }
 @end
 
-static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, NSString *path) {
-    return [url.scheme.lowercaseString isEqualToString:@"https"] &&
-           [url.host.lowercaseString isEqualToString:@"lrclib.net"] &&
-           [url.path isEqualToString:path] && (!url.port || url.port.integerValue == 443) &&
-           !url.user.length && !url.password.length && !url.fragment.length;
+typedef NS_ENUM(NSUInteger, MSLyricsRoute) { MSLyricsRouteLRCLibGet, MSLyricsRouteLRCLibSearch, MSLyricsRouteQQSearch, MSLyricsRouteQQLyric };
+static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, MSLyricsRoute route) {
+    NSString *host = route <= MSLyricsRouteLRCLibSearch ? @"lrclib.net" : @"c.y.qq.com";
+    NSString *path = route == MSLyricsRouteLRCLibGet ? @"/api/get" : route == MSLyricsRouteLRCLibSearch ? @"/api/search" : route == MSLyricsRouteQQSearch ? @"/soso/fcgi-bin/client_search_cp" : @"/lyric/fcgi-bin/fcg_query_lyric_new.fcg";
+    return [url.scheme.lowercaseString isEqualToString:@"https"] && [url.host.lowercaseString isEqualToString:host] && [url.path isEqualToString:path] && (!url.port || url.port.integerValue == 443) && !url.user.length && !url.password.length && !url.fragment.length;
 }
 
 @interface MSLyricsCacheEntry : NSObject
@@ -234,18 +280,29 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, NSString *path) {
 @property(nonatomic, copy, nullable) MiniSightLyricsResult completion;
 @property(nonatomic) BOOL searchTask;
 @property(nonatomic) BOOL searchAttempted;
-@property(nonatomic) BOOL searchPending;
+@property(nonatomic) BOOL qqTask;
+@property(nonatomic) BOOL qqSearching;
+@property(nonatomic) BOOL qqSearchAttempted;
+@property(nonatomic, copy, nullable) NSString *qqSongMID;
+@property(nonatomic) BOOL searchPending; // LRCLIB only.
+@property(nonatomic) BOOL qqSearchPending;
 @property(nonatomic) BOOL requestPending;
 @property(atomic) NSUInteger generation; // Ticket invalidation is immediate, even off-main.
 @property(nonatomic) NSUInteger activeGeneration;
 @property(nonatomic) NSUInteger rateAttempt;
-@property(nonatomic) NSTimeInterval notBefore;
+@property(nonatomic) NSTimeInterval notBefore; // LRCLIB only; a QQ outage must not disable the primary source.
+@property(nonatomic) NSTimeInterval qqNotBefore;
+@property(nonatomic) NSUInteger qqRateAttempt;
 @property(nonatomic) NSTimeInterval lastRequestAt;
 @property(nonatomic) NSTimeInterval deadline;
 - (void)startTrack:(MiniSightLyricsTrack *)track generation:(NSUInteger)generation completion:(MiniSightLyricsResult)completion;
 - (void)startSearchForGeneration:(NSUInteger)generation;
 - (void)sendGetForTrack:(MiniSightLyricsTrack *)track;
 - (void)sendSearchForTrack:(MiniSightLyricsTrack *)track;
+- (void)startQQSearch;
+- (void)sendQQSearch;
+- (void)sendQQLyric;
+- (void)finishQQTimeoutForRoute:(NSString *)route;
 - (void)receivedResponse:(NSURLResponse *)response task:(NSURLSessionDataTask *)task completion:(void (^)(NSURLSessionResponseDisposition))completion;
 - (void)receivedData:(NSData *)data task:(NSURLSessionDataTask *)task;
 - (void)finishedTask:(NSURLSessionTask *)task error:(nullable NSError *)error;
@@ -284,7 +341,7 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, NSString *path) {
 + (nullable MiniSightLyricsTimeline *)timelineForResponseData:(NSData *)data response:(NSHTTPURLResponse *)response track:(MiniSightLyricsTrack *)track reason:(NSString **)reason {
     *reason = @"lyrics_response_rejected";
     if (![track isKindOfClass:MiniSightLyricsTrack.class] || ![response isKindOfClass:NSHTTPURLResponse.class] ||
-        response.statusCode != 200 || !MSLyricsAllowedURL(response.URL, @"/api/get") ||
+        response.statusCode != 200 || !MSLyricsAllowedURL(response.URL, MSLyricsRouteLRCLibGet) ||
         ![response.MIMEType.lowercaseString isEqualToString:@"application/json"] ||
         ![data isKindOfClass:NSData.class] || !data.length || data.length > MSLyricsMaxBytes) return nil;
     id record = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
@@ -312,7 +369,7 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, NSString *path) {
     if (candidates) *candidates = 0;
     *reason = @"lyrics_not_found";
     if (![track isKindOfClass:MiniSightLyricsTrack.class] || ![response isKindOfClass:NSHTTPURLResponse.class] ||
-        response.statusCode != 200 || !MSLyricsAllowedURL(response.URL, @"/api/search") ||
+        response.statusCode != 200 || !MSLyricsAllowedURL(response.URL, MSLyricsRouteLRCLibSearch) ||
         ![response.MIMEType.lowercaseString isEqualToString:@"application/json"] ||
         ![data isKindOfClass:NSData.class] || !data.length || data.length > MSLyricsMaxBytes) {
         *reason = @"lyrics_response_rejected"; return nil;
@@ -407,7 +464,8 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, NSString *path) {
 - (void)clearActive {
     [_task cancel];
     _task = nil; _body = nil; _response = nil; _track = nil; _completion = nil;
-    _searchTask = NO; _searchAttempted = NO; _searchPending = NO; _requestPending = NO;
+    _searchTask = NO; _searchAttempted = NO; _qqTask = NO; _qqSearching = NO;
+    _qqSearchAttempted = NO; _qqSongMID = nil; _searchPending = NO; _qqSearchPending = NO; _requestPending = NO;
 }
 - (void)cancel {
     NSUInteger generation = [self nextGeneration];
@@ -478,6 +536,70 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, NSString *path) {
     url.queryItems = @[[NSURLQueryItem queryItemWithName:@"q" value:[NSString stringWithFormat:@"%@ %@", track.title, track.artist]]];
     [self sendRequestURL:url.URL track:track search:YES];
 }
+- (void)startQQSearch {
+    if (_qqSearchAttempted || !_track || _activeGeneration != self.generation || _task) return;
+    _qqSearchAttempted = YES;
+    if (NSProcessInfo.processInfo.systemUptime < _qqNotBefore) {
+        MiniSightLyricsResult completion = _completion; NSUInteger generation = _activeGeneration;
+        _completion = nil; _track = nil;
+        MSLyricsEvidence(@"finish", @"skipped", @"qq_search", @"lyrics_cooldown", generation, 0, 0, 0);
+        [self deliver:nil reason:@"lyrics_cooldown" generation:generation completion:completion];
+        return;
+    }
+    NSTimeInterval delay = MAX(0.0, _lastRequestAt + 0.35 - NSProcessInfo.processInfo.systemUptime);
+    if (!MSLyricsDispatchReady(NSProcessInfo.processInfo.systemUptime + delay, _deadline)) { [self finishQQTimeoutForRoute:@"qq_search"]; return; }
+    const NSUInteger ticket = _activeGeneration;
+    _qqSearchPending = YES;
+    __weak typeof(self) weakSelf = self;
+    void (^dispatchSearch)(void) = ^{
+        typeof(self) owner = weakSelf;
+        if (!owner || !MSLyricsQQTicket(ticket, owner.generation, owner.activeGeneration,
+                                        owner.qqSearchPending, owner.track != nil, owner.task != nil)) return;
+        owner.qqSearchPending = NO;
+        [owner sendQQSearch];
+    };
+    if (delay > 0) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), dispatchSearch);
+    else dispatchSearch();
+}
+- (void)finishQQTimeoutForRoute:(NSString *)route {
+    if (_activeGeneration != self.generation || !_completion) return;
+    NSUInteger generation = _activeGeneration; MiniSightLyricsResult completion = _completion;
+    [_task cancel]; _task = nil; _body = nil; _response = nil; _track = nil; _completion = nil;
+    _searchPending = NO; _qqSearchPending = NO; _requestPending = NO;
+    MSLyricsEvidence(@"finish", @"skipped", route, @"lyrics_timeout", generation, 0, 0, 0);
+    [self deliver:nil reason:@"lyrics_timeout" generation:generation completion:completion];
+}
+- (void)sendQQSearch {
+    MiniSightLyricsTrack *t=_track;
+    if (!MSLyricsDispatchReady(NSProcessInfo.processInfo.systemUptime,_deadline)) { [self finishQQTimeoutForRoute:@"qq_search"]; return; }
+    if (!t) return;
+    NSURLComponents *u=[NSURLComponents componentsWithString:@"https://c.y.qq.com/soso/fcgi-bin/client_search_cp"];
+    // Keep the request shape identical to the previously successful public probe.
+    u.queryItems=@[[NSURLQueryItem queryItemWithName:@"w" value:[NSString stringWithFormat:@"%@ %@",t.title,t.artist]]];
+    [self sendQQURL:u.URL search:YES];
+}
+- (void)sendQQLyric {
+    if (!MSLyricsDispatchReady(NSProcessInfo.processInfo.systemUptime,_deadline)) { [self finishQQTimeoutForRoute:@"qq_lyric"]; return; }
+    if (!_qqSongMID.length || !_track) return;
+    NSURLComponents *u=[NSURLComponents componentsWithString:@"https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg"];
+    // Exact parameter set from the previously successful public probe.
+    u.queryItems=@[[NSURLQueryItem queryItemWithName:@"songmid" value:_qqSongMID],[NSURLQueryItem queryItemWithName:@"g_tk" value:@"5381"]];
+    [self sendQQURL:u.URL search:NO];
+}
+- (void)sendQQURL:(NSURL *)url search:(BOOL)search {
+    const NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    if (_activeGeneration != self.generation || !_track || _task) return;
+    if (!MSLyricsDispatchReady(now, _deadline)) { [self finishQQTimeoutForRoute:search ? @"qq_search" : @"qq_lyric"]; return; }
+    NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:MIN(12.0, _deadline - now)];
+    r.HTTPMethod = @"GET";
+    r.HTTPShouldHandleCookies = NO;
+    [r setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+    [r setValue:@"MiniSight-Lyrics/1.0 (+https://openminis.app)" forHTTPHeaderField:@"User-Agent"];
+    [r setValue:(search ? @"https://y.qq.com/" : @"https://y.qq.com/portal/player.html") forHTTPHeaderField:@"Referer"];
+    _lastRequestAt=NSProcessInfo.processInfo.systemUptime; _searchTask=NO; _qqTask=YES; _qqSearching=search; _body=[NSMutableData data]; _response=nil;
+    MSLyricsEvidence(@"request", @"pending", search ? @"qq_search" : @"qq_lyric", @"not_applicable", _activeGeneration, 0, 0, 0);
+    _task=[_session dataTaskWithRequest:r]; [_task resume];
+}
 - (void)sendRequestURL:(NSURL *)url track:(MiniSightLyricsTrack *)track search:(BOOL)search {
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
     // A dispatch_after block may run late. Never start a GET/search after the
@@ -519,8 +641,8 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, NSString *path) {
             if (self.generation != generation || self.activeGeneration != generation || !self.searchPending || self.task) return;
             self.searchPending = NO;
             if (NSProcessInfo.processInfo.systemUptime >= self.deadline) {
-                MiniSightLyricsResult completion = self.completion; MiniSightLyricsTrack *track = self.track;
-                self.track = nil; self.completion = nil;
+                MiniSightLyricsResult completion = self.completion;
+                self.track = nil; self.completion = nil; self.searchPending = NO;
                 [self deliver:nil reason:@"lyrics_timeout" generation:generation completion:completion];
                 return;
             }
@@ -533,25 +655,33 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, NSString *path) {
 - (void)receivedResponse:(NSURLResponse *)response task:(NSURLSessionDataTask *)task completion:(void (^)(NSURLSessionResponseDisposition))completion {
     if (task != _task) { completion(NSURLSessionResponseCancel); return; }
     if (_activeGeneration != self.generation) { completion(NSURLSessionResponseCancel); return; }
-    NSString *expectedPath = _searchTask ? @"/api/search" : @"/api/get";
-    if (![response isKindOfClass:NSHTTPURLResponse.class] || !MSLyricsAllowedURL(response.URL, expectedPath)) {
+    MSLyricsRoute expectedRoute = _qqTask ? (_qqSearching ? MSLyricsRouteQQSearch : MSLyricsRouteQQLyric) : (_searchTask ? MSLyricsRouteLRCLibSearch : MSLyricsRouteLRCLibGet);
+    if (![response isKindOfClass:NSHTTPURLResponse.class] || !MSLyricsAllowedURL(response.URL, expectedRoute) ||
+        (_qqTask && ![response.URL isEqual:task.originalRequest.URL])) {
         completion(NSURLSessionResponseCancel);
         [self finishedTask:task error:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorBadServerResponse userInfo:nil]];
         return;
     }
     _response = (NSHTTPURLResponse *)response;
     if (_response.statusCode == 429 || _response.statusCode == 503) {
-        double delay = [MiniSightLyricsClient retryDelayForResponse:_response now:NSDate.date attempt:_rateAttempt];
-        _rateAttempt = MIN(_rateAttempt + 1, (NSUInteger)4);
+        NSUInteger *attempt = _qqTask ? &_qqRateAttempt : &_rateAttempt;
+        NSTimeInterval *notBefore = _qqTask ? &_qqNotBefore : &_notBefore;
+        double delay = [MiniSightLyricsClient retryDelayForResponse:_response now:NSDate.date attempt:*attempt];
+        *attempt = MIN(*attempt + 1, (NSUInteger)4);
         double jitter = MIN(5.0, delay * 0.1) * arc4random_uniform(1001) / 1000.0;
-        _notBefore = MAX(_notBefore, NSProcessInfo.processInfo.systemUptime + delay + jitter);
+        *notBefore = MAX(*notBefore, NSProcessInfo.processInfo.systemUptime + delay + jitter);
     }
     if (_response.statusCode != 200) {
         completion(NSURLSessionResponseCancel);
         [self finishedTask:task error:nil]; // Status/header only; never buffer an error page.
         return;
     }
-    if (![response.MIMEType.lowercaseString isEqualToString:@"application/json"]) {
+    NSString *mime = response.MIMEType.lowercaseString;
+    BOOL mimeOK = _qqTask
+        ? (_qqSearching ? [mime isEqualToString:@"application/x-javascript"] || [mime isEqualToString:@"application/javascript"]
+                        : [mime isEqualToString:@"text/html"])
+        : [mime isEqualToString:@"application/json"];
+    if (!mimeOK) {
         completion(NSURLSessionResponseCancel);
         [self finishedTask:task error:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorBadServerResponse userInfo:nil]];
         return;
@@ -573,6 +703,20 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, NSString *path) {
     }
     [_body appendData:data];
 }
+static NSDictionary *MSQQJSONP(NSData *data) {
+    size_t at = 0, length = 0;
+    if (!MSLyricsQQPayloadRange(data.bytes, data.length, &at, &length)) return nil;
+    NSData *json = [data subdataWithRange:NSMakeRange(at, length)];
+    if (![[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]) return nil;
+    id object = [NSJSONSerialization JSONObjectWithData:json options:0 error:NULL];
+    return [object isKindOfClass:NSDictionary.class] ? object : nil;
+}
+static NSString *MSQQBase64LRC(id value) {
+    if(![value isKindOfClass:NSString.class] || ![value length] || [value length]>MSLyricsMaxBytes*2) return nil;
+    NSData *d=[[NSData alloc] initWithBase64EncodedString:value options:0]; if(!d.length || d.length>MSLyricsMaxBytes) return nil;
+    NSString *b=[d base64EncodedStringWithOptions:0]; if(![b isEqual:value]) return nil;
+    NSString *text=[[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding]; return text.length ? text : nil;
+}
 - (void)finishedTask:(NSURLSessionTask *)task error:(NSError * _Nullable)error {
     if (task != _task) return;
     if (_activeGeneration != self.generation) return;
@@ -580,7 +724,7 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, NSString *path) {
     // timers. The two legs share one deadline, including parsing/delivery.
     if (!MSLyricsDispatchReady(NSProcessInfo.processInfo.systemUptime, _deadline))
         error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorTimedOut userInfo:nil];
-    BOOL wasSearch = _searchTask;
+    BOOL wasSearch = _searchTask; BOOL wasQQ = _qqTask, qqSearch = _qqSearching;
     MiniSightLyricsTimeline *timeline = nil;
     NSInteger status = _response.statusCode;
     NSUInteger candidates = 0;
@@ -593,38 +737,116 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, NSString *path) {
     } else if (status == 404) reason = @"lyrics_not_found";
     else if (status == 429) reason = @"lyrics_rate_limited";
     else if (status == 503) reason = @"lyrics_service_unavailable";
-    else if (status == 200) timeline = wasSearch
+    else if (status == 200 && !wasQQ) timeline = wasSearch
         ? [MiniSightLyricsClient timelineForSearchResponseData:_body response:_response track:_track reason:&reason candidates:&candidates]
         : [MiniSightLyricsClient timelineForResponseData:_body response:_response track:_track reason:&reason];
+    else if (status == 200 && wasQQ) reason = @"lyrics_response_rejected";
+    NSString *qqMID = nil;
+    if (!error && status == 200 && wasQQ) {
+        NSDictionary *obj=MSQQJSONP(_body); id code=obj[@"code"];
+        BOOL good=[code isKindOfClass:NSNumber.class] && CFGetTypeID((__bridge CFTypeRef)code)!=CFBooleanGetTypeID() && [code isEqualToNumber:@0];
+        if(good && qqSearch) {
+            NSDictionary *data=[obj[@"data"] isKindOfClass:NSDictionary.class]?obj[@"data"]:nil;
+            NSDictionary *songBlock=[data[@"song"] isKindOfClass:NSDictionary.class]?data[@"song"]:nil;
+            id rawList=songBlock[@"list"];
+            if([rawList isKindOfClass:NSArray.class] && [rawList count]<=20) {
+                NSArray *list=(NSArray *)rawList; NSMutableArray *matches=[NSMutableArray array];
+                for(id item in list) {
+                    if(![item isKindOfClass:NSDictionary.class]) { reason=@"lyrics_response_rejected"; matches=nil; break; }
+                    NSDictionary *song=(NSDictionary *)item; id rawSingers=song[@"singer"];
+                    if(![rawSingers isKindOfClass:NSArray.class] || ![(NSArray *)rawSingers count] || [(NSArray *)rawSingers count]>20) { reason=@"lyrics_response_rejected"; matches=nil; break; }
+                    NSMutableArray *names=[NSMutableArray array];
+                    for(id singer in (NSArray *)rawSingers) {
+                        if(![singer isKindOfClass:NSDictionary.class]) { reason=@"lyrics_response_rejected"; matches=nil; break; }
+                        NSString *name=MSLyricsNormalize(((NSDictionary *)singer)[@"name"]);
+                        if(!name) { reason=@"lyrics_response_rejected"; matches=nil; break; }
+                        [names addObject:name];
+                    }
+                    if(!matches) break;
+                    NSString *title=MSLyricsNormalize(song[@"songname"]);
+                    NSString *artist=MSLyricsNormalize([names componentsJoinedByString:@" "]);
+                    id seconds=song[@"interval"]; id mid=song[@"songmid"];
+                    if(!title || !artist || ![seconds isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)seconds)==CFBooleanGetTypeID() || !isfinite([seconds doubleValue])) { reason=@"lyrics_response_rejected"; matches=nil; break; }
+                    if(![title isEqual:_track.title] || ![artist isEqual:_track.artist] || fabs([seconds doubleValue]-_track.duration)>2.0) continue;
+                    NSData *midBytes = [mid isKindOfClass:NSString.class] && [mid length] <= 64 ? [mid dataUsingEncoding:NSUTF8StringEncoding] : nil;
+                    if (!MSLyricsQQMIDOK(midBytes.bytes, midBytes.length)) { reason=@"lyrics_response_rejected"; matches=nil; break; }
+                    [matches addObject:@{@"duration":seconds,@"mid":mid}];
+                }
+                if(matches) {
+                    candidates=list.count;
+                    if(!matches.count) reason=@"lyrics_not_found";
+                    else {
+                        double durations[20]; size_t equivalent[20];
+                        for(NSUInteger i=0;i<matches.count;i++) {
+                            durations[i]=[matches[i][@"duration"] doubleValue]; equivalent[i]=i;
+                            for(NSUInteger j=0;j<i;j++) if([matches[i][@"mid"] isEqual:matches[j][@"mid"]]) { equivalent[i]=equivalent[j]; break; }
+                        }
+                        size_t best=MSLyricsClosestCandidate(durations,equivalent,matches.count,_track.duration);
+                        if(best!=SIZE_MAX) qqMID=matches[best][@"mid"];
+                        reason=qqMID?@"not_applicable":@"lyrics_response_rejected";
+                    }
+                }
+            } else reason=@"lyrics_response_rejected";
+        } else if (good && !qqSearch && obj[@"songmid"] && ![obj[@"songmid"] isEqual:_qqSongMID]) {
+            reason = @"lyrics_track_mismatch"; // Echo is optional, but a conflicting echo must never supply lyrics.
+        } else if(good && !qqSearch) {
+            id lyric=obj[@"lyric"];
+            if(!lyric) reason=@"lyrics_response_rejected";
+            else if(lyric==NSNull.null || ([lyric isKindOfClass:NSString.class] && ![(NSString *)lyric length])) reason=@"no_synced_lyrics";
+            else {
+                NSString *lrc=MSQQBase64LRC(lyric);
+                timeline=lrc?[MiniSightLyricsTimeline timelineWithLRC:lrc duration:_track.duration]:nil;
+                if (timeline) {
+                    BOOL visible = NO;
+                    for (MiniSightLyricLine *line in timeline.lines) if (line.text.length) { visible = YES; break; }
+                    if (!visible) { timeline = nil; reason = @"no_synced_lyrics"; }
+                    else reason = @"lyrics_timeline";
+                } else reason = @"lyrics_invalid_lrc";
+            }
+        }
+    }
     if (!MSLyricsDispatchReady(NSProcessInfo.processInfo.systemUptime, _deadline)) {
         timeline = nil; reason = @"lyrics_timeout";
         error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorTimedOut userInfo:nil];
     }
-    MSLyricsEvidence(@"finish", timeline ? @"ok" : @"skipped", wasSearch ? @"search" : @"exact",
+    if (_activeGeneration != self.generation || _task != task) return;
+    NSString *evidenceRoute = wasQQ ? (qqSearch ? @"qq_search" : @"qq_lyric") : (wasSearch ? @"search" : @"exact");
+    MSLyricsEvidence(@"finish", (timeline || (qqMID && !error)) ? @"ok" : @"skipped", evidenceRoute,
         reason, _activeGeneration, status, _body.length, candidates);
     // Only a strict same-track, non-instrumental 200 with null/empty synced LRC
     // may join 404 here. Rejected/malformed/mismatched LRC and all HTTP failures
     // never broaden the fallback, and a search response cannot recurse.
-    if (MSLyricsShouldSearch(error != nil, status, wasSearch, _searchAttempted,
+    if (!wasQQ && MSLyricsShouldSearch(error != nil, status, wasSearch, _searchAttempted,
         [reason isEqualToString:@"no_synced_lyrics"])) {
         NSUInteger generation = _activeGeneration;
         _task = nil; _body = nil; _response = nil;
         [self startSearchForGeneration:generation];
         return;
     }
-    if (MSLyricsShouldCache(error != nil, timeline != nil, wasSearch, status,
-        [reason isEqualToString:@"lyrics_response_rejected"])) {
+    if (MSLyricsMayTryQQ(!wasQQ && wasSearch, _qqSearchAttempted, error != nil, timeline != nil,
+                         status, [reason isEqualToString:@"lyrics_not_found"] || [reason isEqualToString:@"no_synced_lyrics"])) {
+        _task=nil; _body=nil; _response=nil; [self startQQSearch]; return;
+    }
+    if (wasQQ && !error && status==200 && qqSearch && qqMID) { _qqSongMID=qqMID; _task=nil; _body=nil; _response=nil; [self sendQQLyric]; return; }
+    BOOL conclusiveQQMiss = wasQQ && !error && status == 200 && !timeline &&
+        ((qqSearch && !qqMID && [reason isEqualToString:@"lyrics_not_found"]) ||
+         (!qqSearch && [reason isEqualToString:@"no_synced_lyrics"]));
+    if (conclusiveQQMiss || MSLyricsShouldCache(error != nil, timeline != nil, wasSearch, status,
+        [reason isEqualToString:@"lyrics_response_rejected"] || [reason isEqualToString:@"lyrics_invalid_lrc"])) {
         MSLyricsCacheEntry *entry = [[MSLyricsCacheEntry alloc] init];
         entry.timeline = timeline; entry.reason = reason; entry.status = status; entry.candidates = candidates;
         entry.expires = NSProcessInfo.processInfo.systemUptime + (timeline ? 3600.0 : 300.0);
         [_cache setObject:entry forKey:_track.cacheKey cost:MAX((NSUInteger)1, _body.length)];
     }
-    if (!error && status == 200) _rateAttempt = 0;
-    if (error || (_response.statusCode >= 500 && _response.statusCode != 503))
-        _notBefore = MAX(_notBefore, NSProcessInfo.processInfo.systemUptime + 5.0);
+    if (!error && status == 200) { if (wasQQ) _qqRateAttempt = 0; else _rateAttempt = 0; }
+    if (error || (status >= 500 && status != 503)) {
+        NSTimeInterval *notBefore = wasQQ ? &_qqNotBefore : &_notBefore;
+        *notBefore = MAX(*notBefore, NSProcessInfo.processInfo.systemUptime + 5.0);
+    }
     MiniSightLyricsResult completion = _completion;
     NSUInteger generation = _activeGeneration;
     _task = nil; _body = nil; _response = nil; _track = nil; _completion = nil;
+    _searchPending = NO; _qqSearchPending = NO; _requestPending = NO;
     [self deliver:timeline reason:reason generation:generation completion:completion];
 }
 @end
