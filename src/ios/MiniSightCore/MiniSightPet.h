@@ -9,6 +9,7 @@
 //
 
 #import <UIKit/UIKit.h>
+#import "MiniSightRhythmFrame.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -43,6 +44,17 @@ typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
 @property (nonatomic, copy, nullable) NSString *actionManifestPath;
 @property (nonatomic, copy, nullable) NSString *lyricsLine;
 @property (nonatomic) BOOL musicPlaying;
+/// Explicit host opt-in, default NO. YES + musicPlaying disables legacy timer
+/// travel/position sway. Feed real/fixture frames on main thread only.
+@property (nonatomic) BOOL rhythmFollowing;
+- (void)applyRhythmFrame:(MSRhythmFrame)frame receivedAt:(CFTimeInterval)receivedAt;
+/// Track/connection generation changes must call this BEFORE new input.
+/// Fences old sequence/epoch callbacks; never cancels a manual drag/fling.
+- (void)clearRhythm;
+/// Use ONLY after the client has fenced a new server/session. Token is an
+/// opaque nonzero owner identity; repeated same-token calls are no-ops.
+/// Allows a restarted service to reuse a formerly retired stream epoch.
+- (void)resetRhythmForSession:(uint64_t)sessionToken;
 @property (nonatomic) NSTimeInterval musicPosition;
 @property (nonatomic) BOOL lyricsSuppressed;
 

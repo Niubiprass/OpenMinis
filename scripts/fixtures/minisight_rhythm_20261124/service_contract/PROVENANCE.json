@@ -1,0 +1,31 @@
+{
+  "kind": "non-capturing header-only exact service encode/bridge contract for App-independent tests",
+  "upstream": "AudioSnapshotServer2@20d26f5061fa7db132da5148e18d814947f1905e; MIT plus local source adaptation",
+  "files": [
+    {
+      "path": "FeaturePayload.h",
+      "sha256": "3012314ef0f7103e9d82e9c73cdb43e7e89c98b170f0026825233992aa02f561",
+      "source": "approved source/capture/MiniSightRhythmService/FeaturePayload.h"
+    },
+    {
+      "path": "MSHFProtocol.h",
+      "sha256": "a5bd150c1d2e101562ad1d0d19e4ccd63d652d750a1e42a692cf9c81ee27336e",
+      "source": "approved source/capture/MiniSightRhythmService/MSHFProtocol.h"
+    },
+    {
+      "path": "RhythmInput.h",
+      "sha256": "a3410e914295a198fdd71def84bb950741455b2e59e0c013ff0f656002161e55",
+      "source": "approved source/capture/MiniSightRhythmService/RhythmInput.h"
+    },
+    {
+      "path": "RhythmBridge.inc",
+      "sha256": "25e25d024cf5aea6ee1ab0534adfc7ab8961bb36702c130d772a7eb7fe138555",
+      "source": "approved source/capture/MiniSightRhythmService/RhythmBridge.inc"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "70dfb0bd73f5c96f0f17ea22a6c0b40fb27ce36d9f7db170b1697c2e5f1f432a",
+      "source": "approved source/capture/MiniSightRhythmService/LICENSE"
+    }
+  ]
+}

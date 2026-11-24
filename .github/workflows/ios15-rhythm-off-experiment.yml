@@ -1,0 +1,241 @@
+name: iOS15 Rhythm OFF Experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios15-rhythm-off-experiment-20261124]
+    paths: ['src/ios/**', 'scripts/test_*.py', 'scripts/run_ios15_geometry_probe.py', 'scripts/fixtures/**', 'scripts/v64r_package.py', 'deps/build_rclone_ios.sh', '.github/workflows/ios15-rhythm-off-experiment.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios15-rhythm-off-experiment-${{ github.ref }}
+  # 新推送直接取消还在跑的那一轮：以前是 false，推两次就要白等一整轮。
+  cancel-in-progress: true
+
+env:
+  # Re-run 2026-10-17 after repo made public to restore macOS runner eligibility.
+  IOS_DEPLOYMENT_TARGET: '15.5'
+  MINIS_RHYTHM_EXPERIMENT_BASE_BUILD: '380'
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Verify fixed source (never fetch or re-port upstream)
+        id: source_gate
+        # The current full App baseline has compiled. Fail early on a native
+        # regression instead of spending another full build before rejecting it.
+        # Packaging BELOW still checks the outcome; no failed check is bypassed.
+        continue-on-error: false
+        run: |
+          git log -1 --format='%H %s'
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_feature_compile_160651.py
+          python3 scripts/test_photo_picker_multi_select_160651.py
+          python3 scripts/test_attachment_preview_160651.py
+          python3 scripts/test_minisight_blip_wav.py
+          python3 scripts/test_attachment_send_20261106.py
+          python3 scripts/test_attachment_share_20261106.py
+          python3 scripts/test_launch_icon_160651.py
+          python3 scripts/test_ask_card_160651.py
+          python3 scripts/test_export_160651.py
+          python3 scripts/test_quota_160651.py
+          python3 scripts/test_quota_balance_priority_160651.py
+          python3 scripts/test_quota_perkey_userid_160651.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_relay_quota_protocol_20261113.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_billing_20261113.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_checkin_20261113.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_group_order_20261113.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_list_20261115.py
+          python3 scripts/test_v64r_text_layout.py
+          python3 scripts/test_model_refresh_authoritative_160652.py
+          python3 scripts/test_inapp_update_160652.py
+          python3 scripts/test_inapp_update_20261106.py
+          python3 scripts/test_multikey_quota_failover_20261105.py
+          python3 scripts/test_v64r_render_contracts.py
+          python3 scripts/test_stream_text_fade_source.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_autocompress.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_attribute_prefix.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_live_assistant.py
+          # Three-agent source contracts; Swift helpers fail closed on macOS.
+          python3 scripts/test_host_stable_shrink.py
+          python3 scripts/test_scroll_deferred_identity.py
+          python3 scripts/test_longtext_container_layout.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_thinking_visibility.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_thinking_resize_source.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_host_shrink_release.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_text_measure_stability.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_current_textkit_height.py
+          python3 scripts/test_stream_delivery_160649.py
+          python3 scripts/test_height_convergence_160649.py
+          python3 scripts/test_appstore115_lowrisk_160651.py
+          python3 scripts/test_chat_folder_configuration_160651.py
+          python3 scripts/test_memory_management_wiring_160651.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_folder_runtime_160651.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_memory_documents_160651.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_memory_swiftui_160651.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_model_group_picker_toolbar_160651.py
+          python3 scripts/test_minisight_signal_160651.py
+          python3 scripts/verify_minisight_integration.py
+          python3 scripts/test_minisight_settings_diagnostics.py
+          python3 scripts/test_minisight_shown_toggle_20261106.py
+          python3 scripts/test_minisight_live_settings_20261106.py
+          python3 scripts/test_friendly_error_text_160651.py
+          python3 scripts/test_provider_digest_160651.py
+          python3 scripts/test_codex_client_mask_20261122.py
+          python3 scripts/test_error_copy_l10n_160651.py
+          python3 scripts/test_friendly_error_text_behavior_160651.py
+          python3 scripts/test_minisight_local_repairs_20261107.py
+          python3 scripts/test_chat_nav_title_stability_20261120.py
+          python3 scripts/test_composer_rainbow_wave_20261120.py
+          python3 scripts/test_composer_effects_20261123.py
+          python3 scripts/test_minisight_rhythm_off_20261124.py
+          python3 scripts/test_minisight_rhythm_paths_20261124.py --mutations
+          # The cross-tree settings audit runs locally with both repositories;
+          # this independent runner checks the new settings in the liveliness gate.
+          python3 scripts/test_minisight_action_import.py --require-native
+          python3 scripts/test_minisight_action_library_20261116.py --ci
+          python3 scripts/test_minisight_lyrics_20261116.py --require-native
+          python3 scripts/test_minisight_music_monitor_20261116.py --require-native
+          python3 scripts/test_minisight_media_repair_20261119.py --require-native
+          python3 scripts/test_minisight_wake_retirement_20261119.py --require-native
+          python3 scripts/test_minisight_music_symbols_20261118.py --require-native
+          python3 scripts/test_minisight_atlas_restore_20261118.py
+          python3 scripts/test_minisight_pet_bounds_20261118.py --require-native
+          python3 scripts/test_minisight_bubble_edge_20261118.py --require-native
+          python3 scripts/test_minisight_permissions_20261118.py --require-native
+          python3 scripts/test_minisight_presentation_readback_20261116.py --require-native
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_quota_current_key_20261116.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_consumption_20261117.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_quota_detail_repair_20261117.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_minisight_shown_name_20261117.py
+          python3 scripts/test_minisight_liveliness_20261116.py --require-ios
+          python3 scripts/test_minisight_effects_runtime_20261116.py --require-native
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_checkin_no_participation_20261116.py
+          python3 scripts/test_queued_video_preview_20261116.py --require-native
+          python3 scripts/test_minisight_vad_identity_20261117.py --portable-only
+          python3 scripts/test_multikey_160651.py
+          python3 scripts/test_multikey_persistence_160651.py
+          python3 scripts/test_multikey_freeze_20261101.py
+          python3 scripts/test_plugin_workbench_160651.py
+          python3 scripts/test_mcp_builtin_and_workflow.py
+          python3 scripts/test_four_features_160652.py
+          python3 scripts/test_minis_snapshot_offmain.py
+          python3 scripts/test_minis_native_return.py
+          python3 scripts/test_ish_residual_reaper.py
+          python3 scripts/test_residual_sweep_schedule.py
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: true
+          cache-dependency-path: deps/rclone-mobile/go.sum
+      - name: Cache native dependencies (v64 scripts and deployment are part of key)
+        id: native
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps/frameworks
+            deps/libs
+            deps/include
+            deps/alpine-rootfs.tar.gz
+            deps/resources
+          key: native-v64r-ios15.5-${{ runner.arch }}-${{ hashFiles('deps/build_*.sh', 'deps/rclone-mobile/**', 'deps/prepare_alpine_rootfs.sh', '.gitmodules') }}
+      - name: Install build tools
+        run: |
+          brew install meson ninja pkg-config nasm llvm lld libarchive ccache
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+          if ! test -f src/ios/Configs/ProviderCustomization.xcconfig; then
+            cp src/ios/Configs/ProviderCustomization.xcconfig.example src/ios/Configs/ProviderCustomization.xcconfig
+          fi
+          command -v meson
+          command -v ninja
+          command -v pkg-config
+          command -v nasm
+      - name: Build native libraries
+        run: |
+          set -euo pipefail
+          bash deps/build_lame.sh
+          bash deps/build_ffmpeg.sh
+          bash deps/build_ish.sh
+          bash deps/prepare_alpine_rootfs.sh
+          bash deps/build_rclone_ios.sh
+      - name: Build fixed v64 repair source
+        run: |
+          set -o pipefail
+          xcodebuild -project src/ios/Minis.xcodeproj -scheme Minis \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedData -clonedSourcePackagesDirPath SPMCache \
+            -parallelizeTargets -jobs 4 CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
+            CURRENT_PROJECT_VERSION=160652 \
+            SWIFT_OPTIMIZATION_LEVEL=-Osize build 2>&1 | tee build-v64r.log
+      - name: Package without adding elevated entitlements
+        run: |
+          set -euo pipefail
+          EXPERIMENT_BUILD=$((MINIS_RHYTHM_EXPERIMENT_BASE_BUILD + GITHUB_RUN_NUMBER))
+          APP=DerivedData/Build/Products/Release-iphoneos/Minis.app
+          test -f "$APP/Info.plist"
+          if [ "${{ steps.source_gate.outcome }}" != success ]; then
+            echo 'FAIL CLOSED: source/native checks failed; App archive collected, no IPA publication'
+            exit 1
+          fi
+          # Native dependency notices/source obligations must be closed before
+          # any IPA artifact/release publication. Compilation is not this gate.
+          
+          python3 scripts/test_minisight_vad_identity_20261117.py \
+            --vad "$APP/Frameworks/RealTimeCutVADCXXLibrary.framework/RealTimeCutVADCXXLibrary" \
+            --native-apple --require-native --json-output vad-signing-identity.json
+          mkdir -p Payload
+          ditto "$APP" Payload/Minis.app
+          python3 scripts/strip_ios15_incompatible_extensions.py Payload/Minis.app
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Payload/Minis.app/Info.plist
+          # [T-inapp-update-beta] Finish plist mutations BEFORE signing: changing
+          # MinisBuildNumber afterwards invalidates CodeDirectory's Info slot.
+          /usr/libexec/PlistBuddy -c "Set :MinisBuildNumber ${EXPERIMENT_BUILD}" Payload/Minis.app/Info.plist \
+            || /usr/libexec/PlistBuddy -c "Add :MinisBuildNumber string ${EXPERIMENT_BUILD}" Payload/Minis.app/Info.plist
+          /usr/libexec/PlistBuddy -c 'Print :MinisBuildNumber' Payload/Minis.app/Info.plist
+          # Preserve only source entitlements; no sandbox-disabling additions.
+          python3 scripts/v64r_package.py Payload/Minis.app
+          xcrun vtool -show-build Payload/Minis.app/Minis | tee minos-v64r.txt
+          zip -qry Minis-160652-Rhythm-OFF-Experiment-iOS15.5.ipa Payload
+          unzip -tq Minis-160652-Rhythm-OFF-Experiment-iOS15.5.ipa
+          # Validate the bytes we will publish, not only the pre-zip staging app.
+          IPA_VERIFY_DIR=$(mktemp -d)
+          trap 'rm -rf "$IPA_VERIFY_DIR"' EXIT
+          unzip -q Minis-160652-Rhythm-OFF-Experiment-iOS15.5.ipa -d "$IPA_VERIFY_DIR"
+          codesign --verify --deep --strict "$IPA_VERIFY_DIR/Payload/Minis.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MinisBuildNumber' "$IPA_VERIFY_DIR/Payload/Minis.app/Info.plist")" = "${EXPERIMENT_BUILD}"
+          shasum -a 256 Minis-160652-Rhythm-OFF-Experiment-iOS15.5.ipa > SHA256SUMS
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-160652-Rhythm-OFF-Experiment-iOS15.5
+          path: |
+            Minis-160652-Rhythm-OFF-Experiment-iOS15.5.ipa
+            SHA256SUMS
+            minos-v64r.txt
+          retention-days: 30
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minis-Rhythm-OFF-build-evidence
+          path: |
+            build-v64r.log
+            minos-v64r.txt
+            vad-signing-identity.json
+          if-no-files-found: ignore
+          retention-days: 14

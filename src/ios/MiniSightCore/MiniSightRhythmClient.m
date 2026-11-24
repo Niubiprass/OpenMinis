@@ -1,0 +1,122 @@
+#import "MiniSightRhythmClient.h"
+#import "MiniSightRhythmReceivePolicy.h"
+#import "MiniSightPet.h"
+#import <objc/runtime.h>
+#import <QuartzCore/QuartzCore.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <errno.h>
+#ifndef MINISIGHT_ENABLE_RHYTHM_TRANSPORT
+#define MINISIGHT_ENABLE_RHYTHM_TRANSPORT 0
+#endif
+BOOL MiniSightRhythmLiveTransportCompiled(void) { return MINISIGHT_ENABLE_RHYTHM_TRANSPORT != 0; }
+@interface MiniSightRhythmClient () {
+    int _socket;
+    uint64_t _session,_requestSequence,_server;
+    double _renewAt;
+    MSRhythmReceiveState _received;
+    NSTimer *_timer;
+    BOOL _cleared;
+}
+- (void)drain;
+@end
+@implementation MiniSightRhythmClient
+- (instancetype)init { if((self=[super init]))_socket=-1;return self; }
+- (void)clearOnce { if(!_cleared){_cleared=YES;if(_clearHandler)_clearHandler();} }
+- (void)sendLease:(BOOL)subscribe {
+    if(_socket<0)return;
+    uint8_t packet[40];size_t length=MSRhythmRequest(packet,sizeof(packet),subscribe,_session,_server,++_requestSequence);
+    struct sockaddr_in a={0};a.sin_len=sizeof(a);a.sin_family=AF_INET;a.sin_port=htons(MS_RHYTHM_PORT);a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    if(length)(void)sendto(_socket,packet,length,0,(const struct sockaddr*)&a,sizeof(a));
+}
+- (void)configureEnabled:(BOOL)enabled {
+    NSAssert(NSThread.isMainThread,@"rhythm receiver must be main-thread");
+    // No sockets, subscription, or audio service demand in the default candidate.
+    if(!enabled||!MiniSightRhythmLiveTransportCompiled()){[self stop];return;}
+    if(_timer)return;
+    _socket=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+    if(_socket<0){[self clearOnce];return;}
+    int flags=fcntl(_socket,F_GETFL,0);
+    struct sockaddr_in a={0};a.sin_len=sizeof(a);a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    if(flags<0||fcntl(_socket,F_SETFL,flags|O_NONBLOCK)<0||bind(_socket,(const struct sockaddr*)&a,sizeof(a))<0){[self stop];return;}
+    arc4random_buf(&_session,sizeof(_session));if(!_session)_session=1;
+    _requestSequence=_server=0;_renewAt=0;_cleared=NO;MSRhythmReceiveResetState(&_received);
+    __weak typeof(self) weakSelf=self;
+    _timer=[NSTimer timerWithTimeInterval:1./60. repeats:YES block:^(NSTimer*t){(void)t;[weakSelf drain];}];
+    [NSRunLoop.mainRunLoop addTimer:_timer forMode:NSRunLoopCommonModes];
+    [self drain];
+}
+- (void)drain {
+    if(_socket<0)return;double now=CACurrentMediaTime();
+    if(now>=_renewAt){[self sendLease:YES];_renewAt=now+5.;}
+    MSRhythmFrame latest={0};BOOL have=NO;
+    for(unsigned count=0;count<16;++count){
+        uint8_t data[1025];struct sockaddr_in a={0};socklen_t len=sizeof(a);
+        ssize_t n=recvfrom(_socket,data,sizeof(data),0,(struct sockaddr*)&a,&len);
+        if(n<0){if(errno==EINTR)continue;break;}
+        if(len!=sizeof(a)||a.sin_family!=AF_INET||a.sin_addr.s_addr!=htonl(INADDR_LOOPBACK)||a.sin_port!=htons(MS_RHYTHM_PORT))continue;
+        MSRhythmEnvelope envelope={0};MSRhythmFrame frame={0};
+        if(!MSRhythmDecodePacket(data,(size_t)n,_session,&envelope,&frame))continue;
+        int decision=MSRhythmReceive(&_received,&envelope,&frame,now);
+        if(decision==MSRhythmReceiveReject)continue;
+        if(_server!=envelope.server){
+            uint64_t owner=0;arc4random_buf(&owner,sizeof(owner));if(!owner)owner=1;
+            if(_sessionHandler)_sessionHandler(owner);
+        }
+        _server=envelope.server;
+        if(decision==MSRhythmReceiveReset){have=NO;[self clearOnce];continue;}
+        // Latest-value mailbox: buffered beats never become a burst of actions.
+        latest=frame;have=YES;
+    }
+    if(have){_cleared=NO;if(_updateHandler)_updateHandler(latest,now);}
+    else if(!MSRhythmReceiveFresh(&_received,now))[self clearOnce];
+}
+- (void)stop {
+    [_timer invalidate];_timer=nil;
+    if(_socket>=0){[self sendLease:NO];close(_socket);_socket=-1;}
+    _session=_server=_requestSequence=0;MSRhythmReceiveResetState(&_received);[self clearOnce];
+}
+- (void)dealloc { [_timer invalidate];if(_socket>=0)close(_socket); }
+@end
+@interface MSRhythmPetBinding : NSObject
+@property(nonatomic,weak) MiniSightPetView *pet;
+@property(nonatomic,strong) MiniSightRhythmClient *client;
+@property(nonatomic) NSUInteger token;
+@property(nonatomic) BOOL enabled;
+@property(nonatomic) double lastPosition,lastPositionAt;
+@property(nonatomic) BOOL hasPosition;
+@end
+@implementation MSRhythmPetBinding
+- (void)dealloc { [_client stop]; }
+@end
+static char MSRhythmPetBindingKey;
+void MiniSightRhythmConfigurePet(MiniSightPetView *pet,BOOL enabled,NSUInteger token) {
+    NSCAssert(NSThread.isMainThread,@"rhythm host wiring must be main-thread");
+    if(!pet)return;
+    MSRhythmPetBinding *binding=objc_getAssociatedObject(pet,&MSRhythmPetBindingKey);
+    if(!binding){
+        binding=[MSRhythmPetBinding new];binding.pet=pet;binding.client=[MiniSightRhythmClient new];
+        __weak MSRhythmPetBinding *weakBinding=binding;
+        binding.client.updateHandler=^(MSRhythmFrame frame,double receivedAt){
+            MSRhythmPetBinding *current=weakBinding;
+            if(current.enabled&&current.pet)[current.pet applyRhythmFrame:frame receivedAt:receivedAt];
+        };
+        binding.client.clearHandler=^{[weakBinding.pet clearRhythm];};
+        binding.client.sessionHandler=^(uint64_t owner){[weakBinding.pet resetRhythmForSession:owner];};
+        objc_setAssociatedObject(pet,&MSRhythmPetBindingKey,binding,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // Host eligibility is rechecked independently of metadata availability.
+    enabled = enabled && pet.window && !pet.window.hidden && !pet.hidden && pet.alpha > .01 &&
+        pet.roamPace > 0 && !pet.roamingPaused && !pet.interactionActive && !pet.activityActive &&
+        !pet.lyricsSuppressed && !UIAccessibilityIsReduceMotionEnabled();
+    double now=CACurrentMediaTime(),position=pet.musicPosition;
+    BOOL seek=enabled&&binding.enabled&&binding.hasPosition&&isfinite(position)&&
+        fabs(position-(binding.lastPosition+fmax(0.,now-binding.lastPositionAt)))>.8;
+    if(binding.token!=token||binding.enabled!=enabled||seek){[binding.client stop];[pet clearRhythm];}
+    binding.token=token;binding.enabled=enabled;
+    binding.hasPosition=enabled&&isfinite(position);binding.lastPosition=position;binding.lastPositionAt=now;
+    pet.rhythmFollowing=YES; // No data means quiet, never the legacy periodic dance.
+    [binding.client configureEnabled:enabled];
+}

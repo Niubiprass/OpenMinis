@@ -1,0 +1,45 @@
+{
+  "kind": "portable copies of verified local fixtures; no behavior reimplementation",
+  "files": [
+    {
+      "path": "analyzer.cpp",
+      "source": "analyzer/test_analyzer.cpp",
+      "sha256": "d393a51fda4414e24049299422954e52324352e58e45e5307b9db262226c52ce"
+    },
+    {
+      "path": "analyzer_boundaries.cpp",
+      "source": "tests/analyzer_boundaries.cpp",
+      "sha256": "9f5480b7e021687f9169b1969f3524f0a5fd1ede8a826254f2884296b83d9037"
+    },
+    {
+      "path": "wire_receive.c",
+      "source": "tests/wire_receive.c",
+      "sha256": "ff88a93ca185810de5fa82a04e2c834442da10faebeb7b6ddd60b5ebfea94551"
+    },
+    {
+      "path": "pipeline_trace.cpp",
+      "source": "tests/pipeline_trace.cpp",
+      "sha256": "bed6c79b32f3b1e593f180137fc5dffa4487d427c159dbf9f27f3c95501aee49"
+    },
+    {
+      "path": "rhythm_cases.c",
+      "source": "motion/rhythm_cases.c",
+      "sha256": "3c667ed95bd1ee59826c240927add7dbb71b1e02a0f12da1b6e52e0ef8b3e1af"
+    },
+    {
+      "path": "extra_cases.c",
+      "source": "motion/extra_cases.c",
+      "sha256": "2dd05c0a553b576f5eaff50112d47c9772e84f9106a356ed340e28e058180af1"
+    },
+    {
+      "path": "BridgeTests.cpp",
+      "source": "capture-adapter/tests/BridgeTests.cpp",
+      "sha256": "8941ec41de78dc5abdab5eb4c11c4e6016074b824ae335efb2ff405a2e2b88a9"
+    },
+    {
+      "path": "RealWrapperSmoke.cpp",
+      "source": "capture-adapter/tests/RealWrapperSmoke.cpp",
+      "sha256": "692d2679b4ff2a2af1eaac71743d1c0139c41872ecc7c970af4778bb71716215"
+    }
+  ]
+}

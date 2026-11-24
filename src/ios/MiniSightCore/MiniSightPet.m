@@ -20,6 +20,7 @@
 #import "MiniSightBlip.h"
 #import "MiniSightPetBehavior.h"
 #import "MiniSightPetMusicMotion.h"
+#import "MiniSightPetRhythmPolicy.h"
 #import "MiniSightPetEffects.h"
 #import "MiniSightLiveliness.h"
 #import "MiniSightLog.h"
@@ -102,6 +103,10 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
     BOOL _lyricsSuppressed;
     BOOL _musicMotion; // Only an automatic music route, never a drag/fling.
     unsigned _musicMotionStep;
+    BOOL _rhythmFollowing, _rhythmStarting;
+    uint64_t _rhythmSessionToken;
+    MSPetRhythmPolicy _rhythmPolicy;
+    MSPetRhythmAction _rhythmAction;
     MiniSightPetState _state;
     NSInteger _column;
     NSInteger _variantIndex;
@@ -153,6 +158,7 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
 - (BOOL)shouldAnimate;
 - (BOOL)mayRoam;
 - (BOOL)mayPerformMusicMotion;
+- (void)checkRhythmAtTime:(CFTimeInterval)now;
 - (void)reconcilePlayback;
 - (void)reconcilePlaybackOnce;
 - (MSPetResidentContext)residentContext;
@@ -575,6 +581,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     } @finally { _reconcilingPlayback = NO; }
 }
 - (void)reconcilePlaybackOnce {
+    [self checkRhythmAtTime:CACurrentMediaTime()];
     _effects.busy = _lyricsSuppressed || _motionLockReasons != 0 || _activityActive;
     [_effects setRunning:[self shouldAnimate]];
     if (![self shouldAnimate]) {
@@ -631,6 +638,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (timer != _frameTimer) return;
     if (![self shouldAnimate]) { [self reconcilePlayback]; return; }
     CFTimeInterval now = CACurrentMediaTime();
+    [self checkRhythmAtTime:now];
     if (_effects.musicPlaying && ![self mayPerformMusicMotion]) {
         [self invalidateRoamTimer];
         if (_musicMotion && !_physicsMotion && !_dragging) [self cancelMotion];
@@ -999,6 +1007,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (_hasCenterBounds && CGRectEqualToRect(clean, _centerBounds)) return;
     _hasCenterBounds = YES;
     _centerBounds = clean;
+    [self clearRhythm];
     // A new feasible range invalidates the old trajectory before clamping.
     [self invalidateRoamTimer];
     [self cancelMotion];
@@ -1029,6 +1038,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 }
 
 - (void)setBounds:(CGRect)bounds {
+    if (!CGRectEqualToRect(self.bounds, bounds)) [self clearRhythm];
     BOOL nested = _settingGeometry;
     _settingGeometry = YES;
     [super setBounds:bounds];
@@ -1072,6 +1082,9 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 #pragma mark - Roaming (every target comes from centerBounds)
 
 - (void)scheduleRoam {
+    if (_rhythmFollowing && _effects.musicPlaying) {
+        [self invalidateRoamTimer]; return; // No free-running/fallback beat.
+    }
     if (_effects.autonomyHeld || (_effects.musicPlaying && ![self mayPerformMusicMotion])) {
         [self invalidateRoamTimer]; return;
     }
@@ -1111,6 +1124,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 }
 
 - (void)roamOnce {
+    if (_rhythmFollowing && _effects.musicPlaying) { [self invalidateRoamTimer]; return; }
     [self invalidateRoamTimer];
     if (_effects.autonomyHeld || ![self mayRoam] || _motionActive) return;
     if (_effects.musicPlaying) {
@@ -1175,12 +1189,65 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 }
 - (NSString *)lyricsLine { return _effects.lyricsLine; }
 - (void)setLyricsLine:(NSString *)line { _effects.lyricsLine = line; }
+- (BOOL)rhythmFollowing { return _rhythmFollowing; }
+- (void)setRhythmFollowing:(BOOL)following {
+    NSAssert(NSThread.isMainThread, @"Rhythm is main-thread owned");
+    if (_rhythmFollowing == following) return;
+    [self clearRhythm];
+    _rhythmFollowing = following;
+    _effects.rhythmFollowing = following;
+    [self invalidateRoamTimer];
+    if (following && _effects.musicPlaying && _motionActive && !_physicsMotion && !_dragging)
+        [self cancelMotion];
+    [self reconcilePlayback];
+}
+- (void)resetRhythmForSession:(uint64_t)sessionToken {
+    NSAssert(NSThread.isMainThread, @"Rhythm is main-thread owned");
+    if (!sessionToken || sessionToken == _rhythmSessionToken) return;
+    [self clearRhythm];
+    _rhythmSessionToken = sessionToken;
+    _rhythmPolicy = (MSPetRhythmPolicy){0};
+}
+- (void)clearRhythm {
+    NSAssert(NSThread.isMainThread, @"Rhythm is main-thread owned");
+    MSPetRhythmClear(&_rhythmPolicy);
+    _rhythmStarting = NO;
+    _rhythmAction = (MSPetRhythmAction){0};
+    [_effects applyRhythmStrength:0 pulse:0];
+    if (_musicMotion && !_physicsMotion && !_dragging) [self cancelMotion];
+}
+- (void)checkRhythmAtTime:(CFTimeInterval)now {
+    if (!_rhythmFollowing) return;
+    if (![self mayPerformMusicMotion] || _dragging || _interactionActive || _physicsMotion ||
+        !MSPetRhythmFresh(&_rhythmPolicy, now)) [self clearRhythm];
+}
+- (void)applyRhythmFrame:(MSRhythmFrame)frame receivedAt:(CFTimeInterval)receivedAt {
+    NSAssert(NSThread.isMainThread, @"Rhythm is main-thread owned");
+    if (!_rhythmFollowing) return;
+    BOOL gate = [self mayPerformMusicMotion] && !_dragging && !_physicsMotion && !_interactionActive;
+    BOOL available = gate && !_motionActive && !_landingRecoveryStage &&
+        _stateHoldUntil <= 0. && !_effects.autonomyHeld;
+    MSPetRhythmAction action = MSPetRhythmConsume(&_rhythmPolicy, frame,
+        receivedAt, CACurrentMediaTime(), [self feasibleCenters], MSPetPoint(self.center), available);
+    if (!gate || !action.accepted) { [self clearRhythm]; return; }
+    [_effects applyRhythmStrength:action.strength pulse:action.pulse];
+    if (!action.valid || !available) return;
+    _rhythmAction = action;
+    _rhythmStarting = YES;
+    _musicMotion = YES;
+    [self startMotionTo:MSPetCGPoint(action.target) jump:action.jump rest:0];
+    _rhythmStarting = NO; // Manual physics never inherits measured duration/height.
+    _rhythmAction = (MSPetRhythmAction){0};
+    if (!_motionActive) _musicMotion = NO;
+}
+
 - (BOOL)musicPlaying { return _effects.musicPlaying; }
 - (NSTimeInterval)musicPosition { return _effects.musicPosition; }
 - (void)setMusicPosition:(NSTimeInterval)position { _effects.musicPosition = position; }
 - (void)setMusicPlaying:(BOOL)playing {
     if (_effects.musicPlaying == playing) return;
     _effects.musicPlaying = playing;
+    [self clearRhythm];
     MSDiagEvent(@"pet", @"state", @"ok", @{@"source": @"app", @"active": @((BOOL)playing), @"reason": @"music_state"});
     [self invalidateRoamTimer];
     if (playing) {
@@ -1198,6 +1265,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 - (BOOL)lyricsSuppressed { return _lyricsSuppressed; }
 - (void)setLyricsSuppressed:(BOOL)suppressed {
     _lyricsSuppressed = suppressed;
+    if (suppressed) [self clearRhythm];
     _effects.busy = suppressed || _motionLockReasons != 0 || _activityActive;
 }
 
@@ -1212,6 +1280,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     if (_dragging || ![self shouldAnimate]) return;
     [self wakeForInteraction];
     _dragging = YES; _interactionActive = YES;
+    [self clearRhythm];
     MSDiagEvent(@"drag", @"begin", @"ok", @{@"source": @"app", @"reason": @"pet_drag"});
     MSPetResidentCancelWakePose(&_resident);
     [self cancelMotion]; [self cancelGravityImpulse];
@@ -1262,7 +1331,8 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     CGPoint end = [self clampedCenter:target];
     double height = 0.;
     if (jump) {
-        height = MSPetSafeJumpHeight([self feasibleCenters], MSPetPoint(start), MSPetPoint(end), kMiniSightJumpDesiredHeight);
+        height = MSPetSafeJumpHeight([self feasibleCenters], MSPetPoint(start), MSPetPoint(end),
+            _rhythmStarting ? _rhythmAction.height : kMiniSightJumpDesiredHeight);
         if (height < kMiniSightJumpMinHeight) height = 0.;
     }
     double distance = hypot((double)end.x - start.x, (double)end.y - start.y);
@@ -1278,6 +1348,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     _motionDuration = jump ? kMiniSightJumpDuration
                            : MSClamp(distance / kMiniSightWalkSpeed,
                                      kMiniSightWalkMinDuration, kMiniSightWalkMaxDuration);
+    if (_rhythmStarting) _motionDuration = _rhythmAction.duration;
     _motionBegan = CACurrentMediaTime();
     _restAfterMotion = rest;
     _motionActive = YES;
@@ -1327,6 +1398,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 
 - (void)motionTick:(CADisplayLink *)link {
     if (link != _motionLink) return;
+    [self checkRhythmAtTime:CACurrentMediaTime()];
     if (!_motionActive || _activeMotionGeneration != _motionGeneration) return;
     if (![self shouldAnimate] || _roamingPaused || _interactionActive || _motionLockReasons ||
         (_musicMotion && ![self mayPerformMusicMotion])) {

@@ -59,7 +59,7 @@ struct MiniSightInAppRuntime: View {
                 MiniSightPetHost(image: petImage, displaySize: CGFloat(petSize), variant: MiniSightAppFiles.variantIndex,
                                  spriteLayout: MiniSightAppFiles.spriteLayout,
                                  actionManifestPath: actionManifestPath,
-                                 lyricsLine: music.line, musicPlaying: music.playing, musicAnchor: music.anchor,
+                                 lyricsLine: music.line, musicPlaying: music.playing, musicAnchor: music.anchor, musicToken: music.rhythmToken,
                                  dragGain: dragResponse ? 1.0 : 0.20, soundEnabled: petSoundEnabled,
                                  roll: motion.roll,
                                  activityActive: activity.active, gravityEnabled: gravityEnabled, gravityStrength: gravityStrength,
@@ -473,6 +473,7 @@ private final class MiniSightMusicBridge: ObservableObject {
     @Published private(set) var line: String?
     @Published private(set) var playing = false
     @Published private(set) var anchor: MiniSightMusicAnchor?
+    @Published private(set) var rhythmToken: UInt = 0
     private var timer: Timer?
     private let io = DispatchQueue(label: "com.openminis.minisight.music.read", qos: .utility)
     private var generation = 0
@@ -533,6 +534,9 @@ private final class MiniSightMusicBridge: ObservableObject {
                 let now = Date().timeIntervalSince1970
                 guard let snapshot, snapshot.fresh(at: now) else { self.line = nil; self.playing = false; self.anchor = nil; self.evidence("music_stale", valid: false, present: false); return }
                 self.lastValidAt = snapshot.time
+                if let value = MiniSightMusicSnapshot.number(value?["generation"]), value >= 0, value <= 1_000_000_000 {
+                    self.rhythmToken = UInt(value)
+                } else { self.rhythmToken = 0 }
                 let defaults = UserDefaults.standard
                 let nextLine = snapshot.playing && snapshot.lyricsEnabled && defaults.bool(forKey: "minisight.music.lyrics") ? snapshot.line : nil
                 let nextPlaying = snapshot.playing && snapshot.motionEnabled && defaults.bool(forKey: "minisight.music.motion")
@@ -816,6 +820,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
     let lyricsLine: String?
     let musicPlaying: Bool
     let musicAnchor: MiniSightMusicAnchor?
+    let musicToken: UInt
     let dragGain: CGFloat
     let soundEnabled: Bool
     let roll: Double
@@ -898,6 +903,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.actionManifestPath = parent.actionManifestPath
             pet.lyricsLine = parent.lyricsLine
             pet.musicPosition = parent.musicAnchor?.current ?? 0
+            MiniSightRhythmConfigurePet(pet, parent.musicPlaying, parent.musicToken)
             pet.musicPlaying = parent.musicPlaying
             pet.activityActive = parent.activityActive
             root.pet = pet
@@ -938,6 +944,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.image = image
             pet.lyricsLine = parent.lyricsLine
             pet.musicPosition = parent.musicAnchor?.current ?? 0
+            MiniSightRhythmConfigurePet(pet, parent.musicPlaying, parent.musicToken)
             pet.musicPlaying = parent.musicPlaying
             pet.gravityRoll = roll
             pet.activityActive = active
@@ -1033,6 +1040,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             }
             pet?.onGeometryChanged = nil
             MSDiagEvent("runtime", "hide", "ok", ["source": "app", "reason": "teardown"])
+            MiniSightRhythmConfigurePet(pet, false, parent.musicToken)
             pet?.stopPlaying()
             pet = nil
             host?.pet = nil

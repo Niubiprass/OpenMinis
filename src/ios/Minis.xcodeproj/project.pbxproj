@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BE231123A000000000000001 /* MiniSightRhythmClient.m in Sources */ = {isa = PBXBuildFile; fileRef = BE231123A000000000000002 /* MiniSightRhythmClient.m */; };
 		BE1611161000000000000001 /* MiniSightWakeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE1611161000000000000002 /* MiniSightWakeController.swift */; };
 		E5MPG001 /* ModelPagination.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5MPG002 /* ModelPagination.swift */; };
 		160649A00000000000000001 /* MemoryDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 160649A00000000000000002 /* MemoryDocumentStore.swift */; };
@@ -708,6 +709,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		BE231123A000000000000002 /* MiniSightRhythmClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightRhythmClient.m; sourceTree = "<group>"; };
+		BE231123A000000000000003 /* MiniSightRhythmClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightRhythmClient.h; sourceTree = "<group>"; };
 		BE1611161000000000000002 /* MiniSightWakeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightWakeController.swift; sourceTree = "<group>"; };
 		E5MPG002 /* ModelPagination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPagination.swift; sourceTree = "<group>"; };
 		160649A00000000000000002 /* MemoryDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDocumentStore.swift; sourceTree = "<group>"; };
@@ -1668,6 +1671,8 @@
 				BE1711170000000000000002 /* MiniSightResources.m */,
 				BE1711170000000000000003 /* MiniSightResources.h */,
 				C0FFEE000000000000000002 /* MiniSightPet.m */,
+				BE231123A000000000000002 /* MiniSightRhythmClient.m */,
+				BE231123A000000000000003 /* MiniSightRhythmClient.h */,
 				BE1611160000000000000002 /* MiniSightPetEffects.m */,
 				BE1611160000000000000003 /* MiniSightPetEffects.h */,
 				BE1611160000000000000005 /* MiniSightActionLibrary.m */,
@@ -3180,6 +3185,7 @@
 				F1MCF001 /* MiniSightConfirm.swift in Sources */,
 				BE1711170000000000000001 /* MiniSightResources.m in Sources */,
 				C0FFEE000000000000000001 /* MiniSightPet.m in Sources */,
+				BE231123A000000000000001 /* MiniSightRhythmClient.m in Sources */,
 				BE1611160000000000000001 /* MiniSightPetEffects.m in Sources */,
 				BE1611160000000000000004 /* MiniSightActionLibrary.m in Sources */,
 				BE1611160000000000000007 /* MiniSightLyrics.m in Sources */,

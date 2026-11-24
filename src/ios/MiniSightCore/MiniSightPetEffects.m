@@ -37,6 +37,8 @@
     double _musicAnchor, _musicAnchorAt, _musicAmplitude, _recoveryBegan;
     NSInteger _recoveryStage;
     unsigned _musicEvidenceBudget, _lastMusicCue;
+    BOOL _rhythmFollowing;
+    double _rhythmStrength, _rhythmPulse, _rhythmAt;
     MSPetDamped _angle, _offsetX, _offsetY, _scaleX, _scaleY, _dragX, _dragY;
     MSPetDragTrail _trail;
     CGPoint _dragTarget, _visualOffset;
@@ -103,6 +105,17 @@
 - (BOOL)hasActions { return _ownsSprite; }
 - (BOOL)isDragging { return _dragging; }
 - (BOOL)presentationBlocked { return _busy || MiniSightChatPanel.existingPanel.isVisible; }
+- (BOOL)rhythmFollowing { return _rhythmFollowing; }
+- (void)setRhythmFollowing:(BOOL)following {
+    _rhythmFollowing = following;
+    _rhythmStrength = _rhythmPulse = _rhythmAt = 0.;
+    _musicAmplitude = 0.;
+}
+- (void)applyRhythmStrength:(CGFloat)strength pulse:(CGFloat)pulse {
+    _rhythmStrength = MSPetFiniteClamp(strength, 0., 1.);
+    _rhythmPulse = MSPetFiniteClamp(pulse, 0., 1.);
+    _rhythmAt = CACurrentMediaTime();
+}
 - (BOOL)musicPlaying { return _musicPlaying; }
 - (void)setMusicPlaying:(BOOL)playing {
     if (_musicPlaying == playing) return;
@@ -411,7 +424,7 @@
     }
     [self advanceActions:now];
     BOOL reduce = UIAccessibilityIsReduceMotionEnabled();
-    BOOL dance = _musicPlaying && !blocked && !_dragging && !_flying && _state == 8 && !_recoveryStage && now >= _landUntil && now >= _shakeUntil && !reduce;
+    BOOL dance = !_rhythmFollowing && _musicPlaying && !blocked && !_dragging && !_flying && _state == 8 && !_recoveryStage && now >= _landUntil && now >= _shakeUntil && !reduce;
     MSPetMusicCue cue = MSPetMusicCueAt(dance ? self.musicPosition : -1.);
     _musicAmplitude = MSPetMusicAmplitude(_musicAmplitude, dance ? 1. : 0., dt);
     double angle = blocked || reduce ? 0. : MSPetFiniteClamp(_tilt, -.22, .22);
@@ -452,6 +465,20 @@
         angle = _musicAmplitude * sway.angle;
         x = 0.; y = pet.bounds.size.height * _musicAmplitude * sway.bob;
         sx = 1.; sy = 1.;
+    }
+    // Sample-and-decay only: phase is supplied by a fresh producer frame.
+    // No musicPosition/time oscillator, travel, scale, or host geometry writes.
+    BOOL rhythm = _rhythmFollowing && _musicPlaying && !blocked && !reduce &&
+        !_dragging && !_flying && !_recoveryStage && _state == 8 &&
+        now >= _landUntil && now >= _shakeUntil && now >= _rhythmAt && now - _rhythmAt <= .40;
+    if (rhythm) {
+        double envelope = exp(-10. * (now - _rhythmAt));
+        angle = .055 * _rhythmPulse * envelope;
+        x = 0.; y = -pet.bounds.size.height * .014 * _rhythmStrength * _rhythmPulse * envelope;
+        sx = 1.; sy = 1.;
+    }
+    if (_rhythmFollowing && (!rhythm || now - _rhythmAt > .40)) {
+        _rhythmStrength = _rhythmPulse = 0.;
     }
     MSPetLandingPresentation recoveryMark = MSPetLandingPresentationAt(now - _recoveryBegan);
     BOOL showDizzy = _recoveryStage && !blocked && !reduce && !_dragging && !_flying &&
