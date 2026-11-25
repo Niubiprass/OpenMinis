@@ -61,7 +61,11 @@ static void ArtistIdentityNativeTests(void) {
     NSMutableDictionary *conflict = [valid mutableCopy]; conflict[@"songmid"] = @"def456";
     NSMutableDictionary *bad = [valid mutableCopy]; bad[@"singer"] = NSNull.null;
     NSMutableArray *over = [NSMutableArray array]; for (unsigned i = 0; i < 21; ++i) [over addObject:valid];
-    for (NSArray *list in @[@[title,artist,duration], @[valid,conflict], @[bad], over]) {
+    // Force an actual empty QQ result after a different match fact. Production
+    // dedupes identical route/stage facts across clients for 60 seconds; the
+    // earlier synthetic suites may already have emitted LRCLIB's empty fact.
+    // Keep the roundtrip assertion: changing a log container is not a dedupe reset.
+    for (NSArray *list in @[@[title,artist,duration], @[valid,conflict], @[bad], @[], over]) {
         handler = ^(FixtureProtocol *p) {
             if (Equal(p.request.URL.host,@"lrclib.net")) { if (Equal(p.request.URL.path,@"/api/get")) Emit(p,404,nil,nil); else Emit(p,200,JSON(@[]),nil); }
             else { CHECK(Equal(p.request.URL.path,@"/soso/fcgi-bin/client_search_cp"), "mixed/ambiguous/invalid QQ never fetches lyrics"); Emit(p,200,QQJSONPData(@{@"code":@0,@"data":@{@"song":@{@"list":list}}}),@{@"Content-Type":@"application/x-javascript"}); }

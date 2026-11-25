@@ -409,6 +409,8 @@ static void DailyActionCategoryAndRepeat(void) {
                 CHECK(CGPointEqualToPoint(fixed, r.pet.center));
             }
         }
+        CHECK(r.effects.rhythmFollowing); // Production defaults to measured-input mode.
+        r.effects.rhythmFollowing = NO; // Select legacy explicitly before testing its priority.
         r.effects.musicPlaying = YES;
         CHECK([r.effects performDailyAction] == 0.); // Explicit legacy music retains its priority.
         r.effects.rhythmFollowing = YES;
