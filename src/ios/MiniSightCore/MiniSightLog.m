@@ -75,7 +75,7 @@ static BOOL MSDiagEnum(NSString *key, NSString *value) {
         @"domain": [NSSet setWithArray:@[@"chat", @"runtime", @"settings", @"voice"]],
         @"issue": [NSSet setWithArray:@[@"0", @"1", @"2", @"3", @"4", @"5", @"6", @"7", @"8", @"9"]],
         @"finish": [NSSet setWithArray:@[@"content_filter", @"error", @"function_call", @"length", @"none", @"other", @"stop", @"tool_calls", @"unknown"]],
-        @"version": [NSSet setWithArray:@[@"0.8.1", @"0.8.49", @"0.8.50", @"0.8.51", @"0.8.52", @"0.8.53"]]
+        @"version": [NSSet setWithArray:@[@"0.8.1", @"0.8.49", @"0.8.50", @"0.8.51", @"0.8.52", @"0.8.54"]]
     }; });
     return [allowed[key] containsObject:value];
 }

@@ -1,12 +1,10 @@
-# Current: OpenMinis daily-action local candidate (2026-11-25; not pushed)
+# Current: OpenMinis daily-action repeat fix (2026-11-25; local repair, ready to push)
 
-- User approved local-only changes for varied everyday pet animation, independent of roaming; preserve lyrics/music logic, existing movement, drag/chat/sleep/interactions and legacy imports.
-- Baseline HEAD `0157569ac11b95a6f1393fc3b46f12f04e24dc99` (OpenMinis 1.16/build382). Release candidate target is build383; candidate is uncommitted in this isolated copy; no push, GitHub CI run, IPA, install, device action, audio capture, respring or reboot.
-- The existing GitHub Actions App workflow now includes the portable daily-action test; its YAML and local test invocation were checked. This workflow edit is local only; GitHub has not run it. Existing `--require-native` gates remain fail-closed for the authorized macOS runner.
-- App-side portable daily-action test ran 7/7; existing importer source/synthetic checks passed. Apple SDK/ImageIO/UIKit, CI/build/package, app runtime and phone visuals are not verified.
-- Local host-C/path, parser/importer static, source-mirror and package checks passed. Apple SDK/ImageIO/UIKit, CI/build/package, app runtime and phone visuals are not verified.
-- Artwork source terms are non-commercial; do not publish/package the assets for public or commercial distribution without resolving those terms.
-- Detailed evidence: `/var/minis/shared/openminis/local-reviews/pet-lively-reuse-20261125/local-candidate/LOCAL-RESULT.md`. Stop at local-check gate; push/build and install each need separate approval.
+- App build383 CI run `45533888037` completed successfully; the IPA evidence independently verifies CRC, strict signature, source entitlements and all 11 Mach-O images/12 slices. The same shared daily-action repeat defect exists in that build, so build383 is not a fixed release.
+- Repair scope: both mirrored `MiniSightPetEffects.m`, both native runtime fixtures, both portable daily-action gates, both diagnostic version allowlists and only the App packaging/build workflow metadata for build384. Preserve lyrics/music logic, movement/roaming policy, legacy imports, drag/chat/sleep/interaction priorities and 48-clip asset package locality.
+- Production fix isolates `_lastDailyClip` from normal `_lastClip`; only `idleAlt` updates it; manifest changes clear it. Normal idle/tap selection still uses `_lastClip`; a true single remaining usable daily clip may repeat.
+- Native fixture forces both category rolls (0 and 84), loops daily→idle repeatedly, tests tap/cancelled drag/music priority, manifest clearing, singleton reuse, two-idle avoidance, and the real three-bad-frame fallback to ordinary idle. Portable tests pass 9/9 both sides; host-C paths, bounds, liveliness, source/mirror, YAML and diff checks pass. Apple Foundation native execution is intentionally pending GitHub macOS CI; no iSH iOS build.
+- Candidate target: OpenMinis 1.16/build384 on `ios15-daily-actions-20261125-build384`; MiniSight 0.8.54 on `minisight-0.8.54-daily-actions-20261125`. This tree remains uncommitted/unpushed pending the user's explicit push approval. No install, updater publication, device, audio capture, logout or reboot.
 
 ---
 # Historical records (not current authorization)

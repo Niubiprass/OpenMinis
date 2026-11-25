@@ -53,8 +53,11 @@ class DailyActionContracts(unittest.TestCase):
     def test_weighted_categories_and_no_repeat(self):
         for token in ('@"micro": @55', '@"play": @30', '@"food": @15',
                       '@"seasonal": @10', '@"social": @10', 'clip.category ?: @"micro"',
-                      "_lastClip", "allUsablePool"):
+                      "_lastClip", "allUsablePool", "_lastDailyClip",
+                      'NSString *avoidClip = [actual isEqualToString:@"idleAlt"] ? _lastDailyClip : _lastClip;',
+                      'if ([actual isEqualToString:@"idleAlt"]) _lastDailyClip = next.identifier;'):
             self.assertIn(token, EFFECTS)
+        self.assertIn("_lastDailyClip = nil", EFFECTS)
 
     def test_legacy_single_action_keeps_wave_fallback(self):
         roam = section(PET, "- (void)roamOnce {", "- (void)holdState:")
@@ -87,7 +90,7 @@ class DailyActionContracts(unittest.TestCase):
         source = log.read_text()
         stages = source.split("MSDiagStages =", 1)[1].split("MSDiagResults =", 1)[0]
         self.assertIn('@"daily_action"', stages)
-        self.assertIn('@"0.8.53"', source.split('@"version":', 1)[1])
+        self.assertIn('@"0.8.54"', source.split('@"version":', 1)[1])
 
     def test_checked_in_synthetic_category_fixture(self):
         app_fixture = ROOT / "scripts/fixtures/minisight_action_import/actions.json"
@@ -100,6 +103,17 @@ class DailyActionContracts(unittest.TestCase):
             cases = json.loads(plugin_fixture.read_text())["cases"]
             self.assertTrue(any(c["name"] == "valid-daily-category" and c["valid"] for c in cases))
             self.assertTrue(any(c["name"] == "unknown-category" and not c["valid"] for c in cases))
+
+    def test_repeat_runtime_fixture_forces_both_category_choices(self):
+        fixture = CORE / "scripts/fixtures/minisight_effects_runtime_20261116/runtime.m"
+        if not fixture.is_file():
+            fixture = ROOT / "scripts/fixtures/minisight_effects_runtime_20261116/runtime.m"
+        source = fixture.read_text()
+        for token in ("FixtureFixedDailyRandom", "FixtureDailyRandomValue", "@[@0, @84]",
+                      "cycle < 8", "CHECK(![previous isEqualToString:selected.identifier])",
+                      'isEqual:@"fixture-idle"', 'valueForKey:@"lastDailyClip"',
+                      "endDragCancelled:YES", "musicPlaying = YES"):
+            self.assertIn(token, source)
 
 
 if __name__ == "__main__":

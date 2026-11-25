@@ -19,7 +19,7 @@
     MSPetEffectsProxy *_proxy;
     MiniSightActionLibrary *_library;
     MiniSightActionClip *_clip;
-    NSString *_actionManifestPath, *_lyricsLine, *_role, *_wantedRole, *_lastClip;
+    NSString *_actionManifestPath, *_lyricsLine, *_role, *_wantedRole, *_lastClip, *_lastDailyClip;
     UIView *_bubble;
     UILabel *_label;
     CAShapeLayer *_tail, *_dizzyStars;
@@ -77,6 +77,7 @@
     _actionManifestPath = [path copy]; ++_generation; ++_frameRequest; _framePending = NO;
     _clip = nil; _role = nil; _wantedRole = nil; _displayedFrame = NSNotFound;
     _ownsSprite = NO; _manifestRetries = 0; _failedClips = [NSSet set];
+    _lastDailyClip = nil; // A different manifest owns a fresh daily-action history.
     [_library purgeFrames]; _library = nil;
     [self restorePoster]; // Retire the previous clip even if the new manifest fails.
     if (path.length) [self loadManifestGeneration:_generation];
@@ -212,24 +213,27 @@
     _wantedRole = wanted;
     if ([_role isEqualToString:actual] && _clip) return;
     if (!pool.count) { _clip = nil; _role = @"poster"; [self restorePoster]; return; }
+    // Base idle and interaction clips must not erase the last daily choice.
+    NSString *avoidClip = [actual isEqualToString:@"idleAlt"] ? _lastDailyClip : _lastClip;
     NSMutableArray<MiniSightActionClip *> *choices = [pool mutableCopy];
-    if (choices.count > 1 && _lastClip) {
+    if (choices.count > 1 && avoidClip) {
         NSIndexSet *indexes = [choices indexesOfObjectsPassingTest:^BOOL(MiniSightActionClip *item, NSUInteger idx, BOOL *stop) {
-            (void)idx; (void)stop; return [item.identifier isEqualToString:self->_lastClip];
+            (void)idx; (void)stop; return [item.identifier isEqualToString:avoidClip];
         }];
         [choices removeObjectsAtIndexes:indexes];
     }
     if (!choices.count) choices = [pool mutableCopy];
     if (choices.count == 1 && allUsablePool.count > 1 &&
-        [choices.firstObject.identifier isEqualToString:_lastClip]) {
+        [choices.firstObject.identifier isEqualToString:avoidClip]) {
         choices = [allUsablePool mutableCopy];
         NSIndexSet *indexes = [choices indexesOfObjectsPassingTest:^BOOL(MiniSightActionClip *item, NSUInteger idx, BOOL *stop) {
-            (void)idx; (void)stop; return [item.identifier isEqualToString:self->_lastClip];
+            (void)idx; (void)stop; return [item.identifier isEqualToString:avoidClip];
         }];
         if (indexes.count) [choices removeObjectsAtIndexes:indexes];
     }
     MiniSightActionClip *next = choices[arc4random_uniform((uint32_t)choices.count)];
     _role = actual; _clip = next; _lastClip = next.identifier;
+    if ([actual isEqualToString:@"idleAlt"]) _lastDailyClip = next.identifier;
     _selectionBegan = CACurrentMediaTime();
     _clipStart = 0; _displayedFrame = NSNotFound; _frameRetryAt = 0; _frameFailures = 0;
     ++_frameRequest; _framePending = NO;

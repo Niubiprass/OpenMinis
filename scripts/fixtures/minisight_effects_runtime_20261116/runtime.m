@@ -1,6 +1,14 @@
 // Actual production code in this translation unit; only dependency shims below.
 #import "support.h"
+#include <stdlib.h>
+static BOOL FixtureFixedDailyRandom;
+static uint32_t FixtureDailyRandomValue;
+static uint32_t MSFixtureRandomUniform(uint32_t upper) {
+    return FixtureFixedDailyRandom ? (upper ? FixtureDailyRandomValue % upper : 0) : arc4random_uniform(upper);
+}
+#define arc4random_uniform MSFixtureRandomUniform
 #import "MiniSightPetEffects.m"
+#undef arc4random_uniform
 #import "pet_atlas_excerpt.inc" // Generated verbatim from the current MiniSightPet.m.
 #import "MiniSightLyrics.m" // Only timeline/track methods run. No client/session.
 #include <stdio.h>
@@ -364,22 +372,95 @@ static void TapAndIdleAltFinish(void) {
     CHECK(![r.effects valueForKey:@"transientRole"]); Finish(r.library, Pixel(100));
 }
 static void DailyActionCategoryAndRepeat(void) {
-    MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@2.]),
-        @"idleAlt": @[DailyClip(@"stretch", @"micro", @[@.2, @.3]), DailyClip(@"toy", @"play", @[@.4])]});
-    Finish(r.library, Pixel(100));
-    CGPoint fixed = r.pet.center;
-    CHECK([r.effects performDailyAction] > 0.);
-    MiniSightActionClip *first = [r.effects valueForKey:@"clip"];
-    CHECK([first.role isEqual:@"idleAlt"] && ([first.category isEqual:@"micro"] || [first.category isEqual:@"play"]));
-    Finish(r.library, Pixel(110));
-    Now = Start(r.effects) + first.duration + .02; Tick(r.effects, Now);
-    CHECK([Role(r.effects) isEqual:@"idle"] && CGPointEqualToPoint(fixed, r.pet.center));
-    CHECK([r.effects performDailyAction] > 0.);
-    MiniSightActionClip *second = [r.effects valueForKey:@"clip"];
-    CHECK(![first.identifier isEqualToString:second.identifier]); // Even a one-clip category cannot repeat immediately.
-    CHECK(CGPointEqualToPoint(fixed, r.pet.center));
-    r.effects.musicPlaying = YES;
-    CHECK([r.effects performDailyAction] == 0.); // Daily life never substitutes for music beat capture.
+    FixtureFixedDailyRandom = YES;
+    // Both weighted categories are forced in turn. The old shared _lastClip
+    // implementation must fail every run, not merely when random choices repeat.
+    for (NSNumber *roll in @[@0, @84]) { @autoreleasepool {
+        FixtureDailyRandomValue = roll.unsignedIntValue;
+        MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@2.]), @"tap": Clip(@"tap", @[@.1]),
+            @"idleAlt": @[DailyClip(@"stretch", @"micro", @[@.2, @.3]), DailyClip(@"toy", @"play", @[@.4])]});
+        Finish(r.library, Pixel(100));
+        CGPoint fixed = r.pet.center;
+        NSString *previous = nil;
+        for (NSUInteger cycle = 0; cycle < 8; ++cycle) {
+            CHECK([r.effects performDailyAction] > 0.);
+            MiniSightActionClip *selected = [r.effects valueForKey:@"clip"];
+            CHECK([selected.role isEqual:@"idleAlt"] && ([selected.category isEqual:@"micro"] || [selected.category isEqual:@"play"]));
+            CHECK(![previous isEqualToString:selected.identifier]);
+            CHECK([[r.effects valueForKey:@"lastDailyClip"] isEqual:selected.identifier]);
+            previous = selected.identifier;
+            Finish(r.library, Pixel(110));
+            Now = Start(r.effects) + selected.duration + .02; Tick(r.effects, Now);
+            CHECK([Role(r.effects) isEqual:@"idle"] && CGPointEqualToPoint(fixed, r.pet.center));
+            CHECK([[r.effects valueForKey:@"lastClip"] isEqual:@"fixture-idle"]);
+            CHECK([[r.effects valueForKey:@"lastDailyClip"] isEqual:previous]);
+            Finish(r.library, Pixel(100));
+            if (cycle == 1) {
+                [r.effects setLegacyState:3 waking:NO]; Tick(r.effects, Now + .01);
+                CHECK([Role(r.effects) isEqual:@"tap"]); Finish(r.library, Pixel(115));
+                [r.effects setLegacyState:0 waking:NO]; Tick(r.effects, Start(r.effects) + .12);
+                CHECK([Role(r.effects) isEqual:@"idle"]); Finish(r.library, Pixel(100));
+                CHECK([[r.effects valueForKey:@"lastDailyClip"] isEqual:previous]);
+            }
+            if (cycle == 2) {
+                [r.effects beginDragAt:CGPointZero]; CHECK([r.effects performDailyAction] == 0.);
+                [r.effects endDragCancelled:YES];
+                CHECK([[r.effects valueForKey:@"lastDailyClip"] isEqual:previous]);
+                CHECK(CGPointEqualToPoint(fixed, r.pet.center));
+            }
+        }
+        r.effects.musicPlaying = YES;
+        CHECK([r.effects performDailyAction] == 0.); // Never substitute daily clips for beat capture.
+        r.effects.musicPlaying = NO;
+        // If only the previous clip remains usable, repetition is necessary.
+        NSString *other = [previous isEqual:@"fixture-stretch"] ? @"fixture-toy" : @"fixture-stretch";
+        [r.effects setValue:[NSSet setWithObject:other] forKey:@"failedClips"];
+        CHECK([r.effects performDailyAction] > 0.);
+        CHECK([[[r.effects valueForKey:@"clip"] identifier] isEqual:previous]);
+        [r.effects setActionManifestPath:nil];
+        CHECK(![r.effects valueForKey:@"lastDailyClip"]);
+    } }
+    @autoreleasepool {
+        MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@2.]),
+            @"idleAlt": @[DailyClip(@"single", nil, @[@.2])]});
+        Finish(r.library, Pixel(100));
+        for (NSUInteger cycle = 0; cycle < 2; ++cycle) {
+            CHECK([r.effects performDailyAction] > 0.);
+            CHECK([[[r.effects valueForKey:@"clip"] identifier] isEqual:@"fixture-single"]);
+            Finish(r.library, Pixel(110)); Tick(r.effects, Start(r.effects) + .22);
+            CHECK([Role(r.effects) isEqual:@"idle"]); Finish(r.library, Pixel(100));
+        }
+    }
+    @autoreleasepool {
+        MSRig *r = Rig(@{@"idle": @[[[MiniSightActionClip alloc] initFixtureRole:@"idle-a" durations:@[@1.]],
+            [[MiniSightActionClip alloc] initFixtureRole:@"idle-b" durations:@[@1.]]]});
+        Finish(r.library, Pixel(100));
+        CHECK([[[r.effects valueForKey:@"clip"] identifier] isEqual:@"fixture-idle-a"]);
+        Tick(r.effects, Start(r.effects) + 1.01);
+        CHECK([[[r.effects valueForKey:@"clip"] identifier] isEqual:@"fixture-idle-b"]);
+    }
+    @autoreleasepool {
+        MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@2.]),
+            @"idleAlt": @[DailyClip(@"broken", @"micro", @[@.1, @5.])]});
+        Finish(r.library, Pixel(100));
+        CHECK([r.effects performDailyAction] > 0.);
+        CHECK([[[r.effects valueForKey:@"clip"] identifier] isEqual:@"fixture-broken"]);
+        Finish(r.library, Pixel(110));
+        Now = Start(r.effects) + .11; Tick(r.effects, Now);
+        CHECK(r.library.pending.index == 1);
+        for (NSUInteger failure = 0; failure < 3; ++failure) {
+            if (failure) {
+                Now = [[r.effects valueForKey:@"frameRetryAt"] doubleValue] + .01;
+                Tick(r.effects, Now);
+                CHECK(r.library.pending.index == 1);
+            }
+            Finish(r.library, nil);
+        }
+        CHECK([[r.effects valueForKey:@"failedClips"] containsObject:@"fixture-broken"]);
+        CHECK([Role(r.effects) isEqual:@"idle"]);
+        CHECK([r.effects performDailyAction] == 0. && [Role(r.effects) isEqual:@"idle"]);
+    }
+    FixtureFixedDailyRandom = NO;
 }
 static void DelayedTapFirstFrame(void) {
     MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@5.]), @"tap": Clip(@"tap", @[@1.])});
