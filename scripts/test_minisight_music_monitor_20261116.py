@@ -130,7 +130,7 @@ class SourceTests(unittest.TestCase):
             assert(!MSMusicPIDMatches(5,5,false)); assert(!MSMusicPIDMatches(0,0,true));
             for(int i=0;i<8;++i) assert(!MSMusicPublishDue(false,false,100+i*.25,100));
             assert(MSMusicPublishDue(false,false,102,100)); assert(MSMusicPublishDue(true,false,100,100));
-            assert(MSMusicPublishDue(false,true,100,100)); }"""
+            assert(MSMusicPublishDue(false,true,100,100)); }\n"""
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp)/'cases'
             subprocess.run(['cc','-x','c','-Wall','-Werror','-o',str(binary),'-'],input='#include <assert.h>\n#include <stdbool.h>\n'+body+cases,text=True,check=True)
@@ -145,7 +145,7 @@ class SourceTests(unittest.TestCase):
             assert(!MSMusicUseFirstProgress(true,false,true,true));
             assert(!MSMusicUseFirstProgress(true,true,false,true));
             assert(!MSMusicUseFirstProgress(true,true,true,false));
-        }'''
+        }\n'''
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp) / 'progress'
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-pedantic','-x','c','-o',str(binary),'-'],

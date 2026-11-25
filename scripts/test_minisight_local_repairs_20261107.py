@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression locks for the 2026-11-07 App-side MiniSight repair. Static only."""
 from pathlib import Path
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1] / 'src/ios'
@@ -31,10 +32,60 @@ need('url.host == "minisight"' in app and 'url.path == "/voice"' in app, 'voice 
 need('reason: "stopped"' in bridge or 'reason: "stopped"' in bridge.replace('"', '"'), 'pending start can be stopped')
 need('empty_transcript' in bridge, 'empty final is explicit')
 
-# Runtime snapshot: 46 legacy + 2 audited media + 3 explicit wake identity keys.
+# Runtime snapshot: preserve all 51 App384 mappings and add only the audited daily key.
 settings = read(ROOT / 'MiniSightSettings.swift')
 store = read(ROOT / 'MiniSightConfigStore.swift')
-need('runtimeFields.count == 51' in settings, 'snapshot validates 51 audited keys')
+# Frozen symbol/alias pairs from published App384 (9db1366c), not derived from
+# the candidate under test: missing/renamed old fields must remain a failure.
+legacy_fields = dict(pair.split('=') for pair in '''
+style=style renderer=renderer mode=mode petSize=petSize gravity=gravity
+ gravityStrength=gravityStrength gravityShake=gravityShake interaction=interaction
+ singleTap=singleTap doubleTap=doubleTap longPress=longPress activity=activity
+ activityInterval=activityInterval frameLimit=frameLimit dragResponse=dragResponse
+ petSound=sound lyricsEnabled=lyricsEnabled musicMotion=musicMotion
+ wakeEnabled=wakeEnabled wakeName=wakeName wakePronunciation=wakePronunciation
+ bottomGap=bottomGap tint=tint costume=costume supplier=supplier
+ downloadSource=downloadSource darkMode=darkMode persona=persona nickname=nickname
+ aiAdjust=aiAdjust aiPermissions=aiPermissions adjustments=adjustments
+ proactive=proactive proactiveInterval=proactiveInterval bubbleScale=bubbleScale
+ panelScale=panelScale textScale=textScale dwell=dwell returnKey=returnKey
+ voiceReply=voiceReply voiceInput=voiceInput snore=snore quickButtons=quick
+ quickPosition=quickPosition quickLines=quickLines quickOrder=quickOrder
+ record=record longPressRecord=longPressRecord diagnostics=diagnostics
+ shown=shown shownRevision=revision
+'''.split())
+expected_fields = {**legacy_fields, 'dailyActionsEnabled': 'dailyActionsEnabled'}
+canonical_suffixes = dict(pair.split('=') for pair in '''
+gravityStrength=gravity.strength gravityShake=gravity.shake
+singleTap=gesture.single doubleTap=gesture.double longPress=gesture.long
+activityInterval=activity.interval lyricsEnabled=music.lyrics musicMotion=music.motion
+wakeEnabled=wake.enabled wakeName=wake.name wakePronunciation=wake.pronunciation
+tint=pet.tint costume=pet.costume supplier=ai.supplier downloadSource=asset.source
+persona=ai.persona nickname=ai.nickname aiAdjust=ai.adjust aiPermissions=ai.permissions
+adjustments=ai.adjustments proactiveInterval=proactive.interval bubbleScale=dialogue.scale
+panelScale=chat.panelScale textScale=dialogue.textScale dwell=dialogue.dwell
+returnKey=dialogue.return voiceReply=voice.reply voiceInput=voice.input snore=voice.snore
+quickButtons=quick.enabled quickPosition=quick.position quickLines=quick.lines
+quickOrder=quick.order longPressRecord=longPress shownRevision=settings.revision
+dailyActionsEnabled=actions.daily
+'''.split())
+expected_keys = {symbol: 'minisight.' + canonical_suffixes.get(symbol, symbol)
+                 for symbol in expected_fields}
+key_pairs = re.findall(r'static let (\w+) = "(minisight\.[\w.]+)"', settings)
+need(dict(key_pairs) == expected_keys and
+     len(key_pairs) == len({key for _, key in key_pairs}) == 52,
+     'all 51 old canonical preference names are unchanged; only actions.daily is added')
+field_block = settings.split('static let runtimeFields:', 1)[1].split('static let all', 1)[0]
+field_pairs = re.findall(r'MiniSightSettingKey\.(\w+): "(\w+)"', field_block)
+need(len(legacy_fields) == 51 and dict(field_pairs) == expected_fields,
+     'snapshot preserves all 51 audited mappings plus the independent daily field')
+need(len(field_pairs) == len(dict(field_pairs)) == len({alias for _, alias in field_pairs}) == 52,
+     'snapshot has 52 actual unique keys and aliases, with no duplicate hidden by a dictionary')
+need('runtimeFields.count == 52' in settings, 'snapshot validates 52 audited keys')
+need('static let dailyActionsEnabled = "minisight.actions.daily"' in settings and
+     'MiniSightSettingKey.dailyActionsEnabled: true' in settings and
+     'case MiniSightSettingKey.dailyActionsEnabled: return dailyActionsEnabled' in store,
+     'daily key stays independent, defaults on and reads back through the store')
 need('MiniSightSettingKey.lyricsEnabled: "lyricsEnabled"' in settings and
      'MiniSightSettingKey.musicMotion: "musicMotion"' in settings, 'approved media fields remain in snapshot')
 for var in ['wakeEnabled', 'wakeName', 'wakePronunciation']:
