@@ -173,9 +173,26 @@ struct UIColor {
         expect(rejected.definitiveClaimFailure && SubscriptionCheckinPolicy.needsReminder(rejected, now: now), "eligible 9004 claim failure requires one notice")
         expect(!rejected.verifiedRetryableFailure, "9004 is definite failure, not verified retry classification")
         expect(SubscriptionCheckinLedger.cachedStatus(key) == nil, "eligible cooldown is not a terminal cached status")
-        let retryAt = rejected.attemptedAt!.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval)
-        expect(!SubscriptionCheckinLedger.canAttempt(key, now: retryAt.addingTimeInterval(-1)), "restored failed claim still waits two hours")
-        expect(SubscriptionCheckinLedger.canAttempt(key, now: retryAt), "restored failed claim retries after two hours")
+        // Restore the real rejection at a deterministic same-day clock. Using
+        // wall-clock + 2h crosses the Shanghai day after 22:00, when policy
+        // intentionally resets instead of keeping yesterday's retry window.
+        var retryCalendar = Calendar(identifier: .gregorian)
+        retryCalendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let retryNoon = retryCalendar.date(bySettingHour: 12, minute: 0, second: 0, of: now)!
+        let retryKey = key + "-restored-retry-window"
+        var restoredRejection = rejected
+        restoredRejection.attemptedAt = retryNoon
+        defaults.set(try JSONEncoder().encode(restoredRejection), forKey: "subscription.checkin.v2." + retryKey)
+        let retryAt = retryNoon.addingTimeInterval(SubscriptionCheckinPolicy.retryInterval)
+        expect(SubscriptionCheckinPolicy.day(retryAt) == day, "two-hour fixture remains on its request day")
+        expect(!SubscriptionCheckinLedger.canAttempt(retryKey, now: retryAt.addingTimeInterval(-1)), "restored failed claim still waits two hours")
+        expect(SubscriptionCheckinLedger.canAttempt(retryKey, now: retryAt), "restored failed claim retries after two hours")
+        defaults.removeObject(forKey: "subscription.checkin.v2." + retryKey)
+        var lateRejection = rejected
+        lateRejection.attemptedAt = retryCalendar.date(bySettingHour: 23, minute: 0, second: 0, of: now)!
+        let nextDay = retryCalendar.date(byAdding: .day, value: 1, to: retryCalendar.startOfDay(for: now))!
+        expect(nextDay.timeIntervalSince(lateRejection.attemptedAt!) < SubscriptionCheckinPolicy.retryInterval, "day-reset fixture crosses before two hours")
+        expect(SubscriptionCheckinPolicy.canAttempt(lateRejection, now: nextDay), "new Shanghai day resets the old retry window")
         let refusedWrites = CheckinTransport.writes
         do { _ = try await SubscriptionCreditAPI.claim(ctx, automatic: true); fatalError("2-hour retry guard must hold") }
         catch is SubscriptionBillingError { }
