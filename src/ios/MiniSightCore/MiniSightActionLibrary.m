@@ -198,12 +198,12 @@ static NSData * _Nullable MSALRead(int root, NSString *relative, NSUInteger limi
 
 @interface MiniSightActionClip ()
 @property(nonatomic, copy, readonly) NSArray<MSALFrame *> *frames;
-- (instancetype)initWithID:(NSString *)identifier role:(NSString *)role frames:(NSArray<MSALFrame *> *)frames;
+- (instancetype)initWithID:(NSString *)identifier role:(NSString *)role category:(NSString * _Nullable)category frames:(NSArray<MSALFrame *> *)frames;
 @end
 @implementation MiniSightActionClip
-- (instancetype)initWithID:(NSString *)identifier role:(NSString *)role frames:(NSArray<MSALFrame *> *)frames {
+- (instancetype)initWithID:(NSString *)identifier role:(NSString *)role category:(NSString * _Nullable)category frames:(NSArray<MSALFrame *> *)frames {
     if ((self = [super init])) {
-        _identifier = [identifier copy]; _role = [role copy]; _frames = [frames copy];
+        _identifier = [identifier copy]; _role = [role copy]; _category = [category copy]; _frames = [frames copy];
         NSMutableArray *durations = [NSMutableArray arrayWithCapacity:frames.count];
         for (MSALFrame *frame in frames) { [durations addObject:@(frame->seconds)]; _duration += frame->seconds; }
         _durations = [durations copy]; _frameCount = frames.count;
@@ -485,14 +485,18 @@ static MSALState * _Nullable MSALParse(NSDictionary *json, NSError * _Nullable *
     }
     NSSet *allowed = [NSSet setWithArray:@[@"idle", @"idleAlt", @"tap", @"drag", @"shakeSoft", @"shakeHard",
         @"flight", @"land", @"walkLeft", @"walkRight", @"jump", @"sleep", @"wake", @"music"]];
+    NSSet *allowedCategories = [NSSet setWithArray:@[@"micro", @"play", @"food", @"seasonal", @"social"]];
     NSMutableDictionary *clips = [NSMutableDictionary dictionary], *roles = [NSMutableDictionary dictionary];
     NSMutableDictionary<NSString *, MSALSource *> *sources = [NSMutableDictionary dictionary];
     NSUInteger total = 0;
     for (id record in records) {
-        if (!MSALKeys(record, @[@"id", @"role", @"frames"], @[])) {
+        if (!MSALKeys(record, @[@"id", @"role", @"frames"], @[@"category"])) {
             MSALFail(error, 1, @"Invalid clip fields."); return nil;
         }
-        id identifier = record[@"id"], role = record[@"role"], entries = record[@"frames"];
+        id identifier = record[@"id"], role = record[@"role"], entries = record[@"frames"], category = record[@"category"];
+        if (category && (![category isKindOfClass:NSString.class] || ![allowedCategories containsObject:category])) {
+            MSALFail(error, 1, @"Invalid action category."); return nil;
+        }
         if (!MSALSafeID(identifier) || clips[identifier] || ![allowed containsObject:role] ||
             ![entries isKindOfClass:NSArray.class] || ![entries count] || [entries count] > 600 ||
             (total += [entries count]) > 6000) {
@@ -526,7 +530,7 @@ static MSALState * _Nullable MSALParse(NSDictionary *json, NSError * _Nullable *
             frame->index = [entry[@"index"] unsignedIntegerValue]; frame->seconds = [entry[@"duration"] doubleValue];
             [frames addObject:frame];
         }
-        MiniSightActionClip *clip = [[MiniSightActionClip alloc] initWithID:identifier role:role frames:frames];
+        MiniSightActionClip *clip = [[MiniSightActionClip alloc] initWithID:identifier role:role category:category frames:frames];
         clips[identifier] = clip;
         if (!roles[role]) roles[role] = [NSMutableArray array];
         [roles[role] addObject:clip];

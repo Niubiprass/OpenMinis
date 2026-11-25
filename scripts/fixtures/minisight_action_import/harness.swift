@@ -109,8 +109,10 @@ private func runImportTests() throws {
     try expect(try A.read(pack(bundle), "resources/source.png", limit: C.maxInputBytes) == png, "PNG source immutable")
     let saved = try A.validate(pack(bundle), operation: MiniSightAssetOperation())
     try expect(saved.id == bundle.metadata!.id && saved.id != originalManifest.id && saved.clips.contains(where: { $0.role == "music" }), "UUID normalized; explicit music supported")
+    try expect(saved.clips.contains(where: { $0.role == "idleAlt" && $0.category == "play" }), "daily category survives native Catalog parse")
     try expect(try current() == png, "folder addition never switches")
 
+    try rejectManifest("unknown category") { $0.clips[1].category = "walking" }
     try rejectManifest("unknown role") { $0.clips[0].role = "running" }
     try rejectManifest("idle required") { $0.clips.removeFirst() }
     try rejectManifest("duplicate clip ID") { $0.clips[1].id = $0.clips[0].id }

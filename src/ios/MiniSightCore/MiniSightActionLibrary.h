@@ -7,6 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface MiniSightActionClip : NSObject
 @property(nonatomic, copy, readonly) NSString *identifier;
 @property(nonatomic, copy, readonly) NSString *role;
+@property(nonatomic, copy, readonly, nullable) NSString *category;
 @property(nonatomic, copy, readonly) NSArray<NSNumber *> *durations;
 @property(nonatomic, readonly) NSTimeInterval duration;
 @property(nonatomic, readonly) NSUInteger frameCount;

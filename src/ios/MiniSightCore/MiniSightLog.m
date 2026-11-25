@@ -75,7 +75,7 @@ static BOOL MSDiagEnum(NSString *key, NSString *value) {
         @"domain": [NSSet setWithArray:@[@"chat", @"runtime", @"settings", @"voice"]],
         @"issue": [NSSet setWithArray:@[@"0", @"1", @"2", @"3", @"4", @"5", @"6", @"7", @"8", @"9"]],
         @"finish": [NSSet setWithArray:@[@"content_filter", @"error", @"function_call", @"length", @"none", @"other", @"stop", @"tool_calls", @"unknown"]],
-        @"version": [NSSet setWithArray:@[@"0.8.1", @"0.8.49", @"0.8.50", @"0.8.51", @"0.8.52"]]
+        @"version": [NSSet setWithArray:@[@"0.8.1", @"0.8.49", @"0.8.50", @"0.8.51", @"0.8.52", @"0.8.53"]]
     }; });
     return [allowed[key] containsObject:value];
 }
@@ -112,7 +112,7 @@ static void MSDiagSetup(void) {
         MSDiagDate.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
         MSDiagDate.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
         MSDiagFeatures = [NSSet setWithArray:@[@"chat", @"settings", @"runtime", @"voice", @"ai", @"ai_test", @"assets", @"recording", @"gravity", @"drag", @"activity", @"screen", @"ownership", @"gesture", @"bubble", @"approval", @"music", @"lyrics", @"pet", @"name_wake"]];
-        MSDiagStages = [NSSet setWithArray:@[@"save", @"receive", @"apply", @"show", @"layout", @"send", @"reply", @"display", @"close", @"skip", @"build", @"entry", @"editor", @"keyboard", @"composer", @"state", @"visibility", @"hide", @"begin", @"end", @"readback", @"publish", @"request", @"cancel", @"config", @"network", @"callback", @"parse", @"finish", @"ready", @"error", @"sample", @"stop", @"start", @"load", @"click", @"response", @"change", @"configure", @"deliver", @"readback", @"interruption", @"rotate", @"reload", @"identity", @"route", @"answer", @"single", @"double", @"long", @"install", @"picker", @"remove", @"local", @"source"]];
+        MSDiagStages = [NSSet setWithArray:@[@"save", @"receive", @"apply", @"show", @"layout", @"send", @"reply", @"display", @"close", @"skip", @"build", @"entry", @"editor", @"keyboard", @"composer", @"state", @"visibility", @"hide", @"begin", @"end", @"readback", @"publish", @"request", @"cancel", @"config", @"network", @"callback", @"parse", @"finish", @"ready", @"error", @"sample", @"stop", @"start", @"load", @"click", @"response", @"change", @"configure", @"deliver", @"readback", @"interruption", @"rotate", @"reload", @"identity", @"route", @"answer", @"single", @"double", @"long", @"install", @"picker", @"remove", @"local", @"source", @"daily_action"]];
         MSDiagResults = [NSSet setWithArray:@[@"ok", @"failed", @"skipped", @"cancelled", @"pending", @"unsupported", @"allow", @"deny", @"open", @"source"]];
         MSDiagKeys = [NSSet setWithArray:@[@"setting", @"source", @"sensor", @"sensor_domain", @"fallback", @"device_available", @"accelerometer_available", @"sensor_active", @"latency_ms", @"sample_age_ms", @"reason", @"request", @"revision", @"generation", @"issue", @"count", @"chars", @"duration_ms", @"renderer", @"visible", @"sending", @"keyboard", @"below", @"x", @"y", @"w", @"h", @"enabled", @"mode", @"style", @"field", @"code", @"domain", @"saved", @"readback", @"sequence", @"value", @"present", @"roll", @"samples", @"http", @"bytes", @"reasoning", @"finish", @"valid", @"executing", @"active", @"version", @"action", @"route", @"old", @"new", @"player_stage", @"player_detail", @"metadata_stage", @"progress_stage", @"lyrics_stage", @"lyrics_route", @"lyrics_detail", @"reason_detail"]];
     });

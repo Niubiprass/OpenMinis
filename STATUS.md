@@ -1,11 +1,12 @@
-# Current: QQ lyrics scoped candidate / authorized push + CI (2026-11-24)
+# Current: OpenMinis daily-action local candidate (2026-11-25; not pushed)
 
-- User explicitly approved only App/plugin lyrics-only push, CI, static packaging verification.
-- Native baseline and mutations remain mandatory; no new device, capture, install, respring or reboot authorization.
-- App 1.16/build382, independent artifact only; beta-latest and formal branch untouched.
-- Frozen authorized source: /var/minis/shared/openminis/local-reviews/lyrics-qq-local-20261124/FINAL-SCOPE.json.
-- Scope: strict LRCLIB->QQ, stale-track fence, bounded diagnostic routes; preserve old pet gestures, atlas, bounds, composer.
-- Stage: staged; new native execution/build/package not yet proven.
+- User approved local-only changes for varied everyday pet animation, independent of roaming; preserve lyrics/music logic, existing movement, drag/chat/sleep/interactions and legacy imports.
+- Baseline HEAD `0157569ac11b95a6f1393fc3b46f12f04e24dc99` (OpenMinis 1.16/build382). Release candidate target is build383; candidate is uncommitted in this isolated copy; no push, GitHub CI run, IPA, install, device action, audio capture, respring or reboot.
+- The existing GitHub Actions App workflow now includes the portable daily-action test; its YAML and local test invocation were checked. This workflow edit is local only; GitHub has not run it. Existing `--require-native` gates remain fail-closed for the authorized macOS runner.
+- App-side portable daily-action test ran 7/7; existing importer source/synthetic checks passed. Apple SDK/ImageIO/UIKit, CI/build/package, app runtime and phone visuals are not verified.
+- Local host-C/path, parser/importer static, source-mirror and package checks passed. Apple SDK/ImageIO/UIKit, CI/build/package, app runtime and phone visuals are not verified.
+- Artwork source terms are non-commercial; do not publish/package the assets for public or commercial distribution without resolving those terms.
+- Detailed evidence: `/var/minis/shared/openminis/local-reviews/pet-lively-reuse-20261125/local-candidate/LOCAL-RESULT.md`. Stop at local-check gate; push/build and install each need separate approval.
 
 ---
 # Historical records (not current authorization)

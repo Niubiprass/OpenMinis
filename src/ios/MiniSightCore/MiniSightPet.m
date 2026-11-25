@@ -113,6 +113,7 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
     CFTimeInterval _lastSpriteTime;
     CGRect _lastSpriteRect;
     BOOL _wantsPlaying, _suspended, _hasCenterBounds;
+    CFTimeInterval _dailyActionDue, _dailyActionHoldUntil;
     BOOL _geometryReady, _settingGeometry, _motionActive;
     CGPoint _lastNotifiedCenter;
     CGRect _lastNotifiedBounds;
@@ -179,6 +180,8 @@ static CGPoint MSPetCGPoint(MSPoint p) { return CGPointMake((CGFloat)p.x, (CGFlo
 - (void)armRoamTimerWithDelay:(NSTimeInterval)delay;
 - (void)roamOnce;
 - (void)holdState:(MiniSightPetState)state forDuration:(NSTimeInterval)duration;
+- (void)scheduleDailyActionFrom:(CFTimeInterval)now;
+- (void)tryDailyActionAt:(CFTimeInterval)now;
 - (void)startMotionTo:(CGPoint)target jump:(BOOL)jump rest:(NSTimeInterval)rest;
 - (void)ensureMotionLink;
 - (void)finishMotion;
@@ -579,6 +582,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     [_effects setRunning:[self shouldAnimate]];
     if (![self shouldAnimate]) {
         [self clearResidentForPlayback];
+        _dailyActionDue = 0.; _dailyActionHoldUntil = 0.;
         [self invalidateFrameTimer];
         [self invalidateRoamTimer];
         [self cancelMotion];
@@ -654,6 +658,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     }
     [self updateResidentAtTime:now];
     [self consumeAttentionAtTime:now];
+    [self tryDailyActionAt:now];
     if (!_roamTimer && !_motionActive && _stateHoldUntil <= 0.) [self scheduleRoam];
     [self advanceSpriteAtTime:now];
 }
@@ -1071,13 +1076,47 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
 
 #pragma mark - Roaming (every target comes from centerBounds)
 
+- (void)scheduleDailyActionFrom:(CFTimeInterval)now {
+    if (_dailyActionDue <= 0. && !_effects.musicPlaying) _dailyActionDue = now + MSPetRandomRange(8.0, 14.0);
+}
+
+- (void)tryDailyActionAt:(CFTimeInterval)now {
+    BOOL blocked = ![self shouldAnimate] || _resident.sleeping || _resident.waking ||
+        _landingRecoveryStage || _motionActive || _physicsMotion || _dragging || _activityActive ||
+        _lyricsSuppressed || _motionLockReasons || _interactionActive || _effects.presentationBlocked ||
+        _effects.musicPlaying || _stateHoldUntil > now || (_effects.autonomyHeld && _dailyActionHoldUntil <= 0.) ||
+        UIAccessibilityIsReduceMotionEnabled();
+    if (blocked) {
+        _dailyActionDue = 0.;
+        _dailyActionHoldUntil = 0.;
+        return;
+    }
+    if (_dailyActionHoldUntil > now) return;
+    if (_dailyActionHoldUntil > 0.) {
+        _dailyActionHoldUntil = 0.;
+        _dailyActionDue = now + MSPetRandomRange(14.0, 25.0);
+        return;
+    }
+    [self scheduleDailyActionFrom:now];
+    if (now < _dailyActionDue) return;
+    NSTimeInterval duration = [_effects performDailyAction];
+    if (duration <= 0.) {
+        _dailyActionDue = now + MSPetRandomRange(24.0, 36.0);
+        return; // No imported daily clip: preserve the legacy poster/idle behavior.
+    }
+    _dailyActionDue = 0.;
+    _dailyActionHoldUntil = now + duration + .25;
+    [self invalidateRoamTimer]; // A pose action owns the sprite; it never moves the center.
+    MSDiagEvent(@"pet", @"daily_action", @"ok", @{@"source": @"app", @"duration_ms": @((NSInteger)lrint(duration * 1000.))});
+}
+
 - (void)scheduleRoam {
     if (_effects.autonomyHeld || (_effects.musicPlaying && ![self mayPerformMusicMotion])) {
         [self invalidateRoamTimer]; return;
     }
     // A state hold (waving) owns the sprite state: frameTick arms the next roam.
     // A running motion arms the next roam itself, in finishMotion.
-    if (_landingRecoveryStage || _stateHoldUntil > 0. || _motionActive || ![self mayRoam]) {
+    if (_landingRecoveryStage || _stateHoldUntil > 0. || _dailyActionHoldUntil > CACurrentMediaTime() || _motionActive || ![self mayRoam]) {
         [self invalidateRoamTimer];
         return;
     }
@@ -1144,16 +1183,14 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
         } else {
             [self startMotionTo:MSPetCGPoint(target) jump:YES rest:MSPetRandomRange(0.65, 1.5)];
         }
-    } else if (roll < 90) {
-        NSTimeInterval actionDuration = [_effects performIdleAction];
-        if (actionDuration > 0.) {
-            _stateHoldUntil = CACurrentMediaTime() + actionDuration + .2;
-            [self invalidateRoamTimer]; [self reconcilePlayback];
-        } else [self holdState:MiniSightPetStateWaving forDuration:kMiniSightWaveHold];
     } else {
-        // Do nothing this beat, then wait a visibly longer stretch.
-        _restAfterMotion = MSPetRandomRange(2.0, 5.0);
-        [self scheduleRoam];
+        // Daily pose clips have their own clock above; roaming no longer owns
+        // their frequency. Keep the old waving fallback only for legacy atlases.
+        if (!_effects.hasDailyActions && roll < 90) [self holdState:MiniSightPetStateWaving forDuration:kMiniSightWaveHold];
+        else {
+            _restAfterMotion = MSPetRandomRange(2.0, 5.0);
+            [self scheduleRoam];
+        }
     }
 }
 

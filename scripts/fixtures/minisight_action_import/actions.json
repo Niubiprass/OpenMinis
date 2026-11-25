@@ -19,6 +19,18 @@
       ]
     },
     {
+      "id": "daily-play",
+      "role": "idleAlt",
+      "category": "play",
+      "frames": [
+        {
+          "file": "source.png",
+          "index": 0,
+          "duration": 0.2
+        }
+      ]
+    },
+    {
       "id": "touch",
       "role": "tap",
       "frames": [

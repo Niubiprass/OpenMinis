@@ -69,7 +69,7 @@ static struct {
  bool wantsPlaying,suspended,hasCenterBounds,hasPet,hidden,windowExists,windowHidden,layerExists,sheetExists;
  bool activityActive,interactionActive,lyricsSuppressed,roamingPaused,physicsMotion,motionActive,dragging,reducedWork,gravityEnabled,geometryReady,musicMotion;
  unsigned musicMotionStep,roamGeneration;
- double alpha,poseBegan,lastMotionTick,lastSpriteTime,stateHoldUntil,landingRecoveryBegan,jumpHeight;
+ double alpha,poseBegan,lastMotionTick,lastSpriteTime,stateHoldUntil,dailyActionDue,dailyActionHoldUntil,landingRecoveryBegan,jumpHeight;
  double flingSpin,flingSpinVelocity,flingSquash,gravityRoll,gravityStrength;
  double gravityImpulseAngle,gravityImpulseBegan,gravityImpulseDuration,motionBegan,motionDuration;
  double roamInterval,roamPace,restAfterMotion;
@@ -79,7 +79,7 @@ static struct {
 } P;
 static struct {
  bool running,busy,ownsSprite,dragging,flying,musicPlaying,waking,starsExists,hasLand,hasTap,manifestPresent,framePending;
- bool bubbleHidden,hasWalk,hasJump;
+ bool bubbleHidden,hasWalk,hasJump,hasDailyActionPool;
  int link,state,clip,recoveryStage,preferredFPS,linkFPS;
  unsigned displayedFrame,frameRequest,frameFailures,musicEvidenceBudget,lastMusicCue;
  double frameRetryAt;
@@ -101,6 +101,8 @@ static CGRect LastCrop;
 static double SheetWidth=768.,SheetHeight=936.,ObservedImpact;
 static unsigned CenterWrites,Crops,RoamArms,Purges,EffectTicks,ContactTicks;
 static bool CancelOnCenter;
+static bool DailyAvailable;
+static unsigned DailyCalls;
 static FILE *Trace;
 static double ContactAt,RoamDeadline;
 static int CGImageGetWidth(int image) {(void)image;return (int)SheetWidth;}
@@ -111,6 +113,7 @@ static bool FixtureRole(const char*a,const char*b) {return a&&b&&!strcmp(a,b);}
 static bool FixtureTransient(const char*r) {return FixtureRole(r,"tap")||FixtureRole(r,"idleAlt")||FixtureRole(r,"land")||FixtureRole(r,"shakeSoft")||FixtureRole(r,"shakeHard")||FixtureRole(r,"wake");}
 static bool FixtureVisible(void) {return P.hasPet&&P.windowExists&&!P.windowHidden&&!P.hidden&&P.alpha>.01;}
 static bool FixtureBlocked(void) {return E.busy||Chat;}
+static bool FixtureHasDailyActions(void) {return E.hasDailyActionPool;}
 static void FixtureSetCenter(CGPoint);
 static void FixtureWake(void);
 static void FixtureInvalidateRoam(void) {++P.roamGeneration;P.roamTimer=0;RoamDeadline=0.;}
@@ -123,6 +126,7 @@ static void FixtureUpdateResident(double t) {(void)t;}
 static bool FixtureConsumeAttention(double t) {(void)t;return false;}
 static void FixtureClearResident(void) {MSPetResidentReset(&P.resident);}
 static void FixtureArmRoam(double t) {CHECK(t>=.05);FixtureInvalidateRoam();P.roamTimer=++NextRoamID;RoamDeadline=Now+t;++RoamArms;}
+static double FixtureDailyActionDuration(void) {++DailyCalls;return DailyAvailable?2.:0.;}
 static double FixtureIdleAction(void) {return 0.;}
 static void FixtureChooseRole(void);
 static void FixtureAdvanceActions(double);
@@ -184,6 +188,7 @@ static void FinishFrame(void) {
 static void Fresh(bool actions,bool land) {
  memset(&P,0,sizeof(P));memset(&E,0,sizeof(E));memset(&S,0,sizeof(S));memset(&D,0,sizeof(D));
  Now=100.;ContactAt=RoamDeadline=0.;ObservedImpact=0.;Reduce=Chat=CancelOnCenter=false;RandomRoll=25;
+ DailyAvailable=false;DailyCalls=0;
  CenterWrites=Crops=RoamArms=Purges=EffectTicks=ContactTicks=0;NextMotionID=NextRoamID=0;NextFrameID=1;
  P.center=(CGPoint){180,300};P.bounds=CGRectMake(0,0,80,90);Viewport.bounds=CGRectMake(0,0,360,780);
  MSRect b=MSBodyCenterBounds(360,780,(MSSize){80,90},2);
@@ -380,12 +385,36 @@ static void MusicBoundsAndNormal(void) {
  }
  Case="ordinary-roam-preserves-walk-hop-wave-and-rest";
  for(unsigned k=0;k<4;k++) {
-  Fresh(false,false);RandomRoll=k==0?25:k==1?65:k==2?85:95;P_roamOnce();
+  Fresh(false,false);RandomRoll=k==0?25:k==1?65:k==2?85:95;
+  if(k==2)E.ownsSprite=true; // An old/one-GIF import still has no daily role pool.
+  P_roamOnce();
   if(k<2){CHECK(P.motionActive&&!P.musicMotion);CHECK((P.jumpHeight>0.)==(k==1));}
   else if(k==2)CHECK(P.state==MiniSightPetStateWaving&&P.stateHoldUntil>Now);
   else CHECK(!P.motionActive&&P.roamTimer);
  }
- puts("C PATH PASS: music safe corners, collapsed/tiny bounds, geometry recovery and unchanged ordinary weighted roam");
+ Fresh(false,false);E.hasDailyActionPool=true;RandomRoll=85;P_roamOnce();
+ CHECK(P.state!=MiniSightPetStateWaving&&!P.motionActive&&P.roamTimer);
+ puts("C PATH PASS: music safe corners, collapsed/tiny bounds, geometry recovery, old single-GIF fallback and weighted roam");
+}
+static void DailyActionIndependentOfRoam(void) {
+ Case="daily-pose-runs-with-roaming-disabled-and-yields-to-priority-owners";
+ Fresh(false,false);P.roamingPaused=true;P.roamPace=0.;CHECK(!P_mayRoam());
+ CGPoint fixed=P.center;DailyAvailable=true;P.dailyActionDue=Now-1.;P_tryDailyActionAt(Now);
+ CHECK(DailyCalls==1&&P.dailyActionHoldUntil>Now&&P.dailyActionDue==0.&&!P.roamTimer&&!P.motionActive);
+ CHECK(P.center.x==fixed.x&&P.center.y==fixed.y);
+ double hold=P.dailyActionHoldUntil;Now+=1.;P_tryDailyActionAt(Now);
+ CHECK(DailyCalls==1&&P.dailyActionHoldUntil==hold&&P.center.x==fixed.x&&P.center.y==fixed.y);
+ Now=hold+.1;P_tryDailyActionAt(Now);
+ CHECK(DailyCalls==1&&fabs(P.dailyActionDue-Now-19.5)<1e-9); // Finish, then a real quiet interval.
+ E.musicPlaying=true;P.dailyActionDue=Now-1.;P_tryDailyActionAt(Now);
+ CHECK(DailyCalls==1&&P.dailyActionDue==0.&&P.dailyActionHoldUntil==0.);
+ E.musicPlaying=false;P.activityActive=true;P_tryDailyActionAt(Now);CHECK(DailyCalls==1&&P.dailyActionDue==0.);
+ P.activityActive=false;P.resident.sleeping=true;P_tryDailyActionAt(Now);CHECK(DailyCalls==1&&P.dailyActionDue==0.);
+ P.resident.sleeping=false;Chat=true;P_tryDailyActionAt(Now);CHECK(DailyCalls==1&&P.dailyActionDue==0.);Chat=false;
+ DailyAvailable=false;P.dailyActionDue=Now-1.;P_tryDailyActionAt(Now);
+ CHECK(DailyCalls==2&&P.dailyActionHoldUntil==0.&&fabs(P.dailyActionDue-Now-30.)<1e-9);
+ CHECK(P.center.x==fixed.x&&P.center.y==fixed.y&&!P.motionActive);
+ puts("C PATH PASS: daily pose timer independent of roam, finishes before retry, preserves music/sleep/chat priority");
 }
 static void InvisibleGate(void) {
  Case="hidden-or-locked-host-stops-frame-roam-and-music";
@@ -413,8 +442,9 @@ int main(int argc,char**argv) {
  MusicGates();
  MusicDragFlingLoop();
  MusicBoundsAndNormal();
+ DailyActionIndependentOfRoam();
  InvisibleGate();
  if(Trace){fclose(Trace);Trace=NULL;}
- puts("PET PATH SUITE PASS: heavy, gentle/cancel, music travel, 12 gates, corners/tiny and ordinary roaming");
+ puts("PET PATH SUITE PASS: daily pose/roam independence, blockers, heavy, gentle/cancel, music travel, 12 gates, corners/tiny and ordinary roaming");
  return 0;
 }

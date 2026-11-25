@@ -1,9 +1,9 @@
-name: iOS15 QQ Lyrics Candidate
+name: iOS15 OpenMinis Daily Actions Candidate
 
 on:
   workflow_dispatch:
   push:
-    branches: [ios15-lyrics-qq-20261124]
+    branches: [ios15-daily-actions-20261125]
     paths: ['src/ios/**', 'scripts/test_*.py', 'scripts/run_ios15_geometry_probe.py', 'scripts/fixtures/**', 'scripts/v64r_package.py', 'deps/build_rclone_ios.sh', '.github/workflows/ios15-lyrics-qq.yml', 'scripts/ci_verify_lyrics_ipa.py']
 
 permissions:
@@ -17,7 +17,7 @@ concurrency:
 env:
   # Re-run 2026-10-17 after repo made public to restore macOS runner eligibility.
   IOS_DEPLOYMENT_TARGET: '15.5'
-  LYRICS_BUILD: '382'
+  LYRICS_BUILD: '383'
 
 jobs:
   build:
@@ -100,6 +100,7 @@ jobs:
           python3 scripts/test_composer_rainbow_wave_20261120.py
           python3 scripts/test_composer_effects_20261123.py
           python3 scripts/test_minisight_pet_paths_20261122.py --mutations
+          python3 scripts/test_minisight_daily_actions_20261125.py
           # The cross-tree settings audit runs locally with both repositories;
           # this independent runner checks the new settings in the liveliness gate.
           python3 scripts/test_minisight_action_import.py --require-native
@@ -207,22 +208,22 @@ jobs:
           # Preserve only source entitlements; no sandbox-disabling additions.
           python3 scripts/v64r_package.py Payload/Minis.app
           xcrun vtool -show-build Payload/Minis.app/Minis | tee minos-v64r.txt
-          zip -qry Minis-1.16-build382-QQ-Lyrics-iOS15.5.ipa Payload
-          unzip -tq Minis-1.16-build382-QQ-Lyrics-iOS15.5.ipa
+          zip -qry Minis-1.16-build383-Daily-Actions-iOS15.5.ipa Payload
+          unzip -tq Minis-1.16-build383-Daily-Actions-iOS15.5.ipa
           # Validate the bytes we will publish, not only the pre-zip staging app.
           IPA_VERIFY_DIR=$(mktemp -d)
           trap 'rm -rf "$IPA_VERIFY_DIR"' EXIT
-          unzip -q Minis-1.16-build382-QQ-Lyrics-iOS15.5.ipa -d "$IPA_VERIFY_DIR"
+          unzip -q Minis-1.16-build383-Daily-Actions-iOS15.5.ipa -d "$IPA_VERIFY_DIR"
           codesign --verify --deep --strict "$IPA_VERIFY_DIR/Payload/Minis.app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinisBuildNumber' "$IPA_VERIFY_DIR/Payload/Minis.app/Info.plist")" = "${LYRICS_BUILD}"
-          shasum -a 256 Minis-1.16-build382-QQ-Lyrics-iOS15.5.ipa > SHA256SUMS
-          python3 scripts/ci_verify_lyrics_ipa.py Minis-1.16-build382-QQ-Lyrics-iOS15.5.ipa ipa-verification.json "$LYRICS_BUILD"
+          shasum -a 256 Minis-1.16-build383-Daily-Actions-iOS15.5.ipa > SHA256SUMS
+          python3 scripts/ci_verify_lyrics_ipa.py Minis-1.16-build383-Daily-Actions-iOS15.5.ipa ipa-verification.json "$LYRICS_BUILD"
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Minis-1.16-build382-QQ-Lyrics-iOS15.5
+          name: Minis-1.16-build383-Daily-Actions-iOS15.5
           path: |
-            Minis-1.16-build382-QQ-Lyrics-iOS15.5.ipa
+            Minis-1.16-build383-Daily-Actions-iOS15.5.ipa
             SHA256SUMS
             minos-v64r.txt
           retention-days: 30

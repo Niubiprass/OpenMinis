@@ -53,6 +53,7 @@ P_METHODS={
  'frameCountForRow:':('int','int row'), 'applySpriteFrame':('void','void'),
  'restorePosterFrame':('void','void'), 'advanceSpriteAtTime:':('void','double now'),
  'frameTick:':('void','int timer'), 'setMusicPlaying:':('void','bool playing'),
+ 'scheduleDailyActionFrom:':('void','double now'), 'tryDailyActionAt:':('void','double now'),
  'startMotionTo:jump:rest:':('void','CGPoint target, bool jump, double rest'),
  'beginDraggingAtPoint:':('void','CGPoint localPoint'),
  'updateDraggingTarget:':('void','CGPoint center'), 'endDraggingCancelled:':('void','bool cancelled'),
@@ -83,9 +84,9 @@ P_SHIMS={'isActuallyVisible':'FixtureVisible','wakeForInteraction':'FixtureWake'
  'consumeAttentionAtTime:':'FixtureConsumeAttention','clearResidentForPlayback':'FixtureClearResident',
  'armRoamTimerWithDelay:':'FixtureArmRoam','reconcilePlayback':'P_reconcilePlaybackOnce'}
 E_SHIMS={'chooseRole':'FixtureChooseRole','advanceActions:':'FixtureAdvanceActions',
- 'presentationBlocked':'FixtureBlocked','setRunning:':'FixtureSetRunning',
+ 'presentationBlocked':'FixtureBlocked','hasDailyActions':'FixtureHasDailyActions','setRunning:':'FixtureSetRunning',
  'restorePoster':'FixtureRestorePoster','placeLyricsBlocked:':'FixtureLyrics',
- 'requestFrame:':'FixtureRequestFrame',
+ 'requestFrame:':'FixtureRequestFrame','performDailyAction':'FixtureDailyActionDuration',
  'setTilt:sway:':'FixtureTilt', 'performIdleAction':'FixtureIdleAction'}
 
 def cname(owner,key): return owner+'_'+key.split(':')[0]
@@ -170,6 +171,7 @@ def translate(raw,owner):
     s=re.sub(r'(?:self|pet).center = ([^;]+);',r'FixtureSetCenter(\1);',s)
     reads={'_effects.presentationBlocked':'FixtureBlocked()', '_effects.autonomyHeld':'E_autonomyHeld()',
       '_effects.landingRecoveryHeld':'E_landingRecoveryHeld()', '_effects.hasActions':'E.ownsSprite',
+      '_effects.hasDailyActions':'FixtureHasDailyActions()',
       '_effects.musicPosition':'E_musicPosition()', '_effects.musicPlaying':'E.musicPlaying',
       '_effects.visualOffset':'E.visualOffset', '_effects.busy':'E.busy',
       'self.musicPosition':'E_musicPosition()', 'self.transform':'P.transform',

@@ -883,6 +883,7 @@ enum MiniSightActionImport {
         var id: String
         var role: String
         var frames: [Frame]
+        var category: String? = nil
     }
     struct Frame: Codable {
         var file: String
@@ -943,6 +944,9 @@ enum MiniSightActionImport {
                       (97...122).contains($0) || $0 == 45 || $0 == 95 }),
                   identifiers.insert(clip.id).inserted, roles.contains(clip.role) else { throw Invalid.package }
             guard !clip.frames.isEmpty, clip.frames.count <= 600 else { throw Invalid.limits }
+            if let category = clip.category {
+                guard ["micro", "play", "food", "seasonal", "social"].contains(category) else { throw Invalid.package }
+            }
             total += clip.frames.count
             guard total <= 6000 else { throw Invalid.limits }
             var seconds = 0.0
@@ -998,7 +1002,9 @@ enum MiniSightActionImport {
               Set(object.keys) == ["schema", "id", "clips"],
               let clips = object["clips"] as? [[String: Any]] else { throw Invalid.package }
         for clip in clips {
-            guard Set(clip.keys) == ["id", "role", "frames"], let frames = clip["frames"] as? [[String: Any]] else { throw Invalid.package }
+            let keys = Set(clip.keys)
+            guard keys == ["id", "role", "frames"] || keys == ["id", "role", "frames", "category"],
+                  !(clip["category"] is NSNull), let frames = clip["frames"] as? [[String: Any]] else { throw Invalid.package }
             for frame in frames {
                 let keys = Set(frame.keys)
                 guard keys == ["file", "index", "duration"] || keys == ["file", "index", "duration", "rect"],

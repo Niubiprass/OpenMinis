@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL presentationBlocked;
 @property (nonatomic) NSInteger preferredFPS;
 @property (nonatomic, readonly) BOOL hasActions;
+@property (nonatomic, readonly) BOOL hasDailyActions;
 @property (nonatomic, readonly) BOOL isDragging;
 @property (nonatomic, readonly) BOOL autonomyHeld;
 @property (nonatomic, readonly) CGPoint visualOffset;
@@ -36,5 +37,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)land;
 /// Returns the chosen clip's finite duration; zero means use the legacy action.
 - (NSTimeInterval)performIdleAction;
+/// Selects a non-moving, non-music daily-life clip from idleAlt. Zero means unavailable.
+- (NSTimeInterval)performDailyAction;
 @end
 NS_ASSUME_NONNULL_END

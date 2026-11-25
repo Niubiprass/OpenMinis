@@ -119,11 +119,20 @@ typedef void (^LoadReply)(MiniSightActionLibrary *, NSError *);
 @implementation MSLoadJob @end
 @interface MiniSightActionClip ()
 - (instancetype)initFixtureRole:(NSString *)role durations:(NSArray<NSNumber *> *)durations;
+- (instancetype)initFixtureID:(NSString *)identifier category:(NSString *)category durations:(NSArray<NSNumber *> *)durations;
 @end
 @implementation MiniSightActionClip
 - (instancetype)initFixtureRole:(NSString *)role durations:(NSArray<NSNumber *> *)durations {
     if ((self = [super init])) {
         _identifier = [@"fixture-" stringByAppendingString:role]; _role = [role copy];
+        _durations = [durations copy]; _frameCount = durations.count;
+        for (NSNumber *length in durations) _duration += length.doubleValue;
+    }
+    return self;
+}
+- (instancetype)initFixtureID:(NSString *)identifier category:(NSString *)category durations:(NSArray<NSNumber *> *)durations {
+    if ((self = [super init])) {
+        _identifier = [@"fixture-" stringByAppendingString:identifier]; _role = @"idleAlt"; _category = [category copy];
         _durations = [durations copy]; _frameCount = durations.count;
         for (NSNumber *length in durations) _duration += length.doubleValue;
     }
@@ -182,6 +191,9 @@ static UIImage *Pixel(unsigned char red) {
 static NSArray *Clip(NSString *role, NSArray *durations) {
     return @[[[MiniSightActionClip alloc] initFixtureRole:role durations:durations]];
 }
+static MiniSightActionClip *DailyClip(NSString *identifier, NSString *category, NSArray *durations) {
+    return [[MiniSightActionClip alloc] initFixtureID:identifier category:category durations:durations];
+}
 static NSString *Role(MiniSightPetEffects *effects) { return [effects valueForKey:@"role"]; }
 static BOOL Pending(MiniSightPetEffects *effects) { return [[effects valueForKey:@"framePending"] boolValue]; }
 static double Start(MiniSightPetEffects *effects) { return [[effects valueForKey:@"clipStart"] doubleValue]; }
@@ -220,6 +232,7 @@ static MSRig *Rig(NSDictionary *roles) {
 
 static void FirstFrame(void) {
     MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@1.])});
+    CHECK(!r.effects.hasDailyActions); // Single/legacy idle is not a daily-action pool.
     CHECK(MatchesPoster(r) && !r.effects.hasActions);
     Finish(r.library, nil); CHECK(!r.effects.hasActions && !Pending(r.effects));
     Tick(r.effects, 100.49); CHECK(r.library.requests.count == 1);
@@ -328,7 +341,7 @@ static void StopAndPurge(void) {
 static void TapAndIdleAltFinish(void) {
     MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@1.]), @"tap": Clip(@"tap", @[@.25, @.25, @.5]),
                     @"idleAlt": Clip(@"idleAlt", @[@.2, @.3, @.8])});
-    Finish(r.library, Pixel(100)); [r.effects setLegacyState:3 waking:NO]; Tick(r.effects, 100.1);
+    Finish(r.library, Pixel(100)); CHECK(r.effects.hasDailyActions); [r.effects setLegacyState:3 waking:NO]; Tick(r.effects, 100.1);
     CHECK(r.effects.autonomyHeld && [Role(r.effects) isEqual:@"tap"] && Start(r.effects) == 0.);
     Now = 100.5; Finish(r.library, Pixel(200)); double start = Start(r.effects);
     [r.effects setLegacyState:0 waking:NO]; Tick(r.effects, 100.8);
@@ -349,6 +362,24 @@ static void TapAndIdleAltFinish(void) {
     Tick(r.effects, 103.20); CHECK([Role(r.effects) isEqual:@"idleAlt"] && r.effects.autonomyHeld);
     Tick(r.effects, 103.22); CHECK([Role(r.effects) isEqual:@"idle"] && !r.effects.autonomyHeld);
     CHECK(![r.effects valueForKey:@"transientRole"]); Finish(r.library, Pixel(100));
+}
+static void DailyActionCategoryAndRepeat(void) {
+    MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@2.]),
+        @"idleAlt": @[DailyClip(@"stretch", @"micro", @[@.2, @.3]), DailyClip(@"toy", @"play", @[@.4])]});
+    Finish(r.library, Pixel(100));
+    CGPoint fixed = r.pet.center;
+    CHECK([r.effects performDailyAction] > 0.);
+    MiniSightActionClip *first = [r.effects valueForKey:@"clip"];
+    CHECK([first.role isEqual:@"idleAlt"] && ([first.category isEqual:@"micro"] || [first.category isEqual:@"play"]));
+    Finish(r.library, Pixel(110));
+    Now = Start(r.effects) + first.duration + .02; Tick(r.effects, Now);
+    CHECK([Role(r.effects) isEqual:@"idle"] && CGPointEqualToPoint(fixed, r.pet.center));
+    CHECK([r.effects performDailyAction] > 0.);
+    MiniSightActionClip *second = [r.effects valueForKey:@"clip"];
+    CHECK(![first.identifier isEqualToString:second.identifier]); // Even a one-clip category cannot repeat immediately.
+    CHECK(CGPointEqualToPoint(fixed, r.pet.center));
+    r.effects.musicPlaying = YES;
+    CHECK([r.effects performDailyAction] == 0.); // Daily life never substitutes for music beat capture.
 }
 static void DelayedTapFirstFrame(void) {
     MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@5.]), @"tap": Clip(@"tap", @[@1.])});
@@ -524,7 +555,7 @@ int main(void) { @autoreleasepool {
         {"first-frame-ownership", FirstFrame}, {"three-bad-frames-poster", ThreeBadFrames},
         {"superseded-role-and-manifest", SupersededRoleAndManifest}, {"missing-drag-and-changed", MissingDragAndChanged},
         {"cancel-and-release-velocity", CancelAndVelocity}, {"stop-purge-parent-pending", StopAndPurge},
-        {"tap-idleAlt-finish", TapAndIdleAltFinish}, {"delayed-first-tap", DelayedTapFirstFrame},
+        {"tap-idleAlt-finish", TapAndIdleAltFinish}, {"daily-category-no-repeat-no-travel", DailyActionCategoryAndRepeat}, {"delayed-first-tap", DelayedTapFirstFrame},
         {"short-tap-no-loop", ShortTapDoesNotLoop}, {"busy-chat-retreat", BusyRetreat}, {"lyrics-never-title", LyricsOnly},
         {"in-place-music-land-ownership", InPlaceMusicAndLandOwnership},
         {"atlas-layouts-first-frame", AtlasLayouts}, {"atlas-repaint-same-image", AtlasRepaintAndSameImage},
@@ -540,6 +571,6 @@ int main(void) { @autoreleasepool {
         fprintf(stderr, "FAIL: %s exception: %s\n", Case, error.name.UTF8String); return 1;
     }
     CHECK(!Loads.count);
-    puts("NATIVE PASS: 11 original PetEffects + 6 production-excerpt atlas + 1 in-place/land ownership groups; no iOS/visual/network/device execution");
+    puts("NATIVE PASS: 11 original PetEffects + 1 daily-action + 6 production-excerpt atlas + 1 in-place/land ownership groups; no iOS/visual/network/device execution");
     return 0;
 } }

@@ -44,6 +44,7 @@ def fixtures(dest):
     (dest/'idle.gif').write_bytes(gif())
     manifest = {'schema': 1, 'id': 'BE27E983-68DC-4D38-9755-13BBA99862A9', 'clips': [
         {'id': 'rest', 'role': 'idle', 'frames': [{'file':'idle.gif','index':0,'duration':0.04}, {'file':'idle.gif','index':1,'duration':0.17}]},
+        {'id': 'daily-play', 'role':'idleAlt', 'category':'play', 'frames':[{'file':'source.png','index':0,'duration':0.2}]},
         {'id': 'touch', 'role':'tap', 'frames':[{'file':'source.png','index':0,'duration':0.2}]},
         {'id': 'music', 'role':'music', 'frames':[{'file':'idle.gif','index':1,'duration':0.3}]}]}
     (dest/'actions.json').write_text(json.dumps(manifest, indent=2)+'\n')
@@ -63,6 +64,8 @@ def static_checks():
     for token in ['contentTypes: [.folder], asCopy: false', 'importActionDirectory(', 'documentPickerWasCancelled', 'GIF']:
         assert token in ui, token
     assert 'try verifyAction(meta)' in source
+    assert 'category: String? = nil' in source and '"micro", "play", "food", "seasonal", "social"' in source
+    assert 'keys == ["id", "role", "frames"] || keys == ["id", "role", "frames", "category"]' in source
     assert 'pet.backup.json' in source.split('private static func collectActionPacks()',1)[1].split('private static func changed()',1)[0]
     print('PASS source guards; static prepare/preview byte-identical to 82f9fb1')
 

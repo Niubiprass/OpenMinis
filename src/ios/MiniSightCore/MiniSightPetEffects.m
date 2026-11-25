@@ -101,6 +101,7 @@
     }];
 }
 - (BOOL)hasActions { return _ownsSprite; }
+- (BOOL)hasDailyActions { return _library.roles[@"idleAlt"].count > 0; }
 - (BOOL)isDragging { return _dragging; }
 - (BOOL)presentationBlocked { return _busy || MiniSightChatPanel.existingPanel.isVisible; }
 - (BOOL)musicPlaying { return _musicPlaying; }
@@ -187,6 +188,26 @@
         return ![self->_failedClips containsObject:clip.identifier];
     }];
     pool = [pool filteredArrayUsingPredicate:usable];
+    NSArray<MiniSightActionClip *> *allUsablePool = pool;
+    if ([actual isEqualToString:@"idleAlt"] && pool.count > 1) {
+        NSMutableDictionary<NSString *, NSMutableArray<MiniSightActionClip *> *> *groups = [NSMutableDictionary dictionary];
+        for (MiniSightActionClip *clip in pool) {
+            NSString *category = clip.category ?: @"micro"; // Older packs remain a valid small-action pool.
+            if (!groups[category]) groups[category] = [NSMutableArray array];
+            [groups[category] addObject:clip];
+        }
+        NSDictionary<NSString *, NSNumber *> *weights = @{@"micro": @55, @"play": @30, @"food": @15,
+            @"seasonal": @10, @"social": @10};
+        NSUInteger totalWeight = 0;
+        for (NSString *category in groups) totalWeight += MAX(1, weights[category].unsignedIntegerValue);
+        NSUInteger roll = arc4random_uniform((uint32_t)MAX(1, totalWeight));
+        for (NSString *category in @[@"micro", @"play", @"food", @"seasonal", @"social"]) {
+            NSArray *items = groups[category]; if (!items.count) continue;
+            NSUInteger weight = MAX(1, weights[category].unsignedIntegerValue);
+            if (roll < weight) { pool = items; break; }
+            roll -= weight;
+        }
+    }
     if (!pool.count) { pool = [_library.roles[@"idle"] filteredArrayUsingPredicate:usable]; actual = @"idle"; }
     _wantedRole = wanted;
     if ([_role isEqualToString:actual] && _clip) return;
@@ -199,6 +220,14 @@
         [choices removeObjectsAtIndexes:indexes];
     }
     if (!choices.count) choices = [pool mutableCopy];
+    if (choices.count == 1 && allUsablePool.count > 1 &&
+        [choices.firstObject.identifier isEqualToString:_lastClip]) {
+        choices = [allUsablePool mutableCopy];
+        NSIndexSet *indexes = [choices indexesOfObjectsPassingTest:^BOOL(MiniSightActionClip *item, NSUInteger idx, BOOL *stop) {
+            (void)idx; (void)stop; return [item.identifier isEqualToString:self->_lastClip];
+        }];
+        if (indexes.count) [choices removeObjectsAtIndexes:indexes];
+    }
     MiniSightActionClip *next = choices[arc4random_uniform((uint32_t)choices.count)];
     _role = actual; _clip = next; _lastClip = next.identifier;
     _selectionBegan = CACurrentMediaTime();
@@ -387,12 +416,18 @@
     [self chooseRole];
 }
 - (NSTimeInterval)performIdleAction {
-    if (!_library.roles[@"idleAlt"].count || [self presentationBlocked] || _dragging || _flying || !_running) return 0.;
+    return [self performDailyAction];
+}
+- (NSTimeInterval)performDailyAction {
+    if (!_library.roles[@"idleAlt"].count || [self presentationBlocked] || _dragging || _flying || !_running || _musicPlaying) return 0.;
     if ([_role isEqualToString:@"idleAlt"] && [self autonomyHeld]) return fmax(.2, _clip.duration - (CACurrentMediaTime() - _clipStart));
     _role = nil;
     _transientRole = @"idleAlt"; _transientUntil = CACurrentMediaTime() + 120.;
     _wantedRole = nil; [self chooseRole];
-    return _clip.duration;
+    if (_clip && [_role isEqualToString:@"idleAlt"]) return _clip.duration;
+    _transientRole = nil; _transientUntil = 0.; _wantedRole = nil; _role = nil;
+    [self chooseRole]; // All daily clips failed: visibly fall back to the base idle.
+    return 0.;
 }
 - (void)tick:(CADisplayLink *)link {
     if (!_running || link != _link) return;
