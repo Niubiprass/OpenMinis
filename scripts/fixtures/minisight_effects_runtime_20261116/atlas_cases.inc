@@ -70,8 +70,15 @@ static void AtlasLayouts(void) {
     [pet applySpriteFrame]; ExpectCrop(pet, image, CGRectMake(0, 0, 96, 104));
     Now += .70; [pet applySpriteFrame]; ExpectCrop(pet, image, CGRectMake(0, 0, 96, 104));
     effects.musicPosition = 1.52; [pet applySpriteFrame]; ExpectCrop(pet, image, CGRectMake(0, 0, 96, 104));
-    // Past 3.6s the neutral row blinks: column 1 of row 0 (idle), not a dance row.
-    effects.musicPosition = 3.8; [pet applySpriteFrame]; ExpectCrop(pet, image, CGRectMake(96, 0, 96, 104));
+    // The default measured-input mode must stay neutral without measured input,
+    // even when a playback cursor passes the old legacy blink threshold.
+    CHECK(pet.rhythmFollowing && effects.rhythmFollowing);
+    effects.musicPosition = 3.8; [pet applySpriteFrame]; ExpectCrop(pet, image, CGRectMake(0, 0, 96, 104));
+    // Explicit legacy-only regression: column 1 of row 0, never a dance row.
+    // This excerpt fixture stores mode directly; it does not emulate host wiring.
+    pet.rhythmFollowing = NO; effects.rhythmFollowing = NO;
+    CHECK(!pet.rhythmFollowing && !effects.rhythmFollowing);
+    [pet applySpriteFrame]; ExpectCrop(pet, image, CGRectMake(96, 0, 96, 104));
     effects.musicPlaying = NO; [pet setValue:@3 forKey:@"state"];
     pet.spriteLayout = 2; pet.variantIndex = 10; ExpectCrop(pet, image, CGRectMake(192, 104, 96, 104));
     pet.spriteLayout = 4; pet.variantIndex = 71; ExpectCrop(pet, image, CGRectMake(672, 832, 96, 104));
