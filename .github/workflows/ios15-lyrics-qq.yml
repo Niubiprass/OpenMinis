@@ -3,11 +3,11 @@ name: iOS15 OpenMinis Daily Actions Candidate
 on:
   workflow_dispatch:
   push:
-    branches: [ios15-daily-actions-20261125-build384]
+    branches: [ios15-daily-actions-20261125-build385]
     paths: ['src/ios/**', 'scripts/test_*.py', 'scripts/run_ios15_geometry_probe.py', 'scripts/fixtures/**', 'scripts/v64r_package.py', 'deps/build_rclone_ios.sh', '.github/workflows/ios15-lyrics-qq.yml', 'scripts/ci_verify_lyrics_ipa.py']
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ios15-qq-lyrics-${{ github.ref }}
@@ -17,7 +17,7 @@ concurrency:
 env:
   # Re-run 2026-10-17 after repo made public to restore macOS runner eligibility.
   IOS_DEPLOYMENT_TARGET: '15.5'
-  LYRICS_BUILD: '384'
+  LYRICS_BUILD: '385'
 
 jobs:
   build:
@@ -208,22 +208,22 @@ jobs:
           # Preserve only source entitlements; no sandbox-disabling additions.
           python3 scripts/v64r_package.py Payload/Minis.app
           xcrun vtool -show-build Payload/Minis.app/Minis | tee minos-v64r.txt
-          zip -qry Minis-1.16-build384-Daily-Actions-iOS15.5.ipa Payload
-          unzip -tq Minis-1.16-build384-Daily-Actions-iOS15.5.ipa
+          zip -qry Minis-1.16-build385-Daily-Actions-iOS15.5.ipa Payload
+          unzip -tq Minis-1.16-build385-Daily-Actions-iOS15.5.ipa
           # Validate the bytes we will publish, not only the pre-zip staging app.
           IPA_VERIFY_DIR=$(mktemp -d)
           trap 'rm -rf "$IPA_VERIFY_DIR"' EXIT
-          unzip -q Minis-1.16-build384-Daily-Actions-iOS15.5.ipa -d "$IPA_VERIFY_DIR"
+          unzip -q Minis-1.16-build385-Daily-Actions-iOS15.5.ipa -d "$IPA_VERIFY_DIR"
           codesign --verify --deep --strict "$IPA_VERIFY_DIR/Payload/Minis.app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinisBuildNumber' "$IPA_VERIFY_DIR/Payload/Minis.app/Info.plist")" = "${LYRICS_BUILD}"
-          shasum -a 256 Minis-1.16-build384-Daily-Actions-iOS15.5.ipa > SHA256SUMS
-          python3 scripts/ci_verify_lyrics_ipa.py Minis-1.16-build384-Daily-Actions-iOS15.5.ipa ipa-verification.json "$LYRICS_BUILD"
+          shasum -a 256 Minis-1.16-build385-Daily-Actions-iOS15.5.ipa > SHA256SUMS
+          python3 scripts/ci_verify_lyrics_ipa.py Minis-1.16-build385-Daily-Actions-iOS15.5.ipa ipa-verification.json "$LYRICS_BUILD"
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Minis-1.16-build384-Daily-Actions-iOS15.5
+          name: Minis-1.16-build385-Daily-Actions-iOS15.5
           path: |
-            Minis-1.16-build384-Daily-Actions-iOS15.5.ipa
+            Minis-1.16-build385-Daily-Actions-iOS15.5.ipa
             SHA256SUMS
             minos-v64r.txt
           retention-days: 30
@@ -240,3 +240,41 @@ jobs:
             SHA256SUMS
           if-no-files-found: ignore
           retention-days: 14
+      - name: Publish in-app update
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=beta-latest
+          IPA="Minis-1.16-build${LYRICS_BUILD}-Daily-Actions-iOS15.5.ipa"
+          python3 - "$IPA" <<'PYMANIFEST'
+          import json, os, sys
+          ipa = sys.argv[1]
+          v = json.load(open('ipa-verification.json'))
+          notes = ("日常动作修复：每天的小动作不会连着重复同一个，回到待机也不会把上一次动作用过的记录抹掉；"
+                   "走动、拖动、聊天、睡眠和歌词逻辑保持不变。桌面桌宠需要配套 MiniSight 0.8.54，"
+                   "App 更新不会自动安装插件。")
+          manifest = {
+              "build": int(os.environ["LYRICS_BUILD"]),
+              "version": v["info"]["CFBundleShortVersionString"],
+              "notes": notes,
+              "ipa": ipa,
+              "sha256": v["sha256"],
+              "size": int(v["bytes"]),
+          }
+          with open('latest.json', 'w', encoding='utf-8') as fh:
+              json.dump(manifest, fh, ensure_ascii=False, separators=(',', ':'))
+          print(json.dumps(manifest, ensure_ascii=False))
+          PYMANIFEST
+          gh release view "$TAG" >/dev/null 2>&1 ||             gh release create "$TAG" --prerelease --title "测试版 1.16" --notes "应用内更新通道"
+          if gh release download "$TAG" --pattern latest.json --output old-latest.json 2>/dev/null; then
+            OLD=$(python3 -c 'import json;print(json.load(open("old-latest.json"))["build"])')
+            cp old-latest.json "latest-build${OLD}.json"
+            gh release upload "$TAG" "latest-build${OLD}.json" --clobber
+          fi
+          gh release upload "$TAG" "$IPA" --clobber
+          gh release upload "$TAG" latest.json --clobber
+          gh release edit "$TAG" --title "测试版 1.16 / build ${LYRICS_BUILD}"             --notes "$(python3 -c 'import json;print(json.load(open("latest.json"))["notes"])')"
+          gh release view "$TAG" --json assets -q '.assets[].name' | grep -Fx "$IPA"
+          echo "PUBLISHED build ${LYRICS_BUILD} to ${TAG}"
