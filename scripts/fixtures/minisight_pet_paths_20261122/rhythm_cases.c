@@ -9,7 +9,7 @@ static void SendMeasured(double period,double rms,double peak,unsigned flags) {
 static void RhythmFresh(void) {
  Fresh(false,false);RhythmSeq=0;RhythmEpoch=100;
  P_setRhythmFollowing(true);P_setMusicPlaying(true);
- CHECK(P.rhythmFollowing&&E.rhythmFollowing&&!P.roamTimer&&!P.motionActive);
+ CHECK(P.rhythmFollowing&&E.rhythmFollowing&&P.roamTimer&&!P.motionActive);
  SendMeasured(.5,.012,.025,MSRhythmFlagValid);
 }
 static void ContinueInput(double seconds) {
@@ -61,24 +61,24 @@ static RhythmMetric RhythmImpulse(double period,double rms,double peak,bool hop)
 static void RhythmQuietAndStale(void) {
  Case="rhythm-no-input-no-cyclic-travel";RhythmFresh();CGPoint start=P.center;
  for(int i=0;i<240;i++)Tick(.02,"rhythm-no-input");
- CHECK(!P.motionActive&&!P.roamTimer&&hypot(P.center.x-start.x,P.center.y-start.y)<.001);
+ CHECK(!P.musicMotion&&P.roamTimer); // ordinary life is now allowed; never a synthetic beat
  for(unsigned mode=0;mode<3;mode++) for(int i=0;i<150;i++) {
   Tick(.02,"rhythm-untrusted-tone-silence");
   MSRhythmFrame f=Measured(.5,mode==1?0.:.1,mode==1?0.:.3,MSRhythmFlagValid|MSRhythmFlagBeat);
   if(mode==0)f.confidence=.15;if(mode==1)f.flags|=MSRhythmFlagSilence;if(mode==2)f.flags=0;
-  P_applyRhythmFrame(f,Now);CHECK(!P.motionActive&&!P.roamTimer);
+  P_applyRhythmFrame(f,Now);CHECK(!P.musicMotion);
  }
  RhythmImpulse(.8,.25,.8,true); // start a separate route, then test stale callback
  RhythmFresh();Tick(.02,"stale-before-hop");SendMeasured(.8,.3,.8,3);
  Tick(.12,"stale-moving");start=P.center;int old=P.motionLink;
  for(int i=0;i<40;i++)Tick(.02,"stale-cancel");
- CHECK(!P.motionActive&&!P.roamTimer);CGPoint stopped=P.center;P_motionTick(old);
+ CHECK(!P.musicMotion&&P.roamTimer);CGPoint stopped=P.center;P_motionTick(old);
  CHECK(hypot(P.center.x-stopped.x,P.center.y-stopped.y)<.001);
  CHECK(hypot(P.center.x-start.x,P.center.y-start.y)<60.);
  MSRhythmFrame late=Measured(.5,.3,.8,3);P_applyRhythmFrame(late,Now-.3);CHECK(!P.motionActive);
  SendMeasured(.5,.3,.8,3);CHECK(!P.motionActive); // anchor, not remembered beat
  Tick(.02,"stale-reanchor");SendMeasured(.5,.03,.06,3);CHECK(P.motionActive);
- P_clearRhythm();CHECK(!P.motionActive&&!P.roamTimer);
+ P_clearRhythm();CHECK(!P.motionActive&&!P.musicMotion);
  puts("RHYTHM PASS: silence/tone/unknown/no input quiet; stale route freezes current center, stale tick rejected");
 }
 static void RhythmGates(void) {
@@ -93,7 +93,7 @@ static void RhythmGates(void) {
    case 8:P.hidden=true;break;case 9:P_setSuspended(true);break;
    case 10:P_stopPlaying();break;case 11:P_setCenterBounds(CGRectMake(43,48,270,680));break;
   }
-  P_reconcilePlaybackOnce();Tick(.02,"gate-cancel");CHECK(!P.motionActive&&!P.roamTimer);
+  P_reconcilePlaybackOnce();Tick(.02,"gate-cancel");CHECK(!P.motionActive&&!P.musicMotion);
   CHECK(hypot(P.center.x-before.x,P.center.y-before.y)<.001);
   SendMeasured(.8,.3,.8,3);CHECK(!P.motionActive);
   P_setRoamPace(1);P_setLyricsSuppressed(false);P_setActivityActive(false);Chat=Reduce=false;
@@ -121,7 +121,7 @@ static void RhythmManualLoop(void) {
    travelled+=hypot(P.center.x-previous.x,P.center.y-previous.y);previous=P.center;
   }
   CHECK(limit<500&&travelled>50.);CHECK(!P.physicsMotion);
-  ContinueInput(4.);CHECK(!P.motionActive&&!P.roamTimer);
+  ContinueInput(4.);CHECK(!P.motionActive&&!P.musicMotion);
   Tick(.02,"manual-resume-fresh-beat");SendMeasured(.5,.03,.06,3);
   CHECK(P.motionActive&&P.musicMotion&&!P.physicsMotion);
   P_clearRhythm();CHECK(!P.motionActive);

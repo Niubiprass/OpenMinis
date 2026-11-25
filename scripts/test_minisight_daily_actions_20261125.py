@@ -74,6 +74,24 @@ class DailyActionContracts(unittest.TestCase):
         self.assertNotIn("center =", perform)
         self.assertNotIn("setCenter", perform)
 
+    def test_measured_music_keeps_life_and_reports_real_first_frame(self):
+        daily = section(PET, "- (void)tryDailyActionAt:(CFTimeInterval)now {", "- (void)scheduleRoam {")
+        self.assertIn("[self measuredMusicInputAt:now]", daily)
+        self.assertIn("_dailyPausedRemaining", daily)
+        self.assertIn("_dailyBlockers", daily)
+        self.assertNotIn('reason\": @\"daily_first_frame', daily)
+        crop = section(PET, "- (void)applySpriteFrame {", "- (void)restorePosterFrame {")
+        self.assertIn("if (cell && _dailyFirstFramePending", crop)
+        self.assertLess(crop.index("_gravityLayer.contents ="), crop.index('@"daily_first_frame"'))
+        prepared = section(EFFECTS, "- (void)requestFrame:(NSUInteger)index {", "- (void)advanceActions:")
+        self.assertLess(prepared.index("if (!image.CGImage)"), prepared.index('@"daily_first_frame"'))
+        self.assertLess(prepared.index("self->_sprite.contents ="), prepared.index('@"daily_first_frame"'))
+        perform = section(EFFECTS, "- (NSTimeInterval)performDailyAction {", "- (void)cancelDailyAction {")
+        self.assertIn("_musicPlaying && (!_rhythmFollowing", perform)
+        policy = (CORE / "MiniSightPetDailyPolicy.h").read_text()
+        self.assertIn("static const int look[]", policy)
+        self.assertIn("static const int wave[]", policy)
+
     def test_optional_category_schema_preserves_old_packs(self):
         for category in ("micro", "play", "food", "seasonal", "social"):
             self.assertIn(category, LIBRARY)

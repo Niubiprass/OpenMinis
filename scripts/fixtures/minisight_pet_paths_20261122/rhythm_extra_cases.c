@@ -7,8 +7,7 @@ static void RhythmExtra(void) {
   MSRhythmFrame f={0};
   if(i&1u) {f.epoch=3;f.sequence=++RhythmSeq;f.sampleTime=700.+Now;f.flags=MSRhythmFlagValid;f.rms=.1;f.peak=.3;}
   P_applyRhythmFrame(f,Now);
-  CHECK(!P.roamTimer&&!P.motionActive&&!P.musicMotion);
-  CHECK(hypot(P.center.x-center.x,P.center.y-center.y)<.0001);
+  CHECK(!P.musicMotion); // ordinary roam is intentionally independent of absent/invalid input
  }
  CHECK(fabs(E.angle.value)<.0001&&fabs(E.offsetY.value)<.0001);
  puts("RHYTHM PASS: actual Pet/Effects explicit mode + default/invalid/no-grid 500 frames quiet");

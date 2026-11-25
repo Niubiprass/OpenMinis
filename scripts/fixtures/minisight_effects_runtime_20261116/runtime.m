@@ -410,7 +410,11 @@ static void DailyActionCategoryAndRepeat(void) {
             }
         }
         r.effects.musicPlaying = YES;
-        CHECK([r.effects performDailyAction] == 0.); // Never substitute daily clips for beat capture.
+        CHECK([r.effects performDailyAction] == 0.); // Explicit legacy music retains its priority.
+        r.effects.rhythmFollowing = YES;
+        CHECK([r.effects performDailyAction] > 0.); // No measured input: ordinary life remains available.
+        [r.effects cancelDailyAction];
+        r.effects.rhythmFollowing = NO;
         r.effects.musicPlaying = NO;
         // If only the previous clip remains usable, repetition is necessary.
         NSString *other = [previous isEqual:@"fixture-stretch"] ? @"fixture-toy" : @"fixture-stretch";

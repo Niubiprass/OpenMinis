@@ -126,6 +126,13 @@ class Source(unittest.TestCase):
             self.assertIn(reason,reasons)
         for feature in ('music','lyrics','pet','name_wake'):self.assertIn('@"'+feature+'"',log)
         self.assertIn('MSDiagMaxBytes = 200 * 1024',log);self.assertIn('MSDiagPending >= 256',log)
+        snapshot=log.split('void MSDiagSettingsSnapshot(',1)[1]
+        self.assertIn('MSDiagValue(@"activity_mode", raw)',snapshot)
+        self.assertIn('now - [previous[@"time"] doubleValue] < 60.',snapshot)
+        self.assertIn('[previous[@"fields"] isEqual:fields]',snapshot)
+        self.assertIn('lastFields.count >= 128',snapshot)
+        self.assertIn('epoch != lastEpoch',snapshot)
+        self.assertNotIn('_readbackNonce',snapshot)
         fields=re.search(r'MSDiagKeys = \[NSSet setWithArray:@\[(.*?)\]\]',log).group(1)
         for name in ('title','artist','lyric','audio','url','credential'):self.assertNotIn('@"'+name+'"',fields)
     def test_host_ownership(self):
@@ -158,7 +165,10 @@ class Source(unittest.TestCase):
         self.assertNotIn('MSPetPoseWalk',dance)
         self.assertNotIn('return @"music";',definition(effects,'- (NSString *)currentRole'))
         playing=definition(s,'- (void)setMusicPlaying:')
-        self.assertIn('_motionActive && !_physicsMotion && !_dragging',playing)
+        self.assertIn('_musicMotion && !_physicsMotion && !_dragging',playing)
+        self.assertNotIn('if (_motionActive && !_physicsMotion && !_dragging)',playing)
+        self.assertIn('if (playing && !_rhythmFollowing) [self cancelDailyAction];',playing)
+        self.assertIn('[self measuredMusicInputAt:CACurrentMediaTime()]',definition(s,'- (void)scheduleRoam'))
         self.assertIn('[self cancelMotion]',playing)
         self.assertIn('[self reconcilePlayback]',playing)
         roam=definition(s,'- (void)roamOnce')
@@ -216,7 +226,13 @@ class NativeLogs(unittest.TestCase):
         original=(CORE/'MiniSightLog.m').read_text()
         variants={'baseline': original,
             'music-feature-dropped': original.replace('@"music", @"lyrics", @"pet", @"name_wake"','@"lyrics", @"pet", @"name_wake"'),
-            'reason-dropped': original.replace('@"lyrics_no_space"','@"fixture_no_space"')}
+            'reason-dropped': original.replace('@"lyrics_no_space"','@"fixture_no_space"'),
+            'settings-repeat-flood': original.replace('if (emit) MSDiagEvent(@"settings", stage, @"pending", fields);',
+                'MSDiagEvent(@"settings", stage, @"pending", fields);'),
+            'same-revision-change-lost': original.replace('[previous[@"fields"] isEqual:fields]',
+                '[previous[@"fields"][@"revision"] isEqual:fields[@"revision"]]'),
+            'activity-mode-redacted': original.replace('@"activity_mode": [NSSet setWithArray:@[@"lively", @"quiet", @"off"]]',
+                '@"activity_mode": [NSSet setWithArray:@[@"quiet", @"off"]]')}
         with tempfile.TemporaryDirectory(prefix='ms-log-roundtrip-') as directory:
             directory=Path(directory)
             for name,source in variants.items():

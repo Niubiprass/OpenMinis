@@ -86,7 +86,7 @@ def excerpt(pet):
     state = re.search(r'typedef NS_ENUM\(NSInteger, MiniSightPetState\) \{.*?\};', pet, re.S).group(0)
     constants = '\n'.join(re.search(r'^static const NSInteger ' + name + r' = .*?;', pet, re.M).group(0)
                           for name in ('kMiniSightPetRows', 'kMiniSightPetMaxCols'))
-    preamble = '#import "MiniSightPet.h"\n#import "MiniSightGeometry.h"\n#import "MiniSightLiveliness.h"\n' + state + '\n' + constants + '''
+    preamble = '#import "MiniSightPet.h"\n#import "MiniSightGeometry.h"\n#import "MiniSightLiveliness.h"\n#import "MiniSightPetDailyPolicy.h"\n#import "MiniSightLog.h"\n' + state + '\n' + constants + '''
 @interface MiniSightPetView () {
     UIImage *_sheet;
     CALayer *_gravityLayer;
@@ -95,7 +95,8 @@ def excerpt(pet):
     NSInteger _column, _spriteLayout, _variantIndex;
     CGRect _lastSpriteRect, _lastNotifiedBounds;
     CGPoint _lastNotifiedCenter;
-    BOOL _longPressEnabled, _geometryReady, _dailyActionsEnabled, _rhythmFollowing;
+    BOOL _longPressEnabled, _geometryReady, _dailyActionsEnabled, _rhythmFollowing, _dailyFirstFramePending;
+    MSPetDailyFallback _dailyFallback;
     double _roamPace, _lastSpriteTime, _poseBegan;
     UILabel *_sleepBadge;
 }

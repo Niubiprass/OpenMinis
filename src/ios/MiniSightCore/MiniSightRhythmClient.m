@@ -1,6 +1,7 @@
 #import "MiniSightRhythmClient.h"
 #import "MiniSightRhythmReceivePolicy.h"
 #import "MiniSightPet.h"
+#import "MiniSightLog.h"
 #import <objc/runtime.h>
 #import <QuartzCore/QuartzCore.h>
 #include <arpa/inet.h>
@@ -87,6 +88,7 @@ BOOL MiniSightRhythmLiveTransportCompiled(void) { return MINISIGHT_ENABLE_RHYTHM
 @property(nonatomic) BOOL enabled;
 @property(nonatomic) double lastPosition,lastPositionAt;
 @property(nonatomic) BOOL hasPosition;
+@property(nonatomic) NSUInteger inputEvidenceMode;
 @end
 @implementation MSRhythmPetBinding
 - (void)dealloc { [_client stop]; }
@@ -111,12 +113,18 @@ void MiniSightRhythmConfigurePet(MiniSightPetView *pet,BOOL enabled,NSUInteger t
     enabled = enabled && token > 0 && pet.window && !pet.window.hidden && !pet.hidden && pet.alpha > .01 &&
         pet.roamPace > 0 && !pet.roamingPaused && !pet.interactionActive && !pet.activityActive &&
         !pet.lyricsSuppressed && !UIAccessibilityIsReduceMotionEnabled();
+    NSUInteger inputMode = enabled ? (MiniSightRhythmLiveTransportCompiled() ? 2u : 1u) : 0u;
+    if (binding.inputEvidenceMode != inputMode) {
+        binding.inputEvidenceMode = inputMode;
+        MSDiagEvent(@"pet", @"state", @"ok", @{@"source": ([NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"] ? @"plugin" : @"app"), @"reason": @"rhythm_transport_mode",
+            @"input_mode": @(inputMode), @"input_ready": @NO, @"enabled": @(enabled)});
+    }
     double now=CACurrentMediaTime(),position=pet.musicPosition;
     BOOL seek=enabled&&binding.enabled&&binding.hasPosition&&isfinite(position)&&
         fabs(position-(binding.lastPosition+fmax(0.,now-binding.lastPositionAt)))>.8;
     if(binding.token!=token||binding.enabled!=enabled||seek){[binding.client stop];[pet clearRhythm];}
     binding.token=token;binding.enabled=enabled;
     binding.hasPosition=enabled&&isfinite(position);binding.lastPosition=position;binding.lastPositionAt=now;
-    pet.rhythmFollowing=YES; // No data means quiet, never the legacy periodic dance.
+    pet.rhythmFollowing=YES; // No data means ordinary life, never a fabricated beat.
     [binding.client configureEnabled:enabled];
 }

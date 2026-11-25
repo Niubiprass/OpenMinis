@@ -41,6 +41,7 @@ def strip_call(s,name):
 
 P_METHODS={
  'shouldAnimate':('bool','void'), 'mayRoam':('bool','void'),
+ 'measuredMusicInputAt:':('bool','double now'),
  'mayPerformMusicMotion':('bool','void'), 'roamOnce':('void','void'),
  'holdState:forDuration:':('void','int state, double duration'),
  'setRoamPace:':('void','double pace'), 'setSuspended:':('void','bool suspended'),
@@ -286,8 +287,14 @@ def main(argv=None):
     ap.add_argument('--trace',default=None,help='write JSON frame trace to this path')
     ap.add_argument('--evidence',default=None,help='write extracted production method hashes and seam list')
     ap.add_argument('--mutations',action='store_true',help='require compiled music behavior negatives to be rejected')
+    ap.add_argument('--compiler',default=None,help='explicit host C compiler for bounded low-memory retries')
+    ap.add_argument('--only-mutant',action='append',default=[],help='resume named negatives after a resource failure; default runs all five')
     ap.add_argument('--require-native',action='store_true',help='fail if Apple native runtime cannot run')
     args=ap.parse_args(argv)
+    known_mutants = {'music-host-starved', 'center-frozen-until-finish', 'no-travelling-hops',
+                     'no-music-motion-gate', 'stop-keeps-music-route'}
+    if args.only_mutant and (not args.mutations or not set(args.only_mutant) <= known_mutants):
+        ap.error('--only-mutant requires --mutations and exact known variant names')
     root=HERE.parent
     core=root/'src/ios/MiniSightCore' if (root/'src/ios/MiniSightCore/MiniSightPet.m').is_file() else root
     pet=(core/'MiniSightPet.m').read_text()
@@ -299,7 +306,7 @@ def main(argv=None):
             'pet_shims':P_SHIMS,'effects_shims':E_SHIMS,
             'limitations':'C translation only: no ObjC ABI, UIKit, QuartzCore, real NSTimer/CADisplayLink or ActionLibrary image decoding/delivery'},ensure_ascii=False,indent=2)+'\n')
     print('source guards PASS; %d production method bodies extracted'%len(evidence))
-    cc=shutil.which('clang') or shutil.which('gcc')
+    cc=shutil.which(args.compiler) if args.compiler else (shutil.which('clang') or shutil.which('gcc'))
     if not cc:
         print('SKIP: no host C compiler; production-path control flow NOT executed')
         if args.require_native:
@@ -310,7 +317,7 @@ def main(argv=None):
         td=Path(tmp)
         (td/'production-paths.h').write_text(header)
         shutil.copy(str(FIX/'driver.c'),str(td/'driver.c'))
-        for case in ('rhythm_cases.c', 'rhythm_extra_cases.c', 'daily_fallback_cases.c'):
+        for case in ('rhythm_cases.c', 'rhythm_extra_cases.c', 'daily_fallback_cases.c', 'music_ordinary_cases.c'):
             shutil.copy(str(FIX/case), str(td/case))
         for name in ('MiniSightGeometry.h','MiniSightGravity.h','MiniSightLiveliness.h','MiniSightPetBehavior.h','MiniSightPetMusicMotion.h',
                      'MiniSightPetRhythmPolicy.h','MiniSightRhythmFrame.h','MiniSightPetDailyPolicy.h'):
@@ -332,18 +339,27 @@ def main(argv=None):
         if args.mutations:
             music=(core/'MiniSightPetMusicMotion.h').read_text()
             variants={
-              'music-host-starved':(pet.replace('    if (_effects.musicPlaying) {','    if (_effects.musicPlaying) { return;'),music),
+              'music-host-starved':(pet.replace('    if (!_rhythmFollowing && _effects.musicPlaying) {','    if (!_rhythmFollowing && _effects.musicPlaying) { return;'),music),
               'center-frozen-until-finish':(pet.replace('self.center = [self clampedCenter:MSPetCGPoint(sample)];','self.center = MSPetCGPoint(_motionStart);'),music),
               'no-travelling-hops':(pet,re.sub(r'travel.jump = [^;]+;', 'travel.jump = false;',music)),
               'no-music-motion-gate':(pet.replace('(_musicMotion && ![self mayPerformMusicMotion])','NO'),music),
             }
             playing=definition(pet,'setMusicPlaying:')
-            # The new rhythm reset also cancels an automatic route. Break BOTH
-            # stop guards so this remains a behavioral negative, not a no-op.
+            # Stop now has three independent cleanup defenses: the setter's
+            # direct cancel, its clearRhythm call, and reconcile's owned-music
+            # gate. Break all three so this remains an unsafe behavioral mutant
+            # rather than a safe variant rescued by the other real defense.
             missing_cancel=playing.replace('if (_musicMotion && !_physicsMotion && !_dragging) [self cancelMotion];','if (_musicMotion) { /* deliberately broken stop */ }')
             missing_cancel=missing_cancel.replace('[self clearRhythm];', '/* deliberately broken rhythm stop */')
-            variants['stop-keeps-music-route']=(pet.replace(playing,missing_cancel),music)
+            missing_stop=pet.replace(playing,missing_cancel)
+            cleanup=definition(pet,'reconcilePlaybackOnce')
+            broken_cleanup=cleanup.replace('((!_rhythmFollowing && _effects.musicPlaying) || _musicMotion)',
+                '(!_rhythmFollowing && _effects.musicPlaying)')
+            assert broken_cleanup != cleanup, 'stop cleanup negative must break the independent reconcile defense'
+            missing_stop=missing_stop.replace(cleanup,broken_cleanup)
+            variants['stop-keeps-music-route']=(missing_stop,music)
             for name,(mutated,policy) in variants.items():
+                if args.only_mutant and name not in args.only_mutant: continue
                 assert (mutated,policy)!=(pet,music), 'no-op mutation '+name
                 generated,_=generate(mutated,effects)
                 (td/'production-paths.h').write_text(generated)

@@ -47,6 +47,22 @@ def errors(source):
         'partial metadata does not fetch old track': 'self->_lyrics && track && self->_track && self->_progressAvailable',
         'request requires current metadata': 'self->_lyrics && track && self->_track && self->_progressAvailable',
         'event coalescing': 'if (_eventQueued) return;',
+        'metadata-only hint': '[note.name isEqualToString:metadataName]',
+        'bounded evidence lease': 'now - validAt <= 1.',
+        'candidate absolute expiry': '_candidateUntil = MSMusicNow() + 3.;',
+        'expiry rejection': '[self discardCandidate:@"candidate_expired"];',
+        'apply expiry before reuse': 'if (self->_candidateUntil > 0. && !MSMusicCandidateAlive(received, self->_candidateUntil))',
+        'confirmed stop immediate': '[self discardCandidate:@"confirmed_stop"];',
+        'complete candidate consumption': 'if (track) self->_candidateUntil = 0.;',
+        'positive PID rejection fence': 'if (self->_pidRead > 0 && self->_track) self->_verifiedPID = self->_pidRead;',
+        'known direct switch': 'if (player.length && _source.length && ![_source isEqualToString:player]) {',
+        'unverified new source hidden': '_source = nil; _playerIdentified = NO;',
+        'pause immediate hide': 'if (playing != 1) [self beginPause];',
+        'pause candidate not destruction': '[self beginCandidate:@"confirmed_pause"];',
+        'no metadata stop': 'if (playing != 1 && !hasMetadata)',
+        'stage one conflict': '[self discardCandidate:@"metadata_conflict"];',
+        'identity diagnostics': '@"identity_epoch": @(_identityEpoch)',
+        'no false fresh PID0': 'PID0 is unknown, NOT a confirmed stop and NOT a fresh sample.',
         'single song cooldown': 'self->_retryTimes[retryKey] = @(received + 60.);',
         'bounded cooldown': 'self->_retryTimes.count >= 16',
         'bridge mailbox': 'if (_bridgeScheduled) return;',
@@ -89,6 +105,17 @@ def errors(source):
     timeout = source.split('if (_reading && !_readTimedOut', 1)[1].split('if (!_reading', 1)[0]
     if '_reading = NO' in timeout:
         result.append('timeout incorrectly cancels native call')
+    pause = source.split('- (void)beginPause {', 1)[-1].split('- (NSTimeInterval)motionPosition', 1)[0]
+    for token in ('++_trackGeneration;', '[_client cancel]; _fetching = NO;',
+                  '[self beginCandidate:@"confirmed_pause"];', '[self publishLine:nil playing:NO force:NO];'):
+        if token not in pause:
+            result.append('pause fence:' + token)
+    if '_timeline = nil' in pause or '_candidateUntil = 0.' in pause:
+        result.append('pause destroys successful timeline/deadline')
+    poll = source.split('- (void)pollAt:', 1)[-1].split('- (void)rejectPlayer:', 1)[0]
+    revoke, read = poll.find('[self discardCandidate:@"player_changed"];'), poll.find('_reading = YES;')
+    if revoke < 0 or read < 0 or revoke >= read:
+        result.append('known source switch not revoked before native read')
     return result
 
 
@@ -109,6 +136,19 @@ class SourceTests(unittest.TestCase):
             ('((id (*)(id, SEL, int))objc_msgSend)(controller, sel, pid)', 'nil'),
             ('((id (*)(id, SEL, NSInteger))objc_msgSend)(controller, sel, (NSInteger)pid)', 'nil'),
             ('MSMusicPIDABIForTypes(sig.methodReturnType, sig.numberOfArguments,', 'wrongClassifier('),
+            ('now - validAt <= 1.', 'true'),
+            ('[self discardCandidate:@"candidate_expired"];', ''),
+            ('if (self->_candidateUntil > 0. && !MSMusicCandidateAlive(received, self->_candidateUntil))', 'if (NO)'),
+            ('[self discardCandidate:@"confirmed_stop"];', ''),
+            ('[self discardCandidate:@"metadata_conflict"];', ''),
+            ('if (track) self->_candidateUntil = 0.;', 'self->_candidateUntil = 0.;'),
+            ('if (self->_pidRead > 0 && self->_track) self->_verifiedPID = self->_pidRead;', 'self->_verifiedPID = self->_pidRead;'),
+            ('if (player.length && _source.length && ![_source isEqualToString:player]) {', 'if (NO) {'),
+            ('_source = nil; _playerIdentified = NO;', '_source = player; _playerIdentified = YES;'),
+            ('if (playing != 1) [self beginPause];', ''),
+            ('[self beginCandidate:@"confirmed_pause"];', '[self discardCandidate:@"confirmed_pause"];'),
+            ('if (playing != 1 && !hasMetadata)', 'if (NO)'),
+            ('++_trackGeneration; ++_identityEpoch; [_client cancel]; _fetching = NO;\n    [self beginCandidate:@"confirmed_pause"];', '[self beginCandidate:@"confirmed_pause"];'),
         ):
             with self.subTest(mutation=old):
                 self.assertIn(old, source)
@@ -130,10 +170,19 @@ class SourceTests(unittest.TestCase):
             assert(!MSMusicPIDMatches(5,5,false)); assert(!MSMusicPIDMatches(0,0,true));
             for(int i=0;i<8;++i) assert(!MSMusicPublishDue(false,false,100+i*.25,100));
             assert(MSMusicPublishDue(false,false,102,100)); assert(MSMusicPublishDue(true,false,100,100));
-            assert(MSMusicPublishDue(false,true,100,100)); }\n"""
+            assert(MSMusicPublishDue(false,true,100,100));
+            assert(MSMusicMetadataLease(true,true,101.,100.));
+            assert(!MSMusicMetadataLease(true,true,101.001,100.));
+            assert(!MSMusicMetadataLease(false,true,100.,100.));
+            assert(!MSMusicMetadataLease(true,false,100.,100.));
+            assert(!MSMusicMetadataLease(true,true,99.,100.));
+            assert(!MSMusicMetadataLease(true,true,100.,0.));
+            assert(MSMusicCandidateAlive(103.,103.));
+            assert(!MSMusicCandidateAlive(103.001,103.));
+            assert(!MSMusicCandidateAlive(100.,0.)); }\n"""
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp)/'cases'
-            subprocess.run(['cc','-x','c','-Wall','-Werror','-o',str(binary),'-'],input='#include <assert.h>\n#include <stdbool.h>\n'+body+cases,text=True,check=True)
+            subprocess.run(['cc','-std=c11','-x','c','-Wall','-Wextra','-Werror','-pedantic','-o',str(binary),'-'],input='#include <assert.h>\n#include <stdbool.h>\n'+body+cases,text=True,check=True)
             subprocess.run([str(binary)],check=True)
 
     def test_same_track_progress_group_policy(self):

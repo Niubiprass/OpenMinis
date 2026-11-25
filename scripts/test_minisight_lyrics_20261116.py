@@ -24,6 +24,8 @@ HEADER = CORE / "MiniSightLyrics.h"
 NATIVE = FIXTURES / "minisight_lyrics_20261116.m"
 NATIVE22 = FIXTURES / "minisight_lyrics_20261122/native_client.inc"
 NATIVE23 = FIXTURES / "minisight_lyrics_20261123/native_client.inc"
+NATIVE26 = FIXTURES / "minisight_lyrics_20261126/native_artist.inc"
+ARTIST26 = FIXTURES / "minisight_lyrics_20261126/portable_artist.inc"
 PORTABLE = FIXTURES / "minisight_lyrics_20261123/portable.c"
 DATA = FIXTURES / "minisight_lyrics_20261116.json"
 DEFAULT_PLUGIN = ROOT.parent.parent / "MiniSight-complete-20261105"
@@ -69,6 +71,10 @@ def contract_errors(source, header):
         "byte budget": "MSLyricsMaxBytes = 1024 * 1024;",
         "exact title": "[title isEqualToString:track.title]",
         "exact artist": "[artist isEqualToString:track.artist]",
+        "candidate-local complete artist identity": 'if(!MSLyricsQQArtistsMatch(names, _track.artist))',
+        "explicit artist grammar": 'static bool MSLyricsArtistIdentity(',
+        "duplicate credit rejected": 'if (found == SIZE_MAX || seen[found]) return false;',
+        "whole artist set required": 'return tokens == count;',
         "duration tolerance": "fabs([duration doubleValue] - track.duration) > 2.0",
         "ephemeral session": "NSURLSessionConfiguration.ephemeralSessionConfiguration",
         "no cookie store": "config.HTTPCookieStorage = nil;",
@@ -84,7 +90,8 @@ def contract_errors(source, header):
         "weak delegate owner": "@property(nonatomic, weak, nullable) MiniSightLyricsClient *owner;",
         "no redirects": "completionHandler(nil);",
         "honor server wait": "MAX(fallback, seconds)",
-        "explicit blank clearing without a timed expiry": "if (!line.text.length) return nil;",
+        "explicit blank clearing": "if (!line.text.length) return nil;",
+        "original bounded current line display": "if (time - line.time >= MSLyricsMaxDisplay) return nil;",
     }
     for label, needle in required.items():
         if needle not in source:
@@ -127,7 +134,7 @@ class SourceContractTests(unittest.TestCase):
         self.assertEqual(codes, set('lyrics_http lyrics_cooldown lyrics_network_error lyrics_response_rejected lyrics_not_found lyrics_rate_limited lyrics_timeout lyrics_service_unavailable lyrics_oversized lyrics_track_mismatch lyrics_instrumental lyrics_invalid_lrc lyrics_timeline no_synced_lyrics'.split()))
         for code in codes: self.assertIn('@"'+code+'"',log)
         self.assertNotIn('localizedDescription',src)
-        evidence = src.split('static void MSLyricsEvidence(',1)[1].split('// BEGIN LYRICS PORTABLE POLICY',1)[0]
+        evidence = src.split('static void MSLyricsEvidenceRecord(',1)[1].split('// BEGIN LYRICS PORTABLE POLICY',1)[0]
         self.assertEqual(src.count('MSDiagEvent('), 1)
         self.assertIn('MSDiagEvent(@"lyrics", stage, result', evidence)
         self.assertIn('now - [times[slot] doubleValue] < 60.0', evidence)
@@ -139,7 +146,16 @@ class SourceContractTests(unittest.TestCase):
         self.assertIn('@"lyrics_route": [NSSet setWithArray:@[@"exact", @"search", @"qq_search", @"qq_lyric", @"positive_cache", @"negative_cache", @"cooldown"]]', log)
         self.assertIn('search ? @"qq_search" : @"qq_lyric"', src)
         self.assertIn('wasQQ ? (qqSearch ? @"qq_search" : @"qq_lyric")', src)
-        self.assertIn('Seven fixed routes x two stages', src)
+        self.assertIn('Seven fixed routes x three stages', src)
+        match_codes = set(re.findall(r'@"(match_(?:accepted|empty|title_rejected|artist_rejected|duration_rejected|invalid|ambiguous|mixed|no_timeline))"', src))
+        self.assertEqual(match_codes, set('match_accepted match_empty match_title_rejected match_artist_rejected match_duration_rejected match_invalid match_ambiguous match_mixed match_no_timeline'.split()))
+        for code in match_codes: self.assertIn('@"'+code+'"', log, 'parent Log integration must allow fixed match details')
+        for key in ('match_total','match_title_rejected','match_artist_rejected','match_duration_rejected','match_invalid','match_ambiguous'):
+            self.assertIn('@"'+key+'"', evidence)
+            self.assertIn('@"'+key+'"', log, 'parent Log integration must allow bounded numeric fields')
+        stages = log.split('MSDiagStages = ',1)[1].split(';',1)[0]
+        self.assertIn('@"match"', stages, 'parent Log integration must allow match stage')
+        self.assertNotIn('componentsJoinedByString:@" "', src.split('if(good && qqSearch)',1)[1].split('if (!MSLyricsDispatchReady',1)[0])
         self.assertIn('@"0.8.50", @"0.8.51"', log)
 
     def test_qq_network_contract_is_exact_and_bounded(self):
@@ -169,6 +185,11 @@ class SourceContractTests(unittest.TestCase):
         self.assertNotIn("@implementation MiniSightLyricsClient", native)
         self.assertIn('#include "minisight_lyrics_20261122/native_client.inc"', native)
         self.assertIn('#include "minisight_lyrics_20261123/native_client.inc"', native)
+        self.assertIn('#include "minisight_lyrics_20261126/native_artist.inc"', native)
+        self.assertEqual(native.count('ArtistIdentityNativeTests('), 1)
+        self.assertTrue(NATIVE26.is_file())
+        for needle in ('FixtureProtocol *p', 'Fetch(client, track)', 'match_artist_rejected', 'match_ambiguous', '@62.001', '(Live)', '(Remix)', '(Cover)'):
+            self.assertIn(needle, NATIVE26.read_text())
         self.assertTrue(NATIVE22.is_file(), "missing prior native include must fail locally, not await Apple CI")
         self.assertIn('search_ambiguous', fixture)
         added = NATIVE23.read_text()
@@ -196,7 +217,7 @@ class SourceContractTests(unittest.TestCase):
                 label=b'@"0.8.51", @"0.8.52~rhythm-off1"]]'; self.assertEqual(other.count(label),1)
                 other = other.replace(label,b'@"0.8.51"]]')
             self.assertEqual(app, other, name)
-        for local in (NATIVE, NATIVE22, NATIVE23, DATA, PORTABLE, Path(__file__).resolve()):
+        for local in (NATIVE, NATIVE22, NATIVE23, NATIVE26, ARTIST26, DATA, PORTABLE, Path(__file__).resolve()):
             relative = local.relative_to(ROOT)
             self.assertEqual(local.read_bytes(), (plugin / relative).read_bytes(), str(relative))
 
@@ -207,7 +228,7 @@ class PortableProductionPolicyTests(unittest.TestCase):
         self.assertIsNotNone(compiler, 'a host C compiler is required for portable policy checks')
         source = SOURCE.read_text()
         policy = source.split('// BEGIN LYRICS PORTABLE POLICY', 1)[1].split('// END LYRICS PORTABLE POLICY', 1)[0]
-        prelude = '#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <math.h>\n#include <float.h>\n'
+        prelude = '#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <math.h>\n#include <float.h>\n#include <string.h>\n'
         mutations = {
             'network-may-search': ('return !failed && !search && !attempted', 'return (!failed || failed) && !search && !attempted'),
             'recursive-search': ('!search && !attempted', '(!search || search) && (!attempted || attempted)'),
@@ -222,6 +243,9 @@ class PortableProductionPolicyTests(unittest.TestCase):
             'qq-old-ticket': ('captured == current && captured == active', 'current == active && captured != 0'),
             'qq-mid-inversion': ('!MSLyricsASCIIAlpha(bytes[i]) && !MSLyricsASCIIDigit(bytes[i])', 'MSLyricsASCIIAlpha(bytes[i]) || MSLyricsASCIIDigit(bytes[i])'),
             'qq-extra-separator': ("p[--end] != ')'", "p[--end] == ')'"),
+            'artist-subset-accepted': ('return tokens == count;', 'return tokens <= count;'),
+            'artist-duplicate-accepted': ('found == SIZE_MAX || seen[found]', 'found == SIZE_MAX || (seen[found] && false)'),
+            'artist-solo-not-exact': ('n == lengths[0] && memcmp(credit, names[0], n) == 0', 'n != 0'),
         }
         with tempfile.TemporaryDirectory(prefix='minisight-lyrics-c-') as tmp:
             directory = Path(tmp)
@@ -232,7 +256,10 @@ class PortableProductionPolicyTests(unittest.TestCase):
                     self.assertIn(old, text, name + ' must actually mutate production C')
                     text = text.replace(old, new)
                 case = directory / (name + '.c')
-                case.write_text(prelude + text + PORTABLE.read_text())
+                fixture = PORTABLE.read_text().replace('int main(void) {', ARTIST26.read_text() + '\nint main(void) {\n    CHECK(ArtistIdentityTests() == 0);')
+                text = prelude + text + fixture
+                self.assertTrue(text.endswith('\n'), 'temporary C translation units must end in LF')
+                case.write_text(text)
                 binary = directory / name
                 compiled = subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', '-pedantic', str(case), '-lm', '-o', str(binary)], capture_output=True, text=True, timeout=60)
                 self.assertEqual(compiled.returncode, 0, name + compiled.stdout + compiled.stderr)
@@ -298,6 +325,9 @@ class NativeFoundationTests(unittest.TestCase):
             "qq_old_song_timer": ('captured == current && captured == active', 'current == active && captured != 0'),
             "qq_conflicting_echo": ('obj[@"songmid"] && ![obj[@"songmid"] isEqual:_qqSongMID]', 'obj[@"songmid"] && NO'),
             "qq_fractional_service_code": ('[code isEqualToNumber:@0]', '[code integerValue] == 0'),
+            "qq_artist_set": ('MSLyricsQQArtistsMatch(names, _track.artist)', 'YES'),
+            "qq_title": ('[title isEqual:_track.title]', 'YES'),
+            "qq_duration": ('fabs([seconds doubleValue]-_track.duration)>2.0', 'fabs([seconds doubleValue]-_track.duration)>3.0'),
         }
         # Baseline must succeed before a failing mutant is counted as detected.
         baseline = self.run_fixture(self.baseline)

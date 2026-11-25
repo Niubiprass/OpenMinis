@@ -222,12 +222,12 @@ static void LyricsDiagnosticRoundtripTests(MiniSightLyricsTrack *track) {
     CHECK(text.length && ![text containsString:@"PRIVATE_"] && ![text containsString:track.title] && ![text containsString:track.artist] && ![text containsString:@"Synthetic line"] && ![text containsString:@"https://"], "production writer persists no metadata/fullURL/lyric/cookie or unlisted enum");
     BOOL exact404=NO, search404=NO, qqSearchOK=NO, qqNoSync=NO, negative200=NO, positive=NO, rejected21=NO;
     NSUInteger negativeEvents=0;
-    NSSet *keys = [NSSet setWithArray:@[@"lyrics_route", @"lyrics_detail", @"generation", @"http", @"bytes", @"count"]];
+    NSSet *keys = [NSSet setWithArray:@[@"lyrics_route", @"lyrics_detail", @"generation", @"http", @"bytes", @"count", @"match_total", @"match_title_rejected", @"match_artist_rejected", @"match_duration_rejected", @"match_invalid", @"match_ambiguous"]];
     for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
         NSRange marker = [line rangeOfString:@" event="]; if (marker.location == NSNotFound) continue;
         NSDictionary *event = [NSJSONSerialization JSONObjectWithData:[[line substringFromIndex:NSMaxRange(marker)] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
         NSDictionary *f = event[@"fields"]; CHECK([event[@"feature"] isEqual:@"lyrics"], "only lyrics feature in isolated diagnostic fixture");
-        for (NSString *key in f) CHECK([keys containsObject:key], "diagnostic contains only six explicit fixed/numeric fields");
+        for (NSString *key in f) CHECK([keys containsObject:key], "diagnostic contains only explicit fixed/numeric fields");
         NSString *route = f[@"lyrics_route"];
         NSInteger http = [f[@"http"] integerValue];
         CHECK(http >= 0 && http <= 599 && [f[@"count"] unsignedIntegerValue] <= 21 && [f[@"bytes"] unsignedIntegerValue] <= 1024*1024, "diagnostic numeric budgets remain bounded");

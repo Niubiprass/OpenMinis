@@ -54,6 +54,12 @@ static BOOL fixtureControllerMissing;
 @implementation PIDNSInteger
 - (id)applicationWithPid:(NSInteger)pid { return pid == 123 ? fixturePIDBundle : @"com.tencent.QQMusic"; }
 @end
+@interface PIDSameBundle : NSObject
+- (id)applicationWithPid:(int)pid;
+@end
+@implementation PIDSameBundle
+- (id)applicationWithPid:(int)pid { return pid > 0 ? fixturePIDBundle : nil; }
+@end
 @interface PIDFloat : NSObject
 - (id)applicationWithPid:(double)pid;
 @end
@@ -129,7 +135,7 @@ static void GiveState(BOOL playing) {
     dispatch_sync(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{ cb(playing); }); Pump();
 }
 static MiniSightMusicMonitor *NewMonitor(FakeClient **client) {
-    [infos removeAllObjects]; [states removeAllObjects]; fixturePlayer = @"com.apple.Music";
+    [infos removeAllObjects]; [states removeAllObjects]; [pids removeAllObjects]; fixturePlayer = @"com.apple.Music";
     MiniSightMusicMonitor *m = [MiniSightMusicMonitor new]; *client = [FakeClient new];
     [m setValue:*client forKey:@"client"];
     m.updateHandler = ^(NSDictionary *s) { Check(NSThread.isMainThread, "main update callback"); };
@@ -382,6 +388,189 @@ int main(void) { @autoreleasepool {
     Check(pidCalls == 0 && ![m.snapshot[@"playing"] boolValue] &&
         [m.snapshot[@"diagnostics"][@"playerDetail"] isEqual:@"unsupported_player"], "explicitly unsupported never falls back to PID");
     Stop(m); MSMusicPID=NULL;
+    // Known metadata hints are not application/play-state invalidations.
+    // Observe EVERY delivered snapshot, not only the final state.
+    m = NewMonitor(&c); Song(@"Hints", @"h");
+    c.completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]stable" duration:120]); Pump();
+    Kick(m); Song(@"Hints", @"h");
+    __block NSUInteger falseSnapshots = 0, emptySnapshots = 0;
+    m.updateHandler = ^(NSDictionary *s) { if (![s[@"playing"] boolValue]) ++falseSnapshots; if (![s[@"line"] length]) ++emptySnapshots; };
+    for (int round=0; round<5; ++round) {
+        fixtureTime += 0.5;
+        for (int hint=0; hint<20; ++hint) [m mediaChanged:[NSNotification notificationWithName:MSMusicKey("kMRMediaRemoteNowPlayingInfoDidChangeNotification") object:nil]];
+        Pump();
+        Check(infos.count == 1 && [m.snapshot[@"line"] isEqual:@"stable"], "recent verified same-direct metadata hints do not clear");
+        GiveInfo(Info(@"Hints", @"h"), NO);
+        [m mediaChanged:[NSNotification notificationWithName:MSMusicKey("kMRMediaRemoteNowPlayingInfoDidChangeNotification") object:nil]]; Pump();
+        GiveState(YES); GiveInfo(Info(@"Hints", @"h"), NO);
+    }
+    Check(falseSnapshots == 0 && emptySnapshots == 0 && c.requests == 1, "same-song metadata bursts cannot manufacture false/empty snapshots or cancel sampler");
+    fixtureTime += 0.5;
+    [m mediaChanged:[NSNotification notificationWithName:MSMusicKey("kMRMediaRemoteNowPlayingInfoDidChangeNotification") object:nil]]; Pump();
+    fixtureTime += 1.01; [m tick];
+    Check(![m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"line"] length] && infos.count == 1, "metadata evidence lease expires without replacing native slot");
+    GiveInfo(Info(@"Hints", @"h"), NO); GiveState(YES); GiveInfo(Info(@"Hints", @"h"), NO);
+    Check([m.snapshot[@"line"] isEqual:@"stable"], "expired visible lease recovers only through completed fresh sandwich");
+    [m mediaChanged:[NSNotification notificationWithName:MSMusicKey("kMRMediaRemoteNowPlayingInfoDidChangeNotification") object:nil]];
+    [m mediaChanged:[NSNotification notificationWithName:MSMusicKey("kMRMediaRemoteNowPlayingApplicationIsPlayingDidChangeNotification") object:nil]]; Pump();
+    Check(![m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"line"] length], "hard play-state note dominates coalesced metadata hints");
+    Stop(m);
+    m = NewMonitor(&c); Song(@"Switch A", @"same-id");
+    c.completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]A-only" duration:120]); Pump();
+    Kick(m); Song(@"Switch A", @"same-id");
+    MiniSightLyricsCompletion switchedLookup = [c.completion copy];
+    Kick(m); GiveInfo(Info(@"Switch B", @"same-id"), NO);
+    Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue], "first conflicting same-App metadata hides old lyrics before state callback");
+    GiveState(YES); GiveInfo(Info(@"Switch B", @"same-id"), NO);
+    switchedLookup([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]late-A" duration:120]); Pump();
+    Check(c.requests == 2 && ![m.snapshot[@"line"] length], "same identifier does not admit late previous-song lyrics");
+    Stop(m);
+    // PID0 remains public unknown, while a bounded INVISIBLE candidate can
+    // survive for a later fully fresh same-player/same-track PID sandwich.
+    m = NewMonitor(&c); Song(@"Candidate", @"c");
+    c.completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]candidate" duration:120]); Pump();
+    Kick(m); Song(@"Candidate", @"c");
+    MiniSightLyricsTimeline *candidate = [m valueForKey:@"timeline"];
+    MiniSightLyricsCompletion preUnknown = [c.completion copy];
+    fixturePIDBundle = @"com.apple.Music"; fixturePlayer = nil; MSMusicPID = GetPID;
+    Kick(m); GivePID(0);
+    Check(![m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"line"] length] && ![m.snapshot[@"source"] length] && [m valueForKey:@"timeline"] == candidate, "PID0 is hidden unknown not cached-player success");
+    preUnknown([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]late" duration:120]); Pump();
+    Check([m valueForKey:@"timeline"] == candidate, "pre-unknown late result is generation-rejected");
+    Kick(m); GivePID(123); Song(@"Candidate", @"c"); GivePID(123);
+    Check([m.snapshot[@"line"] isEqual:@"candidate"] && c.requests == 1, "fresh PID sandwich recovers bounded matching candidate without cooldown refetch");
+    Kick(m); GivePID(0);
+    fixtureTime += 3.01; [m tick];
+    Check([m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length], "PID0 candidate expiry is absolute and clears old lyrics");
+    Stop(m);
+    if (pids.count) GivePID(123);
+    MSMusicPID = NULL;
+    m = NewMonitor(&c); fixturePIDBundle = @"com.apple.Music"; fixturePlayer = nil;
+    fixturePIDController = [PIDSameBundle new]; MSMusicPID = GetPID;
+    // Consume the direct request started by NewMonitor under the original
+    // direct source, then explicitly begin a new, fresh PID sample.
+    GiveInfo(Info(@"Instance", @"i"), NO);
+    Kick(m); GivePID(123); Song(@"Instance", @"i"); GivePID(123);
+    c.completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]old-instance" duration:120]); Pump();
+    Kick(m); GivePID(123); Song(@"Instance", @"i"); GivePID(123);
+    Check([m.snapshot[@"line"] isEqual:@"old-instance"], "first PID instance has confirmed lyrics");
+    Kick(m); GivePID(456); Song(@"Instance", @"i"); GivePID(456);
+    Check(![m.snapshot[@"line"] length] && [m valueForKey:@"timeline"] == nil,
+        "two matching NEW PIDs for same App cannot reuse previous process timeline");
+    Stop(m); fixturePIDController = nil; MSMusicPID = NULL; fixturePIDBundle = @"com.netease.cloudmusic";
+    // B1/D1: partial (playing OR paused) cannot consume/renew the PID0 deadline.
+    for (int partialPlaying = 0; partialPlaying < 2; ++partialPlaying) {
+        m = NewMonitor(&c); Song(@"Absolute", @"abs");
+        c.completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]absolute-old" duration:120]); Pump();
+        Kick(m); Song(@"Absolute", @"abs");
+        fixturePIDBundle = @"com.apple.Music"; fixturePlayer = nil; MSMusicPID = GetPID;
+        Kick(m); GivePID(0);
+        double absoluteUntil = [[m valueForKey:@"candidateUntil"] doubleValue];
+        Check(absoluteUntil == fixtureTime + 3., "PID0 owns one absolute three-second deadline");
+        fixtureTime += 1.;
+        NSMutableDictionary *incomplete = Info(@"Absolute", @"abs");
+        [incomplete removeObjectForKey:@"kMRMediaRemoteNowPlayingInfoArtist"];
+        Kick(m); GivePID(123); GiveInfo(incomplete, NO); GiveState(partialPlaying);
+        GiveInfo(incomplete, NO); GivePID(123);
+        Check([[m valueForKey:@"candidateUntil"] doubleValue] == absoluteUntil &&
+            [m valueForKey:@"timeline"] != nil && ![m.snapshot[@"line"] length],
+            "partial sandwich neither consumes nor extends original candidate deadline");
+        fixtureTime = absoluteUntil + .01;
+        [m setValue:@(fixtureTime + 10.) forKey:@"pollAt"]; [m tick];
+        Check([m valueForKey:@"timeline"] == nil && [m valueForKey:@"track"] == nil &&
+            [[m valueForKey:@"verifiedPID"] intValue] == 0,
+            "post-deadline tick destroys partial candidate and PID fence");
+        Kick(m); GivePID(123); Song(@"Absolute", @"abs"); GivePID(123);
+        Check(c.requests == 1 && [m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length],
+            "complete same song after absolute expiry cannot revive old lyrics or bypass 60s request fence");
+        Stop(m); MSMusicPID = NULL;
+    }
+    // B2: a direct sample cannot erase the previous positive process fence.
+    m = NewMonitor(&c); fixturePIDBundle = @"com.apple.Music"; fixturePlayer = nil;
+    fixturePIDController = [PIDSameBundle new]; MSMusicPID = GetPID;
+    GiveInfo(Info(@"Direct fence", @"df"), NO);
+    Kick(m); GivePID(123); Song(@"Direct fence", @"df"); GivePID(123);
+    c.completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]process-123" duration:120]); Pump();
+    Kick(m); GivePID(123); Song(@"Direct fence", @"df"); GivePID(123);
+    MiniSightLyricsTimeline *process123 = [m valueForKey:@"timeline"];
+    MiniSightLyricsCompletion processLookup = [c.completion copy];
+    fixturePlayer = @"com.apple.Music"; Kick(m); Song(@"Direct fence", @"df");
+    Check([[m valueForKey:@"verifiedPID"] intValue] == 123 && [m valueForKey:@"timeline"] == process123,
+        "direct same metadata retains positive PID rejection fence");
+    fixturePlayer = nil; Kick(m); GivePID(456); Song(@"Direct fence", @"df"); GivePID(456);
+    processLookup([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]late-123" duration:120]); Pump();
+    Check([m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length] && c.requests == 1,
+        "PID123 to direct to PID456 same App/song rejects old process timeline without cooldown refetch");
+    Stop(m); fixturePIDController = nil; MSMusicPID = NULL;
+    fixturePIDBundle = @"com.netease.cloudmusic";
+    // B3: no notification; B has the same cache key and its first callback stalls.
+    m = NewMonitor(&c); Song(@"Same source key", @"same");
+    c.completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]A-only-source" duration:120]); Pump();
+    Kick(m); Song(@"Same source key", @"same");
+    MiniSightLyricsCompletion sourceLookup = [c.completion copy];
+    fixturePlayer = @"com.tencent.QQMusic"; Kick(m);
+    Check(infos.count == 1 && [m valueForKey:@"timeline"] == nil &&
+        ![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"source"] length],
+        "known direct A to B revokes old timeline and source before first B metadata callback");
+    fixtureTime += .25; [m tick];
+    sourceLookup([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]late-A-source" duration:120]); Pump();
+    Check(infos.count == 1 && [m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length] &&
+        ![m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"source"] length],
+        "delayed same-cache-key B read owns one slot and old lookup cannot republish A");
+    Song(@"Same source key", @"same");
+    Check([m.snapshot[@"source"] isEqual:@"com.tencent.QQMusic"] && ![m.snapshot[@"line"] length] && c.requests == 1,
+        "new source belongs only to completed B sample and does not bypass same-key cooldown");
+    Stop(m);
+    // D1: direct AND fresh two-PID pause/resume keep a successful same-song timeline.
+    for (int usePID = 0; usePID < 2; ++usePID) {
+        m = NewMonitor(&c);
+        if (usePID) {
+            fixturePIDBundle = @"com.apple.Music"; fixturePlayer = nil; MSMusicPID = GetPID;
+            GiveInfo(Info(@"Pause resume", @"pr"), NO); Kick(m); GivePID(123);
+        }
+        Song(@"Pause resume", @"pr"); if (usePID) GivePID(123);
+        c.completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]resume-current" duration:120]); Pump();
+        Kick(m); if (usePID) GivePID(123); Song(@"Pause resume", @"pr"); if (usePID) GivePID(123);
+        MiniSightLyricsTimeline *pausedTimeline = [m valueForKey:@"timeline"];
+        MiniSightLyricsCompletion beforePause = [c.completion copy];
+        NSUInteger pauseGeneration = [[m valueForKey:@"trackGeneration"] unsignedIntegerValue];
+        Kick(m); if (usePID) GivePID(123);
+        GiveInfo(Info(@"Pause resume", @"pr"), NO); GiveState(NO);
+        Check(![m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"line"] length] &&
+            [[m valueForKey:@"trackGeneration"] unsignedIntegerValue] > pauseGeneration &&
+            ![[m valueForKey:@"fetching"] boolValue], "pause callback immediately hides and generation-fences lookup");
+        GiveInfo(Info(@"Pause resume", @"pr"), NO); if (usePID) GivePID(123);
+        beforePause([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]late-before-pause" duration:120]); Pump();
+        Check(pausedTimeline != nil && [m valueForKey:@"timeline"] == pausedTimeline &&
+            [[m valueForKey:@"candidateUntil"] doubleValue] == 0. && ![m.snapshot[@"line"] length],
+            "only complete same track/source/PID pause retains mature successful timeline without showing it");
+        fixtureTime += 1.;
+        Kick(m); if (usePID) GivePID(123);
+        GiveInfo(Info(@"Pause resume", @"pr"), NO); GiveState(YES);
+        Check(![m.snapshot[@"line"] length], "resume still waits for final metadata and PID");
+        GiveInfo(Info(@"Pause resume", @"pr"), NO); if (usePID) GivePID(123);
+        Check([m.snapshot[@"line"] isEqual:@"resume-current"] && [m valueForKey:@"timeline"] == pausedTimeline &&
+            c.requests == 1, "one-second pause resumes original timeline with no new lyric request");
+        Kick(m); if (usePID) GivePID(123); GiveInfo(@{}, NO); GiveState(NO); GiveInfo(@{}, NO);
+        if (usePID) GivePID(123);
+        beforePause([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]late-after-stop" duration:120]); Pump();
+        Check([m valueForKey:@"timeline"] == nil && [[m valueForKey:@"verifiedPID"] intValue] == 0 &&
+            ![m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"line"] length] && c.requests == 1,
+            "empty-metadata stop destroys timeline and old callback cannot revive it");
+        Stop(m); MSMusicPID = NULL;
+    }
+    fixturePIDBundle = @"com.netease.cloudmusic";
+    m = NewMonitor(&c); Song(@"Pending pause", @"pp");
+    MiniSightLyricsCompletion unfinishedPause = [c.completion copy];
+    NSUInteger cancelsBeforePause = c.cancels;
+    Kick(m); GiveInfo(Info(@"Pending pause", @"pp"), NO); GiveState(NO); GiveInfo(Info(@"Pending pause", @"pp"), NO);
+    unfinishedPause([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]cancelled-pause" duration:120]); Pump();
+    Check(c.cancels > cancelsBeforePause && ![[m valueForKey:@"fetching"] boolValue] &&
+        [m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length] && c.requests == 1,
+        "pause cancels unfinished lyric request and generation-rejects its late completion");
+    fixtureTime += 1.; Kick(m); Song(@"Pending pause", @"pp");
+    Check(c.requests == 1 && [m valueForKey:@"timeline"] == nil, "pause cancellation cannot reopen 60s lyric cooldown");
+    Stop(m);
     // Same-track partial progress keeps the first read's elapsed/timestamp/rate
     // together; explicit invalid progress must never be rescued.
     NSMutableDictionary *firstProgress = Info(@"Progress", @"p");

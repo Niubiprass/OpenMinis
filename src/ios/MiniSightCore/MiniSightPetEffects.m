@@ -289,6 +289,11 @@
         self->_displayedFrame = index;
         if (first) {
             self->_clipStart = CACurrentMediaTime();
+            if (self->_dailyActionOwned && [self->_role isEqualToString:@"idleAlt"]) {
+                NSUInteger actionID = [self->_library.roles[@"idleAlt"] indexOfObjectIdenticalTo:clip];
+                MSDiagEvent(@"pet", @"daily_action", @"ok", @{@"source": ([NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"] ? @"plugin" : @"app"), @"reason": @"daily_first_frame",
+                    @"action_id": @(actionID == NSNotFound ? 0 : actionID + 100), @"frame_count": @(clip.frameCount), @"frame_index": @(index)});
+            }
             if (!self->_recoveryStage && [self->_role isEqualToString:@"land"]) self->_landUntil = self->_clipStart + clip.duration;
             if ([self->_role isEqualToString:@"shakeSoft"] || [self->_role isEqualToString:@"shakeHard"])
                 self->_shakeUntil = self->_clipStart + clip.duration;
@@ -438,7 +443,8 @@
     return [self performDailyAction];
 }
 - (NSTimeInterval)performDailyAction {
-    if (!_library.roles[@"idleAlt"].count || [self presentationBlocked] || _dragging || _flying || !_running || _musicPlaying) return 0.;
+    if (!_library.roles[@"idleAlt"].count || [self presentationBlocked] || _dragging || _flying || !_running ||
+        (_musicPlaying && (!_rhythmFollowing || (_rhythmStrength > 0. && CACurrentMediaTime() - _rhythmAt <= .40)))) return 0.;
     if ([_role isEqualToString:@"idleAlt"] && [self autonomyHeld]) return fmax(.2, _clip.duration - (CACurrentMediaTime() - _clipStart));
     _dailyActionOwned = YES;
     _role = nil;

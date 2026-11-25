@@ -14,7 +14,7 @@ class CompleteWiring(unittest.TestCase):
   self.assertIn('enabled = enabled && token > 0',client)
   self.assertLess(client.index('!MiniSightRhythmLiveTransportCompiled()'),client.index('_socket=socket('))
   self.assertIn('#define MINISIGHT_ENABLE_RHYTHM_TRANSPORT 0',client)
-  self.assertIn('static let version = "0.8.55"',(IOS/'MiniSightHostAdapter.swift').read_text())
+  self.assertIn('static let version = "0.8.56"',(IOS/'MiniSightHostAdapter.swift').read_text())
  def test_daily_switch_round_trip_and_two_host_application(self):
   s=(IOS/'MiniSightSettings.swift').read_text();c=(IOS/'MiniSightConfigStore.swift').read_text();ui=(IOS/'Views/Settings/MiniSightHomePage.swift').read_text();runtime=(IOS/'MiniSightInAppRuntime.swift').read_text()
   self.assertIn('static let dailyActionsEnabled = "minisight.actions.daily"',s)
@@ -23,7 +23,9 @@ class CompleteWiring(unittest.TestCase):
   self.assertIn('Toggle("丰富日常动作"',ui)
   self.assertIn('@AppStorage("minisight.actions.daily") private var dailyActionsEnabled = true',runtime)
   self.assertEqual(runtime.count('pet.dailyActionsEnabled = parent.dailyActionsEnabled'),2)
-  self.assertIn('本候选未启用实时节奏接收',ui)
+  self.assertIn('实时节奏接收尚未启用',ui)
+  self.assertIn('播放音乐时仍保留普通活动',ui)
+  self.assertIn('不会安装服务或开启采音',ui)
   log=(CORE/'MiniSightLog.m').read_text()
   allowed=log.split('@"setting":',1)[1].split('@"sensor":',1)[0]
   for key in ['minisight.actions.daily','minisight.music.lyrics','minisight.music.motion']:
@@ -75,7 +77,7 @@ class CompleteWiring(unittest.TestCase):
   for n in ['MiniSightMusicMonitor.m','MiniSightMusicPlayerABI.h','MiniSightPetEffects.m','MiniSightPetDailyPolicy.h','MiniSightRhythmClient.m','MiniSightLog.m']:
    self.assertEqual((CORE/n).read_bytes(),(PLUGIN/n).read_bytes(),n)
   t=(PLUGIN/'Tweak.xm').read_text();r=(PLUGIN/'MiniSightResources.m').read_text()
-  self.assertIn('static NSString *const kMiniSightVersion   = @"0.8.55";',t)
+  self.assertIn('static NSString *const kMiniSightVersion   = @"0.8.56";',t)
   self.assertIn('gMiniSightPet.dailyActionsEnabled = MiniSightDailyActionsEnabled();',t)
   self.assertIn('if (gMiniSightUsingDefaultAtlas) return 3;',t)
   self.assertIn('MSAssetNeedsHostRebuild(resourcesFresh',t)

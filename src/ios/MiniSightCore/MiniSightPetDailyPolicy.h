@@ -17,19 +17,28 @@ static inline MSPetDailyFallback MSPetDailyChooseFallback(int layout,
     if (choice == previous) choice = choice % 3u + 1u;
     return (MSPetDailyFallback)choice;
 }
+/* Existing verified atlas clips, with a neutral tail before returning to idle.
+ * These are small blink/look/wave gestures, not invented stretch/yawn artwork. */
 static inline double MSPetDailyFallbackDuration(MSPetDailyFallback action) {
-    return action == MSPetDailyBreathe ? 1.75 : action == MSPetDailyWave ? 1.15 :
-        action == MSPetDailyObserve ? 1.20 : 0.;
+    return action == MSPetDailyBreathe ? 2.40 : action == MSPetDailyWave ? 1.80 :
+        action == MSPetDailyObserve ? 2.10 : 0.;
 }
 static inline int MSPetDailyFallbackPose(MSPetDailyFallback action) {
     return action == MSPetDailyWave ? 3 : 0;
 }
 static inline int MSPetDailyFallbackColumn(MSPetDailyFallback action, double elapsed) {
     double t = isfinite(elapsed) ? fmax(0., elapsed) : 0.;
-    if (action == MSPetDailyWave) return (int)fmin(3., floor(t * 7.));
+    if (action == MSPetDailyWave) {
+        static const int wave[] = {0,1,2,3,2,1,0};
+        return wave[(int)fmin(6., floor(t / .24))];
+    }
     if (action == MSPetDailyBreathe) {
         static const int neutral[] = {0,1,2,3,4,5,0};
-        return neutral[(int)fmin(6., floor(t / .25))];
+        return neutral[(int)fmin(6., floor(t / .32))];
+    }
+    if (action == MSPetDailyObserve) {
+        static const int look[] = {0,1,2,3,4,5,0};
+        return look[(int)fmin(6., floor(t / .28))];
     }
     return 0;
 }

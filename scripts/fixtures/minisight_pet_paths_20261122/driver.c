@@ -70,6 +70,7 @@ static struct {
  MSGravityBody gravityBody;
  bool wantsPlaying,suspended,hasCenterBounds,hasPet,hidden,windowExists,windowHidden,layerExists,sheetExists;
  bool activityActive,interactionActive,lyricsSuppressed,roamingPaused,physicsMotion,motionActive,dragging,reducedWork,gravityEnabled,geometryReady,musicMotion;
+ bool dailyFirstFramePending; unsigned dailyBlockers,musicInputMode; double dailyPausedRemaining,dailyDiagAt,musicDiagAt;
  bool dailyActionsEnabled; MSPetDailyFallback dailyFallback; unsigned lastDailyFallback; double dailyFallbackBegan;
  bool rhythmFollowing,rhythmStarting;
  uint64_t rhythmSessionToken;
@@ -448,6 +449,7 @@ static void InvisibleGate(void) {
 #include "rhythm_cases.c"
 #include "rhythm_extra_cases.c"
 #include "daily_fallback_cases.c"
+#include "music_ordinary_cases.c"
 
 int main(int argc,char**argv) {
  for(int i=1;i<argc;i++) {
@@ -461,7 +463,7 @@ int main(int argc,char**argv) {
  MusicGates();
  MusicDragFlingLoop();
  MusicBoundsAndNormal();
- RhythmSuite(); RhythmExtra(); DailyFallbackSuite();
+ RhythmSuite(); RhythmExtra(); DailyFallbackSuite(); MusicOrdinaryLifeSuite();
  DailyActionIndependentOfRoam();
  InvisibleGate();
  if(Trace){fclose(Trace);Trace=NULL;}

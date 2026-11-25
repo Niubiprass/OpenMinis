@@ -6,6 +6,7 @@
 #import <stdbool.h>
 #import <stddef.h>
 #import <stdint.h>
+#import <string.h>
 #import <dispatch/dispatch.h>
 
 NS_ASSUME_NONNULL_BEGIN
@@ -13,25 +14,57 @@ NS_ASSUME_NONNULL_BEGIN
 static const NSUInteger MSLyricsMaxBytes = 1024 * 1024;
 static const NSTimeInterval MSLyricsMaxDisplay = 12.0;
 
+// Candidate-local evidence: first failing identity layer per record. Never metadata.
+typedef struct {
+    NSUInteger total, titleRejected, artistRejected, durationRejected, invalid, ambiguous;
+} MSLyricsMatchStats;
+
 // Fixed-vocabulary local evidence only: never metadata, URLs, errors or LRC.
-// Seven fixed routes x two stages bound the dedupe table; repeated facts emit at most
+// Seven fixed routes x three stages bound the dedupe table; repeated facts emit at most
 // once per minute. The shared writer also caps pending events and rotates files.
-static void MSLyricsEvidence(NSString *stage, NSString *result, NSString *route,
-    NSString *reason, NSUInteger generation, NSInteger status, NSUInteger bytes, NSUInteger candidates) {
+static void MSLyricsEvidenceRecord(NSString *stage, NSString *result, NSString *route,
+    NSString *reason, NSUInteger generation, NSInteger status, NSUInteger bytes, NSUInteger candidates,
+    const MSLyricsMatchStats * _Nullable stats) {
     static NSMutableDictionary *last, *times; static NSObject *lock; static dispatch_once_t once;
     dispatch_once(&once, ^{ last = [NSMutableDictionary dictionary]; times = [NSMutableDictionary dictionary]; lock = [NSObject new]; });
     NSInteger http = MAX(0, MIN(599, status));
     NSUInteger count = MIN((NSUInteger)21, candidates); // 21 is the over-limit sentinel.
-    NSArray *fact = @[result, reason, @(http), @(count)];
+    NSMutableDictionary *fields = [@{@"lyrics_route": route, @"lyrics_detail": reason,
+        @"generation": @(MIN(generation, (NSUInteger)1000000000)), @"http": @(http),
+        @"bytes": @(MIN(bytes, MSLyricsMaxBytes)), @"count": @(count)} mutableCopy];
+    if (stats) {
+        fields[@"match_total"] = @(MIN((NSUInteger)21, stats->total));
+        fields[@"match_title_rejected"] = @(MIN((NSUInteger)21, stats->titleRejected));
+        fields[@"match_artist_rejected"] = @(MIN((NSUInteger)21, stats->artistRejected));
+        fields[@"match_duration_rejected"] = @(MIN((NSUInteger)21, stats->durationRejected));
+        fields[@"match_invalid"] = @(MIN((NSUInteger)21, stats->invalid));
+        fields[@"match_ambiguous"] = @(MIN((NSUInteger)21, stats->ambiguous));
+    }
+    NSArray *fact = @[result, reason, @(http), @(count), stats ? @[
+        fields[@"match_total"], fields[@"match_title_rejected"], fields[@"match_artist_rejected"],
+        fields[@"match_duration_rejected"], fields[@"match_invalid"], fields[@"match_ambiguous"]] : @[]];
     NSString *slot = [route stringByAppendingFormat:@"/%@", stage];
     @synchronized (lock) {
         double now = NSProcessInfo.processInfo.systemUptime;
         if ([last[slot] isEqual:fact] && now - [times[slot] doubleValue] < 60.0) return;
         last[slot] = fact; times[slot] = @(now);
     }
-    MSDiagEvent(@"lyrics", stage, result, @{@"lyrics_route": route, @"lyrics_detail": reason,
-        @"generation": @(MIN(generation, (NSUInteger)1000000000)), @"http": @(http),
-        @"bytes": @(MIN(bytes, MSLyricsMaxBytes)), @"count": @(count)});
+    MSDiagEvent(@"lyrics", stage, result, fields);
+}
+static void MSLyricsEvidence(NSString *stage, NSString *result, NSString *route,
+    NSString *reason, NSUInteger generation, NSInteger status, NSUInteger bytes, NSUInteger candidates) {
+    MSLyricsEvidenceRecord(stage, result, route, reason, generation, status, bytes, candidates, NULL);
+}
+static void MSLyricsMatchEvidence(NSString *route, NSUInteger generation, NSInteger status,
+    NSUInteger bytes, const MSLyricsMatchStats *stats, BOOL accepted) {
+    NSString *detail = accepted ? @"match_accepted" : stats->invalid ? @"match_invalid"
+        : stats->ambiguous ? @"match_ambiguous" : !stats->total ? @"match_empty" : @"match_no_timeline";
+    NSUInteger layers = (stats->titleRejected > 0) + (stats->artistRejected > 0) + (stats->durationRejected > 0);
+    if (!accepted && !stats->invalid && !stats->ambiguous && layers)
+        detail = layers > 1 ? @"match_mixed" : stats->titleRejected ? @"match_title_rejected"
+            : stats->artistRejected ? @"match_artist_rejected" : @"match_duration_rejected";
+    MSLyricsEvidenceRecord(@"match", accepted ? @"ok" : @"skipped", route, detail,
+        generation, status, bytes, stats->total, stats);
 }
 
 // BEGIN LYRICS PORTABLE POLICY
@@ -123,7 +156,73 @@ static bool MSLyricsQQPayloadRange(const uint8_t *p, size_t n, size_t *at, size_
     if (end - i < 2 || p[i] != '{' || p[end-1] != '}') return false;
     *at = i; *length = end - i; return true;
 }
+// Explicit credit separators: '/', '&', or U+3001. Whitespace is never split
+// into artist names. The original ordered whole-list space-join is kept as an
+// exact compatibility form, NOT a fuzzy/name-subset rule.
+static size_t MSLyricsArtistSeparator(const uint8_t *p, size_t n) {
+    if (!n) return 0;
+    if (p[0] == '/' || p[0] == '&') return 1;
+    return n >= 3 && p[0] == 0xe3 && p[1] == 0x80 && p[2] == 0x81 ? 3 : 0;
+}
+static bool MSLyricsArtistIdentity(const uint8_t *credit, size_t n,
+    const uint8_t *const *names, const size_t *lengths, size_t count) {
+    if (!credit || !n || n > 2048 || !names || !lengths || !count || count > 20) return false;
+    for (size_t i = 0; i < count; ++i) if (!names[i] || !lengths[i] || lengths[i] > 2048) return false;
+    // An atomic solo name (including AC/DC, A&B, etc.) is never split or stripped.
+    if (count == 1) return n == lengths[0] && memcmp(credit, names[0], n) == 0;
+    for (size_t i = 0; i < count; ++i) {
+        for (size_t j = 0; j < i; ++j)
+            if (lengths[i] == lengths[j] && memcmp(names[i], names[j], lengths[i]) == 0) return false;
+    }
+    // Preserve the original QQ complete-list exact positive. No whitespace
+    // parsing: the structured singer list constructs the whole expected string.
+    size_t joinedLength = count - 1;
+    for (size_t i = 0; i < count; ++i) joinedLength += lengths[i];
+    if (joinedLength == n) {
+        size_t at = 0; bool same = true;
+        for (size_t i = 0; i < count; ++i) {
+            if (i && credit[at++] != ' ') same = false;
+            if (memcmp(credit + at, names[i], lengths[i]) != 0) same = false;
+            at += lengths[i];
+        }
+        if (same) return true;
+    }
+    // Reordering uses explicit separators only. Embedded punctuation in an
+    // atomic multi-credit name is ambiguous here and is not stripped or split.
+    for (size_t i = 0; i < count; ++i) for (size_t j = 0; j < lengths[i]; ++j)
+        if (MSLyricsArtistSeparator(names[i] + j, lengths[i] - j)) return false;
+    bool seen[20] = {false}; size_t start = 0, tokens = 0;
+    for (size_t end = 0; end <= n;) {
+        size_t separator = end < n ? MSLyricsArtistSeparator(credit + end, n - end) : 0;
+        if (end < n && !separator) { ++end; continue; }
+        size_t left = start, right = end;
+        while (left < right && credit[left] == ' ') ++left;
+        while (right > left && credit[right - 1] == ' ') --right;
+        if (left == right || tokens >= count) return false;
+        size_t found = SIZE_MAX;
+        for (size_t i = 0; i < count; ++i)
+            if (right - left == lengths[i] && memcmp(credit + left, names[i], lengths[i]) == 0) { found = i; break; }
+        if (found == SIZE_MAX || seen[found]) return false;
+        seen[found] = true; ++tokens;
+        if (end == n) break;
+        end += separator; start = end;
+    }
+    return tokens == count;
+}
 // END LYRICS PORTABLE POLICY
+
+// Candidate-local QQ singer[] is the only structured artist list available.
+// LRCLIB artistName remains exact: no documented multi-credit grammar there.
+// No change to global Normalize, track identity, cache keys, query or title guards.
+static BOOL MSLyricsQQArtistsMatch(NSArray<NSString *> *names, NSString *credit) {
+    if (!names.count || names.count > 20) return NO;
+    NSData *observed = [credit dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableArray<NSData *> *storage = [NSMutableArray arrayWithCapacity:names.count];
+    const uint8_t *parts[20]; size_t lengths[20];
+    for (NSString *name in names) [storage addObject:[name dataUsingEncoding:NSUTF8StringEncoding]];
+    for (NSUInteger i = 0; i < storage.count; ++i) { parts[i] = storage[i].bytes; lengths[i] = storage[i].length; }
+    return MSLyricsArtistIdentity(observed.bytes, observed.length, parts, lengths, storage.count);
+}
 
 static NSRegularExpression * _Nullable MSLyricsRegex(NSString *pattern) {
     return [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:NULL];
@@ -339,6 +438,11 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, MSLyricsRoute route) {
     return [self timelineForResponseData:data response:response track:track reason:&reason];
 }
 + (nullable MiniSightLyricsTimeline *)timelineForResponseData:(NSData *)data response:(NSHTTPURLResponse *)response track:(MiniSightLyricsTrack *)track reason:(NSString **)reason {
+    return [self timelineForResponseData:data response:response track:track reason:reason match:NULL];
+}
++ (nullable MiniSightLyricsTimeline *)timelineForResponseData:(NSData *)data response:(NSHTTPURLResponse *)response track:(MiniSightLyricsTrack *)track reason:(NSString **)reason match:(MSLyricsMatchStats * _Nullable)stats {
+    MSLyricsMatchStats local = {0}; if (!stats) stats = &local;
+    *stats = (MSLyricsMatchStats){.total = 1, .invalid = 1};
     *reason = @"lyrics_response_rejected";
     if (![track isKindOfClass:MiniSightLyricsTrack.class] || ![response isKindOfClass:NSHTTPURLResponse.class] ||
         response.statusCode != 200 || !MSLyricsAllowedURL(response.URL, MSLyricsRouteLRCLibGet) ||
@@ -351,9 +455,14 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, MSLyricsRoute route) {
     if (!title.length || !artist.length || ![duration isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)duration) == CFBooleanGetTypeID() ||
         !MSLyricsDurationOK([duration doubleValue]) ||
         ![instrumental isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)instrumental) != CFBooleanGetTypeID()) return nil;
-    if (![title isEqualToString:track.title] || ![artist isEqualToString:track.artist] || fabs([duration doubleValue] - track.duration) > 2.0) {
+    stats->invalid = 0;
+    if (![title isEqualToString:track.title]) stats->titleRejected++;
+    else if (![artist isEqualToString:track.artist]) stats->artistRejected++;
+    else if (fabs([duration doubleValue] - track.duration) > 2.0) stats->durationRejected++;
+    if (stats->titleRejected || stats->artistRejected || stats->durationRejected) {
         *reason = @"lyrics_track_mismatch"; return nil;
     }
+    if (!lrc) stats->invalid++;
     if (!lrc) return nil; // Absent schema field is not an explicit null/empty lyric.
     if ([instrumental boolValue]) { *reason = @"lyrics_instrumental"; return nil; }
     if (lrc == NSNull.null || ([lrc isKindOfClass:NSString.class] && ![lrc length])) { *reason = @"no_synced_lyrics"; return nil; }
@@ -366,23 +475,28 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, MSLyricsRoute route) {
     return [self timelineForSearchResponseData:data response:response track:track reason:reason candidates:NULL];
 }
 + (nullable MiniSightLyricsTimeline *)timelineForSearchResponseData:(NSData *)data response:(NSHTTPURLResponse *)response track:(MiniSightLyricsTrack *)track reason:(NSString **)reason candidates:(NSUInteger * _Nullable)candidates {
+    return [self timelineForSearchResponseData:data response:response track:track reason:reason candidates:candidates match:NULL];
+}
++ (nullable MiniSightLyricsTimeline *)timelineForSearchResponseData:(NSData *)data response:(NSHTTPURLResponse *)response track:(MiniSightLyricsTrack *)track reason:(NSString **)reason candidates:(NSUInteger * _Nullable)candidates match:(MSLyricsMatchStats * _Nullable)stats {
+    MSLyricsMatchStats local = {0}; if (!stats) stats = &local; *stats = local;
     if (candidates) *candidates = 0;
     *reason = @"lyrics_not_found";
     if (![track isKindOfClass:MiniSightLyricsTrack.class] || ![response isKindOfClass:NSHTTPURLResponse.class] ||
         response.statusCode != 200 || !MSLyricsAllowedURL(response.URL, MSLyricsRouteLRCLibSearch) ||
         ![response.MIMEType.lowercaseString isEqualToString:@"application/json"] ||
         ![data isKindOfClass:NSData.class] || !data.length || data.length > MSLyricsMaxBytes) {
-        *reason = @"lyrics_response_rejected"; return nil;
+        stats->invalid++; *reason = @"lyrics_response_rejected"; return nil;
     }
     id payload = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    if ([payload isKindOfClass:NSArray.class]) stats->total = MIN((NSUInteger)21, [payload count]);
     if (candidates && [payload isKindOfClass:NSArray.class]) *candidates = MIN((NSUInteger)21, [payload count]);
     if (![payload isKindOfClass:NSArray.class] || [payload count] > 20) {
-        *reason = @"lyrics_response_rejected"; return nil;
+        stats->invalid++; *reason = @"lyrics_response_rejected"; return nil;
     }
     NSMutableArray<NSDictionary *> *matches = [NSMutableArray array];
     BOOL sawInstrumental = NO, sawUnsynced = NO, sawInvalidLRC = NO;
     for (id value in (NSArray *)payload) {
-        if (![value isKindOfClass:NSDictionary.class]) { *reason = @"lyrics_response_rejected"; return nil; }
+        if (![value isKindOfClass:NSDictionary.class]) { stats->invalid++; *reason = @"lyrics_response_rejected"; return nil; }
         NSDictionary *record = value;
         NSString *title = MSLyricsNormalize(record[@"trackName"]), *artist = MSLyricsNormalize(record[@"artistName"]);
         id duration = record[@"duration"], instrumental = record[@"instrumental"], lrc = record[@"syncedLyrics"];
@@ -390,10 +504,11 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, MSLyricsRoute route) {
             CFGetTypeID((__bridge CFTypeRef)duration) == CFBooleanGetTypeID() || !MSLyricsDurationOK([duration doubleValue]) ||
             ![instrumental isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)instrumental) != CFBooleanGetTypeID() ||
             (! [lrc isKindOfClass:NSString.class] && lrc != NSNull.null)) {
-            *reason = @"lyrics_response_rejected"; return nil;
+            stats->invalid++; *reason = @"lyrics_response_rejected"; return nil;
         }
-        if (![title isEqualToString:track.title] || ![artist isEqualToString:track.artist] ||
-            fabs([duration doubleValue] - track.duration) > 2.0) continue;
+        if (![title isEqualToString:track.title]) { stats->titleRejected++; continue; }
+        if (![artist isEqualToString:track.artist]) { stats->artistRejected++; continue; }
+        if (fabs([duration doubleValue] - track.duration) > 2.0) { stats->durationRejected++; continue; }
         if ([instrumental boolValue]) { sawInstrumental = YES; continue; }
         if (lrc == NSNull.null || ![lrc length]) { sawUnsynced = YES; continue; }
         MiniSightLyricsTimeline *candidateTimeline = [MiniSightLyricsTimeline timelineWithLRC:lrc duration:track.duration];
@@ -416,7 +531,7 @@ static BOOL MSLyricsAllowedURL(NSURL * _Nullable url, MSLyricsRoute route) {
         }
     }
     size_t best = MSLyricsClosestCandidate(durations, equivalent, matches.count, track.duration);
-    if (best == SIZE_MAX) { *reason = @"lyrics_response_rejected"; return nil; }
+    if (best == SIZE_MAX) { stats->ambiguous = matches.count; *reason = @"lyrics_response_rejected"; return nil; }
     *reason = @"lyrics_timeline";
     return matches[best][@"timeline"];
 }
@@ -728,6 +843,8 @@ static NSString *MSQQBase64LRC(id value) {
     MiniSightLyricsTimeline *timeline = nil;
     NSInteger status = _response.statusCode;
     NSUInteger candidates = 0;
+    MSLyricsMatchStats match = {0};
+    BOOL hasMatch = !error && status == 200 && (!wasQQ || qqSearch);
     NSString *reason = @"lyrics_http";
     if (error) {
         BOOL urlError = [error.domain isEqualToString:NSURLErrorDomain];
@@ -738,38 +855,42 @@ static NSString *MSQQBase64LRC(id value) {
     else if (status == 429) reason = @"lyrics_rate_limited";
     else if (status == 503) reason = @"lyrics_service_unavailable";
     else if (status == 200 && !wasQQ) timeline = wasSearch
-        ? [MiniSightLyricsClient timelineForSearchResponseData:_body response:_response track:_track reason:&reason candidates:&candidates]
-        : [MiniSightLyricsClient timelineForResponseData:_body response:_response track:_track reason:&reason];
+        ? [MiniSightLyricsClient timelineForSearchResponseData:_body response:_response track:_track reason:&reason candidates:&candidates match:&match]
+        : [MiniSightLyricsClient timelineForResponseData:_body response:_response track:_track reason:&reason match:&match];
     else if (status == 200 && wasQQ) reason = @"lyrics_response_rejected";
     NSString *qqMID = nil;
     if (!error && status == 200 && wasQQ) {
+        if (qqSearch) match.invalid = 1; // Invalid envelope unless a bounded list is proven.
         NSDictionary *obj=MSQQJSONP(_body); id code=obj[@"code"];
         BOOL good=[code isKindOfClass:NSNumber.class] && CFGetTypeID((__bridge CFTypeRef)code)!=CFBooleanGetTypeID() && [code isEqualToNumber:@0];
         if(good && qqSearch) {
             NSDictionary *data=[obj[@"data"] isKindOfClass:NSDictionary.class]?obj[@"data"]:nil;
             NSDictionary *songBlock=[data[@"song"] isKindOfClass:NSDictionary.class]?data[@"song"]:nil;
             id rawList=songBlock[@"list"];
+            if ([rawList isKindOfClass:NSArray.class]) { candidates = MIN((NSUInteger)21, [rawList count]); match.total = candidates; }
             if([rawList isKindOfClass:NSArray.class] && [rawList count]<=20) {
+                match.invalid = 0;
                 NSArray *list=(NSArray *)rawList; NSMutableArray *matches=[NSMutableArray array];
                 for(id item in list) {
-                    if(![item isKindOfClass:NSDictionary.class]) { reason=@"lyrics_response_rejected"; matches=nil; break; }
+                    if(![item isKindOfClass:NSDictionary.class]) { match.invalid++; reason=@"lyrics_response_rejected"; matches=nil; break; }
                     NSDictionary *song=(NSDictionary *)item; id rawSingers=song[@"singer"];
-                    if(![rawSingers isKindOfClass:NSArray.class] || ![(NSArray *)rawSingers count] || [(NSArray *)rawSingers count]>20) { reason=@"lyrics_response_rejected"; matches=nil; break; }
+                    if(![rawSingers isKindOfClass:NSArray.class] || ![(NSArray *)rawSingers count] || [(NSArray *)rawSingers count]>20) { match.invalid++; reason=@"lyrics_response_rejected"; matches=nil; break; }
                     NSMutableArray *names=[NSMutableArray array];
                     for(id singer in (NSArray *)rawSingers) {
-                        if(![singer isKindOfClass:NSDictionary.class]) { reason=@"lyrics_response_rejected"; matches=nil; break; }
+                        if(![singer isKindOfClass:NSDictionary.class]) { match.invalid++; reason=@"lyrics_response_rejected"; matches=nil; break; }
                         NSString *name=MSLyricsNormalize(((NSDictionary *)singer)[@"name"]);
-                        if(!name) { reason=@"lyrics_response_rejected"; matches=nil; break; }
+                        if(!name) { match.invalid++; reason=@"lyrics_response_rejected"; matches=nil; break; }
                         [names addObject:name];
                     }
                     if(!matches) break;
                     NSString *title=MSLyricsNormalize(song[@"songname"]);
-                    NSString *artist=MSLyricsNormalize([names componentsJoinedByString:@" "]);
                     id seconds=song[@"interval"]; id mid=song[@"songmid"];
-                    if(!title || !artist || ![seconds isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)seconds)==CFBooleanGetTypeID() || !isfinite([seconds doubleValue])) { reason=@"lyrics_response_rejected"; matches=nil; break; }
-                    if(![title isEqual:_track.title] || ![artist isEqual:_track.artist] || fabs([seconds doubleValue]-_track.duration)>2.0) continue;
+                    if(!title || ![seconds isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)seconds)==CFBooleanGetTypeID() || !isfinite([seconds doubleValue])) { match.invalid++; reason=@"lyrics_response_rejected"; matches=nil; break; }
+                    if(![title isEqual:_track.title]) { match.titleRejected++; continue; }
+                    if(!MSLyricsQQArtistsMatch(names, _track.artist)) { match.artistRejected++; continue; }
+                    if(fabs([seconds doubleValue]-_track.duration)>2.0) { match.durationRejected++; continue; }
                     NSData *midBytes = [mid isKindOfClass:NSString.class] && [mid length] <= 64 ? [mid dataUsingEncoding:NSUTF8StringEncoding] : nil;
-                    if (!MSLyricsQQMIDOK(midBytes.bytes, midBytes.length)) { reason=@"lyrics_response_rejected"; matches=nil; break; }
+                    if (!MSLyricsQQMIDOK(midBytes.bytes, midBytes.length)) { match.invalid++; reason=@"lyrics_response_rejected"; matches=nil; break; }
                     [matches addObject:@{@"duration":seconds,@"mid":mid}];
                 }
                 if(matches) {
@@ -783,6 +904,7 @@ static NSString *MSQQBase64LRC(id value) {
                         }
                         size_t best=MSLyricsClosestCandidate(durations,equivalent,matches.count,_track.duration);
                         if(best!=SIZE_MAX) qqMID=matches[best][@"mid"];
+                        else match.ambiguous = matches.count;
                         reason=qqMID?@"not_applicable":@"lyrics_response_rejected";
                     }
                 }
@@ -811,6 +933,8 @@ static NSString *MSQQBase64LRC(id value) {
     }
     if (_activeGeneration != self.generation || _task != task) return;
     NSString *evidenceRoute = wasQQ ? (qqSearch ? @"qq_search" : @"qq_lyric") : (wasSearch ? @"search" : @"exact");
+    if (hasMatch && !error) MSLyricsMatchEvidence(evidenceRoute, _activeGeneration, status, _body.length,
+        &match, timeline != nil || qqMID != nil);
     MSLyricsEvidence(@"finish", (timeline || (qqMID && !error)) ? @"ok" : @"skipped", evidenceRoute,
         reason, _activeGeneration, status, _body.length, candidates);
     // Only a strict same-track, non-instrumental 200 with null/empty synced LRC

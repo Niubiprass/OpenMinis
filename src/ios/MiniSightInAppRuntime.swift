@@ -904,7 +904,17 @@ private struct MiniSightPetHost: UIViewRepresentable {
         private var panStart = CGPoint.zero
         private var handledShakeGeneration = 0
         private var lastConfigured = ""
+        private var lastActivityApplied = ""
         private var lastDeliveredTime: CFTimeInterval = 0
+
+        private func recordAppliedActivity(_ pet: MiniSightPetView) {
+            let signature = "\(pet.dailyActionsEnabled)|\(pet.roamPace)|\(pet.roamInterval)|\(pet.activityActive)"
+            guard signature != lastActivityApplied else { return }
+            lastActivityApplied = signature
+            MSDiagEvent("pet", "config", "ok", ["source": "app", "reason": "activity_applied",
+                "enabled": pet.dailyActionsEnabled, "value": pet.roamPace,
+                "duration_ms": pet.roamInterval * 1000, "active": pet.activityActive])
+        }
 
         init(_ parent: MiniSightPetHost) { self.parent = parent }
 
@@ -942,6 +952,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.musicPlaying = parent.musicPlaying
             MiniSightRhythmConfigurePet(pet, parent.musicPlaying, parent.musicToken)
             pet.activityActive = parent.activityActive
+            recordAppliedActivity(pet)
             root.pet = pet
             root.addSubview(pet)
             self.pet = pet
@@ -985,6 +996,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.musicPlaying = parent.musicPlaying
             pet.gravityRoll = roll
             pet.activityActive = active
+            recordAppliedActivity(pet)
             pet.reducedWork = ProcessInfo.processInfo.isLowPowerModeEnabled
             MiniSightRhythmConfigurePet(pet, parent.musicPlaying, parent.musicToken)
             if parent.shakeGeneration != handledShakeGeneration {

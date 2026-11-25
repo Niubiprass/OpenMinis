@@ -401,6 +401,7 @@ static void CancellationTests(MiniSightLyricsTrack *track) {
 
 #include "minisight_lyrics_20261122/native_client.inc"
 #include "minisight_lyrics_20261123/native_client.inc"
+#include "minisight_lyrics_20261126/native_artist.inc"
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
@@ -417,6 +418,7 @@ int main(int argc, const char *argv[]) {
         ExplicitUnsyncedFallbackTests(track); SearchBoundaryTransportTests(fixture, track);
         SearchCancelDeadlineTests(track); SearchSizeAndRedirectTests(track); QQFallbackNativeTests(track);
         QQQueuedLifecycleTests(track); QQRejectedInputsTests(track);
+        ArtistIdentityNativeTests();
         handler = nil; lastRequest = nil;
         printf("NATIVE PASS: %lu checks; synthetic Fake NSURLProtocol only\n", (unsigned long)checks);
     }
