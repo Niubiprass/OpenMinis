@@ -41,12 +41,44 @@ static BOOL fixtureLocked;
 @end
 @interface SBApplicationController : NSObject
 @end
+static id fixturePIDController;
+static NSString *fixturePIDBundle = @"com.netease.cloudmusic";
+static BOOL fixtureControllerMissing;
 @implementation SBApplicationController
-+ (instancetype)sharedInstance { return [self new]; }
-- (id)applicationWithPid:(NSInteger)pid { return pid == 123 ? @"com.netease.cloudmusic" : @"com.not.allowed"; }
++ (instancetype)sharedInstance { return fixtureControllerMissing ? nil : (fixturePIDController ?: [self new]); }
+- (id)applicationWithPid:(int)pid { return pid == 123 ? fixturePIDBundle : nil; }
 @end
-static int secondPID; static NSUInteger pidCalls;
-static void GetPID(dispatch_queue_t q, void (^cb)(int)) { cb(++pidCalls == 1 ? 123 : secondPID); }
+@interface PIDNSInteger : NSObject
+- (id)applicationWithPid:(NSInteger)pid;
+@end
+@implementation PIDNSInteger
+- (id)applicationWithPid:(NSInteger)pid { return pid == 123 ? fixturePIDBundle : @"com.tencent.QQMusic"; }
+@end
+@interface PIDFloat : NSObject
+- (id)applicationWithPid:(double)pid;
+@end
+@implementation PIDFloat
+- (id)applicationWithPid:(double)pid { abort(); }
+@end
+@interface PIDObject : NSObject
+- (id)applicationWithPid:(id)pid;
+@end
+@implementation PIDObject
+- (id)applicationWithPid:(id)pid { abort(); }
+@end
+@interface PIDNoSignature : SBApplicationController
+@end
+@implementation PIDNoSignature
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)sel {
+    return sel == @selector(applicationWithPid:) ? nil : [super methodSignatureForSelector:sel];
+}
+@end
+static NSMutableArray *pids;
+static NSUInteger pidCalls;
+static void NotePending(void);
+static void GetPID(dispatch_queue_t q, void (^cb)(int)) { ++pidCalls; [pids addObject:[cb copy]]; NotePending(); }
+static NSTimeInterval fixtureTime = 1000.;
+static NSTimeInterval FixtureNow(void) { return fixtureTime; }
 @interface WrongReturn : NSObject
 - (double)bad;
 @end
@@ -66,7 +98,7 @@ static void GetPID(dispatch_queue_t q, void (^cb)(int)) { cb(++pidCalls == 1 ? 1
 @end
 static NSMutableArray *infos, *states;
 static NSUInteger maxPending;
-static void NotePending(void) { maxPending = MAX(maxPending, infos.count + states.count); }
+static void NotePending(void) { maxPending = MAX(maxPending, infos.count + states.count + pids.count); }
 static void GetInfo(dispatch_queue_t q, void (^cb)(CFDictionaryRef)) { [infos addObject:[cb copy]]; NotePending(); }
 static void GetState(dispatch_queue_t q, void (^cb)(Boolean)) { [states addObject:[cb copy]]; NotePending(); }
 static void Check(BOOL ok, const char *message) { if (!ok) { fprintf(stderr, "FAIL: %s\n", message); exit(1); } }
@@ -85,6 +117,11 @@ static void GiveInfo(NSDictionary *info, BOOL mutate) {
         if (mutate) [(NSMutableDictionary *)info setObject:@"Mutated" forKey:@"kMRMediaRemoteNowPlayingInfoTitle"];
     });
     Pump();
+}
+static void GivePID(int pid) {
+    Check(pids.count == 1, "one PID request");
+    void (^cb)(int) = pids.firstObject; [pids removeObjectAtIndex:0];
+    dispatch_sync(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{ cb(pid); }); Pump();
 }
 static void GiveState(BOOL playing) {
     Check(states.count == 1, "one state request");
@@ -110,6 +147,7 @@ static void Song(NSString *title, NSString *identifier) {
 }
 int main(void) { @autoreleasepool {
     disk = [NSMutableDictionary dictionary]; infos = [NSMutableArray array]; states = [NSMutableArray array];
+    pids = [NSMutableArray array]; MSMusicTestNow = FixtureNow;
     MSMusicInfo = GetInfo; MSMusicIsPlaying = GetState;
     Check(MSMusicObject([WrongReturn new], @"bad") == nil, "reject scalar ObjC return ABI");
     NSString *playerReason = nil;
@@ -142,10 +180,15 @@ int main(void) { @autoreleasepool {
     [withoutID removeObjectForKey:@"kMRMediaRemoteNowPlayingInfoUniqueIdentifier"];
     [m applyInfo:withoutID playing:YES player:@"com.apple.Music"];
     Check(c.requests == 1 && [m.snapshot[@"line"] isEqual:@"fresh"], "identifier omission preserves validated timeline");
+    partial[@"kMRMediaRemoteNowPlayingInfoUniqueIdentifier"] = @"2";
+    NSUInteger beforePartialGeneration = [[m valueForKey:@"trackGeneration"] unsignedIntegerValue];
     [m applyInfo:partial playing:YES player:@"com.apple.Music"];
     Check(![m.snapshot[@"line"] length] && c.requests == 1, "partial metadata clears display without fetching stale track");
+    Check([m valueForKey:@"timeline"] != nil &&
+        [[m valueForKey:@"trackGeneration"] unsignedIntegerValue] == beforePartialGeneration,
+        "same-ID partial hides display but preserves the actual verified timeline");
     NSMutableDictionary *changedID = [partial mutableCopy];
-    changedID[@"kMRMediaRemoteNowPlayingInfoUniqueIdentifier"] = @"2";
+    changedID[@"kMRMediaRemoteNowPlayingInfoUniqueIdentifier"] = @"3";
     [m applyInfo:changedID playing:YES player:@"com.apple.Music"];
     Check([m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length], "partial new identifier invalidates old lyrics");
     Stop(m);
@@ -262,29 +305,97 @@ int main(void) { @autoreleasepool {
     GiveInfo(unknown, NO); GiveState(YES); GiveInfo(unknown, NO);
     Check([m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"line"] length] && c.requests == 0, "unknown track allows motion but never lyrics/status text");
     Stop(m);
-    for (int changed=0; changed<2; changed++) {
-        [infos removeAllObjects];
+    for (id controller in @[[SBApplicationController new], [PIDNSInteger new]]) {
+        fixturePIDController = controller;
+        Check([MSMusicPIDPlayer(123, &playerReason) isEqual:@"com.netease.cloudmusic"], "int and NSInteger typed PID sends");
+    }
+    for (id controller in @[[PIDFloat new], [PIDObject new]]) {
+        fixturePIDController = controller;
+        Check(!MSMusicPIDPlayer(123, &playerReason) && [playerReason isEqual:@"pid_signature_rejected"], "wrong PID ABI never invoked");
+    }
+    fixturePIDController = [PIDNoSignature new];
+    Check(!MSMusicPIDPlayer(123, &playerReason) && [playerReason isEqual:@"pid_signature_missing"], "missing PID signature");
+    fixturePIDController = [NSObject new];
+    Check(!MSMusicPIDPlayer(123, &playerReason) && [playerReason isEqual:@"pid_method_unavailable"], "missing PID selector");
+    fixturePIDController = nil; fixtureControllerMissing = YES;
+    Check(!MSMusicPIDPlayer(123, &playerReason) && [playerReason isEqual:@"pid_controller_unavailable"], "missing PID controller");
+    fixtureControllerMissing = NO;
+    Check(!MSMusicPIDPlayer(0, &playerReason) && [playerReason isEqual:@"player_pid_nonpositive"], "nonpositive PID");
+    Check(!MSMusicPIDPlayer(456, &playerReason) && [playerReason isEqual:@"pid_mapping_missing"], "nil PID application mapping");
+    for (int width=0; width<2; ++width) for (int changed=0; changed<2; changed++) {
+        fixturePIDController = width ? [PIDNSInteger new] : nil;
+        [infos removeAllObjects]; [pids removeAllObjects];
         m = [MiniSightMusicMonitor new]; c = [FakeClient new]; [m setValue:c forKey:@"client"];
         m.presentationHandler = ^{return @{@"allowed": @YES};}; fixturePlayer=nil;
-        MSMusicPID = GetPID; pidCalls=0; secondPID=changed?456:123;
-        [m configureAllowed:YES lyrics:YES motion:YES container:@"fixture-A"]; Pump();
-        Song(@"Fixture", @"123"); Pump();
+        MSMusicPID = GetPID; pidCalls=0;
+        [m configureAllowed:YES lyrics:YES motion:YES container:@"fixture-A"];
+        GivePID(123); Song(@"Fixture", @"123"); GivePID(changed ? 456 : 123);
         Check(pidCalls == 2 && c.requests == (changed ? 0 : 1), "fresh PID sandwich, no stale track on PID switch");
         if (!changed) {
             Check([m.snapshot[@"source"] isEqual:@"com.netease.cloudmusic"], "exact PID source published");
             [m handleMediaChange];
             Check(![m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"line"] length], "PID candidate cannot display unverified state");
-            Kick(m); Pump(); Song(@"Fixture", @"123"); Pump();
+            Kick(m); GivePID(123); Song(@"Fixture", @"123"); GivePID(123);
             Check(c.requests == 1 && [m.snapshot[@"playing"] boolValue], "stable reverified PID retains pending lookup");
+            MiniSightLyricsCompletion savedLookup = [c.completion copy];
+            Check(savedLookup != nil, "pending lookup remains owned after stable PID revalidation");
+            savedLookup([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]pending-current" duration:120]); Pump();
+            Kick(m); GivePID(123); Song(@"Fixture", @"123"); GivePID(123);
+            Check([m.snapshot[@"line"] isEqual:@"pending-current"] && c.requests == 1,
+                  "PID candidate actually receives its original lookup, not only a request counter");
+            Kick(m); GivePID(123); Song(@"Fixture", @"123"); GivePID(456);
+            Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue] &&
+                  ![m.snapshot[@"source"] length], "changed ending PID clears existing lyric/source state");
+            savedLookup([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]late-old" duration:120]); Pump();
+            Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue],
+                  "late old lookup cannot revive lyrics after PID rejection");
         }
         Stop(m); MSMusicPID=NULL;
     }
+    fixturePIDController = nil;
+    // Foreground direct -> background direct nil: retain only an invisible
+    // candidate, then recover the exact same player using current PID twice.
+    m = NewMonitor(&c); Song(@"A", @"1");
+    c.completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]current" duration:120]); Pump();
+    Kick(m); Song(@"A", @"1");
+    fixturePIDBundle = @"com.apple.Music"; fixturePlayer = nil; MSMusicPID = GetPID;
+    MiniSightLyricsTimeline *beforeBackground = [m valueForKey:@"timeline"];
+    Check(beforeBackground != nil, "foreground current lyrics exist before first background notification");
+    [m handleMediaChange];
+    Check([m valueForKey:@"timeline"] == beforeBackground, "first direct-loss notification retains only a hidden candidate");
+    Kick(m);
+    Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"source"] length], "direct loss cannot publish cached player");
+    GivePID(123); Song(@"A", @"1"); GivePID(123);
+    Check([m.snapshot[@"line"] isEqual:@"current"] && c.requests == 1, "background current PID restores verified same-track lyrics");
+    [m handleMediaChange]; Kick(m); GivePID(123);
+    GiveInfo(Info(@"A", @"1"), NO); GiveState(NO); GiveInfo(Info(@"A", @"1"), NO); GivePID(123);
+    Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue], "background pause clears lyrics");
+    [m handleMediaChange]; Kick(m); GivePID(123); GiveInfo(@{}, NO); GiveState(NO); GiveInfo(@{}, NO); GivePID(123);
+    Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue], "background stop clears lyrics");
+    // An explicit other direct source mid-sandwich must reject the old PID.
+    Kick(m); GivePID(123); fixturePlayer = @"com.tencent.QQMusic"; GiveInfo(Info(@"A", @"1"), NO);
+    Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue], "switch App rejects old PID sample");
+    Stop(m); MSMusicPID = NULL; fixturePIDBundle = @"com.netease.cloudmusic";
     fixturePlayer = @"com.netease.cloudmusic.extra"; MSMusicPID = GetPID; pidCalls = 0;
     m = [MiniSightMusicMonitor new]; m.presentationHandler = ^{return @{@"allowed": @YES};};
     [m configureAllowed:YES lyrics:YES motion:YES container:@"fixture-A"]; Pump();
     Check(pidCalls == 0 && ![m.snapshot[@"playing"] boolValue] &&
         [m.snapshot[@"diagnostics"][@"playerDetail"] isEqual:@"unsupported_player"], "explicitly unsupported never falls back to PID");
     Stop(m); MSMusicPID=NULL;
+    // Same-track partial progress keeps the first read's elapsed/timestamp/rate
+    // together; explicit invalid progress must never be rescued.
+    NSMutableDictionary *firstProgress = Info(@"Progress", @"p");
+    firstProgress[@"kMRMediaRemoteNowPlayingInfoElapsedTime"] = @30;
+    firstProgress[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"] = @0.5;
+    NSMutableDictionary *lastProgress = Info(@"Progress", @"p");
+    [lastProgress removeObjectForKey:@"kMRMediaRemoteNowPlayingInfoElapsedTime"];
+    NSDictionary *resolvedProgress = MSMusicResolvedInfo(firstProgress, lastProgress, @"com.apple.Music");
+    Check([resolvedProgress[@"kMRMediaRemoteNowPlayingInfoElapsedTime"] isEqual:@30] &&
+        [resolvedProgress[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"] isEqual:@0.5] &&
+        [resolvedProgress[@"kMRMediaRemoteNowPlayingInfoTimestamp"] isEqual:firstProgress[@"kMRMediaRemoteNowPlayingInfoTimestamp"]], "same-track progress group is atomic");
+    lastProgress[@"kMRMediaRemoteNowPlayingInfoElapsedTime"] = @(-1);
+    Check([MSMusicResolvedInfo(firstProgress,lastProgress,@"com.apple.Music")[@"kMRMediaRemoteNowPlayingInfoElapsedTime"] isEqual:@(-1)], "explicit invalid progress is not rescued");
+    Check(maxPending <= 1, "at most one pending native API callback including PID");
     puts("NATIVE PASS: ABI, five players, CF copy, main callbacks, storm, timeout/reopen, sandwich, late lyrics, cooldown, pause/stale, bridge mailbox/privacy, recovery/switches, unknown gate, no-LRC motion, real JSON booleans");
     return 0;
 } }

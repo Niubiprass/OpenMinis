@@ -184,7 +184,7 @@ class SourceContracts(unittest.TestCase):
         self.assertIn('let consumption = request.consumption?.started()', T)
 
     def test_required_workflow_hook_present(self):
-        workflow = (ROOT / '.github/workflows/ios15-v64-repair.yml').read_text()
+        workflow = (ROOT / '.github/workflows/openminis-app.yml').read_text()
         self.assertIn('V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_consumption_20261117.py', workflow)
 
     def test_fixture_scenarios_not_clock_only(self):

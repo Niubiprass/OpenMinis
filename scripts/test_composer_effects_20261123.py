@@ -106,7 +106,7 @@ class SourceContracts(unittest.TestCase):
    self.assertNotIn(t,self.p)
   self.assertEqual(self.p.count('MARKETING_VERSION = 1.16;'),8)
  def test_native_gate_is_wired(self):
-  wf=(ROOT/'.github/workflows/ios15-v64-repair.yml').read_text()
+  wf=(ROOT/'.github/workflows/openminis-app.yml').read_text()
   self.assertIn('python3 scripts/test_composer_effects_20261123.py',wf)
 
 class PortableProductionMath(unittest.TestCase):

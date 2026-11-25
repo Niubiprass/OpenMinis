@@ -36,7 +36,7 @@ ok("MCP 集成 → Minis 内置工具" in TOOLS, "权限错误提示走新路径
 ok("allowsFullSwipe" in MCP or "ForEach(store.servers)" in MCP,
    "外部 MCP 列表仍在")
 
-FLOW = (ROOT / ".github/workflows/ios15-v64-repair.yml").read_text()
+FLOW = (ROOT / ".github/workflows/openminis-app.yml").read_text()
 ok("CURRENT_PROJECT_VERSION=160652" in FLOW and "ios15-160652-four-features" in FLOW,
    "dedicated build uses 160652 on an isolated trigger branch")
 

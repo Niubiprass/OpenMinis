@@ -90,7 +90,7 @@ class DailyActionContracts(unittest.TestCase):
         source = log.read_text()
         stages = source.split("MSDiagStages =", 1)[1].split("MSDiagResults =", 1)[0]
         self.assertIn('@"daily_action"', stages)
-        self.assertIn('@"0.8.54"', source.split('@"version":', 1)[1])
+        self.assertIn('@"0.8.55"', source.split('@"version":', 1)[1])
 
     def test_checked_in_synthetic_category_fixture(self):
         app_fixture = ROOT / "scripts/fixtures/minisight_action_import/actions.json"

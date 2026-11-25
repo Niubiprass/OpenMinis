@@ -11,7 +11,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 ABOUT = (ROOT / "src/ios/Views/Settings/AboutView.swift").read_text()
-WF = (ROOT / ".github/workflows/ios15-v64-repair.yml").read_text()
+WF = (ROOT / ".github/workflows/openminis-app.yml").read_text()
 
 fails = []
 
@@ -77,9 +77,10 @@ need("func discardDownload()" in ABOUT, "stale download can be discarded")
 # No API quota dependency; manifest and IPA use the fixed release path.
 need("https://api.github.com" not in ABOUT, "no api.github.com")
 need("releases/download/" in ABOUT, "fixed download path")
-need("gh release create \"$TAG\"" in WF, "CI publishes")
-need("latest.json" in WF, "CI publishes the manifest")
-need("Set :MinisBuildNumber ${{ github.run_number }}" in WF, "CI stamps a monotonic build")
+PUBLISHER = (ROOT / 'scripts/app_release.py').read_text()
+need('python3 scripts/app_release.py publish' in WF, "CI publishes through one verified entry")
+need("CHANNEL = 'beta-latest'" in PUBLISHER and "'latest.json'" in PUBLISHER, "CI publishes the same fixed manifest")
+need('Set :MinisBuildNumber ${APP_BUILD}' in WF and 'app_release.py prepare' in WF, "CI stamps the single monotonic config build")
 
 if fails:
     print("❌ update failure guard failed:")

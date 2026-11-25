@@ -71,11 +71,12 @@ struct MiniSightHomeView: View {
             Section {
                 NavigationLink("素材与服装") { MiniSightCostumePage() }
             } header: { Text("素材") } footer: {
-                Text("保留原有图片和 8×9 图集；GIF 按自己的帧时长播放，多动作素材可从动作文件夹导入。缺少专用姿态时使用原画面和轻柔受力反馈，不会凭空生成肢体动作。素材不绑定某个角色，也不覆盖旧文件。")
+                Text("未导入时可直接使用随包原创基础角色，不需要下载或另找素材。保留原有图片和 8×9 图集；GIF 按自己的帧时长播放，多动作素材可从动作文件夹导入。缺少专用姿态时使用原画面和轻柔受力反馈，不会凭空生成肢体动作。素材不绑定某个角色，也不覆盖旧文件。")
             }
 
             Section {
-                NavigationLink(config.activity.title) {
+                Toggle("丰富日常动作", isOn: $config.dailyActionsEnabled)
+                NavigationLink("巡游 · \(config.activity.title)") {
                     MiniSightActivityPage()
                 }
                 Toggle("增强拖动响应", isOn: $config.dragResponse)
@@ -86,14 +87,20 @@ struct MiniSightHomeView: View {
                     Slider(value: $config.gravityStrength, in: 0.4...1.6, step: 0.1)
                 }
             } header: { Text("动作与手感") } footer: {
-                Text("动作音效只在互动和自主活动时响。")
+                Text("丰富日常动作与巡游分开控制：没有额外动作包也使用当前角色已有的观察、呼吸/眨眼、挥手基础姿态；关闭巡游不关闭这些日常姿态。8×9 图集继续使用原帧，不会换成单个 GIF。没有专用画面就不冒充伸懒腰、哈欠等肢体动作。动作音效只在互动和自主活动时响。")
             }
 
             Section {
                 Toggle("自动显示在线歌词", isOn: $config.lyricsEnabled)
-                Toggle("跟随播放轻轻律动", isOn: $config.musicMotion)
+                Toggle("跟随真实节奏强弱", isOn: $config.musicMotion)
+                if config.musicMotion {
+                    Text(MiniSightRhythmLiveTransportCompiled()
+                        ? "等待可信节奏输入；此开关不代表已检测到节拍。服务不可用或没有有效输入时保持安静。"
+                        : "本候选未启用实时节奏接收，尚不能在手机上跟拍。需另行确认启用与安装，不是你缺素材或漏开开关。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             } header: { Text("音乐与歌词") } footer: {
-                Text("开启歌词后，插件先将歌名、歌手和时长发给 LRCLIB。那里没有匹配的同步歌词时，才用歌名和歌手查 QQ 音乐（c.y.qq.com），选中同一版本后用歌曲编号取词。歌词查询不读取音乐账号、不录音。气泡只显示当前这一句；查不到或暂停时隐藏，聊天与审批优先。音乐动作是平滑播放联动，不是精准节拍检测。需插件配合，播放器或曲目未匹配时不会硬显示。")
+                Text("开启歌词后，插件先将歌名、歌手和时长发给 LRCLIB。那里没有匹配的同步歌词时，才用歌名和歌手查 QQ 音乐（c.y.qq.com），选中同一版本后用歌曲编号取词。歌词查询不读取音乐账号、不录音。气泡只显示当前这一句；查不到或暂停时隐藏，聊天与审批优先。歌词与节奏开关互不依赖。音乐动作只接受可信的实时节奏强弱输入，不用定时摇摆伪装跟拍；启用服务和音频读取需另行授权，本开关不会安装服务或开启采音。需插件配合，播放器或曲目未匹配时不会硬显示。")
             }
 
             Section {
@@ -139,7 +146,7 @@ struct MiniSightHomeView: View {
             // single image; that path publishes didChange, which re-enters here
             // and lands on a real pack preview.
             _ = try? MiniSightAssetCatalog.snapshot()
-            let image = try? MiniSightAssetCatalog.preview(at: MiniSightPetFile.url, variant: MiniSightAssetCatalog.currentVariant)
+            let image = (try? MiniSightAssetCatalog.preview(at: MiniSightPetFile.url, variant: MiniSightAssetCatalog.currentVariant)) ?? MiniSightDefaultAssets.previewImage()
             DispatchQueue.main.async { petImage = image }
         }
     }
@@ -213,6 +220,12 @@ struct MiniSightDownloadPage: View {
 
     var body: some View {
         List {
+            Section {
+                Button("使用随包原创基础角色") {
+                    perform({ try MiniSightAssetCatalog.activateDefault() }, onSuccess: { config.costume = MiniSightDefaultAssets.title })
+                }.disabled(importing)
+                Text("不需下载或动作包。仅点此按钮才切换；当前角色和元数据会先保留到上一次素材，可恢复。").font(.caption).foregroundStyle(.secondary)
+            } header: { Text("无需导入即可使用") }
             Section {
                 Picker("素材格式", selection: $kind) {
                     ForEach(MiniSightAssetCatalog.ImportKind.allCases) { Text($0.title).tag($0) }

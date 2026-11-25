@@ -1,4 +1,5 @@
 [
+  "minisight.actions.daily",
   "minisight.activity",
   "minisight.activity.interval",
   "minisight.ai.adjust",

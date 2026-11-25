@@ -25,6 +25,7 @@ struct MiniSightInAppRuntime: View {
     @AppStorage("minisight.gesture.double") private var doubleGesture = "voice"
     @AppStorage("minisight.gesture.long") private var longGesture = "menu"
     @AppStorage("minisight.dragResponse") private var dragResponse = true
+    @AppStorage("minisight.actions.daily") private var dailyActionsEnabled = true
     @AppStorage("minisight.petSound") private var petSoundEnabled = false
     @AppStorage("minisight.chat.height") private var chatHeight = 160.0
     @AppStorage("minisight.chat.theme") private var chatTheme = 0
@@ -40,6 +41,9 @@ struct MiniSightInAppRuntime: View {
     @StateObject private var recorder = MiniSightAppRecorderModel()
     @State private var petImage: UIImage?
     @State private var petIdentity = ""
+    @State private var petSpriteLayout = 0
+    @State private var petVariantIndex = 0
+    @State private var assetRefreshInFlight = false
     @State private var actionManifestPath: String?
     @StateObject private var music = MiniSightMusicBridge()
     @State private var preferencesLoaded = false
@@ -56,10 +60,11 @@ struct MiniSightInAppRuntime: View {
     var body: some View {
         Group {
             if visible, let petImage {
-                MiniSightPetHost(image: petImage, displaySize: CGFloat(petSize), variant: MiniSightAppFiles.variantIndex,
-                                 spriteLayout: MiniSightAppFiles.spriteLayout,
+                MiniSightPetHost(image: petImage, displaySize: CGFloat(petSize), variant: petVariantIndex,
+                                 spriteLayout: petSpriteLayout,
                                  actionManifestPath: actionManifestPath,
                                  lyricsLine: music.line, musicPlaying: music.playing, musicAnchor: music.anchor,
+                                 musicToken: music.rhythmToken, dailyActionsEnabled: dailyActionsEnabled,
                                  dragGain: dragResponse ? 1.0 : 0.20, soundEnabled: petSoundEnabled,
                                  roll: motion.roll,
                                  activityActive: activity.active, gravityEnabled: gravityEnabled, gravityStrength: gravityStrength,
@@ -83,13 +88,9 @@ struct MiniSightInAppRuntime: View {
             }
         }
         .onAppear {
-            petIdentity = MiniSightAppFiles.petIdentity
-            petImage = MiniSightAppFiles.loadPet()
-            actionManifestPath = MiniSightAppFiles.actionManifestPath
+            // Bootstrap/migrate on asset-io BEFORE exposing a runtime selection.
+            refreshPetResources(force: true)
             music.setVisible(visible)
-            // Migrate records written by the tiled layouts without requiring
-            // the user to open Settings first.
-            MiniSightAssetCatalog.io.async { _ = try? MiniSightAssetCatalog.snapshot() }
             activity.refresh()
             preferencesLoaded = true
             setAppForeground(scenePhase == .active)
@@ -143,23 +144,13 @@ struct MiniSightInAppRuntime: View {
             if locked { MiniSightChatPanel.existing()?.close() }
         }
         .onReceive(NotificationCenter.default.publisher(for: MiniSightAssetCatalog.didChange)) { _ in
-            // Migration/import rewrote pet.json; re-read instead of keeping the
-            // old slice layout for the rest of the process.
-            petIdentity = MiniSightAppFiles.petIdentity
-            petImage = MiniSightAppFiles.loadPet()
-            actionManifestPath = MiniSightAppFiles.actionManifestPath
-            updateOwnershipMarker()
+            // Refresh the whole checked selection, not a mix of old/new layout.
+            refreshPetResources(force: true)
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             if scenePhase == .active {
                 activity.refresh()
-                let identity = MiniSightAppFiles.petIdentity
-                if identity != petIdentity {
-                    petIdentity = identity
-                    petImage = MiniSightAppFiles.loadPet()
-                    actionManifestPath = MiniSightAppFiles.actionManifestPath
-                    updateOwnershipMarker()
-                }
+                refreshPetResources(force: false)
                 proactiveTick()
             }
         }
@@ -174,6 +165,27 @@ struct MiniSightInAppRuntime: View {
             toast = text
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 if toast == text { toast = nil }
+            }
+        }
+    }
+
+    private func refreshPetResources(force: Bool) {
+        guard !assetRefreshInFlight else { return }
+        assetRefreshInFlight = true
+        let previous = petIdentity
+        MiniSightAssetCatalog.io.async {
+            if force { _ = try? MiniSightAssetCatalog.snapshot() }
+            let identity = MiniSightAppFiles.petIdentity
+            let selection = force || identity != previous ? MiniSightAppFiles.renderSelection() : nil
+            DispatchQueue.main.async {
+                assetRefreshInFlight = false
+                guard let selection else { return }
+                petImage = selection.image
+                petSpriteLayout = selection.layout
+                petVariantIndex = selection.variant
+                actionManifestPath = selection.manifest
+                petIdentity = identity
+                updateOwnershipMarker()
             }
         }
     }
@@ -373,6 +385,26 @@ private enum MiniSightAppFiles {
         return ctx.makeImage()
     }
 
+    struct RenderSelection {
+        let image: UIImage?
+        let layout: Int
+        let variant: Int
+        let manifest: String?
+    }
+    /// Runs only on asset-io. Keep current user bytes/metadata untouched if they
+    /// fail bounded preview/decode; the default is a render-only selection.
+    static func renderSelection() -> RenderSelection {
+        let file = directory.appendingPathComponent("pet.png")
+        let variant = variantIndex
+        if (try? MiniSightAssetCatalog.preview(at: file, variant: variant)) != nil,
+           let image = loadPet() {
+            return RenderSelection(image: image, layout: spriteLayout, variant: variant,
+                                   manifest: actionManifestPath)
+        }
+        return RenderSelection(image: MiniSightDefaultAssets.runtimeImage(), layout: 3,
+                               variant: 0, manifest: nil)
+    }
+
     static func loadPet() -> UIImage? {
         guard let image = UIImage(contentsOfFile: directory.appendingPathComponent("pet.png").path) else { return nil }
         // Import stores the sheet inverted; both photo and sheet are flipped
@@ -418,7 +450,7 @@ private struct MiniSightMusicAnchor: Equatable {
 
 private enum MiniSightMusicDiagnosticCodes {
     static let player: Set<String> = ["unknown", "not_applicable", "unavailable", "selected", "none"]
-    static let playerDetail: Set<String> = ["unknown", "not_applicable", "no_active_player", "no_supported_player", "media_controller_unavailable", "player_bundle_missing", "unsupported_player", "player_pid_unresolved", "netease_player_selected", "supported_player_selected", "netease_pid_selected", "supported_pid_selected"]
+    static let playerDetail: Set<String> = ["unknown", "not_applicable", "no_active_player", "no_supported_player", "media_controller_unavailable", "player_bundle_missing", "unsupported_player", "player_pid_unresolved", "player_pid_nonpositive", "pid_api_unavailable", "pid_controller_unavailable", "pid_method_unavailable", "pid_signature_missing", "pid_signature_rejected", "pid_mapping_missing", "pid_resolution_exception", "pid_changed_during_sample", "netease_player_selected", "supported_player_selected", "netease_pid_selected", "supported_pid_selected"]
     static let metadata: Set<String> = ["unknown", "not_applicable", "awaiting_fresh_info", "coherent", "missing"]
     static let progress: Set<String> = ["unknown", "not_applicable", "available", "missing"]
     static let lyrics: Set<String> = ["unknown", "inactive", "media_api_unavailable", "disabled", "no_supported_player", "awaiting_fresh_identity", "metadata_missing", "progress_missing", "not_playing", "fetching", "awaiting_fetch", "no_synced_lyrics", "no_current_line", "current_line"]
@@ -473,6 +505,7 @@ private final class MiniSightMusicBridge: ObservableObject {
     @Published private(set) var line: String?
     @Published private(set) var playing = false
     @Published private(set) var anchor: MiniSightMusicAnchor?
+    @Published private(set) var rhythmToken: UInt = 0
     private var timer: Timer?
     private let io = DispatchQueue(label: "com.openminis.minisight.music.read", qos: .utility)
     private var generation = 0
@@ -495,7 +528,7 @@ private final class MiniSightMusicBridge: ObservableObject {
         guard visible != wanted else { if wanted { refresh() }; return }
         visible = wanted; generation &+= 1
         timer?.invalidate(); timer = nil
-        if !wanted { line = nil; playing = false; anchor = nil; evidence("gate_closed", valid: false, present: false); return }
+        if !wanted { line = nil; playing = false; anchor = nil; rhythmToken = 0; evidence("gate_closed", valid: false, present: false); return }
         // The visible-only 250ms read is also the lost-notification fallback.
         // Common modes keep expiration/OFF reads running during UI tracking.
         let polling = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -508,7 +541,7 @@ private final class MiniSightMusicBridge: ObservableObject {
     private func refresh() {
         guard visible else { return }
         let now = Date().timeIntervalSince1970
-        if now - lastValidAt > 5 || now < lastValidAt - 1 { line = nil; playing = false; anchor = nil; evidence("music_stale", valid: false, present: false) }
+        if now - lastValidAt > 5 || now < lastValidAt - 1 { line = nil; playing = false; anchor = nil; rhythmToken = 0; evidence("music_stale", valid: false, present: false) }
         guard !inFlight else { return } // Never queue another disk read behind a stalled one.
         inFlight = true; lastReadAt = now
         let token = generation
@@ -531,8 +564,13 @@ private final class MiniSightMusicBridge: ObservableObject {
                 self.inFlight = false
                 guard self.visible, self.generation == token else { return }
                 let now = Date().timeIntervalSince1970
-                guard let snapshot, snapshot.fresh(at: now) else { self.line = nil; self.playing = false; self.anchor = nil; self.evidence("music_stale", valid: false, present: false); return }
+                guard let snapshot, snapshot.fresh(at: now) else { self.line = nil; self.playing = false; self.anchor = nil; self.rhythmToken = 0; self.evidence("music_stale", valid: false, present: false); return }
                 self.lastValidAt = snapshot.time
+                if let musicGeneration = MiniSightMusicSnapshot.number(value?["generation"]),
+                   musicGeneration > 0, musicGeneration.rounded(.towardZero) == musicGeneration,
+                   musicGeneration <= 9_007_199_254_740_991 {
+                    self.rhythmToken = UInt(musicGeneration)
+                } else { self.rhythmToken = 0 }
                 let defaults = UserDefaults.standard
                 let nextLine = snapshot.playing && snapshot.lyricsEnabled && defaults.bool(forKey: "minisight.music.lyrics") ? snapshot.line : nil
                 let nextPlaying = snapshot.playing && snapshot.motionEnabled && defaults.bool(forKey: "minisight.music.motion")
@@ -816,6 +854,8 @@ private struct MiniSightPetHost: UIViewRepresentable {
     let lyricsLine: String?
     let musicPlaying: Bool
     let musicAnchor: MiniSightMusicAnchor?
+    let musicToken: UInt
+    let dailyActionsEnabled: Bool
     let dragGain: CGFloat
     let soundEnabled: Bool
     let roll: Double
@@ -896,9 +936,11 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.variantIndex = parent.variant
             pet.spriteLayout = parent.spriteLayout
             pet.actionManifestPath = parent.actionManifestPath
+            pet.dailyActionsEnabled = parent.dailyActionsEnabled
             pet.lyricsLine = parent.lyricsLine
             pet.musicPosition = parent.musicAnchor?.current ?? 0
             pet.musicPlaying = parent.musicPlaying
+            MiniSightRhythmConfigurePet(pet, parent.musicPlaying, parent.musicToken)
             pet.activityActive = parent.activityActive
             root.pet = pet
             root.addSubview(pet)
@@ -917,6 +959,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.startPlaying()
             window.isHidden = false
             root.setNeedsLayout(); root.layoutIfNeeded()
+            MiniSightRhythmConfigurePet(pet, parent.musicPlaying, parent.musicToken)
             refreshChatAnchor()
             MSDiagEvent("runtime", "show", "ok", ["source": "app", "visible": true])
         }
@@ -935,6 +978,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.variantIndex = parent.variant
             pet.spriteLayout = parent.spriteLayout
             pet.actionManifestPath = parent.actionManifestPath
+            pet.dailyActionsEnabled = parent.dailyActionsEnabled
             pet.image = image
             pet.lyricsLine = parent.lyricsLine
             pet.musicPosition = parent.musicAnchor?.current ?? 0
@@ -942,6 +986,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.gravityRoll = roll
             pet.activityActive = active
             pet.reducedWork = ProcessInfo.processInfo.isLowPowerModeEnabled
+            MiniSightRhythmConfigurePet(pet, parent.musicPlaying, parent.musicToken)
             if parent.shakeGeneration != handledShakeGeneration {
                 handledShakeGeneration = parent.shakeGeneration
                 if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
@@ -1033,6 +1078,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             }
             pet?.onGeometryChanged = nil
             MSDiagEvent("runtime", "hide", "ok", ["source": "app", "reason": "teardown"])
+            MiniSightRhythmConfigurePet(pet, false, parent.musicToken)
             pet?.stopPlaying()
             pet = nil
             host?.pet = nil

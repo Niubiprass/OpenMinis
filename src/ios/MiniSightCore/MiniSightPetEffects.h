@@ -7,6 +7,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSString *actionManifestPath;
 @property (nonatomic, copy, nullable) NSString *lyricsLine;
 @property (nonatomic) BOOL musicPlaying;
+/// Explicit presentation opt-in; measured strengths do not generate beats.
+@property (nonatomic) BOOL rhythmFollowing;
+- (void)applyRhythmStrength:(CGFloat)strength pulse:(CGFloat)pulse;
 @property (nonatomic) NSTimeInterval musicPosition;
 @property (nonatomic) BOOL busy;
 @property (nonatomic, readonly) BOOL presentationBlocked;
@@ -39,5 +42,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSTimeInterval)performIdleAction;
 /// Selects a non-moving, non-music daily-life clip from idleAlt. Zero means unavailable.
 - (NSTimeInterval)performDailyAction;
+/// Cancels only a daily-owned idleAlt request, including its late decoded frame.
+/// Tap/drag/flight/land/wake roles and the last-daily anti-repeat history survive.
+- (void)cancelDailyAction;
 @end
 NS_ASSUME_NONNULL_END

@@ -22,6 +22,7 @@ final class MiniSightConfigStore: ObservableObject {
     @Published var doubleTap: MiniSightGesture { didSet { publish(MiniSightSettingKey.doubleTap) } }
     @Published var longPress: MiniSightGesture { didSet { publish(MiniSightSettingKey.longPress) } }
 
+    @Published var dailyActionsEnabled: Bool { didSet { publish(MiniSightSettingKey.dailyActionsEnabled) } }
     @Published var activity: MiniSightActivity { didSet { publish(MiniSightSettingKey.activity) } }
     @Published var activityInterval: Double { didSet { publish(MiniSightSettingKey.activityInterval) } }
     @Published var frameLimit: Int { didSet { publish(MiniSightSettingKey.frameLimit) } }
@@ -87,6 +88,7 @@ final class MiniSightConfigStore: ObservableObject {
         singleTap = MiniSightConfig.gesture(MiniSightSettingKey.singleTap, .interact)
         doubleTap = MiniSightConfig.gesture(MiniSightSettingKey.doubleTap, .conversation)
         longPress = MiniSightConfig.gesture(MiniSightSettingKey.longPress, .menu)
+        dailyActionsEnabled = MiniSightConfig.bool(MiniSightSettingKey.dailyActionsEnabled, true)
         activity = MiniSightActivity(rawValue: MiniSightConfig.string(MiniSightSettingKey.activity, "lively")) ?? .lively
         activityInterval = MiniSightConfig.double(MiniSightSettingKey.activityInterval, 7)
         frameLimit = MiniSightConfig.int(MiniSightSettingKey.frameLimit, 0)
@@ -160,6 +162,7 @@ final class MiniSightConfigStore: ObservableObject {
         case MiniSightSettingKey.singleTap: return singleTap.rawValue
         case MiniSightSettingKey.doubleTap: return doubleTap.rawValue
         case MiniSightSettingKey.longPress: return longPress.rawValue
+        case MiniSightSettingKey.dailyActionsEnabled: return dailyActionsEnabled
         case MiniSightSettingKey.activity: return activity.rawValue
         case MiniSightSettingKey.activityInterval: return activityInterval
         case MiniSightSettingKey.frameLimit: return frameLimit

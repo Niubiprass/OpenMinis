@@ -62,7 +62,7 @@ def source_gate():
     for name in ['Controller','Engine','Assets','Name','Policy','Remote','AudioPulse','Page']:
         require(project.count('MiniSightWake'+name+'.swift in Sources')==2, 'PBX '+name)
     require('relativePath = Packages/MiniSightKeywordRuntime;' in project,'local binary package')
-    workflow = (ROOT/'.github/workflows/ios15-v64-repair.yml').read_text()
+    workflow = (ROOT/'.github/workflows/openminis-app.yml').read_text()
     require('id: source_gate' in workflow, 'CI must retain the native validation outcome')
     package = workflow.split('- name: Package without adding elevated entitlements', 1)[1]
     require('if [ "${{ steps.source_gate.outcome }}" != success ]; then' in package and

@@ -17,6 +17,7 @@ enum MiniSightSettingKey {
     static let doubleTap = "minisight.gesture.double"
     static let longPress = "minisight.gesture.long"
 
+    static let dailyActionsEnabled = "minisight.actions.daily"
     static let activity = "minisight.activity"
     static let activityInterval = "minisight.activity.interval"
     static let frameLimit = "minisight.frameLimit"
@@ -165,7 +166,7 @@ enum MiniSightAIPermission: String, CaseIterable {
 /// Raw defaults access used by the ObjC bridge and the App. Absent values must
 /// keep the old behavior: pet + plugin + call mode.
 enum MiniSightConfig {
-    // Exactly 45 transport keys, including the transaction revision. The legacy
+    // Allowlisted transport keys, including the transaction revision. The legacy
     // boolean minisight.longPress must NEVER alias minisight.gesture.long.
     static let runtimeFields: [String: String] = [
         MiniSightSettingKey.style: "style", MiniSightSettingKey.renderer: "renderer",
@@ -174,6 +175,7 @@ enum MiniSightConfig {
         MiniSightSettingKey.gravityShake: "gravityShake", MiniSightSettingKey.interaction: "interaction",
         MiniSightSettingKey.singleTap: "singleTap", MiniSightSettingKey.doubleTap: "doubleTap",
         MiniSightSettingKey.longPress: "longPress", MiniSightSettingKey.activity: "activity",
+        MiniSightSettingKey.dailyActionsEnabled: "dailyActionsEnabled",
         MiniSightSettingKey.activityInterval: "activityInterval", MiniSightSettingKey.frameLimit: "frameLimit",
         MiniSightSettingKey.dragResponse: "dragResponse", MiniSightSettingKey.petSound: "sound",
         MiniSightSettingKey.lyricsEnabled: "lyricsEnabled", MiniSightSettingKey.musicMotion: "musicMotion",
@@ -216,6 +218,7 @@ enum MiniSightConfig {
             MiniSightSettingKey.doubleTap: MiniSightGesture.voice.rawValue,
             MiniSightSettingKey.longPress: MiniSightGesture.menu.rawValue,
             MiniSightSettingKey.activity: MiniSightActivity.lively.rawValue,
+            MiniSightSettingKey.dailyActionsEnabled: true,
             MiniSightSettingKey.activityInterval: 7.0,
             MiniSightSettingKey.frameLimit: 0,
             MiniSightSettingKey.dragResponse: true,
@@ -306,7 +309,7 @@ enum MiniSightConfig {
     }
 }
 
-/// Local runtime transport of the 45 allowlisted settings, never credentials.
+/// Local runtime transport of the allowlisted settings, never credentials.
 /// User strings belong in this file but must never be passed to diagnostics.
 enum MiniSightRuntimeSnapshot {
     @discardableResult
@@ -320,7 +323,7 @@ enum MiniSightRuntimeSnapshot {
 
     @discardableResult
     static func write(container: URL, rawValues: [String: Any]) -> Bool {
-        guard MiniSightConfig.runtimeFields.count == 51,
+        guard MiniSightConfig.runtimeFields.count == 52,
               MiniSightConfig.all.allSatisfy({ rawValues[$0] != nil }) else { return false }
         var canonical: [String: Any] = [:]
         var values: [String: Any] = ["version": 2]

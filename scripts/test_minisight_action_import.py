@@ -80,14 +80,20 @@ def native(directory):
 struct UIImage {
     enum Orientation { case up }
     init(cgImage: CGImage, scale: CGFloat, orientation: Orientation) {}
+    init?(data: Data) { return nil } // Wrapper unused by this native file/catalog test.
+    var cgImage: CGImage? { nil }
 }
 enum MiniSightPetFile {
     static var directory: URL { URL(fileURLWithPath: CommandLine.arguments[1]).appendingPathComponent("documents", isDirectory: true) }
     static var url: URL { directory.appendingPathComponent("pet.png") }
 }
 '''
+    defaults = (ROOT / 'src/ios/MiniSightDefaultAssets.swift').read_text().replace('import UIKit\n', '')
+    # Bundle.main on a standalone native harness points at its executable dir.
+    # Copy the ACTUAL bundled original artwork; no fake default bytes/parser.
+    shutil.copytree(ROOT / 'src/ios/Resources/MiniSightDefaults', directory / 'MiniSightDefaults')
     path = directory/'main.swift'
-    path.write_text(source + support + (FIX/'harness.swift').read_text())
+    path.write_text(source + support + defaults + (FIX/'harness.swift').read_text())
     subprocess.run(['xcrun','--sdk','macosx','swiftc','-swift-version','5',str(path),'-o',str(directory/'test')], check=True)
     subprocess.run([str(directory/'test'),str(directory),str(FIX)], check=True)
 

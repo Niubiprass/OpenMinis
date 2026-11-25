@@ -37,6 +37,8 @@
     double _musicAnchor, _musicAnchorAt, _musicAmplitude, _recoveryBegan;
     NSInteger _recoveryStage;
     unsigned _musicEvidenceBudget, _lastMusicCue;
+    BOOL _rhythmFollowing, _dailyActionOwned;
+    double _rhythmStrength, _rhythmPulse, _rhythmAt;
     MSPetDamped _angle, _offsetX, _offsetY, _scaleX, _scaleY, _dragX, _dragY;
     MSPetDragTrail _trail;
     CGPoint _dragTarget, _visualOffset;
@@ -77,6 +79,7 @@
     _actionManifestPath = [path copy]; ++_generation; ++_frameRequest; _framePending = NO;
     _clip = nil; _role = nil; _wantedRole = nil; _displayedFrame = NSNotFound;
     _ownsSprite = NO; _manifestRetries = 0; _failedClips = [NSSet set];
+    _dailyActionOwned = NO;
     _lastDailyClip = nil; // A different manifest owns a fresh daily-action history.
     [_library purgeFrames]; _library = nil;
     [self restorePoster]; // Retire the previous clip even if the new manifest fails.
@@ -105,6 +108,17 @@
 - (BOOL)hasDailyActions { return _library.roles[@"idleAlt"].count > 0; }
 - (BOOL)isDragging { return _dragging; }
 - (BOOL)presentationBlocked { return _busy || MiniSightChatPanel.existingPanel.isVisible; }
+- (BOOL)rhythmFollowing { return _rhythmFollowing; }
+- (void)setRhythmFollowing:(BOOL)following {
+    _rhythmFollowing = following;
+    _rhythmStrength = _rhythmPulse = _rhythmAt = 0.;
+    _musicAmplitude = 0.;
+}
+- (void)applyRhythmStrength:(CGFloat)strength pulse:(CGFloat)pulse {
+    _rhythmStrength = MSPetFiniteClamp(strength, 0., 1.);
+    _rhythmPulse = MSPetFiniteClamp(pulse, 0., 1.);
+    _rhythmAt = CACurrentMediaTime();
+}
 - (BOOL)musicPlaying { return _musicPlaying; }
 - (void)setMusicPlaying:(BOOL)playing {
     if (_musicPlaying == playing) return;
@@ -317,6 +331,7 @@
     if (!running) {
         ++_frameRequest; _framePending = NO; _frameRetryAt = 0; _frameFailures = 0;
         [_link invalidate]; _link = nil;
+        _dailyActionOwned = NO;
         _dragging = NO; _flying = NO; _waking = NO; _state = 0; _transientRole = nil;
         _shakeUntil = 0; _landUntil = 0; _musicAmplitude = 0; _recoveryStage = 0;
         memset(&_trail, 0, sizeof(_trail));
@@ -425,13 +440,26 @@
 - (NSTimeInterval)performDailyAction {
     if (!_library.roles[@"idleAlt"].count || [self presentationBlocked] || _dragging || _flying || !_running || _musicPlaying) return 0.;
     if ([_role isEqualToString:@"idleAlt"] && [self autonomyHeld]) return fmax(.2, _clip.duration - (CACurrentMediaTime() - _clipStart));
+    _dailyActionOwned = YES;
     _role = nil;
     _transientRole = @"idleAlt"; _transientUntil = CACurrentMediaTime() + 120.;
     _wantedRole = nil; [self chooseRole];
     if (_clip && [_role isEqualToString:@"idleAlt"]) return _clip.duration;
     _transientRole = nil; _transientUntil = 0.; _wantedRole = nil; _role = nil;
+    _dailyActionOwned = NO;
     [self chooseRole]; // All daily clips failed: visibly fall back to the base idle.
     return 0.;
+}
+- (void)cancelDailyAction {
+    if (!_dailyActionOwned) return;
+    _dailyActionOwned = NO;
+    if (![_transientRole isEqualToString:@"idleAlt"]) return;
+    _transientRole = nil; _transientUntil = 0.;
+    if (![_role isEqualToString:@"idleAlt"]) return; // Another role already took over.
+    ++_frameRequest; _framePending = NO; // Fence daily's outstanding decode only.
+    _frameRetryAt = 0.; _frameFailures = 0; _clip = nil; _role = nil; _wantedRole = nil;
+    [self restorePoster];
+    [self chooseRole]; // Never clears _lastDailyClip or a manual owner's timers.
 }
 - (void)tick:(CADisplayLink *)link {
     if (!_running || link != _link) return;
@@ -450,7 +478,7 @@
     }
     [self advanceActions:now];
     BOOL reduce = UIAccessibilityIsReduceMotionEnabled();
-    BOOL dance = _musicPlaying && !blocked && !_dragging && !_flying && _state == 8 && !_recoveryStage && now >= _landUntil && now >= _shakeUntil && !reduce;
+    BOOL dance = !_rhythmFollowing && _musicPlaying && !blocked && !_dragging && !_flying && _state == 8 && !_recoveryStage && now >= _landUntil && now >= _shakeUntil && !reduce;
     MSPetMusicCue cue = MSPetMusicCueAt(dance ? self.musicPosition : -1.);
     _musicAmplitude = MSPetMusicAmplitude(_musicAmplitude, dance ? 1. : 0., dt);
     double angle = blocked || reduce ? 0. : MSPetFiniteClamp(_tilt, -.22, .22);
@@ -491,6 +519,20 @@
         angle = _musicAmplitude * sway.angle;
         x = 0.; y = pet.bounds.size.height * _musicAmplitude * sway.bob;
         sx = 1.; sy = 1.;
+    }
+    // Sample-and-decay only: phase is supplied by a fresh producer frame.
+    // No musicPosition/time oscillator, travel, scale, or host geometry writes.
+    BOOL rhythm = _rhythmFollowing && _musicPlaying && !blocked && !reduce &&
+        !_dragging && !_flying && !_recoveryStage && _state == 8 &&
+        now >= _landUntil && now >= _shakeUntil && now >= _rhythmAt && now - _rhythmAt <= .40;
+    if (rhythm) {
+        double envelope = exp(-10. * (now - _rhythmAt));
+        angle = .055 * _rhythmPulse * envelope;
+        x = 0.; y = -pet.bounds.size.height * .014 * _rhythmStrength * _rhythmPulse * envelope;
+        sx = 1.; sy = 1.;
+    }
+    if (_rhythmFollowing && (!rhythm || now - _rhythmAt > .40)) {
+        _rhythmStrength = _rhythmPulse = 0.;
     }
     MSPetLandingPresentation recoveryMark = MSPetLandingPresentationAt(now - _recoveryBegan);
     BOOL showDizzy = _recoveryStage && !blocked && !reduce && !_dragging && !_flying &&

@@ -588,6 +588,7 @@
 		BE1711170000000000000001 /* MiniSightResources.m in Sources */ = {isa = PBXBuildFile; fileRef = BE1711170000000000000002 /* MiniSightResources.m */; };
 		C0FFEE000000000000000001 /* MiniSightPet.m in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE000000000000000002 /* MiniSightPet.m */; };
 		BE1611160000000000000001 /* MiniSightPetEffects.m in Sources */ = {isa = PBXBuildFile; fileRef = BE1611160000000000000002 /* MiniSightPetEffects.m */; };
+		BE231123A000000000000001 /* MiniSightRhythmClient.m in Sources */ = {isa = PBXBuildFile; fileRef = BE231123A000000000000002 /* MiniSightRhythmClient.m */; };
 		BE1611160000000000000004 /* MiniSightActionLibrary.m in Sources */ = {isa = PBXBuildFile; fileRef = BE1611160000000000000005 /* MiniSightActionLibrary.m */; };
 		BE1611160000000000000007 /* MiniSightLyrics.m in Sources */ = {isa = PBXBuildFile; fileRef = BE1611160000000000000008 /* MiniSightLyrics.m */; };
 		C0FFEE100000000000000001 /* MiniSightAI.m in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE100000000000000002 /* MiniSightAI.m */; };
@@ -609,6 +610,8 @@
 		FCA41672E4F16454494A6D8B /* MiniSightConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6DE242CC618A8346E99F28 /* MiniSightConfigStore.swift */; };
 		20176A14369C3E928DDE3B4C /* MiniSightVoiceBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03083761BE7ABA94B4DD74A4 /* MiniSightVoiceBridge.swift */; };
 		5A4318BD2D1F837735FAA183 /* MiniSightHomePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E68D884EB9F8A75C624AD5E /* MiniSightHomePage.swift */; };
+		BE251125D000000000000001 /* MiniSightDefaultAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE251125D000000000000002 /* MiniSightDefaultAssets.swift */; };
+		BE251125D000000000000003 /* MiniSightDefaults in Resources */ = {isa = PBXBuildFile; fileRef = BE251125D000000000000004 /* MiniSightDefaults */; };
 		E0DA0E4E0EC597E37519FDBF /* MiniSightAIPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98EA448072951D8177A4F8BD /* MiniSightAIPage.swift */; };
 		E8172243CE0FF08A8D15E41F /* MiniSightDialoguePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */; };
 		4747D26C804CC6201A3E41DD /* MiniSightBlip.m in Sources */ = {isa = PBXBuildFile; fileRef = 2027A85A60830ED6F755AABD /* MiniSightBlip.m */; };
@@ -1376,6 +1379,8 @@
 		C0FFEE000000000000000002 /* MiniSightPet.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightPet.m; sourceTree = "<group>"; };
 		BE1611160000000000000002 /* MiniSightPetEffects.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightPetEffects.m; sourceTree = "<group>"; };
 		BE1611160000000000000003 /* MiniSightPetEffects.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightPetEffects.h; sourceTree = "<group>"; };
+		BE231123A000000000000002 /* MiniSightRhythmClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightRhythmClient.m; sourceTree = "<group>"; };
+		BE231123A000000000000003 /* MiniSightRhythmClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightRhythmClient.h; sourceTree = "<group>"; };
 		BE1611160000000000000005 /* MiniSightActionLibrary.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightActionLibrary.m; sourceTree = "<group>"; };
 		BE1611160000000000000006 /* MiniSightActionLibrary.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MiniSightActionLibrary.h; sourceTree = "<group>"; };
 		BE1611160000000000000008 /* MiniSightLyrics.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightLyrics.m; sourceTree = "<group>"; };
@@ -1412,6 +1417,8 @@
 		4D6DE242CC618A8346E99F28 /* MiniSightConfigStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightConfigStore.swift; sourceTree = "<group>"; };
 		03083761BE7ABA94B4DD74A4 /* MiniSightVoiceBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightVoiceBridge.swift; sourceTree = "<group>"; };
 		6E68D884EB9F8A75C624AD5E /* MiniSightHomePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightHomePage.swift; sourceTree = "<group>"; };
+		BE251125D000000000000002 /* MiniSightDefaultAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightDefaultAssets.swift; sourceTree = "<group>"; };
+		BE251125D000000000000004 /* MiniSightDefaults */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MiniSightDefaults; path = Resources/MiniSightDefaults; sourceTree = "<group>"; };
 		98EA448072951D8177A4F8BD /* MiniSightAIPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightAIPage.swift; sourceTree = "<group>"; };
 		24A46ABE8E0073E8B63D2163 /* MiniSightDialoguePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniSightDialoguePage.swift; sourceTree = "<group>"; };
 		2027A85A60830ED6F755AABD /* MiniSightBlip.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MiniSightBlip.m; sourceTree = "<group>"; };
@@ -1670,6 +1677,8 @@
 				C0FFEE000000000000000002 /* MiniSightPet.m */,
 				BE1611160000000000000002 /* MiniSightPetEffects.m */,
 				BE1611160000000000000003 /* MiniSightPetEffects.h */,
+				BE231123A000000000000002 /* MiniSightRhythmClient.m */,
+				BE231123A000000000000003 /* MiniSightRhythmClient.h */,
 				BE1611160000000000000005 /* MiniSightActionLibrary.m */,
 				BE1611160000000000000006 /* MiniSightActionLibrary.h */,
 				BE1611160000000000000008 /* MiniSightLyrics.m */,
@@ -1725,6 +1734,8 @@
 				4D6DE242CC618A8346E99F28 /* MiniSightConfigStore.swift */,
 				F9CE2D5AF8B57EEC1795081D /* MiniSightSettings.swift */,
 				A15E9A170000000000000004 /* MiniSightHostAdapter.swift */,
+				BE251125D000000000000002 /* MiniSightDefaultAssets.swift */,
+				BE251125D000000000000004 /* MiniSightDefaults */,
 				A15E9A170000000000000002 /* MiniSightSignal.swift */,
 				C0FFEE900000000000000011 /* MiniSightRecorderModel.swift */,
 				E51000011 /* MinisApp.swift */,
@@ -2901,6 +2912,7 @@
 			files = (
 				E51000004 /* Preview Assets.xcassets in Resources */,
 				BEA2026112300000000000003 /* BorderBeam-LICENSE.txt in Resources */,
+				BE251125D000000000000003 /* MiniSightDefaults in Resources */,
 				AA26CCB72F31067900AECF2D /* alpine-rootfs.zip in Resources */,
 				E5BSH0004 /* bashism_rules.json in Resources */,
 				E5BSH0005 /* bashism_test_vectors.json in Resources */,
@@ -3177,10 +3189,12 @@
 				E8172243CE0FF08A8D15E41F /* MiniSightDialoguePage.swift in Sources */,
 				E0DA0E4E0EC597E37519FDBF /* MiniSightAIPage.swift in Sources */,
 				5A4318BD2D1F837735FAA183 /* MiniSightHomePage.swift in Sources */,
+				BE251125D000000000000001 /* MiniSightDefaultAssets.swift in Sources */,
 				F1MCF001 /* MiniSightConfirm.swift in Sources */,
 				BE1711170000000000000001 /* MiniSightResources.m in Sources */,
 				C0FFEE000000000000000001 /* MiniSightPet.m in Sources */,
 				BE1611160000000000000001 /* MiniSightPetEffects.m in Sources */,
+				BE231123A000000000000001 /* MiniSightRhythmClient.m in Sources */,
 				BE1611160000000000000004 /* MiniSightActionLibrary.m in Sources */,
 				BE1611160000000000000007 /* MiniSightLyrics.m in Sources */,
 				C0FFEE100000000000000001 /* MiniSightAI.m in Sources */,

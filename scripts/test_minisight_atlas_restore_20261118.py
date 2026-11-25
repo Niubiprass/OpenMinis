@@ -95,7 +95,7 @@ def excerpt(pet):
     NSInteger _column, _spriteLayout, _variantIndex;
     CGRect _lastSpriteRect, _lastNotifiedBounds;
     CGPoint _lastNotifiedCenter;
-    BOOL _longPressEnabled, _geometryReady;
+    BOOL _longPressEnabled, _geometryReady, _dailyActionsEnabled, _rhythmFollowing;
     double _roamPace, _lastSpriteTime, _poseBegan;
     UILabel *_sleepBadge;
 }

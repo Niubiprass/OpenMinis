@@ -23,7 +23,7 @@ STORE = IOS / "MiniSightConfigStore.swift"
 SNAPSHOT = IOS / "MiniSightSettings.swift"
 RUNTIME = IOS / "MiniSightInAppRuntime.swift"
 PAGES = IOS / "Views/Settings"
-PLUGIN = Path("/var/minis/shared/MiniSight-complete-20261105/debs/MiniSight")
+PLUGIN = ROOT.parent / "plugin/debs/MiniSight"
 
 
 def read(path):

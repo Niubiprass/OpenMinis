@@ -20,7 +20,29 @@ extension MiniSightAssetCatalog {
         _ = try commitAction(root, id: id, title: "cancelled", operation: operation)
     }
 }
+private func runDefaultBootstrapTests() throws {
+    let fm = FileManager.default
+    let png = MiniSightPetFile.url
+    let meta = MiniSightPetFile.directory.appendingPathComponent("pet.json")
+    try fm.createDirectory(at: MiniSightPetFile.directory, withIntermediateDirectories: true)
+    let fallback = try MiniSightDefaultAssets.stageFallback()
+    try expect(MiniSightDefaultAssets.validated(fallback), "actual bundled original bytes hash/ImageIO verified")
+    try expect(try MiniSightAssetCatalog.ensureDefaultIfAbsent(), "empty selection seeds default")
+    let originalImage = try Data(contentsOf: png), originalMeta = try Data(contentsOf: meta)
+    try expect(try !MiniSightAssetCatalog.ensureDefaultIfAbsent(), "existing default never reseeded")
+    try expect(try Data(contentsOf: png) == originalImage && Data(contentsOf: meta) == originalMeta, "default second pass exact bytes preserved")
+    try Data("bad user image".utf8).write(to: png)
+    try Data("{corrupt-user-metadata".utf8).write(to: meta)
+    try expect(try !MiniSightAssetCatalog.ensureDefaultIfAbsent(), "corrupt user pair is not replaced")
+    try expect(try Data(contentsOf: png) == Data("bad user image".utf8) && Data(contentsOf: meta) == Data("{corrupt-user-metadata".utf8), "bad selection left intact for render-only fallback")
+    try fm.removeItem(at: png); try fm.removeItem(at: meta)
+    try fm.createSymbolicLink(atPath: png.path, withDestinationPath: "does-not-exist.png")
+    try expect(try !MiniSightAssetCatalog.ensureDefaultIfAbsent(), "dangling user path never overwritten")
+    try fm.removeItem(at: png)
+}
+
 private func runImportTests() throws {
+    try runDefaultBootstrapTests()
     typealias C = MiniSightAssetCatalog
     typealias A = MiniSightActionImport
     let fm = FileManager.default

@@ -16,6 +16,8 @@
 #include "MiniSightLiveliness.h"
 #include "MiniSightPetBehavior.h"
 #include "MiniSightPetMusicMotion.h"
+#include "MiniSightPetRhythmPolicy.h"
+#include "MiniSightPetDailyPolicy.h"
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #define M_PI_2 (M_PI/2.)
@@ -68,6 +70,11 @@ static struct {
  MSGravityBody gravityBody;
  bool wantsPlaying,suspended,hasCenterBounds,hasPet,hidden,windowExists,windowHidden,layerExists,sheetExists;
  bool activityActive,interactionActive,lyricsSuppressed,roamingPaused,physicsMotion,motionActive,dragging,reducedWork,gravityEnabled,geometryReady,musicMotion;
+ bool dailyActionsEnabled; MSPetDailyFallback dailyFallback; unsigned lastDailyFallback; double dailyFallbackBegan;
+ bool rhythmFollowing,rhythmStarting;
+ uint64_t rhythmSessionToken;
+ MSPetRhythmPolicy rhythmPolicy;
+ MSPetRhythmAction rhythmAction;
  unsigned musicMotionStep,roamGeneration;
  double alpha,poseBegan,lastMotionTick,lastSpriteTime,stateHoldUntil,dailyActionDue,dailyActionHoldUntil,landingRecoveryBegan,jumpHeight;
  double flingSpin,flingSpinVelocity,flingSquash,gravityRoll,gravityStrength;
@@ -79,6 +86,8 @@ static struct {
 } P;
 static struct {
  bool running,busy,ownsSprite,dragging,flying,musicPlaying,waking,starsExists,hasLand,hasTap,manifestPresent,framePending;
+ bool dailyActionOwned,rhythmFollowing;
+ double rhythmStrength,rhythmPulse,rhythmAt;
  bool bubbleHidden,hasWalk,hasJump,hasDailyActionPool;
  int link,state,clip,recoveryStage,preferredFPS,linkFPS;
  unsigned displayedFrame,frameRequest,frameFailures,musicEvidenceBudget,lastMusicCue;
@@ -193,6 +202,11 @@ static void Fresh(bool actions,bool land) {
  P.center=(CGPoint){180,300};P.bounds=CGRectMake(0,0,80,90);Viewport.bounds=CGRectMake(0,0,360,780);
  MSRect b=MSBodyCenterBounds(360,780,(MSSize){80,90},2);
  P.centerBounds=CGRectMake(b.x,b.y,b.w,b.h);P.hasCenterBounds=true;
+ P.dailyActionsEnabled=true;
+ /* Legacy-regression cases intentionally select old opt-out mode; additional
+  * rhythm cases below explicitly select measured-input mode. Real init defaults
+  * to YES and is separately guarded, not represented by this memset fixture. */
+ P.rhythmFollowing=false;
  P.sheetExists=P.layerExists=P.hasPet=P.windowExists=P.wantsPlaying=true;P.alpha=1.;P.roamPace=1.;
  P.lastSpriteRect=CGRectNull;P.transform=S.transform=CGAffineTransformIdentity;
  E.scaleX.value=E.scaleY.value=1.;E.displayedFrame=NSNotFound;E.manifestPresent=actions;
@@ -411,6 +425,7 @@ static void DailyActionIndependentOfRoam(void) {
  E.musicPlaying=false;P.activityActive=true;P_tryDailyActionAt(Now);CHECK(DailyCalls==1&&P.dailyActionDue==0.);
  P.activityActive=false;P.resident.sleeping=true;P_tryDailyActionAt(Now);CHECK(DailyCalls==1&&P.dailyActionDue==0.);
  P.resident.sleeping=false;Chat=true;P_tryDailyActionAt(Now);CHECK(DailyCalls==1&&P.dailyActionDue==0.);Chat=false;
+ P.spriteLayout=1; /* Static legacy art has no safe no-package pose fallback. */
  DailyAvailable=false;P.dailyActionDue=Now-1.;P_tryDailyActionAt(Now);
  CHECK(DailyCalls==2&&P.dailyActionHoldUntil==0.&&fabs(P.dailyActionDue-Now-30.)<1e-9);
  CHECK(P.center.x==fixed.x&&P.center.y==fixed.y&&!P.motionActive);
@@ -430,6 +445,10 @@ static void InvisibleGate(void) {
  CHECK(!E.running);          /* effects tick retires itself when host invisible */
  puts("C PATH PASS: hidden/locked host stops frame, roam and music loops");
 }
+#include "rhythm_cases.c"
+#include "rhythm_extra_cases.c"
+#include "daily_fallback_cases.c"
+
 int main(int argc,char**argv) {
  for(int i=1;i<argc;i++) {
   if(!strcmp(argv[i],"--trace")&&i+1<argc){Trace=fopen(argv[++i],"w");CHECK(Trace);}
@@ -442,6 +461,7 @@ int main(int argc,char**argv) {
  MusicGates();
  MusicDragFlingLoop();
  MusicBoundsAndNormal();
+ RhythmSuite(); RhythmExtra(); DailyFallbackSuite();
  DailyActionIndependentOfRoam();
  InvisibleGate();
  if(Trace){fclose(Trace);Trace=NULL;}

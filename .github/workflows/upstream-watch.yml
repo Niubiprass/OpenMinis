@@ -26,7 +26,7 @@ jobs:
         run: |
           set -e
           echo "=== 当前钉住的上游版本 (port-and-build.yml 的 upstream_ref 默认) ==="
-          PINNED=$(awk '/upstream_ref:/{f=1} f&&/default: "/{print; exit}' .github/workflows/port-and-build.yml | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
+          PINNED=$(awk '/upstream_ref:/{f=1} f&&/default: "/{print; exit}' .github/archived-workflows/port-and-build.yml.disabled | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
           echo "当前钉住: ${PINNED:-未知}"
 
           echo "=== 获取上游 OpenMinis 最新 tag (按 semver 取最大) ==="
@@ -93,7 +93,7 @@ jobs:
                 echo ""
               fi
               echo "### 升级操作"
-              echo "到 **Actions → iOS15 移植并打包 IPA → Run workflow**，将 \`upstream_ref\` 改为 \`$LATEST\` 即可触发同步构建（含运行时修复 + 4 条自检）。"
+              echo "先评估合并到固定分支 ios15-160652-four-features，更新 scripts/app-release.json 的build号；仍只走 OpenMinis App — Build, Verify and Update，不再调用归档移植流程。"
             } > "$BODY_FILE"
             gh issue create --repo "$GITHUB_REPOSITORY" \
               --title "上游新版本 $LATEST 已发布，可评估同步到 iOS15 版" \

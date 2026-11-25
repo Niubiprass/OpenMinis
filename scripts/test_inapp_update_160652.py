@@ -17,7 +17,7 @@ ABOUT = ROOT / "src/ios/Views/Settings/AboutView.swift"
 CONTENT = ROOT / "src/ios/Views/ContentView.swift"
 DELEGATE = ROOT / "src/ios/AppDelegate.swift"
 PLIST = ROOT / "src/ios/Info.plist"
-WORKFLOW = ROOT / ".github/workflows/ios15-v64-repair.yml"
+WORKFLOW = ROOT / ".github/workflows/openminis-app.yml"
 
 fails = []
 
@@ -114,10 +114,15 @@ def main():
     # CI side.
     need("contents: write" in wf, "workflow may create releases")
     need("Publish beta release for the in-app updater" in wf, "publish step exists")
-    need("gh release create \"$TAG\"" in wf, "release is created")
-    need("latest.json" in wf, "manifest is published")
-    need("--prerelease" in wf, "tagged as a test channel")
-    need("Set :MinisBuildNumber ${{ github.run_number }}" in wf, "run number is injected")
+    need('python3 scripts/app_release.py publish' in wf, "verified publication entry exists")
+    publisher = (ROOT / 'scripts/app_release.py').read_text()
+    transaction = (ROOT / 'scripts/app_release_transaction.py').read_text()
+    need("CHANNEL = 'beta-latest'" in publisher and "'latest.json'" in publisher, "same fixed manifest is published")
+    need("'prerelease': True" in transaction, "tagged as a test channel")
+    need('Set :MinisBuildNumber ${APP_BUILD}' in wf and 'python3 scripts/app_release.py prepare' in wf,
+         "single explicit build config is injected (not a resettable per-workflow counter)")
+    need('gh release delete' not in wf and "['release', 'delete'" not in publisher,
+         "publication preserves the existing release and rollback assets")
 
     # build290: signing first and stamping Info.plist afterwards invalidated
     # the final IPA's Info signature slot despite a green pre-zip verification.

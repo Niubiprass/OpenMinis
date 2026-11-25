@@ -540,7 +540,55 @@ enum MiniSightAssetCatalog {
         return meta
     }
 
+    /// Bootstrap only a genuinely empty selection. Existing/corrupt legacy
+    /// pairs remain untouched; runtimes may render the separate fallback copy.
+    @discardableResult
+    static func ensureDefaultIfAbsent() throws -> Bool {
+        let data = try MiniSightDefaultAssets.stageFallback()
+        let fm = FileManager.default
+        for file in [MiniSightPetFile.url, metadataURL] {
+            if fm.fileExists(atPath: file.path) || (try? fm.destinationOfSymbolicLink(atPath: file.path)) != nil { return false }
+        }
+        var meta = Metadata(id: MiniSightDefaultAssets.id, title: MiniSightDefaultAssets.title,
+                            sourceKind: ImportKind.singleImage.rawValue, bytes: data.count,
+                            sha256: digest(data), revision: UUID().uuidString,
+                            createdAt: Date().timeIntervalSince1970)
+        meta.layoutVersion = 3; meta.variants = 1; meta.selectedVariant = 0
+        try verify(data, metadata: meta)
+        let json = try JSONEncoder().encode(meta)
+        var wroteImage = false
+        do {
+            try data.write(to: MiniSightPetFile.url, options: .withoutOverwriting); wroteImage = true
+            try json.write(to: metadataURL, options: .withoutOverwriting)
+            guard try boundedData(MiniSightPetFile.url, limit: maxStoredBytes) == data,
+                  try metadata(at: metadataURL) == meta else { throw Failure.verification }
+            changed()
+            return true
+        } catch {
+            // Never erase another writer's bytes or an already-existing user pair.
+            if wroteImage, (try? boundedData(MiniSightPetFile.url, limit: maxStoredBytes)) == data {
+                try? fm.removeItem(at: MiniSightPetFile.url)
+            }
+            if (try? boundedData(metadataURL, limit: 16 * 1024)) == json { try? fm.removeItem(at: metadataURL) }
+            throw error
+        }
+    }
+
+    /// Explicit user choice only; existing selection is backed up unchanged.
+    static func activateDefault() throws {
+        let data = try MiniSightDefaultAssets.stageFallback()
+        var meta = Metadata(id: MiniSightDefaultAssets.id, title: MiniSightDefaultAssets.title,
+                            sourceKind: ImportKind.singleImage.rawValue, bytes: data.count,
+                            sha256: digest(data), revision: UUID().uuidString,
+                            createdAt: Date().timeIntervalSince1970)
+        meta.layoutVersion = 3; meta.variants = 1; meta.selectedVariant = 0
+        try verify(data, metadata: meta)
+        try replaceCurrent(data, json: JSONEncoder().encode(meta), keepBackup: true)
+        changed()
+    }
+
     static func snapshot() throws -> Snapshot {
+        _ = try? ensureDefaultIfAbsent()
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let files = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey])
@@ -554,6 +602,10 @@ enum MiniSightAssetCatalog {
                let fresh = migrateSheet(file: file, metaFile: sidecar(file), meta: current) {
                 meta = fresh
                 migrated = true
+            }
+            if let checked = meta, checked.actionPack != nil {
+                // A removed/broken optional pack is not a selectable costume.
+                guard (try? verifyAction(checked)) != nil else { continue }
             }
             let bytes = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             let poseSheet = meta?.sourceKind == ImportKind.singleImage.rawValue && (meta?.variants ?? 1) == 72

@@ -54,6 +54,10 @@ P_METHODS={
  'restorePosterFrame':('void','void'), 'advanceSpriteAtTime:':('void','double now'),
  'frameTick:':('void','int timer'), 'setMusicPlaying:':('void','bool playing'),
  'scheduleDailyActionFrom:':('void','double now'), 'tryDailyActionAt:':('void','double now'),
+ 'cancelDailyAction':('void','void'), 'setDailyActionsEnabled:':('void','bool enabled'),
+ 'setRhythmFollowing:':('void','bool following'), 'clearRhythm':('void','void'),
+ 'resetRhythmForSession:':('void','uint64_t sessionToken'), 'checkRhythmAtTime:':('void','double now'),
+ 'applyRhythmFrame:receivedAt:':('void','MSRhythmFrame frame, double receivedAt'),
  'startMotionTo:jump:rest:':('void','CGPoint target, bool jump, double rest'),
  'beginDraggingAtPoint:':('void','CGPoint localPoint'),
  'updateDraggingTarget:':('void','CGPoint center'), 'endDraggingCancelled:':('void','bool cancelled'),
@@ -76,6 +80,8 @@ E_METHODS={
  'beginDragAt:':('void','CGPoint localPoint'), 'dragTo:':('void','CGPoint center'),
  'endDragCancelled:':('CGPoint','bool cancelled'), 'land':('void','void'), 'setRunning:':('void','bool running'),
  'tick:':('void','int link'), 'resetRigidPresentation':('void','void'),
+ 'cancelDailyAction':('void','void'), 'setRhythmFollowing:':('void','bool following'),
+ 'applyRhythmStrength:pulse:':('void','double strength, double pulse'),
 }
 P_SHIMS={'isActuallyVisible':'FixtureVisible','wakeForInteraction':'FixtureWake',
  'invalidateRoamTimer':'FixtureInvalidateRoam','invalidateFrameTimer':'FixtureInvalidateFrame',
@@ -144,6 +150,9 @@ def translate(raw,owner):
     s=re.sub(r'NSString \*source = [^\n]*;','',s)
     # ObjC object reads have controllable fixture metadata, not fake asset decoding.
     s=s.replace('_library.roles[@"land"].count','E.hasLand')
+    s=s.replace('[_transientRole isEqualToString:@"idleAlt"]','FixtureRole(E.transientRole, "idleAlt")')
+    s=s.replace('(MiniSightPetState)', '(int)')
+    s=s.replace('_effects.rhythmFollowing = following;', '[_effects setRhythmFollowing:following];')
     s=s.replace('_effects.actionManifestPath.length','E.manifestPresent')
     s=re.sub(r'\[_role isEqualToString:@"(\w+)"\]',r'FixtureRole(E.role, "\1")',s)
     s=s.replace('[self->_role isEqualToString:self->_transientRole]','FixtureRole(E.role, E.transientRole)')
@@ -301,7 +310,10 @@ def main(argv=None):
         td=Path(tmp)
         (td/'production-paths.h').write_text(header)
         shutil.copy(str(FIX/'driver.c'),str(td/'driver.c'))
-        for name in ('MiniSightGeometry.h','MiniSightGravity.h','MiniSightLiveliness.h','MiniSightPetBehavior.h','MiniSightPetMusicMotion.h'):
+        for case in ('rhythm_cases.c', 'rhythm_extra_cases.c', 'daily_fallback_cases.c'):
+            shutil.copy(str(FIX/case), str(td/case))
+        for name in ('MiniSightGeometry.h','MiniSightGravity.h','MiniSightLiveliness.h','MiniSightPetBehavior.h','MiniSightPetMusicMotion.h',
+                     'MiniSightPetRhythmPolicy.h','MiniSightRhythmFrame.h','MiniSightPetDailyPolicy.h'):
             shutil.copy(str(core/name),str(td/name))
         exe=td/'pet_paths'
         build=subprocess.run([cc,'-std=c99','-O1','-Wall','-Wno-unused-function','-I',str(td),
@@ -326,7 +338,10 @@ def main(argv=None):
               'no-music-motion-gate':(pet.replace('(_musicMotion && ![self mayPerformMusicMotion])','NO'),music),
             }
             playing=definition(pet,'setMusicPlaying:')
+            # The new rhythm reset also cancels an automatic route. Break BOTH
+            # stop guards so this remains a behavioral negative, not a no-op.
             missing_cancel=playing.replace('if (_musicMotion && !_physicsMotion && !_dragging) [self cancelMotion];','if (_musicMotion) { /* deliberately broken stop */ }')
+            missing_cancel=missing_cancel.replace('[self clearRhythm];', '/* deliberately broken rhythm stop */')
             variants['stop-keeps-music-route']=(pet.replace(playing,missing_cancel),music)
             for name,(mutated,policy) in variants.items():
                 assert (mutated,policy)!=(pet,music), 'no-op mutation '+name

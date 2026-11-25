@@ -16,6 +16,7 @@ static UIImage *MSAtlas;
         @"minisight.gravity": @"gravity", @"minisight.gravity.strength": @"gravityStrength",
         @"minisight.gravity.shake": @"gravityShake", @"minisight.interaction": @"interaction",
         @"minisight.gesture.single": @"singleTap", @"minisight.gesture.double": @"doubleTap",
+        @"minisight.actions.daily": @"dailyActionsEnabled",
         @"minisight.gesture.long": @"longPress", @"minisight.activity": @"activity",
         @"minisight.activity.interval": @"activityInterval", @"minisight.frameLimit": @"frameLimit",
         @"minisight.dragResponse": @"dragResponse", @"minisight.petSound": @"sound",

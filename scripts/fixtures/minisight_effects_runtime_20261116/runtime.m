@@ -585,6 +585,7 @@ static void InPlaceMusicAndLandOwnership(void) {
         MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@5.]), @"music": Clip(@"music", @[@.2,@.2])});
         Finish(r.library, Pixel(100));
         CGPoint fixed = r.pet.center; CGRect bounds = r.pet.bounds;
+        r.effects.rhythmFollowing = NO; // Explicit legacy-only regression, NOT the default music path.
         [r.effects setLegacyState:8 waking:NO]; r.effects.musicPlaying = YES;
         double low=1.,high=-1.;
         for (int i=0;i<240;i++) {
@@ -628,6 +629,25 @@ static void InPlaceMusicAndLandOwnership(void) {
     }
 }
 
+static void MeasuredMusicInputOnly(void) {
+    MSRig *r = Rig(@{@"idle": Clip(@"idle", @[@20.])});
+    Finish(r.library, Pixel(100));
+    CHECK(r.pet.rhythmFollowing && r.effects.rhythmFollowing && r.pet.dailyActionsEnabled);
+    CGPoint fixed = r.pet.center;
+    [r.effects setLegacyState:8 waking:NO]; r.effects.musicPlaying = YES;
+    for (int i=0;i<120;++i) {
+        r.effects.musicPosition = i*.02; Tick(r.effects,Now+.02);
+        CHECK(fabs(r.sprite.affineTransform.b)<.001 && fabs(r.sprite.affineTransform.ty)<.001);
+    }
+    double weakBob = 0., strongBob = 0.;
+    for (int i=0;i<40;++i) { [r.effects applyRhythmStrength:.12 pulse:.18]; Tick(r.effects,Now+.02); weakBob=fmax(weakBob,fabs(r.sprite.affineTransform.ty)); }
+    for (int i=0;i<40;++i) { [r.effects applyRhythmStrength:.8 pulse:.9]; Tick(r.effects,Now+.02); strongBob=fmax(strongBob,fabs(r.sprite.affineTransform.ty)); }
+    CHECK(strongBob>weakBob && strongBob>0.);
+    CHECK(CGPointEqualToPoint(fixed,r.pet.center)); // child sprite, never hit geometry.
+    for (int i=0;i<180;++i) Tick(r.effects,Now+.02);
+    CHECK(fabs(r.sprite.affineTransform.b)<.003 && fabs(r.sprite.affineTransform.ty)<.003);
+}
+
 #import "atlas_cases.inc"
 
 int main(void) { @autoreleasepool {
@@ -639,6 +659,7 @@ int main(void) { @autoreleasepool {
         {"tap-idleAlt-finish", TapAndIdleAltFinish}, {"daily-category-no-repeat-no-travel", DailyActionCategoryAndRepeat}, {"delayed-first-tap", DelayedTapFirstFrame},
         {"short-tap-no-loop", ShortTapDoesNotLoop}, {"busy-chat-retreat", BusyRetreat}, {"lyrics-never-title", LyricsOnly},
         {"in-place-music-land-ownership", InPlaceMusicAndLandOwnership},
+        {"measured-music-input-only", MeasuredMusicInputOnly},
         {"atlas-layouts-first-frame", AtlasLayouts}, {"atlas-repaint-same-image", AtlasRepaintAndSameImage},
         {"atlas-crop-failure-retry", AtlasCropFailureRetry}, {"atlas-action-poster-metadata", AtlasActionPosterMetadata},
         {"atlas-effects-failure-stop", AtlasEffectsFailureStop}, {"atlas-manifest-swap", AtlasManifestSwap}
@@ -652,6 +673,6 @@ int main(void) { @autoreleasepool {
         fprintf(stderr, "FAIL: %s exception: %s\n", Case, error.name.UTF8String); return 1;
     }
     CHECK(!Loads.count);
-    puts("NATIVE PASS: 11 original PetEffects + 1 daily-action + 6 production-excerpt atlas + 1 in-place/land ownership groups; no iOS/visual/network/device execution");
+    puts("NATIVE PASS: 11 original PetEffects + 1 daily-action + 6 production-excerpt atlas + 1 in-place/land ownership + 1 measured-input groups; no iOS/visual/network/device execution");
     return 0;
 } }

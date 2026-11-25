@@ -9,6 +9,7 @@
 //
 
 #import <UIKit/UIKit.h>
+#import "MiniSightRhythmFrame.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -41,8 +42,22 @@ typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
 - (void)updateDraggingTarget:(CGPoint)center NS_SWIFT_NAME(updateDraggingTarget(_:));
 - (void)endDraggingCancelled:(BOOL)cancelled NS_SWIFT_NAME(endDraggingCancelled(_:));
 @property (nonatomic, copy, nullable) NSString *actionManifestPath;
+/// Independent non-moving daily poses, default YES. NO cancels only this
+/// owner's pose/clip; no daily timer survives it, no manual motion is cancelled.
+@property (nonatomic) BOOL dailyActionsEnabled;
 @property (nonatomic, copy, nullable) NSString *lyricsLine;
 @property (nonatomic) BOOL musicPlaying;
+/// Measured-input mode, default YES. With musicPlaying it disables legacy timer
+/// travel/position sway. Feed real/fixture frames on main thread only.
+@property (nonatomic) BOOL rhythmFollowing;
+- (void)applyRhythmFrame:(MSRhythmFrame)frame receivedAt:(CFTimeInterval)receivedAt;
+/// Track/connection generation changes must call this BEFORE new input.
+/// Fences old sequence/epoch callbacks; never cancels a manual drag/fling.
+- (void)clearRhythm;
+/// Use ONLY after the client has fenced a new server/session. Token is an
+/// opaque nonzero owner identity; repeated same-token calls are no-ops.
+/// Allows a restarted service to reuse a formerly retired stream epoch.
+- (void)resetRhythmForSession:(uint64_t)sessionToken;
 @property (nonatomic) NSTimeInterval musicPosition;
 @property (nonatomic) BOOL lyricsSuppressed;
 

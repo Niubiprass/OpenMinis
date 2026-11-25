@@ -72,7 +72,10 @@ class Integration(unittest.TestCase):
         for key in ['lyricsEnabled', 'musicMotion']:
             self.assertIn('MiniSightSettingKey.' + key + ': false', keys)
             self.assertIn('MiniSightSettingKey.' + key + ': return ' + key, store)
-        self.assertIn('runtimeFields.count == 51', keys)  # Three explicit wake identity/settings additions.
+        self.assertIn('runtimeFields.count == 52', keys)  # Prior 51 fields plus the independent daily-action switch.
+        self.assertIn('MiniSightSettingKey.dailyActionsEnabled: "dailyActionsEnabled"', keys)
+        self.assertIn('MiniSightSettingKey.dailyActionsEnabled: true', keys)
+        self.assertIn('case MiniSightSettingKey.dailyActionsEnabled: return dailyActionsEnabled', store)
         for key in ['wakeEnabled', 'wakeName', 'wakePronunciation']:
             self.assertIn('MiniSightSettingKey.' + key + ':', keys)
             self.assertIn('case MiniSightSettingKey.' + key + ': return ' + key, store)

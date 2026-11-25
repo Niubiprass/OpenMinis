@@ -69,6 +69,15 @@ def errors(source):
         'progress stage tracking': '_progressAvailable',
         'request completion tracking': '_lyricsRequestFinished',
         'stable incomplete metadata': 'MSMusicTrackIdentityCompatible(first, last, player)',
+        'PID int dispatch': '((id (*)(id, SEL, int))objc_msgSend)(controller, sel, pid)',
+        'PID NSInteger dispatch': '((id (*)(id, SEL, NSInteger))objc_msgSend)(controller, sel, (NSInteger)pid)',
+        'PID runtime classifier': 'MSMusicPIDABIForTypes(sig.methodReturnType, sig.numberOfArguments,',
+        'PID controller nil diagnostic': '@"pid_controller_unavailable"',
+        'PID method missing diagnostic': '@"pid_method_unavailable"',
+        'PID signature diagnostic': '@"pid_signature_rejected"',
+        'PID nonpositive diagnostic': '@"player_pid_nonpositive"',
+        'PID nil mapping diagnostic': '@"pid_mapping_missing"',
+        'PID second mapping': 'NSString *pidReason = nil, *lastPlayer = MSMusicPIDPlayer(pid, &pidReason);',
     }
     result = [label for label, text in required.items() if text not in source]
     for forbidden in ('MRMediaRemoteSendCommand', 'MRMediaRemoteSetElapsedTime', 'NSLog(', '/api/get', 'AVAudioRecorder'):
@@ -97,6 +106,9 @@ class SourceTests(unittest.TestCase):
             ('verified && version == _bridgeVersion', 'verified'),
             ('self->_retryTimes[retryKey] = @(received + 60.);', ''),
             ('_readTimedOut = YES; ++_readGeneration;', '_readTimedOut = YES; _reading = NO;'),
+            ('((id (*)(id, SEL, int))objc_msgSend)(controller, sel, pid)', 'nil'),
+            ('((id (*)(id, SEL, NSInteger))objc_msgSend)(controller, sel, (NSInteger)pid)', 'nil'),
+            ('MSMusicPIDABIForTypes(sig.methodReturnType, sig.numberOfArguments,', 'wrongClassifier('),
         ):
             with self.subTest(mutation=old):
                 self.assertIn(old, source)
@@ -108,7 +120,7 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(source.count('static NSString *MSMusicResolvePlayer('), 1)
         self.assertNotIn('static NSString *MSMusicPlayer(', source)
         self.assertIn('!player && MSMusicMissingSource(playerReason) && MSMusicPID', source)
-        self.assertIn('!MSMusicPIDMatches(self->_pidRead, pid, [player isEqual:MSMusicPIDPlayer(pid, NULL)])', source)
+        self.assertIn('!MSMusicPIDMatches(self->_pidRead, pid, [player isEqual:lastPlayer])', source)
         self.assertIn('!MSMusicPublishDue(changed, force, MSMusicNow(), _writeAt)', source)
         self.assertIn('@"motionTime": @(motionPosition)', source)
         self.assertNotIn('_motionLogAt', source)
@@ -124,6 +136,23 @@ class SourceTests(unittest.TestCase):
             subprocess.run(['cc','-x','c','-Wall','-Werror','-o',str(binary),'-'],input='#include <assert.h>\n#include <stdbool.h>\n'+body+cases,text=True,check=True)
             subprocess.run([str(binary)],check=True)
 
+    def test_same_track_progress_group_policy(self):
+        source = (plugin() / 'MiniSightMusicMonitor.m').read_text()
+        body = source.split('// BEGIN MUSIC PROGRESS POLICY', 1)[1].split('// END MUSIC PROGRESS POLICY', 1)[0]
+        cases = '''int main(void) {
+            assert(MSMusicUseFirstProgress(true,true,true,true));
+            assert(!MSMusicUseFirstProgress(false,true,true,true));
+            assert(!MSMusicUseFirstProgress(true,false,true,true));
+            assert(!MSMusicUseFirstProgress(true,true,false,true));
+            assert(!MSMusicUseFirstProgress(true,true,true,false));
+        }'''
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / 'progress'
+            subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-pedantic','-x','c','-o',str(binary),'-'],
+                input='#include <assert.h>\n#include <stdbool.h>\n'+body+cases,text=True,check=True)
+            subprocess.run([str(binary)],check=True)
+        self.assertIn('for (NSString *field in @[@"ElapsedTime", @"PlaybackRate", @"Timestamp"])', source)
+
     def test_real_harness_is_not_python_model(self):
         native = FIXTURE.read_text()
         self.assertIn('#import "MiniSightMusicMonitor.m"', native)
@@ -137,6 +166,20 @@ class SourceTests(unittest.TestCase):
 
 
 class PortablePresentationTests(unittest.TestCase):
+    def test_actual_production_pid_abi(self):
+        cc = shutil.which('cc') or shutil.which('clang')
+        self.assertIsNotNone(cc, 'Portable C compiler is required')
+        with tempfile.TemporaryDirectory(prefix='minisight-pid-abi-') as tmp:
+            binary = Path(tmp) / 'player-abi'
+            result = subprocess.run([cc, '-std=c11', '-Wall', '-Wextra', '-Werror', '-pedantic',
+                '-I', str(plugin()), str(FIXTURE.with_name('player_abi.c')), '-o', str(binary)],
+                text=True, capture_output=True, timeout=90)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('PORTABLE PASS:', result.stdout)
+            print(result.stdout.strip())
+
     def test_actual_production_gate_and_epochs(self):
         cc = shutil.which('cc') or shutil.which('clang')
         self.assertIsNotNone(cc, 'Portable C compiler is required')

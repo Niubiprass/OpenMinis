@@ -64,8 +64,8 @@ check("只在新草稿消费", "if cached.isNew, vm.inputText" in chat)
 
 # 4. Retired packager.
 check("ios15-build.yml 已删除", not (ROOT / ".github/workflows/ios15-build.yml").exists())
-wf = (ROOT / ".github/workflows/ios15-v64-repair.yml").read_text()
-check("v64 Repair 仍是唯一出包流程", "ios15-v64-repair.yml" in wf)
+wf = (ROOT / ".github/workflows/openminis-app.yml").read_text()
+check("OpenMinis固定单一编译发布入口", 'name: OpenMinis App — Build, Verify and Update' in wf and 'python3 scripts/app_release.py publish' in wf)
 check("新测试已接入 CI", "test_plugin_workbench_160651.py" in wf)
 check("信号测试已接入 CI", "test_minisight_signal_160651.py" in wf)
 

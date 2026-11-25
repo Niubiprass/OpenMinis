@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "title": "小团 · 原创基础角色",
+  "author": "OpenMinis local repair original geometric artwork",
+  "license": "CC0-1.0",
+  "thirdPartyArt": false,
+  "frameCounts": [
+    6,
+    8,
+    8,
+    4,
+    5,
+    8,
+    6,
+    6,
+    6
+  ],
+  "columns": 8,
+  "rows": 9,
+  "cellSize": [
+    96,
+    104
+  ],
+  "actions": [
+    "idle/blink",
+    "step-right",
+    "step-left",
+    "simple-wave",
+    "hop",
+    "eyes-closed-rest",
+    "wake",
+    "drag-response",
+    "neutral-music-pose"
+  ],
+  "notDepicted": [
+    "stretch",
+    "yawn",
+    "fall-specific-limb-animation"
+  ],
+  "storageOrientation": "vertically inverted; existing loader flips once",
+  "files": {
+    "base-preview-atlas.png": "3746cdeece098d922c7cf92c00e5fbc4381e484d8a547b02e57215c5481c9849",
+    "base-preview.png": "a7f2580b16b0dea91843704979ae3de67b2ee04b9ef8f85d6352d5389c7bf386",
+    "base-storage-atlas.png": "fc7560e05d55c3276e3fc808a162583acfac9611b43e93f5682cd8cf61ccda9e"
+  }
+}

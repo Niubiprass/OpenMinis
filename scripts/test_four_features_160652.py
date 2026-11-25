@@ -22,7 +22,7 @@ oai = read('Providers/OpenAI/OpenAIAgentProvider.swift')
 gp = IOS / 'Agent/Chat/SessionWorkflowGate.swift'
 gate = gp.read_text() if gp.exists() else ''
 vm = read('Agent/Chat/AIChatViewModel.swift')
-workflow = (ROOT / '.github/workflows/ios15-v64-repair.yml').read_text()
+workflow = (ROOT / '.github/workflows/openminis-app.yml').read_text()
 localizable = json.loads((IOS / 'Localizable.xcstrings').read_text())
 
 checks = []
@@ -37,7 +37,7 @@ checks += [
     check('Responses identity is optional and resource-scoped', 'resourceIdentity: String?' in agent and 'credentialResourceIdentity: String?' in openai),
     check('Responses replay requires same resource', 'sameResource' in oai and 'echo.resourceIdentity != nil' in oai),
     check('synthetic function ids preserve call pairing', 'fc_syn_' in oai and 'safeCallId' in oai),
-    check('build number is 160652', 'CURRENT_PROJECT_VERSION=160652' in workflow and '160652-FourFeatures' in workflow),
+    check('CFBundleVersion stays 160652; updater build is separate', 'CURRENT_PROJECT_VERSION=160652' in workflow and 'Set :MinisBuildNumber ${APP_BUILD}' in workflow),
 ]
 
 # The user explicitly excluded #185 body-size budgeting and automatic 413 shrinking.
