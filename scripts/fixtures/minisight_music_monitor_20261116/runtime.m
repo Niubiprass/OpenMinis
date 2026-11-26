@@ -151,10 +151,165 @@ static void Kick(MiniSightMusicMonitor *m) { [m setValue:@0 forKey:@"pollAt"]; [
 static void Song(NSString *title, NSString *identifier) {
     GiveInfo(Info(title, identifier), NO); GiveState(YES); GiveInfo(Info(title, identifier), NO);
 }
+static NSMutableDictionary *DurationInfo(double duration, NSString *identifier) {
+    NSMutableDictionary *info = Info(@"Continuity", identifier);
+    info[@"kMRMediaRemoteNowPlayingInfoDuration"] = @(duration);
+    return info;
+}
+static void DurationSong(double first, double last) {
+    GiveInfo(DurationInfo(first, @"duration-id"), NO); GiveState(YES);
+    GiveInfo(DurationInfo(last, @"duration-id"), NO);
+}
+static MiniSightMusicMonitor *ReadyDuration(FakeClient **client) {
+    MiniSightMusicMonitor *m = NewMonitor(client);
+    DurationSong(261., 261.);
+    Check((*client).requests == 1, "one mocked lyrics GET dispatch, not bridge POST");
+    (*client).completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]duration-current" duration:261]); Pump();
+    Check(![m.snapshot[@"line"] length], "fetch result still requires a fresh sandwich");
+    Kick(m); DurationSong(261.1316, 261.2245);
+    Check([m.snapshot[@"line"] isEqual:@"duration-current"] && (*client).requests == 1,
+        "261 -> 261.1316/261.2245 fresh double read reuses timeline without another lyrics GET");
+    return m;
+}
+static void TestDurationContinuity(void) {
+    FakeClient *c; MiniSightMusicMonitor *m = ReadyDuration(&c);
+    MiniSightLyricsTrack *anchor = [m valueForKey:@"track"];
+    MiniSightLyricsTimeline *timeline = [m valueForKey:@"timeline"];
+    NSUInteger generation = [[m valueForKey:@"trackGeneration"] unsignedIntegerValue];
+    for (int i=0; i<4; ++i) {
+        Kick(m); DurationSong(i % 2 ? 261.2245 : 261.1316, i % 2 ? 261.1316 : 261.2245);
+        Check([m valueForKey:@"track"] == anchor && anchor.duration == 261. &&
+            [m valueForKey:@"timeline"] == timeline && c.requests == 1 &&
+            [[m valueForKey:@"trackGeneration"] unsignedIntegerValue] == generation,
+            "continuous fractional samples keep same timeline, original anchor, generation and GET count");
+    }
+    Kick(m); DurationSong(261., 262.);
+    Check([m valueForKey:@"timeline"] == timeline && [m valueForKey:@"track"] == anchor && c.requests == 1,
+        "inclusive one-second anchor boundary survives");
+    Kick(m); GiveInfo(DurationInfo(262.000001, @"duration-id"), NO);
+    Check([m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length],
+        "one second plus epsilon rejected on FIRST read"); Stop(m);
+
+    m = ReadyDuration(&c); timeline = [m valueForKey:@"timeline"];
+    Kick(m); DurationSong(261.8, 261.8);
+    Check([m valueForKey:@"timeline"] == timeline && ((MiniSightLyricsTrack *)[m valueForKey:@"track"]).duration == 261.,
+        "first +0.8 does not move anchor");
+    Kick(m); GiveInfo(DurationInfo(262.6, @"duration-id"), NO);
+    Check([m valueForKey:@"timeline"] == nil, "second +0.8 cannot accumulate drift"); Stop(m);
+
+    for (NSString *field in @[@"Title", @"Artist", @"UniqueIdentifier"]) {
+        m = ReadyDuration(&c);
+        NSMutableDictionary *changed = DurationInfo(261.2245, @"duration-id");
+        changed[[ @"kMRMediaRemoteNowPlayingInfo" stringByAppendingString:field]] = @"Different";
+        Kick(m); GiveInfo(changed, NO);
+        Check([m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length],
+            "epsilon never overrides title/artist/known identifier conflict"); Stop(m);
+    }
+    m = ReadyDuration(&c); fixturePlayer = @"com.tencent.QQMusic"; Kick(m);
+    Check([m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length],
+        "source switch revokes before B first read"); Stop(m);
+
+    m = ReadyDuration(&c); timeline = [m valueForKey:@"timeline"];
+    Kick(m); GiveInfo(DurationInfo(261.1316, @"duration-id"), NO); GiveState(YES);
+    NSMutableDictionary *otherID = DurationInfo(261.2245, @"different-id"); GiveInfo(otherID, NO);
+    Check([m valueForKey:@"timeline"] == nil, "sandwich ID conflict rejected even with bounded duration"); Stop(m);
+
+    m = ReadyDuration(&c); timeline = [m valueForKey:@"timeline"];
+    Kick(m); NSMutableDictionary *firstProgress = DurationInfo(261.1316, @"duration-id");
+    firstProgress[@"kMRMediaRemoteNowPlayingInfoElapsedTime"] = @2;
+    firstProgress[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"] = @0.5;
+    GiveInfo(firstProgress, NO); GiveState(YES);
+    NSMutableDictionary *lastMissing = DurationInfo(261.2245, @"duration-id");
+    [lastMissing removeObjectForKey:@"kMRMediaRemoteNowPlayingInfoElapsedTime"];
+    GiveInfo(lastMissing, NO);
+    Check([[m valueForKey:@"elapsed"] doubleValue] == 2. && [[m valueForKey:@"rate"] doubleValue] == .5 &&
+        [m valueForKey:@"timeline"] == timeline && c.requests == 1, "fractional double read preserves progress as GROUP");
+    NSMutableDictionary *beyondAnchor = DurationInfo(261.8, @"duration-id");
+    beyondAnchor[@"kMRMediaRemoteNowPlayingInfoElapsedTime"] = @261.5;
+    [m applyInfo:beyondAnchor playing:YES player:@"com.apple.Music"];
+    Check(![m.snapshot[@"playing"] boolValue] && ![m.snapshot[@"line"] length],
+        "epsilon cannot extend original timeline progress boundary"); Stop(m);
+
+    m = ReadyDuration(&c); timeline = [m valueForKey:@"timeline"];
+    fixturePIDBundle = @"com.apple.Music"; fixturePlayer = nil;
+    fixturePIDController = [PIDSameBundle new]; MSMusicPID = GetPID;
+    Kick(m); GivePID(123); DurationSong(261.1316, 261.2245); GivePID(123);
+    Check([m valueForKey:@"timeline"] == timeline && [[m valueForKey:@"verifiedPID"] intValue] == 123,
+        "fresh two-PID fractional sandwich retains anchor");
+    fixturePlayer = @"com.apple.Music"; Kick(m); DurationSong(261.2245, 261.1316);
+    Check([[m valueForKey:@"verifiedPID"] intValue] == 123 && [m valueForKey:@"timeline"] == timeline,
+        "fractional direct sample cannot erase positive PID fence");
+    fixturePlayer = nil; Kick(m); GivePID(456); DurationSong(261.2245, 261.2245); GivePID(456);
+    Check([m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length],
+        "new PID instance rejects fractional same-song candidate");
+    Stop(m); MSMusicPID = NULL; fixturePIDController = nil; fixturePIDBundle = @"com.netease.cloudmusic";
+
+    m = ReadyDuration(&c); timeline = [m valueForKey:@"timeline"];
+    Kick(m); GiveInfo(DurationInfo(261.1316, @"duration-id"), NO); GiveState(NO);
+    Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue], "fractional pause immediately hidden");
+    GiveInfo(DurationInfo(261.2245, @"duration-id"), NO);
+    fixtureTime += 1.; Kick(m); DurationSong(261.2245, 261.1316);
+    Check([m valueForKey:@"timeline"] == timeline && c.requests == 1 && [m.snapshot[@"line"] length],
+        "fractional pause/resume requires completed fresh sandwich, no second GET");
+    [m handleMediaChange]; double deadline = [[m valueForKey:@"candidateUntil"] doubleValue];
+    NSMutableDictionary *partialDuration = DurationInfo(261.2245, @"duration-id");
+    [partialDuration removeObjectForKey:@"kMRMediaRemoteNowPlayingInfoArtist"];
+    fixtureTime += .5; Kick(m); GiveInfo(partialDuration, NO); GiveState(YES); GiveInfo(partialDuration, NO);
+    Check([[m valueForKey:@"candidateUntil"] doubleValue] == deadline && ![m.snapshot[@"line"] length],
+        "fractional partial cannot consume/renew absolute hidden deadline");
+    fixtureTime = deadline + .01; [m setValue:@(fixtureTime+10.) forKey:@"pollAt"]; [m tick];
+    Check([m valueForKey:@"timeline"] == nil && [m valueForKey:@"track"] == nil,
+        "fractional partial candidate destroyed after original three seconds"); Stop(m);
+
+    m = NewMonitor(&c); DurationSong(261., 261.); c.completion(nil); Pump();
+    Kick(m); DurationSong(261.1316, 261.2245);
+    Check(c.requests == 2 && ((MiniSightLyricsTrack *)[m valueForKey:@"track"]).duration == 261.2245,
+        "without successful timeline, fractional retry retains exact track key");
+    c.completion(nil); Pump(); Kick(m); DurationSong(261.2245, 261.2245);
+    Check(c.requests == 2, "same exact failed signature still observes 60-second cooldown"); Stop(m);
+}
+static void TestMusicHostLease(void) {
+    FakeClient *c; MiniSightMusicMonitor *m = NewMonitor(&c);
+    Song(@"Lease", @"lease-id");
+    NSUInteger token=[m.snapshot[@"rhythmGeneration"] unsignedIntegerValue];
+    Check(token == 1 && [m.snapshot[@"playing"] boolValue], "initial active music lease starts at one");
+    Check(CFGetTypeID((__bridge CFTypeRef)m.snapshot[@"progressAvailable"]) == CFBooleanGetTypeID() &&
+        [m.snapshot[@"progressAvailable"] boolValue] && [m.snapshot[@"motionRate"] doubleValue] == 1., "fresh position flag is a real JSON BOOL and finite normal rate");
+    c.completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]lease-line" duration:120]); Pump();
+    Kick(m); Song(@"Lease", @"lease-id");
+    Check([m.snapshot[@"rhythmGeneration"] unsignedIntegerValue] == token && [m.snapshot[@"line"] length], "timeline callback and lyric generation are independent of music lease");
+    for (NSUInteger i=0;i<100;++i) {
+        [m setValue:@([[m valueForKey:@"trackGeneration"] unsignedIntegerValue]+1) forKey:@"trackGeneration"];
+        [m publishLine:nil playing:YES force:YES];
+        Check([m.snapshot[@"rhythmGeneration"] unsignedIntegerValue] == token && ![m.snapshot[@"line"] length], "line:nil and one hundred lyric generations never restart motion token");
+    }
+    [m setValue:@(fixtureTime-6.01) forKey:@"validAt"]; [m publishLine:nil playing:YES force:YES];
+    Check(![m.snapshot[@"progressAvailable"] boolValue] && [m.snapshot[@"rhythmGeneration"] unsignedIntegerValue] == token, "expired position evidence is false without restarting music lease");
+    [m setValue:@(fixtureTime) forKey:@"validAt"]; [m setValue:@YES forKey:@"awaitingFreshInfo"];
+    [m publishLine:nil playing:YES force:YES];
+    Check(![m.snapshot[@"progressAvailable"] boolValue], "awaiting fresh identity cannot manufacture measured position");
+    [m setValue:@NO forKey:@"awaitingFreshInfo"];
+    [m setValue:@NO forKey:@"progressAvailable"]; [m publishLine:nil playing:YES force:YES];
+    Check(![m.snapshot[@"progressAvailable"] boolValue] && [m.snapshot[@"rhythmGeneration"] unsignedIntegerValue] == token, "missing position evidence does not close enabled music lease");
+    [m beginPause];
+    Check([m.snapshot[@"rhythmGeneration"] unsignedIntegerValue] == 0 && [[m valueForKey:@"rhythmGeneration"] unsignedIntegerValue] == token &&
+        ![m.snapshot[@"progressAvailable"] boolValue], "pause closes snapshot token and evidence but retains internal counter");
+    Kick(m); Song(@"Lease", @"lease-id");
+    Check([m.snapshot[@"rhythmGeneration"] unsignedIntegerValue] == token+1, "fresh resumed sandwich advances music lease once");
+    fixturePlayer=@"com.tencent.QQMusic"; Kick(m);
+    Check([m.snapshot[@"rhythmGeneration"] unsignedIntegerValue] == 0 && ![m.snapshot[@"progressAvailable"] boolValue], "source switch closes old music input before callback");
+    Song(@"Lease", @"lease-id");
+    Check([m.snapshot[@"rhythmGeneration"] unsignedIntegerValue] == token+2, "verified new source advances music lease");
+    [m applyInfo:@{} playing:NO player:fixturePlayer];
+    Check([m.snapshot[@"rhythmGeneration"] unsignedIntegerValue] == 0 && ![m.snapshot[@"progressAvailable"] boolValue], "confirmed stop clears motion token and fresh position flag");
+    Stop(m);
+}
+
 int main(void) { @autoreleasepool {
     disk = [NSMutableDictionary dictionary]; infos = [NSMutableArray array]; states = [NSMutableArray array];
     pids = [NSMutableArray array]; MSMusicTestNow = FixtureNow;
     MSMusicInfo = GetInfo; MSMusicIsPlaying = GetState;
+    TestMusicHostLease();
     Check(MSMusicObject([WrongReturn new], @"bad") == nil, "reject scalar ObjC return ABI");
     NSString *playerReason = nil;
     fixturePlayer = @"com.netease.cloudmusic";
@@ -169,6 +324,7 @@ int main(void) { @autoreleasepool {
     Check([MiniSightMusicMonitor deviceIsUnlocked], "explicit unlocked lock-state ABI");
     fixtureLocked = YES; Check(![MiniSightMusicMonitor deviceIsUnlocked], "lock is not the same as a lit screen");
     fixtureLocked = NO;
+    TestDurationContinuity();
     FakeClient *c; MiniSightMusicMonitor *m = NewMonitor(&c);
     NSMutableDictionary *partial = Info(@"A", @"1");
     [partial removeObjectForKey:@"kMRMediaRemoteNowPlayingInfoArtist"];
@@ -204,9 +360,9 @@ int main(void) { @autoreleasepool {
     Stop(m);
     m = NewMonitor(&c);
     NSMutableDictionary *drift = Info(@"A", @"1");
-    drift[@"kMRMediaRemoteNowPlayingInfoDuration"] = @121;
+    drift[@"kMRMediaRemoteNowPlayingInfoDuration"] = @121.000001;
     GiveInfo(Info(@"A", @"1"), NO); GiveState(YES); GiveInfo(drift, NO);
-    Check(c.requests == 0, "track identity is exact, not response-duration tolerance");
+    Check(c.requests == 0, "double read rejects over-one-second continuity, not provider response tolerance");
     Stop(m);
     m = NewMonitor(&c);
     for (int i = 0; i < 1000; ++i) [m mediaChanged:nil]; Pump();

@@ -83,6 +83,7 @@ jobs:
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_subscription_checkin_20261113.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_group_order_20261113.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_list_20261115.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_model_catalog_160651.py
           python3 scripts/test_v64r_text_layout.py
           python3 scripts/test_model_refresh_authoritative_160652.py
           python3 scripts/test_inapp_update_160652.py
@@ -128,6 +129,7 @@ jobs:
           python3 scripts/test_minisight_pet_paths_20261122.py --mutations
           python3 scripts/test_minisight_daily_actions_20261125.py
           "$RUNNER_TEMP/openminis-workflow-tools/bin/python" scripts/test_minisight_defaults_settings_20261125.py --require-native
+          python3 scripts/test_rhythm_release_pair_20261126.py
           python3 scripts/test_minisight_rhythm_20261125.py
           python3 scripts/test_minisight_complete_wiring_20261125.py
           python3 scripts/test_app_release.py
@@ -218,6 +220,7 @@ jobs:
             -parallelizeTargets -jobs 4 CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
             CURRENT_PROJECT_VERSION=160652 \
+            MINISIGHT_RHYTHM_PAIR=1 \
             SWIFT_OPTIMIZATION_LEVEL=-Osize build 2>&1 | tee build-v64r.log
       - name: Package without adding elevated entitlements
         if: env.APP_MODE == 'build'

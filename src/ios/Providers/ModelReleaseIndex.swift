@@ -24,7 +24,7 @@ enum ModelReleaseIndex {
     /// Sort key for one model. Ordering is: newest release first, then the more
     /// expensive (≈ larger / more capable) model, then the bigger context
     /// window, then name for a stable, non-jittery final order.
-    struct Rank: Comparable {
+    struct Rank: Comparable, Sendable {
         /// Days since epoch; `nil` release date sorts last (see `<`).
         let releaseDay: Int?
         let outputCostPerMTok: Double
@@ -71,8 +71,9 @@ enum ModelReleaseIndex {
 
     /// Full ranking key. Pass the display name so same-date/same-price models
     /// still land in a deterministic order.
-    static func rank(modelId: String, displayName: String, contextWindow: Int?) -> Rank {
-        let hit = resolve(modelId)
+    static func rank(modelId: String, displayName: String, contextWindow: Int?,
+                     index: ModelsDevAPI.ReleaseIndex? = ModelsDevAPI.releaseIndex()) -> Rank {
+        let hit = resolve(modelId, index: index)
         return Rank(
             releaseDay: hit.day,
             outputCostPerMTok: hit.outputCost ?? 0,
@@ -91,8 +92,9 @@ enum ModelReleaseIndex {
         var tier: MatchTier
     }
 
-    private static func resolve(_ raw: String) -> Hit {
-        guard let index = ModelsDevAPI.releaseIndex() else {
+    private static func resolve(_ raw: String,
+                                index: ModelsDevAPI.ReleaseIndex? = ModelsDevAPI.releaseIndex()) -> Hit {
+        guard let index else {
             return Hit(date: nil, day: nil, outputCost: nil, context: nil, tier: .miss)
         }
         let cleaned = clean(raw)
@@ -168,7 +170,6 @@ enum ModelReleaseIndex {
 
     // MARK: - Date parsing
 
-    private static let calendar = Calendar(identifier: .gregorian)
     private static let epoch = DateComponents(calendar: Calendar(identifier: .gregorian),
                                               timeZone: TimeZone(secondsFromGMT: 0),
                                               year: 1970, month: 1, day: 1).date!
@@ -188,6 +189,8 @@ enum ModelReleaseIndex {
         var c = DateComponents()
         c.year = year; c.month = month; c.day = day
         c.timeZone = TimeZone(secondsFromGMT: 0)
+        // Calendar has internal reference storage: use one local value per call.
+        let calendar = Calendar(identifier: .gregorian)
         guard let date = calendar.date(from: c) else { return nil }
         let days = Int(date.timeIntervalSince(epoch) / 86_400)
         return (date, days)

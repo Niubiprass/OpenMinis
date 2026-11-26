@@ -652,6 +652,24 @@ static void MeasuredMusicInputOnly(void) {
     CHECK(CGPointEqualToPoint(fixed,r.pet.center)); // child sprite, never hit geometry.
     for (int i=0;i<180;++i) Tick(r.effects,Now+.02);
     CHECK(fabs(r.sprite.affineTransform.b)<.003 && fabs(r.sprite.affineTransform.ty)<.003);
+    // Two actual library roles: music does not replace ordinary idle/idleAlt.
+    MSRig *m = Rig(@{@"idle": Clip(@"ordinary-idle", @[@5.]),
+        @"idleAlt": DailyClip(@"ordinary-stretch", @"micro", @[@.3,@.3]),
+        @"music": Clip(@"measured-music", @[@.2,@.2])});
+    Finish(m.library,Pixel(100)); CGPoint anchor=m.pet.center;
+    m.effects.lyricsLine=nil; m.effects.musicPlaying=YES;
+    [m.effects setLegacyState:8 waking:NO];
+    [m.effects applyRhythmStrength:.8 pulse:.9]; Tick(m.effects,Now+.02);
+    CHECK([Role(m.effects) isEqual:@"music"] && [m.effects performDailyAction]==0.);
+    Finish(m.library,Pixel(150));
+    for(int i=0;i<40;++i){[m.effects applyRhythmStrength:.8 pulse:-.9];Tick(m.effects,Now+.02);}
+    CHECK(m.sprite.affineTransform.b<-.02 && CGPointEqualToPoint(anchor,m.pet.center));
+    CHECK(m.effects.lyricsLine==nil && [Role(m.effects) isEqual:@"music"]);
+    m.effects.musicPlaying=NO;[m.effects setLegacyState:0 waking:NO];Tick(m.effects,Now+.02);
+    CHECK([Role(m.effects) isEqual:@"idle"]);Finish(m.library,Pixel(100));
+    CHECK([m.effects performDailyAction]>0. && [Role(m.effects) isEqual:@"idleAlt"]);
+    Finish(m.library,Pixel(130));[m.effects cancelDailyAction];
+    CHECK([Role(m.effects) isEqual:@"idle"]);
 }
 
 #import "atlas_cases.inc"

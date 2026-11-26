@@ -642,10 +642,150 @@ final class ProviderRowCredentialCache: @unchecked Sendable {
     }
 }
 
+// BEGIN QUOTA_ROW_PROJECTION_LOADER
+/// Display-only, per-row projection. Never owns credentials or quota requests.
+/// One read + one replaceable pending request; a canceled read keeps its slot
+/// until it returns, so a disappearing/reappearing row cannot fan out workers.
+@MainActor final class ProviderQuotaRowProjectionLoader: ObservableObject {
+    struct Display: Equatable, Sendable {
+        enum Kind: Equatable, Sendable { case used, balance }
+        let displayText: String
+        let highlighted: Bool
+        let kind: Kind
+    }
+    struct Scope: Equatable, Sendable {
+        let instanceId: String
+        let providerType: String
+        let credentialType: String
+        let root: String?
+        let appendV1Suffix: Bool
+        let accountIds: [String]?
+        let activeAccountId: String?
+        let authRevision: UInt
+        let configRevision: UInt
+        let snapshotRevision: UInt
+        let credentialGeneration: UInt
+    }
+    private struct Request: Sendable {
+        let scope: Scope
+        let generation: UInt64
+        let quotaRevision: Int
+    }
+    typealias Reader = @Sendable (Scope) -> Display?
+    typealias Validator = @MainActor (Scope, Int) -> Bool
+    @Published private(set) var display: Display?
+    private var scope: Scope?
+    private var generation: UInt64 = 0
+    private var pending: Request?
+    private var projectionTask: Task<Void, Never>?
+    private let reader: Reader
+    private let isCurrent: Validator
+
+    init(reader: Reader? = nil, isCurrent: Validator? = nil) {
+        self.reader = reader ?? Self.readCached
+        self.isCurrent = isCurrent ?? Self.currentScopeMatches
+    }
+    deinit { projectionTask?.cancel() }
+
+    func value(for wantedScope: Scope) -> Display? {
+        scope == wantedScope ? display : nil
+    }
+    private func publish(_ value: Display?) {
+        // A global quota revision (including another row) does not redraw this
+        // row unless its actual pill/circle projection changed.
+        if display != value { display = value }
+    }
+    func cancel() {
+        generation &+= 1
+        scope = nil; pending = nil
+        projectionTask?.cancel()
+        publish(nil)
+        // Do not release the in-flight slot before the worker has returned.
+    }
+    func project(scope wantedScope: Scope, quotaRevision: Int) {
+        if scope != wantedScope {
+            cancel() // never keep an old owner's pill across a scope change
+            scope = wantedScope
+        }
+        generation &+= 1
+        pending = Request(scope: wantedScope, generation: generation, quotaRevision: quotaRevision)
+        startProjection()
+    }
+    private func accepts(_ request: Request) -> Bool {
+        scope == request.scope && generation == request.generation
+    }
+    private func startProjection() {
+        guard projectionTask == nil, let request = pending else { return }
+        pending = nil
+        let reader = self.reader
+        let isCurrent = self.isCurrent
+        projectionTask = Task { [weak self] in
+            // No strong self across this await: deinit can cancel a blocked read.
+            let value = await Self.buildDisplay(scope: request.scope, reader: reader)
+            guard let self else { return }
+            self.projectionTask = nil
+            if !Task.isCancelled, self.accepts(request),
+               isCurrent(request.scope, request.quotaRevision) {
+                self.publish(value)
+            }
+            self.startProjection()
+        }
+    }
+    nonisolated private static func buildDisplay(scope: Scope, reader: @escaping Reader) async -> Display? {
+        let worker = Task.detached(priority: .utility) {
+            guard !Task.isCancelled else { return nil as Display? }
+            return reader(scope)
+        }
+        return await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+    }
+    nonisolated private static func readCached(_ scope: Scope) -> Display? {
+        // cachedQuota's lock, threshold Defaults read and reproject all stay on
+        // this worker. Its original asynchronous owner validation is unchanged.
+        guard let quota = ProviderQuotaService.shared.cachedQuota(instanceId: scope.instanceId) else { return nil }
+        return Display(displayText: quota.displayText, highlighted: quota.highlighted,
+                       kind: quota.kind == .balance ? .balance : .used)
+    }
+    static func makeScope(instance: ProviderInstance, authRevision: UInt,
+                          configRevision: UInt, snapshotRevision: UInt,
+                          credentialGeneration: UInt) -> Scope {
+        Scope(instanceId: instance.id, providerType: instance.providerType.rawValue,
+              credentialType: instance.credentialType.rawValue, root: instance.customBaseURL,
+              appendV1Suffix: instance.appendV1Suffix, accountIds: instance.subscriptionAccountIds,
+              activeAccountId: instance.subscriptionActiveAccountId, authRevision: authRevision,
+              configRevision: configRevision, snapshotRevision: snapshotRevision,
+              credentialGeneration: credentialGeneration)
+    }
+    private static func currentScopeMatches(_ scope: Scope, _ revision: Int) -> Bool {
+        let store = ProviderConfigStore.shared
+        guard let current = store.instance(for: scope.instanceId),
+              ProviderQuotaService.shared.revision == revision else { return false }
+        return scope == makeScope(instance: current, authRevision: store.authRevision,
+                                  configRevision: store.configRevision,
+                                  snapshotRevision: store.modelSnapshotRevision,
+                                  credentialGeneration: ProviderRowCredentialCache.shared.generation)
+    }
+}
+// END QUOTA_ROW_PROJECTION_LOADER
+
 private struct InstanceRow: View {
     let instance: ProviderInstance
     @ObservedObject private var store = ProviderConfigStore.shared
-    @ObservedObject private var quotaService = ProviderQuotaService.shared
+    private let quotaService = ProviderQuotaService.shared
+    private let thresholdChanges = NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+    @StateObject private var quotaLoader = ProviderQuotaRowProjectionLoader()
+    @State private var isQuotaVisible = false
+
+    private var quotaScope: ProviderQuotaRowProjectionLoader.Scope {
+        ProviderQuotaRowProjectionLoader.makeScope(
+            instance: instance, authRevision: store.authRevision,
+            configRevision: store.configRevision, snapshotRevision: store.modelSnapshotRevision,
+            credentialGeneration: credentialGeneration)
+    }
+
+    @MainActor private func projectQuota() {
+        guard isQuotaVisible else { return }
+        quotaLoader.project(scope: quotaScope, quotaRevision: quotaService.revision)
+    }
 
     @State private var credentialResult: (request: ProviderRowCredentialCache.Request,
                                            display: ProviderRowCredentialCache.Display)?
@@ -675,8 +815,8 @@ private struct InstanceRow: View {
         let credentialDisplay = (credentialResult?.request == request ? credentialResult?.display : nil)
             ?? ProviderRowCredentialCache.shared.cachedDisplay(for: request) ?? .loading
         let modelCount = store.visibleEntryCount(for: instance.id)
-        // [T-115-quota] Quota pill for this instance (nil = unsupported/unfetched).
-        let quota = quotaService.cachedQuota(instanceId: instance.id)
+        // [T-115-quota] Pure display only: no quota lock/Defaults/reproject in body.
+        let quota = quotaLoader.value(for: quotaScope)
         HStack(spacing: 12) {
             Circle()
                 .fill(quota?.highlighted == true ? Color.yellow
@@ -743,7 +883,18 @@ private struct InstanceRow: View {
         .onReceive(NotificationCenter.default.publisher(for: ProviderRowCredentialCache.didInvalidate)
             .receive(on: DispatchQueue.main)) { _ in
                 credentialGeneration = ProviderRowCredentialCache.shared.generation
+                quotaLoader.cancel()
+                projectQuota()
         }
+        // @Published sends in willSet: enqueue before reading service/cache.
+        // There is no per-instance revision payload, so never filter these out.
+        .onReceive(quotaService.$revision.receive(on: DispatchQueue.main)) { _ in
+            projectQuota()
+        }
+        .onReceive(thresholdChanges.receive(on: DispatchQueue.main)) { _ in
+            projectQuota()
+        }
+        .onChange(of: quotaScope) { _ in projectQuota() }
         .task(id: request) {
             let cache = ProviderRowCredentialCache.shared
             let latestGeneration = cache.generation
@@ -757,8 +908,14 @@ private struct InstanceRow: View {
             credentialResult = (request, display)
         }
         .onAppear {
+            isQuotaVisible = true
+            projectQuota()
             // Existing 15-minute foreground gate stays in the quota service.
             quotaService.refreshAllIfNeeded(instances: [instance])
+        }
+        .onDisappear {
+            isQuotaVisible = false
+            quotaLoader.cancel()
         }
     }
 }

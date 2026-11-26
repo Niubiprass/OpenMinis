@@ -96,7 +96,8 @@ static inline MSPetRhythmAction MSPetRhythmConsume(MSPetRhythmPolicy *s,
     s->previousRMS = f.rms; s->previousPeak = f.peak;
     a.accepted = true;
     a.strength = MSClamp(f.rms * 2.4 + f.peak * .45, 0., 1.);
-    a.pulse = MSClamp((.5 + .5 * cos(6.2831853071795864769 * f.phase)) * a.strength, 0., 1.);
+    // Signed measured phase drives left AND right sway; never a timer/LRC beat.
+    a.pulse = MSClamp(cos(6.2831853071795864769 * f.phase) * a.strength, -1., 1.);
     /* First input after stream/ownership/stale reset only anchors, even if its
      * beat bit is set. Busy beats are consumed, never queued for later. */
     if (!anchored || !(f.flags & MSRhythmFlagBeat)) return a;

@@ -247,6 +247,167 @@ struct ModelPickerConfig {
     }
 }
 
+// MARK: - Pure bounded picker sorting [T-picker-cold-sort]
+
+/// Only immutable scalar keys / Rank values cross the worker boundary. Models,
+/// instances, UI closures and the catalog stay on MainActor.
+private enum PickerSortInput: Sendable {
+    struct InstanceKey: Sendable {
+        let id: String
+        let createdAt: Double
+        let offset: Int
+    }
+    struct EntryKey: Sendable {
+        let instanceID: String
+        let modelID: String
+        let offset: Int
+    }
+    struct ReleaseKey: Sendable {
+        let modelID: String
+        let rank: ModelReleaseIndex.Rank?
+        let offset: Int
+    }
+    case alphabetical(instances: [InstanceKey], entries: [EntryKey])
+    case release(sections: [[ReleaseKey]])
+}
+
+private struct PickerBuildTicket: Equatable, Sendable {
+    let generation: UInt
+    let revision: UInt
+    let snapshotRevision: UInt
+    let key: String
+
+    func accepts(current: Self, cancelled: Bool) -> Bool {
+        !cancelled && self == current
+    }
+}
+
+/// The only mutable field is protected by a short lock; never held during sort.
+private final class PickerSortCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock(); cancelled = true; lock.unlock()
+    }
+
+    func check() throws {
+        lock.lock(); let value = cancelled; lock.unlock()
+        if value { throw CancellationError() }
+    }
+}
+
+/// One executing request plus ONE replaceable pending request per picker.
+/// All instances use one serial non-main queue. Superseded pending requests are
+/// resumed exactly once with cancellation, never left awaiting a continuation.
+/// @unchecked is confined to the lock-protected scheduling/cancellation boxes;
+/// no ModelEntry, ProviderInstance, store or UI reference enters a request.
+private final class PickerSortWorker: @unchecked Sendable {
+    private struct Request: Sendable {
+        let input: PickerSortInput
+        let cancellation: PickerSortCancellation
+        let continuation: CheckedContinuation<[[Int]], Error>
+    }
+    private static let queue = DispatchQueue(label: "minis.provider.picker-sort", qos: .userInitiated)
+    private let lock = NSLock()
+    private var running = false
+    private var pending: Request?
+
+    func sort(_ input: PickerSortInput) async throws -> [[Int]] {
+        let cancellation = PickerSortCancellation()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                enqueue(Request(input: input, cancellation: cancellation, continuation: continuation))
+            }
+        }, onCancel: { cancellation.cancel() })
+    }
+
+    private func enqueue(_ request: Request) {
+        lock.lock()
+        // A cancelled old task may reach this nonisolated async method late.
+        // Check under the scheduling lock BEFORE it can replace a newer job.
+        do { try request.cancellation.check() } catch {
+            lock.unlock()
+            request.continuation.resume(throwing: error)
+            return
+        }
+        if running {
+            let replaced = pending
+            pending = request
+            lock.unlock()
+            replaced?.continuation.resume(throwing: CancellationError())
+        } else {
+            running = true
+            lock.unlock()
+            Self.queue.async { self.drain(request) }
+        }
+    }
+
+    private func drain(_ first: Request) {
+        var next: Request? = first
+        while let request = next {
+            do {
+                let offsets = try Self.orderedOffsets(request.input, cancellation: request.cancellation)
+                try request.cancellation.check()
+                request.continuation.resume(returning: offsets)
+            } catch {
+                request.continuation.resume(throwing: error)
+            }
+            lock.lock()
+            next = pending
+            pending = nil
+            if next == nil { running = false }
+            lock.unlock()
+        }
+    }
+
+    /// Same keys and stable ties as sortedEntries / sortedByReleaseRank. Checks
+    /// cancellation at comparisons as well as section/instance boundaries.
+    static func orderedOffsets(_ input: PickerSortInput,
+                               cancellation: PickerSortCancellation) throws -> [[Int]] {
+        try cancellation.check()
+        switch input {
+        case let .alphabetical(instances, entries):
+            let orderedInstances = try instances.sorted { a, b in
+                try cancellation.check()
+                if a.createdAt != b.createdAt { return a.createdAt < b.createdAt }
+                return a.offset < b.offset
+            }
+            var instanceOrder: [String: Int] = [:]
+            for (index, instance) in orderedInstances.enumerated() {
+                try cancellation.check()
+                instanceOrder[instance.id] = index
+            }
+            let ordered = try entries.sorted { a, b in
+                try cancellation.check()
+                let ai = instanceOrder[a.instanceID] ?? Int.max
+                let bi = instanceOrder[b.instanceID] ?? Int.max
+                if ai != bi { return ai < bi }
+                if a.modelID != b.modelID { return a.modelID < b.modelID }
+                return a.offset < b.offset
+            }
+            return [ordered.map(\.offset)]
+        case let .release(sections):
+            return try sections.map { entries in
+                try cancellation.check()
+                // System rows and singleton sections retain their original order.
+                guard entries.count > 1, entries.first?.rank != nil else {
+                    return entries.map(\.offset)
+                }
+                return try entries.sorted { a, b in
+                    try cancellation.check()
+                    if let ar = a.rank, let br = b.rank {
+                        if ar < br { return true }
+                        if br < ar { return false }
+                    }
+                    if a.modelID != b.modelID { return a.modelID < b.modelID }
+                    return a.offset < b.offset
+                }.map(\.offset)
+            }
+        }
+    }
+}
+
 // MARK: - UnifiedModelPicker
 
 struct UnifiedModelPicker: View {
@@ -302,6 +463,10 @@ struct UnifiedModelPicker: View {
     /// that produces identical input can skip re-publishing (and re-rendering).
     @State private var sectionsRevision: UInt?
     @State private var refreshTask: Task<Void, Never>?
+    @State private var sectionsSnapshotRevision: UInt?
+    @State private var sectionsKey: String?
+    @State private var refreshGeneration: UInt = 0
+    @State private var sortWorker = PickerSortWorker()
 
     typealias InstanceSection = (instance: ProviderInstance, entries: [ModelEntry])
 
@@ -311,17 +476,20 @@ struct UnifiedModelPicker: View {
     @MainActor
     private enum SectionCache {
         static var revision: UInt?
+        static var snapshotRevision: UInt?
         static var byKey: [String: [InstanceSection]] = [:]
 
-        static func read(key: String, revision current: UInt) -> [InstanceSection]? {
-            guard revision == current else { return nil }
+        static func read(key: String, revision current: UInt, snapshotRevision snapshot: UInt) -> [InstanceSection]? {
+            guard revision == current, snapshotRevision == snapshot else { return nil }
             return byKey[key]
         }
 
-        static func write(key: String, revision current: UInt, value: [InstanceSection]) {
+        static func write(key: String, revision current: UInt, snapshotRevision snapshot: UInt, value: [InstanceSection]) {
             // A revision bump invalidates every key at once — entries computed
             // from older config must never be served.
-            if revision != current { byKey.removeAll(); revision = current }
+            if revision != current || snapshotRevision != snapshot {
+                byKey.removeAll(); revision = current; snapshotRevision = snapshot
+            }
             byKey[key] = value
         }
     }
@@ -329,9 +497,18 @@ struct UnifiedModelPicker: View {
     /// Distinguishes the pickers that share this view (session picker, group
     /// builder, agent-loop add, voice pickers): each filters the pool
     /// differently, so they cannot share a cache slot.
-    private var cacheKey: String {
+    @MainActor
+    private var cacheKey: String { makeCacheKey(existingIds: config.existingIds?()) }
+
+    /// Body observation must not enumerate/sort the existing-entry set. Store
+    /// snapshot changes cover membership; full keys are checked at publication.
+    @MainActor
+    private var configurationKey: String { makeCacheKey(existingIds: nil) }
+
+    @MainActor
+    private func makeCacheKey(existingIds: Set<String>?) -> String {
         let prefs = (config.effectivePreferModality ?? []).map { String(describing: $0) }.sorted().joined(separator: ",")
-        let existing = config.existingIds?().sorted().joined(separator: ",") ?? ""
+        let existing = existingIds?.sorted().joined(separator: ",") ?? ""
         let hasFilter = config.candidateFilter != nil ? "f" : "-"
         return "\(config.title)|\(config.mode)|\(prefs)|\(hasFilter)|\(existing.hashValue)|\(systemVoiceRoster.revision)"
     }
@@ -344,9 +521,10 @@ struct UnifiedModelPicker: View {
         prefs.contains { modality.isSuperset(of: $0) }
     }
 
-    private var candidateEntries: [ModelEntry] {
+    @MainActor
+    private func candidateEntries(from sortedEntries: [ModelEntry], existingIds: Set<String>?) -> [ModelEntry] {
         let prefs = config.effectivePreferModality
-        var pool = store.modelEntries.filter { entry in
+        var pool = sortedEntries.filter { entry in
             guard !entry.isHidden else { return false }
             guard store.instance(for: entry.providerInstanceId)?.isEnabled == true else { return false }
             guard let prefs, !prefs.isEmpty else { return true }
@@ -369,24 +547,21 @@ struct UnifiedModelPicker: View {
             }
         }
         if let f = config.candidateFilter { pool = pool.filter(f) }
-        if let existing = config.existingIds?() { pool = pool.filter { !existing.contains($0.id) } }
+        if let existing = existingIds { pool = pool.filter { !existing.contains($0.id) } }
         return pool
     }
 
-    private var systemEntries: [ModelEntry] {
-        candidateEntries.filter { VoiceProviderResolver.isSystemEntry($0.providerInstanceId) }
-    }
-
-    private var regularEntries: [ModelEntry] {
-        candidateEntries.filter { !VoiceProviderResolver.isSystemEntry($0.providerInstanceId) }
-    }
-
-    /// [T-picker-cache-first] The expensive build (whole-table sort + per-entry
-    /// instance lookup + per-section sort). Called ONLY from `loadSections`,
-    /// never from `body` — it used to be a computed property that `body` hit
-    /// several times per render, re-sorting all ~1100 entries each time.
-    private func buildSections() -> [InstanceSection] {
+    /// MainActor-only grouping of the once-filtered pool. Provider and System
+    /// section order is unchanged; pure per-section ranking happens on worker.
+    @MainActor
+    private func buildSections(from candidates: [ModelEntry]) -> [InstanceSection] {
         var result: [(ProviderInstance, [ModelEntry])] = []
+        let systemEntries = candidates.filter {
+            VoiceProviderResolver.isSystemEntry($0.providerInstanceId)
+        }
+        let regularEntries = candidates.filter {
+            !VoiceProviderResolver.isSystemEntry($0.providerInstanceId)
+        }
         // Built-in System engine FIRST — as its own provider section (Phase C), the
         // same collapsible header treatment as any cloud provider, driven by the
         // synthetic local-only instance rather than a parallel systemSection.
@@ -405,26 +580,9 @@ struct UnifiedModelPicker: View {
                 guard !seen.contains(instance.id) else { continue }
                 seen.insert(instance.id)
                 if let entries = grouped[instance.id], !entries.isEmpty {
-                    // [T-model-release-ranking] Order models WITHIN the section
-                    // newest-first. This is a different axis from the provider
-                    // ordering above and must not be confused with it: provider
-                    // sections follow the user's arrangement, models inside a
-                    // section follow release date.
-                    //
-                    // `candidateEntries` comes from `store.modelEntries`, whose
-                    // getter applies `sortedEntries` — instance cluster, then
-                    // `baseModel.id` ALPHABETICALLY. It does NOT apply
-                    // `releaseRankOrder`, so this picker was showing models
-                    // alphabetically and silently losing the release ranking
-                    // that `visibleEntries(for:)` gives the provider-detail
-                    // list. That matters most in the COLLAPSED state, where the
-                    // section renders `entries.prefix(1)`: the one model on
-                    // screen was the alphabetically-first, which is exactly the
-                    // "first entry is a stale/dead model" hazard
-                    // T-model-release-ranking exists to prevent (OpenMinis#83 —
-                    // the unusable model's 400 renders as an empty reply and
-                    // reads as "the app is broken").
-                    result.append((instance, ProviderConfigStore.sortedByReleaseRank(entries)))
+                    // Keep the same pre-ranking order. loadSections captures
+                    // rank keys once and applies the worker's stable offsets.
+                    result.append((instance, entries))
                 }
             }
         }
@@ -758,9 +916,11 @@ struct UnifiedModelPicker: View {
             // (missing entries only; results cached 5 min).
             quotaService.refreshAllIfNeeded(instances: store.instances)
         }
-        .onDisappear { refreshTask?.cancel() }
+        .onDisappear { refreshGeneration &+= 1; refreshTask?.cancel() }
         .onChange(of: sections == nil) { _ in seedCollapse() }
         .onChange(of: store.configRevision) { _ in loadSections() }
+        .onChange(of: store.modelSnapshotRevision) { _ in loadSections() }
+        .onChange(of: configurationKey) { _ in loadSections() }
         .onChange(of: systemVoiceRoster.revision) { _ in
             sectionsRevision = nil
             loadSections()
@@ -1754,38 +1914,100 @@ struct UnifiedModelPicker: View {
 
     // MARK: - Cache-first loading [T-picker-cache-first]
 
-    /// Serve the cache synchronously (so the sheet's FIRST frame already has
-    /// rows), then recompute off the main actor and publish only if the result
-    /// actually differs. With no cache, `sections` stays nil and the list shows
-    /// its loading row until the first compute lands.
+    /// Serve the MainActor cache synchronously. Only scalar sort keys cross the
+    /// worker; original models/instances and every UI/config closure stay here.
+    @MainActor
     private func loadSections() {
-        let revision = store.configRevision
-        let key = cacheKey
-
-        // Warm path — no spinner, no work on the presentation frame.
-        if let cached = SectionCache.read(key: key, revision: revision) {
-            if sections == nil { sections = cached; sectionsRevision = revision }
-        }
-        // Already current for this revision: nothing to recompute.
-        if sectionsRevision == revision, sections != nil { return }
-
+        refreshGeneration &+= 1
         refreshTask?.cancel()
+        let revision = store.configRevision
+        let snapshotRevision = store.modelSnapshotRevision
+        let existingIds = config.existingIds?()
+        let key = makeCacheKey(existingIds: existingIds)
+        let ticket = PickerBuildTicket(generation: refreshGeneration, revision: revision,
+                                      snapshotRevision: snapshotRevision, key: key)
+
+        if let cached = SectionCache.read(key: key, revision: revision, snapshotRevision: snapshotRevision) {
+            sections = cached
+            sectionsRevision = revision
+            sectionsSnapshotRevision = snapshotRevision
+            sectionsKey = key
+            return
+        }
+        if sectionsRevision == revision, sectionsSnapshotRevision == snapshotRevision,
+           sectionsKey == key, sections != nil { return }
+
         refreshTask = Task { @MainActor in
-            // Yield first so the sheet's presentation animation gets its frames
-            // before the rebuild runs. This is what keeps "open" feeling instant
-            // even on the cold path.
+            // Yield helps presentation only; it is NOT the off-main boundary.
             await Task.yield()
-            guard !Task.isCancelled else { return }
-            let rebuilt = buildSections()
-            guard !Task.isCancelled else { return }
-            SectionCache.write(key: key, revision: revision, value: rebuilt)
-            // Skip a no-op publish so a refresh that changes nothing does not
-            // re-render the list under the user.
-            if sectionsRevision != revision || !sameSections(sections, rebuilt) {
-                sections = rebuilt
-                sectionsRevision = revision
+            guard isCurrent(ticket) else { return }
+            let entries = store.config.modelEntries
+            let instances = store.instances
+            let input = PickerSortInput.alphabetical(
+                instances: instances.enumerated().map { offset, instance in
+                    .init(id: instance.id, createdAt: instance.createdAt.timeIntervalSinceReferenceDate, offset: offset)
+                },
+                entries: entries.enumerated().map { offset, entry in
+                    .init(instanceID: entry.providerInstanceId, modelID: entry.baseModel.id, offset: offset)
+                })
+            do {
+                let alphabetical = try await sortWorker.sort(input)
+                guard isCurrent(ticket) else { return }
+                let sortedEntries = alphabetical[0].map { entries[$0] }
+                let candidates = candidateEntries(from: sortedEntries, existingIds: existingIds)
+                let captured = buildSections(from: candidates)
+                let needsIndex = captured.contains {
+                    !VoiceProviderResolver.isSystemEntry($0.instance.id) && $0.entries.count > 1
+                }
+                guard isCurrent(ticket) else { return }
+                let index = needsIndex ? await ModelsDevAPI.prepareReleaseIndex() : nil
+                guard isCurrent(ticket) else { return }
+                let releaseInput = captureReleaseKeys(captured, index: index)
+                guard isCurrent(ticket) else { return }
+                let ranked = try await sortWorker.sort(releaseInput)
+                guard isCurrent(ticket) else { return }
+                let rebuilt: [InstanceSection] = zip(captured, ranked).map { section, offsets in
+                    (section.instance, offsets.map { section.entries[$0] })
+                }
+                // No await between the final ticket check, cache write and UI
+                // publish: a cancelled/old generation can never overwrite new.
+                SectionCache.write(key: key, revision: revision, snapshotRevision: snapshotRevision, value: rebuilt)
+                if sectionsRevision != revision || sectionsSnapshotRevision != snapshotRevision ||
+                   sectionsKey != key || !sameSections(sections, rebuilt) {
+                    sections = rebuilt
+                    sectionsRevision = revision
+                    sectionsSnapshotRevision = snapshotRevision
+                    sectionsKey = key
+                }
+            } catch {
+                // The pure worker only throws cancellation. Never publish a
+                // partial order or fall back to doing the sort on MainActor.
+                return
             }
         }
+    }
+
+    @MainActor
+    private func isCurrent(_ ticket: PickerBuildTicket) -> Bool {
+        guard !Task.isCancelled else { return false }
+        let current = PickerBuildTicket(generation: refreshGeneration, revision: store.configRevision,
+                                        snapshotRevision: store.modelSnapshotRevision, key: cacheKey)
+        return ticket.accepts(current: current, cancelled: Task.isCancelled)
+    }
+
+    /// Only scalar Rank capture stays MainActor; disk/JSON/release-index build
+    /// completed via the shared async catalog worker before this method runs.
+    @MainActor
+    private func captureReleaseKeys(_ captured: [InstanceSection], index: ModelsDevAPI.ReleaseIndex?) -> PickerSortInput {
+        return .release(sections: captured.map { section in
+            let preserve = VoiceProviderResolver.isSystemEntry(section.instance.id) || section.entries.count < 2
+            return section.entries.enumerated().map { offset, entry in
+                PickerSortInput.ReleaseKey(modelID: entry.baseModel.id,
+                    rank: preserve ? nil : ModelReleaseIndex.rank(modelId: entry.baseModel.id,
+                        displayName: entry.baseModel.displayName, contextWindow: entry.baseModel.contextWindow,
+                        index: index), offset: offset)
+            }
+        })
     }
 
     private func sameSections(_ a: [InstanceSection]?, _ b: [InstanceSection]) -> Bool {

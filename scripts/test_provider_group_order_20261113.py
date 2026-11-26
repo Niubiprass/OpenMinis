@@ -40,7 +40,7 @@ class ProviderGroupOrderTests(unittest.TestCase):
         rows = block(VIEW, "private var listRows")
         self.assertIn("instances.filter { $0.providerType == type }", rows)
         self.assertNotIn("isEnabled", rows)
-        build = block(PICKER, "private func buildSections()")
+        build = block(PICKER, "private func buildSections(")
         self.assertIn("for type in ProviderGroupOrder.types(in: store.instances)", build)
         self.assertLess(build.index("ProviderGroupOrder.types"), build.index("instance.isEnabled"))
         self.assertNotIn("ProviderType.allCases", VIEW + build)
@@ -92,7 +92,7 @@ class ProviderGroupOrderTests(unittest.TestCase):
     def test_picker_keeps_saved_order_after_selection_and_reload(self):
         capped = block(PICKER, 'private var cappedEntriesByInstance')
         self.assertIn('orderedByLastUsedProvider(filteredEntriesByInstance)', capped)
-        base = block(PICKER, 'private func buildSections()')
+        base = block(PICKER, 'private func buildSections(')
         self.assertIn('ProviderGroupOrder.types(in: store.instances)', base)
         self.assertNotIn('ProviderType.allCases', base)
         lift = block(PICKER, 'private func orderedByLastUsedProvider')

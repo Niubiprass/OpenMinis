@@ -64,6 +64,7 @@ struct MiniSightInAppRuntime: View {
                                  spriteLayout: petSpriteLayout,
                                  actionManifestPath: actionManifestPath,
                                  lyricsLine: music.line, musicPlaying: music.playing, musicAnchor: music.anchor,
+                                 musicPositionEvidence: music.hasPositionEvidence,
                                  musicToken: music.rhythmToken, dailyActionsEnabled: dailyActionsEnabled,
                                  dragGain: dragResponse ? 1.0 : 0.20, soundEnabled: petSoundEnabled,
                                  roll: motion.roll,
@@ -506,6 +507,7 @@ private final class MiniSightMusicBridge: ObservableObject {
     @Published private(set) var playing = false
     @Published private(set) var anchor: MiniSightMusicAnchor?
     @Published private(set) var rhythmToken: UInt = 0
+    @Published private(set) var hasPositionEvidence = false
     private var timer: Timer?
     private let io = DispatchQueue(label: "com.openminis.minisight.music.read", qos: .utility)
     private var generation = 0
@@ -528,7 +530,7 @@ private final class MiniSightMusicBridge: ObservableObject {
         guard visible != wanted else { if wanted { refresh() }; return }
         visible = wanted; generation &+= 1
         timer?.invalidate(); timer = nil
-        if !wanted { line = nil; playing = false; anchor = nil; rhythmToken = 0; evidence("gate_closed", valid: false, present: false); return }
+        if !wanted { line = nil; playing = false; anchor = nil; rhythmToken = 0; hasPositionEvidence = false; evidence("gate_closed", valid: false, present: false); return }
         // The visible-only 250ms read is also the lost-notification fallback.
         // Common modes keep expiration/OFF reads running during UI tracking.
         let polling = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -541,7 +543,7 @@ private final class MiniSightMusicBridge: ObservableObject {
     private func refresh() {
         guard visible else { return }
         let now = Date().timeIntervalSince1970
-        if now - lastValidAt > 5 || now < lastValidAt - 1 { line = nil; playing = false; anchor = nil; rhythmToken = 0; evidence("music_stale", valid: false, present: false) }
+        if now - lastValidAt > 5 || now < lastValidAt - 1 { line = nil; playing = false; anchor = nil; rhythmToken = 0; hasPositionEvidence = false; evidence("music_stale", valid: false, present: false) }
         guard !inFlight else { return } // Never queue another disk read behind a stalled one.
         inFlight = true; lastReadAt = now
         let token = generation
@@ -564,9 +566,9 @@ private final class MiniSightMusicBridge: ObservableObject {
                 self.inFlight = false
                 guard self.visible, self.generation == token else { return }
                 let now = Date().timeIntervalSince1970
-                guard let snapshot, snapshot.fresh(at: now) else { self.line = nil; self.playing = false; self.anchor = nil; self.rhythmToken = 0; self.evidence("music_stale", valid: false, present: false); return }
+                guard let snapshot, snapshot.fresh(at: now) else { self.line = nil; self.playing = false; self.anchor = nil; self.rhythmToken = 0; self.hasPositionEvidence = false; self.evidence("music_stale", valid: false, present: false); return }
                 self.lastValidAt = snapshot.time
-                if let musicGeneration = MiniSightMusicSnapshot.number(value?["generation"]),
+                if let musicGeneration = MiniSightMusicSnapshot.number(value?["rhythmGeneration"] ?? value?["generation"]),
                    musicGeneration > 0, musicGeneration.rounded(.towardZero) == musicGeneration,
                    musicGeneration <= 9_007_199_254_740_991 {
                     self.rhythmToken = UInt(musicGeneration)
@@ -574,6 +576,10 @@ private final class MiniSightMusicBridge: ObservableObject {
                 let defaults = UserDefaults.standard
                 let nextLine = snapshot.playing && snapshot.lyricsEnabled && defaults.bool(forKey: "minisight.music.lyrics") ? snapshot.line : nil
                 let nextPlaying = snapshot.playing && snapshot.motionEnabled && defaults.bool(forKey: "minisight.music.motion")
+                let positionEvidence = nextPlaying && snapshot.motionTime != nil &&
+                    MiniSightMusicSnapshot.flag(value?["progressAvailable"]) == true &&
+                    MiniSightMusicSnapshot.number(value?["motionRate"]) == 1
+                if self.hasPositionEvidence != positionEvidence { self.hasPositionEvidence = positionEvidence }
                 if self.lastMusicDiagnostics != diagnosticToken {
                     self.lastMusicDiagnostics = diagnosticToken
                     MSDiagEvent("music", "readback", "ok", ["source": "app", "generation": token,
@@ -854,6 +860,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
     let lyricsLine: String?
     let musicPlaying: Bool
     let musicAnchor: MiniSightMusicAnchor?
+    let musicPositionEvidence: Bool
     let musicToken: UInt
     let dailyActionsEnabled: Bool
     let dragGain: CGFloat
@@ -950,7 +957,8 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.lyricsLine = parent.lyricsLine
             pet.musicPosition = parent.musicAnchor?.current ?? 0
             pet.musicPlaying = parent.musicPlaying
-            MiniSightRhythmConfigurePet(pet, parent.musicPlaying, parent.musicToken)
+            MiniSightRhythmConfigurePetWithPosition(pet, parent.musicPlaying, parent.musicToken,
+                parent.musicPositionEvidence ? (parent.musicAnchor?.current ?? .nan) : .nan)
             pet.activityActive = parent.activityActive
             recordAppliedActivity(pet)
             root.pet = pet
@@ -970,7 +978,8 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.startPlaying()
             window.isHidden = false
             root.setNeedsLayout(); root.layoutIfNeeded()
-            MiniSightRhythmConfigurePet(pet, parent.musicPlaying, parent.musicToken)
+            MiniSightRhythmConfigurePetWithPosition(pet, parent.musicPlaying, parent.musicToken,
+                parent.musicPositionEvidence ? (parent.musicAnchor?.current ?? .nan) : .nan)
             refreshChatAnchor()
             MSDiagEvent("runtime", "show", "ok", ["source": "app", "visible": true])
         }
@@ -998,7 +1007,8 @@ private struct MiniSightPetHost: UIViewRepresentable {
             pet.activityActive = active
             recordAppliedActivity(pet)
             pet.reducedWork = ProcessInfo.processInfo.isLowPowerModeEnabled
-            MiniSightRhythmConfigurePet(pet, parent.musicPlaying, parent.musicToken)
+            MiniSightRhythmConfigurePetWithPosition(pet, parent.musicPlaying, parent.musicToken,
+                parent.musicPositionEvidence ? (parent.musicAnchor?.current ?? .nan) : .nan)
             if parent.shakeGeneration != handledShakeGeneration {
                 handledShakeGeneration = parent.shakeGeneration
                 if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }

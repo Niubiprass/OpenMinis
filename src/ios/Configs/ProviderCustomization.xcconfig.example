@@ -14,4 +14,6 @@
 // them. We ship no value — supply your own. Other open-source projects
 // talking to the same endpoint declare the same identifier, e.g.
 // https://github.com/Wei-Shaw/claude-relay-service
+// Keep the required rhythm build contract when copying this template.
+#include "MiniSightRhythm.xcconfig"
 ANTHROPIC_OAUTH_IDENTIFIER_PROMPT =

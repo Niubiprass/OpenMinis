@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import test_minisight_music_host_bridge_20261126 as host_bridge
+from test_minisight_music_host_bridge_20261126 import MusicLeasePortableTests, MusicHostSourceTests, MusicHostNativeTests
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PLUGIN = ROOT.parent.parent / 'MiniSight-complete-20261105'
@@ -77,7 +79,15 @@ def errors(source):
         'unknown metadata motion': 'track.cacheKey ?: @"unknown"',
         'lyrics independent freshness': 'self->_lyricsAwaitingFreshInfo = YES;',
         'lock ABI': "(type[0] != 'B' && type[0] != 'c')",
-        'reference time': 'age <= track.duration + 3.',
+        'reference time': 'age <= progressTrack.duration + 3.',
+        'finite duration continuity': 'return isfinite(first) && isfinite(last) && fabs(first - last) <= 1.0;',
+        'epsilon requires successful timeline': 'return hasTimeline && MSMusicTrackConflictMask(firstTrack, lastTrack) == 0 &&',
+        'epsilon retains ID fence': '!(firstID.length && lastID.length && ![firstID isEqualToString:lastID]);',
+        'fixed track anchor assignment': 'if (!self->_track) {\n                    self->_track = track;',
+        'fixed progress anchor': 'MiniSightLyricsTrack *progressTrack = track && self->_timeline ? self->_track : track;',
+        'first read anchor': '!MSMusicTracksCompatible(self->_track, self->_identifier, firstTrack, MSMusicIdentifier(first), self->_timeline != nil)',
+        'apply read anchor': 'track, identifier, self->_timeline != nil)) || conflictingPartial;',
+        'double read progress continuity': 'BOOL sameTrack = firstTrack && resolvedTrack && MSMusicTrackConflictMask(firstTrack, resolvedTrack) == 0;',
         'real readback': 'MSBridgeRead(container, @"music-state.json", 16384)',
         'diagnostic helper': 'MSMusicDiagnose(',
         'diagnostic snapshot': '@"diagnostics": diagnostics',
@@ -154,6 +164,22 @@ class SourceTests(unittest.TestCase):
                 self.assertIn(old, source)
                 self.assertTrue(errors(source.replace(old, new)))
 
+    def test_continuity_negative_controls(self):
+        source = (plugin() / 'MiniSightMusicMonitor.m').read_text()
+        for old, new in (
+            ('return isfinite(first) && isfinite(last) && fabs(first - last) <= 1.0;', 'return true;'),
+            ('return hasTimeline && MSMusicTrackConflictMask(firstTrack, lastTrack) == 0 &&', 'return MSMusicTrackConflictMask(firstTrack, lastTrack) == 0 &&'),
+            ('if (!self->_track) {\n                    self->_track = track;', 'if (YES) {\n                    self->_track = track;'),
+            ('MiniSightLyricsTrack *progressTrack = track && self->_timeline ? self->_track : track;', 'MiniSightLyricsTrack *progressTrack = track;'),
+            ('!(firstID.length && lastID.length && ![firstID isEqualToString:lastID]);', 'YES;'),
+            ('!MSMusicTracksCompatible(self->_track, self->_identifier, firstTrack, MSMusicIdentifier(first), self->_timeline != nil)', 'NO'),
+            ('track, identifier, self->_timeline != nil)) || conflictingPartial;', 'track, identifier, YES)) || conflictingPartial;'),
+            ('BOOL sameTrack = firstTrack && resolvedTrack && MSMusicTrackConflictMask(firstTrack, resolvedTrack) == 0;', 'BOOL sameTrack = YES;'),
+        ):
+            with self.subTest(mutation=old):
+                self.assertEqual(source.count(old), 1)
+                self.assertTrue(errors(source.replace(old, new)))
+
     def test_pid_and_snapshot_production_policy(self):
         source = (plugin() / 'MiniSightMusicMonitor.m').read_text()
         self.assertNotIn('MSMusicAppIDFn', source)
@@ -179,7 +205,8 @@ class SourceTests(unittest.TestCase):
             assert(!MSMusicMetadataLease(true,true,100.,0.));
             assert(MSMusicCandidateAlive(103.,103.));
             assert(!MSMusicCandidateAlive(103.001,103.));
-            assert(!MSMusicCandidateAlive(100.,0.)); }\n"""
+            assert(!MSMusicCandidateAlive(100.,0.));
+            assert(MSMusicNextRhythmGeneration(0,true,false,true) == 1); }\n"""
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp)/'cases'
             subprocess.run(['cc','-std=c11','-x','c','-Wall','-Wextra','-Werror','-pedantic','-o',str(binary),'-'],input='#include <assert.h>\n#include <stdbool.h>\n'+body+cases,text=True,check=True)
@@ -215,6 +242,31 @@ class SourceTests(unittest.TestCase):
 
 
 class PortablePresentationTests(unittest.TestCase):
+    def test_lexical_production_duration_policy(self):
+        source = (plugin() / 'MiniSightMusicMonitor.m').read_text()
+        body = source.split('// BEGIN MUSIC DURATION POLICY', 1)[1].split('\n', 1)[1].split('// END MUSIC DURATION POLICY', 1)[0]
+        cases = '''int main(void) {
+            assert(MSMusicDurationCompatible(261.,261.1316));
+            assert(MSMusicDurationCompatible(261.1316,261.2245));
+            assert(MSMusicDurationCompatible(261.,262.));
+            assert(MSMusicDurationCompatible(262.,261.));
+            assert(!MSMusicDurationCompatible(261.,262.000001));
+            assert(MSMusicDurationCompatible(261.,261.8));
+            assert(MSMusicDurationCompatible(261.8,262.6));
+            assert(!MSMusicDurationCompatible(261.,262.6));
+            assert(!MSMusicDurationCompatible(NAN,261.));
+            assert(!MSMusicDurationCompatible(261.,NAN));
+            assert(!MSMusicDurationCompatible(INFINITY,INFINITY));
+            assert(!MSMusicDurationCompatible(-INFINITY,261.));
+        }\n'''
+        with tempfile.TemporaryDirectory(prefix='minisight-duration-') as tmp:
+            binary = Path(tmp) / 'duration'
+            result = subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pedantic',
+                '-x', 'c', '-o', str(binary), '-', '-lm'], input='#include <assert.h>\n#include <stdbool.h>\n#include <math.h>\n'+body+cases,
+                text=True, capture_output=True, timeout=90)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            subprocess.run([str(binary)], check=True, timeout=15)
+
     def test_actual_production_pid_abi(self):
         cc = shutil.which('cc') or shutil.which('clang')
         self.assertIsNotNone(cc, 'Portable C compiler is required')
@@ -271,5 +323,6 @@ if __name__ == '__main__':
     parser.add_argument('--plugin-root', default=OPTIONS.plugin_root)
     parser.add_argument('--require-native', action='store_true')
     OPTIONS, rest = parser.parse_known_args()
+    host_bridge.REQUIRE_NATIVE = OPTIONS.require_native
     print('Source conformance only; native SKIP is NOT runtime success.', flush=True)
     unittest.main(argv=[__file__] + rest, verbosity=2)

@@ -12,6 +12,12 @@
 #ifndef MINISIGHT_ENABLE_RHYTHM_TRANSPORT
 #define MINISIGHT_ENABLE_RHYTHM_TRANSPORT 0
 #endif
+#if MINISIGHT_ENABLE_RHYTHM_TRANSPORT != 0 && MINISIGHT_ENABLE_RHYTHM_TRANSPORT != 1
+#error MINISIGHT_ENABLE_RHYTHM_TRANSPORT_must_be_0_or_1
+#endif
+#if MINISIGHT_ENABLE_RHYTHM_TRANSPORT && (!MINISIGHT_ENABLE_RHYTHM_CAPTURE || !MINISIGHT_RHYTHM_LIVE_BUILD)
+#error LIVE_transport_requires_paired_capture_and_explicit_LIVE_build
+#endif
 BOOL MiniSightRhythmLiveTransportCompiled(void) { return MINISIGHT_ENABLE_RHYTHM_TRANSPORT != 0; }
 @interface MiniSightRhythmClient () {
     int _socket;
@@ -22,6 +28,7 @@ BOOL MiniSightRhythmLiveTransportCompiled(void) { return MINISIGHT_ENABLE_RHYTHM
     BOOL _cleared;
 }
 - (void)drain;
+@property(nonatomic,copy) BOOL (^eligibilityHandler)(void);
 @end
 @implementation MiniSightRhythmClient
 - (instancetype)init { if((self=[super init]))_socket=-1;return self; }
@@ -50,7 +57,9 @@ BOOL MiniSightRhythmLiveTransportCompiled(void) { return MINISIGHT_ENABLE_RHYTHM
     [self drain];
 }
 - (void)drain {
-    if(_socket<0)return;double now=CACurrentMediaTime();
+    if(_socket<0)return;
+    if(_eligibilityHandler && !_eligibilityHandler()){[self stop];return;}
+    double now=CACurrentMediaTime();
     if(now>=_renewAt){[self sendLease:YES];_renewAt=now+5.;}
     MSRhythmFrame latest={0};BOOL have=NO;
     for(unsigned count=0;count<16;++count){
@@ -94,13 +103,30 @@ BOOL MiniSightRhythmLiveTransportCompiled(void) { return MINISIGHT_ENABLE_RHYTHM
 - (void)dealloc { [_client stop]; }
 @end
 static char MSRhythmPetBindingKey;
+static BOOL MSRhythmPetInputEligible(MiniSightPetView *pet) {
+    // Keep existing owner vetoes until parent separates daily and music owners.
+    // Lyrics text itself is never tested; lyricsSuppressed is the attention gate.
+    return pet && pet.musicPlaying && pet.window && !pet.window.hidden &&
+        !pet.hidden && pet.alpha > .01 && pet.roamPace > 0 && !pet.roamingPaused &&
+        !pet.interactionActive && !pet.activityActive && !pet.lyricsSuppressed &&
+        !UIAccessibilityIsReduceMotionEnabled();
+}
 void MiniSightRhythmConfigurePet(MiniSightPetView *pet,BOOL enabled,NSUInteger token) {
+    // Compatibility entry has NO measured position. Never infer seeks from
+    // interpolated/default-zero musicPosition or metadata tick clocks.
+    MiniSightRhythmConfigurePetWithPosition(pet,enabled,token,NAN);
+}
+void MiniSightRhythmConfigurePetWithPosition(MiniSightPetView *pet,BOOL enabled,NSUInteger token,double position) {
     NSCAssert(NSThread.isMainThread,@"rhythm host wiring must be main-thread");
     if(!pet)return;
     MSRhythmPetBinding *binding=objc_getAssociatedObject(pet,&MSRhythmPetBindingKey);
     if(!binding){
         binding=[MSRhythmPetBinding new];binding.pet=pet;binding.client=[MiniSightRhythmClient new];
         __weak MSRhythmPetBinding *weakBinding=binding;
+        binding.client.eligibilityHandler=^BOOL {
+            MSRhythmPetBinding *current=weakBinding;
+            return current.enabled && MSRhythmPetInputEligible(current.pet);
+        };
         binding.client.updateHandler=^(MSRhythmFrame frame,double receivedAt){
             MSRhythmPetBinding *current=weakBinding;
             if(current.enabled&&current.pet)[current.pet applyRhythmFrame:frame receivedAt:receivedAt];
@@ -110,16 +136,15 @@ void MiniSightRhythmConfigurePet(MiniSightPetView *pet,BOOL enabled,NSUInteger t
         objc_setAssociatedObject(pet,&MSRhythmPetBindingKey,binding,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     // Host eligibility is rechecked independently of metadata availability.
-    enabled = enabled && token > 0 && pet.window && !pet.window.hidden && !pet.hidden && pet.alpha > .01 &&
-        pet.roamPace > 0 && !pet.roamingPaused && !pet.interactionActive && !pet.activityActive &&
-        !pet.lyricsSuppressed && !UIAccessibilityIsReduceMotionEnabled();
+    enabled = enabled && token > 0 && MSRhythmPetInputEligible(pet);
     NSUInteger inputMode = enabled ? (MiniSightRhythmLiveTransportCompiled() ? 2u : 1u) : 0u;
     if (binding.inputEvidenceMode != inputMode) {
         binding.inputEvidenceMode = inputMode;
         MSDiagEvent(@"pet", @"state", @"ok", @{@"source": ([NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"] ? @"plugin" : @"app"), @"reason": @"rhythm_transport_mode",
             @"input_mode": @(inputMode), @"input_ready": @NO, @"enabled": @(enabled)});
     }
-    double now=CACurrentMediaTime(),position=pet.musicPosition;
+    double now=CACurrentMediaTime();
+    if(!isfinite(position)||position<0)position=NAN;
     BOOL seek=enabled&&binding.enabled&&binding.hasPosition&&isfinite(position)&&
         fabs(position-(binding.lastPosition+fmax(0.,now-binding.lastPositionAt)))>.8;
     if(binding.token!=token||binding.enabled!=enabled||seek){[binding.client stop];[pet clearRhythm];}

@@ -166,7 +166,60 @@ struct ProviderConfig: Codable, Equatable {
 final class ProviderConfigStore: ObservableObject {
     static let shared = ProviderConfigStore()
 
-    @Published private(set) var config: ProviderConfig
+    @Published private(set) var config: ProviderConfig {
+        didSet {
+            // Keep derived model projections tied to the actual published
+            // snapshot, including inbound sync assignments that do not call
+            // save(). No credential, quota, or persisted config semantics live
+            // in these caches.
+            modelEntryProjection = nil
+            modelSnapshotRevision &+= 1
+        }
+    }
+
+    private struct ModelEntryProjection {
+        let visibleCounts: [String: Int]
+        let voiceEntriesByInstance: [String: [ModelEntry]]
+        let latestModifiedAtByInstance: [String: Date]
+        let voiceInstanceIds: Set<String>
+    }
+
+    /// MainActor-only, pure projection of the current model-entry snapshot.
+    /// Building it once avoids one full-table count/voice scan per provider row
+    /// and one additional scan for each shadow voice query.
+    private var modelEntryProjection: ModelEntryProjection? = nil
+
+    private func derivedModelEntryProjection() -> ModelEntryProjection {
+        if let modelEntryProjection { return modelEntryProjection }
+        var visibleCounts: [String: Int] = [:]
+        var voiceEntriesByInstance: [String: [ModelEntry]] = [:]
+        var latestModifiedAtByInstance: [String: Date] = [:]
+        var voiceInstanceIds = Set<String>()
+        visibleCounts.reserveCapacity(config.instances.count)
+        voiceEntriesByInstance.reserveCapacity(config.instances.count)
+        latestModifiedAtByInstance.reserveCapacity(config.instances.count)
+        for entry in config.modelEntries {
+            if !entry.isHidden {
+                visibleCounts[entry.providerInstanceId, default: 0] += 1
+            }
+            if let modifiedAt = entry.userModifiedAt,
+               modifiedAt > (latestModifiedAtByInstance[entry.providerInstanceId] ?? .distantPast) {
+                latestModifiedAtByInstance[entry.providerInstanceId] = modifiedAt
+            }
+            if entry.baseModel.isVoiceCandidate {
+                voiceInstanceIds.insert(entry.providerInstanceId)
+                voiceEntriesByInstance[entry.providerInstanceId, default: []].append(entry)
+            }
+        }
+        let projection = ModelEntryProjection(
+            visibleCounts: visibleCounts,
+            voiceEntriesByInstance: voiceEntriesByInstance,
+            latestModifiedAtByInstance: latestModifiedAtByInstance,
+            voiceInstanceIds: voiceInstanceIds
+        )
+        modelEntryProjection = projection
+        return projection
+    }
 
     /// Bumped whenever an OAuth token or string is saved/deleted in the Keychain,
     /// so views observing the store re-evaluate auth state. Also an L1 cache key
@@ -178,6 +231,10 @@ final class ProviderConfigStore: ObservableObject {
     /// An L1 cache key component: any config mutation invalidates cached
     /// resolveCurrentEntry results. [T-new-session-hang-credential-cache]
     private(set) var configRevision: UInt = 0
+
+    /// Pure in-memory snapshot epoch, including unsaved/direct config mutation.
+    /// Does not change persistence, auth, quota or configRevision semantics.
+    private(set) var modelSnapshotRevision: UInt = 0
 
     private let fileURL: URL
 
@@ -1711,9 +1768,7 @@ final class ProviderConfigStore: ObservableObject {
     /// The provider list only needs a count. Use the same visibility rule as
     /// visibleEntries without building the release index or sorting models.
     func visibleEntryCount(for instanceId: String) -> Int {
-        config.modelEntries.reduce(into: 0) { count, entry in
-            if entry.providerInstanceId == instanceId && !entry.isHidden { count += 1 }
-        }
+        derivedModelEntryProjection().visibleCounts[instanceId] ?? 0
     }
 
     /// [T-model-release-ranking] Release-rank sort that ranks each entry ONCE
@@ -2861,9 +2916,7 @@ final class ProviderConfigStore: ObservableObject {
     func hasVoiceModels(for instanceId: String) -> Bool {
         // [T-openrouter-voice-catalog] Voice candidates, not raw audio bits:
         // an OpenRouter chat model that merely hears audio is no voice model.
-        config.modelEntries.contains { e in
-            e.providerInstanceId == instanceId && e.baseModel.isVoiceCandidate
-        }
+        derivedModelEntryProjection().voiceInstanceIds.contains(instanceId)
     }
 
     /// Per-instance UserDefaults flag: user hid this instance's shadow voice
@@ -2910,9 +2963,10 @@ final class ProviderConfigStore: ObservableObject {
     /// createdAt, then id — deterministic across devices).
     func shadowVoiceProviders() -> [ShadowVoiceProvider] {
         // Candidate instances.
+        let projection = derivedModelEntryProjection()
         let candidates = config.instances.filter { inst in
             inst.isEnabled
-            && hasVoiceModels(for: inst.id)
+            && projection.voiceInstanceIds.contains(inst.id)
             && !isVoiceShadowDisabled(inst.id)
             // [T-voice-capability-probe] Was `make(for: inst) != nil`, which
             // built a whole provider — and read the Keychain — just to answer a
@@ -2931,23 +2985,18 @@ final class ProviderConfigStore: ObservableObject {
             let bucket = key.isEmpty ? "id:\(inst.id)" : key
             byKey[bucket, default: []].append(inst)
         }
-        func mostRecentModified(_ instanceId: String) -> Date {
-            config.modelEntries
-                .filter { $0.providerInstanceId == instanceId }
-                .compactMap { $0.userModifiedAt }
-                .max() ?? .distantPast
-        }
         var result: [ShadowVoiceProvider] = []
         for (_, insts) in byKey {
             // Representative selection — deterministic.
             let rep = insts.sorted { a, b in
                 if a.isEnabled != b.isEnabled { return a.isEnabled }
-                let ma = mostRecentModified(a.id), mb = mostRecentModified(b.id)
+                let ma = projection.latestModifiedAtByInstance[a.id] ?? .distantPast
+                let mb = projection.latestModifiedAtByInstance[b.id] ?? .distantPast
                 if ma != mb { return ma > mb }
                 if a.createdAt != b.createdAt { return a.createdAt < b.createdAt }
                 return a.id < b.id
             }.first!
-            let entries = config.modelEntries.filter { $0.providerInstanceId == rep.id }
+            let entries = projection.voiceEntriesByInstance[rep.id] ?? []
             let inputs = entries.filter { $0.baseModel.isVoiceInputCandidate }
             let outputs = entries.filter { $0.baseModel.isVoiceOutputCandidate }
             result.append(ShadowVoiceProvider(

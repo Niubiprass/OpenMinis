@@ -116,7 +116,7 @@
 }
 - (void)applyRhythmStrength:(CGFloat)strength pulse:(CGFloat)pulse {
     _rhythmStrength = MSPetFiniteClamp(strength, 0., 1.);
-    _rhythmPulse = MSPetFiniteClamp(pulse, 0., 1.);
+    _rhythmPulse = MSPetFiniteClamp(pulse, -1., 1.);
     _rhythmAt = CACurrentMediaTime();
 }
 - (BOOL)musicPlaying { return _musicPlaying; }
@@ -185,9 +185,14 @@
     if (_state == 2) return @"walkLeft";
     if (_state == 3) return @"tap";
     if (_state == 4) return @"jump";
-    // Automatic music playback adds in-place sway to idle art only. A legacy
-    // music clip can contain travelling/jumping frames, so do not auto-select it.
-    if (_state == 8 && _musicPlaying) return @"idle";
+    // Distinct music artwork is eligible only for fresh measured input.
+    // idle/idleAlt remain the ordinary-life set; missing music art falls back
+    // through chooseRole without changing either set or manufacturing a beat.
+    if (_state == 8 && _musicPlaying) {
+        BOOL fresh = _rhythmFollowing && _rhythmStrength > 0. &&
+            now >= _rhythmAt && now - _rhythmAt <= .40;
+        return fresh ? @"music" : @"idle";
+    }
     return @"idle";
 }
 - (void)chooseRole {
@@ -533,8 +538,8 @@
         now >= _landUntil && now >= _shakeUntil && now >= _rhythmAt && now - _rhythmAt <= .40;
     if (rhythm) {
         double envelope = exp(-10. * (now - _rhythmAt));
-        angle = .055 * _rhythmPulse * envelope;
-        x = 0.; y = -pet.bounds.size.height * .014 * _rhythmStrength * _rhythmPulse * envelope;
+        angle = .10 * _rhythmPulse * envelope;
+        x = 0.; y = -pet.bounds.size.height * .025 * _rhythmStrength * fabs(_rhythmPulse) * envelope;
         sx = 1.; sy = 1.;
     }
     if (_rhythmFollowing && (!rhythm || now - _rhythmAt > .40)) {

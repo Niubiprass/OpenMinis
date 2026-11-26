@@ -13,18 +13,36 @@ struct ProviderInstance: Identifiable, Sendable {
     let isEnabled: Bool
     var subscriptionAccountIds: [String]? = nil
     var subscriptionActiveAccountId: String? = nil
+    var customBaseURL: String? = nil
+    var appendV1Suffix = true
 }
-struct ModelEntry { let providerInstanceId: String; let isHidden: Bool }
-struct ProviderConfig { var modelEntries: [ModelEntry] }
+struct ProjectionBaseModel {
+    let id: String
+    let isVoiceCandidate: Bool
+    let isVoiceInputCandidate: Bool
+    let isVoiceOutputCandidate: Bool
+}
+struct ModelEntry {
+    let providerInstanceId: String
+    let isHidden: Bool
+    let baseModel: ProjectionBaseModel
+    let userModifiedAt: Date?
+}
+struct ProviderConfig {
+    var instances: [ProviderInstance] = []
+    var modelEntries: [ModelEntry] = []
+    static let empty = ProviderConfig()
+}
 @MainActor final class ProviderConfigStore: ObservableObject {
     static let shared = ProviderConfigStore()
     @Published var instances: [ProviderInstance] = []
     @Published var authRevision: UInt = 0
-    var config = ProviderConfig(modelEntries: [])
+    var configRevision: UInt = 0
+    private init() { config = .empty }
     var reorderedIDs: [String] = []
     func reorderInstances(_ ids: [String]) { reorderedIDs = ids }
     func instance(for id: String) -> ProviderInstance? { instances.first { $0.id == id } }
-    // COUNT_METHOD
+    // MODEL_ENTRY_PROJECTION_DECLARATIONS
 }
 final class ProviderQuotaService: ObservableObject {
     static let shared = ProviderQuotaService()

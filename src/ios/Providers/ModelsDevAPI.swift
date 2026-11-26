@@ -28,11 +28,12 @@ enum ModelsDevAPI {
     /// Tries both with and without `/v1` suffix, normalizing trailing slashes.
     /// Returns immediately from bundled/cached data; network refresh happens in the background.
     static func fetchModels(forBaseURL baseURL: String) -> [LLMModel] {
-        guard let registry = loadRegistry() else {
+        guard let snapshot = loadRegistry() else {
             logger.info("models.dev registry not loaded")
             return []
         }
 
+        let registry = snapshot.registry
         logger.info("models.dev lookup: baseURL=\(baseURL), registry has \(registry.count) providers")
 
         // Phase 1: Exact API base match (with/without /v1)
@@ -81,7 +82,8 @@ enum ModelsDevAPI {
     /// session knows its model id (e.g. `deepseek-v4-flash`) but the provider
     /// entry it resolved through may be a relay that models.dev does not list.
     static func pricingPerMillion(for modelId: String) -> (input: Double, output: Double)? {
-        guard let registry = loadRegistry() else { return nil }
+        guard let snapshot = loadRegistry() else { return nil }
+        let registry = snapshot.registry
         let wanted = modelId.lowercased()
         // Prefer an exact id match; fall back to a suffix match so a relay's
         // "vendor/model" id still finds the vendor's entry.
@@ -134,8 +136,8 @@ enum ModelsDevAPI {
     /// Looks up by provider name + model ID. Returns the original model if no match found.
     /// Only fills in fields that are currently nil/unset on the model.
     static func enrichModel(_ model: LLMModel) -> LLMModel {
-        guard let registry = loadRegistry() else { return model }
-        guard let match = resolveDevModel(for: model, in: registry) else { return model }
+        guard let snapshot = loadRegistry() else { return model }
+        guard let match = resolveDevModel(for: model, in: snapshot) else { return model }
         return applyDevData(to: model, from: match.model, authoritative: match.authoritative)
     }
 
@@ -193,14 +195,15 @@ enum ModelsDevAPI {
     /// `authoritative` is true only for a stage-1 hit (the model's own provider); the
     /// stage-2 cross-provider vote is a guess about a different endpoint and callers must
     /// not treat it as a statement about this one.
-    private struct DevModelMatch {
+    private struct DevModelMatch: Sendable {
         let model: ModelsDevModel
         let authoritative: Bool
     }
 
     private static func resolveDevModel(
-        for model: LLMModel, in registry: [String: ModelsDevProvider]
+        for model: LLMModel, in snapshot: RegistrySnapshot
     ) -> DevModelMatch? {
+        let registry = snapshot.registry
         let wanted = normalizedModelKey(model.id)
 
         // Stage 1 is left as a direct scan on purpose: it only ever touches the
@@ -231,7 +234,7 @@ enum ModelsDevAPI {
         // single dictionary lookup. The RESOLUTION SEMANTICS ARE UNCHANGED: the
         // index stores the winner picked by exactly the vote below, evaluated in
         // exactly the old scan order (see `buildStage2Index`).
-        guard let index = stage2Index(for: registry) else { return nil }
+        guard let index = stage2Index(for: snapshot) else { return nil }
         if let hit = index[wanted] { return hit }
 
         // [T-modelsdev-suffix-alias] Stage 3: longest-prefix fallback for a
@@ -267,7 +270,7 @@ enum ModelsDevAPI {
         // endpoint — so it can never suppress an explicit "thinking off"
         // (see `effortDeclarationIsAuthoritative` in `applyDevData`).
         guard isUnrecognizedProvider(model.provider),
-              let aggIndex = aggregateIndex(for: registry) else { return nil }
+              let aggIndex = aggregateIndex(for: snapshot) else { return nil }
         var segments = wanted.split(separator: "-").map(String.init)
         while segments.count >= minPrefixSegments {
             if let agg = aggIndex[segments.joined(separator: "-")] {
@@ -346,19 +349,17 @@ enum ModelsDevAPI {
     /// closest thing to the truth we have, and under-reporting a context window
     /// silently truncates conversations while over-reporting merely surfaces
     /// the provider's own error.
-    private static var cachedAggregateIndex: [String: ModelsDevModel]?
-    private static var aggregateIndexBuiltFrom: Date?
-
-    /// Build (and memoize) the aggregate index. Same invalidation rule as
-    /// `stage2Index` / `releaseIndex`: keyed on `cacheTimestamp`, so a
-    /// background models.dev refresh rebuilds it without a relaunch.
-    private static func aggregateIndex(for registry: [String: ModelsDevProvider]) -> [String: ModelsDevModel]? {
-        if let cached = cachedAggregateIndex, aggregateIndexBuiltFrom == cacheTimestamp {
-            return cached
+    /// Cache identity is the captured snapshot's epoch, not a mutable timestamp.
+    private static func aggregateIndex(for snapshot: RegistrySnapshot) -> [String: ModelsDevModel]? {
+        if let cached = catalog.withLock({ $0.aggregate }), cached.epoch == snapshot.epoch {
+            return cached.value
         }
-        let index = buildAggregateIndex(registry)
-        cachedAggregateIndex = index
-        aggregateIndexBuiltFrom = cacheTimestamp
+        let index = buildAggregateIndex(snapshot.registry)
+        catalog.withLock { state in
+            if state.snapshot?.epoch == snapshot.epoch, state.aggregate?.epoch != snapshot.epoch {
+                state.aggregate = EpochCache(epoch: snapshot.epoch, value: index)
+            }
+        }
         logger.info("[ModelsDev] aggregate index built: \(index.count) prefixes")
         return index
     }
@@ -451,19 +452,16 @@ enum ModelsDevAPI {
     ///
     /// Keyed by `normalizedModelKey`; the value is the same `DevModelMatch` the
     /// old inline scan produced, so callers cannot tell the difference.
-    private static var cachedStage2Index: [String: DevModelMatch]?
-    private static var stage2IndexBuiltFrom: Date?
-
-    /// Build (and memoize) the stage-2 index. Rebuilt whenever the registry
-    /// timestamp moves, so a background models.dev refresh is picked up without
-    /// a relaunch — same invalidation rule as `releaseIndex()`.
-    private static func stage2Index(for registry: [String: ModelsDevProvider]) -> [String: DevModelMatch]? {
-        if let cached = cachedStage2Index, stage2IndexBuiltFrom == cacheTimestamp {
-            return cached
+    private static func stage2Index(for snapshot: RegistrySnapshot) -> [String: DevModelMatch]? {
+        if let cached = catalog.withLock({ $0.stage2 }), cached.epoch == snapshot.epoch {
+            return cached.value
         }
-        let index = buildStage2Index(registry)
-        cachedStage2Index = index
-        stage2IndexBuiltFrom = cacheTimestamp
+        let index = buildStage2Index(snapshot.registry)
+        catalog.withLock { state in
+            if state.snapshot?.epoch == snapshot.epoch, state.stage2?.epoch != snapshot.epoch {
+                state.stage2 = EpochCache(epoch: snapshot.epoch, value: index)
+            }
+        }
         logger.info("[ModelsDev] stage-2 index built: \(index.count) normalized keys")
         return index
     }
@@ -526,14 +524,14 @@ enum ModelsDevAPI {
 
     /// Enrich an array of models in bulk.
     static func enrichModels(_ models: [LLMModel]) -> [LLMModel] {
-        guard let registry = loadRegistry() else { return models }
+        guard let snapshot = loadRegistry() else { return models }
         return models.map { model in
             // [T-modelsdev-id-normalization] Same resolver as the single-model
             // path: own provider → exact id → normalized id, each stage picking
             // deterministically and preferring an entry that declares effort
             // tiers. The fallback scan is what third-party gateways actually
             // hit, since a relay's provider name matches no catalog key.
-            guard let match = resolveDevModel(for: model, in: registry) else { return model }
+            guard let match = resolveDevModel(for: model, in: snapshot) else { return model }
             return applyDevData(to: model, from: match.model, authoritative: match.authoritative)
         }
     }
@@ -612,17 +610,48 @@ enum ModelsDevAPI {
 
     // MARK: - Registry Cache
 
-    private static var cachedRegistry: [String: ModelsDevProvider]?
-    private static var cacheTimestamp: Date?
-    /// True while a background network fetch is in flight (prevents concurrent fetches).
-    private static var isRefreshing = false
+    /// All fields are immutable values; no decoder/model reference is shared.
+    private struct RegistrySnapshot: Sendable {
+        let epoch: UUID
+        let registry: [String: ModelsDevProvider]
+        let timestamp: Date
+    }
 
-    /// Returns the registry immediately from memory/disk/bundle (never blocks on network).
-    /// Triggers a background refresh when the cache is stale (>24h), at most one at a time.
+    private struct EpochCache<Value> {
+        let epoch: UUID
+        let value: Value
+    }
+
+    private struct CatalogState {
+        var snapshot: RegistrySnapshot?
+        var isRefreshing = false
+        var stage2: EpochCache<[String: DevModelMatch]>?
+        var aggregate: EpochCache<[String: ModelsDevModel]>?
+        var release: EpochCache<ReleaseIndex>?
+        var releasePreparing = false
+        var releaseWaiters: [CheckedContinuation<ReleaseIndex?, Never>] = []
+    }
+
+    /// The ONLY unchecked conformance: mutable state is exclusively accessed
+    /// through this short lock. No I/O, decoding, building or callback under it.
+    private final class CatalogBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var state = CatalogState()
+
+        func withLock<T>(_ body: (inout CatalogState) -> T) -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return body(&state)
+        }
+    }
+
+    private static let catalog = CatalogBox()
+    private static let releaseQueue = DispatchQueue(label: "app.openminis.modelsdev.release", qos: .utility)
+
     // MARK: - Release ranking index [T-model-release-ranking]
 
     /// One catalog entry reduced to just what ranking needs.
-    struct ReleaseEntry {
+    struct ReleaseEntry: Sendable {
         let date: Date
         let day: Int
         let outputCost: Double?
@@ -630,25 +659,69 @@ enum ModelsDevAPI {
     }
 
     /// Lookup tables consumed by `ModelReleaseIndex`.
-    struct ReleaseIndex {
+    struct ReleaseIndex: Sendable {
         /// Keyed by the full catalog id, vendor prefix included.
         let byFullId: [String: ReleaseEntry]
         /// Keyed by the id's last `/` segment.
         let byTail: [String: ReleaseEntry]
     }
 
-    private static var cachedReleaseIndex: ReleaseIndex?
-    private static var releaseIndexBuiltFrom: Date?
-
-    /// Build (and memoize) the release index from whatever registry is loaded.
-    ///
-    /// Rebuilt whenever the underlying registry timestamp moves, so a background
-    /// refresh of models.dev is picked up without a relaunch.
+    /// Synchronous compatibility API: never waits on the preparation queue.
     static func releaseIndex() -> ReleaseIndex? {
-        guard let registry = loadRegistry() else { return nil }
-        if let cached = cachedReleaseIndex, releaseIndexBuiltFrom == cacheTimestamp {
-            return cached
+        guard let snapshot = loadRegistry() else { return nil }
+        return releaseIndex(for: snapshot)
+    }
+
+    /// Shared single-flight cold preparation across ALL pickers. Cancelling a
+    /// waiter does not cancel this shared work; each picker fences its result.
+    static func prepareReleaseIndex() async -> ReleaseIndex? {
+        if let cached = currentReleaseIndex() { return cached }
+        return await withCheckedContinuation { continuation in
+            let start = catalog.withLock { state -> Bool in
+                state.releaseWaiters.append(continuation)
+                guard !state.releasePreparing else { return false }
+                state.releasePreparing = true
+                return true
+            }
+            guard start else { return }
+            releaseQueue.async {
+                // All disk/JSON/index work is outside the state lock and off UI.
+                let index = releaseIndex()
+                let waiters = catalog.withLock { state -> [CheckedContinuation<ReleaseIndex?, Never>] in
+                    let waiters = state.releaseWaiters
+                    state.releaseWaiters = []
+                    state.releasePreparing = false
+                    return waiters
+                }
+                for waiter in waiters { waiter.resume(returning: index) }
+            }
         }
+    }
+
+    private static func currentReleaseIndex() -> ReleaseIndex? {
+        let result = catalog.withLock { state -> (ReleaseIndex, Date)? in
+            guard let snapshot = state.snapshot, let cached = state.release,
+                  cached.epoch == snapshot.epoch else { return nil }
+            return (cached.value, snapshot.timestamp)
+        }
+        if let result, Date().timeIntervalSince(result.1) >= cacheTTL { scheduleBackgroundRefresh() }
+        return result?.0
+    }
+
+    private static func releaseIndex(for snapshot: RegistrySnapshot) -> ReleaseIndex {
+        if let cached = catalog.withLock({ $0.release }), cached.epoch == snapshot.epoch {
+            return cached.value
+        }
+        let index = buildReleaseIndex(snapshot.registry)
+        catalog.withLock { state in
+            if state.snapshot?.epoch == snapshot.epoch, state.release?.epoch != snapshot.epoch {
+                state.release = EpochCache(epoch: snapshot.epoch, value: index)
+            }
+        }
+        return index
+    }
+
+    private static func buildReleaseIndex(_ registry: [String: ModelsDevProvider]) -> ReleaseIndex {
         var byFullId: [String: ReleaseEntry] = [:]
         var byTail: [String: ReleaseEntry] = [:]
         for provider in registry.values {
@@ -672,61 +745,76 @@ enum ModelsDevAPI {
             }
         }
         let index = ReleaseIndex(byFullId: byFullId, byTail: byTail)
-        cachedReleaseIndex = index
-        releaseIndexBuiltFrom = cacheTimestamp
         logger.info("[ModelRank] release index built: full=\(byFullId.count) tail=\(byTail.count)")
         return index
     }
 
-    private static func loadRegistry() -> [String: ModelsDevProvider]? {
-        // 1. In-memory cache (fresh)
-        if let cached = cachedRegistry, let ts = cacheTimestamp,
-           Date().timeIntervalSince(ts) < cacheTTL {
-            return cached
+    private static func loadRegistry() -> RegistrySnapshot? {
+        if let snapshot = catalog.withLock({ $0.snapshot }) {
+            if Date().timeIntervalSince(snapshot.timestamp) >= cacheTTL { scheduleBackgroundRefresh() }
+            return snapshot
         }
 
-        // 2. In-memory cache exists but stale — return it, schedule refresh
-        if let cached = cachedRegistry {
-            scheduleBackgroundRefresh()
-            return cached
-        }
-
-        // 3. Disk cache (downloaded data) — fallback to bundled on parse failure
+        // Legacy synchronous APIs keep their return contract and local cold
+        // fallback. They never sync/wait on releaseQueue. Picker uses ONLY the
+        // async preparation above. Concurrent cold callers may read in parallel;
+        // conditional installation below cannot replace a newer network epoch.
         if let (diskData, diskDate) = loadDiskCache() {
             if let parsed = parseRegistry(diskData) {
-                cachedRegistry = parsed
-                cacheTimestamp = diskDate
-                if Date().timeIntervalSince(diskDate) >= cacheTTL {
-                    scheduleBackgroundRefresh()
-                }
-                return parsed
+                let snapshot = installColdRegistry(parsed, timestamp: diskDate)
+                if Date().timeIntervalSince(snapshot.timestamp) >= cacheTTL { scheduleBackgroundRefresh() }
+                return snapshot
             } else {
                 logger.error("Downloaded models.dev cache failed to parse, falling back to bundled")
             }
         }
-
-        // 4. Bundled fallback — must always succeed
         if let bundled = loadBundledRegistry() {
-            cachedRegistry = bundled
-            cacheTimestamp = Date() // Treat as fresh to avoid repeated bundled loads within same session
+            let snapshot = installColdRegistry(bundled, timestamp: Date())
             scheduleBackgroundRefresh()
-            return bundled
+            return snapshot
         }
-
-        return nil
+        return catalog.withLock { $0.snapshot }
     }
 
-    /// Schedule a background refresh if one isn't already in flight.
+    private static func installColdRegistry(_ registry: [String: ModelsDevProvider], timestamp: Date) -> RegistrySnapshot {
+        let candidate = RegistrySnapshot(epoch: UUID(), registry: registry, timestamp: timestamp)
+        return catalog.withLock { state in
+            if let installed = state.snapshot { return installed }
+            state.snapshot = candidate
+            return candidate
+        }
+    }
+
+    /// New epoch atomically invalidates ALL derived caches. Keep old values alive
+    /// until after unlocking so destruction of large dictionaries is lock-free.
+    private static func installRefreshedRegistry(_ registry: [String: ModelsDevProvider], timestamp: Date) {
+        let snapshot = RegistrySnapshot(epoch: UUID(), registry: registry, timestamp: timestamp)
+        let retired = catalog.withLock { state -> CatalogState in
+            let retired = state
+            state.snapshot = snapshot
+            state.stage2 = nil
+            state.aggregate = nil
+            state.release = nil
+            return retired
+        }
+        withExtendedLifetime(retired) {}
+    }
+
+    /// Exactly one refresh admission; network, parse and disk write are lock-free.
     private static func scheduleBackgroundRefresh() {
-        guard !isRefreshing else { return }
-        isRefreshing = true
+        let start = catalog.withLock { state -> Bool in
+            guard !state.isRefreshing else { return false }
+            state.isRefreshing = true
+            return true
+        }
+        guard start else { return }
         Task.detached(priority: .utility) {
             await refreshFromNetwork()
         }
     }
 
     private static func refreshFromNetwork() async {
-        defer { isRefreshing = false }
+        defer { catalog.withLock { $0.isRefreshing = false } }
         do {
             guard let url = URL(string: sourceURL) else { return }
             var request = URLRequest(url: url)
@@ -737,8 +825,7 @@ enum ModelsDevAPI {
                 return
             }
             if let parsed = parseRegistry(data) {
-                cachedRegistry = parsed
-                cacheTimestamp = Date()
+                installRefreshedRegistry(parsed, timestamp: Date())
                 saveDiskCache(data)
                 logger.info("Background-refreshed models.dev registry: \(parsed.count) providers")
             }
@@ -803,7 +890,7 @@ enum ModelsDevAPI {
 
 // MARK: - models.dev JSON Models
 
-private struct ModelsDevProvider: Decodable {
+private struct ModelsDevProvider: Decodable, Sendable {
     let id: String
     let name: String?
     let api: String?
@@ -822,7 +909,7 @@ private struct ModelsDevProvider: Decodable {
     }
 }
 
-private struct ModelsDevModel: Decodable {
+private struct ModelsDevModel: Decodable, Sendable {
     let id: String
     let name: String?
     let family: String?
@@ -933,7 +1020,7 @@ private struct ModelsDevModel: Decodable {
     }
 }
 
-private struct ModelsDevModalities: Decodable {
+private struct ModelsDevModalities: Decodable, Sendable {
     let input: [String]?
     let output: [String]?
 
@@ -945,7 +1032,7 @@ private struct ModelsDevModalities: Decodable {
     }
 }
 
-private struct ModelsDevLimit: Decodable {
+private struct ModelsDevLimit: Decodable, Sendable {
     let context: Int?
     let output: Int?
 
@@ -959,7 +1046,7 @@ private struct ModelsDevLimit: Decodable {
 /// [T-model-release-ranking] models.dev `cost` block (USD per million tokens).
 /// Several entries omit it entirely (free/local models), and some publish only
 /// a subset of the keys, so every field is optional.
-private struct ModelsDevCost: Decodable {
+private struct ModelsDevCost: Decodable, Sendable {
     let input: Double?
     let output: Double?
 }
@@ -969,7 +1056,7 @@ private struct ModelsDevCost: Decodable {
 /// Observed shapes in the bundled catalog: `{"type":"toggle"}`,
 /// `{"type":"effort","values":[…]}`, `{"type":"budget_tokens","max":131072}`.
 /// Only `type` is always present, so every other field is optional.
-private struct ModelsDevReasoningOption: Decodable {
+private struct ModelsDevReasoningOption: Decodable, Sendable {
     let type: String?
     let values: [String]?
 
@@ -1023,7 +1110,7 @@ private struct AnyDecodableSkip: Decodable {
     }
 }
 
-private struct ModelsDevInterleaved: Decodable {
+private struct ModelsDevInterleaved: Decodable, Sendable {
     let field: String?
 
     init(from decoder: Decoder) throws {

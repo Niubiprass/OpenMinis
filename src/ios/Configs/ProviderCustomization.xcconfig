@@ -14,4 +14,6 @@
 // them. We ship no value — supply your own. Other open-source projects
 // talking to the same endpoint declare the same identifier, e.g.
 // https://github.com/Wei-Shaw/claude-relay-service
+// Explicit live compilation is selected only by the approved CI command line.
+#include "MiniSightRhythm.xcconfig"
 ANTHROPIC_OAUTH_IDENTIFIER_PROMPT =

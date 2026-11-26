@@ -35,5 +35,27 @@ static void RhythmExtra(void) {
   CHECK(fabs(E.offsetY.value)<.00001&&fabs(E.angle.value)<.00001);
  }
  CHECK(bob[1]>bob[0]*4.&&angle[1]>.001);
- printf("RHYTHM PASS: measured sprite-only spring bob %.5f -> %.5f, no center/hit geometry write, settles without fresh input\n",bob[0],bob[1]);
+ Case="independent-daily-and-signed-measured-music-roles";
+ RhythmFresh();P_clearRhythm();P_setSpriteState(8);center=P.center;
+ CHECK(FixtureRole(E_currentRole(),"idle")); // No input is not a claimed beat.
+ MSPetRhythmPolicy phasePolicy={0};
+ for(unsigned side=0;side<3;side++) {
+  bool left=side==1;
+  for(unsigned i=0;i<30;i++) {
+   Now+=.01;MSRhythmFrame frame=Measured(.5,.3,.8,MSRhythmFlagValid);
+   frame.phase=left?.5:0.;
+   MSPetRhythmAction sample=MSPetRhythmConsume(&phasePolicy,frame,Now,Now,
+      P_feasibleCenters(),P.center,false);
+   CHECK(sample.accepted&&!sample.valid&&!sample.beat);
+   CHECK(left?sample.pulse<-.2:sample.pulse>.2);
+   E_applyRhythmStrength(sample.strength,sample.pulse);E_tick(E.link);
+  }
+  CHECK(left?E.angle.value<-.02:E.angle.value>.02);
+  CHECK(FixtureRole(E_currentRole(),"music"));
+  CHECK(hypot(P.center.x-center.x,P.center.y-center.y)<.0001);
+ }
+ for(unsigned i=0;i<100;i++){Now+=.02;E_tick(E.link);}
+ CHECK(FixtureRole(E_currentRole(),"idle")&&fabs(E.angle.value)<.00001);
+ P_setMusicPlaying(false);P_setSpriteState(0);CHECK(FixtureRole(E_currentRole(),"idle")&&P.dailyActionsEnabled);
+ printf("RHYTHM PASS: measured sprite-only spring bob %.5f -> %.5f, signed producer phase left/right, distinct music/ordinary roles, no center/hit geometry write, settles without fresh input\n",bob[0],bob[1]);
 }

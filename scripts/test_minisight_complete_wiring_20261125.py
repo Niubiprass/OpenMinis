@@ -14,7 +14,7 @@ class CompleteWiring(unittest.TestCase):
   self.assertIn('enabled = enabled && token > 0',client)
   self.assertLess(client.index('!MiniSightRhythmLiveTransportCompiled()'),client.index('_socket=socket('))
   self.assertIn('#define MINISIGHT_ENABLE_RHYTHM_TRANSPORT 0',client)
-  self.assertIn('static let version = "0.8.56"',(IOS/'MiniSightHostAdapter.swift').read_text())
+  self.assertIn('static let version = "0.8.57"',(IOS/'MiniSightHostAdapter.swift').read_text())
  def test_daily_switch_round_trip_and_two_host_application(self):
   s=(IOS/'MiniSightSettings.swift').read_text();c=(IOS/'MiniSightConfigStore.swift').read_text();ui=(IOS/'Views/Settings/MiniSightHomePage.swift').read_text();runtime=(IOS/'MiniSightInAppRuntime.swift').read_text()
   self.assertIn('static let dailyActionsEnabled = "minisight.actions.daily"',s)
@@ -25,7 +25,9 @@ class CompleteWiring(unittest.TestCase):
   self.assertEqual(runtime.count('pet.dailyActionsEnabled = parent.dailyActionsEnabled'),2)
   self.assertIn('实时节奏接收尚未启用',ui)
   self.assertIn('播放音乐时仍保留普通活动',ui)
-  self.assertIn('不会安装服务或开启采音',ui)
+  self.assertIn('本开关不会安装服务',ui)
+  self.assertIn('开关开启且音乐在播时会请求本机系统输出分析',ui)
+  self.assertIn('不读取麦克风、不外传音频，可能混入提示音',ui)
   log=(CORE/'MiniSightLog.m').read_text()
   allowed=log.split('@"setting":',1)[1].split('@"sensor":',1)[0]
   for key in ['minisight.actions.daily','minisight.music.lyrics','minisight.music.motion']:
@@ -39,6 +41,26 @@ class CompleteWiring(unittest.TestCase):
   self.assertIn('MiniSightRhythmConfigurePet(pet, false, parent.musicToken)',s)
   self.assertIn('musicGeneration.rounded(.towardZero) == musicGeneration',s)
   self.assertIn('self.rhythmToken = 0',s)
+ def test_measured_music_evidence_complete_host_chain_static_only(self):
+  s=(IOS/'MiniSightInAppRuntime.swift').read_text()
+  self.assertIn('@Published private(set) var hasPositionEvidence = false',s)
+  self.assertIn('musicPositionEvidence: music.hasPositionEvidence',s)
+  self.assertIn('let musicPositionEvidence: Bool',s)
+  self.assertIn('value?["rhythmGeneration"] ?? value?["generation"]',s)
+  self.assertIn('let positionEvidence = nextPlaying && snapshot.motionTime != nil &&',s)
+  self.assertIn('MiniSightMusicSnapshot.flag(value?["progressAvailable"]) == true',s)
+  self.assertIn('MiniSightMusicSnapshot.number(value?["motionRate"]) == 1',s)
+  self.assertEqual(s.count('MiniSightRhythmConfigurePetWithPosition(pet, parent.musicPlaying, parent.musicToken,'),3)
+  self.assertEqual(s.count('parent.musicPositionEvidence ? (parent.musicAnchor?.current ?? .nan) : .nan'),3)
+  self.assertIn('MiniSightRhythmConfigurePet(pet, false, parent.musicToken)',s)
+  self.assertIn('if !wanted { line = nil; playing = false; anchor = nil; rhythmToken = 0; hasPositionEvidence = false;',s)
+  self.assertIn('if now - lastValidAt > 5 || now < lastValidAt - 1 { line = nil; playing = false; anchor = nil; rhythmToken = 0; hasPositionEvidence = false;',s)
+  self.assertIn('self.rhythmToken = 0; self.hasPositionEvidence = false; self.evidence("music_stale"',s)
+  self.assertIn('guard !inFlight else { return }',s)
+  self.assertIn('Timer(timeInterval: 0.25, repeats: true)',s)
+  evidence=s.split('let positionEvidence =',1)[1].split('if self.hasPositionEvidence',1)[0]
+  self.assertNotIn('nextLine',evidence)
+  self.assertNotIn('lyrics',evidence)
  def test_original_defaults_are_independent_of_user_assets(self):
   s=(IOS/'MiniSightDefaultAssets.swift').read_text();catalog=(IOS/'Agent/Chat/MiniSightCatalog.swift').read_text()
   self.assertIn('CC0',(IOS/'Resources/MiniSightDefaults/LICENSE.txt').read_text())
@@ -77,7 +99,7 @@ class CompleteWiring(unittest.TestCase):
   for n in ['MiniSightMusicMonitor.m','MiniSightMusicPlayerABI.h','MiniSightPetEffects.m','MiniSightPetDailyPolicy.h','MiniSightRhythmClient.m','MiniSightLog.m']:
    self.assertEqual((CORE/n).read_bytes(),(PLUGIN/n).read_bytes(),n)
   t=(PLUGIN/'Tweak.xm').read_text();r=(PLUGIN/'MiniSightResources.m').read_text()
-  self.assertIn('static NSString *const kMiniSightVersion   = @"0.8.56";',t)
+  self.assertIn('static NSString *const kMiniSightVersion   = @"0.8.57";',t)
   self.assertIn('gMiniSightPet.dailyActionsEnabled = MiniSightDailyActionsEnabled();',t)
   self.assertIn('if (gMiniSightUsingDefaultAtlas) return 3;',t)
   self.assertIn('MSAssetNeedsHostRebuild(resourcesFresh',t)
