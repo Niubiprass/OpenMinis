@@ -59,6 +59,27 @@ def baseline_gate(orig_stripped: str, stripped: str, accepted) -> str | None:
     return None
 
 
+def accepted_performance_baseline(source: str) -> str:
+    """Recognize ONLY the exact, separately approved provider-performance delta.
+
+    The old b113f88 toolbar guard predates the bounded worker. Pin its new
+    non-toolbar bytes to the first approved 388 commit, then apply the original
+    legacy gate to the released 387 source. This is not a marker-based allowance
+    for arbitrary worker/code/comment changes; any byte drift fails closed.
+    """
+    path = 'src/ios/Views/Providers/UnifiedModelPicker.swift'
+    def historical(commit):
+        return subprocess.run(['git', 'show', commit + ':' + path], cwd=ROOT,
+                              text=True, capture_output=True, check=True).stdout
+    approved = historical('ecddbef45c77041ea5f70e6a7ea0aa7728580289')
+    previous = historical('6d32564fd545538864e6e63b9b57dde634390d44')
+    current_masked = source.replace(toolbar(source), '<TOOLBAR>')
+    approved_masked = approved.replace(toolbar(approved), '<TOOLBAR>')
+    if current_masked != approved_masked:
+        raise AssertionError('Unexpected non-toolbar drift outside the exact approved 388 performance source')
+    return previous.replace(toolbar(previous), '<TOOLBAR>')
+
+
 class SourceContracts(unittest.TestCase):
     def test_commit_and_cancel_have_separate_items(self):
         items = item_bodies(toolbar(SOURCE))
@@ -113,7 +134,10 @@ class SourceContracts(unittest.TestCase):
         # must surface `isUnavailableFromProvider` ("Not listed by provider")
         # exactly like the provider-detail page does. Those accepted edits are
         # whitelisted by content; anything ELSE still fails the guard.
-        stripped = SOURCE.replace(toolbar(SOURCE), '<TOOLBAR>')
+        # The new bounded sorting/catalog flow is an explicitly approved
+        # change, not part of the older toolbar-only contract. Require its
+        # complete non-toolbar bytes to match the immutable approved commit.
+        stripped = accepted_performance_baseline(SOURCE)
         orig_stripped = original.replace(toolbar(original), '<TOOLBAR>')
         accepted = ('unlisted', 'Not listed by provider', 'no longer lists', 'T-115-quota', 'T-picker-refresh-all', 'isRefreshingAll', 'refreshNote', 'refreshAllModels', 'T-quota-header-balance', 'T-quota-threshold', 'quotaTint', 'quotaBackground', 'cachedQuota', 'HStack(spacing: 8)', 'T-quota-header-balance', 'T-picker-pin-selected', 'T-picker-select-section', 'T-picker-pin-scroll', 'scrollProxy', 'ScrollViewProxy', 'scrollTo', 'ScrollViewReader', 'T-picker-provider-recency', 'rememberProvider', 'orderedByLastUsedProvider', 'sessionId', 'T-provider-group-order', 'ProviderGroupOrder.types(in: store.instances)')
         # [T-115-picker-unlisted] Accept diff BLOCKS whose added lines carry an
@@ -142,7 +166,7 @@ class SourceContracts(unittest.TestCase):
         comment_tampered = '\n'.join(lines)
         failure = baseline_gate(orig_stripped, comment_tampered, accepted)
         self.assertIsNotNone(
-            {failure},
+            failure,
             'a comment-only diff block must not whitelist itself')
 
         # 2) Sneaky behavioral edit on the baseline: must FAIL.
@@ -151,8 +175,21 @@ class SourceContracts(unittest.TestCase):
             'guard !disabled, false else { return } // disable rows always')
         failure = baseline_gate(orig_stripped, behavior_tampered, accepted)
         self.assertIsNotNone(
-            {failure},
+            failure,
             'an unmarked behavioral edit must not pass the gate')
+
+    def test_exact_performance_gate_rejects_unknown_worker_or_comment_drift(self):
+        # A broad accepted-marker whitelist would also accept this legitimate-
+        # looking change. The exact pinned source must reject it instead.
+        self.assertIsInstance(accepted_performance_baseline(SOURCE), str)
+        changed = SOURCE.replace('guard !state.releasePreparing', 'guard false && !state.releasePreparing', 1)
+        if changed == SOURCE:
+            changed = SOURCE.replace('if running {', 'if false && running {', 1)
+        self.assertNotEqual(changed, SOURCE)
+        with self.assertRaisesRegex(AssertionError, 'non-toolbar drift'):
+            accepted_performance_baseline(changed)
+        with self.assertRaisesRegex(AssertionError, 'non-toolbar drift'):
+            accepted_performance_baseline(SOURCE + '\n// T-picker-cold-sort is not permission for arbitrary edits\n')
 
     def test_session_picker_surfaces_provider_unlisted(self):
         # [T-115-picker-unlisted] The session picker row must show + block
