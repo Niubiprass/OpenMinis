@@ -418,7 +418,7 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                 messages: messages, systemPrompt: systemPrompt, tools: tools,
                 maxTokens: maxTokens, thinkingLevel: thinkingLevel)
             return AsyncThrowingStream { continuation in
-                let worker = ProviderChatAPIBudget.worker {
+                let worker = ProviderChatAPIBudget.worker { [self] in
                     do {
                         for try await event in stream {
                             try Task.checkCancellation()
@@ -459,7 +459,7 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
             : 1
         let initialExclusions = takeResumeExclusions()
         return AsyncThrowingStream { continuation in
-            let worker = ProviderChatAPIBudget.worker {
+            let worker = ProviderChatAPIBudget.worker { [self] in
                 var attempted = initialExclusions
                 var attemptedSecrets = Set<String>()
                 var lastError: Error?

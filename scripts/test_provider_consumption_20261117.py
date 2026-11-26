@@ -191,6 +191,16 @@ class SourceContracts(unittest.TestCase):
         self.assertIn('let requestConsumption = consumption?.started()', O)
         self.assertIn('let consumption = request.consumption?.started()', T)
 
+    def test_worker_capture_and_cancellation_preserved(self):
+        wrapper = A[A.index('final class MultiKeyAgentProvider:'):]
+        # A custom @escaping worker does not inherit Task's implicit-self
+        # exception. Both the single-key and key-pool workers must opt in.
+        self.assertEqual(wrapper.count('ProviderChatAPIBudget.worker {'), 2)
+        self.assertEqual(wrapper.count('ProviderChatAPIBudget.worker { [self] in'), 2)
+        self.assertEqual(wrapper.count('worker.cancel()'), 2)
+        self.assertIn('if case .cancelled = termination { self?.clearNetworkRetryLease() }', wrapper)
+        self.assertIn(wrapper, harness())
+
     def test_required_workflow_hook_present(self):
         workflow = (ROOT / '.github/workflows/openminis-app.yml').read_text()
         self.assertIn('V64R_REQUIRE_SWIFT=1 python3 scripts/test_provider_consumption_20261117.py', workflow)
