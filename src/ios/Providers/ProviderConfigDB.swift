@@ -671,7 +671,8 @@ actor ProviderConfigDB {
             let oldExtras = storedInst[inst.id]?["extras_json"] as? String
             let subscriptionExtras: String?
             do {
-                subscriptionExtras = try SubscriptionConfigurationStorage.merging(inst, into: oldExtras)
+                let subscription = try SubscriptionConfigurationStorage.merging(inst, into: oldExtras)
+                subscriptionExtras = try ProviderChatAPIConfiguration.merging(inst, into: subscription)
             } catch {
                 logger.error("[v3] subscription settings not saved: malformed extras for \(inst.id.prefix(8))")
                 continue // preserve the existing record, including unknown fields
@@ -905,7 +906,8 @@ actor ProviderConfigDB {
                 codexClientMask: (row["codex_client_mask"] as? Bool) ?? false
             )
             do {
-                instances.append(try SubscriptionConfigurationStorage.applying(row["extras_json"] as? String, to: inst))
+                let subscription = try SubscriptionConfigurationStorage.applying(row["extras_json"] as? String, to: inst)
+                instances.append(try ProviderChatAPIConfiguration.applying(row["extras_json"] as? String, to: subscription))
             } catch {
                 // Keep the parent visible, but never fall back to its legacy
                 // credential when a malformed explicit account list was stored.

@@ -1052,6 +1052,7 @@ final class ProviderConfigStore: ObservableObject {
             updated.imageEndpointResolved = nil
         }
         config.instances[idx] = updated
+        if old != updated { ProviderChatAPI.invalidate(instanceId: instance.id) }
         save()
     }
 
@@ -1220,6 +1221,7 @@ final class ProviderConfigStore: ObservableObject {
     }
 
     func removeInstance(_ instanceId: String) {
+        ProviderChatAPI.invalidate(instanceId: instanceId)
         if let subscription = instance(for: instanceId), subscription.providerType.isDomesticSubscription {
             removedSubscriptionInstanceIds.insert(instanceId)
             // Invalidate pending login/refresh before deleting the instance or Keychain item.

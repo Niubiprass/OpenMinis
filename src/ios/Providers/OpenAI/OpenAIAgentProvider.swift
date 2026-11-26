@@ -73,10 +73,88 @@ final class OpenAIAgentProvider: AgentProvider {
         maxTokens: Int,
         thinkingLevel: ThinkingLevel
     ) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
+        if provider.chatAPIContext != nil {
+            return try await streamChatAPINegotiated(messages:messages,systemPrompt:systemPrompt,tools:tools,
+                                                   maxTokens:maxTokens,thinkingLevel:thinkingLevel)
+        }
         if provider.usesChatCompletionsAPI {
             return try await streamChatCompletions(messages: messages, systemPrompt: systemPrompt, tools: tools, maxTokens: maxTokens, thinkingLevel: thinkingLevel)
         } else {
             return try await streamResponsesAPI(messages: messages, systemPrompt: systemPrompt, tools: tools, maxTokens: maxTokens, thinkingLevel: thinkingLevel)
+        }
+    }
+
+    // Explicit, request-local choice: NEVER toggle a shared provider's format
+    // while a stream is in flight. The existing serializers/parsers own both paths.
+    func streamChatAPINegotiated(messages:[AgentMessage],systemPrompt:String?,tools:[AgentToolDefinition],
+                                maxTokens:Int,thinkingLevel:ThinkingLevel) async throws -> AsyncThrowingStream<AgentStreamEvent,Error> {
+        guard let context=provider.chatAPIContext else{throw ProviderChatAPIError.unavailable}
+        let budget=ProviderChatAPIBudget.current ?? ProviderChatAPIBudget()
+        return AsyncThrowingStream { continuation in
+            let worker=ProviderChatAPIBudget.worker {
+                var format=ProviderChatAPIHistory.shared.cached(context.scope) ?? context.initial
+                var corrected=false
+                func open(_ value:ProviderChatAPIFormat) async throws -> AsyncThrowingStream<AgentStreamEvent,Error> {
+                    if value == .responses {
+                        return try await self.streamResponsesAPI(messages:messages,systemPrompt:systemPrompt,tools:tools,maxTokens:maxTokens,thinkingLevel:thinkingLevel)
+                    }
+                    return try await self.streamChatCompletions(messages:messages,systemPrompt:systemPrompt,tools:tools,maxTokens:maxTokens,thinkingLevel:thinkingLevel)
+                }
+                do {
+                    try Task.checkCancellation()
+                    guard await context.validate() else{throw ProviderChatAPIError.scopeChanged}
+                    let upstream:AsyncThrowingStream<AgentStreamEvent,Error>
+                    do { upstream=try await open(format) }
+                    catch let rejection as ProviderChatEndpointRejection {
+                        // streamRaw throws this ONLY for a non-2xx entry rejection,
+                        // before creating/yielding any parser stream or tool event.
+                        guard let last = messages.last, last.role == .user,
+                              !last.parts.contains(where: { part in
+                                  switch part { case .toolUse, .toolResult: return true; default: return false }
+                              }) else { throw ProviderChatAPIError.unverified }
+                        guard rejection.target != format,budget.take() else {
+                            throw ProviderChatAPIError.correctionFailed
+                        }
+                        try Task.checkCancellation()
+                        guard await context.validate() else{throw ProviderChatAPIError.scopeChanged}
+                        format = rejection.target;corrected=true
+                        do {upstream=try await open(format)}
+                        catch is CancellationError {throw CancellationError()}
+                        catch {throw ProviderChatAPIError.correctionFailed} // No key/group retry explosion.
+                    }
+                    var content=false,completed=false
+                    var terminal:AgentStreamEvent?
+                    for try await event in upstream {
+                        try Task.checkCancellation()
+                        switch event {
+                        case .textDelta(let text): content = content || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        case .done(let reason):
+                            terminal=event
+                            switch reason {
+                            case .endTurn,.maxTokens: completed=true
+                            case .refusal,.toolUse: completed=false
+                            }
+                            continue // A normal, fully parsed finish is required before remembering.
+                        default:break
+                        }
+                        continuation.yield(event)
+                    }
+                    try Task.checkCancellation()
+                    if completed && content {
+                        // A cache invalidation must not turn a valid reply into a chat error.
+                        try? await context.record(format)
+                    }
+                    try Task.checkCancellation()
+                    if let terminal {continuation.yield(terminal)}
+                    continuation.finish()
+                } catch {
+                    // NO format retry from an error after output/tool events.
+                    if Task.isCancelled {continuation.finish(throwing:CancellationError())}
+                    else if corrected {continuation.finish(throwing:ProviderChatAPIError.correctionFailed)}
+                    else {continuation.finish(throwing:error)}
+                }
+            }
+            continuation.onTermination={_ in worker.cancel()}
         }
     }
 
@@ -1039,6 +1117,9 @@ final class OpenAIAgentProvider: AgentProvider {
     /// handle the field correctly, add it here by base-URL match rather than
     /// widening the default.
     static func shouldSendPromptCacheKey(for provider: OpenAIProvider) -> Bool {
+        // Automatic discovery is not the user's explicit opt-in to optional
+        // relay-specific body fields; neither setup nor correction adds them.
+        if provider.chatAPIContext != nil { return false }
         if provider.customBaseURL == nil && !provider.isAzure { return true }
         return provider.forceResponsesAPI
     }

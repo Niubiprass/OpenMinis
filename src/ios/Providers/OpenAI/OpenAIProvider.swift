@@ -76,11 +76,20 @@ private let streamingSession: URLSession = {
 /// Deliberately NOT registered with `LLMSessionRegistry`: that registry exists
 /// to evict long-lived pooled connections on network-interface changes, and a
 /// session that lives for exactly one stream has nothing to evict.
-private func makeStreamingSession() -> URLSession {
+private final class ChatAPINoRedirect: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil) // Auto-negotiation never forwards credentials to a redirect.
+    }
+}
+private func makeStreamingSession(rejectRedirects: Bool = false) -> URLSession {
     let config = URLSessionConfiguration.default
     config.timeoutIntervalForRequest = 600  // 10 minutes — matches the shared session
     // One stream per session, so there is no second connection to pool.
     config.httpMaximumConnectionsPerHost = 1
+    if rejectRedirects { return URLSession(configuration: config, delegate: ChatAPINoRedirect(), delegateQueue: nil) }
     return URLSession(configuration: config)
 }
 
@@ -266,6 +275,8 @@ final class OpenAIProvider: LLMProvider {
     /// When true, always use the Responses API format (/v1/responses) regardless of auth mode.
     /// Used by the "Responses API" provider type for third-party Responses-compatible endpoints.
     var forceResponsesAPI: Bool = false
+    /// Immutable automatic-mode snapshot attached after all factory overrides.
+    var chatAPIContext: ProviderChatAPIContext?
 
     /// [T-codex-client-mask] When true, add the Codex client identity (headers +
     /// body `client_metadata`) to Responses requests, for relays that only admit
@@ -741,7 +752,7 @@ final class OpenAIProvider: LLMProvider {
         // [T-ios-stream-connection-reuse] Own session for this stream; see
         // `makeStreamingSession()`. Invalidated on every exit path below so the
         // connection is torn down rather than returned to a long-lived pool.
-        let session = makeStreamingSession()
+        let session = makeStreamingSession(rejectRedirects: chatAPIContext != nil)
         let byteStream: URLSession.AsyncBytes
         let response: URLResponse
         do {
@@ -1098,7 +1109,7 @@ final class OpenAIProvider: LLMProvider {
         // [T-ios-stream-connection-reuse] Own session for this stream; see
         // `makeStreamingSession()`. This is the agent loop's request path — the
         // one the 22:11 stall happened on.
-        let session = makeStreamingSession()
+        let session = makeStreamingSession(rejectRedirects: chatAPIContext != nil)
         let byteStream: URLSession.AsyncBytes
         let response: URLResponse
         do {
@@ -1111,8 +1122,18 @@ final class OpenAIProvider: LLMProvider {
 
         if !(200..<300).contains(statusCode) {
             var body = ""
-            for try await line in byteStream.lines { body += line }
+            for try await line in byteStream.lines {
+                guard chatAPIContext == nil || body.utf8.count + line.utf8.count <= 16_384 else {
+                    session.finishTasksAndInvalidate()
+                    throw ProviderChatAPIError.unverified
+                }
+                body += line
+            }
             session.finishTasksAndInvalidate()
+            if chatAPIContext != nil,
+               let target=ProviderChatEndpointRejection.target(status:statusCode,body:body,fromChat:!isResponsesAPI) {
+                throw ProviderChatEndpointRejection(target:target)
+            }
             // [T-codex-identity-selfheal] Identity-level 403: the relay has
             // blacklisted this installation id, so the same request can only
             // fail again. Burn the id and re-issue ONCE with a fresh one. The
@@ -2325,7 +2346,27 @@ final class OpenAIProvider: LLMProvider {
     }
 
     func mapHTTPError(statusCode: Int, body: String) -> LLMError {
-        if statusCode == 401 { return .invalidAPIKey(detail: "HTTP 401: \(String(body.prefix(200)))") }
+        // Keep the provider's complete reason, not the entire envelope (which
+        // may echo headers or a request). Scrub before UI, copy and persistence.
+        func safeReason() -> String {
+            var text: String
+            if let data = body.data(using: .utf8),
+               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                let envelope = (root["error"] as? [String: Any]) ?? root
+                text = ["code", "type", "message"].compactMap { envelope[$0] as? String }.joined(separator: ": ")
+                if text.isEmpty { text = "Provider returned an error without a message" }
+            } else { text = body }
+            if case .apiKey(let key) = authMode, !key.isEmpty {
+                text = text.replacingOccurrences(of: key, with: "[已隐藏]")
+            }
+            for pattern in [#"(?i)\b(?:bearer|basic)\s+[^\s,;\"']+"#,
+                            #"(?i)\b(?:authorization|cookie|set-cookie|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|password)\b[\"']?\s*[:=]\s*[^\r\n]+"#,
+                            #"\bsk-[A-Za-z0-9_-]+"#] {
+                text = text.replacingOccurrences(of: pattern, with: "[已隐藏]", options: .regularExpression)
+            }
+            return text
+        }
+        if statusCode == 401 { return .invalidAPIKey(detail: "HTTP 401: \(safeReason())") }
         if statusCode == 403 {
             // 403 is used both for key permissions and for a blocked egress IP.
             // Keep the HTTP cause so MultiKey can try another key WITHOUT
@@ -2335,13 +2376,13 @@ final class OpenAIProvider: LLMProvider {
             // the relay refuses the *installation identity*, rotating keys is
             // useless and only deepens its risk scoring.
             if CodexClientMask.isIdentityRejection(statusCode: statusCode, body: body) {
-                return .providerError(message: "[403] identity rejected: \(body.prefix(200))")
+                return .providerError(message: "[403] identity rejected: \(safeReason())")
             }
-            return .providerError(message: "[403] access denied: \(body.prefix(200))")
+            return .providerError(message: "[403] access denied: \(safeReason())")
         }
         if statusCode == 429 { return ProviderServiceError.httpError(statusCode: statusCode, body: body) }
         if statusCode == 413 {
-            return .providerError(message: "[413] request too large: \(body.prefix(160))")
+            return .providerError(message: "[413] request too large: \(safeReason())")
         }
 
         // A relay can answer 5xx when the MODEL has no channel in the account's
@@ -2351,7 +2392,7 @@ final class OpenAIProvider: LLMProvider {
         if [500, 502, 503].contains(statusCode),
            lowerBody.contains("model_not_found") || lowerBody.contains("no available channel")
             || lowerBody.contains("无可用渠道") {
-            return .providerError(message: "[\(statusCode)] model has no available channel: \(body.prefix(300))")
+            return .providerError(message: "[\(statusCode)] model has no available channel: \(safeReason())")
         }
 
         // Preserve structured code/type as well as message (including 400

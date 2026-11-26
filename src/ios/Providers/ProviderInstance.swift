@@ -16,7 +16,7 @@ enum ImageEndpointMode: String, Codable, Hashable, CaseIterable {
 struct ProviderInstance: Identifiable, Codable, Hashable {
     let id: String
     var label: String
-    let providerType: ProviderType
+    var providerType: ProviderType
     let credentialType: ProviderCredential
     var isEnabled: Bool
     let createdAt: Date
@@ -25,6 +25,9 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
     /// When true (default), "/v1" is automatically appended to the custom base URL.
     /// Set to false for endpoints that already include the full path (e.g. "https://host/api/v2").
     var appendV1Suffix: Bool
+    /// nil preserves a pre-auto instance's explicit legacy provider format.
+    /// New OpenAI-compatible instances select .automatic during setup.
+    var chatAPIFormatMode: ProviderChatAPIMode?
     /// User preference for image-generation endpoint. Defaults to `.auto` so existing
     /// instances (decoded from JSON without this field) keep the previous probe behavior.
     var imageEndpointMode: ImageEndpointMode
@@ -93,7 +96,8 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         subscriptionActiveAccountId: String? = nil,
         subscriptionAutoFailover: Bool = true,
         subscriptionAutoCheckin: Bool = true,
-        codexClientMask: Bool = false
+        codexClientMask: Bool = false,
+        chatAPIFormatMode: ProviderChatAPIMode? = nil
     ) {
         self.id = id
         self.label = label
@@ -103,6 +107,7 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         self.createdAt = createdAt
         self.customBaseURL = providerType.isDomesticSubscription ? nil : customBaseURL
         self.appendV1Suffix = appendV1Suffix
+        self.chatAPIFormatMode = providerType.isDomesticSubscription ? nil : chatAPIFormatMode
         self.imageEndpointMode = imageEndpointMode
         self.imageEndpointResolved = imageEndpointResolved
         self.customUserAgent = providerType.isDomesticSubscription ? nil : customUserAgent
@@ -119,7 +124,7 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case id, label, providerType, credentialType, isEnabled, createdAt, customBaseURL, appendV1Suffix
-        case imageEndpointMode, imageEndpointResolved, customUserAgent, azureMode
+        case imageEndpointMode, imageEndpointResolved, customUserAgent, azureMode, chatAPIFormatMode
         case subscriptionAccountIds, subscriptionActiveAccountId, subscriptionAutoFailover
         case subscriptionAutoCheckin
         case codexClientMask
@@ -143,6 +148,8 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         let decodedBaseURL = try c.decodeIfPresent(String.self, forKey: .customBaseURL)
         customBaseURL = providerType.isDomesticSubscription ? nil : decodedBaseURL
         appendV1Suffix = try c.decodeIfPresent(Bool.self, forKey: .appendV1Suffix) ?? true
+        chatAPIFormatMode = providerType.isDomesticSubscription ? nil :
+            ((try? c.decodeIfPresent(ProviderChatAPIMode.self, forKey: .chatAPIFormatMode)) ?? nil)
         // Both new fields tolerate absence (old data) and unknown values (forward compat).
         imageEndpointMode = (try? c.decodeIfPresent(ImageEndpointMode.self, forKey: .imageEndpointMode)) ?? .auto
         imageEndpointResolved = try? c.decodeIfPresent(ImageEndpointMode.self, forKey: .imageEndpointResolved)
@@ -179,6 +186,7 @@ struct ProviderInstance: Identifiable, Codable, Hashable {
         try c.encode(createdAt, forKey: .createdAt)
         try c.encodeIfPresent(customBaseURL, forKey: .customBaseURL)
         try c.encode(appendV1Suffix, forKey: .appendV1Suffix)
+        try c.encodeIfPresent(chatAPIFormatMode, forKey: .chatAPIFormatMode)
         try c.encode(imageEndpointMode, forKey: .imageEndpointMode)
         try c.encodeIfPresent(imageEndpointResolved, forKey: .imageEndpointResolved)
         try c.encodeIfPresent(customUserAgent, forKey: .customUserAgent)

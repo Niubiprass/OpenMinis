@@ -141,7 +141,8 @@ extension AIChatViewModel {
             if instance.isOpenCodeChannel {
                 OpenCodeChannel.attach(to: p, resolveSessionId: resolveSessionId)
             }
-            return LLMProviderFactory.applyModelOverrides(p, entry: entry)
+            _ = LLMProviderFactory.applyModelOverrides(p, entry: entry)
+            return ProviderChatAPI.configure(p, instance: instance, entry: entry)
         }
         switch instance.providerType {
         case .anthropic:

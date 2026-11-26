@@ -156,6 +156,15 @@ struct ProviderInstanceDetailView: View {
     @ObservedObject private var quotaService = ProviderQuotaService.shared
     @Environment(\.dismiss) private var dismiss
 
+    @State private var detectedChatFormat = "自动"
+    private func chatFormatUpdates() -> AsyncStream<Void> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let observer = NotificationCenter.default.addObserver(forName: ProviderChatAPIHistory.didChange,
+                object: nil, queue: .main) { _ in continuation.yield(()) }
+            continuation.onTermination = { _ in NotificationCenter.default.removeObserver(observer) }
+            continuation.yield(())
+        }
+    }
     @State private var editingLabel = ""
     @State private var showKimiLogin = false
     /// [T-copilot-provider] Same device-code shape as Kimi's.
@@ -624,39 +633,26 @@ struct ProviderInstanceDetailView: View {
             if (instance.providerType == .openAI || instance.providerType == .openAIResponses)
                 && instance.credentialType == .apiKey {
                 Section {
-                    Picker("API Format", selection: Binding(
-                        get: { instance.providerType == .openAIResponses },
-                        set: { useResponses in
-                            // Swap between .openAI and .openAIResponses
-                            // This requires recreating the instance since providerType is let.
-                            // Carry ALL other fields forward — otherwise switching the
-                            // format would silently reset imageEndpointMode / customUserAgent
-                            // / azureMode to their defaults. [T-ios-azure-openai]
-                            let newInstance = ProviderInstance(
-                                id: instance.id,
-                                label: instance.label,
-                                providerType: useResponses ? .openAIResponses : .openAI,
-                                credentialType: instance.credentialType,
-                                isEnabled: instance.isEnabled,
-                                createdAt: instance.createdAt,
-                                customBaseURL: instance.customBaseURL,
-                                appendV1Suffix: instance.appendV1Suffix,
-                                imageEndpointMode: instance.imageEndpointMode,
-                                imageEndpointResolved: instance.imageEndpointResolved,
-                                customUserAgent: instance.customUserAgent,
-                                azureMode: instance.azureMode,
-                                codexClientMask: instance.codexClientMask
-                            )
-                            store.updateInstance(newInstance)
+                    Picker("API 格式", selection: Binding(
+                        get: { instance.chatAPIFormatMode ?? (instance.providerType == .openAIResponses ? .responses : .chatCompletions) },
+                        set: { mode in
+                            var updated = instance
+                            updated.chatAPIFormatMode = mode
+                            updated.providerType = mode == .responses ? .openAIResponses : .openAI
+                            store.updateInstance(updated)
                         }
                     )) {
-                        Text("Chat Completions").tag(false)
-                        Text("Responses API").tag(true)
+                        Text(instance.chatAPIFormatMode == .automatic ? detectedChatFormat : "自动").tag(ProviderChatAPIMode.automatic)
+                        Text("Chat Completions").tag(ProviderChatAPIMode.chatCompletions)
+                        Text("Responses API").tag(ProviderChatAPIMode.responses)
                     }
-                } footer: {
-                    Text(instance.providerType == .openAIResponses
-                        ? "Uses /v1/responses endpoint format."
-                        : "Standard /v1/chat/completions format.")
+                    .task(id: instance) {
+                        for await _ in chatFormatUpdates() {
+                            let status = await ProviderChatAPI.status(for: instance)
+                            guard !Task.isCancelled else { return }
+                            detectedChatFormat = status
+                        }
+                    }
                 }
             }
 

@@ -62,7 +62,8 @@ enum LLMProviderFactory {
             if instance.isOpenCodeChannel {
                 OpenCodeChannel.attach(to: p, resolveSessionId: resolveSessionId)
             }
-            return applyModelOverrides(p, entry: entry)
+            _ = applyModelOverrides(p, entry: entry)
+            return ProviderChatAPI.configure(p, instance: instance, entry: entry)
         }
         let openCode = finish
         let supportsAPIKey: Bool

@@ -167,7 +167,7 @@ struct AddProviderView: View {
     @State private var configuringVendorName: String?
     @State private var customBaseURLInput = ""
     @State private var appendV1SuffixInput = true
-    @State private var useResponsesAPI = false
+    @State private var chatAPIFormatMode: ProviderChatAPIMode = .automatic
     @State private var manualOAuthTokenInput = ""
     @State private var isSaving = false
     @State private var errorMessage: String?
@@ -825,17 +825,18 @@ struct AddProviderView: View {
                 customBaseURLSection
             }
 
-            // API Format picker for OpenAI provider (hidden for voice-only templates)
+            // Automatic is the default; fixed protocols remain an optional advanced choice.
             if !enteredViaVoiceTemplate, selectedType == .openAI || selectedType == .openAIResponses {
                 Section {
-                    Picker("API Format", selection: $useResponsesAPI) {
-                        Text("Chat Completions").tag(false)
-                        Text("Responses API").tag(true)
+                    Picker("API Format", selection: $chatAPIFormatMode) {
+                        Text("自动").tag(ProviderChatAPIMode.automatic)
+                        Text("Chat Completions").tag(ProviderChatAPIMode.chatCompletions)
+                        Text("Responses API").tag(ProviderChatAPIMode.responses)
                     }
                 } footer: {
-                    Text(useResponsesAPI
-                        ? "Uses /v1/responses endpoint format. Required for some Responses-API-only services."
-                        : "Standard /v1/chat/completions format. Compatible with most OpenAI-compatible services.")
+                    Text(chatAPIFormatMode == .automatic
+                         ? "添加时不发送测试请求。正常聊天遇到明确接口拒绝时自动纠正一次，成功后记住并更新这里。"
+                         : "已按你的选择固定模式，不会自动换接口。")
                 }
             }
 
@@ -1050,8 +1051,11 @@ struct AddProviderView: View {
         // compatible endpoints (see emptyKeyAllowedForCurrentInput).
         guard !trimmedKey.isEmpty || emptyKeyAllowedForCurrentInput else { return }
 
-        // Map OpenAI + Responses API format to .openAIResponses provider type
-        let effectiveType: ProviderType = (type == .openAI && useResponsesAPI) ? .openAIResponses : type
+        // Keep the stored provider family consistent for explicitly fixed modes.
+        // Automatic stays OpenAI-compatible; learning never rewrites providerType.
+        let usesChatFormat = !enteredViaVoiceTemplate && (type == .openAI || type == .openAIResponses)
+        let effectiveType: ProviderType = usesChatFormat
+            ? (chatAPIFormatMode == .responses ? .openAIResponses : .openAI) : type
 
         isSaving = true
         let base = trimmedBase.isEmpty ? nil : trimmedBase
@@ -1060,7 +1064,8 @@ struct AddProviderView: View {
             providerType: effectiveType,
             credentialType: .apiKey,
             customBaseURL: base,
-            appendV1Suffix: appendV1SuffixInput
+            appendV1Suffix: appendV1SuffixInput,
+            chatAPIFormatMode: usesChatFormat ? chatAPIFormatMode : nil
         )
         // Nothing to store for a keyless endpoint — and never write an empty
         // string to the Keychain (hasAnyCredential treats empty as absent).
@@ -1207,7 +1212,7 @@ struct AddProviderView: View {
                 pendingInstanceId = UUID().uuidString
             }
             selectedCredential = nil
-            useResponsesAPI = false
+            chatAPIFormatMode = .automatic
             apiKeyInput = ""
             customBaseURLInput = ""
             manualOAuthTokenInput = ""

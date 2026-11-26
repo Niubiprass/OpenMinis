@@ -536,6 +536,7 @@ private struct BridgedAssistantBlockV3: View {
 private struct BridgedAssistantFooterV3: View {
     @ObservedObject var message: ChatMessage
     @ObservedObject var bridge: CellStateBridgeV2
+    @ObservedObject var errorCard: InlineErrorCardState
     var maxWidth: CGFloat
 
     // showUsage and usageContentVisible are on bridge, toggled by double-tap on block cells.
@@ -614,6 +615,9 @@ private struct BridgedAssistantFooterV3: View {
         .padding(.vertical, hasFooterContent ? 2 : 0)
         .opacity(message.isCompactedHistory ? 0.5 : 1.0)
         .accessibilityIdentifier("assistantFooter")
+        .onChange(of: message.error) { _ in reconcileErrorCard() }
+        .onChange(of: bridge.autoRetryAttempt) { _ in reconcileErrorCard() }
+        .onChange(of: bridge.isActiveMessage) { _ in reconcileErrorCard() }
         // Sheet + contextMenu on zero-size overlay so they don't inflate self-sizing.
         // Both .sheet and .contextMenu wrap the view in interaction containers that
         // report inflated heights to systemLayoutSizeFitting, causing height oscillation.
@@ -675,22 +679,23 @@ private struct BridgedAssistantFooterV3: View {
 
     // MARK: - Footer sub-views
 
+    private func reconcileErrorCard() {
+        errorCard.reconcile(messageID: message.id, rawError: message.error,
+                            retryAttempt: bridge.autoRetryAttempt, processing: bridge.isActiveMessage)
+    }
+
     @ViewBuilder
     private func inlineError(_ error: String) -> some View {
+        let expanded = errorCard.value.isExpanded(messageID: message.id, rawError: error)
         HStack(alignment: .center, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.red)
-                Text(error).font(.caption).foregroundStyle(.red).lineLimit(2)
+                Text(error).font(.caption).foregroundStyle(.red)
+                    .lineLimit(expanded ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .contentShape(Rectangle())
-            .contextMenu (menuItems: {
-                Button {
-                    UIPasteboard.general.string = error
-                } label: {
-                    Label(AppLocalized("Copy Error"), systemImage: "doc.on.doc")
-                }
-            })
+            .allowsHitTesting(false)
             Spacer()
             if bridge.autoRetryAttempt > 0 {
                 Text(bridge.autoRetryIsNetwork && !bridge.autoRetryNetworkHint.isEmpty
@@ -704,7 +709,10 @@ private struct BridgedAssistantFooterV3: View {
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(Color.secondary.opacity(0.12)).clipShape(Capsule())
             } else if let onRetry = bridge.onRetry {
-                Button(action: onRetry) {
+                Button {
+                    errorCard.collapse()
+                    onRetry()
+                } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.clockwise").font(.caption.weight(.semibold))
                         Text(AppLocalized("Retry")).font(.caption.weight(.semibold))
@@ -715,8 +723,10 @@ private struct BridgedAssistantFooterV3: View {
                 }
             }
         }
-        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 10))
+        .modifier(InlineErrorCardSurface(copyText: error) {
+            reconcileErrorCard()
+            errorCard.toggle(messageID: message.id, rawError: error)
+        })
     }
 
     private var resumeBanner: some View {
@@ -1082,6 +1092,64 @@ extension CollectionViewMessageListV3 {
 
         // === Bridges ===
         private var cellBridges: [UUID: CellStateBridgeV2] = [:]
+        // One bounded local state per message, separate from the shared V2 bridge.
+        // Removed messages and VM replacement release raw error identities.
+        private var errorCardStates: [UUID: InlineErrorCardState] = [:]
+        private var pendingErrorCardHeights = Set<UUID>()
+        private var errorCardHeightScheduled = false
+
+        private func errorCardState(for message: ChatMessage, bridge: CellStateBridgeV2) -> InlineErrorCardState {
+            if let state = errorCardStates[message.id] { return state }
+            let state = InlineErrorCardState()
+            state.reconcile(messageID: message.id, rawError: message.error,
+                            retryAttempt: bridge.autoRetryAttempt, processing: bridge.isActiveMessage)
+            errorCardStates[message.id] = state
+            state.onHeightChange = { [weak self] in self?.scheduleErrorCardHeight(message.id) }
+            return state
+        }
+
+        private func scheduleErrorCardHeight(_ messageID: UUID) {
+            pendingErrorCardHeights.insert(messageID)
+            guard !errorCardHeightScheduled else { return }
+            errorCardHeightScheduled = true
+            // Read the new shape AFTER @Published and SwiftUI's render pass.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.errorCardHeightScheduled = false
+                self.flushErrorCardHeights()
+            }
+        }
+
+        private func flushErrorCardHeights() {
+            guard vm?.isLoadingSession == false,
+                  let cv = viewController?.collectionView, !cv.isTracking,
+                  !cv.isDragging, !cv.isDecelerating,
+                  let layout = viewController?.messageListLayout, !layout.deferSelfSizing,
+                  let ds = dataSource else { return }
+            for mid in pendingErrorCardHeights {
+                guard let state = errorCardStates[mid],
+                      let ip = ds.indexPath(for: .assistantFooter(mid)) else { continue }
+                var hasHost = false
+                if let cell = cv.cellForItem(at: ip) as? SelfSizingCell {
+                    forEachIOS15Host(in: cell.contentView) { host in
+                        hasHost = true
+                        host.noteIOS15HostingContentShape(AnyHashable(state.revision))
+                        host.consumeIOS15PendingStableShrink()
+                    }
+                }
+                // The existing iOS15 host waits for CURRENT natural geometry,
+                // then clears cell + layout + memo together through its owner.
+                // Native hosts need the same targeted two-layer invalidation.
+                if !hasHost {
+                    performHostingHeightChange(preserveVisibleAnchor: true, animated: true) {
+                        (cv.cellForItem(at: ip) as? SelfSizingCell)?.clearCachedHeight()
+                        layout.invalidateHeight(at: ip.item, discardPrecalc: true)
+                        layout.invalidateLayout()
+                    }
+                }
+            }
+            pendingErrorCardHeights.removeAll()
+        }
 
         // === Height Measurement Cache ===
         /// [T-ios-listsessions-perf] Caches measureAttributedStringHeight
@@ -1665,17 +1733,28 @@ extension CollectionViewMessageListV3 {
                 guard let msgIdx = messageIndex[msgId], msgIdx < messages.count else { return }
                 let message = messages[msgIdx]
                 let bridge = getOrCreateBridge(for: message, in: messages)
+                let errorCard = errorCardState(for: message, bridge: bridge)
+                errorCard.reconcile(messageID: message.id, rawError: message.error,
+                                    retryAttempt: bridge.autoRetryAttempt, processing: bridge.isActiveMessage)
                 cell.backgroundColor = .clear
                 let config = UIHostingConfiguration {
                     BridgedAssistantFooterV3(
                         message: message,
                         bridge: bridge,
+                        errorCard: errorCard,
                         maxWidth: width
                     )
                     .transaction { $0.disablesAnimations = true }
                     .environmentObject(vm)
                 }.minSize(width: 0, height: 0).margins(.all, 0)
                 cell.applyContentConfiguration(config.ios15ContentIdentity(item))
+                forEachIOS15Host(in: cell.contentView) { host in
+                    host.noteIOS15HostingContentShape(AnyHashable(errorCard.revision))
+                    host.ios15PerformHeightChange = { [weak self] updates in
+                        guard let self else { updates(); return }
+                        self.performHostingHeightChange(preserveVisibleAnchor: true, animated: true, updates)
+                    }
+                }
 
             case .toolCallGroup(let msgId, let firstBlockId):
                 guard let msgIdx = messageIndex[msgId], msgIdx < messages.count else { return }
@@ -2012,6 +2091,9 @@ extension CollectionViewMessageListV3 {
             // into `cellForItem` mid-apply is a re-entrancy hazard for no gain —
             // a new bridge's cell is being configured from scratch anyway, so
             // `applyContentConfiguration` has already cleared its cache.
+            errorCardStates[message.id]?.reconcile(messageID: message.id, rawError: message.error,
+                                                  retryAttempt: bridge.autoRetryAttempt,
+                                                  processing: bridge.isActiveMessage)
             let afterShape = FooterHeightShape(bridge: bridge, message: message)
             lastFooterShapeByMessage[message.id] = afterShape
             if !isInitialBridgeSetup, afterShape != beforeShape {
@@ -2168,6 +2250,10 @@ extension CollectionViewMessageListV3 {
             #endif
             AppLogger(category: "ScrollDiag").info("[ScrollDiag][rebind] coordinator vm \(hadOld ? "changed" : "was nil") → rebinding subscriptions + resyncing flags")
             subscriptions.removeAll()
+            for state in errorCardStates.values { state.onHeightChange = nil }
+            errorCardStates.removeAll()
+            pendingErrorCardHeights.removeAll()
+            errorCardHeightScheduled = false
             pendingTextLayoutItems.removeAll()
             thinkingHeightState.reset()
             thinkingShapeFlushScheduled = false
@@ -3121,7 +3207,8 @@ extension CollectionViewMessageListV3 {
 
         /// Only one offset owner: suppress layout/KVO adjustments while measuring,
         /// then restore one stable item's screen Y (or the pinned bottom).
-        private func performHostingHeightChange(_ updates: () -> Void) {
+        private func performHostingHeightChange(preserveVisibleAnchor: Bool = false, animated: Bool = false,
+                                                _ updates: () -> Void) {
             guard let cv = viewController?.collectionView,
                   let layout = viewController?.messageListLayout, !isFlushing else { updates(); return }
             let savedOffset = cv.contentOffset.y
@@ -3132,22 +3219,33 @@ extension CollectionViewMessageListV3 {
             isFlushing = true
             layout.suppressContentOffsetAdjustment = true
             defer { layout.suppressContentOffsetAdjustment = wasSuppressed; isFlushing = false }
-            UIView.performWithoutAnimation {
-                updates()
+            // Preserve the existing transaction for all other callers. Error-card
+            // taps animate only the affected layout, never force a bottom jump.
+            let finishLayout = { [self] in
                 cv.layoutIfNeeded()
                 let postIP = anchorItem.flatMap { dataSource?.indexPath(for: $0) }
                 let afterY = postIP.flatMap { cv.layoutAttributesForItem(at: $0)?.frame.minY }
                 let maxY = max(-cv.adjustedContentInset.top,
                     cv.contentSize.height - cv.bounds.height + cv.adjustedContentInset.bottom)
                 let target: CGFloat
-                if scrollMode == .autoScrolling { target = maxY }
+                if !preserveVisibleAnchor && scrollMode == .autoScrolling { target = maxY }
                 else { target = savedOffset + ((afterY ?? beforeY ?? 0) - (beforeY ?? 0)) }
                 cv.setContentOffset(CGPoint(x: cv.contentOffset.x,
                     y: min(maxY, max(-cv.adjustedContentInset.top, target))), animated: false)
             }
+            if animated && !UIAccessibility.isReduceMotionEnabled {
+                updates()
+                UIView.animate(withDuration: 0.2, delay: 0,
+                               options: [.beginFromCurrentState, .allowUserInteraction], animations: finishLayout)
+            } else {
+                UIView.performWithoutAnimation { updates(); finishLayout() }
+            }
         }
 
         private func flushThinkingShapeChanges() {
+            // Share all existing idle/scroll-settle consumers; a card tap is not
+            // streaming text and must not get stranded behind the 3s throttle.
+            flushErrorCardHeights()
             // [T-thinking-collapse-blank] A thinking block's expand/collapse is a
             // DISCRETE shape change, not a streaming text update: it happens once
             // per turn, so it must not wait on `streamingUIUpdatesSuspended`
@@ -3460,6 +3558,16 @@ extension CollectionViewMessageListV3 {
             let removedIds = Set(cellBridges.keys).subtracting(currentIds)
             for id in removedIds { bridgeSheetSubs.removeValue(forKey: id) }
             cellBridges = cellBridges.filter { currentIds.contains($0.key) }
+            for (mid, state) in errorCardStates where !currentIds.contains(mid) { state.onHeightChange = nil }
+            errorCardStates = errorCardStates.filter { currentIds.contains($0.key) }
+            pendingErrorCardHeights.formIntersection(currentIds)
+            for message in messages {
+                guard let state = errorCardStates[message.id] else { continue }
+                let bridge = cellBridges[message.id]
+                state.reconcile(messageID: message.id, rawError: message.error,
+                                retryAttempt: bridge?.autoRetryAttempt ?? 0,
+                                processing: bridge?.isActiveMessage ?? false)
+            }
             lastFooterShapeByMessage = lastFooterShapeByMessage.filter { currentIds.contains($0.key) }
 
             // [T-ios-first-block-footer-gap] Precompute the last assistant id once.

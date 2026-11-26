@@ -1,5 +1,99 @@
 import SwiftUI
 
+// MARK: - Inline error-card interaction (local UI state only)
+
+/// Exact message + raw-error identity; never persisted, logged or shared globally.
+/// Kept free of SwiftUI so tests can execute this production state machine.
+struct InlineErrorCardExpansion: Equatable {
+    private(set) var messageID: UUID?
+    private(set) var rawError: String?
+    private(set) var expanded = false
+    private var retryAttempt = 0
+    private var processing = false
+
+    func isExpanded(messageID: UUID, rawError: String) -> Bool {
+        self.messageID == messageID && self.rawError == rawError && expanded
+    }
+
+    mutating func reconcile(messageID: UUID, rawError: String?, retryAttempt: Int, processing: Bool) {
+        if self.messageID != messageID || self.rawError != rawError
+            || self.retryAttempt != retryAttempt || self.processing != processing {
+            expanded = false
+        }
+        self.messageID = messageID
+        self.rawError = rawError
+        self.retryAttempt = retryAttempt
+        self.processing = processing
+    }
+
+    mutating func toggle(messageID: UUID, rawError: String) {
+        if self.messageID != messageID || self.rawError != rawError { expanded = false }
+        self.messageID = messageID
+        self.rawError = rawError
+        expanded.toggle()
+    }
+
+    mutating func collapse() { expanded = false }
+}
+
+final class InlineErrorCardState: ObservableObject {
+    @Published private(set) var value = InlineErrorCardExpansion()
+    private(set) var revision: UInt = 0
+    var onHeightChange: (() -> Void)?
+
+    private func commit(_ next: InlineErrorCardExpansion) {
+        guard next != value else { return }
+        revision &+= 1
+        value = next
+        onHeightChange?()
+    }
+
+    func reconcile(messageID: UUID, rawError: String?, retryAttempt: Int, processing: Bool) {
+        var next = value
+        next.reconcile(messageID: messageID, rawError: rawError, retryAttempt: retryAttempt, processing: processing)
+        commit(next)
+    }
+
+    func toggle(messageID: UUID, rawError: String) {
+        var next = value
+        next.toggle(messageID: messageID, rawError: rawError)
+        commit(next)
+    }
+
+    func collapse() {
+        var next = value
+        next.collapse()
+        commit(next)
+    }
+}
+
+/// Put the ONE tap recognizer on the background, not on the retry button's
+/// ancestor. Non-interactive text lets taps/long presses reach this surface;
+/// the foreground retry control wins hit testing and cannot toggle the card.
+/// Native contextMenu arbitrates a long press against onTapGesture (no extra
+/// long-press/simultaneous gesture, so copying/dismissing never toggles).
+struct InlineErrorCardSurface: ViewModifier {
+    let copyText: String
+    let onTap: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                Color.red.opacity(0.12)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: onTap)
+                    .contextMenu(menuItems: {
+                        Button { UIPasteboard.general.string = copyText } label: {
+                            Label(AppLocalized("Copy Error"), systemImage: "doc.on.doc")
+                        }
+                    })
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .accessibilityAction(onTap)
+    }
+}
+
 // MARK: - Context-menu preview
 
 /// Opaque rounded-card preview shown under a message's long-press context menu.
