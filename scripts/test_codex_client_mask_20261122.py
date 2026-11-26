@@ -21,6 +21,9 @@ places that copy a ProviderInstance (a dropped field there resets the toggle).
 """
 import json
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -180,12 +183,55 @@ class Persistence(unittest.TestCase):
         self.assertIn('p.codexClientMask = instance.codexClientMask', CHAT_FACTORY)
         self.assertIn('p.providerInstanceId = instance.id', FACTORY)
 
+    def api_format_setter(self):
+        picker = re.findall(r'Picker\("API 格式",\s*selection:\s*Binding\((.*?)\)\s*\)\s*\{',
+                            DETAIL, re.S)
+        self.assertEqual(len(picker), 1, 'expected one API format picker binding')
+        setter = re.search(r'\bset:\s*(\{.*\})\s*$', picker[0], re.S)
+        self.assertIsNotNone(setter, 'API format picker setter missing')
+        return setter[1]
+
     def test_switching_api_format_keeps_the_toggle(self):
-        """The picker rebuilds the instance from a field list — a missed field
-        silently resets the user's setting."""
-        i = DETAIL.index('let newInstance = ProviderInstance(')
-        block = DETAIL[i:DETAIL.index('store.updateInstance(newInstance)', i)]
-        self.assertIn('codexClientMask: instance.codexClientMask', block)
+        # Portable guard: only edit the two format fields and save that same copy.
+        self.assertRegex(self.api_format_setter(),
+                         r'^\{\s*(\w+)\s+in\s+var\s+(\w+)\s*=\s*instance\s+'
+                         r'\2\.chatAPIFormatMode\s*=\s*\1\s+'
+                         r'\2\.providerType\s*=\s*\1\s*==\s*\.responses\s*\?\s*'
+                         r'\.openAIResponses\s*:\s*\.openAI\s+'
+                         r'store\.updateInstance\(\s*\2\s*\)\s*\}$')
+
+    @unittest.skipUnless(shutil.which('swiftc'), 'swiftc unavailable: setter fixture not run')
+    def test_api_format_setter_behavior(self):
+        fixture = '''
+            enum Mode: CaseIterable { case automatic, chatCompletions, responses }
+            enum Backend { case openAI, openAIResponses }
+            struct Instance: Equatable {
+                var codexClientMask: Bool
+                var chatAPIFormatMode: Mode?
+                var providerType: Backend
+            }
+            final class Store {
+                var saved: [Instance] = []
+                func updateInstance(_ value: Instance) { saved.append(value) }
+            }
+            for oldMask in [false, true] {
+                for mode in Mode.allCases {
+                    let backend: Backend = mode == .responses ? .openAIResponses : .openAI
+                    let instance = Instance(codexClientMask: oldMask, chatAPIFormatMode: nil,
+                                            providerType: backend == .openAI ? .openAIResponses : .openAI)
+                    let store = Store()
+                    let set: (Mode) -> Void = SETTER
+                    set(mode)
+                    precondition(store.saved == [Instance(codexClientMask: oldMask,
+                        chatAPIFormatMode: mode, providerType: backend)])
+                }
+            }
+        '''.replace('SETTER', self.api_format_setter())
+        with tempfile.TemporaryDirectory() as td:
+            src, binary = Path(td) / 'main.swift', Path(td) / 'picker'
+            src.write_text(fixture)
+            subprocess.run(['swiftc', src, '-o', binary], check=True)
+            subprocess.run([binary], check=True)
 
     def test_backup_import_keeps_the_toggle(self):
         self.assertIn('let codexClientMask = dict["codexClientMask"] as? Bool ?? false', STORE)
