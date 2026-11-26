@@ -654,7 +654,7 @@ static void MeasuredMusicInputOnly(void) {
     CHECK(fabs(r.sprite.affineTransform.b)<.003 && fabs(r.sprite.affineTransform.ty)<.003);
     // Two actual library roles: music does not replace ordinary idle/idleAlt.
     MSRig *m = Rig(@{@"idle": Clip(@"ordinary-idle", @[@5.]),
-        @"idleAlt": DailyClip(@"ordinary-stretch", @"micro", @[@.3,@.3]),
+        @"idleAlt": @[DailyClip(@"ordinary-stretch", @"micro", @[@.3,@.3])],
         @"music": Clip(@"measured-music", @[@.2,@.2])});
     Finish(m.library,Pixel(100)); CGPoint anchor=m.pet.center;
     m.effects.lyricsLine=nil; m.effects.musicPlaying=YES;
