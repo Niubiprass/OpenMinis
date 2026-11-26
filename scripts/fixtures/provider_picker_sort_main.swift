@@ -34,7 +34,7 @@ enum ModelsDevAPI {
     static func model(_ id: String, name: String? = nil, context: Int? = nil, instance: String = "A") -> ModelEntry {
         ModelEntry(providerInstanceId: instance, baseModel: LLMModel(id: id, displayName: name ?? id, contextWindow: context))
     }
-    static func keys(_ entries: [ModelEntry], index: ModelsDevAPI.ReleaseIndex?) -> [PickerSortInput.ReleaseKey] {
+    private static func keys(_ entries: [ModelEntry], index: ModelsDevAPI.ReleaseIndex?) -> [PickerSortInput.ReleaseKey] {
         entries.enumerated().map { offset, entry in
             .init(modelID: entry.baseModel.id, rank: ModelReleaseIndex.rank(modelId: entry.baseModel.id,
                 displayName: entry.baseModel.displayName, contextWindow: entry.baseModel.contextWindow, index: index), offset: offset)
