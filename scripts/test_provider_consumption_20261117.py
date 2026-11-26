@@ -18,6 +18,7 @@ import test_quota_current_key_20261116 as quota
 ROOT = Path(__file__).resolve().parents[1]
 P = ROOT / 'src/ios'
 A = (P / 'Providers/AgentProvider.swift').read_text()
+CHAT_API = (P / 'Providers/ProviderChatAPI.swift').read_text()
 M = (P / 'Providers/ProviderMultiKeys.swift').read_text()
 F = (P / 'Agent/Chat/AIChatViewModel+ProviderFactory.swift').read_text()
 L = (P / 'Providers/LLMProviderFactory.swift').read_text()
@@ -63,6 +64,9 @@ def harness():
     base += '\n' + top(M, 'struct ProviderConsumptionReporter:')
     base += '\nimport Darwin\n' + M[M.index('enum MultiKeyFailureKind:'):M.index('/// [T-multikey] One API key')]
     base += '\n' + top(M, 'enum MultiKeyStrategy:')
+    # Agent workers now carry a task-local format-correction budget. Keep the
+    # real worker implementation; do not replace it with a plain Task in tests.
+    base += '\n' + top(CHAT_API, 'final class ProviderChatAPIBudget:')
     base += '\n' + A[A.index('// MARK: - Protocol'):]
     helpers = support()
     helpers = helpers[helpers.index('// Remaining synthetic'):]  # replacements already installed above
@@ -115,6 +119,10 @@ class SourceContracts(unittest.TestCase):
             if marker in ('func runAutomatic(', 'func refreshRow(', 'func scheduleAutomatic('): marker = 'private ' + marker
             self.assertIn(public(decl(source, marker)), text)
         self.assertIn(A[A.index('// MARK: - Protocol'):], text)
+        self.assertIn(top(CHAT_API, 'final class ProviderChatAPIBudget:'), text)
+        self.assertEqual(text.count('final class ProviderChatAPIBudget:'), 1)
+        self.assertEqual(text.count('enum ProviderChatAPI {'), 1)
+        self.assertIn(top(support(), '@MainActor enum ProviderChatAPI {'), text)
         self.assertIn(decl(F, '    static func makeAgentProvider(\n'), text)
         self.assertIn(decl(L, '    static func makeProviderWithConsumption('), text)
         self.assertIn(top(M, 'struct ProviderConsumptionReporter:'), text)

@@ -137,6 +137,13 @@ class SyntheticLLMProvider: LLMProvider, @unchecked Sendable {
     }
 }
 final class OpenAIProvider: SyntheticLLMProvider, @unchecked Sendable {}
+// Synthetic transport setup, like OpenCodeChannel below. This consumption
+// fixture has no endpoint negotiation; it keeps the same provider/key/model.
+@MainActor enum ProviderChatAPI {
+    @discardableResult
+    static func configure(_ provider: OpenAIProvider, instance: ProviderInstance,
+                          entry: ModelEntry? = nil) -> OpenAIProvider { provider }
+}
 final class AnthropicProvider: SyntheticLLMProvider, @unchecked Sendable {}
 final class GeminiProvider: SyntheticLLMProvider, @unchecked Sendable {}
 final class SubscriptionLLMProvider: SyntheticLLMProvider, @unchecked Sendable {
