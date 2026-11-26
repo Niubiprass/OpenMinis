@@ -30,6 +30,7 @@ def check(name, condition):
 check('assistant default two lines and unlimited natural expanded text', all(x in inline for x in ['.lineLimit(expanded ? nil : 2)', '.fixedSize(horizontal: false, vertical: true)', 'Text(error).font(.caption).foregroundStyle(.red)']))
 check('unchanged horizontal warning/text/retry composition', 'HStack(alignment: .center, spacing: 8)' in inline and 'HStack(spacing: 6)' in inline and 'exclamationmark.triangle.fill' in inline)
 check('original card visuals', all(x in shared for x in ['.padding(10).frame(maxWidth: .infinity, alignment: .leading)', 'Color.red.opacity(0.12)', 'RoundedRectangle(cornerRadius: 10)']))
+check('default accessibility action invokes the same tap handler', '.accessibilityAction(.default, onTap)' in shared and '.accessibilityAction(onTap)' not in shared)
 check('one tap and native context menu full copy', shared.count('.onTapGesture') == 1 and '.contextMenu(menuItems:' in shared and 'UIPasteboard.general.string = copyText' in shared)
 check('retry is foreground sibling not parent gesture', '.allowsHitTesting(false)' in inline and 'errorCard.collapse()\n                    onRetry()' in inline and '.modifier(InlineErrorCardSurface(copyText: error)' in inline)
 check('no simultaneous/extra long press or alternate UI', not any(x in shared + inline for x in ['.simultaneousGesture(', '.onLongPressGesture(', '.sheet(', 'ScrollView', 'chevron', 'View Full Error']))

@@ -90,7 +90,7 @@ struct InlineErrorCardSurface: ViewModifier {
                     })
             }
             .clipShape(RoundedRectangle(cornerRadius: 10))
-            .accessibilityAction(onTap)
+            .accessibilityAction(.default, onTap)
     }
 }
 
