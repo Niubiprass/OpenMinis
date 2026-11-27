@@ -67,6 +67,10 @@ def harness():
     # Agent workers now carry a task-local format-correction budget. Keep the
     # real worker implementation; do not replace it with a plain Task in tests.
     base += '\n' + top(CHAT_API, 'final class ProviderChatAPIBudget:')
+    # The real worker forwards explicit turn-limit rejection without key rotation.
+    # Include its real Foundation-only error declaration, not a dummy replacement.
+    turn = (P / 'Providers/ProviderTurnCompaction.swift').read_text()
+    base += '\n' + top(turn, 'struct ProviderTurnLimitRejection:')
     base += '\n' + A[A.index('// MARK: - Protocol'):]
     helpers = support()
     helpers = helpers[helpers.index('// Remaining synthetic'):]  # replacements already installed above
@@ -121,6 +125,9 @@ class SourceContracts(unittest.TestCase):
         self.assertIn(A[A.index('// MARK: - Protocol'):], text)
         self.assertIn(top(CHAT_API, 'final class ProviderChatAPIBudget:'), text)
         self.assertEqual(text.count('final class ProviderChatAPIBudget:'), 1)
+        turn = (P / 'Providers/ProviderTurnCompaction.swift').read_text()
+        self.assertIn(top(turn, 'struct ProviderTurnLimitRejection:'), text)
+        self.assertEqual(text.count('struct ProviderTurnLimitRejection:'), 1)
         self.assertEqual(text.count('enum ProviderChatAPI {'), 1)
         self.assertIn(top(support(), '@MainActor enum ProviderChatAPI {'), text)
         self.assertIn(decl(F, '    static func makeAgentProvider(\n'), text)
