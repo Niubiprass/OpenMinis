@@ -99,6 +99,7 @@ struct ModelPickerConfig {
     var showCreateGroup: Bool = false
     var createGroupDirection: VoiceDirection?
     var dismissOnSelect: Bool = true
+    var useSessionDisplaySnapshots = false
 
     /// [T-picker-provider-recency] 这个选择器属于哪个会话。用来按会话记住
     /// "上次用的是哪个供应商"，把那一整段排到最前；不同会话互不影响。
@@ -408,6 +409,85 @@ private final class PickerSortWorker: @unchecked Sendable {
     }
 }
 
+// MARK: - Session-only display data
+
+// BEGIN SESSION_PICKER_CREDENTIAL_WORKER
+private struct SessionPickerCredentialScope: Equatable, Sendable {
+    let sessionId: String?
+    let authRevision: UInt
+    let configRevision: UInt
+    let snapshotRevision: UInt
+    let generation: UInt
+
+    func accepts(current: Self, cancelled: Bool) -> Bool {
+        !cancelled && self == current
+    }
+}
+
+private struct SessionPickerCredentialSnapshot: Equatable, Sendable {
+    let scope: SessionPickerCredentialScope
+    let available: [String: Bool]
+}
+
+// One serial worker for all picker presentations. The old routing predicate
+// supplies a Bool only. A stale result must not refill the shared router cache.
+private actor SessionPickerCredentialWorker {
+    static let shared = SessionPickerCredentialWorker()
+
+    func read(_ instances: [ProviderInstance],
+              probe: @Sendable (ProviderInstance) -> Bool = { $0.computeHasAnyCredential() }) throws -> [String: Bool] {
+        try Task.checkCancellation()
+        var result: [String: Bool] = [:]
+        for instance in instances where result[instance.id] == nil {
+            try Task.checkCancellation()
+            result[instance.id] = probe(instance)
+        }
+        try Task.checkCancellation()
+        return result
+    }
+}
+// END SESSION_PICKER_CREDENTIAL_WORKER
+
+@MainActor private struct SessionPickerQuotaBadge: View {
+    let scope: ProviderQuotaRowProjectionLoader.Scope
+    let inHeader: Bool
+    @StateObject private var loader = ProviderQuotaRowProjectionLoader()
+    @State private var visible = false
+    private let quotaService = ProviderQuotaService.shared
+
+    init(scope: ProviderQuotaRowProjectionLoader.Scope, inHeader: Bool) {
+        self.scope = scope
+        self.inHeader = inHeader
+    }
+
+    private func project() {
+        guard visible else { return }
+        loader.project(scope: scope, quotaRevision: quotaService.revision)
+    }
+
+    var body: some View {
+        ZStack {
+            if let q = loader.value(for: scope) {
+                let tint: Color = q.kind == .balance ? (q.highlighted ? .yellow : .green) : .secondary
+                Text(q.displayText)
+                    .font(inHeader ? .system(size: 10.5, weight: .medium) : .caption2.weight(.medium))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, inHeader ? 6 : 5)
+                    .padding(.vertical, inHeader ? 2 : 1)
+                    .background(q.kind == .balance ? tint.opacity(0.16) : Color(UIColor.tertiarySystemFill))
+                    .clipShape(Capsule())
+                    .textCase(nil)
+            }
+        }
+        .onAppear { visible = true; project() }
+        .onDisappear { visible = false; loader.cancel() }
+        .onChange(of: scope) { _ in project() }
+        .onReceive(quotaService.$revision.receive(on: DispatchQueue.main)) { _ in project() }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+            .receive(on: DispatchQueue.main)) { _ in project() }
+    }
+}
+
 // MARK: - UnifiedModelPicker
 
 struct UnifiedModelPicker: View {
@@ -417,7 +497,10 @@ struct UnifiedModelPicker: View {
     /// changes (Enhanced/Premium pack download, Personal Voice creation).
     @ObservedObject private var systemVoiceRoster = SystemVoiceRoster.shared
     /// [T-115-quota] Provider quota pills (yellow when low).
-    @ObservedObject private var quotaService = ProviderQuotaService.shared
+    private let quotaService = ProviderQuotaService.shared
+    @State private var legacyQuotaRevision = 0
+    @State private var sessionCredentialGeneration: UInt = 0
+    @State private var sessionCredentials: SessionPickerCredentialSnapshot?
     @Environment(\.dismiss) private var dismiss
 
     @State private var searchText = ""
@@ -775,7 +858,40 @@ struct UnifiedModelPicker: View {
 
     // MARK: - Body
 
+    private var sessionCredentialScope: SessionPickerCredentialScope? {
+        guard config.useSessionDisplaySnapshots else { return nil }
+        return SessionPickerCredentialScope(sessionId: config.sessionId,
+            authRevision: store.authRevision, configRevision: store.configRevision,
+            snapshotRevision: store.modelSnapshotRevision, generation: sessionCredentialGeneration)
+    }
+
+    @MainActor
+    private func refreshSessionCredentials(_ scope: SessionPickerCredentialScope) async {
+        // Probe only cloud providers referenced by a model group, once per provider.
+        let memberIds = Set(store.modelGroups.flatMap(\.memberEntryIds))
+        let providerIds = Set(memberIds.compactMap { id -> String? in
+            guard let entry = store.entry(for: id), entry.displayTraits.requiresCredential,
+                  !entry.isHidden, !entry.isUnavailableFromProvider else { return nil }
+            return entry.providerInstanceId
+        })
+        let instances = store.instances.filter { $0.isEnabled && providerIds.contains($0.id) }
+        guard let available = try? await SessionPickerCredentialWorker.shared.read(instances),
+              let current = sessionCredentialScope,
+              scope.accepts(current: current, cancelled: Task.isCancelled),
+              scope.generation == ProviderRowCredentialCache.shared.generation else { return }
+        let snapshot = SessionPickerCredentialSnapshot(scope: scope, available: available)
+        if snapshot != sessionCredentials { sessionCredentials = snapshot }
+    }
+
+    @MainActor private func sessionQuotaScope(_ instance: ProviderInstance) -> ProviderQuotaRowProjectionLoader.Scope {
+        ProviderQuotaRowProjectionLoader.makeScope(instance: instance,
+            authRevision: store.authRevision, configRevision: store.configRevision,
+            snapshotRevision: store.modelSnapshotRevision, credentialGeneration: sessionCredentialGeneration)
+    }
+
     var body: some View {
+        // Other picker entry points still redraw on quota revision as before.
+        let _ = config.useSessionDisplaySnapshots ? 0 : legacyQuotaRevision
         ScrollViewReader { proxy in
         List {
             if let note = config.headerNote {
@@ -915,8 +1031,32 @@ struct UnifiedModelPicker: View {
             // [T-115-quota] Warm the quota cache for every configured instance
             // (missing entries only; results cached 5 min).
             quotaService.refreshAllIfNeeded(instances: store.instances)
+            if config.useSessionDisplaySnapshots {
+                sessionCredentialGeneration = ProviderRowCredentialCache.shared.generation
+            }
         }
-        .onDisappear { refreshGeneration &+= 1; refreshTask?.cancel() }
+        .onDisappear {
+            refreshGeneration &+= 1; refreshTask?.cancel()
+            sessionCredentials = nil
+        }
+        .onReceive(quotaService.$revision.receive(on: DispatchQueue.main)) { revision in
+            if !config.useSessionDisplaySnapshots { legacyQuotaRevision = revision }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ProviderRowCredentialCache.didInvalidate)
+            .receive(on: DispatchQueue.main)) { _ in
+            if config.useSessionDisplaySnapshots {
+                sessionCredentialGeneration = ProviderRowCredentialCache.shared.generation
+            }
+        }
+        .task(id: sessionCredentialScope) { [scope = sessionCredentialScope] in
+            guard let scope else { return }
+            // Preserve the original 15 s freshness backstop while presented.
+            while !Task.isCancelled {
+                await refreshSessionCredentials(scope)
+                do { try await Task.sleep(nanoseconds: 15_000_000_000) }
+                catch { return }
+            }
+        }
         .onChange(of: sections == nil) { _ in seedCollapse() }
         .onChange(of: store.configRevision) { _ in loadSections() }
         .onChange(of: store.modelSnapshotRevision) { _ in loadSections() }
@@ -1244,6 +1384,11 @@ struct UnifiedModelPicker: View {
             Text("→ \(entry.model.displayName)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        } else if let scope = sessionCredentialScope, sessionCredentials?.scope != scope {
+            let total = group.memberEntryIds.count
+            Text(AppLocalized("\(total) models"))
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         } else {
             let available = availableMemberEntryIds(group).count
             let total = group.memberEntryIds.count
@@ -1302,6 +1447,11 @@ struct UnifiedModelPicker: View {
             return AppLocalized("Provider not found")
         }
         if !instance.isEnabled { return AppLocalized("Provider disabled") }
+        if let scope = sessionCredentialScope {
+            guard sessionCredentials?.scope == scope,
+                  let available = sessionCredentials?.available[instance.id] else { return "…" }
+            return available ? nil : AppLocalized("Not signed in")
+        }
         if !instance.hasAnyCredential { return AppLocalized("Not signed in") }
         return nil
     }
@@ -1441,8 +1591,12 @@ struct UnifiedModelPicker: View {
             Spacer()
 
             // [T-115-quota] 行尾额度（仅支持余额查询的 API-key 实例显示）。
-            if let inst = store.instance(for: entry.providerInstanceId),
-               let q = quotaService.cachedQuota(instanceId: inst.id) {
+            if config.useSessionDisplaySnapshots {
+                if let inst = store.instance(for: entry.providerInstanceId) {
+                    SessionPickerQuotaBadge(scope: sessionQuotaScope(inst), inHeader: false)
+                }
+            } else if let inst = store.instance(for: entry.providerInstanceId),
+                      let q = quotaService.cachedQuota(instanceId: inst.id) {
                 Text(q.displayText)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(quotaTint(q))
@@ -1635,7 +1789,9 @@ struct UnifiedModelPicker: View {
                 // Order: name → balance → collapse button. The balance is
                 // right-aligned but deliberately inset from the 28pt toggle
                 // so the tap target is never shared.
-                if let q = quotaService.cachedQuota(instanceId: item.instance.id) {
+                if config.useSessionDisplaySnapshots {
+                    SessionPickerQuotaBadge(scope: sessionQuotaScope(item.instance), inHeader: true)
+                } else if let q = quotaService.cachedQuota(instanceId: item.instance.id) {
                     Text(q.displayText)
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(quotaTint(q))

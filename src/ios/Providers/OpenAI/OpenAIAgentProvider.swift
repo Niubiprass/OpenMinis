@@ -67,6 +67,103 @@ final class OpenAIAgentProvider: AgentProvider {
     }
 
     func streamAgentMessageClamped(
+        messages: [AgentMessage], systemPrompt: String?, tools: [AgentToolDefinition],
+        maxTokens: Int, thinkingLevel: ThinkingLevel
+    ) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
+        guard let context = provider.turnCompactionContext, let run = ProviderTurnRun.current,
+              await run.enabled(), await context.validate() else {
+            return try await streamAgentMessageUncompacted(messages: messages, systemPrompt: systemPrompt,
+                tools: tools, maxTokens: maxTokens, thinkingLevel: thinkingLevel)
+        }
+        return AsyncThrowingStream { continuation in
+            let worker = Task { [self] in
+                var history = messages
+                var observation: ProviderTurnObservation?
+                var failure: ProviderTurnLimitRejection?
+                var retried = false
+                let initialResponses = provider.chatAPIContext.map {
+                    (ProviderChatAPIHistory.shared.cached($0.scope) ?? $0.initial) == .responses
+                } ?? !provider.usesChatCompletionsAPI
+                let initialScope = context.scope(responses: initialResponses)
+                do {
+                    try Task.checkCancellation()
+                    guard await context.validate() else { throw ProviderChatAPIError.scopeChanged }
+                    if await run.enabled(), let trigger = ProviderTurnHistory.shared.row(initialScope)?.trigger,
+                       ProviderTurnRun.count(history) >= trigger, run.takeProactive(initialScope), run.takeRecovery(),
+                       let reduced = await run.compact(context.entryId), ProviderTurnRun.count(reduced) < ProviderTurnRun.count(history) {
+                        history = reduced
+                    }
+                    while true {
+                        var exposed = false, content = false, completed = false, sawTool = false, abnormalStop = false
+                        do {
+                            try Task.checkCancellation()
+                            guard await context.validate() else { throw ProviderChatAPIError.scopeChanged }
+                            if retried, !(await run.enabled()) { throw failure ?? ProviderTurnLimitRejection(limit: nil) }
+                            let stream: AsyncThrowingStream<AgentStreamEvent, Error>
+                            if let failure {
+                                // Recover on the ACTUAL rejecting endpoint, not a fresh format negotiation.
+                                if failure.responses {
+                                    stream = try await streamResponsesAPI(messages: history, systemPrompt: systemPrompt, tools: tools,
+                                        maxTokens: maxTokens, thinkingLevel: thinkingLevel)
+                                } else {
+                                    stream = try await streamChatCompletions(messages: history, systemPrompt: systemPrompt, tools: tools,
+                                        maxTokens: maxTokens, thinkingLevel: thinkingLevel)
+                                }
+                            } else {
+                                stream = try await streamAgentMessageUncompacted(messages: history, systemPrompt: systemPrompt,
+                                    tools: tools, maxTokens: maxTokens, thinkingLevel: thinkingLevel)
+                            }
+                            for try await event in stream {
+                                try Task.checkCancellation()
+                                // Even thinking, usage, empty prelude and tool-start prohibit a retry.
+                                exposed = true
+                                if case .textDelta(let text) = event { content = content || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                                switch event {
+                                case .contentBlockStart(.toolUse), .toolInputDelta, .toolCallComplete: sawTool = true
+                                default: break
+                                }
+                                if case .done(let reason) = event {
+                                    abnormalStop = abnormalStop || reason != .endTurn
+                                    completed = reason == .endTurn && !sawTool && !abnormalStop
+                                }
+                                continuation.yield(event)
+                            }
+                            try Task.checkCancellation()
+                            if let failure, !sawTool, (!content || !completed) { throw failure }
+                            if let observation, content && completed, await run.enabled(), await context.validate() {
+                                try Task.checkCancellation()
+                                let recorded = await context.verify(observation, count: ProviderTurnRun.count(history), run: run)
+                                logger.info("[TurnCompact] verification recorded=\(recorded) reducedReplies=\(ProviderTurnRun.count(history))")
+                            }
+                            continuation.finish(); return
+                        } catch let rejection as ProviderTurnLimitRejection {
+                            try Task.checkCancellation()
+                            // Only an actual pre-event HTTP rejection is new evidence.
+                            // Synthetic terminal failure after a partial reply must not
+                            // overwrite the original observation with a smaller count.
+                            guard !exposed else { throw rejection }
+                            guard let recorded = await context.observe(rejection, count: ProviderTurnRun.count(history), run: run) else { throw rejection }
+                            observation = recorded
+                            logger.info("[TurnCompact] observed replies=\(ProviderTurnRun.count(history)) reportedLimit=\(rejection.limit ?? -1) responses=\(rejection.responses) exposed=\(exposed) retried=\(retried)")
+                            guard !exposed, !retried, run.takeRecovery() else { throw rejection }
+                            failure = rejection; retried = true
+                            guard let reduced = await run.compact(context.entryId), ProviderTurnRun.count(reduced) < ProviderTurnRun.count(history) else { throw rejection }
+                            try Task.checkCancellation()
+                            guard await context.validate(), await run.enabled() else { throw rejection }
+                            history = reduced
+                        }
+                    }
+                } catch {
+                    // Failed recovery is terminal for this run, not a key/network/group retry.
+                    if Task.isCancelled { continuation.finish(throwing: CancellationError()) }
+                    else { continuation.finish(throwing: failure.map { $0 as Error } ?? error) }
+                }
+            }
+            continuation.onTermination = { _ in worker.cancel() }
+        }
+    }
+
+    private func streamAgentMessageUncompacted(
         messages: [AgentMessage],
         systemPrompt: String?,
         tools: [AgentToolDefinition],
@@ -120,6 +217,7 @@ final class OpenAIAgentProvider: AgentProvider {
                         format = rejection.target;corrected=true
                         do {upstream=try await open(format)}
                         catch is CancellationError {throw CancellationError()}
+                        catch let error as ProviderTurnLimitRejection { throw error }
                         catch {throw ProviderChatAPIError.correctionFailed} // No key/group retry explosion.
                     }
                     var content=false,completed=false
@@ -150,6 +248,7 @@ final class OpenAIAgentProvider: AgentProvider {
                 } catch {
                     // NO format retry from an error after output/tool events.
                     if Task.isCancelled {continuation.finish(throwing:CancellationError())}
+                    else if let rejection = error as? ProviderTurnLimitRejection { continuation.finish(throwing: rejection) }
                     else if corrected {continuation.finish(throwing:ProviderChatAPIError.correctionFailed)}
                     else {continuation.finish(throwing:error)}
                 }

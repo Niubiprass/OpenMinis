@@ -5,7 +5,7 @@ import Foundation
 ///              The successful path is cached on the instance via `imageEndpointResolved`.
 ///   - `imagesGenerations`: always use /v1/images/generations.
 ///   - `chatCompletions`:   always use /v1/chat/completions (multimodal output).
-enum ImageEndpointMode: String, Codable, Hashable, CaseIterable {
+enum ImageEndpointMode: String, Codable, Hashable, CaseIterable, Sendable {
     case auto
     case imagesGenerations = "images_generations"
     case chatCompletions = "chat_completions"
@@ -13,7 +13,7 @@ enum ImageEndpointMode: String, Codable, Hashable, CaseIterable {
 
 /// A configured provider source (type + credential + label).
 /// Multiple instances of the same type are allowed (e.g. two Anthropic accounts).
-struct ProviderInstance: Identifiable, Codable, Hashable {
+struct ProviderInstance: Identifiable, Codable, Hashable, Sendable {
     let id: String
     var label: String
     var providerType: ProviderType

@@ -18,6 +18,7 @@ enum MiniSightSettingKey {
     static let longPress = "minisight.gesture.long"
 
     static let dailyActionsEnabled = "minisight.actions.daily"
+    static let keyboardAvoidance = "minisight.keyboard.avoid"
     static let activity = "minisight.activity"
     static let activityInterval = "minisight.activity.interval"
     static let frameLimit = "minisight.frameLimit"
@@ -176,6 +177,7 @@ enum MiniSightConfig {
         MiniSightSettingKey.singleTap: "singleTap", MiniSightSettingKey.doubleTap: "doubleTap",
         MiniSightSettingKey.longPress: "longPress", MiniSightSettingKey.activity: "activity",
         MiniSightSettingKey.dailyActionsEnabled: "dailyActionsEnabled",
+        MiniSightSettingKey.keyboardAvoidance: "keyboardAvoidance",
         MiniSightSettingKey.activityInterval: "activityInterval", MiniSightSettingKey.frameLimit: "frameLimit",
         MiniSightSettingKey.dragResponse: "dragResponse", MiniSightSettingKey.petSound: "sound",
         MiniSightSettingKey.lyricsEnabled: "lyricsEnabled", MiniSightSettingKey.musicMotion: "musicMotion",
@@ -219,6 +221,7 @@ enum MiniSightConfig {
             MiniSightSettingKey.longPress: MiniSightGesture.menu.rawValue,
             MiniSightSettingKey.activity: MiniSightActivity.lively.rawValue,
             MiniSightSettingKey.dailyActionsEnabled: true,
+            MiniSightSettingKey.keyboardAvoidance: false,
             MiniSightSettingKey.activityInterval: 7.0,
             MiniSightSettingKey.frameLimit: 0,
             MiniSightSettingKey.dragResponse: true,
@@ -323,7 +326,7 @@ enum MiniSightRuntimeSnapshot {
 
     @discardableResult
     static func write(container: URL, rawValues: [String: Any]) -> Bool {
-        guard MiniSightConfig.runtimeFields.count == 52,
+        guard MiniSightConfig.runtimeFields.count == 53,
               MiniSightConfig.all.allSatisfy({ rawValues[$0] != nil }) else { return false }
         var canonical: [String: Any] = [:]
         var values: [String: Any] = ["version": 2]

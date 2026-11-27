@@ -171,6 +171,40 @@ static MiniSightMusicMonitor *ReadyDuration(FakeClient **client) {
         "261 -> 261.1316/261.2245 fresh double read reuses timeline without another lyrics GET");
     return m;
 }
+static void TestPendingDurationContinuity(void) {
+    FakeClient *c; MiniSightMusicMonitor *m = NewMonitor(&c);
+    DurationSong(261., 261.);
+    MiniSightLyricsTrack *anchor = [m valueForKey:@"track"];
+    NSUInteger generation = [[m valueForKey:@"trackGeneration"] unsignedIntegerValue];
+    MiniSightLyricsCompletion pending = [c.completion copy];
+    Kick(m); DurationSong(261.1316, 261.2245);
+    Check(c.requests == 1 && [m valueForKey:@"track"] == anchor &&
+        [[m valueForKey:@"trackGeneration"] unsignedIntegerValue] == generation &&
+        [[m valueForKey:@"fetching"] boolValue] && ![m.snapshot[@"line"] length],
+        "same nonempty ID keeps one pending lookup and fixed anchor, never fabricates a line");
+    pending([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]synthetic-pending" duration:261]); Pump();
+    Check(![m.snapshot[@"line"] length], "pending result still needs fresh sandwich");
+    Kick(m); DurationSong(261.2245, 261.1316);
+    dispatch_sync([m valueForKey:@"bridgeQueue"], ^{});
+    NSDictionary *delivered = MSBridgeRead(@"fixture-A", @"music-state.json", 16384);
+    Check([delivered[@"line"] isEqual:@"synthetic-pending"] &&
+        [delivered[@"playing"] boolValue] && c.requests == 1,
+        "production monitor to snapshot to bridge readback delivers only freshly revalidated synthetic line");
+    Stop(m);
+    for (NSString *field in @[@"Title", @"Artist", @"Duration", @"UniqueIdentifier"]) {
+        m = NewMonitor(&c); DurationSong(261.,261.);
+        pending = [c.completion copy];
+        NSMutableDictionary *changed = DurationInfo(261.2,@"duration-id");
+        changed[[@"kMRMediaRemoteNowPlayingInfo" stringByAppendingString:field]] =
+            [field isEqual:@"Duration"] ? (id)@262.01 : @"Other";
+        Kick(m); GiveInfo(changed, NO);
+        Check([m valueForKey:@"track"] == nil && ![m.snapshot[@"line"] length],
+            "pending continuity cannot override title artist duration or ID conflict");
+        pending([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]late" duration:261]); Pump();
+        Check([m valueForKey:@"timeline"] == nil, "cancelled pending result remains generation fenced");
+        Stop(m);
+    }
+}
 static void TestDurationContinuity(void) {
     FakeClient *c; MiniSightMusicMonitor *m = ReadyDuration(&c);
     MiniSightLyricsTrack *anchor = [m valueForKey:@"track"];
@@ -324,6 +358,7 @@ int main(void) { @autoreleasepool {
     Check([MiniSightMusicMonitor deviceIsUnlocked], "explicit unlocked lock-state ABI");
     fixtureLocked = YES; Check(![MiniSightMusicMonitor deviceIsUnlocked], "lock is not the same as a lit screen");
     fixtureLocked = NO;
+    TestPendingDurationContinuity();
     TestDurationContinuity();
     FakeClient *c; MiniSightMusicMonitor *m = NewMonitor(&c);
     NSMutableDictionary *partial = Info(@"A", @"1");

@@ -1,5 +1,6 @@
 #import "MiniSightRhythmClient.h"
 #import "MiniSightRhythmReceivePolicy.h"
+#import "MiniSightRhythmTransportHealth.h"
 #import "MiniSightPet.h"
 #import "MiniSightLog.h"
 #import <objc/runtime.h>
@@ -26,29 +27,49 @@ BOOL MiniSightRhythmLiveTransportCompiled(void) { return MINISIGHT_ENABLE_RHYTHM
     MSRhythmReceiveState _received;
     NSTimer *_timer;
     BOOL _cleared;
+    double _startedAt;
+    unsigned _datagrams, _decoded, _updates, _ioErrors;
+    BOOL _hasUpdate;
+    MSRhythmFrame _lastUpdate;
+    MSRhythmHealthLimiter _healthLimiter;
 }
 - (void)drain;
+- (void)reportHealth:(MSRhythmHealthCode)code now:(double)now;
 @property(nonatomic,copy) BOOL (^eligibilityHandler)(void);
 @end
 @implementation MiniSightRhythmClient
 - (instancetype)init { if((self=[super init]))_socket=-1;return self; }
 - (void)clearOnce { if(!_cleared){_cleared=YES;if(_clearHandler)_clearHandler();} }
+- (void)reportHealth:(MSRhythmHealthCode)code now:(double)now {
+    if(!MSRhythmHealthShouldLog(&_healthLimiter,code,now))return;
+    MSDiagEvent(@"pet",@"state",@"ok",@{
+        @"source":([NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"]?@"plugin":@"app"),
+        @"reason":[NSString stringWithUTF8String:MSRhythmHealthReason(code)],
+        @"input_mode":@(code),@"input_ready":@NO,@"valid":@(!_ioErrors),
+        @"count":@(_datagrams),@"samples":@(_updates),@"code":@(_ioErrors),
+        @"duration_ms":@(fmax(0.,now-_startedAt)*1000.)});
+}
 - (void)sendLease:(BOOL)subscribe {
     if(_socket<0)return;
     uint8_t packet[40];size_t length=MSRhythmRequest(packet,sizeof(packet),subscribe,_session,_server,++_requestSequence);
     struct sockaddr_in a={0};a.sin_len=sizeof(a);a.sin_family=AF_INET;a.sin_port=htons(MS_RHYTHM_PORT);a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
-    if(length)(void)sendto(_socket,packet,length,0,(const struct sockaddr*)&a,sizeof(a));
+    if(length && sendto(_socket,packet,length,0,(const struct sockaddr*)&a,sizeof(a))!=(ssize_t)length){
+        MSRhythmHealthIncrement(&_ioErrors);
+        if(subscribe)[self reportHealth:MSRhythmHealthSendError now:CACurrentMediaTime()];
+    }
 }
 - (void)configureEnabled:(BOOL)enabled {
     NSAssert(NSThread.isMainThread,@"rhythm receiver must be main-thread");
     // No sockets, subscription, or audio service demand in the default candidate.
     if(!enabled||!MiniSightRhythmLiveTransportCompiled()){[self stop];return;}
     if(_timer)return;
+    _startedAt=CACurrentMediaTime();_datagrams=_decoded=_updates=_ioErrors=0;_hasUpdate=NO;
+    memset(&_lastUpdate,0,sizeof(_lastUpdate));memset(&_healthLimiter,0,sizeof(_healthLimiter));
     _socket=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
-    if(_socket<0){[self clearOnce];return;}
+    if(_socket<0){MSRhythmHealthIncrement(&_ioErrors);[self reportHealth:MSRhythmHealthSocketError now:_startedAt];[self clearOnce];return;}
     int flags=fcntl(_socket,F_GETFL,0);
     struct sockaddr_in a={0};a.sin_len=sizeof(a);a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
-    if(flags<0||fcntl(_socket,F_SETFL,flags|O_NONBLOCK)<0||bind(_socket,(const struct sockaddr*)&a,sizeof(a))<0){[self stop];return;}
+    if(flags<0||fcntl(_socket,F_SETFL,flags|O_NONBLOCK)<0||bind(_socket,(const struct sockaddr*)&a,sizeof(a))<0){MSRhythmHealthIncrement(&_ioErrors);[self reportHealth:MSRhythmHealthSocketError now:_startedAt];[self stop];return;}
     arc4random_buf(&_session,sizeof(_session));if(!_session)_session=1;
     _requestSequence=_server=0;_renewAt=0;_cleared=NO;MSRhythmReceiveResetState(&_received);
     __weak typeof(self) weakSelf=self;
@@ -65,7 +86,8 @@ BOOL MiniSightRhythmLiveTransportCompiled(void) { return MINISIGHT_ENABLE_RHYTHM
     for(unsigned count=0;count<16;++count){
         uint8_t data[1025];struct sockaddr_in a={0};socklen_t len=sizeof(a);
         ssize_t n=recvfrom(_socket,data,sizeof(data),0,(struct sockaddr*)&a,&len);
-        if(n<0){if(errno==EINTR)continue;break;}
+        if(n<0){if(errno==EINTR)continue;if(errno!=EAGAIN&&errno!=EWOULDBLOCK){MSRhythmHealthIncrement(&_ioErrors);[self reportHealth:MSRhythmHealthReceiveError now:now];}break;}
+        MSRhythmHealthIncrement(&_datagrams);
         if(len!=sizeof(a)||a.sin_family!=AF_INET||a.sin_addr.s_addr!=htonl(INADDR_LOOPBACK)||a.sin_port!=htons(MS_RHYTHM_PORT))continue;
         MSRhythmEnvelope envelope={0};MSRhythmFrame frame={0};
         if(!MSRhythmDecodePacket(data,(size_t)n,_session,&envelope,&frame))continue;
@@ -75,13 +97,18 @@ BOOL MiniSightRhythmLiveTransportCompiled(void) { return MINISIGHT_ENABLE_RHYTHM
             uint64_t owner=0;arc4random_buf(&owner,sizeof(owner));if(!owner)owner=1;
             if(_sessionHandler)_sessionHandler(owner);
         }
+        MSRhythmHealthIncrement(&_decoded);
         _server=envelope.server;
-        if(decision==MSRhythmReceiveReset){have=NO;[self clearOnce];continue;}
+        if(decision==MSRhythmReceiveReset){_hasUpdate=NO;have=NO;[self clearOnce];continue;}
         // Latest-value mailbox: buffered beats never become a burst of actions.
+        MSRhythmHealthIncrement(&_updates);_lastUpdate=frame;_hasUpdate=YES;
         latest=frame;have=YES;
     }
     if(have){_cleared=NO;if(_updateHandler)_updateHandler(latest,now);}
     else if(!MSRhythmReceiveFresh(&_received,now))[self clearOnce];
+    MSRhythmHealthSample sample={now,_startedAt,_datagrams,_decoded,
+        MSRhythmReceiveFresh(&_received,now),_hasUpdate,_lastUpdate};
+    [self reportHealth:MSRhythmHealthClassify(sample) now:now];
 }
 - (void)stop {
     [_timer invalidate];_timer=nil;

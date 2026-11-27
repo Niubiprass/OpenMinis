@@ -358,6 +358,7 @@ extension AIChatViewModel {
                 currentSystemPrompt = rebuiltPrompt
                 // continue loop — will try next entry immediately
             } catch {
+                if error is ProviderTurnLimitRejection { throw error }
                 // Check if group uses "always" fallback strategy — if so, treat all
                 // errors as immediately fallbackable (skip auto-retry on current model).
                 let groupFallbackStrategy = activeGroupId

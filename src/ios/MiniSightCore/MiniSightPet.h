@@ -45,6 +45,9 @@ typedef NS_OPTIONS(NSUInteger, MiniSightPetMotionLockReason) {
 /// Independent non-moving daily poses, default YES. NO cancels only this
 /// owner's pose/clip; no daily timer survives it, no manual motion is cancelled.
 @property (nonatomic) BOOL dailyActionsEnabled;
+/// Main-thread transient host state, never persisted. Only a no-room keyboard
+/// exclusion may keep an already visible chat panel while the sprite is hidden.
+@property (nonatomic) BOOL keyboardAvoidanceOccluded;
 @property (nonatomic, copy, nullable) NSString *lyricsLine;
 @property (nonatomic) BOOL musicPlaying;
 /// Measured-input mode, default YES. With musicPlaying it disables legacy timer

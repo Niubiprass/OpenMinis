@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import CryptoKit
 import os.log
 
@@ -277,6 +278,7 @@ final class OpenAIProvider: LLMProvider {
     var forceResponsesAPI: Bool = false
     /// Immutable automatic-mode snapshot attached after all factory overrides.
     var chatAPIContext: ProviderChatAPIContext?
+    var turnCompactionContext: ProviderTurnContext?
 
     /// [T-codex-client-mask] When true, add the Codex client identity (headers +
     /// body `client_metadata`) to Responses requests, for relays that only admit
@@ -765,8 +767,16 @@ final class OpenAIProvider: LLMProvider {
 
         if !(200..<300).contains(statusCode) {
             var body = ""
-            for try await line in byteStream.lines { body += line }
+            for try await line in byteStream.lines {
+                if ProviderTurnRun.isRecoverySummary && body.utf8.count + line.utf8.count > 16_384 {
+                    session.finishTasksAndInvalidate()
+                    throw ProviderTurnLimitRejection(limit: nil)
+                }
+                body += line
+            }
             session.finishTasksAndInvalidate()
+            if ProviderTurnRun.isRecoverySummary,
+               let rejection = ProviderTurnLimitRejection.parse(status: statusCode, body: body) { throw rejection }
             throw mapHTTPError(statusCode: statusCode, body: body)
         }
 
@@ -1067,13 +1077,38 @@ final class OpenAIProvider: LLMProvider {
         // [T-ios-openai-body-oom] Must run BEFORE serializing: an out-of-memory
         // inside JSONSerialization aborts the process and cannot be caught. This
         // is the agent loop's request path, where the body grows with every turn.
-        try guardRequestBodySize(body, context: "streamRaw")
+        // [T-request-failure-diagnostic] Failure-only metadata from the FINAL body.
+        // This local, nonescaping function never reaches the SSE pump, so a live
+        // stream does not retain an extra conversation-sized body for diagnostics.
+        func diagnoseFailure(_ stage: OpenAIRequestFailureDiagnostic.Stage,
+                             response: HTTPURLResponse? = nil,
+                             responseBody: String? = nil, error: Error? = nil) {
+            if let line = OpenAIRequestFailureDiagnostic.line(
+                body: body, isResponsesAPI: isResponsesAPI,
+                providerId: providerInstanceId, url: url,
+                encodedBytes: request.httpBody?.count, stage: stage,
+                response: response, responseBody: responseBody, error: error,
+                identityRetry: identityRetry) {
+                logger.warning("[RequestFailureDiag] \(line)")
+            }
+        }
+        do {
+            try guardRequestBodySize(body, context: "streamRaw")
+        } catch {
+            diagnoseFailure(.sizeGuard, error: error)
+            throw error
+        }
 
         // Use .sortedKeys so every request with the same body produces byte-identical
         // JSON, letting DeepSeek's prefix-based disk cache match from the 0th token.
         // Without this, Swift's dictionary iteration order randomizes top-level /
         // nested key order across calls and the cache misses on every request.
-        request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        } catch {
+            diagnoseFailure(.encoding, error: error)
+            throw error
+        }
 
         #if DEBUG
         // Capture the actual on-wire body bytes for debug.llmRequests, so parity
@@ -1116,20 +1151,33 @@ final class OpenAIProvider: LLMProvider {
             (byteStream, response) = try await session.bytes(for: request)
         } catch {
             session.finishTasksAndInvalidate()
+            diagnoseFailure(.transport, error: error)
             throw error
         }
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
 
         if !(200..<300).contains(statusCode) {
             var body = ""
-            for try await line in byteStream.lines {
-                guard chatAPIContext == nil || body.utf8.count + line.utf8.count <= 16_384 else {
-                    session.finishTasksAndInvalidate()
-                    throw ProviderChatAPIError.unverified
+            do {
+                for try await line in byteStream.lines {
+                    guard (chatAPIContext == nil && (turnCompactionContext == nil || ProviderTurnRun.current == nil))
+                            || body.utf8.count + line.utf8.count <= 16_384 else {
+                        session.finishTasksAndInvalidate()
+                        throw ProviderChatAPIError.unverified
+                    }
+                    body += line
                 }
-                body += line
+            } catch {
+                diagnoseFailure(.httpRead, response: response as? HTTPURLResponse, error: error)
+                throw error
             }
             session.finishTasksAndInvalidate()
+            diagnoseFailure(.http, response: response as? HTTPURLResponse, responseBody: body)
+            if turnCompactionContext != nil, let turnRun = ProviderTurnRun.current, await turnRun.enabled(),
+               var rejection = ProviderTurnLimitRejection.parse(status: statusCode, body: body) {
+                rejection.responses = isResponsesAPI
+                throw rejection
+            }
             if chatAPIContext != nil,
                let target=ProviderChatEndpointRejection.target(status:statusCode,body:body,fromChat:!isResponsesAPI) {
                 throw ProviderChatEndpointRejection(target:target)
@@ -2401,6 +2449,228 @@ final class OpenAIProvider: LLMProvider {
         return ProviderServiceError.httpError(statusCode: statusCode, body: body)
     }
 }
+
+// BEGIN REQUEST FAILURE DIAGNOSTIC (standalone Foundation test extraction)
+/// No new files/settings/network: a small failure-only event in the existing log.
+/// All dynamic content is counted, classified, or keyed, never dumped.
+enum OpenAIRequestFailureDiagnostic {
+    enum Stage: String { case sizeGuard, encoding, transport, http, httpRead }
+    final class Limiter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var started: TimeInterval = -Double.infinity
+        private var count = 0
+        private var suppressed = 0
+        func take(now: TimeInterval) -> Int? {
+            lock.lock(); defer { lock.unlock() }
+            if now < started || now - started >= 60 { started = now; count = 0 }
+            guard count < 8 else { suppressed = min(suppressed + 1, 1_000_000); return nil }
+            count += 1
+            let previous = suppressed; suppressed = 0
+            return previous
+        }
+    }
+    static let limiter = Limiter()
+    static let processID = UUID().uuidString
+    private static let knownKeys = ["model", "messages", "input", "instructions", "tools", "stream",
+        "stream_options", "max_tokens", "max_completion_tokens", "max_output_tokens", "reasoning_effort",
+        "reasoning", "thinking", "temperature", "top_p", "store", "prompt_cache_key", "tool_choice",
+        "parallel_tool_calls", "client_metadata"]
+    // This ephemeral key is never exported, logged, persisted or read from credentials.
+    // The public process tag is deliberately NOT the fingerprint key.
+    private static let fingerprintKey = SymmetricKey(size: .bits256)
+    private static func fingerprint(_ value: String?) -> String {
+        guard let value else { return "absent" }
+        let data = Data(value.utf8.prefix(256))
+        return HMAC<SHA256>.authenticationCode(for: data, using: fingerprintKey)
+            .prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+    private static func shape(_ value: Any?) -> String {
+        guard let value else { return "absent" }
+        if value is NSNull { return "null" }
+        if value is String { return "string" }
+        if let n = value as? NSNumber {
+            return CFGetTypeID(n) == CFBooleanGetTypeID() ? "bool" : "number"
+        }
+        if value is [Any] { return "array" }
+        if value is [String: Any] { return "object" }
+        return "other"
+    }
+    private static func number(_ value: Any?) -> Any {
+        guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
+              n.doubleValue.isFinite, n.doubleValue >= 0, n.doubleValue <= 10_000_000 else { return "other" }
+        return n
+    }
+    private static func classify(_ value: Any?, allowed: [String]) -> String {
+        guard let s = value as? String else { return shape(value) }
+        return allowed.contains(s) ? s : "other"
+    }
+    static func line(body: [String: Any], isResponsesAPI: Bool, providerId: String?, url: URL,
+                     encodedBytes: Int?, stage: Stage, response: HTTPURLResponse? = nil,
+                     responseBody: String? = nil, error: Error? = nil, identityRetry: Int = 0,
+                     now: TimeInterval = ProcessInfo.processInfo.systemUptime,
+                     gate: Limiter = limiter) -> String? {
+        if Task.isCancelled || error is CancellationError { return nil }
+        if let e = error as NSError?, e.domain == NSURLErrorDomain && e.code == NSURLErrorCancelled { return nil }
+        guard let suppressed = gate.take(now: now) else { return nil }
+        var event: [String: Any] = ["schema": 1, "process": processID, "event": UUID().uuidString,
+            "stage": stage.rawValue, "route": isResponsesAPI ? "responses" : "chat_completions",
+            "providerHash": fingerprint(providerId), "hostHash": fingerprint(url.host),
+            "modelHash": fingerprint(body["model"] as? String), "suppressed": suppressed,
+            "identityRetry": max(0, min(identityRetry, 2)), "bodyBytes": encodedBytes ?? -1,
+            "jsonEncoded": encodedBytes != nil, "status": response?.statusCode ?? -1]
+        var fields: [String: String] = [:]
+        for key in knownKeys { fields[key] = shape(body[key]) }
+        event["fields"] = fields
+        event["modelEmpty"] = (body["model"] as? String)?.isEmpty ?? true
+        if shape(body["stream"]) == "bool" { event["stream"] = body["stream"] }
+        if let options = body["stream_options"] as? [String: Any], shape(options["include_usage"]) == "bool" {
+            event["includeUsage"] = options["include_usage"]
+        }
+        event["unknownFieldCount"] = body.count - knownKeys.filter { body[$0] != nil }.count
+        for key in ["max_tokens", "max_completion_tokens", "max_output_tokens"] where body[key] != nil {
+            event[key] = number(body[key])
+        }
+        event["effort"] = classify(body["reasoning_effort"], allowed: ["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+        event["nestedEffort"] = classify((body["reasoning"] as? [String: Any])?["effort"], allowed: ["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+        if let e = error as NSError? {
+            event["errorDomain"] = e.domain == NSURLErrorDomain ? "url" : "other"
+            if e.domain == NSURLErrorDomain { event["urlErrorCode"] = e.code }
+        }
+        var requestID = response?.value(forHTTPHeaderField: "x-request-id")
+            ?? response?.value(forHTTPHeaderField: "request-id")
+        if let responseBody {
+            let bytes = Data(responseBody.utf8.prefix(32769))
+            event["errorBodyCapped"] = bytes.count > 32768
+            if bytes.count <= 32768, let root = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] {
+                let detail = root["error"] as? [String: Any] ?? root
+                let allowed = ["invalid_request", "invalid_request_error", "model_not_found", "rate_limit_exceeded",
+                    "permission_error", "authentication_error", "context_length_exceeded", "server_error"]
+                event["errorCode"] = classify(detail["code"], allowed: allowed)
+                event["errorType"] = classify(detail["type"], allowed: allowed)
+                requestID = requestID ?? (root["request_id"] as? String) ?? (detail["request_id"] as? String)
+            }
+        }
+        if let requestID {
+            event["requestIDPresent"] = true
+            event["requestIDHash"] = fingerprint(requestID)
+        }
+        event["counts"] = counts(body: body, responses: isResponsesAPI)
+        guard let data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]), data.count <= 4096,
+              let text = String(data: data, encoding: .utf8) else {
+            return "{\"schema\":1,\"diagnosticOmitted\":true}"
+        }
+        return text
+    }
+    private static func counts(body: [String: Any], responses: Bool) -> [String: Int] {
+        var out = ["messages": 0, "scanned": 0, "capped": 0, "invalidMessages": 0,
+            "system": 0, "developer": 0, "user": 0, "assistant": 0, "tool": 0, "otherRole": 0,
+            "textBytesSampled": 0, "textSamplesCapped": 0, "images": 0, "otherParts": 0,
+            "toolCalls": 0, "toolResults": 0, "missingResults": 0, "orphanResults": 0,
+            "duplicateCalls": 0, "invalidCallIDs": 0, "emptyContent": 0, "reasoningMessages": 0,
+            "tools": 0, "toolsScanned": 0, "invalidToolDefinitions": 0, "contentPartsCapped": 0]
+        func inc(_ key: String, _ n: Int = 1) { out[key, default: 0] += n }
+        var remainingText = 65536
+        func text(_ value: Any?) {
+            guard let s = value as? String else { return }
+            guard remainingText > 0 else { inc("textSamplesCapped"); return }
+            let budget = min(8192, remainingText)
+            let n = s.utf8.prefix(budget + 1).count
+            let sampled = min(n, budget)
+            inc("textBytesSampled", sampled); remainingText -= sampled
+            if n > budget { inc("textSamplesCapped") }
+            if n == 0 { inc("emptyContent") }
+        }
+        func content(_ value: Any?) {
+            if let s = value as? String { text(s); return }
+            guard let parts = value as? [Any] else {
+                if value == nil || value is NSNull { inc("emptyContent") } else { inc("otherParts") }
+                return
+            }
+            if parts.count > 64 { inc("contentPartsCapped") }
+            for item in parts.prefix(64) {
+                guard let part = item as? [String: Any] else { inc("otherParts"); continue }
+                switch part["type"] as? String {
+                case "text", "input_text", "output_text": text(part["text"])
+                case "image_url", "input_image": inc("images")
+                default: inc("otherParts")
+                }
+            }
+        }
+        var pending = Set<String>()
+        var seen = Set<String>()
+        var remainingCalls = 256
+        func callID(_ value: Any?) -> String? {
+            guard let s = value as? String, !s.isEmpty, s.utf8.prefix(257).count <= 256 else {
+                inc("invalidCallIDs"); return nil
+            }
+            return s
+        }
+        func call(_ value: Any?) {
+            guard remainingCalls > 0 else { inc("capped"); return }
+            remainingCalls -= 1
+            inc("toolCalls")
+            guard let id = callID(value) else { return }
+            if !seen.insert(id).inserted { inc("duplicateCalls") }
+            pending.insert(id)
+        }
+        func result(_ value: Any?) {
+            inc("toolResults")
+            guard let id = callID(value) else { return }
+            if pending.remove(id) == nil { inc("orphanResults") }
+        }
+        if let tools = body["tools"] as? [Any] {
+            out["tools"] = tools.count
+            out["toolsScanned"] = min(tools.count, 128)
+            if tools.count > 128 { inc("capped") }
+            for item in tools.prefix(128) {
+                guard let tool = item as? [String: Any], let type = tool["type"] as? String else {
+                    inc("invalidToolDefinitions"); continue
+                }
+                if type == "function" {
+                    let f = responses ? tool : tool["function"] as? [String: Any]
+                    if !(f?["name"] is String) { inc("invalidToolDefinitions") }
+                }
+            }
+        }
+        text(body["instructions"])
+        let raw = responses ? body["input"] : body["messages"]
+        if let s = raw as? String { text(s); return out }
+        guard let messages = raw as? [Any] else { inc("invalidMessages"); return out }
+        out["messages"] = messages.count
+        out["scanned"] = min(messages.count, 256)
+        if messages.count > 256 { inc("capped") }
+        for item in messages.prefix(256) {
+            guard let message = item as? [String: Any] else { inc("invalidMessages"); continue }
+            let type = message["type"] as? String
+            if responses && type == "function_call" { call(message["call_id"]); continue }
+            if responses && type == "function_call_output" { result(message["call_id"]); text(message["output"]); continue }
+            if responses && type == "reasoning" { inc("reasoningMessages"); continue }
+            let role = message["role"] as? String ?? ""
+            if ["system", "developer", "user", "assistant", "tool"].contains(role) { inc(role) }
+            else { inc("otherRole") }
+            // Chat results must immediately follow the assistant tool-call group.
+            // A capped scan is only a partial view; the event explicitly says so.
+            if !responses && role != "tool" && !pending.isEmpty {
+                inc("missingResults", pending.count); pending.removeAll(keepingCapacity: true)
+            }
+            if role == "tool" { result(message["tool_call_id"]) }
+            content(message["content"])
+            if message["reasoning_content"] != nil || message["reasoning_details"] != nil { inc("reasoningMessages") }
+            if let calls = message["tool_calls"] as? [Any] {
+                let sampled = min(64, remainingCalls)
+                if calls.count > sampled { inc("capped") }
+                for item in calls.prefix(sampled) {
+                    let c = item as? [String: Any]
+                    call(c?["id"])
+                    text((c?["function"] as? [String: Any])?["arguments"])
+                }
+            }
+        }
+        inc("missingResults", pending.count)
+        return out
+    }
+}
+// END REQUEST FAILURE DIAGNOSTIC
 
 // MARK: - Codex client mask ("伪装 Codex 端") [T-codex-client-mask]
 //

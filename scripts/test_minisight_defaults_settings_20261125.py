@@ -16,7 +16,8 @@ def extracted():
     keys=dict(re.findall(r'static let (\w+) = "(minisight\.[\w.]+)"',S))
     block=S.split('static let runtimeFields:',1)[1].split('static let all',1)[0]
     fields={keys[k]:v for k,v in re.findall(r'MiniSightSettingKey\.(\w+): "(\w+)"',block)}
-    assert len(fields)==int(re.search(r'runtimeFields.count == (\d+)',S)[1])==52
+    assert len(fields)==int(re.search(r'runtimeFields.count == (\d+)',S)[1])==53
+    assert fields['minisight.keyboard.avoid']=='keyboardAvoidance'
     assert fields[KEY]=='dailyActionsEnabled'
     return keys, fields
 
@@ -26,6 +27,7 @@ def projected_transport():
     initial=S.split('static let initial:',1)[1].split('static func installDefaults',1)[0]
     bools={keys[k]:v=='true' for k,v in re.findall(r'MiniSightSettingKey\.(\w+): (true|false)',initial)}
     assert bools[KEY] is True
+    assert bools['minisight.keyboard.avoid'] is False
     resources = [IOS/'MiniSightCore/MiniSightResources.m']
     if (PLUGIN/'MiniSightResources.m').is_file():
         resources.append(PLUGIN/'MiniSightResources.m')
@@ -34,6 +36,7 @@ def projected_transport():
     for name in resources:
         mapping=dict(re.findall(r'@"(minisight\.[\w.]+)": @"(\w+)"',name.read_text().split('+ (NSDictionary<NSString *, id> *)mergedPreferences',1)[0]))
         assert mapping[KEY]=='dailyActionsEnabled'
+        assert mapping['minisight.keyboard.avoid']=='keyboardAvoidance'
         def merge(prefs, snap):
             out=dict(prefs)
             for k,f in mapping.items():
@@ -109,6 +112,7 @@ func recordVerifiedNotification(container: URL) {
 '''.replace('(try? Data(contentsOf: file)).isEmpty == false','((try? Data(contentsOf: file))?.isEmpty) == false')
     harness='''
 let key = MiniSightSettingKey.dailyActionsEnabled
+let keyboard = MiniSightSettingKey.keyboardAvoidance
 let defaults = UserDefaults.standard
 let previous = MiniSightConfig.all.reduce(into: [String: Any]()) { if let v = defaults.object(forKey: $1) { $0[$1] = v } }
 defer { for k in MiniSightConfig.all { if let v = previous[k] { defaults.set(v, forKey: k) } else { defaults.removeObject(forKey: k) } } }
@@ -116,6 +120,8 @@ let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().
 defer { try? FileManager.default.removeItem(at: root) }
 for value in [nil, false, true] as [Bool?] {
     defaults.removeObject(forKey: key)
+    defaults.removeObject(forKey: keyboard)
+    if let value = value { defaults.set(value, forKey: keyboard) }
     if let value = value { defaults.set(value, forKey: key) }
     defaults.set("off", forKey: MiniSightSettingKey.activity)
     MiniSightConfig.installDefaults()
@@ -125,6 +131,8 @@ for value in [nil, false, true] as [Bool?] {
     let data = try Data(contentsOf: root.appendingPathComponent("Documents/MiniSight/runtime.json"))
     let bag = try JSONSerialization.jsonObject(with: data) as! [String: Any]
     precondition((bag["dailyActionsEnabled"] as? Bool) == (value ?? true))
+    precondition((bag["keyboardAvoidance"] as? Bool) == (value ?? false))
+    precondition(((bag["preferences"] as! [String: Any])[keyboard] as? Bool) == (value ?? false))
     precondition(((bag["preferences"] as! [String: Any])[key] as? Bool) == (value ?? true))
 }
 precondition(notifications == 3)

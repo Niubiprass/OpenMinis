@@ -224,6 +224,12 @@ static bool MSMusicDurationCompatible(double first, double last) {
     // Continuity only: provider matching and exact lyrics cache keys do not change.
     return isfinite(first) && isfinite(last) && fabs(first - last) <= 1.0;
 }
+// Pending lyrics have no timeline yet. Reuse only the established duration
+// tolerance, an unchanged NONEMPTY item ID, and an actually in-flight request.
+// This never admits a provider candidate or supplies presentation evidence.
+static bool MSMusicPendingContinuity(bool fetching, bool sameKnownID) {
+    return fetching && sameKnownID;
+}
 // END MUSIC DURATION POLICY
 static NSUInteger MSMusicTrackConflictMask(MiniSightLyricsTrack *firstTrack,
     MiniSightLyricsTrack *lastTrack) {
@@ -263,6 +269,12 @@ static BOOL MSMusicTracksCompatible(MiniSightLyricsTrack *firstTrack, NSString *
     if ([firstTrack.cacheKey isEqualToString:lastTrack.cacheKey]) return YES;
     return hasTimeline && MSMusicTrackConflictMask(firstTrack, lastTrack) == 0 &&
         !(firstID.length && lastID.length && ![firstID isEqualToString:lastID]);
+}
+static BOOL MSMusicTrackContinuity(MiniSightLyricsTrack *firstTrack, NSString *firstID,
+    MiniSightLyricsTrack *lastTrack, NSString *lastID, BOOL hasTimeline, BOOL fetching) {
+    BOOL pending = MSMusicPendingContinuity(fetching,
+        firstID.length && lastID.length && [firstID isEqualToString:lastID]);
+    return MSMusicTracksCompatible(firstTrack, firstID, lastTrack, lastID, hasTimeline || pending);
 }
 static BOOL MSMusicTrackIdentityCompatible(NSDictionary *first, NSDictionary *last, NSString *player) {
     if (!player.length) return NO;
@@ -387,6 +399,8 @@ static MSMusicDiagnosticStages MSMusicDiagnose(bool active, bool mediaAvailable,
     NSTimeInterval _candidateUntil;
     NSUInteger _identityEpoch, _playbackSequence, _rhythmGeneration;
     NSString *_stateReason;
+    NSUInteger _conflictMask, _conflictStage;
+    NSTimeInterval _conflictAt;
     NSMutableDictionary<NSString *, NSArray *> *_identityEvidence;
     NSMutableDictionary<NSString *, NSNumber *> *_identityEvidenceAt;
     NSString *_playerDetail, *_lyricsDetail;
@@ -471,6 +485,15 @@ static MSMusicDiagnosticStages MSMusicDiagnose(bool active, bool mediaAvailable,
         @"present": @((BOOL)(_timeline != nil)), @"valid": @((BOOL)(_playing && !_awaitingFreshInfo && _validAt > 0. && now - _validAt <= 6.)),
         @"read_stage": @(_readStage), @"identity_epoch": @(_identityEpoch),
         @"last_valid_age_ms": @(_validAt > 0. ? fmin(60000., fmax(0., now - _validAt) * 1000.) : -1.)});
+}
+- (void)conflictEvidence:(NSUInteger)mask stage:(NSUInteger)stage {
+    NSTimeInterval now = MSMusicNow();
+    mask &= 15u;
+    if (_conflictStage == stage && _conflictMask == mask && now - _conflictAt < 60.) return;
+    _conflictStage = stage; _conflictMask = mask; _conflictAt = now;
+    // Numeric fixed-vocabulary evidence only; never metadata, IDs or PID values.
+    MSDiagEvent(@"music", @"sample", @"skipped", @{@"source": @"plugin", @"reason": @"metadata_conflict",
+        @"generation": @(_readGeneration), @"read_stage": @(stage), @"field": @(mask)});
 }
 - (void)beginCandidate:(NSString *)reason {
     // Candidate data is never presentation evidence; expiry is non-sliding.
@@ -779,9 +802,14 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
         if (!self || ![self acceptRead:ticket generation:request stage:1 player:player]) return;
         MiniSightLyricsTrack *firstTrack = MSMusicTrack(first);
         BOOL firstConflict = self->_track && (firstTrack
-            ? !MSMusicTracksCompatible(self->_track, self->_identifier, firstTrack, MSMusicIdentifier(first), self->_timeline != nil)
+            ? !MSMusicTrackContinuity(self->_track, self->_identifier, firstTrack, MSMusicIdentifier(first), self->_timeline != nil, self->_fetching)
             : MSMusicPartialConflicts(first, self->_track, self->_identifier));
         if (firstConflict) {
+            // Fixed bit mask only; no metadata, item ID or PID enters diagnostics.
+            NSUInteger mask = MSMusicTrackConflictMask(self->_track, firstTrack);
+            NSString *firstID = MSMusicIdentifier(first);
+            if (firstID.length && self->_identifier.length && ![firstID isEqualToString:self->_identifier]) mask |= 8u;
+            [self conflictEvidence:mask stage:1];
             [self discardCandidate:@"metadata_conflict"];
             [self publishLine:nil playing:NO force:NO];
         }
@@ -796,6 +824,7 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
                     BOOL compatible = MSMusicTrackIdentityCompatible(first, last, player);
                     if (!compatible) {
                         self->_reading = NO;
+                        [self conflictEvidence:MSMusicIdentityConflictMask(first, last) stage:3];
                         [self discardCandidate:@"metadata_conflict"];
                         [self handleMediaChange]; return;
                     }
@@ -854,8 +883,8 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
                 ![identifier isEqualToString:self->_identifier] &&
                 (!track || !self->_track || ![track.cacheKey isEqualToString:self->_track.cacheKey]);
             BOOL changedTrack = sourceChanged || conflictingIdentifier ||
-                (track && self->_track && !MSMusicTracksCompatible(self->_track, self->_identifier,
-                    track, identifier, self->_timeline != nil)) || conflictingPartial;
+                (track && self->_track && !MSMusicTrackContinuity(self->_track, self->_identifier,
+                    track, identifier, self->_timeline != nil, self->_fetching)) || conflictingPartial;
             NSString *identity = MSMusicIdentity(info, player);
             if (changedTrack) {
                 [self discardCandidate:@"track_changed"];

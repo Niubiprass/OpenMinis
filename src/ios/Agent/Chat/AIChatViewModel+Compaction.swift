@@ -920,7 +920,9 @@ extension AIChatViewModel {
     @MainActor
     @discardableResult
     func compactBefore(_ chatMessageId: UUID, includesBoundary: Bool = false,
-                        allowDuringProcessing: Bool = false, explicitRawAnchor: String? = nil) async -> CompactionOutcome {
+                        allowDuringProcessing: Bool = false, explicitRawAnchor: String? = nil,
+                        validity: (() -> Bool)? = nil) async -> CompactionOutcome {
+        guard validity?() != false else { return .cancelled }
         guard allowDuringProcessing || !isProcessing else {
             logger.info("[Compact] Cannot compact while processing")
             appendSystemInfo("Cannot compact while processing.", icon: "arrow.down.right.and.arrow.up.left")
@@ -968,6 +970,7 @@ extension AIChatViewModel {
         // the marker, but we still need to locate the boundary in agentHistory to
         // size the compacted range.
         let allRaw = await ChatStore.shared.loadMessages(sessionId: sessionId)
+        guard !Task.isCancelled, self.sessionId == sessionId, validity?() != false else { return .cancelled }
         var firstKeptMessageId: String? = nil
         if let explicitRawAnchor {
             guard allRaw.contains(where: { $0.id == explicitRawAnchor }),
@@ -1092,8 +1095,12 @@ extension AIChatViewModel {
         messages.append(statusMsg)
 
         defer {
+            if statusMsg.isCompactLoading {
+                statusMsg.isCompactLoading = false
+                statusMsg.content = "Compaction cancelled."
+            }
             isCompacting = false
-            isProcessing = wasProcessingOnEntry
+            if validity?() != false { isProcessing = wasProcessingOnEntry }
             compactTask = nil
         }
 
@@ -1195,6 +1202,8 @@ extension AIChatViewModel {
             return .failed
         }
 
+        guard !Task.isCancelled, self.sessionId == sessionId, validity?() != false else { return .cancelled }
+
         // ───── Compute marker fields (v2) ─────
         //
         // v2 model: lastCompactedMessageId is the ONLY anchor — a real,
@@ -1280,6 +1289,18 @@ extension AIChatViewModel {
             statusMsg.content = Task.isCancelled ? "Compaction cancelled." : "Compaction failed: could not persist marker."
             statusMsg.isCompactLoading = false
             return Task.isCancelled ? .cancelled : .failed
+        }
+
+        guard !Task.isCancelled, self.sessionId == sessionId, validity?() != false else {
+            // Delete only THIS attempt's marker, never an older/manual marker.
+            // Deletion uses the existing dirty/tombstone path so a sync cannot
+            // resurrect a result from an invalidated recovery.
+            let removed = await ChatStore.shared.deleteCompactMarker(id: marker.id)
+            guard removed else {
+                logger.error("[Compact] Invalidated marker rollback failed; result is not verified")
+                return .failed
+            }
+            return .cancelled
         }
 
         // Phase B: update cache so effectiveAgentHistory() starts using the new summary immediately.
@@ -1516,7 +1537,7 @@ extension AIChatViewModel {
     /// the split path. A server-side 4xx/5xx we cannot classify is exactly the
     /// case where trying a smaller payload is worth one attempt.
     static func isSegmentRetryableError(_ error: Error) -> Bool {
-        if error is CancellationError { return false }
+        if error is CancellationError || error is ProviderTurnLimitRejection { return false }
         if let llm = error as? LLMError {
             switch llm {
             case .cancelled, .networkError:

@@ -552,6 +552,7 @@ final class MultiKeyAgentProvider: AgentProvider, @unchecked Sendable {
                         continuation.finish(); return
                     } catch {
                         if Task.isCancelled { continuation.finish(throwing: CancellationError()); return }
+                        if error is ProviderTurnLimitRejection { continuation.finish(throwing: error); return }
                         let kind = MultiKeyFailureKind.classify(error)
                         if await manager.isActiveAsync(for: instanceId) { manager.recordFailure(lease: lease, kind: kind, for: instanceId) }
                         if kind == .network {

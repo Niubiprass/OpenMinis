@@ -25,6 +25,7 @@ struct MiniSightInAppRuntime: View {
     @AppStorage("minisight.gesture.double") private var doubleGesture = "voice"
     @AppStorage("minisight.gesture.long") private var longGesture = "menu"
     @AppStorage("minisight.dragResponse") private var dragResponse = true
+    @AppStorage("minisight.keyboard.avoid") private var keyboardAvoidance = false
     @AppStorage("minisight.actions.daily") private var dailyActionsEnabled = true
     @AppStorage("minisight.petSound") private var petSoundEnabled = false
     @AppStorage("minisight.chat.height") private var chatHeight = 160.0
@@ -66,6 +67,7 @@ struct MiniSightInAppRuntime: View {
                                  lyricsLine: music.line, musicPlaying: music.playing, musicAnchor: music.anchor,
                                  musicPositionEvidence: music.hasPositionEvidence,
                                  musicToken: music.rhythmToken, dailyActionsEnabled: dailyActionsEnabled,
+                                 keyboardAvoidance: keyboardAvoidance,
                                  dragGain: dragResponse ? 1.0 : 0.20, soundEnabled: petSoundEnabled,
                                  roll: motion.roll,
                                  activityActive: activity.active, gravityEnabled: gravityEnabled, gravityStrength: gravityStrength,
@@ -863,6 +865,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
     let musicPositionEvidence: Bool
     let musicToken: UInt
     let dailyActionsEnabled: Bool
+    let keyboardAvoidance: Bool
     let dragGain: CGFloat
     let soundEnabled: Bool
     let roll: Double
@@ -909,6 +912,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
         weak var pet: MiniSightPetView?
         private var petWindow: UIWindow?
         private var panStart = CGPoint.zero
+        private var panKeyboardEpoch: UInt64 = 0
         private var handledShakeGeneration = 0
         private var lastConfigured = ""
         private var lastActivityApplied = ""
@@ -961,6 +965,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
                 parent.musicPositionEvidence ? (parent.musicAnchor?.current ?? .nan) : .nan)
             pet.activityActive = parent.activityActive
             recordAppliedActivity(pet)
+            root.keyboardAvoidance = parent.keyboardAvoidance
             root.pet = pet
             root.addSubview(pet)
             self.pet = pet
@@ -1015,6 +1020,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
                 pet.triggerGravityImpulse(withDirection: CGFloat(parent.shakeDirection),
                                           strength: CGFloat(parent.shakeStrength))
             }
+            host.keyboardAvoidance = parent.keyboardAvoidance
             host.setNeedsLayout()
             host.layoutIfNeeded()
             let revision = UserDefaults.standard.string(forKey: "minisight.settings.revision") ?? "legacy"
@@ -1062,6 +1068,7 @@ private struct MiniSightPetHost: UIViewRepresentable {
             switch gesture.state {
             case .began:
                 panStart = pet.center
+                panKeyboardEpoch = host.keyboardEpoch
                 if parent.soundEnabled { MiniSightBlip.playIfEnabled(true) }
                 pet.beginDragging(at: gesture.location(in: pet))
                 if parent.dragGain > 0.5 {
@@ -1083,8 +1090,10 @@ private struct MiniSightPetHost: UIViewRepresentable {
                     y: min(bounds.maxY, max(bounds.minY, panStart.y + delta.y * parent.dragGain))))
                 pet.endDraggingCancelled(false)
                 let width = max(host.bounds.width, 1), height = max(host.bounds.height, 1)
-                parent.centerX = Double(pet.center.x / width)
-                parent.centerY = Double(pet.center.y / height)
+                if host.keyboardConstraintInactive, panKeyboardEpoch == host.keyboardEpoch {
+                    parent.centerX = Double(pet.center.x / width)
+                    parent.centerY = Double(pet.center.y / height)
+                }
                 MSDiagEvent("drag", "end", "ok", ["source": "app", "x": pet.center.x, "y": pet.center.y])
             case .cancelled, .failed:
                 pet.endDraggingCancelled(true)
@@ -1118,15 +1127,70 @@ private struct MiniSightPetHost: UIViewRepresentable {
 private final class MiniSightPassthroughView: UIView {
     weak var pet: MiniSightPetView?
     var normalizedCenter = CGPoint(x: 0.5, y: 0.86)
+    var keyboardAvoidance = false {
+        didSet {
+            if oldValue != keyboardAvoidance { keyboardEpoch &+= 1; setNeedsLayout() }
+        }
+    }
+    private var keyboardScreenFrame = CGRect.null
+    private(set) var keyboardEpoch: UInt64 = 0
+    private var lastKeyboardState = 0
     private var didPlaceInitialCenter = false
+    private var localKeyboardFrame: CGRect {
+        guard keyboardAvoidance, let window, !keyboardScreenFrame.isNull else { return .null }
+        return bounds.intersection(convert(keyboardScreenFrame, from: window.screen.coordinateSpace))
+    }
+    var keyboardConstraintInactive: Bool { localKeyboardFrame.isNull || localKeyboardFrame.isEmpty }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        center.addObserver(self, selector: #selector(keyboardCleared(_:)), name: UIResponder.keyboardWillHideNotification, object: nil)
+        center.addObserver(self, selector: #selector(keyboardCleared(_:)), name: UIApplication.didEnterBackgroundNotification, object: nil)
+    }
+
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+
+    @objc private func keyboardChanged(_ note: Notification) {
+        if let screen = note.object as? UIScreen, let window, screen !== window.screen { return }
+        // UIKit supplies a CGRect boxed in NSValue; reject unrelated notifications.
+        guard let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue,
+              frame.origin.x.isFinite, frame.origin.y.isFinite,
+              frame.width.isFinite, frame.height.isFinite, keyboardScreenFrame != frame else { return }
+        keyboardScreenFrame = frame
+        if keyboardAvoidance { keyboardEpoch &+= 1 }
+        if keyboardAvoidance { setNeedsLayout(); layoutIfNeeded() }
+    }
+
+    @objc private func keyboardCleared(_ note: Notification) {
+        guard !keyboardScreenFrame.isNull else { return }
+        keyboardScreenFrame = .null
+        if keyboardAvoidance { keyboardEpoch &+= 1 }
+        if keyboardAvoidance { setNeedsLayout(); layoutIfNeeded() }
+    }
     override func layoutSubviews() {
         super.layoutSubviews()
         guard let pet else { return }
         let body = pet.gravitySafeSize
         // The display bounds constrain the body; controls and bubbles keep
         // their own layout. Do not permanently reserve space above the pet.
-        let centers = MSBodyCenterBounds(Double(bounds.width), Double(bounds.height),
+        let base = MSBodyCenterBounds(Double(bounds.width), Double(bounds.height),
             MSSize(w: Double(body.width), h: Double(body.height)), 2.0)
+        let frame = localKeyboardFrame
+        let centers = frame.isNull ? base : MSPetKeyboardCenters(base,
+            MSSize(w: Double(body.width), h: Double(body.height)),
+            MSRect(x: Double(frame.minX), y: Double(frame.minY), w: Double(frame.width), h: Double(frame.height)))
+        let noRoom = centers.h < 0
+        pet.keyboardAvoidanceOccluded = noRoom
+        if pet.isHidden != noRoom { pet.isHidden = noRoom }
+        let active = !frame.isNull && !frame.isEmpty
+        let state = noRoom ? 2 : active ? 1 : 0
+        if state != lastKeyboardState {
+            lastKeyboardState = state
+            MSDiagEvent("pet", "keyboard", "ok", ["source": "app", "keyboard": active, "visible": !noRoom])
+        }
+        guard !noRoom else { return }
         pet.centerBounds = CGRect(x: centers.x, y: centers.y,
                                   width: centers.w, height: centers.h)
         if !didPlaceInitialCenter {
@@ -1141,7 +1205,7 @@ private final class MiniSightPassthroughView: UIView {
         }
     }
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        guard let pet else { return false }
+        guard let pet, !pet.isHidden else { return false }
         return pet.frame.insetBy(dx: -8, dy: -8).contains(point)
     }
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {

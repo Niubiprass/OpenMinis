@@ -72,7 +72,7 @@ class Integration(unittest.TestCase):
         for key in ['lyricsEnabled', 'musicMotion']:
             self.assertIn('MiniSightSettingKey.' + key + ': false', keys)
             self.assertIn('MiniSightSettingKey.' + key + ': return ' + key, store)
-        self.assertIn('runtimeFields.count == 52', keys)  # Prior 51 fields plus the independent daily-action switch.
+        self.assertIn('runtimeFields.count == 53', keys)  # Previous 52 plus independent keyboard avoidance.
         self.assertIn('MiniSightSettingKey.dailyActionsEnabled: "dailyActionsEnabled"', keys)
         self.assertIn('MiniSightSettingKey.dailyActionsEnabled: true', keys)
         self.assertIn('case MiniSightSettingKey.dailyActionsEnabled: return dailyActionsEnabled', store)

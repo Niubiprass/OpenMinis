@@ -22,6 +22,7 @@ final class MiniSightConfigStore: ObservableObject {
     @Published var doubleTap: MiniSightGesture { didSet { publish(MiniSightSettingKey.doubleTap) } }
     @Published var longPress: MiniSightGesture { didSet { publish(MiniSightSettingKey.longPress) } }
 
+    @Published var keyboardAvoidance: Bool { didSet { publish(MiniSightSettingKey.keyboardAvoidance) } }
     @Published var dailyActionsEnabled: Bool { didSet { publish(MiniSightSettingKey.dailyActionsEnabled) } }
     @Published var activity: MiniSightActivity { didSet { publish(MiniSightSettingKey.activity) } }
     @Published var activityInterval: Double { didSet { publish(MiniSightSettingKey.activityInterval) } }
@@ -89,6 +90,7 @@ final class MiniSightConfigStore: ObservableObject {
         doubleTap = MiniSightConfig.gesture(MiniSightSettingKey.doubleTap, .conversation)
         longPress = MiniSightConfig.gesture(MiniSightSettingKey.longPress, .menu)
         dailyActionsEnabled = MiniSightConfig.bool(MiniSightSettingKey.dailyActionsEnabled, true)
+        keyboardAvoidance = MiniSightConfig.bool(MiniSightSettingKey.keyboardAvoidance, false)
         activity = MiniSightActivity(rawValue: MiniSightConfig.string(MiniSightSettingKey.activity, "lively")) ?? .lively
         activityInterval = MiniSightConfig.double(MiniSightSettingKey.activityInterval, 7)
         frameLimit = MiniSightConfig.int(MiniSightSettingKey.frameLimit, 0)
@@ -163,6 +165,7 @@ final class MiniSightConfigStore: ObservableObject {
         case MiniSightSettingKey.doubleTap: return doubleTap.rawValue
         case MiniSightSettingKey.longPress: return longPress.rawValue
         case MiniSightSettingKey.dailyActionsEnabled: return dailyActionsEnabled
+        case MiniSightSettingKey.keyboardAvoidance: return keyboardAvoidance
         case MiniSightSettingKey.activity: return activity.rawValue
         case MiniSightSettingKey.activityInterval: return activityInterval
         case MiniSightSettingKey.frameLimit: return frameLimit

@@ -212,6 +212,7 @@
 		E5D00001 /* ProviderTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D00011 /* ProviderTypes.swift */; };
 		E5D00002 /* ProviderInstance.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D00012 /* ProviderInstance.swift */; };
 		CB83E001 /* ProviderChatAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB83E002 /* ProviderChatAPI.swift */; };
+		CB83F001 /* ProviderTurnCompaction.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB83F002 /* ProviderTurnCompaction.swift */; };
 		E5D00003 /* ModelEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D00013 /* ModelEntry.swift */; };
 		E5D00004 /* ModelGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D00014 /* ModelGroup.swift */; };
 		E5D00005 /* ProviderConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D00015 /* ProviderConfigStore.swift */; };
@@ -972,6 +973,7 @@
 		E5CR00014 /* CrashSignalHandler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CrashSignalHandler.h; sourceTree = "<group>"; };
 		E5D00011 /* ProviderTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderTypes.swift; sourceTree = "<group>"; };
 		E5D00012 /* ProviderInstance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderInstance.swift; sourceTree = "<group>"; };
+		CB83F002 /* ProviderTurnCompaction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderTurnCompaction.swift; sourceTree = "<group>"; };
 		CB83E002 /* ProviderChatAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderChatAPI.swift; sourceTree = "<group>"; };
 		E5D00013 /* ModelEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelEntry.swift; sourceTree = "<group>"; };
 		E5D00014 /* ModelGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelGroup.swift; sourceTree = "<group>"; };
@@ -1815,6 +1817,7 @@
 				D13AB000000000000000106 /* TraeProvider.swift */,
 				E5D00012 /* ProviderInstance.swift */,
 				CB83E002 /* ProviderChatAPI.swift */,
+				CB83F002 /* ProviderTurnCompaction.swift */,
 				E5D00013 /* ModelEntry.swift */,
 				E5D00014 /* ModelGroup.swift */,
 				E5TLC0002 /* ThinkingLevelCatalog.swift */,
@@ -3370,6 +3373,7 @@
 				D13AB000000000000000208 /* SubscriptionCredit.swift in Sources */,
 				E5D00002 /* ProviderInstance.swift in Sources */,
 				CB83E001 /* ProviderChatAPI.swift in Sources */,
+				CB83F001 /* ProviderTurnCompaction.swift in Sources */,
 				E5D00003 /* ModelEntry.swift in Sources */,
 				E5D00004 /* ModelGroup.swift in Sources */,
 				E5TLC0001 /* ThinkingLevelCatalog.swift in Sources */,

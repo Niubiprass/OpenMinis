@@ -195,6 +195,7 @@ enum ProviderChatAPI {
     }
     @discardableResult
     static func configure(_ provider:OpenAIProvider,instance:ProviderInstance,entry:ModelEntry? = nil) -> OpenAIProvider {
+        defer { ProviderTurnCompaction.configure(provider, instance: instance, entry: entry) }
         guard [.openAI,.openAIResponses].contains(instance.providerType),instance.credentialType == .apiKey else{return provider}
         guard let mode=instance.chatAPIFormatMode else{return provider} // Legacy fixed choice.
         if mode != .automatic {

@@ -1244,7 +1244,9 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
     // Never instantiate/reopen from geometry or a queued display-link callback.
     if (!self.visible || !self.built) return;
     UIView *anchor = self.anchorView;
-    if (!anchor || !anchor.window || anchor.hidden || anchor.alpha < .01 ||
+    BOOL keyboardOccluded = [anchor isKindOfClass:MiniSightPetView.class] &&
+        ((MiniSightPetView *)anchor).keyboardAvoidanceOccluded;
+    if (!anchor || !anchor.window || (anchor.hidden && !keyboardOccluded) || anchor.alpha < .01 ||
         anchor.window.hidden || anchor.window.windowScene != self.window.windowScene) {
         [self hideWithoutKey];
         return;
@@ -1299,7 +1301,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
         self.measuredHeightLimit = heightLimit;
         CGFloat widest = 0;
         for (NSUInteger i = 0; i < self.rows.count && i < self.bubbleWidths.count; i++) {
-            MiniSightChatBubble *row = self.rows[i];
+            MiniSightChatBubble *row = (MiniSightChatBubble *)self.rows[i];
             row.label.preferredMaxLayoutWidth = MAX(1, maxWidth - 24);
             CGFloat w = [row widthForMax:maxWidth];
             self.bubbleWidths[i].constant = w;
@@ -1312,7 +1314,7 @@ static void MiniSightVoiceResult(CFNotificationCenterRef center, void *observer,
         [self.messageStack setNeedsLayout];
         CGFloat content = 0;
         for (NSUInteger i = 0; i < self.rows.count; i++) {
-            MiniSightChatBubble *row = self.rows[i];
+            MiniSightChatBubble *row = (MiniSightChatBubble *)self.rows[i];
             CGFloat w = i < self.bubbleWidths.count ? self.bubbleWidths[i].constant : panelW;
             CGFloat rowHeight = [row systemLayoutSizeFittingSize:CGSizeMake(w, UILayoutFittingCompressedSize.height) withHorizontalFittingPriority:UILayoutPriorityRequired verticalFittingPriority:UILayoutPriorityFittingSizeLevel].height;
             content += MAX(20, rowHeight);

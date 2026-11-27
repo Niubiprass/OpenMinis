@@ -50,6 +50,7 @@ struct SessionModelPicker: View {
             mode: .single,
             groupScope: .all,
             dismissOnSelect: false,
+            useSessionDisplaySnapshots: true,
             sessionId: sessionId,
             currentEntryId: { [self] in currentEntryId },
             currentGroupId: { [self] in currentGroupId },

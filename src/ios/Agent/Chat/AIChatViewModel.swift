@@ -712,6 +712,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     // MARK: - Published State
 
     @Published var messages: [ChatMessage] = []
+    // Changes for every agent run; old asynchronous recovery cannot mutate a new run.
+    var learnedTurnRunToken = UUID()
     /// [T-voice-input-mode-preference-ios] True when a voice session
     /// contributed to the CURRENT composition (set on recording start by any
     /// path: mic tap, quick action, preference auto-entry). Cleared whenever
@@ -6458,6 +6460,43 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         var budgetCompactionsThisLoop = 0
         var budgetCompactionMadeNoProgress = false
         let budgetProtectedRawId = agentHistory.last(where: { Self.isUserBubbleEntry($0) })?.dbMessageId
+        let learnedRunToken = UUID()
+        learnedTurnRunToken = learnedRunToken
+        let learnedSession = sessionId
+        let learnedBinding = ProviderConfigStore.shared.binding(for: learnedSession ?? "")
+        let learnedRun = ProviderTurnRun(enabled: { [weak self] in
+            guard let self else { return false }
+            return !Task.isCancelled && self.autoCompactEnabled && self.isProcessing &&
+                self.sessionId == learnedSession && self.learnedTurnRunToken == learnedRunToken &&
+                !self.pendingModelSwitch && ProviderConfigStore.shared.binding(for: learnedSession ?? "") == learnedBinding
+        }, compact: { [weak self] entryId in
+            guard let self, !Task.isCancelled, self.autoCompactEnabled, self.isProcessing,
+                  self.sessionId == learnedSession, self.learnedTurnRunToken == learnedRunToken,
+                  !self.pendingModelSwitch,
+                  ProviderConfigStore.shared.binding(for: learnedSession ?? "") == learnedBinding,
+                  let target = self.budgetCompactionTarget(before: budgetProtectedRawId) else { return nil }
+            let before = ProviderTurnRun.count(self.effectiveAgentHistory())
+            let outcome = await ProviderTurnRun.$isRecoverySummary.withValue(true) {
+                await ProviderTurnRun.$current.withValue(nil) {
+                    await self.compactBefore(target.uiId, allowDuringProcessing: true, explicitRawAnchor: target.rawId,
+                        validity: { [weak self] in
+                            guard let self else { return false }
+                            return !Task.isCancelled && self.autoCompactEnabled && self.isProcessing &&
+                                self.sessionId == learnedSession && self.learnedTurnRunToken == learnedRunToken &&
+                                !self.pendingModelSwitch && ProviderConfigStore.shared.binding(for: learnedSession ?? "") == learnedBinding
+                        })
+                }
+            }
+            guard outcome == .success, !Task.isCancelled, self.sessionId == learnedSession,
+                  self.learnedTurnRunToken == learnedRunToken, !self.pendingModelSwitch,
+                  ProviderConfigStore.shared.binding(for: learnedSession ?? "") == learnedBinding else { return nil }
+            let history = self.effectiveAgentHistory()
+            guard ProviderTurnRun.count(history) < before else { return nil }
+            if let entryId, let entry = ProviderConfigStore.shared.entry(for: entryId) {
+                self.recordContextDispatch(history: history, model: entry.model)
+            }
+            return Self.limitedMessages(self.applyRequestImageBudget(history), entryId: entryId)
+        })
         // [T-ctx-measure-outbound] Set when an in-loop compaction left the
         // outbound request no smaller; cleared when a response arrives (new
         // content may make the next compaction worthwhile again).
@@ -6967,18 +7006,28 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                 logger.warning("🔀STREAM round-start: msgIdx resynced → \(resynced) (count=\(messages.count))")
                 msgIdx = resynced
             }
-            let stream = try await streamWithGroupFallback(
-                provider: provider,
-                messages: contextHistory,
-                baseSystemPrompt: baseSystemPrompt,
-                systemPrompt: userSystemPrompt,
-                tools: tools,
-                model: activeModel,
-                lastContextTokens: dispatchInputTokens,
-                chatMessage: messages[msgIdx],
-                activeGroupId: &activeGroupId,
-                activeEntryId: &activeEntryId
-            )
+            let stream = try await ProviderTurnRun.$current.withValue(learnedRun) {
+                let upstream = try await streamWithGroupFallback(
+                    provider: provider,
+                    messages: contextHistory,
+                    baseSystemPrompt: baseSystemPrompt,
+                    systemPrompt: userSystemPrompt,
+                    tools: tools,
+                    model: activeModel,
+                    lastContextTokens: dispatchInputTokens,
+                    chatMessage: messages[msgIdx],
+                    activeGroupId: &activeGroupId,
+                    activeEntryId: &activeEntryId
+                )
+                if self.autoCompactEnabled,
+                   let selectedEntry = activeEntryId.flatMap({ ProviderConfigStore.shared.entry(for: $0) }),
+                   let selectedInstance = ProviderConfigStore.shared.instance(for: selectedEntry.providerInstanceId),
+                   selectedInstance.credentialType == .apiKey,
+                   [.openAI, .openAIResponses].contains(selectedInstance.providerType) {
+                    return try await ProviderTurnOpenGate.prime(upstream)
+                }
+                return upstream
+            }
             // [T-agent-model-identity] activeEntryId is now the entry this
             // turn is served on (group fallback inside the call above may
             // have moved it) — record it before any event is consumed.
@@ -7061,6 +7110,12 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             }
 
             await applyFallbackSwitch()
+            // Recovery may have inserted/replaced a divider before the first
+            // stream event. Resolve the stable message id after that work.
+            guard let recoveredMsgIndex = messages.firstIndex(where: { $0.id == runMsgId }) else {
+                throw CancellationError()
+            }
+            msgIdx = recoveredMsgIndex
             scrollToBottomSignal.send()
 
             // Helper: check if a StreamResult is empty (no content produced).

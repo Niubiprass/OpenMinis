@@ -13,6 +13,7 @@ def run(cmd,limit=420):
  return r.stdout
 
 def main():
+ run([__import__('sys').executable, ROOT/'scripts/test_rhythm_transport_health_20261127.py'],120)
  p=argparse.ArgumentParser();p.add_argument('--output',type=Path);a=p.parse_args()
  cxx=shutil.which('clang++') or shutil.which('g++');cc=shutil.which('clang') or shutil.which('cc')
  if not cxx or not cc:raise SystemExit('portable host C/C++ compiler required')

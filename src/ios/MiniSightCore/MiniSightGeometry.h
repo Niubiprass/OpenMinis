@@ -73,6 +73,16 @@ static inline MSPoint MSClampCenter(MSRect centers, MSPoint p) {
     return (MSPoint){MSClamp(p.x,centers.x,centers.x+centers.w),
                      MSClamp(p.y,centers.y,centers.y+centers.h)};
 }
+// Contract the roam rectangle, so drag, walk, hop and physics share one guard.
+// Reserve space above the keyboard for the host's input bar. A negative height
+// denotes no safe room; the owner temporarily suppresses only the pet.
+static inline MSRect MSPetKeyboardCenters(MSRect base, MSSize body, MSRect keyboard) {
+    if (!isfinite(keyboard.x) || !isfinite(keyboard.y) || !isfinite(keyboard.w) ||
+        !isfinite(keyboard.h) || keyboard.w <= 0. || keyboard.h <= 0.) return base;
+    double bottom = keyboard.y - 76. - body.h * .5;
+    base.h = fmin(base.h, bottom - base.y);
+    return base;
+}
 static inline MSRect MSBubbleAbove(MSRect safe, MSPoint center, MSSize body, MSSize bubble, double gap) {
     double w=fmin(fmax(1.,bubble.w),safe.w);
     double h=fmin(fmax(1.,bubble.h),safe.h);

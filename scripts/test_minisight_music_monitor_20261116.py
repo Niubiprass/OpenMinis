@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import test_minisight_music_host_bridge_20261126 as host_bridge
@@ -85,8 +86,8 @@ def errors(source):
         'epsilon retains ID fence': '!(firstID.length && lastID.length && ![firstID isEqualToString:lastID]);',
         'fixed track anchor assignment': 'if (!self->_track) {\n                    self->_track = track;',
         'fixed progress anchor': 'MiniSightLyricsTrack *progressTrack = track && self->_timeline ? self->_track : track;',
-        'first read anchor': '!MSMusicTracksCompatible(self->_track, self->_identifier, firstTrack, MSMusicIdentifier(first), self->_timeline != nil)',
-        'apply read anchor': 'track, identifier, self->_timeline != nil)) || conflictingPartial;',
+        'first read anchor': '!MSMusicTrackContinuity(self->_track, self->_identifier, firstTrack, MSMusicIdentifier(first), self->_timeline != nil, self->_fetching)',
+        'apply read anchor': 'track, identifier, self->_timeline != nil, self->_fetching)) || conflictingPartial;',
         'double read progress continuity': 'BOOL sameTrack = firstTrack && resolvedTrack && MSMusicTrackConflictMask(firstTrack, resolvedTrack) == 0;',
         'real readback': 'MSBridgeRead(container, @"music-state.json", 16384)',
         'diagnostic helper': 'MSMusicDiagnose(',
@@ -130,6 +131,12 @@ def errors(source):
 
 
 class SourceTests(unittest.TestCase):
+    def test_pending_continuity_regressions(self):
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('test_minisight_lyrics_pending_20261127.py'))],
+                                text=True, capture_output=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        print(result.stdout + result.stderr)
+
     def test_contract(self):
         self.assertEqual(errors((plugin() / 'MiniSightMusicMonitor.m').read_text()), [])
 
@@ -172,8 +179,8 @@ class SourceTests(unittest.TestCase):
             ('if (!self->_track) {\n                    self->_track = track;', 'if (YES) {\n                    self->_track = track;'),
             ('MiniSightLyricsTrack *progressTrack = track && self->_timeline ? self->_track : track;', 'MiniSightLyricsTrack *progressTrack = track;'),
             ('!(firstID.length && lastID.length && ![firstID isEqualToString:lastID]);', 'YES;'),
-            ('!MSMusicTracksCompatible(self->_track, self->_identifier, firstTrack, MSMusicIdentifier(first), self->_timeline != nil)', 'NO'),
-            ('track, identifier, self->_timeline != nil)) || conflictingPartial;', 'track, identifier, YES)) || conflictingPartial;'),
+            ('!MSMusicTrackContinuity(self->_track, self->_identifier, firstTrack, MSMusicIdentifier(first), self->_timeline != nil, self->_fetching)', 'NO'),
+            ('track, identifier, self->_timeline != nil, self->_fetching)) || conflictingPartial;', 'track, identifier, YES)) || conflictingPartial;'),
             ('BOOL sameTrack = firstTrack && resolvedTrack && MSMusicTrackConflictMask(firstTrack, resolvedTrack) == 0;', 'BOOL sameTrack = YES;'),
         ):
             with self.subTest(mutation=old):
@@ -246,6 +253,10 @@ class PortablePresentationTests(unittest.TestCase):
         source = (plugin() / 'MiniSightMusicMonitor.m').read_text()
         body = source.split('// BEGIN MUSIC DURATION POLICY', 1)[1].split('\n', 1)[1].split('// END MUSIC DURATION POLICY', 1)[0]
         cases = '''int main(void) {
+            assert(MSMusicPendingContinuity(true,true));
+            assert(!MSMusicPendingContinuity(false,true));
+            assert(!MSMusicPendingContinuity(true,false));
+            assert(!MSMusicPendingContinuity(false,false));
             assert(MSMusicDurationCompatible(261.,261.1316));
             assert(MSMusicDurationCompatible(261.1316,261.2245));
             assert(MSMusicDurationCompatible(261.,262.));

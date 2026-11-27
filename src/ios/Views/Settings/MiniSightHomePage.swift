@@ -76,6 +76,7 @@ struct MiniSightHomeView: View {
 
             Section {
                 Toggle("丰富日常动作", isOn: $config.dailyActionsEnabled)
+                Toggle("自动键盘避让", isOn: $config.keyboardAvoidance)
                 NavigationLink("巡游 · \(config.activity.title)") {
                     MiniSightActivityPage()
                 }

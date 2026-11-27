@@ -54,7 +54,8 @@ style=style renderer=renderer mode=mode petSize=petSize gravity=gravity
  record=record longPressRecord=longPressRecord diagnostics=diagnostics
  shown=shown shownRevision=revision
 '''.split())
-expected_fields = {**legacy_fields, 'dailyActionsEnabled': 'dailyActionsEnabled'}
+expected_fields = {**legacy_fields, 'dailyActionsEnabled': 'dailyActionsEnabled',
+                   'keyboardAvoidance': 'keyboardAvoidance'}
 canonical_suffixes = dict(pair.split('=') for pair in '''
 gravityStrength=gravity.strength gravityShake=gravity.shake
 singleTap=gesture.single doubleTap=gesture.double longPress=gesture.long
@@ -67,21 +68,21 @@ panelScale=chat.panelScale textScale=dialogue.textScale dwell=dialogue.dwell
 returnKey=dialogue.return voiceReply=voice.reply voiceInput=voice.input snore=voice.snore
 quickButtons=quick.enabled quickPosition=quick.position quickLines=quick.lines
 quickOrder=quick.order longPressRecord=longPress shownRevision=settings.revision
-dailyActionsEnabled=actions.daily
+dailyActionsEnabled=actions.daily keyboardAvoidance=keyboard.avoid
 '''.split())
 expected_keys = {symbol: 'minisight.' + canonical_suffixes.get(symbol, symbol)
                  for symbol in expected_fields}
 key_pairs = re.findall(r'static let (\w+) = "(minisight\.[\w.]+)"', settings)
 need(dict(key_pairs) == expected_keys and
-     len(key_pairs) == len({key for _, key in key_pairs}) == 52,
-     'all 51 old canonical preference names are unchanged; only actions.daily is added')
+     len(key_pairs) == len({key for _, key in key_pairs}) == 53,
+     'all 51 old canonical preference names are unchanged; only actions.daily and keyboard.avoid are added')
 field_block = settings.split('static let runtimeFields:', 1)[1].split('static let all', 1)[0]
 field_pairs = re.findall(r'MiniSightSettingKey\.(\w+): "(\w+)"', field_block)
 need(len(legacy_fields) == 51 and dict(field_pairs) == expected_fields,
-     'snapshot preserves all 51 audited mappings plus the independent daily field')
-need(len(field_pairs) == len(dict(field_pairs)) == len({alias for _, alias in field_pairs}) == 52,
-     'snapshot has 52 actual unique keys and aliases, with no duplicate hidden by a dictionary')
-need('runtimeFields.count == 52' in settings, 'snapshot validates 52 audited keys')
+     'snapshot preserves all 51 audited mappings plus the independent daily and keyboard fields')
+need(len(field_pairs) == len(dict(field_pairs)) == len({alias for _, alias in field_pairs}) == 53,
+     'snapshot has 53 actual unique keys and aliases, with no duplicate hidden by a dictionary')
+need('runtimeFields.count == 53' in settings, 'snapshot validates 53 audited keys')
 need('static let dailyActionsEnabled = "minisight.actions.daily"' in settings and
      'MiniSightSettingKey.dailyActionsEnabled: true' in settings and
      'case MiniSightSettingKey.dailyActionsEnabled: return dailyActionsEnabled' in store,

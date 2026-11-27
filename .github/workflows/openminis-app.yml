@@ -92,6 +92,13 @@ jobs:
           python3 scripts/test_v64r_render_contracts.py
           python3 scripts/test_stream_text_fade_source.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_autocompress.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_turn_compaction_20261127.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_session_picker_display_20261127.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_request_failure_diagnostic.py --native-mutations
+          python3 scripts/test_request_diag_source_mutants.py
+          python3 scripts/test_pet_keyboard_20261127.py
+          python3 scripts/test_minisight_lyrics_pending_20261127.py
+          python3 scripts/test_rhythm_transport_health_20261127.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_attribute_prefix.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_live_assistant.py
           # Three-agent source contracts; Swift helpers fail closed on macOS.
