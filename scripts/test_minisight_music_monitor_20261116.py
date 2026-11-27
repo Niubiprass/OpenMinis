@@ -323,7 +323,13 @@ class NativeFoundationTests(unittest.TestCase):
                 str(plugin() / 'MiniSightLyrics.m'), str(plugin() / 'MiniSightLog.m'), '-framework', 'Foundation', '-o', str(binary)],
                 text=True, capture_output=True, timeout=90)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=45)
+            # Same-source plugin suites take 41–44 s on CI; 45 s leaves no
+            # runner variance. This is still bounded, with every assertion kept.
+            try:
+                result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=120)
+            except subprocess.TimeoutExpired as error:
+                self.fail('Native monitor exceeded 120 s; no retry. Partial stdout: '
+                          + str(error.stdout) + '\nPartial stderr: ' + str(error.stderr))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('NATIVE PASS:', result.stdout)
             print(result.stdout.strip())
