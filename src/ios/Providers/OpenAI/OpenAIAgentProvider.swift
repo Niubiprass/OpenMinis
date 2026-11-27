@@ -90,7 +90,7 @@ final class OpenAIAgentProvider: AgentProvider {
                     guard await context.validate() else { throw ProviderChatAPIError.scopeChanged }
                     if await run.enabled(), let trigger = ProviderTurnHistory.shared.row(initialScope)?.trigger,
                        ProviderTurnRun.count(history) >= trigger, run.takeProactive(initialScope), run.takeRecovery(),
-                       let reduced = await run.compact(context.entryId), ProviderTurnRun.count(reduced) < ProviderTurnRun.count(history) {
+                       let reduced = await run.performCompaction(context.entryId), ProviderTurnRun.count(reduced) < ProviderTurnRun.count(history) {
                         history = reduced
                     }
                     while true {
@@ -129,7 +129,7 @@ final class OpenAIAgentProvider: AgentProvider {
                                 continuation.yield(event)
                             }
                             try Task.checkCancellation()
-                            if let failure, !sawTool, (!content || !completed) { throw failure }
+                            if let failure, !sawTool, (!content || !completed) { throw failure.stopped(.retryIncomplete) }
                             if let observation, content && completed, await run.enabled(), await context.validate() {
                                 try Task.checkCancellation()
                                 let recorded = await context.verify(observation, count: ProviderTurnRun.count(history), run: run)
@@ -142,21 +142,30 @@ final class OpenAIAgentProvider: AgentProvider {
                             // Synthetic terminal failure after a partial reply must not
                             // overwrite the original observation with a smaller count.
                             guard !exposed else { throw rejection }
+                            guard rejection.confirmedServerRejection, rejection.stop == .notAttempted else { throw rejection }
                             guard let recorded = await context.observe(rejection, count: ProviderTurnRun.count(history), run: run) else { throw rejection }
                             observation = recorded
                             logger.info("[TurnCompact] observed replies=\(ProviderTurnRun.count(history)) reportedLimit=\(rejection.limit ?? -1) responses=\(rejection.responses) exposed=\(exposed) retried=\(retried)")
+                            if rejection.stop != .notAttempted { throw rejection }
+                            if retried { throw rejection.stopped(.retryRejected) }
                             guard !exposed, !retried, run.takeRecovery() else { throw rejection }
                             failure = rejection; retried = true
-                            guard let reduced = await run.compact(context.entryId), ProviderTurnRun.count(reduced) < ProviderTurnRun.count(history) else { throw rejection }
+                            guard let reduced = await run.performCompaction(context.entryId) else { throw run.compactionFailure(rejection) }
+                            guard ProviderTurnRun.count(reduced) < ProviderTurnRun.count(history) else { throw rejection.stopped(.notReduced) }
                             try Task.checkCancellation()
-                            guard await context.validate(), await run.enabled() else { throw rejection }
+                            guard await context.validate(), await run.enabled() else { throw rejection.stopped(.scopeChanged) }
                             history = reduced
                         }
                     }
                 } catch {
                     // Failed recovery is terminal for this run, not a key/network/group retry.
-                    if Task.isCancelled { continuation.finish(throwing: CancellationError()) }
-                    else { continuation.finish(throwing: failure.map { $0 as Error } ?? error) }
+                    if Task.isCancelled || error is CancellationError { continuation.finish(throwing: CancellationError()) }
+                    else if let rejection = error as? ProviderTurnLimitRejection {
+                        logger.info("[TurnCompact] stopped stage=\(String(describing: rejection.stop)) serverRejection=\(rejection.confirmedServerRejection) causeCode=\(rejection.causeCode ?? 0)")
+                        continuation.finish(throwing: rejection)
+                    }
+                    else if let failure { continuation.finish(throwing: failure.stopped(.retryFailed, code: (error as NSError).code)) }
+                    else { continuation.finish(throwing: error) }
                 }
             }
             continuation.onTermination = { _ in worker.cancel() }

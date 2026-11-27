@@ -32,9 +32,19 @@ checks = {
  'project registration': all((P/'Minis.xcodeproj/project.pbxproj').read_text().count(t)==1 for t in ['CB83F001 /* ProviderTurnCompaction.swift in Sources */ =','CB83F002 /* ProviderTurnCompaction.swift */ =','CB83F002 /* ProviderTurnCompaction.swift */,','CB83F001 /* ProviderTurnCompaction.swift in Sources */,']),
  'UI fixed index only after full wrapper prime': 'ProviderTurnOpenGate.prime(upstream)' in VM and VM.index('msgIdx = recoveredMsgIndex') < VM.index('let result = try await processStreamEvents(', VM.index('msgIdx = recoveredMsgIndex')),
  'summary rejection terminal not split': 'ProviderTurnRun.$isRecoverySummary.withValue(true)' in VM and 'ProviderTurnRun.isRecoverySummary' in RAW and 'error is CancellationError || error is ProviderTurnLimitRejection' in COMPACT,
- 'partial recovered reply cannot invoke old empty retry': 'if let failure, !sawTool, (!content || !completed) { throw failure }' in WRAPPER,
+ 'partial recovered reply cannot invoke old empty retry': 'if let failure, !sawTool, (!content || !completed) { throw failure.stopped(.retryIncomplete) }' in WRAPPER,
  'observations applied on MainActor with final validity': '@MainActor\n    func observe(' in ENGINE and '@MainActor\n    func verify(' in ENGINE and 'confirm(), run.enabled(), !Task.isCancelled' in ENGINE,
  'workflow requires native test': 'V64R_REQUIRE_SWIFT=1 python3 scripts/test_turn_compaction_20261127.py' in (ROOT/'.github/workflows/openminis-app.yml').read_text(),
+ 'summary time has separate finite allowance': 'summaryTimeout: TimeInterval = 900' in ENGINE and 'elapsed - summary' in ENGINE and 'summary >= summaryTimeout' in ENGINE,
+ 'all compactions use stage tracking': WRAPPER.count('await run.performCompaction(context.entryId)') == 2 and 'await run.compact(context.entryId)' not in WRAPPER,
+ 'stage errors survive outer catch': 'else if let rejection = error as? ProviderTurnLimitRejection' in WRAPPER and 'failure.map { $0 as Error } ?? error' not in WRAPPER,
+ 'reduced and repeat refusal distinguished': 'rejection.stopped(.notReduced)' in WRAPPER and 'rejection.stopped(.retryRejected)' in WRAPPER,
+ 'summary cause delivered without raw response': 'noteCompactionFailure(.summaryFailed, error: error)' in COMPACT and 'causeCode' in ENGINE,
+ 'no incomplete summary mislabeled as retry success': 'recoveryRun?.noteCompactionFailure(.commitFailed)' in COMPACT and 'recoveryRun?.noteCompactionFailure(.skipped)' in VM,
+ 'synthetic timeout is not new server refusal': 'confirmedServerRejection: false' in ENGINE and 'guard rejection.confirmedServerRejection' in WRAPPER and WRAPPER.index('guard rejection.confirmedServerRejection') < WRAPPER.index('guard let recorded = await context.observe'),
+ 'summary watchdog records cause before waking waiter': COMPACT.index('await progress.recordBreach(breach)') < COMPACT.index('await MainActor.run { consumeTask.cancel() }'),
+ 'parent stop wins concurrent summary deadline': 'watchdog.cancel()\n            // An explicit parent cancellation' in COMPACT and 'try Task.checkCancellation()\n            // A cancellation raised BY the watchdog' in COMPACT,
+ 'summary consumer cancelled with parent': 'responseText = try await withTaskCancellationHandler' in COMPACT and 'consumeTask.cancel()\n                watchdog.cancel()' in COMPACT,
 }
 
 def harness():

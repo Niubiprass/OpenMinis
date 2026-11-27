@@ -6,8 +6,31 @@ import CryptoKit
 struct ProviderTurnLimitRejection: LocalizedError, Sendable {
     let limit: Int?
     var responses = false
+    var confirmedServerRejection = true
+    enum Stop: String, Sendable {
+        case notAttempted = "尚未完成压缩恢复"
+        case unavailable = "没有可安全压缩的历史，或会话状态已变化"
+        case summaryFailed = "生成摘要失败"
+        case skipped = "压缩未执行（正在压缩或选区不可用）"
+        case cancelled = "压缩已取消"
+        case commitFailed = "摘要生成后未能安全保存或应用"
+        case notReduced = "压缩后有效回复数未减少，未重发"
+        case scopeChanged = "压缩期间会话或供应商配置已变化，未重发"
+        case retryRejected = "压缩后重发仍被服务商轮数限制拒绝"
+        case retryFailed = "压缩后重发失败"
+        case retryIncomplete = "压缩后回复未正常完整结束"
+        case firstOutputTimeout = "等待恢复后的首个回复超时"
+        case summaryTimeout = "压缩摘要等待超时"
+    }
+    var stop: Stop = .notAttempted
+    var causeCode: Int? = nil
+    func stopped(_ reason: Stop, code: Int? = nil) -> Self {
+        var result = self; result.stop = reason; result.causeCode = code; return result
+    }
     var errorDescription: String? {
-        "服务商明确拒绝：会话回复轮数已达上限。自动压缩未能验证恢复，已停止；不会反复压缩或轮换 Key。"
+        let detail = causeCode.map { "（错误码 \($0)）" } ?? ""
+        let prefix = confirmedServerRejection ? "服务商明确拒绝：会话回复轮数已达上限。" : "自动恢复已停止："
+        return "\(prefix)\(stop.rawValue)\(detail)，已停止；不会反复压缩或轮换 Key。"
     }
     static func parse(status: Int, body: String) -> Self? {
         guard [400,409,422].contains(status), body.utf8.count <= 16_384,
@@ -114,6 +137,42 @@ final class ProviderTurnRun: @unchecked Sendable {
     private let lock = NSLock()
     private var recoverySpent = false
     private var proactiveSpent = Set<String>()
+    private var compacting = false
+    private var compactionStarted: TimeInterval?
+    private var compactionElapsed: TimeInterval = 0
+    func compactionTime() -> TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        return compactionElapsed + (compactionStarted.map { max(0, ProcessInfo.processInfo.systemUptime - $0) } ?? 0)
+    }
+    private var compactFailure: ProviderTurnLimitRejection.Stop = .unavailable
+    private var compactCause: Int?
+    func noteCompactionFailure(_ stop: ProviderTurnLimitRejection.Stop, error: Error? = nil) {
+        lock.lock(); defer { lock.unlock() }
+        compactFailure = stop; compactCause = error.map { ($0 as NSError).code }
+    }
+    func compactionFailure(_ rejection: ProviderTurnLimitRejection) -> ProviderTurnLimitRejection {
+        lock.lock(); defer { lock.unlock() }
+        return rejection.stopped(compactFailure, code: compactCause)
+    }
+    func isCompacting() -> Bool {
+        lock.lock(); defer { lock.unlock() }; return compacting
+    }
+    private func setCompacting(_ value: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        compacting = value
+        if value {
+            compactionStarted = ProcessInfo.processInfo.systemUptime
+            compactFailure = .unavailable; compactCause = nil
+        } else if let started = compactionStarted {
+            compactionElapsed += max(0, ProcessInfo.processInfo.systemUptime - started)
+            compactionStarted = nil
+        }
+    }
+    @MainActor
+    func performCompaction(_ entryId: String?) async -> [AgentMessage]? {
+        setCompacting(true); defer { setCompacting(false) }
+        return await compact(entryId)
+    }
     init(enabled: @escaping @MainActor () -> Bool, compact: @escaping @MainActor (String?) async -> [AgentMessage]?) {
         self.enabled = enabled; self.compact = compact
     }
@@ -214,21 +273,32 @@ final class ProviderTurnOpenGate: @unchecked Sendable {
         lock.lock(); cancelled = true; let task = worker; lock.unlock()
         task?.cancel(); open()
     }
-    static func prime(_ upstream: AsyncThrowingStream<AgentStreamEvent,Error>) async throws -> AsyncThrowingStream<AgentStreamEvent,Error> {
+    static func prime(_ upstream: AsyncThrowingStream<AgentStreamEvent,Error>,
+                      firstOutputTimeout: TimeInterval = 120, summaryTimeout: TimeInterval = 900) async throws -> AsyncThrowingStream<AgentStreamEvent,Error> {
         let gate = ProviderTurnOpenGate()
         let run = ProviderTurnRun.current
         let result = AsyncThrowingStream<AgentStreamEvent,Error> { continuation in
             let worker = Task {
-                // Same first-output allowance as the existing stream watchdog.
+                // Summary generation has its own bounded watchdog. Do not
+                // charge its time to the ordinary first-output allowance.
                 let timeout = Task {
-                    do { try await Task.sleep(nanoseconds: 120_000_000_000) }
-                    catch { return }
-                    if run?.hasSpentRecovery() == true {
-                        continuation.finish(throwing: ProviderTurnLimitRejection(limit: nil))
-                    } else {
-                        continuation.finish(throwing: LLMError.transientError(message: "等待模型首个回复超时，请重试。", statusCode: nil))
+                    let started = ProcessInfo.processInfo.systemUptime
+                    let initialSummaryTime = run?.compactionTime() ?? 0
+                    let tick = UInt64(max(0.001, min(0.1, min(firstOutputTimeout, summaryTimeout) / 4)) * 1_000_000_000)
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(nanoseconds: tick); try Task.checkCancellation() }
+                        catch { return }
+                        let elapsed = max(0, ProcessInfo.processInfo.systemUptime - started)
+                        let summary = max(0, (run?.compactionTime() ?? 0) - initialSummaryTime)
+                        let summaryExpired = summary >= summaryTimeout
+                        guard summaryExpired || max(0, elapsed - summary) >= firstOutputTimeout else { continue }
+                        if run?.hasSpentRecovery() == true {
+                            continuation.finish(throwing: ProviderTurnLimitRejection(limit: nil, confirmedServerRejection: false).stopped(summaryExpired ? .summaryTimeout : .firstOutputTimeout))
+                        } else {
+                            continuation.finish(throwing: LLMError.transientError(message: "等待模型首个回复超时，请重试。", statusCode: nil))
+                        }
+                        gate.cancel(); return
                     }
-                    gate.cancel()
                 }
                 defer { timeout.cancel(); gate.open() }
                 do {

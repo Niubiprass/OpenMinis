@@ -6476,6 +6476,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                   ProviderConfigStore.shared.binding(for: learnedSession ?? "") == learnedBinding,
                   let target = self.budgetCompactionTarget(before: budgetProtectedRawId) else { return nil }
             let before = ProviderTurnRun.count(self.effectiveAgentHistory())
+            let recoveryRun = ProviderTurnRun.current
             let outcome = await ProviderTurnRun.$isRecoverySummary.withValue(true) {
                 await ProviderTurnRun.$current.withValue(nil) {
                     await self.compactBefore(target.uiId, allowDuringProcessing: true, explicitRawAnchor: target.rawId,
@@ -6484,14 +6485,23 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
                             return !Task.isCancelled && self.autoCompactEnabled && self.isProcessing &&
                                 self.sessionId == learnedSession && self.learnedTurnRunToken == learnedRunToken &&
                                 !self.pendingModelSwitch && ProviderConfigStore.shared.binding(for: learnedSession ?? "") == learnedBinding
-                        })
+                        }, recoveryRun: recoveryRun)
                 }
             }
-            guard outcome == .success, !Task.isCancelled, self.sessionId == learnedSession,
+            guard outcome == .success else {
+                if outcome == .cancelled { recoveryRun?.noteCompactionFailure(.cancelled) }
+                else if outcome == .skipped { recoveryRun?.noteCompactionFailure(.skipped) }
+                return nil
+            }
+            guard !Task.isCancelled, self.sessionId == learnedSession,
                   self.learnedTurnRunToken == learnedRunToken, !self.pendingModelSwitch,
-                  ProviderConfigStore.shared.binding(for: learnedSession ?? "") == learnedBinding else { return nil }
+                  ProviderConfigStore.shared.binding(for: learnedSession ?? "") == learnedBinding else {
+                recoveryRun?.noteCompactionFailure(.scopeChanged); return nil
+            }
             let history = self.effectiveAgentHistory()
-            guard ProviderTurnRun.count(history) < before else { return nil }
+            guard ProviderTurnRun.count(history) < before else {
+                recoveryRun?.noteCompactionFailure(.notReduced); return nil
+            }
             if let entryId, let entry = ProviderConfigStore.shared.entry(for: entryId) {
                 self.recordContextDispatch(history: history, model: entry.model)
             }

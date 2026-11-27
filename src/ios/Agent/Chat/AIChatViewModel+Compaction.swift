@@ -921,7 +921,7 @@ extension AIChatViewModel {
     @discardableResult
     func compactBefore(_ chatMessageId: UUID, includesBoundary: Bool = false,
                         allowDuringProcessing: Bool = false, explicitRawAnchor: String? = nil,
-                        validity: (() -> Bool)? = nil) async -> CompactionOutcome {
+                        validity: (() -> Bool)? = nil, recoveryRun: ProviderTurnRun? = nil) async -> CompactionOutcome {
         guard validity?() != false else { return .cancelled }
         guard allowDuringProcessing || !isProcessing else {
             logger.info("[Compact] Cannot compact while processing")
@@ -1194,6 +1194,7 @@ extension AIChatViewModel {
             // retried at all.
             let didSegment = Self.isSegmentRetryableError(error)
             let ns = error as NSError
+            recoveryRun?.noteCompactionFailure(.summaryFailed, error: error)
             logger.error("[Compact] Summary generation failed segmented=\(didSegment) domain=\(ns.domain) code=\(ns.code)")
             statusMsg.content = didSegment
                 ? "Compaction failed after retrying in segments: \(error.localizedDescription)"
@@ -1202,6 +1203,7 @@ extension AIChatViewModel {
             return .failed
         }
 
+        recoveryRun?.noteCompactionFailure(.commitFailed)
         guard !Task.isCancelled, self.sessionId == sessionId, validity?() != false else { return .cancelled }
 
         // ───── Compute marker fields (v2) ─────
@@ -1875,8 +1877,10 @@ extension AIChatViewModel {
                 try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
                 if Task.isCancelled { return }
                 if let breach = await progress.breach() {
-                    await MainActor.run { consumeTask.cancel() }
+                    // Publish the deadline reason before cancellation can wake
+                    // the waiter; otherwise it may observe no breach reason.
                     await progress.recordBreach(breach)
+                    await MainActor.run { consumeTask.cancel() }
                     return
                 }
             }
@@ -1884,10 +1888,20 @@ extension AIChatViewModel {
 
         let responseText: String
         do {
-            responseText = try await consumeTask.value
+            responseText = try await withTaskCancellationHandler(operation: {
+                let text = try await consumeTask.value
+                try Task.checkCancellation()
+                return text
+            }, onCancel: {
+                consumeTask.cancel()
+                watchdog.cancel()
+            })
             watchdog.cancel()
         } catch {
             watchdog.cancel()
+            // An explicit parent cancellation wins even if a deadline fired
+            // concurrently; do not relabel the user's Stop as a timeout.
+            try Task.checkCancellation()
             // A cancellation raised BY the watchdog is a timeout, not a user
             // stop — surface it as such so the caller reports something
             // actionable instead of a silent "cancelled".

@@ -203,6 +203,30 @@ final class OpenAIAgentProvider: @unchecked Sendable {
             let error = await task.value
             check(error != nil && agent.opened == 1, "cancel while compact no resend")
         }
+        do {
+            let run = ProviderTurnRun(enabled: { true }, compact: { _ in
+                try? await Task.sleep(nanoseconds: 60_000_000)
+                return [AgentMessage(role: .user)]
+            })
+            do {
+                let stream = try await ProviderTurnRun.$current.withValue(run) {
+                    let upstream = AsyncThrowingStream<AgentStreamEvent, Error> { c in
+                        let t = Task {
+                            _ = await run.performCompaction(nil)
+                            if !Task.isCancelled { c.yield(.done(.endTurn)); c.finish() }
+                        }
+                        c.onTermination = { _ in t.cancel() }
+                    }
+                    return try await ProviderTurnOpenGate.prime(upstream, firstOutputTimeout: 0.02, summaryTimeout: 0.3)
+                }
+                for try await _ in stream {}
+                check(!run.isCompacting(), "long summary excluded from first-output budget")
+            } catch { check(false, "summary prematurely timed out") }
+            run.noteCompactionFailure(.summaryFailed, error: NSError(domain: "synthetic", code: 7))
+            let rejection = run.compactionFailure(ProviderTurnLimitRejection(limit: 100))
+            check(rejection.stop == .summaryFailed && rejection.causeCode == 7, "summary cause preserved")
+            check(rejection.errorDescription?.contains("生成摘要失败") == true, "summary stage visible")
+        }
         print("NATIVE TurnFixture PASS checks=\(cases); actual production wrapper/parser/store/budget, synthetic adapters")
     }
 }
