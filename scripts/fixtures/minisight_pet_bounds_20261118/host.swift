@@ -13,6 +13,8 @@ let MSFixtureInsetsZero = MSFixtureInsets(top: 0, left: 0, bottom: 0, right: 0)
 final class Pet {
     var gravitySafeSize = CGSize(width: 56, height: 61)
     var centerBounds = CGRect.zero
+    var keyboardAvoidanceOccluded = false
+    var isHidden = false
     private var point = CGPoint.zero
     var center: CGPoint {
         get { point }
@@ -24,7 +26,12 @@ final class Pet {
         }
     }
 }
+func MSDiagEvent(_ category: String, _ event: String, _ result: String, _ fields: [String: Any]) {
+    // Only the log sink is mocked; production geometry and visibility remain real.
+}
 final class Host: UIView {
+    var localKeyboardFrame = CGRect.null
+    var lastKeyboardState = 0
     weak var pet: Pet?
     var normalizedCenter = CGPoint(x: 0.5, y: 0.86)
     private var didPlaceInitialCenter = false

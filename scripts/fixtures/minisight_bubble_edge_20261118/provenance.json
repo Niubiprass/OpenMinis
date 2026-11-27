@@ -1,18 +1,18 @@
 {
   "schema": 1,
-  "source_repository": "MiniSight-complete-20261105",
+  "source_repository": "HGFdel-dav/theos-ci",
   "source_path": "debs/MiniSight/Tweak.xm",
-  "source_base_head": "9fbc15d8669d91997c059c1ecedc6cf3e5a16070",
-  "source_state": "HEAD plus uncommitted local repairs; exact excerpt hashes below, NOT a committed revision",
-  "source_file_sha256": "e4ef9d723be016c2122ceba1d57aeb7613e32c80bc797a18b5b2c30777413f29",
+  "source_base_head": "57bf615f99b2d637acb5363e219aa6e4d50c8d8c",
+  "source_state": "Exact committed 0.8.59 production excerpt; keyboard no-room place guards only; approval and styling pins unchanged",
+  "source_file_sha256": "5112997e7cd533a08d3f4518b4814b432eaafa25ce5f457526fe5588187ad451",
   "source_before_sha256": "32293c2ee93eee3ddbda85a8bd25855f10fd8607d773bbaa8129aff081b5adf6",
-  "snapshot_sha256": "d84fc217698d431d50a500eb729d555e5ebfcc2163edbaca5161d531f290be26",
+  "snapshot_sha256": "154031ee3b9785546f7931253ba3265a4812f1378dda858f281fe35c040fe24b",
   "piece_sha256": {
     "body": "27aa1ff167460dae26c241013c484a3e733a6bf975ac9b9fcbab5b8c60016fb1",
     "reserve": "02d3d65ea38b7068bd911f92568458ec54dbf70b0b4b610c47fb31f38b6510ef",
     "layout": "a71a17e5bee40c4b09c6ae545b9e79eab142c6d6e60f4f4be3111562f9cf685b",
     "hide": "5dbc2aa0c92d25c14bed7f76ac346c82b9aedcc6136b83db69936f58aa01f7e5",
-    "place": "9a8ecdc2a46b666d6f03e062c21000db41ef3c3c2836c910680124017a56d6ec",
+    "place": "6cb3cfb78dfc0a00e1835e8b83880f4b9aafde09fad1ae9c86ba47e65a489b2e",
     "show": "c6f567a2966495a167237b2d20c8ee1950fe4a9bc40da5b5b51f2e6c516d0cf3",
     "follow": "1e4530ff7522695ca7d4112f1bcc827c8978f48f463520a867b51695865f9e16",
     "cancel": "8e0eff007d2fcf23095c73aaa19a4304b41e4f58014a149eb27ce24dc1f21522",
@@ -27,7 +27,7 @@
     "timeout": "4f4830504d0a4840d00b303a1041bc67bb3c38e67593a46427466dea971a18e0"
   },
   "layout_sha256": "d645bfad4124e25dbdab1d386ed7f5851e56f58c3485616c98bee807de92e25e",
-  "geometry_sha256": "6b0fa72b356c09eca2020bbb4e7e877f89bcf8870fc9af983f07fe8fa1e5c2ec",
+  "geometry_sha256": "1346e3e17265bf2553d0278204e21fffde2106d0c6689a5ecba43bd7ec7b5f69",
   "approval_before_sha256": {
     "confirm": "9152e1bb6500f23ca53a6bc274f26dc16eacfeaa4d223b40f68442efc176d6b9",
     "writer": "2eb1618b643d7a478893b58039d442619844dffd27a1f3453c55ca8ffa43a0f3",
