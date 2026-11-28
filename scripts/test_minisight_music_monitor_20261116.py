@@ -206,6 +206,14 @@ class SourceTests(unittest.TestCase):
         self.assertNotIn('_motionLogAt', source)
         body = source.split('// BEGIN MUSIC SAMPLE POLICY',1)[1].split('\n',1)[1].split('// END MUSIC SAMPLE POLICY',1)[0]
         cases = """int main(void){
+            for(int api=0;api<2;++api) {
+                assert(MSMusicUsePIDSource(api != 0) == (api != 0));
+                for(int pid=-1;pid<=1;++pid) for(int same=0;same<2;++same)
+                    assert(MSMusicReadSourceOK(api != 0,pid,same != 0) == (api ? pid > 0 : same != 0));
+            }
+            for(int direct=0;direct<2;++direct) for(int fromPID=0;fromPID<2;++fromPID)
+                for(int pid=-1;pid<=1;++pid)
+                    assert(MSMusicMetadataSourceOK(direct != 0,fromPID != 0,pid) == (direct || (fromPID && pid > 0)));
             assert(MSMusicPIDMatches(5,5,true)); assert(!MSMusicPIDMatches(5,6,true));
             assert(!MSMusicPIDMatches(5,5,false)); assert(!MSMusicPIDMatches(0,0,true));
             for(int i=0;i<8;++i) assert(!MSMusicPublishDue(false,false,100+i*.25,100));

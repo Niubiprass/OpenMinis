@@ -73,7 +73,12 @@ class CompleteWiring(unittest.TestCase):
   self.assertIn('options: .withoutOverwriting',catalog)
  def test_actual_background_notification_cannot_drop_current_candidate(self):
   m=(CORE/'MiniSightMusicMonitor.m').read_text();f=(ROOT/'scripts/fixtures/minisight_music_monitor_20261116/runtime.m').read_text()
-  self.assertIn('BOOL awaitPID = !source && MSMusicPID && MSMusicMissingSource(reason);',m)
+  self.assertIn('BOOL awaitPID = MSMusicUsePIDSource(MSMusicPID != NULL);',m)
+  self.assertIn('_playerIdentified = !awaitPID && source.length > 0;',m)
+  self.assertNotIn('BOOL awaitPID = !source && MSMusicPID && MSMusicMissingSource(reason);',m)
+  self.assertIn('BOOL fallback = MSMusicUsePIDSource(MSMusicPID != NULL);',m)
+  self.assertIn('BOOL identityOK = MSMusicReadSourceOK(MSMusicPID != NULL, _pidRead, [player isEqualToString:direct]);',m)
+  self.assertIn('!MSMusicPIDMatches(self->_pidRead, pid, [player isEqual:lastPlayer])',m)
   self.assertNotIn('!source && _sourceFromPID && MSMusicPID',m)
   self.assertIn('first direct-loss notification retains only a hidden candidate',f)
   self.assertIn('background current PID restores verified same-track lyrics',f)
@@ -99,7 +104,7 @@ class CompleteWiring(unittest.TestCase):
   for n in ['MiniSightMusicMonitor.m','MiniSightMusicPlayerABI.h','MiniSightPetEffects.m','MiniSightPetDailyPolicy.h','MiniSightRhythmClient.m','MiniSightLog.m']:
    self.assertEqual((CORE/n).read_bytes(),(PLUGIN/n).read_bytes(),n)
   t=(PLUGIN/'Tweak.xm').read_text();r=(PLUGIN/'MiniSightResources.m').read_text()
-  self.assertIn('static NSString *const kMiniSightVersion   = @"0.8.59";',t)
+  self.assertIn('static NSString *const kMiniSightVersion   = @"0.8.60";',t)
   self.assertIn('gMiniSightPet.dailyActionsEnabled = MiniSightDailyActionsEnabled();',t)
   self.assertIn('if (gMiniSightUsingDefaultAtlas) return 3;',t)
   self.assertIn('MSAssetNeedsHostRebuild(resourcesFresh',t)
