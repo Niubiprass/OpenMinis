@@ -1885,7 +1885,7 @@ extension AIChatViewModel {
         // AIChatViewModel+SSEStream and fixed the same way in BrowserTabPool.
         // The watchdog still sleeps, but only to wake up and COMPARE dates, so
         // a stretched sleep delays detection without corrupting the decision.
-        let remainingOverall = 900. - max(0, ProcessInfo.processInfo.systemUptime - summaryStarted)
+        let remainingOverall = 900.0 - max(0, ProcessInfo.processInfo.systemUptime - summaryStarted)
         guard remainingOverall > 0 else { throw LLMError.transientError(message: "摘要等待超过总时限。") }
         let progress = CompactStreamProgress(overallLimit: remainingOverall, stallLimit: 120)
 

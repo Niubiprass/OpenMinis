@@ -25,7 +25,7 @@ def checks(x):
   'explicit_model_cap_and_headroom':'declared: entry.overrides.maxOutputTokens ?? entry.model.maxOutputTokens' in once and 'min(32768, min(headroom, modelCap))' in b,
   'config_and_auth_snapshot_before_factory':once.index('let configRevision =')<once.index('makeLLMProvider(for: entry)') and once.count('ProviderConfigStore.shared.authRevision == authRevision')==2 and once.count('self.sessionId == summarySession')==2,
   'consumer_owns_connection':once.index('let consumeTask = Task')<once.index('provider.streamMessage('),
-  'same_overall_deadline_across_retry':'let summaryStarted = ProcessInfo.processInfo.systemUptime' in once and '900. - max(0, ProcessInfo.processInfo.systemUptime - summaryStarted)' in once,
+  'same_overall_deadline_across_retry':'let summaryStarted = ProcessInfo.processInfo.systemUptime' in once and '900.0 - max(0, ProcessInfo.processInfo.systemUptime - summaryStarted)' in once,
   'progress_from_real_data_not_reasoning_text':'@TaskLocal static var streamProgress:' in e and 'if let progressTouch { await progressTouch() }' in stream and 'CompactLifecycle.$streamProgress.withValue({ await progress.touch() })' in once,
   'no_tool_replay_in_retry':'tools: nil' in stream and 'streamRaw(' not in once and 'performCompaction(' not in once,
   'native_fixture_access_scope':'private static func tryFinish(_ s: CompactSummaryStreamAssembler)' in (ROOT/'scripts/fixtures/compact_summary_recovery_20261128.swift').read_text(),
