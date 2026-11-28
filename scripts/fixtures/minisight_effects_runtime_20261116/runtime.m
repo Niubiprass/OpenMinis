@@ -672,6 +672,50 @@ static void MeasuredMusicInputOnly(void) {
     CHECK([Role(m.effects) isEqual:@"idle"]);
 }
 
+static void MeasuredArtworkWithoutSongPosition(void) {
+    MSRig *r = Rig(@{@"idle": Clip(@"ordinary", @[@5.]),
+        @"music": Clip(@"music-art", @[@.1,@.1,@.1,@.1])});
+    Finish(r.library,Pixel(100));
+    r.effects.musicPlaying=YES; [r.effects setLegacyState:8 waking:NO];
+    [r.effects applyRhythmStrength:.8 pulse:.6];
+    [r.effects applyRhythmSampleTime:100.]; Tick(r.effects,Now+.01);
+    CHECK([Role(r.effects) isEqual:@"music"]); Finish(r.library,Pixel(110));
+    NSUInteger highest=0;
+    for (int i=1;i<=6;++i) {
+        r.effects.musicPosition=NAN; // Repeated unavailable metadata must not restart the art.
+        [r.effects applyRhythmStrength:.8 pulse:.6];
+        [r.effects applyRhythmSampleTime:100.+i*.05]; Tick(r.effects,Now+.05);
+        if (Pending(r.effects)) {
+            highest=MAX(highest,r.library.pending.index); Finish(r.library,Pixel(120));
+        }
+    }
+    CHECK(highest>=2 && [Role(r.effects) isEqual:@"music"]);
+    NSUInteger requests=r.library.requests.count;
+    r.effects.musicPosition=900.; Tick(r.effects,Now+.02);
+    CHECK(r.library.requests.count==requests); // Neither a seek nor UI time invents a sample.
+    Tick(r.effects,Now+.6); CHECK([Role(r.effects) isEqual:@"idle"]);
+    if(Pending(r.effects)) Finish(r.library,Pixel(100));
+    r.effects.musicPlaying=NO; [r.effects setLegacyState:0 waking:NO]; Tick(r.effects,Now+.01);
+    CHECK([Role(r.effects) isEqual:@"idle"]);
+    MSRig *two=Rig(@{@"idle":Clip(@"ordinary-two",@[@5.]), @"music":@[
+        [[MiniSightActionClip alloc] initFixtureRole:@"music-a" durations:@[@.1,@.1]],
+        [[MiniSightActionClip alloc] initFixtureRole:@"music-b" durations:@[@.1,@.1]]]});
+    Finish(two.library,Pixel(100)); two.effects.musicPlaying=YES;
+    [two.effects setLegacyState:8 waking:NO]; [two.effects applyRhythmStrength:.8 pulse:.6];
+    [two.effects applyRhythmSampleTime:200.]; Tick(two.effects,Now+.01);
+    MiniSightActionClip *first=two.library.pending.clip; CHECK(first); Finish(two.library,Pixel(110));
+    BOOL changed=NO;
+    for (int i=1;i<=6;++i) {
+        [two.effects applyRhythmStrength:.8 pulse:.6]; [two.effects applyRhythmSampleTime:200.+i*.05];
+        Tick(two.effects,Now+.05);
+        if(Pending(two.effects)) {
+            if(two.library.pending.clip!=first) changed=YES;
+            Finish(two.library,Pixel(120));
+        }
+    }
+    CHECK(changed && [Role(two.effects) isEqual:@"music"]);
+}
+
 #import "atlas_cases.inc"
 
 int main(void) { @autoreleasepool {
@@ -684,6 +728,7 @@ int main(void) { @autoreleasepool {
         {"short-tap-no-loop", ShortTapDoesNotLoop}, {"busy-chat-retreat", BusyRetreat}, {"lyrics-never-title", LyricsOnly},
         {"in-place-music-land-ownership", InPlaceMusicAndLandOwnership},
         {"measured-music-input-only", MeasuredMusicInputOnly},
+        {"measured-artwork-without-song-position", MeasuredArtworkWithoutSongPosition},
         {"atlas-layouts-first-frame", AtlasLayouts}, {"atlas-repaint-same-image", AtlasRepaintAndSameImage},
         {"atlas-crop-failure-retry", AtlasCropFailureRetry}, {"atlas-action-poster-metadata", AtlasActionPosterMetadata},
         {"atlas-effects-failure-stop", AtlasEffectsFailureStop}, {"atlas-manifest-swap", AtlasManifestSwap}

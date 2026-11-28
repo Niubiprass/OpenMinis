@@ -83,6 +83,7 @@ E_METHODS={
  'tick:':('void','int link'), 'resetRigidPresentation':('void','void'),
  'cancelDailyAction':('void','void'), 'setRhythmFollowing:':('void','bool following'),
  'applyRhythmStrength:pulse:':('void','double strength, double pulse'),
+ 'applyRhythmSampleTime:':('void','double sampleTime'),
 }
 P_SHIMS={'isActuallyVisible':'FixtureVisible','wakeForInteraction':'FixtureWake',
  'invalidateRoamTimer':'FixtureInvalidateRoam','invalidateFrameTimer':'FixtureInvalidateFrame',
@@ -320,7 +321,7 @@ def main(argv=None):
         for case in ('rhythm_cases.c', 'rhythm_extra_cases.c', 'daily_fallback_cases.c', 'music_ordinary_cases.c'):
             shutil.copy(str(FIX/case), str(td/case))
         for name in ('MiniSightGeometry.h','MiniSightGravity.h','MiniSightLiveliness.h','MiniSightPetBehavior.h','MiniSightPetMusicMotion.h',
-                     'MiniSightPetRhythmPolicy.h','MiniSightRhythmFrame.h','MiniSightPetDailyPolicy.h'):
+                     'MiniSightPetRhythmPolicy.h','MiniSightRhythmFrame.h','MiniSightPetDailyPolicy.h','MiniSightMusicAnimationClock.h'):
             shutil.copy(str(core/name),str(td/name))
         exe=td/'pet_paths'
         build=subprocess.run([cc,'-std=c99','-O1','-Wall','-Wno-unused-function','-I',str(td),

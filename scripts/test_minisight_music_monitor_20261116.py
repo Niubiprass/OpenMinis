@@ -58,7 +58,7 @@ def errors(source):
         'confirmed stop immediate': '[self discardCandidate:@"confirmed_stop"];',
         'complete candidate consumption': 'if (track) self->_candidateUntil = 0.;',
         'positive PID rejection fence': 'if (self->_pidRead > 0 && self->_track) self->_verifiedPID = self->_pidRead;',
-        'known direct switch': 'if (player.length && _source.length && ![_source isEqualToString:player]) {',
+        'known direct switch': 'if (!fallback && player.length && _source.length && ![_source isEqualToString:player]) {',
         'unverified new source hidden': '_source = nil; _playerIdentified = NO;',
         'pause immediate hide': 'if (playing != 1) [self beginPause];',
         'pause candidate not destruction': '[self beginCandidate:@"confirmed_pause"];',
@@ -131,6 +131,12 @@ def errors(source):
 
 
 class SourceTests(unittest.TestCase):
+    def test_mr_source_authority_regressions(self):
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('test_music_source_authority_20261128.py'))],
+                                text=True, capture_output=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        print(result.stdout + result.stderr)
+
     def test_pending_continuity_regressions(self):
         result = subprocess.run([sys.executable, str(Path(__file__).with_name('test_minisight_lyrics_pending_20261127.py'))],
                                 text=True, capture_output=True, timeout=120)
@@ -160,7 +166,7 @@ class SourceTests(unittest.TestCase):
             ('[self discardCandidate:@"metadata_conflict"];', ''),
             ('if (track) self->_candidateUntil = 0.;', 'self->_candidateUntil = 0.;'),
             ('if (self->_pidRead > 0 && self->_track) self->_verifiedPID = self->_pidRead;', 'self->_verifiedPID = self->_pidRead;'),
-            ('if (player.length && _source.length && ![_source isEqualToString:player]) {', 'if (NO) {'),
+            ('if (!fallback && player.length && _source.length && ![_source isEqualToString:player]) {', 'if (NO) {'),
             ('_source = nil; _playerIdentified = NO;', '_source = player; _playerIdentified = YES;'),
             ('if (playing != 1) [self beginPause];', ''),
             ('[self beginCandidate:@"confirmed_pause"];', '[self discardCandidate:@"confirmed_pause"];'),
@@ -192,7 +198,8 @@ class SourceTests(unittest.TestCase):
         self.assertNotIn('MSMusicAppIDFn', source)
         self.assertEqual(source.count('static NSString *MSMusicResolvePlayer('), 1)
         self.assertNotIn('static NSString *MSMusicPlayer(', source)
-        self.assertIn('!player && MSMusicMissingSource(playerReason) && MSMusicPID', source)
+        self.assertIn('BOOL fallback = MSMusicUsePIDSource(MSMusicPID != NULL);', source)
+        self.assertIn('return pidAPIAvailable ? sampledPID > 0 : sameDirect;', source)
         self.assertIn('!MSMusicPIDMatches(self->_pidRead, pid, [player isEqual:lastPlayer])', source)
         self.assertIn('!MSMusicPublishDue(changed, force, MSMusicNow(), _writeAt)', source)
         self.assertIn('@"motionTime": @(motionPosition)', source)
@@ -323,13 +330,7 @@ class NativeFoundationTests(unittest.TestCase):
                 str(plugin() / 'MiniSightLyrics.m'), str(plugin() / 'MiniSightLog.m'), '-framework', 'Foundation', '-o', str(binary)],
                 text=True, capture_output=True, timeout=90)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            # Same-source plugin suites take 41–44 s on CI; 45 s leaves no
-            # runner variance. This is still bounded, with every assertion kept.
-            try:
-                result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=120)
-            except subprocess.TimeoutExpired as error:
-                self.fail('Native monitor exceeded 120 s; no retry. Partial stdout: '
-                          + str(error.stdout) + '\nPartial stderr: ' + str(error.stderr))
+            result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=45)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('NATIVE PASS:', result.stdout)
             print(result.stdout.strip())

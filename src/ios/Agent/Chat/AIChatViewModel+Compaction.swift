@@ -645,7 +645,7 @@ extension AIChatViewModel {
         guard activeMessages.count > 1 else { return }
         didCheckAutoCompactOnEntry = true
         logger.info("[Context] Near capacity on session entry — auto-compacting (autoCompactEnabled, no prompt)")
-        compactAll()
+        CompactLifecycle.$trigger.withValue("capacity") { compactAll() }
     }
 
     /// Find the agentHistory index of the Nth-from-last user message that has
@@ -922,17 +922,40 @@ extension AIChatViewModel {
     func compactBefore(_ chatMessageId: UUID, includesBoundary: Bool = false,
                         allowDuringProcessing: Bool = false, explicitRawAnchor: String? = nil,
                         validity: (() -> Bool)? = nil, recoveryRun: ProviderTurnRun? = nil) async -> CompactionOutcome {
-        guard validity?() != false else { return .cancelled }
+        let inheritedTrace = CompactLifecycle.current
+        let trace = inheritedTrace ?? CompactLifecycleTrace(session: sessionId)
+        let previousTrace = activeCompactionTrace
+        activeCompactionTrace = trace
+        trace.event("begin", ["trigger": recoveryRun != nil ? "turn_limit" : allowDuringProcessing ? "capacity" : compactOrigin == .beforeSend ? "before_send" : CompactLifecycle.trigger])
+        trace.event("compact_begin", ["count": String(agentHistory.count)])
+        let repliesBefore = ProviderTurnRun.count(effectiveAgentHistory())
+        var traceOutcome: CompactionOutcome = .skipped
+        func recordOutcome(_ outcome: CompactionOutcome) -> CompactionOutcome {
+            traceOutcome = outcome
+            if outcome == .cancelled {
+                if validity?() == false { trace.cancel("scope_invalidated") }
+                else if Task.isCancelled { trace.cancel("parent_cancel") }
+            }
+            return outcome
+        }
+        defer {
+            trace.event("compact_end", ["outcome": traceOutcome.rawValue])
+            if inheritedTrace == nil {
+                trace.event("end", ["outcome": traceOutcome == .success ? "summary_saved" : traceOutcome.rawValue])
+            }
+            if activeCompactionTrace === trace { activeCompactionTrace = previousTrace }
+        }
+        guard validity?() != false else { return recordOutcome(.cancelled) }
         guard allowDuringProcessing || !isProcessing else {
             logger.info("[Compact] Cannot compact while processing")
             appendSystemInfo("Cannot compact while processing.", icon: "arrow.down.right.and.arrow.up.left")
-            return .skipped
+            return recordOutcome(.skipped)
         }
         guard !isCompacting else {
             logger.info("[Compact] Compaction already in progress")
-            return .skipped
+            return recordOutcome(.skipped)
         }
-        guard let sessionId else { return .skipped }
+        guard let sessionId else { return recordOutcome(.skipped) }
         // [T-ios-compact-model-fallback] Per-RUN state: a model that was out of
         // quota an hour ago may be fine now, so the burn list must not persist
         // across compactions. `isCompacting` above makes runs non-overlapping,
@@ -940,8 +963,8 @@ extension AIChatViewModel {
         Self.compactFailedEntryIds.removeAll()
 
         // Find the boundary UI message.
-        guard let boundaryIndex = messages.firstIndex(where: { $0.id == chatMessageId }) else { return .skipped }
-        guard boundaryIndex > 0 else { return .skipped }
+        guard let boundaryIndex = messages.firstIndex(where: { $0.id == chatMessageId }) else { return recordOutcome(.skipped) }
+        guard boundaryIndex > 0 else { return recordOutcome(.skipped) }
         let boundaryUIMsg = messages[boundaryIndex]
 
         let compactMeasuredBefore = measureOutboundContextTokens()
@@ -954,7 +977,7 @@ extension AIChatViewModel {
         }
         guard !toCompactUI.isEmpty else {
             logger.info("[Compact] No active UI messages before boundary — aborting")
-            return .skipped
+            return recordOutcome(.skipped)
         }
 
         // ───── Resolve boundary's dbMessageId (firstKeptMessageId for the new marker) ─────
@@ -970,11 +993,11 @@ extension AIChatViewModel {
         // the marker, but we still need to locate the boundary in agentHistory to
         // size the compacted range.
         let allRaw = await ChatStore.shared.loadMessages(sessionId: sessionId)
-        guard !Task.isCancelled, self.sessionId == sessionId, validity?() != false else { return .cancelled }
+        guard !Task.isCancelled, self.sessionId == sessionId, validity?() != false else { return recordOutcome(.cancelled) }
         var firstKeptMessageId: String? = nil
         if let explicitRawAnchor {
             guard allRaw.contains(where: { $0.id == explicitRawAnchor }),
-                  agentHistory.contains(where: { $0.dbMessageId == explicitRawAnchor }) else { return .skipped }
+                  agentHistory.contains(where: { $0.dbMessageId == explicitRawAnchor }) else { return recordOutcome(.skipped) }
             firstKeptMessageId = explicitRawAnchor
         } else if let bso = boundaryUIMsg.sourceSortOrder,
                   let rawMsg = allRaw.first(where: { $0.sortOrder == bso }) {
@@ -1015,7 +1038,7 @@ extension AIChatViewModel {
         } else {
             logger.error("[Compact] firstKeptMessageId=\(firstKeptMessageId?.prefix(8) ?? "nil") not present in agentHistory (count=\(self.agentHistory.count))")
             appendSystemInfo("Cannot compact: boundary not in memory history.", icon: "arrow.down.right.and.arrow.up.left")
-            return .failed
+            return recordOutcome(.failed)
         }
 
         // ───── v2 anchor calculation ─────
@@ -1057,7 +1080,7 @@ extension AIChatViewModel {
 
         guard startIdx < endExclusive else {
             logger.info("[Compact] empty range — aborting (startIdx=\(startIdx) endExclusive=\(endExclusive))")
-            return .skipped
+            return recordOutcome(.skipped)
         }
 
         logger.info("[Compact] range: startIdx=\(startIdx) endExclusive=\(endExclusive) historyCount=\(endExclusive - startIdx)")
@@ -1135,7 +1158,7 @@ extension AIChatViewModel {
                     logger.info("[Compact] prev marker (id=\(prevId.prefix(8))) at idx=\(prevIdx) already covers our range (proposedStart=\(proposedStart) >= endExclusive=\(endExclusive)) — aborting")
                     statusMsg.content = "Already compacted up to this point."
                     statusMsg.isCompactLoading = false
-                    return .skipped
+                    return recordOutcome(.skipped)
                 }
             }
         }
@@ -1144,7 +1167,7 @@ extension AIChatViewModel {
             logger.info("[Compact] empty effective range — aborting (effectiveStartIdx=\(effectiveStartIdx) endExclusive=\(endExclusive))")
             statusMsg.content = "Nothing to compact."
             statusMsg.isCompactLoading = false
-            return .skipped
+            return recordOutcome(.skipped)
         }
 
         let toCompact = Array(agentHistory[effectiveStartIdx..<endExclusive])
@@ -1162,22 +1185,22 @@ extension AIChatViewModel {
         let summary: String
         do {
             try Task.checkCancellation()
-            summary = try await generateCompactSummaryWithSplitting(
-                messages: toCompact,
-                statusMsg: statusMsg,
-                previousSummary: previousSummaryText
-            )
+            summary = try await CompactLifecycle.$current.withValue(trace) {
+                try await generateCompactSummaryWithSplitting(
+                    messages: toCompact, statusMsg: statusMsg, previousSummary: previousSummaryText)
+            }
             try Task.checkCancellation()
         } catch is CancellationError {
-            logger.info("[Compact] Cancelled by user")
+            trace.cancel("parent_cancel")
+            logger.info("[Compact] Cancelled origin=\(trace.cancellation())")
             statusMsg.content = "Compaction cancelled."
             statusMsg.isCompactLoading = false
-            return .cancelled
+            return recordOutcome(.cancelled)
         } catch {
             if Task.isCancelled {
                 statusMsg.content = "Compaction cancelled."
                 statusMsg.isCompactLoading = false
-                return .cancelled
+                return recordOutcome(.cancelled)
             }
             // [T-compact-segment-retry-any-error] Reaching here means the
             // segment retry is EXHAUSTED, not that the first attempt failed:
@@ -1194,17 +1217,19 @@ extension AIChatViewModel {
             // retried at all.
             let didSegment = Self.isSegmentRetryableError(error)
             let ns = error as NSError
+            trace.event("summary_end", ["outcome":"failed", "reason": (error as? CompactSummaryFailure)?.traceReason ?? "error",
+                "error_domain_hash":CompactLifecycleTrace.fingerprint(ns.domain), "error_code":String(ns.code)])
             recoveryRun?.noteCompactionFailure(.summaryFailed, error: error)
             logger.error("[Compact] Summary generation failed segmented=\(didSegment) domain=\(ns.domain) code=\(ns.code)")
             statusMsg.content = didSegment
                 ? "Compaction failed after retrying in segments: \(error.localizedDescription)"
                 : "Compaction failed: \(error.localizedDescription)"
             statusMsg.isCompactLoading = false
-            return .failed
+            return recordOutcome(.failed)
         }
 
         recoveryRun?.noteCompactionFailure(.commitFailed)
-        guard !Task.isCancelled, self.sessionId == sessionId, validity?() != false else { return .cancelled }
+        guard !Task.isCancelled, self.sessionId == sessionId, validity?() != false else { return recordOutcome(.cancelled) }
 
         // ───── Compute marker fields (v2) ─────
         //
@@ -1260,7 +1285,7 @@ extension AIChatViewModel {
             logger.error("[Compact] Cannot write v2 marker: no agentHistory entry in [0..\(endExclusive)) has a persisted dbMessageId. Aborting compact.")
             statusMsg.content = "Compaction failed: could not anchor marker to a persisted message."
             statusMsg.isCompactLoading = false
-            return .failed
+            return recordOutcome(.failed)
         }
         if lcmHistoryIdx != endExclusive - 1 {
             logger.warning("[Compact] v2 marker lcm anchor walked back from idx=\(endExclusive - 1) to idx=\(lcmHistoryIdx ?? -1) (closest persisted message). Some unsynced tail entries will fall on the active side of the divider.")
@@ -1287,26 +1312,33 @@ extension AIChatViewModel {
             version: 2
         )
         logger.info("[Compact] Persisting v2 marker: id=\(marker.id.prefix(8)) lcmId=\(lastCompactedMessageId.prefix(8)) lcmHistoryIdx=\(lcmHistoryIdx ?? -1)/agentHistory.count=\(self.agentHistory.count) historyCount=\(historyCount) includesBoundary=\(includesBoundary)")
+        trace.event("commit_begin", ["marker_hash":CompactLifecycleTrace.fingerprint(marker.id), "chars":String(summary.count)])
         guard await ChatStore.shared.insertCompactMarkerUnlessCancelled(marker) else {
+            trace.event("commit_end", ["persisted":"0", "reason":"commit_failed"])
             statusMsg.content = Task.isCancelled ? "Compaction cancelled." : "Compaction failed: could not persist marker."
             statusMsg.isCompactLoading = false
-            return Task.isCancelled ? .cancelled : .failed
+            return recordOutcome(Task.isCancelled ? .cancelled : .failed)
         }
 
+        trace.event("commit_end", ["persisted":"1", "readback":"1", "marker_hash":CompactLifecycleTrace.fingerprint(marker.id)])
         guard !Task.isCancelled, self.sessionId == sessionId, validity?() != false else {
+            trace.cancel("scope_invalidated")
             // Delete only THIS attempt's marker, never an older/manual marker.
             // Deletion uses the existing dirty/tombstone path so a sync cannot
             // resurrect a result from an invalidated recovery.
             let removed = await ChatStore.shared.deleteCompactMarker(id: marker.id)
+            trace.event("rollback", ["recorded":removed ? "1":"0", "marker_hash":CompactLifecycleTrace.fingerprint(marker.id)])
             guard removed else {
                 logger.error("[Compact] Invalidated marker rollback failed; result is not verified")
-                return .failed
+                return recordOutcome(.failed)
             }
-            return .cancelled
+            return recordOutcome(.cancelled)
         }
 
         // Phase B: update cache so effectiveAgentHistory() starts using the new summary immediately.
         self.cachedLatestMarker = marker
+        trace.event("history", ["before":String(repliesBefore), "after":String(ProviderTurnRun.count(effectiveAgentHistory())),
+            "marker_hash":CompactLifecycleTrace.fingerprint(marker.id)])
 
         // Phase B: do NOT mutate agentHistory. It stays full; summary is synthesized
         // at inference time via effectiveAgentHistory().
@@ -1414,7 +1446,7 @@ extension AIChatViewModel {
         if !wasProcessingOnEntry && !Task.isCancelled {
             schedulePostCompactDrain()
         }
-        return .success
+        return recordOutcome(.success)
     }
 
     /// Build a text representation of messages for summarization.
@@ -1466,6 +1498,11 @@ extension AIChatViewModel {
         // [T-paste-single-split] agentHistory carries fully-expanded pasted
         // text (consumed at the draft→message boundary), so the summary input
         // needs no placeholder resolution here.
+        let lifecycle = CompactLifecycle.current
+        let segment = lifecycle?.nextSegment() ?? 0
+        lifecycle?.event("segment_begin", ["segment":String(segment), "depth":String(depth), "count":String(messages.count)])
+        var segmentOK = false
+        defer { lifecycle?.event("segment_end", ["segment":String(segment), "depth":String(depth), "outcome":segmentOK ? "success":"failed"]) }
         var conversationText = buildConversationTextForSummary(messages)
 
         // Prepend previous summary so the LLM merges old + new into one summary
@@ -1475,7 +1512,9 @@ extension AIChatViewModel {
 
         do {
             try Task.checkCancellation()
-            return try await generateCompactSummary(conversationText: conversationText, statusMsg: statusMsg)
+            let summary = try await generateCompactSummary(conversationText: conversationText, statusMsg: statusMsg)
+            segmentOK = true
+            return summary
         } catch let error where Self.isSegmentRetryableError(error) && messages.count >= 2 && depth < 3 {
             // [T-compact-segment-retry-any-error] Split on ANY non-network,
             // non-cancellation failure — not just a recognised "context too
@@ -1504,7 +1543,10 @@ extension AIChatViewModel {
             let firstHalf = Array(messages[..<mid])
             let secondHalf = Array(messages[mid...])
 
-            logger.info("[Compact] Retry segments: splitting \(messages.count) messages into \(firstHalf.count) + \(secondHalf.count) (depth=\(depth)) after error: \(String(describing: error).prefix(200))")
+            let splitError = error as NSError
+            lifecycle?.event("split", ["segment":String(segment), "depth":String(depth), "left":String(firstHalf.count), "right":String(secondHalf.count),
+                "error_code":String(splitError.code), "error_domain_hash":CompactLifecycleTrace.fingerprint(splitError.domain)])
+            logger.info("[Compact] Retry segments: splitting \(messages.count) messages into \(firstHalf.count) + \(secondHalf.count) (depth=\(depth)) code=\(splitError.code)")
             // Surfaced verbatim so this retry is distinguishable from a plain
             // first-pass compaction in screenshots and bug reports.
             statusMsg.content = "Retry segments \(firstHalf.count)+\(secondHalf.count)..."
@@ -1516,6 +1558,7 @@ extension AIChatViewModel {
             // at every leaf and lets newer decisions supersede older ones.
             let summary2 = try await generateCompactSummaryWithSplitting(messages: secondHalf, statusMsg: statusMsg, previousSummary: summary1, depth: depth + 1)
             try Task.checkCancellation()
+            segmentOK = true
             return summary2
         }
     }
@@ -1540,6 +1583,7 @@ extension AIChatViewModel {
     /// case where trying a smaller payload is worth one attempt.
     static func isSegmentRetryableError(_ error: Error) -> Bool {
         if error is CancellationError || error is ProviderTurnLimitRejection { return false }
+        if error is CompactSummaryFailure { return false } // Empty/incomplete output is not a size failure.
         if let llm = error as? LLMError {
             switch llm {
             case .cancelled, .networkError:
@@ -1672,6 +1716,8 @@ extension AIChatViewModel {
         let candidates = compactFallbackCandidates(startingAt: primary)
         var lastError: Error?
         for (idx, entry) in candidates.enumerated() {
+            CompactLifecycle.current?.event("candidate", ["candidate":String(idx+1), "candidates":String(candidates.count),
+                "model_hash":CompactLifecycleTrace.fingerprint(entry.model.id), "provider_hash":CompactLifecycleTrace.fingerprint(entry.providerInstanceId)])
             do {
                 if idx > 0 {
                     logger.info("[Compact] falling back to candidate \(idx + 1)/\(candidates.count): \(entry.model.id)")
@@ -1713,6 +1759,12 @@ extension AIChatViewModel {
         entry: ModelEntry,
         statusMsg: ChatMessage? = nil
     ) async throws -> String {
+        let lifecycle = CompactLifecycle.current
+        let summarySession = self.sessionId
+        let configRevision = ProviderConfigStore.shared.configRevision
+        let authRevision = ProviderConfigStore.shared.authRevision
+        lifecycle?.event("summary_begin", ["purpose":"summary", "model_hash":CompactLifecycleTrace.fingerprint(entry.model.id),
+            "provider_hash":CompactLifecycleTrace.fingerprint(entry.providerInstanceId), "chars":String(conversationText.count)])
         let provider = try await Self.makeLLMProvider(for: entry)
         let contextWindow = effectiveContextWindow(for: entry.model)
 
@@ -1768,25 +1820,24 @@ extension AIChatViewModel {
         // here — the pre-flight and the split retry cooperate rather than
         // duplicate each other.
         let compactOutputReserve = 1024
-        // Use the shared multilingual meter, including the real system prompt.
-        // Wrapper/framing reserve is conservative; this remains an estimate,
-        // not a tokenizer guarantee, so provider size errors still split.
         let inputEstimate = ContextSizeMeter.estimateTokens(conversationText)
             + ContextSizeMeter.estimateTokens(systemPrompt) + 200
-        let maxOutputTokens: Int
-        if contextWindow > 0 {
-            let available = contextWindow - inputEstimate
-            guard available >= compactOutputReserve else {
-                logger.error("[Compact] pre-flight: input ~\(inputEstimate) tok exceeds window \(contextWindow) (needs \(compactOutputReserve) for output) — not sending")
-                throw LLMError.providerError(
-                    message: "compact input too large: ~\(inputEstimate) tokens estimated against a \(contextWindow)-token window"
-                )
-            }
-            maxOutputTokens = min(8192, available)
-        } else {
-            maxOutputTokens = 4096
+        let outputCeiling = CompactSummaryBudget.ceiling(window: contextWindow, input: inputEstimate,
+            declared: entry.overrides.maxOutputTokens ?? entry.model.maxOutputTokens)
+        guard outputCeiling >= compactOutputReserve else {
+            throw LLMError.providerError(message: "compact input too large for model/context output reserve")
         }
-
+        let firstOutputTokens = CompactSummaryBudget.initial(ceiling: outputCeiling)
+        let summaryStarted = ProcessInfo.processInfo.systemUptime
+        var outputRetryUsed = false
+        var attemptTokens = firstOutputTokens
+        while true {
+        try Task.checkCancellation()
+        guard self.sessionId == summarySession,
+              ProviderConfigStore.shared.configRevision == configRevision,
+              ProviderConfigStore.shared.authRevision == authRevision else { throw CancellationError() }
+        do {
+        let maxOutputTokens = attemptTokens
         let compactUserMessage = """
         Compact this conversation into a context summary:
 
@@ -1799,13 +1850,6 @@ extension AIChatViewModel {
         Do NOT continue the conversation above — summarize it. Write everything in past tense, \
         framed as "what was discussed / what was done", NOT as an ongoing goal or todo list.
         """
-
-        let stream = try await provider.streamMessage(
-            messages: [LLMMessage(role: .user, content: compactUserMessage)],
-            systemPrompt: systemPrompt,
-            maxTokens: maxOutputTokens,
-            temperature: nil   // let provider/model use its default
-        )
 
         // [T-ios-compact-no-timeout] Two independent deadlines guard this loop.
         // Without them a summary request that goes quiet simply hangs: the
@@ -1841,9 +1885,16 @@ extension AIChatViewModel {
         // AIChatViewModel+SSEStream and fixed the same way in BrowserTabPool.
         // The watchdog still sleeps, but only to wake up and COMPARE dates, so
         // a stretched sleep delays detection without corrupting the decision.
-        let progress = CompactStreamProgress(overallLimit: 900, stallLimit: 120)
+        let remainingOverall = 900. - max(0, ProcessInfo.processInfo.systemUptime - summaryStarted)
+        guard remainingOverall > 0 else { throw LLMError.transientError(message: "摘要等待超过总时限。") }
+        let progress = CompactStreamProgress(overallLimit: remainingOverall, stallLimit: 120)
 
         let consumeTask = Task { @MainActor () -> String in
+            let stream = try await CompactLifecycle.$streamProgress.withValue({ await progress.touch() }) {
+                try await provider.streamMessage(
+                    messages: [LLMMessage(role: .user, content: compactUserMessage)],
+                    systemPrompt: systemPrompt, maxTokens: maxOutputTokens, temperature: nil)
+            }
             var text = ""
             var didTag = false
             for try await chunk in stream {
@@ -1880,6 +1931,10 @@ extension AIChatViewModel {
                     // Publish the deadline reason before cancellation can wake
                     // the waiter; otherwise it may observe no breach reason.
                     await progress.recordBreach(breach)
+                    switch breach {
+                    case .stalled: lifecycle?.cancel("summary_stall")
+                    case .overall: lifecycle?.cancel("summary_overall")
+                    }
                     await MainActor.run { consumeTask.cancel() }
                     return
                 }
@@ -1893,6 +1948,7 @@ extension AIChatViewModel {
                 try Task.checkCancellation()
                 return text
             }, onCancel: {
+                lifecycle?.cancel("parent_cancel")
                 consumeTask.cancel()
                 watchdog.cancel()
             })
@@ -1913,10 +1969,27 @@ extension AIChatViewModel {
         }
 
         guard !responseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw NSError(domain: "Compact", code: -2, userInfo: [NSLocalizedDescriptionKey: "LLM returned empty summary"])
+            CompactLifecycle.current?.event("summary_end", ["outcome":"failed", "reason":"empty_summary", "chars":"0"])
+            throw CompactSummaryFailure.empty
         }
 
-        return responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        lifecycle?.event("summary_end", ["outcome":"success", "chars":String(summary.count)])
+        return summary
+        } catch {
+            try Task.checkCancellation()
+            guard !outputRetryUsed,
+                  self.sessionId == summarySession,
+                  ProviderConfigStore.shared.configRevision == configRevision,
+                  ProviderConfigStore.shared.authRevision == authRevision,
+                  let next = CompactSummaryBudget.retry(after: error, used: attemptTokens, ceiling: outputCeiling) else { throw error }
+            outputRetryUsed = true
+            attemptTokens = next
+            lifecycle?.event("summary_end", ["outcome":"failed", "reason":"output_limit"])
+            lifecycle?.event("summary_begin", ["reason":"output_retry", "output_tokens":String(next), "retry":"1"])
+            statusMsg?.content = "摘要输出额度不足，正在调整后继续整理…"
+        }
+        }
     }
 
     /// Create an AgentMessage that injects a compact summary into the conversation context.

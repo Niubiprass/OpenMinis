@@ -120,6 +120,15 @@ static NSString *MSMusicBundle(id app, NSString **reason) {
         ? @"netease_player_selected" : @"supported_player_selected";
     return value;
 }
+static NSString *MSMusicPlayerKind(NSString *player, NSString *reason) {
+    // Diagnostic classification only; this function never admits a player.
+    if ([player isEqualToString:@"com.netease.cloudmusic"]) return @"netease";
+    if ([player isEqualToString:@"com.tencent.QQMusic"]) return @"qq";
+    if ([player isEqualToString:@"com.kugou.kugou1002"]) return @"kugou";
+    if ([player isEqualToString:@"com.yeelion.kwplayer"]) return @"kuwo";
+    if ([player isEqualToString:@"com.apple.Music"]) return @"apple";
+    return [reason isEqualToString:@"unsupported_player"] ? @"unsupported" : @"unknown";
+}
 static NSString *MSMusicResolvePlayer(NSString **reason) {
     if (reason) *reason = @"media_controller_unavailable";
     @try {
@@ -169,6 +178,17 @@ static NSString *MSMusicPIDPlayer(int pid, NSString **reason) {
     }
 }
 // BEGIN MUSIC SAMPLE POLICY (shared verbatim with portable tests)
+// When present, MR's fresh PID is the source authority for MR metadata.
+// SB's foreground hint must neither admit nor veto this independent sample.
+static inline bool MSMusicUsePIDSource(bool pidAPIAvailable) { return pidAPIAvailable; }
+static inline bool MSMusicReadSourceOK(bool pidAPIAvailable, int sampledPID, bool sameDirect) {
+    return pidAPIAvailable ? sampledPID > 0 : sameDirect;
+}
+// A prior PID-verified sample may bridge a metadata-only hint within the
+// existing non-renewable one-second lease. It never admits the next sample.
+static inline bool MSMusicMetadataSourceOK(bool sameDirect, bool fromPID, int verifiedPID) {
+    return sameDirect || (fromPID && verifiedPID > 0);
+}
 static bool MSMusicPIDMatches(int first, int last, bool sameBundle) {
     return first > 0 && first == last && sameBundle;
 }
@@ -404,6 +424,7 @@ static MSMusicDiagnosticStages MSMusicDiagnose(bool active, bool mediaAvailable,
     NSMutableDictionary<NSString *, NSArray *> *_identityEvidence;
     NSMutableDictionary<NSString *, NSNumber *> *_identityEvidenceAt;
     NSString *_playerDetail, *_lyricsDetail;
+    NSString *_playerOrigin, *_playerKind; // Fixed diagnostic enums, never raw bundle IDs.
     BOOL _fetching, _awaitingFreshInfo, _lyricsAwaitingFreshInfo, _readTimedOut;
     NSDictionary *_presentation;
     NSMutableDictionary<NSString *, NSNumber *> *_retryTimes;
@@ -477,13 +498,15 @@ static MSMusicDiagnosticStages MSMusicDiagnose(bool active, bool mediaAvailable,
     // heartbeat/sample event from overwriting the last rejection evidence.
     if (!_identityEvidence) { _identityEvidence = [NSMutableDictionary dictionary]; _identityEvidenceAt = [NSMutableDictionary dictionary]; }
     NSTimeInterval now = MSMusicNow();
-    NSArray *key = @[@(_playbackSequence), @((BOOL)_playing), @((BOOL)(_candidateUntil > 0.))];
+    NSArray *key = @[@(_playbackSequence), @((BOOL)_playing), @((BOOL)(_candidateUntil > 0.)),
+        _playerOrigin ?: @"unknown", _playerKind ?: @"unknown"];
     if ([_identityEvidence[reason] isEqual:key] && now - [_identityEvidenceAt[reason] doubleValue] < 60.) return;
     _identityEvidence[reason] = key; _identityEvidenceAt[reason] = @(now);
     MSDiagEvent(@"music", @"sample", @"ok", @{@"source": @"plugin", @"reason": reason,
         @"generation": @(_readGeneration), @"enabled": @((BOOL)_allowed),
         @"present": @((BOOL)(_timeline != nil)), @"valid": @((BOOL)(_playing && !_awaitingFreshInfo && _validAt > 0. && now - _validAt <= 6.)),
         @"read_stage": @(_readStage), @"identity_epoch": @(_identityEpoch),
+        @"player_origin": _playerOrigin ?: @"unknown", @"player_kind": _playerKind ?: @"unknown",
         @"last_valid_age_ms": @(_validAt > 0. ? fmin(60000., fmax(0., now - _validAt) * 1000.) : -1.)});
 }
 - (void)conflictEvidence:(NSUInteger)mask stage:(NSUInteger)stage {
@@ -602,7 +625,9 @@ static MSMusicDiagnosticStages MSMusicDiagnose(bool active, bool mediaAvailable,
     if (!_timer || ![self refreshPresentation]) return;
     NSString *reason = nil, *direct = MSMusicResolvePlayer(&reason);
     BOOL verified = _playing && !_awaitingFreshInfo && _track && !_lyricsAwaitingFreshInfo;
-    if (!MSMusicMetadataLease(verified, direct.length && [direct isEqualToString:_source], MSMusicNow(), _validAt)) {
+    BOOL sameSource = MSMusicMetadataSourceOK(direct.length && [direct isEqualToString:_source],
+        _sourceFromPID, _verifiedPID);
+    if (!MSMusicMetadataLease(verified, sameSource, MSMusicNow(), _validAt)) {
         [self handleMediaChange]; return;
     }
     // Do not invalidate an in-flight sandwich for redundant metadata hints.
@@ -619,10 +644,11 @@ static MSMusicDiagnosticStages MSMusicDiagnose(bool active, bool mediaAvailable,
     [self beginCandidate:@"identity_revalidate"];
     NSString *reason = nil, *source = MSMusicResolvePlayer(&reason);
     _playerDetail = reason;
-    _playerIdentified = source.length > 0;
-    // Notifications may precede the PID callback. Keep only a candidate; tick cannot
-    // publish a lyric or report playing until fresh metadata AND PID are verified.
-    BOOL awaitPID = !source && MSMusicPID && MSMusicMissingSource(reason);
+    // SB's value is only a hint when MR can identify its own metadata source.
+    // A hard change hides immediately; only a fresh full PID sandwich may
+    // re-admit this invisible candidate, even if the hint says unsupported.
+    BOOL awaitPID = MSMusicUsePIDSource(MSMusicPID != NULL);
+    _playerIdentified = !awaitPID && source.length > 0;
     if (!awaitPID && (!source || ![_source isEqualToString:source])) {
         [self discardCandidate:@"player_changed"];
         _source = [source copy];
@@ -717,7 +743,7 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
     if (!_reading || ticket != _readTicket || stage != _readStage) return NO;
     ++_readStage; // Duplicate/reordered callbacks cannot consume the next stage.
     NSString *reason = nil, *direct = MSMusicResolvePlayer(&reason);
-    BOOL identityOK = [player isEqualToString:direct] || (_pidRead && !direct && MSMusicMissingSource(reason));
+    BOOL identityOK = MSMusicReadSourceOK(MSMusicPID != NULL, _pidRead, [player isEqualToString:direct]);
     if (!_timer || !_allowed || ![self refreshPresentation] ||
         generation != _readGeneration || MSMusicNow() - _readAt > 3. || !identityOK) {
         _reading = NO;
@@ -734,23 +760,30 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
 }
 - (void)pollAt:(NSTimeInterval)now {
     _pollAt = now + 2.;
+    // A rejected poll is still a new diagnostic attempt. Never retain stage 4
+    // or a PID from the previous successful sample on an early return.
+    _readStage = 0; _pidRead = 0; ++_readGeneration;
+    _playerOrigin = @"direct"; _playerKind = @"unknown";
     NSString *playerReason = nil;
     NSString *player = MSMusicResolvePlayer(&playerReason);
-    _pidRead = 0;
-    if (player.length && _source.length && ![_source isEqualToString:player]) {
-        // This is positive switch evidence, not a soft metadata hint. Revoke A
-        // before starting B's first read; do not publish B until it is verified.
+    _playerKind = MSMusicPlayerKind(player, playerReason);
+    BOOL fallback = MSMusicUsePIDSource(MSMusicPID != NULL);
+    if (!fallback && player.length && _source.length && ![_source isEqualToString:player]) {
+        // The direct hint is authoritative only if the MR PID API is absent.
         [self discardCandidate:@"player_changed"];
         _source = nil; _playerIdentified = NO;
         [self publishLine:nil playing:NO force:NO];
     }
-    BOOL fallback = !player && MSMusicMissingSource(playerReason) && MSMusicPID;
     if (fallback) {
-        // No cached PID can admit the next sample. Both fresh PID callbacks
-        // are required even when the previous sample also used fallback.
-        [self beginCandidate:@"identity_unavailable"];
-        _playerIdentified = NO;
-        [self publishLine:nil playing:NO force:NO];
+        _playerOrigin = @"pid"; _playerKind = @"unknown";
+        // Every sample has two fresh PID callbacks. A pending revalidation
+        // does not itself erase an already verified <=6s playing snapshot.
+        // Hard change notifications still hide immediately via beginCandidate.
+        if (!_sourceFromPID || !_playing || _awaitingFreshInfo) {
+            [self beginCandidate:@"identity_unavailable"];
+            _playerIdentified = NO;
+            [self publishLine:nil playing:NO force:NO];
+        }
     }
     if (!fallback || !_playerIdentified) _playerDetail = playerReason;
     if (!player && !fallback) {
@@ -758,7 +791,7 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
         return;
     }
     _reading = YES; _readTimedOut = NO; _readAt = now; _readStage = fallback ? 0 : 1;
-    NSUInteger request = ++_readGeneration, ticket = ++_readTicket;
+    NSUInteger request = _readGeneration, ticket = ++_readTicket;
     if (!fallback) { [self samplePlayer:player ticket:ticket request:request]; return; }
     // A PID is never cached between samples. Verify it again after the metadata sandwich.
     __weak typeof(self) weakSelf = self;
@@ -769,7 +802,15 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
             self->_reading = NO; [self handleMediaChange]; return;
         }
         NSString *reason = nil, *resolved = MSMusicPIDPlayer(pid, &reason);
+        self->_playerKind = MSMusicPlayerKind(resolved, reason);
         if (!resolved) { self->_reading = NO; [self rejectPlayer:reason at:MSMusicNow()]; [self tick]; return; }
+        if ((self->_source.length && ![self->_source isEqualToString:resolved]) ||
+            (self->_verifiedPID > 0 && self->_verifiedPID != pid)) {
+            // Positive evidence from MR itself: retire A before sampling B.
+            [self discardCandidate:@"player_changed"];
+            self->_source = nil; self->_playerIdentified = NO;
+            [self publishLine:nil playing:NO force:NO];
+        }
         self->_pidRead = pid;
         if (![self acceptRead:ticket generation:request stage:0 player:resolved]) return;
         self->_playerDetail = [resolved isEqual:@"com.netease.cloudmusic"] ? @"netease_pid_selected" : @"supported_pid_selected";
@@ -949,7 +990,7 @@ static NSString *MSMusicIdentity(NSDictionary *info, NSString *player) {
                         MSMusicEvidence(@"finish", timeline ? @"ok" : @"skipped", generation,
                             detail, YES, timeline != nil, NO, YES);
                         NSString *sourceReason = nil, *direct = MSMusicResolvePlayer(&sourceReason);
-                        if (![player isEqualToString:direct] && !(MSMusicPID && !direct && MSMusicMissingSource(sourceReason))) {
+                        if (!MSMusicPID && ![player isEqualToString:direct]) {
                             [self handleMediaChange]; return;
                         }
                         // A result never publishes against the old sample: force a fresh

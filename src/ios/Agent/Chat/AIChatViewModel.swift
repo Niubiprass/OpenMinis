@@ -2863,6 +2863,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     // task so cancel() can stop it. [T-compact-queued-drain]
     var currentTask: Task<Void, Never>?
     var compactTask: Task<Void, Never>?
+    var activeCompactionTrace: CompactLifecycleTrace?
+    var activeTurnRecoveryRun: ProviderTurnRun?
 
     /// [T-ios-compact-task-binding] Which entry point started the compaction
     /// `compactTask` is currently holding.
@@ -4972,6 +4974,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             }
             return
         }
+        activeCompactionTrace?.cancel("model_switch")
+        activeTurnRecoveryRun?.lifecycle()?.cancel("model_switch")
         logger.info("🔀 model switch (\(reason)): cancelling work bound to the previous model — retryLadder=\(hadLoop) titleGen=\(hadTitleGen)")
 
         if hadLoop {
@@ -5014,6 +5018,8 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
     }
 
     func cancel() {
+        activeCompactionTrace?.cancel("user_stop")
+        activeTurnRecoveryRun?.lifecycle()?.cancel("user_stop")
         let lastBlocks = (messages.last?.role == .assistant) ? messages.last!.blocks.count : -1
         let lastRole = messages.last.map { $0.role == .assistant ? "assistant" : "user" } ?? "nil"
         logger.info("⏹️ cancel() START session=\(self.sessionId ?? "nil") isProcessing=\(self.isProcessing) lastRole=\(lastRole) lastBlocks=\(lastBlocks) currentTask=\(self.currentTask != nil)")
@@ -6464,7 +6470,7 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
         learnedTurnRunToken = learnedRunToken
         let learnedSession = sessionId
         let learnedBinding = ProviderConfigStore.shared.binding(for: learnedSession ?? "")
-        let learnedRun = ProviderTurnRun(enabled: { [weak self] in
+        let learnedRun = ProviderTurnRun(session: learnedSession, enabled: { [weak self] in
             guard let self else { return false }
             return !Task.isCancelled && self.autoCompactEnabled && self.isProcessing &&
                 self.sessionId == learnedSession && self.learnedTurnRunToken == learnedRunToken &&
@@ -6507,6 +6513,10 @@ final class AIChatViewModel: ObservableObject, SpeechControlling {
             }
             return Self.limitedMessages(self.applyRequestImageBudget(history), entryId: entryId)
         })
+        activeTurnRecoveryRun = learnedRun
+        defer {
+            if activeTurnRecoveryRun === learnedRun { activeTurnRecoveryRun = nil }
+        }
         // [T-ctx-measure-outbound] Set when an in-loop compaction left the
         // outbound request no smaller; cleared when a response arrives (new
         // content may make the next compaction worthwhile again).

@@ -75,12 +75,18 @@ final class OpenAIAgentProvider: AgentProvider {
             return try await streamAgentMessageUncompacted(messages: messages, systemPrompt: systemPrompt,
                 tools: tools, maxTokens: maxTokens, thinkingLevel: thinkingLevel)
         }
-        return AsyncThrowingStream { continuation in
+        let lifecycle = CompactLifecycleTrace(session: run.sessionForTrace)
+        run.installTrace(lifecycle)
+        return CompactLifecycle.$current.withValue(lifecycle) {
+        AsyncThrowingStream { continuation in
             let worker = Task { [self] in
+                var terminal = "not_restored"
+                defer { lifecycle.event("end", ["outcome":terminal]) }
                 var history = messages
                 var observation: ProviderTurnObservation?
                 var failure: ProviderTurnLimitRejection?
                 var retried = false
+                var proactiveCompacted = false
                 let initialResponses = provider.chatAPIContext.map {
                     (ProviderChatAPIHistory.shared.cached($0.scope) ?? $0.initial) == .responses
                 } ?? !provider.usesChatCompletionsAPI
@@ -91,16 +97,17 @@ final class OpenAIAgentProvider: AgentProvider {
                     if await run.enabled(), let trigger = ProviderTurnHistory.shared.row(initialScope)?.trigger,
                        ProviderTurnRun.count(history) >= trigger, run.takeProactive(initialScope), run.takeRecovery(),
                        let reduced = await run.performCompaction(context.entryId), ProviderTurnRun.count(reduced) < ProviderTurnRun.count(history) {
-                        history = reduced
+                        history = reduced; proactiveCompacted = true
                     }
                     while true {
                         var exposed = false, content = false, completed = false, sawTool = false, abnormalStop = false
                         do {
                             try Task.checkCancellation()
                             guard await context.validate() else { throw ProviderChatAPIError.scopeChanged }
-                            if retried, !(await run.enabled()) { throw failure ?? ProviderTurnLimitRejection(limit: nil) }
+                            if retried, !(await run.enabled()) { lifecycle.cancel("scope_invalidated"); throw failure ?? ProviderTurnLimitRejection(limit: nil) }
                             let stream: AsyncThrowingStream<AgentStreamEvent, Error>
                             if let failure {
+                                lifecycle.event("retry_begin", ["route":failure.responses ? "responses":"chat_completions", "count":String(ProviderTurnRun.count(history))])
                                 // Recover on the ACTUAL rejecting endpoint, not a fresh format negotiation.
                                 if failure.responses {
                                     stream = try await streamResponsesAPI(messages: history, systemPrompt: systemPrompt, tools: tools,
@@ -130,11 +137,21 @@ final class OpenAIAgentProvider: AgentProvider {
                             }
                             try Task.checkCancellation()
                             if let failure, !sawTool, (!content || !completed) { throw failure.stopped(.retryIncomplete) }
+                            var verifiedRecovery = false
                             if let observation, content && completed, await run.enabled(), await context.validate() {
                                 try Task.checkCancellation()
                                 let recorded = await context.verify(observation, count: ProviderTurnRun.count(history), run: run)
+                                verifiedRecovery = recorded
+                                lifecycle.event("verification", ["recorded":recorded ? "1":"0", "after":String(ProviderTurnRun.count(history))])
                                 logger.info("[TurnCompact] verification recorded=\(recorded) reducedReplies=\(ProviderTurnRun.count(history))")
                             }
+                            if observation == nil, proactiveCompacted, content && completed,
+                               await run.enabled(), await context.validate() {
+                                try Task.checkCancellation()
+                                verifiedRecovery = true
+                                lifecycle.event("verification", ["recorded":"0", "reason":"learned_limit", "after":String(ProviderTurnRun.count(history))])
+                            }
+                            terminal = verifiedRecovery ? "restored" : "not_restored"
                             continuation.finish(); return
                         } catch let rejection as ProviderTurnLimitRejection {
                             try Task.checkCancellation()
@@ -145,6 +162,8 @@ final class OpenAIAgentProvider: AgentProvider {
                             guard rejection.confirmedServerRejection, rejection.stop == .notAttempted else { throw rejection }
                             guard let recorded = await context.observe(rejection, count: ProviderTurnRun.count(history), run: run) else { throw rejection }
                             observation = recorded
+                            lifecycle.event("begin", ["trigger":"turn_limit"])
+                            lifecycle.event("rejected", ["before":String(ProviderTurnRun.count(history)), "limit":String(rejection.limit ?? -1), "route":rejection.responses ? "responses":"chat_completions"])
                             logger.info("[TurnCompact] observed replies=\(ProviderTurnRun.count(history)) reportedLimit=\(rejection.limit ?? -1) responses=\(rejection.responses) exposed=\(exposed) retried=\(retried)")
                             if rejection.stop != .notAttempted { throw rejection }
                             if retried { throw rejection.stopped(.retryRejected) }
@@ -159,16 +178,27 @@ final class OpenAIAgentProvider: AgentProvider {
                     }
                 } catch {
                     // Failed recovery is terminal for this run, not a key/network/group retry.
-                    if Task.isCancelled || error is CancellationError { continuation.finish(throwing: CancellationError()) }
+                    if Task.isCancelled || error is CancellationError {
+                        lifecycle.cancel("parent_cancel"); terminal = "cancelled"
+                        continuation.finish(throwing: CancellationError())
+                    }
                     else if let rejection = error as? ProviderTurnLimitRejection {
+                        lifecycle.event("verification", ["recorded":"0", "reason":rejection.traceStop, "error_code":String(rejection.causeCode ?? 0)])
                         logger.info("[TurnCompact] stopped stage=\(String(describing: rejection.stop)) serverRejection=\(rejection.confirmedServerRejection) causeCode=\(rejection.causeCode ?? 0)")
                         continuation.finish(throwing: rejection)
                     }
-                    else if let failure { continuation.finish(throwing: failure.stopped(.retryFailed, code: (error as NSError).code)) }
+                    else if let failure {
+                        lifecycle.event("verification", ["recorded":"0", "reason":"retry_failed", "error_code":String((error as NSError).code)])
+                        continuation.finish(throwing: failure.stopped(.retryFailed, code: (error as NSError).code))
+                    }
                     else { continuation.finish(throwing: error) }
                 }
             }
-            continuation.onTermination = { _ in worker.cancel() }
+            continuation.onTermination = { termination in
+                if case .cancelled = termination { lifecycle.cancel("parent_cancel") }
+                worker.cancel()
+            }
+        }
         }
     }
 

@@ -1,6 +1,7 @@
 #import "MiniSightResources.h"
 #import "MiniSightBridgeIO.h"
 #import "MiniSightShownReadback.h"
+#import "MiniSightCompanionActions.h"
 #import <ImageIO/ImageIO.h>
 #import <math.h>
 
@@ -8,6 +9,9 @@
 static NSString *MSResourceContainer;
 static NSString *MSAtlasIdentity;
 static UIImage *MSAtlas;
++ (NSString *)companionActionManifestWithContainer:(NSString *)container metadata:(NSDictionary *)metadata {
+    return MSCompanionManifest(container, metadata, NO);
+}
 + (NSDictionary<NSString *, NSString *> *)runtimeFields {
     static NSDictionary *fields; static dispatch_once_t once;
     dispatch_once(&once, ^{ fields = @{

@@ -5,6 +5,7 @@
 #import "MiniSightLog.h"
 #import "MiniSightGeometry.h"
 #import "MiniSightChatPanel.h"
+#import "MiniSightMusicAnimationClock.h"
 #import <QuartzCore/QuartzCore.h>
 
 @class MiniSightPetEffects;
@@ -39,6 +40,7 @@
     unsigned _musicEvidenceBudget, _lastMusicCue;
     BOOL _rhythmFollowing, _dailyActionOwned;
     double _rhythmStrength, _rhythmPulse, _rhythmAt;
+    MSMusicAnimationClock _rhythmAnimation;
     MSPetDamped _angle, _offsetX, _offsetY, _scaleX, _scaleY, _dragX, _dragY;
     MSPetDragTrail _trail;
     CGPoint _dragTarget, _visualOffset;
@@ -92,6 +94,7 @@
         typeof(self) self = weakSelf;
         if (!self || generation != self->_generation) return;
         if (!library) {
+            MSDiagEvent(@"pet", @"load", @"failed", @{@"reason":@"asset_verification", @"code":@(error.code)});
             if (error.code == 5 && self->_manifestRetries++ < 2) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     typeof(self) self = weakSelf;
@@ -101,6 +104,7 @@
             return; // Invalid packages leave the host's poster/legacy image intact.
         }
         self->_library = library;
+        MSDiagEvent(@"pet", @"load", @"ok", @{@"reason":@"asset_verification", @"count":@(library.roles[@"idleAlt"].count), @"value":@(library.roles[@"music"].count)});
         if (self->_running) [self chooseRole];
     }];
 }
@@ -112,16 +116,25 @@
 - (void)setRhythmFollowing:(BOOL)following {
     _rhythmFollowing = following;
     _rhythmStrength = _rhythmPulse = _rhythmAt = 0.;
+    MSMusicAnimationReset(&_rhythmAnimation);
     _musicAmplitude = 0.;
 }
 - (void)applyRhythmStrength:(CGFloat)strength pulse:(CGFloat)pulse {
     _rhythmStrength = MSPetFiniteClamp(strength, 0., 1.);
     _rhythmPulse = MSPetFiniteClamp(pulse, -1., 1.);
     _rhythmAt = CACurrentMediaTime();
+    if (_rhythmStrength <= 0.) MSMusicAnimationReset(&_rhythmAnimation);
+}
+- (void)applyRhythmSampleTime:(NSTimeInterval)sampleTime {
+    if (!_rhythmFollowing || !_musicPlaying || _rhythmStrength <= 0.) {
+        MSMusicAnimationReset(&_rhythmAnimation); return;
+    }
+    (void)MSMusicAnimationObserve(&_rhythmAnimation, sampleTime);
 }
 - (BOOL)musicPlaying { return _musicPlaying; }
 - (void)setMusicPlaying:(BOOL)playing {
     if (_musicPlaying == playing) return;
+    MSMusicAnimationReset(&_rhythmAnimation);
     if (!playing) _musicAnchor = self.musicPosition; // Freeze the render clock on pause.
     _musicAnchorAt = CACurrentMediaTime();
     _musicPlaying = playing; _musicEvidenceBudget = playing ? 3 : 0; _lastMusicCue = 8;
@@ -294,6 +307,8 @@
         self->_displayedFrame = index;
         if (first) {
             self->_clipStart = CACurrentMediaTime();
+            if ([self->_role isEqualToString:@"music"])
+                MSMusicAnimationRestart(&self->_rhythmAnimation);
             if (self->_dailyActionOwned && [self->_role isEqualToString:@"idleAlt"]) {
                 NSUInteger actionID = [self->_library.roles[@"idleAlt"] indexOfObjectIdenticalTo:clip];
                 MSDiagEvent(@"pet", @"daily_action", @"ok", @{@"source": ([NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"] ? @"plugin" : @"app"), @"reason": @"daily_first_frame",
@@ -316,8 +331,13 @@
     if (_clipStart <= 0) { [self requestFrame:0]; return; }
     double duration = _clip.duration;
     if (!(duration > 0)) return;
-    double elapsed = [_role isEqualToString:@"music"] ? self.musicPosition : fmax(0., now - _clipStart);
-    if (elapsed >= duration && [_role isEqualToString:@"idle"] && _library.roles[@"idle"].count > 1) {
+    // Measured artwork advances only when admitted audio samples arrive.
+    // Missing/seeking song progress affects lyrics, never this music clip.
+    BOOL music = [_role isEqualToString:@"music"];
+    double elapsed = music && _rhythmFollowing ? MSMusicAnimationElapsed(&_rhythmAnimation)
+        : music ? self.musicPosition : fmax(0., now - _clipStart);
+    if (elapsed >= duration && (([_role isEqualToString:@"idle"] && _library.roles[@"idle"].count > 1) ||
+        ([_role isEqualToString:@"music"] && _library.roles[@"music"].count > 1))) {
         _role = nil; _wantedRole = nil; [self chooseRole]; return;
     }
     if (elapsed >= duration && _transientRole) {
@@ -339,6 +359,7 @@
     if (_running == running) return;
     _running = running;
     if (!running) {
+        MSMusicAnimationReset(&_rhythmAnimation);
         ++_frameRequest; _framePending = NO; _frameRetryAt = 0; _frameFailures = 0;
         [_link invalidate]; _link = nil;
         _dailyActionOwned = NO;
@@ -544,6 +565,7 @@
     }
     if (_rhythmFollowing && (!rhythm || now - _rhythmAt > .40)) {
         _rhythmStrength = _rhythmPulse = 0.;
+        MSMusicAnimationReset(&_rhythmAnimation);
     }
     MSPetLandingPresentation recoveryMark = MSPetLandingPresentationAt(now - _recoveryBegan);
     BOOL showDizzy = _recoveryStage && !blocked && !reduce && !_dragging && !_flying &&

@@ -93,6 +93,14 @@ jobs:
           python3 scripts/test_stream_text_fade_source.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_v64r_autocompress.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_turn_compaction_20261127.py
+          python3 scripts/test_compact_trace_seams_20261128.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_compact_lifecycle_trace_20261128.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_compact_network_trace_20261128.py
+          V64R_REQUIRE_SWIFT=1 python3 scripts/test_compact_summary_recovery_20261128.py
+          python3 scripts/test_music_source_authority_20261128.py
+          python3 scripts/test_music_diagnostics_20261128.py
+          python3 scripts/test_music_animation_clock_20261128.py
+          python3 scripts/test_companion_actions_20261128.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_session_picker_display_20261127.py
           V64R_REQUIRE_SWIFT=1 python3 scripts/test_request_failure_diagnostic.py --native-mutations
           python3 scripts/test_request_diag_source_mutants.py

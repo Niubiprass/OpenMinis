@@ -18,6 +18,7 @@
 #include "MiniSightPetMusicMotion.h"
 #include "MiniSightPetRhythmPolicy.h"
 #include "MiniSightPetDailyPolicy.h"
+#include "MiniSightMusicAnimationClock.h"
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #define M_PI_2 (M_PI/2.)
@@ -89,6 +90,7 @@ static struct {
  bool running,busy,ownsSprite,dragging,flying,musicPlaying,waking,starsExists,hasLand,hasTap,manifestPresent,framePending;
  bool dailyActionOwned,rhythmFollowing;
  double rhythmStrength,rhythmPulse,rhythmAt;
+ MSMusicAnimationClock rhythmAnimation;
  bool bubbleHidden,hasWalk,hasJump,hasDailyActionPool;
  int link,state,clip,recoveryStage,preferredFPS,linkFPS;
  unsigned displayedFrame,frameRequest,frameFailures,musicEvidenceBudget,lastMusicCue;

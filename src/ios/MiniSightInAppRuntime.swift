@@ -346,8 +346,13 @@ private enum MiniSightAppFiles {
     static var containerPath: String { directory.deletingLastPathComponent().deletingLastPathComponent().path }
     static var actionManifestPath: String? {
         guard let data = try? MiniSightAssetCatalog.boundedData(directory.appendingPathComponent("pet.json"), limit: 16 * 1024),
-              let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let path = value["actionPack"] as? String else { return nil }
+              let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        guard let path = value["actionPack"] as? String else {
+            // No installation, import or selected-pet mutation. The companion
+            // validates actual image bytes and its private manifest on asset-io.
+            guard value["actionPack"] == nil else { return nil }
+            return MiniSightResources.companionActionManifest(container: containerPath, metadata: value)
+        }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 3, parts[0] == "actionpacks", UUID(uuidString: String(parts[1])) != nil,
               parts[2] == "actions.json" else { return nil }

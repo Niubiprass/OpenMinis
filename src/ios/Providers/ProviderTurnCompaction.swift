@@ -27,6 +27,23 @@ struct ProviderTurnLimitRejection: LocalizedError, Sendable {
     func stopped(_ reason: Stop, code: Int? = nil) -> Self {
         var result = self; result.stop = reason; result.causeCode = code; return result
     }
+    var traceStop: String {
+        switch stop {
+        case .notAttempted: return "not_attempted"
+        case .unavailable: return "unavailable"
+        case .summaryFailed: return "summary_failed"
+        case .skipped: return "skipped"
+        case .cancelled: return "cancelled"
+        case .commitFailed: return "commit_failed"
+        case .notReduced: return "not_reduced"
+        case .scopeChanged: return "scope_changed"
+        case .retryRejected: return "retry_rejected"
+        case .retryFailed: return "retry_failed"
+        case .retryIncomplete: return "retry_incomplete"
+        case .firstOutputTimeout: return "first_output_timeout"
+        case .summaryTimeout: return "summary_overall"
+        }
+    }
     var errorDescription: String? {
         let detail = causeCode.map { "（错误码 \($0)）" } ?? ""
         let prefix = confirmedServerRejection ? "服务商明确拒绝：会话回复轮数已达上限。" : "自动恢复已停止："
@@ -58,6 +75,118 @@ struct ProviderTurnLimitRejection: LocalizedError, Sendable {
         return Self(limit: limit)
     }
 }
+
+// MARK: - Bounded, metadata-only compaction lifecycle
+// The same attempt follows recovery -> summary -> HTTP -> marker -> retry.
+// No user text, summaries, keys, raw IDs/URLs/headers or error descriptions.
+enum CompactLifecycle {
+    @TaskLocal static var current: CompactLifecycleTrace?
+    @TaskLocal static var trigger = "manual"
+    @TaskLocal static var streamProgress: (@Sendable () async -> Void)?
+}
+final class CompactLifecycleTrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private let attempt = UUID().uuidString
+    private let sessionHash: String
+    private let started = ProcessInfo.processInfo.systemUptime
+    private var active = false, ended = false
+    private var sequence = 0, segments = 0, networks = 0, lateNetworkEvents = 0
+    private var origin = "unknown"
+    private static let stages: Set<String> = ["begin", "rejected", "compact_begin", "compact_end", "segment_begin", "segment_end", "split", "candidate", "summary_begin", "summary_end", "network_start", "network_headers", "network_first_event", "network_end", "network_cancel", "commit_begin", "commit_end", "rollback", "history", "retry_begin", "verification", "cancel", "end"]
+    private static let numeric: Set<String> = ["network", "segment", "depth", "count", "left", "right", "chars", "bytes", "http", "events", "text_events", "text_chars", "reasoning_events", "usage_events", "unknown_events", "malformed_events", "error_code", "elapsed_ms", "before", "after", "recorded", "persisted", "readback", "cancelled", "candidate", "candidates", "limit", "output_tokens", "retry"]
+    private static let hashes: Set<String> = ["provider_hash", "model_hash", "host_hash", "request_hash", "error_domain_hash", "marker_hash", "parent_hash"]
+    private static let labels: Set<String> = ["trigger", "purpose", "route", "finish", "outcome", "cancel_origin", "reason", "stage"]
+    private static let words: Set<String> = ["unknown", "none", "manual", "before_send", "capacity", "turn_limit", "learned_limit", "summary", "compact_summary", "tool_calls", "recovery", "chat_completions", "responses", "other", "success", "failed", "skipped", "cancelled", "summary_saved", "restored", "not_restored", "not_attempted", "unavailable", "summary_failed", "not_reduced", "scope_changed", "empty_summary", "invalid_response", "incomplete_stream", "size", "retry_rejected", "retry_failed", "retry_incomplete", "user_stop", "model_switch", "first_output_timeout", "summary_stall", "summary_overall", "scope_invalidated", "parent_cancel", "network_cancel", "cancel", "eof", "done", "completed", "incomplete", "length", "stop", "content_filter", "refusal", "error", "timeout", "configuration_changed", "commit_failed", "rollback_failed", "output_limit", "output_retry"]
+    init(session: String?) { sessionHash = Self.fingerprint(session ?? "unknown") }
+    static func fingerprint(_ value: String) -> String {
+        String(SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined().prefix(16))
+    }
+    func nextSegment() -> Int {
+        lock.lock(); defer { lock.unlock() }; segments += 1; return segments
+    }
+    func nextNetwork() -> Int {
+        lock.lock(); defer { lock.unlock() }; networks += 1; return networks
+    }
+    func cancellation() -> String {
+        lock.lock(); defer { lock.unlock() }; return origin
+    }
+    func cancel(_ value: String) {
+        let ranks = ["unknown":0, "network_cancel":1, "parent_cancel":2, "scope_invalidated":3, "first_output_timeout":4, "summary_stall":4, "summary_overall":4, "model_switch":5, "user_stop":6]
+        lock.lock()
+        guard !ended else { lock.unlock(); return }
+        if let rank = ranks[value], rank > (ranks[origin] ?? 0) { origin = value }
+        let selected = origin
+        lock.unlock()
+        event("cancel", ["cancel_origin": selected])
+    }
+    func event(_ stage: String, _ fields: [String:String] = [:]) {
+        guard Self.stages.contains(stage) else { return }
+        lock.lock()
+        if stage == "begin" { if active { lock.unlock(); return }; active = true }
+        let lateNetwork = ended && ["network_cancel", "network_end"].contains(stage) && lateNetworkEvents < 32
+        guard active, (!ended || lateNetwork), (sequence < 256 || stage == "end" || lateNetwork) else { lock.unlock(); return }
+        if lateNetwork { lateNetworkEvents += 1 }
+        if stage == "end" { ended = true }
+        sequence += 1
+        var result = ["schema":"1", "attempt":attempt, "session_hash":sessionHash,
+            "event":stage, "sequence":String(sequence), "elapsed_ms":String(Int(max(0, ProcessInfo.processInfo.systemUptime-started)*1000)), "cancel_origin":origin]
+        if lateNetwork { result["late"] = "1" }
+        for (key,value) in fields {
+            if Self.numeric.contains(key), let number = Int64(value), (-1_000_000_000...9_000_000_000).contains(number) {
+                result[key] = String(number)
+            } else if Self.hashes.contains(key), value == "none" || ((16...64).contains(value.count) && value.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })) {
+                result[key] = value
+            } else if Self.labels.contains(key), Self.words.contains(value) { result[key] = value }
+        }
+        lock.unlock()
+        guard let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else { return }
+        AppLogger(category: "CompactTrace").info(line)
+    }
+}
+
+// Empty output is NOT evidence that a smaller input would succeed.
+// Keep a typed error so it cannot fall into generic provider-size splitting.
+enum CompactSummaryFailure: Int, LocalizedError, Sendable {
+    case empty = -2, incomplete = -3, outputLimit = -4, refused = -5, invalidResponse = -6
+    var traceReason: String {
+        switch self {
+        case .empty: return "empty_summary"
+        case .incomplete: return "incomplete_stream"
+        case .outputLimit: return "output_limit"
+        case .refused: return "refusal"
+        case .invalidResponse: return "invalid_response"
+        }
+    }
+    var errorDescription: String? {
+        switch self {
+        case .empty: return "摘要没有返回有效文字，已暂停；未保存摘要，也未恢复任务。"
+        case .incomplete: return "摘要响应未完整结束，已暂停；原聊天保留。"
+        case .outputLimit: return "摘要达到了本次输出额度，原聊天保留。"
+        case .refused: return "服务商未提供可用摘要，原聊天保留。"
+        case .invalidResponse: return "摘要响应内容不一致，未保存不完整结果。"
+        }
+    }
+}
+
+// BEGIN COMPACT SUMMARY BUDGET
+// Summary output is local to this operation. Never raise a user's model cap,
+// never mutate provider settings, and retry ONLY an explicit output-limit stop.
+enum CompactSummaryBudget {
+    static func ceiling(window: Int, input: Int, declared: Int?) -> Int {
+        let headroom = window > 0 ? max(0, window - max(0, input)) : 32768
+        let modelCap = declared.map { max(0, $0) } ?? 32768
+        return min(32768, min(headroom, modelCap))
+    }
+    static func initial(ceiling: Int) -> Int { min(8192, max(0, ceiling)) }
+    static func retry(after error: Error, used: Int, ceiling: Int) -> Int? {
+        guard let failure = error as? CompactSummaryFailure, failure == .outputLimit,
+              used > 0, ceiling > used else { return nil }
+        let next = min(ceiling, used <= Int.max / 2 ? used * 2 : Int.max)
+        return next > used ? next : nil
+    }
+}
+// END COMPACT SUMMARY BUDGET
 
 struct ProviderTurnObservation: Codable, Sendable {
     let scope: String // SHA256(provider + config + credential + model + actual endpoint)
@@ -136,6 +265,14 @@ final class ProviderTurnRun: @unchecked Sendable {
     let enabled: @MainActor () -> Bool
     private let lock = NSLock()
     private var recoverySpent = false
+    let sessionForTrace: String?
+    private var currentTrace: CompactLifecycleTrace?
+    func installTrace(_ trace: CompactLifecycleTrace) {
+        lock.lock(); currentTrace = trace; lock.unlock()
+    }
+    func lifecycle() -> CompactLifecycleTrace? {
+        lock.lock(); defer { lock.unlock() }; return currentTrace
+    }
     private var proactiveSpent = Set<String>()
     private var compacting = false
     private var compactionStarted: TimeInterval?
@@ -170,11 +307,12 @@ final class ProviderTurnRun: @unchecked Sendable {
     }
     @MainActor
     func performCompaction(_ entryId: String?) async -> [AgentMessage]? {
+        lifecycle()?.event("begin", ["trigger":"learned_limit"])
         setCompacting(true); defer { setCompacting(false) }
         return await compact(entryId)
     }
-    init(enabled: @escaping @MainActor () -> Bool, compact: @escaping @MainActor (String?) async -> [AgentMessage]?) {
-        self.enabled = enabled; self.compact = compact
+    init(session: String? = nil, enabled: @escaping @MainActor () -> Bool, compact: @escaping @MainActor (String?) async -> [AgentMessage]?) {
+        self.sessionForTrace = session; self.enabled = enabled; self.compact = compact
     }
     func takeRecovery() -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -292,6 +430,7 @@ final class ProviderTurnOpenGate: @unchecked Sendable {
                         let summary = max(0, (run?.compactionTime() ?? 0) - initialSummaryTime)
                         let summaryExpired = summary >= summaryTimeout
                         guard summaryExpired || max(0, elapsed - summary) >= firstOutputTimeout else { continue }
+                        run?.lifecycle()?.cancel(summaryExpired ? "summary_overall" : "first_output_timeout")
                         if run?.hasSpentRecovery() == true {
                             continuation.finish(throwing: ProviderTurnLimitRejection(limit: nil, confirmedServerRejection: false).stopped(summaryExpired ? .summaryTimeout : .firstOutputTimeout))
                         } else {

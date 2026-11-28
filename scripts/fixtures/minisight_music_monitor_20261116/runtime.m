@@ -270,10 +270,10 @@ static void TestDurationContinuity(void) {
     Kick(m); GivePID(123); DurationSong(261.1316, 261.2245); GivePID(123);
     Check([m valueForKey:@"timeline"] == timeline && [[m valueForKey:@"verifiedPID"] intValue] == 123,
         "fresh two-PID fractional sandwich retains anchor");
-    fixturePlayer = @"com.apple.Music"; Kick(m); DurationSong(261.2245, 261.1316);
+    fixturePlayer = @"com.apple.Music"; MSMusicPID = NULL; Kick(m); DurationSong(261.2245, 261.1316);
     Check([[m valueForKey:@"verifiedPID"] intValue] == 123 && [m valueForKey:@"timeline"] == timeline,
         "fractional direct sample cannot erase positive PID fence");
-    fixturePlayer = nil; Kick(m); GivePID(456); DurationSong(261.2245, 261.2245); GivePID(456);
+    fixturePlayer = nil; MSMusicPID = GetPID; Kick(m); GivePID(456); DurationSong(261.2245, 261.2245); GivePID(456);
     Check([m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length],
         "new PID instance rejects fractional same-song candidate");
     Stop(m); MSMusicPID = NULL; fixturePIDController = nil; fixturePIDBundle = @"com.netease.cloudmusic";
@@ -339,10 +339,52 @@ static void TestMusicHostLease(void) {
     Stop(m);
 }
 
+static void TestMRSourceAuthority(void) {
+    FakeClient *c; fixturePIDController=nil; fixturePIDBundle=@"com.netease.cloudmusic";
+    MSMusicPID=GetPID;
+    MiniSightMusicMonitor *m=NewMonitor(&c);
+    fixturePlayer=@"fixture.unsupported-hint";
+    GivePID(123); Song(@"Authority",@"same-id"); GivePID(123);
+    Check(c.requests==1 && [m.snapshot[@"playing"] boolValue] &&
+        [m.snapshot[@"source"] isEqual:@"com.netease.cloudmusic"], "MR source overrides stale unsupported SB hint");
+    c.completion([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]authority-line" duration:120]); Pump();
+    Kick(m); GivePID(123); Song(@"Authority",@"same-id"); GivePID(123);
+    Check([m.snapshot[@"line"] isEqual:@"authority-line"] && c.requests==1,
+        "fresh PID revalidation displays fetched lyrics despite stale hint");
+    __block NSUInteger blanks=0;
+    m.updateHandler=^(NSDictionary *snapshot) { if (![snapshot[@"playing"] boolValue] || ![snapshot[@"line"] length]) ++blanks; };
+    Kick(m); GivePID(123); Song(@"Authority",@"same-id"); GivePID(123);
+    Check(blanks==0 && [m.snapshot[@"line"] isEqual:@"authority-line"], "MR stable poll does not hide current lyrics");
+    MiniSightLyricsTimeline *timeline=[m valueForKey:@"timeline"];
+    fixturePlayer=nil; [m handleMediaChange];
+    Check(![m.snapshot[@"line"] length] && [m valueForKey:@"timeline"]==timeline,
+        "background change keeps only invisible bounded candidate");
+    Kick(m); GivePID(123); Song(@"Authority",@"same-id"); GivePID(123);
+    Check([m.snapshot[@"line"] isEqual:@"authority-line"] && c.requests==1,
+        "fresh same source restores background lyrics without another lookup");
+    // An actual MR switch revokes current lyrics before metadata can run.
+    fixturePIDBundle=@"com.tencent.QQMusic"; Kick(m); GivePID(123);
+    Check(![m.snapshot[@"line"] length] && [m valueForKey:@"timeline"]==nil,
+        "actual MR source switch clears previous timeline before info");
+    Stop(m); // the outstanding info callback must not revive an invalidated run
+    GiveInfo(Info(@"Other",@"new-id"),NO);
+    Check(![m.snapshot[@"line"] length], "late info after Stop cannot show old lyrics");
+    fixturePIDBundle=@"fixture.unsupported"; m=NewMonitor(&c); GivePID(123);
+    Check(c.requests==0 && infos.count==0 && ![m.snapshot[@"playing"] boolValue] &&
+        [m.snapshot[@"diagnostics"][@"playerDetail"] isEqual:@"unsupported_player"],
+        "unknown actual MR source remains rejected");
+    Stop(m);
+    fixturePIDBundle=@"com.netease.cloudmusic"; m=NewMonitor(&c); GivePID(0);
+    Check(c.requests==0 && infos.count==0 && ![m.snapshot[@"playing"] boolValue],
+        "known SB cannot bypass MR PID zero");
+    Stop(m); MSMusicPID=NULL; fixturePlayer=@"com.apple.Music";
+}
+
 int main(void) { @autoreleasepool {
     disk = [NSMutableDictionary dictionary]; infos = [NSMutableArray array]; states = [NSMutableArray array];
     pids = [NSMutableArray array]; MSMusicTestNow = FixtureNow;
     MSMusicInfo = GetInfo; MSMusicIsPlaying = GetState;
+    TestMRSourceAuthority();
     TestMusicHostLease();
     Check(MSMusicObject([WrongReturn new], @"bad") == nil, "reject scalar ObjC return ABI");
     NSString *playerReason = nil;
@@ -569,16 +611,38 @@ int main(void) { @autoreleasepool {
     Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue], "background pause clears lyrics");
     [m handleMediaChange]; Kick(m); GivePID(123); GiveInfo(@{}, NO); GiveState(NO); GiveInfo(@{}, NO); GivePID(123);
     Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue], "background stop clears lyrics");
-    // An explicit other direct source mid-sandwich must reject the old PID.
-    Kick(m); GivePID(123); fixturePlayer = @"com.tencent.QQMusic"; GiveInfo(Info(@"A", @"1"), NO);
-    Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue], "switch App rejects old PID sample");
+    // A changed SB hint is not an MR source switch. Real final PID changes
+    // still reject, even if both sides report the same supported bundle.
+    Kick(m); GivePID(123); fixturePlayer = @"com.tencent.QQMusic";
+    Song(@"A", @"1"); GivePID(123);
+    Check([m.snapshot[@"playing"] boolValue], "stale SB switch cannot veto two matching fresh MR samples");
+    Kick(m); GivePID(123); Song(@"A", @"1"); GivePID(456);
+    Check(![m.snapshot[@"line"] length] && ![m.snapshot[@"playing"] boolValue], "actual ending MR PID switch rejects old sample");
     Stop(m); MSMusicPID = NULL; fixturePIDBundle = @"com.netease.cloudmusic";
-    fixturePlayer = @"com.netease.cloudmusic.extra"; MSMusicPID = GetPID; pidCalls = 0;
+    fixturePlayer = @"com.netease.cloudmusic.extra"; pidCalls = 0;
     m = [MiniSightMusicMonitor new]; m.presentationHandler = ^{return @{@"allowed": @YES};};
     [m configureAllowed:YES lyrics:YES motion:YES container:@"fixture-A"]; Pump();
     Check(pidCalls == 0 && ![m.snapshot[@"playing"] boolValue] &&
-        [m.snapshot[@"diagnostics"][@"playerDetail"] isEqual:@"unsupported_player"], "explicitly unsupported never falls back to PID");
-    Stop(m); MSMusicPID=NULL;
+        [m.snapshot[@"diagnostics"][@"playerDetail"] isEqual:@"unsupported_player"], "SB-only unsupported remains rejected without MR API; explicitly unsupported never falls back to PID");
+    [m setValue:@4 forKey:@"readStage"]; [m setValue:@218 forKey:@"readGeneration"];
+    [m setValue:@123 forKey:@"pidRead"];
+    [m pollAt:fixtureTime];
+    Check([[m valueForKey:@"readStage"] unsignedIntegerValue] == 0 &&
+          [[m valueForKey:@"readGeneration"] unsignedIntegerValue] == 219 &&
+          [[m valueForKey:@"pidRead"] intValue] == 0 && pidCalls == 0,
+          "unsupported poll resets stale stage/PID and advances attempt without PID fallback");
+    Check([[m valueForKey:@"playerOrigin"] isEqual:@"direct"] &&
+          [[m valueForKey:@"playerKind"] isEqual:@"unsupported"], "direct rejection keeps controlled identity diagnostics");
+    Stop(m);
+    fixturePlayer = nil; fixturePIDBundle = @"fixture.unsupported"; pidCalls = 0; MSMusicPID=GetPID;
+    m = [MiniSightMusicMonitor new]; m.presentationHandler = ^{return @{@"allowed": @YES};};
+    [m configureAllowed:YES lyrics:YES motion:YES container:@"fixture-A"]; Pump(); GivePID(123);
+    Check(pidCalls == 1 && ![m.snapshot[@"playing"] boolValue] &&
+          [[m valueForKey:@"playerOrigin"] isEqual:@"pid"] &&
+          [[m valueForKey:@"playerKind"] isEqual:@"unsupported"] &&
+          [[m valueForKey:@"readStage"] unsignedIntegerValue] == 0,
+          "PID mapping rejection is not mislabeled as direct or a completed metadata stage");
+    Stop(m); MSMusicPID=NULL; fixturePIDBundle = @"com.netease.cloudmusic";
     // Known metadata hints are not application/play-state invalidations.
     // Observe EVERY delivered snapshot, not only the final state.
     m = NewMonitor(&c); Song(@"Hints", @"h");
@@ -685,10 +749,10 @@ int main(void) { @autoreleasepool {
     Kick(m); GivePID(123); Song(@"Direct fence", @"df"); GivePID(123);
     MiniSightLyricsTimeline *process123 = [m valueForKey:@"timeline"];
     MiniSightLyricsCompletion processLookup = [c.completion copy];
-    fixturePlayer = @"com.apple.Music"; Kick(m); Song(@"Direct fence", @"df");
+    fixturePlayer = @"com.apple.Music"; MSMusicPID = NULL; Kick(m); Song(@"Direct fence", @"df");
     Check([[m valueForKey:@"verifiedPID"] intValue] == 123 && [m valueForKey:@"timeline"] == process123,
         "direct same metadata retains positive PID rejection fence");
-    fixturePlayer = nil; Kick(m); GivePID(456); Song(@"Direct fence", @"df"); GivePID(456);
+    fixturePlayer = nil; MSMusicPID = GetPID; Kick(m); GivePID(456); Song(@"Direct fence", @"df"); GivePID(456);
     processLookup([MiniSightLyricsTimeline timelineWithLRC:@"[00:00]late-123" duration:120]); Pump();
     Check([m valueForKey:@"timeline"] == nil && ![m.snapshot[@"line"] length] && c.requests == 1,
         "PID123 to direct to PID456 same App/song rejects old process timeline without cooldown refetch");

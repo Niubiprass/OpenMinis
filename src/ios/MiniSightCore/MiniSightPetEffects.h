@@ -10,6 +10,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// Explicit presentation opt-in; measured strengths do not generate beats.
 @property (nonatomic) BOOL rhythmFollowing;
 - (void)applyRhythmStrength:(CGFloat)strength pulse:(CGFloat)pulse;
+/// Artwork clock only; caller must supply an already-admitted producer sample.
+- (void)applyRhythmSampleTime:(NSTimeInterval)sampleTime;
 @property (nonatomic) NSTimeInterval musicPosition;
 @property (nonatomic) BOOL busy;
 @property (nonatomic, readonly) BOOL presentationBlocked;

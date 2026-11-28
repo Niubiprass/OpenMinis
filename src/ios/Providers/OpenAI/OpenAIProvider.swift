@@ -94,6 +94,300 @@ private func makeStreamingSession(rejectRedirects: Bool = false) -> URLSession {
     return URLSession(configuration: config)
 }
 
+// BEGIN COMPACT NETWORK TRACE (also extracted verbatim by the native fixture)
+/// One summary stream only. No payload/header/error text is retained. Calls are
+/// bounded (start, headers, first data event, optional cancel, end), not per chunk.
+private final class CompactSummaryNetworkState: @unchecked Sendable {
+    private let trace: CompactLifecycleTrace
+    private let lock = NSLock()
+    private let started = ProcessInfo.processInfo.systemUptime
+    private var fields: [String: String]
+    private var counts: [String: Int] = [
+        "events": 0, "text_events": 0, "text_chars": 0, "reasoning_events": 0,
+        "usage_events": 0, "unknown_events": 0, "malformed_events": 0, "bytes": 0
+    ]
+    private var ended = false
+    private var headersSeen = false
+    private var finish = "eof"
+
+    init(trace: CompactLifecycleTrace, route: String, providerHash: String, modelHash: String) {
+        self.trace = trace
+        fields = ["purpose": "compact_summary", "route": route,
+                  "network": String(trace.nextNetwork()),
+                  "provider_hash": providerHash, "model_hash": modelHash,
+                  "http": "none", "request_hash": "none"]
+        trace.event("network_start", fields)
+    }
+
+    private func increment(_ key: String, by amount: Int = 1) {
+        let old = counts[key, default: 0]
+        counts[key] = old + min(max(0, amount), Int.max - old)
+    }
+
+    /// AsyncBytes.lines strips separators: bytes counts decoded UTF-8 line
+    /// bytes (including non-data lines), NOT transport/compressed wire bytes.
+    func line(_ line: String) {
+        lock.lock(); defer { lock.unlock() }
+        guard !ended else { return }
+        increment("bytes", by: line.utf8.count)
+    }
+
+    func headers(_ response: URLResponse) {
+        lock.lock(); defer { lock.unlock() }
+        guard !ended, !headersSeen else { return }
+        headersSeen = true
+        let http = response as? HTTPURLResponse
+        fields["http"] = String(http?.statusCode ?? -1)
+        // Exact, case-insensitive HTTP field lookup only; never body IDs or
+        // wildcard header matching. Missing/empty IDs produce the literal none.
+        let requestID = ["x-request-id", "request-id", "openai-request-id", "x-ms-request-id"]
+            .lazy.compactMap { http?.value(forHTTPHeaderField: $0) }.first { !$0.isEmpty }
+        fields["request_hash"] = requestID.map { CompactLifecycleTrace.fingerprint($0) } ?? "none"
+        trace.event("network_headers", fields)
+    }
+
+    private func beginEvent() {
+        if counts["events"] == 0 { trace.event("network_first_event", fields) }
+        increment("events")
+    }
+
+    private func noteFinish(_ candidate: String) {
+        // Preserve explicit length/refusal/incomplete through a subsequent
+        // [DONE] or EOF. Only finite local labels can reach the trace.
+        let priority = ["eof": 0, "done": 1, "other": 2, "stop": 2,
+                        "tool_calls": 2, "completed": 2, "incomplete": 3,
+                        "length": 4, "refusal": 4, "error": 5]
+        if priority[candidate, default: 0] > priority[finish, default: 0] { finish = candidate }
+    }
+
+    func done() {
+        lock.lock(); defer { lock.unlock() }
+        guard !ended else { return }
+        beginEvent(); noteFinish("done")
+    }
+
+    func malformed() {
+        lock.lock(); defer { lock.unlock() }
+        guard !ended else { return }
+        beginEvent(); increment("malformed_events")
+    }
+
+    /// Text/usage come ONLY from the existing real parsers. Reasoning is
+    /// classified for counts, never returned as text and never retained.
+    func event(_ event: [String: Any], text: String?, usage: Bool, useChat: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        guard !ended else { return }
+        beginEvent()
+        var known = false
+        if let text {
+            increment("text_events"); increment("text_chars", by: text.count); known = true
+        }
+        if usage { increment("usage_events"); known = true }
+        if event["error"] != nil { noteFinish("error"); known = true }
+        if useChat {
+            let first = (event["choices"] as? [[String: Any]])?.first
+            let delta = first?["delta"] as? [String: Any]
+            if delta?["reasoning_content"] != nil || delta?["reasoning"] != nil || delta?["reasoning_text"] != nil {
+                increment("reasoning_events"); known = true
+            }
+            if let refusal = delta?["refusal"] as? String, !refusal.isEmpty {
+                noteFinish("refusal"); known = true
+            }
+            if let reason = first?["finish_reason"] as? String {
+                switch reason {
+                case "stop": noteFinish("stop")
+                case "length": noteFinish("length")
+                case "content_filter": noteFinish("refusal")
+                case "tool_calls", "function_call": noteFinish("tool_calls")
+                default: noteFinish("other")
+                }
+                known = true
+            }
+            if delta?["role"] != nil || delta?["tool_calls"] != nil { known = true }
+        } else {
+            let type = event["type"] as? String ?? ""
+            let itemType = (event["item"] as? [String: Any])?["type"] as? String
+            if type.hasPrefix("response.reasoning") || itemType == "reasoning" {
+                increment("reasoning_events"); known = true
+            }
+            switch type {
+            case "response.completed": noteFinish("completed"); known = true
+            case "response.incomplete":
+                let response = event["response"] as? [String: Any]
+                let details = response?["incomplete_details"] as? [String: Any]
+                switch details?["reason"] as? String {
+                case "max_output_tokens": noteFinish("length")
+                case "content_filter": noteFinish("refusal")
+                default: noteFinish("incomplete")
+                }
+                known = true
+            case "response.refusal.delta", "response.refusal.done": noteFinish("refusal"); known = true
+            case "response.failed", "error": noteFinish("error"); known = true
+            case "response.created", "response.in_progress", "response.output_item.added", "response.output_item.done",
+                 "response.content_part.added", "response.content_part.done", "response.output_text.done": known = true
+            default: break
+            }
+        }
+        if !known { increment("unknown_events") }
+    }
+
+    func end(error: Error? = nil, cancelled: Bool = false) {
+        lock.lock(); defer { lock.unlock() }
+        guard !ended else { return }
+        ended = true
+        let nsError = error.map { $0 as NSError }
+        let isCancellation = cancelled || error is CancellationError ||
+            (nsError?.domain == NSURLErrorDomain && nsError?.code == NSURLErrorCancelled)
+        if isCancellation {
+            finish = "cancel"
+            trace.event("network_cancel", fields)
+            trace.cancel("network_cancel") // transport/consumer, NOT presumed user intent
+        } else if error != nil {
+            finish = "error"
+        }
+        var final = fields
+        for (key, value) in counts { final[key] = String(value) }
+        final["finish"] = finish
+        final["elapsed_ms"] = String(Int(max(0, ProcessInfo.processInfo.systemUptime - started) * 1000))
+        final["error_domain_hash"] = nsError.map { CompactLifecycleTrace.fingerprint($0.domain) } ?? "none"
+        final["error_code"] = nsError.map { String($0.code) } ?? "none"
+        trace.event("network_end", final)
+    }
+}
+// END COMPACT NETWORK TRACE
+
+// BEGIN COMPACT SUMMARY ASSEMBLER
+/// Summary-only SSE compatibility. Final snapshots add only an unseen suffix;
+/// reasoning/tools are never promoted into summary text. No new HTTP request.
+private struct CompactSummaryStreamAssembler {
+    private struct Part { var text = ""; var sealed = false }
+    private var parts: [String:Part] = [:]
+    private var order: [String] = []
+    private var terminal: String?
+    private var protocolDone = false
+    private var failed = false
+    private var characters = 0
+    private var utf8Bytes = 0
+    private let maxBytes = 2 * 1024 * 1024
+    var reachedTerminal: Bool { terminal != nil }
+
+    private mutating func append(_ text: String, key: String, snapshot: Bool) throws -> String {
+        guard !failed, key.utf8.count <= 80 else { throw CompactSummaryFailure.invalidResponse }
+        if parts[key] == nil {
+            guard parts.count < 256 else { throw CompactSummaryFailure.invalidResponse }
+            parts[key] = Part(); order.append(key)
+        }
+        var part = parts[key]!
+        let suffix: String
+        if snapshot {
+            guard text.hasPrefix(part.text) else { failed = true; throw CompactSummaryFailure.invalidResponse }
+            suffix = String(text.dropFirst(part.text.count))
+        } else {
+            guard !part.sealed, terminal == nil else { failed = true; throw CompactSummaryFailure.invalidResponse }
+            suffix = text
+        }
+        guard suffix.utf8.count <= maxBytes - utf8Bytes,
+              suffix.isEmpty || order.last == key else { failed = true; throw CompactSummaryFailure.invalidResponse }
+        part.text += suffix; part.sealed = part.sealed || snapshot
+        characters += suffix.count; utf8Bytes += suffix.utf8.count
+        parts[key] = part
+        return suffix
+    }
+    private func bodyText(_ content: Any?) -> String? {
+        if let text = content as? String { return text }
+        guard let blocks = content as? [[String:Any]] else { return nil }
+        var text = ""
+        for block in blocks {
+            if let type = block["type"] as? String, ["text", "output_text"].contains(type),
+               let value = block["text"] as? String { text += value }
+        }
+        return text
+    }
+    private mutating func noteStop(_ value: String?) {
+        guard let value else { return }
+        let mapped: String
+        switch value {
+        case "stop", "completed": mapped = "stop"
+        case "length", "max_output_tokens": mapped = "length"
+        case "content_filter", "refusal": mapped = "refusal"
+        default: mapped = "incomplete"
+        }
+        // A late DONE/stop can never erase a prior refusal/truncation.
+        if terminal == nil || mapped != "stop" { terminal = mapped }
+    }
+    private mutating func item(_ item: [String:Any], index: Int) throws -> String {
+        guard item["type"] as? String == "message", item["role"] as? String == "assistant",
+              let content = item["content"] as? [[String:Any]] else { return "" }
+        var added = ""
+        for (c,block) in content.enumerated() {
+            if block["type"] as? String == "refusal" { noteStop("refusal"); continue }
+            guard block["type"] as? String == "output_text", let text = block["text"] as? String else { continue }
+            added += try append(text, key: "r\(index):\(c)", snapshot: true)
+        }
+        return added
+    }
+    mutating func consume(_ event: [String:Any], useChat: Bool) throws -> String {
+        guard !failed else { throw CompactSummaryFailure.invalidResponse }
+        if useChat {
+            guard let choice = (event["choices"] as? [[String:Any]])?.first else { return "" }
+            guard (choice["index"] as? Int ?? 0) == 0 else { throw CompactSummaryFailure.invalidResponse }
+            var added = ""
+            let delta = choice["delta"] as? [String:Any]
+            if let refusal = delta?["refusal"] as? String, !refusal.isEmpty { noteStop("refusal") }
+            if let text = bodyText(delta?["content"]), !text.isEmpty { added += try append(text,key:"chat",snapshot:false) }
+            if let message = choice["message"] as? [String:Any] {
+                if let role = message["role"] as? String, role != "assistant" { throw CompactSummaryFailure.invalidResponse }
+                if let refusal = message["refusal"] as? String, !refusal.isEmpty { noteStop("refusal") }
+                if let text = bodyText(message["content"]) { added += try append(text,key:"chat",snapshot:true) }
+            }
+            noteStop(choice["finish_reason"] as? String)
+            return added
+        }
+        let type = event["type"] as? String ?? ""
+        let output = event["output_index"] as? Int ?? 0
+        let content = event["content_index"] as? Int ?? 0
+        guard output >= 0, content >= 0, output < 256, content < 256 else { throw CompactSummaryFailure.invalidResponse }
+        let key = "r\(output):\(content)"
+        switch type {
+        case "response.output_text.delta":
+            guard let text = event["delta"] as? String else { throw CompactSummaryFailure.invalidResponse }
+            return try append(text,key:key,snapshot:false)
+        case "response.output_text.done":
+            guard let text = event["text"] as? String else { throw CompactSummaryFailure.invalidResponse }
+            return try append(text,key:key,snapshot:true)
+        case "response.output_item.done":
+            guard let value = event["item"] as? [String:Any] else { return "" }
+            return try item(value,index:output)
+        case "response.completed", "response.incomplete":
+            guard let response = event["response"] as? [String:Any] else { noteStop("incomplete"); return "" }
+            let status = response["status"] as? String
+            let reason = (response["incomplete_details"] as? [String:Any])?["reason"] as? String
+            let isComplete = type == "response.completed" && (status == nil || status == "completed") && reason == nil
+            var added = ""
+            if let items = response["output"] as? [[String:Any]] {
+                for (i,value) in items.enumerated() { added += try item(value,index:i) }
+            }
+            noteStop(isComplete ? "completed" : reason ?? "incomplete")
+            return added
+        case "response.refusal.delta", "response.refusal.done": noteStop("refusal")
+        case "response.failed", "error": noteStop("incomplete")
+        default: break
+        }
+        return ""
+    }
+    mutating func done() { protocolDone = true }
+    func finish() throws -> String {
+        if failed { throw CompactSummaryFailure.invalidResponse }
+        if terminal == "length" { throw CompactSummaryFailure.outputLimit }
+        if terminal == "refusal" { throw CompactSummaryFailure.refused }
+        if terminal == "incomplete" { throw CompactSummaryFailure.incomplete }
+        guard terminal == "stop" || protocolDone else { throw CompactSummaryFailure.incomplete }
+        guard characters > 0, order.contains(where: { !(parts[$0]?.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) }) else { throw CompactSummaryFailure.empty }
+        return "stop"
+    }
+}
+// END COMPACT SUMMARY ASSEMBLER
+
 /// LLMProvider implementation for OpenAI models.
 /// Supports two modes:
 ///   - API Key: Standard Chat Completions API at api.openai.com
@@ -742,14 +1036,29 @@ final class OpenAIProvider: LLMProvider {
         temperature: Double?
     ) async throws -> AsyncThrowingStream<LLMStreamChunk, Error> {
         let useChat = usesChatCompletionsAPI
+        // Snapshot the task-local before any suspension; normal streams allocate
+        // no trace state. Only hashes and fixed vocabulary leave this scope.
+        let trace = CompactLifecycle.current
+        let progressTouch = CompactLifecycle.streamProgress
+        let network = trace.map {
+            CompactSummaryNetworkState(trace: $0, route: useChat ? "chat_completions" : "responses",
+                providerHash: CompactLifecycleTrace.fingerprint(providerInstanceId ?? "unscoped"),
+                modelHash: CompactLifecycleTrace.fingerprint(model.id))
+        }
         let serialized = messages.map { useChat ? Self.openAIMessageDict($0) : Self.responsesAPIMessageDict($0) }
-        let request = try await buildRequest(
-            systemPrompt: systemPrompt,
-            messages: serialized,
-            tools: nil,
-            maxTokens: maxTokens,
-            stream: true
-        )
+        let request: URLRequest
+        do {
+            request = try await buildRequest(
+                systemPrompt: systemPrompt,
+                messages: serialized,
+                tools: nil,
+                maxTokens: maxTokens,
+                stream: true
+            )
+        } catch {
+            network?.end(error: error, cancelled: Task.isCancelled)
+            throw error
+        }
 
         // [T-ios-stream-connection-reuse] Own session for this stream; see
         // `makeStreamingSession()`. Invalidated on every exit path below so the
@@ -760,31 +1069,40 @@ final class OpenAIProvider: LLMProvider {
         do {
             (byteStream, response) = try await session.bytes(for: request)
         } catch {
+            network?.end(error: error, cancelled: Task.isCancelled)
             session.finishTasksAndInvalidate()
             throw error
         }
+        network?.headers(response)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
 
         if !(200..<300).contains(statusCode) {
-            var body = ""
-            for try await line in byteStream.lines {
-                if ProviderTurnRun.isRecoverySummary && body.utf8.count + line.utf8.count > 16_384 {
-                    session.finishTasksAndInvalidate()
-                    throw ProviderTurnLimitRejection(limit: nil)
+            defer { session.finishTasksAndInvalidate() }
+            do {
+                var body = ""
+                for try await line in byteStream.lines {
+                    network?.line(line)
+                    if ProviderTurnRun.isRecoverySummary && body.utf8.count + line.utf8.count > 16_384 {
+                        throw ProviderTurnLimitRejection(limit: nil)
+                    }
+                    body += line
                 }
-                body += line
+                if ProviderTurnRun.isRecoverySummary,
+                   let rejection = ProviderTurnLimitRejection.parse(status: statusCode, body: body) { throw rejection }
+                throw mapHTTPError(statusCode: statusCode, body: body)
+            } catch {
+                network?.end(error: error, cancelled: Task.isCancelled)
+                throw error
             }
-            session.finishTasksAndInvalidate()
-            if ProviderTurnRun.isRecoverySummary,
-               let rejection = ProviderTurnLimitRejection.parse(status: statusCode, body: body) { throw rejection }
-            throw mapHTTPError(statusCode: statusCode, body: body)
         }
 
         return AsyncThrowingStream { continuation in
             let task = Task {
+                var summaryOutput: CompactSummaryStreamAssembler? = trace == nil ? nil : CompactSummaryStreamAssembler()
                 do {
                     continuation.yield(.started)
                     for try await line in byteStream.lines {
+                        network?.line(line)
                         // Tolerate `data:` with or without the optional space
                         // — see OpenAIAgentProvider.ssePayload for context
                         // (China Telecom's deepseek-v4-oc endpoint omits it).
@@ -792,42 +1110,63 @@ final class OpenAIProvider: LLMProvider {
                         let after = line.dropFirst(5)
                         let payload = after.first == " " ? String(after.dropFirst()) : String(after)
                         if payload == "[DONE]" {
+                            summaryOutput?.done()
+                            network?.done()
                             continuation.yield(.finished(stopReason: nil))
                             break
                         }
                         guard let eventData = payload.data(using: .utf8),
-                              let event = try? JSONSerialization.jsonObject(with: eventData) as? [String: Any] else { continue }
-                        if let error = ProviderServiceError.streamError(in: event) { throw error }
+                              let event = try? JSONSerialization.jsonObject(with: eventData) as? [String: Any] else {
+                            network?.malformed()
+                            continue
+                        }
+                        try Task.checkCancellation()
+                        if let progressTouch { await progressTouch() }
+                        if let error = ProviderServiceError.streamError(in: event) {
+                            network?.event(event, text: nil, usage: false, useChat: useChat)
+                            throw error
+                        }
 
                         if self.usesChatCompletionsAPI {
-                            if let choices = event["choices"] as? [[String: Any]],
-                               let delta = choices.first?["delta"] as? [String: Any],
-                               let text = delta["content"] as? String {
-                                continuation.yield(.text(text))
-                            }
-                            if let usage = event["usage"] as? [String: Any] {
+                            let choices = event["choices"] as? [[String: Any]]
+                            let delta = choices?.first?["delta"] as? [String: Any]
+                            let text = delta?["content"] as? String
+                            let usage = event["usage"] as? [String: Any]
+                            let normalized = try summaryOutput?.consume(event, useChat: true)
+                            let delivered = summaryOutput == nil ? text : normalized.flatMap { $0.isEmpty ? nil : $0 }
+                            network?.event(event, text: delivered, usage: usage != nil, useChat: true)
+                            if let delivered { continuation.yield(.text(delivered)) }
+                            if let usage {
                                 continuation.yield(.usage(self.parseChatCompletionsUsage(usage)))
                             }
                         } else {
-                            if let text = self.parseResponsesAPITextDelta(event) {
-                                continuation.yield(.text(text))
-                            }
-                            if let usage = self.parseResponsesAPIUsage(event) {
-                                continuation.yield(.usage(usage))
-                            }
+                            let text = self.parseResponsesAPITextDelta(event)
+                            let usage = self.parseResponsesAPIUsage(event)
+                            let normalized = try summaryOutput?.consume(event, useChat: false)
+                            let delivered = summaryOutput == nil ? text : normalized.flatMap { $0.isEmpty ? nil : $0 }
+                            network?.event(event, text: delivered, usage: usage != nil, useChat: false)
+                            if let delivered { continuation.yield(.text(delivered)) }
+                            if let usage { continuation.yield(.usage(usage)) }
                         }
+                        if !useChat, summaryOutput?.reachedTerminal == true { break }
                     }
+                    try Task.checkCancellation()
+                    _ = try summaryOutput?.finish()
+                    network?.end(cancelled: Task.isCancelled)
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: self.mapError(error))
+                    let outputError: Error = (error as? CompactSummaryFailure).map { $0 as Error } ?? self.mapError(error)
+                    network?.end(error: error, cancelled: Task.isCancelled)
+                    continuation.finish(throwing: outputError)
                 }
             }
-            // [T-ios-stream-connection-reuse] Cancel the pump AND tear down
-            // this stream's session. Fires on normal finish, thrown error, and
-            // consumer cancellation alike, so the connection is never returned
-            // to a pool that could hand it to a later request.
-            continuation.onTermination = { _ in
-                task.cancel()
+            // Normal finish is already terminal; only consumer cancellation
+            // cancels the pump. The locked state arbitrates cancel/EOF/error.
+            continuation.onTermination = { termination in
+                if case .cancelled = termination {
+                    network?.end(cancelled: true)
+                    task.cancel()
+                }
                 session.finishTasksAndInvalidate()
             }
         }

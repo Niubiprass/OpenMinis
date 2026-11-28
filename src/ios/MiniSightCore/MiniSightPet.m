@@ -1358,6 +1358,7 @@ double MiniSightGravityFilterRoll(double previous, double sample, double deltaTi
     [self invalidateRoamTimer];
     if (_dailyActionHoldUntil > 0.) [self cancelDailyAction];
     [_effects applyRhythmStrength:action.strength pulse:action.pulse];
+    [_effects applyRhythmSampleTime:frame.sampleTime];
     if (!action.valid || !available) return;
     [self cancelDailyAction];
     if (_motionActive && !_musicMotion && !_physicsMotion && !_dragging) [self cancelMotion];

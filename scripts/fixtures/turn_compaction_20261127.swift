@@ -25,7 +25,7 @@ final class FakeProvider: @unchecked Sendable {
 }
 struct FakeError: Error {}
 struct FixtureLogger: Sendable { func info(_ message: String) {} }
-struct AppLogger: Sendable { init(category: String) {} ; func error(_ message: String) {} }
+struct AppLogger: Sendable { init(category: String) {} ; func error(_ message: String) {} ; func info(_ message: String) {} }
 let logger = FixtureLogger()
 enum Plan: Sendable {
     case reject(Int, Bool), normal, empty, thinking, tool, truncated, fail, preludeReject

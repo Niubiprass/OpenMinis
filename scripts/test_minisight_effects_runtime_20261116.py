@@ -99,6 +99,12 @@ def main(argv=None):
             fitted = 'transform = CGAffineTransformMake(fitted.a, fitted.b, fitted.c, fitted.d, fitted.tx, fitted.ty);'
             assert effects.count(fitted) == 1
             variants['visual-edge-overflow'] = (pet, effects.replace(fitted, '(void)fitted;'))
+            clock = 'MSMusicAnimationElapsed(&_rhythmAnimation)'
+            assert effects.count(clock) == 1
+            variants['music-artwork-uses-song-position'] = (pet, effects.replace(clock, 'self.musicPosition'))
+            cycle = '([_role isEqualToString:@"music"] && _library.roles[@"music"].count > 1)'
+            assert effects.count(cycle) == 1
+            variants['music-repeats-one-clip-forever'] = (pet, effects.replace(cycle, 'NO'))
             for name, (pet_source, effects_source) in variants.items():
                 (work / 'pet_atlas_excerpt.inc').write_text(excerpt(pet_source))
                 (work / 'MiniSightPetEffects.m').write_text(effects_source)

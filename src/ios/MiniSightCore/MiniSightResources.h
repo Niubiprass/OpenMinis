@@ -5,6 +5,9 @@ NS_ASSUME_NONNULL_BEGIN
 // All scanning, property-list I/O and atlas decoding runs on one utility queue.
 // Completion is main-thread. No renderer, gesture or display-link calls this.
 @interface MiniSightResources : NSObject
+/// Background resource I/O only. Matches the current image; never changes selection.
++ (nullable NSString *)companionActionManifestWithContainer:(nullable NSString *)container metadata:(nullable NSDictionary *)metadata
+    NS_SWIFT_NAME(companionActionManifest(container:metadata:));
 /// A complete allowlisted merge: plist fallback, runtime snapshot wins. The
 /// independently written shown file remains authoritative for visibility.
 + (NSDictionary<NSString *, id> *)mergedPreferencesWithContainer:(nullable NSString *)container

@@ -57,5 +57,15 @@ static void RhythmExtra(void) {
  for(unsigned i=0;i<100;i++){Now+=.02;E_tick(E.link);}
  CHECK(FixtureRole(E_currentRole(),"idle")&&fabs(E.angle.value)<.00001);
  P_setMusicPlaying(false);P_setSpriteState(0);CHECK(FixtureRole(E_currentRole(),"idle")&&P.dailyActionsEnabled);
+ Case="accepted-sample-artwork-clock-independent-of-song-progress";
+ RhythmFresh();P_setSpriteState(8);
+ for(unsigned i=0;i<6;i++) {
+  Now+=.05;E_setMusicPosition(NAN);SendMeasured(.5,.2,.5,MSRhythmFlagValid);E_tick(E.link);
+ }
+ CHECK(E.rhythmAnimation.anchored&&fabs(MSMusicAnimationElapsed(&E.rhythmAnimation)-.30)<1e-8);
+ double held=MSMusicAnimationElapsed(&E.rhythmAnimation);E_setMusicPosition(900.);Now+=.02;E_tick(E.link);
+ CHECK(MSMusicAnimationElapsed(&E.rhythmAnimation)==held);
+ P_clearRhythm();CHECK(!E.rhythmAnimation.anchored&&MSMusicAnimationElapsed(&E.rhythmAnimation)==0.);
+ puts("RHYTHM PASS: actual accepted Pet input advances artwork clock despite NAN progress; seek/UI tick do not advance; clear retires it");
  printf("RHYTHM PASS: measured sprite-only spring bob %.5f -> %.5f, signed producer phase left/right, distinct music/ordinary roles, no center/hit geometry write, settles without fresh input\n",bob[0],bob[1]);
 }
