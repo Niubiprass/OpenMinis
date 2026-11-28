@@ -57,6 +57,9 @@ jobs:
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/openminis-workflow-tools"
           "$RUNNER_TEMP/openminis-workflow-tools/bin/python" -m pip install --disable-pip-version-check PyYAML==6.0.3 Pillow==12.0.0
+      - name: Fail fast on native music monitor runtime
+        if: env.APP_MODE == 'build'
+        run: python3 scripts/test_minisight_music_monitor_20261116.py --require-native
       - name: Verify fixed source (never fetch or re-port upstream)
         if: env.APP_MODE == 'build'
         id: source_gate

@@ -338,7 +338,12 @@ class NativeFoundationTests(unittest.TestCase):
                 str(plugin() / 'MiniSightLyrics.m'), str(plugin() / 'MiniSightLog.m'), '-framework', 'Foundation', '-o', str(binary)],
                 text=True, capture_output=True, timeout=90)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=45)
+            try:
+                result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=45)
+            except subprocess.TimeoutExpired as error:
+                def decoded(value):
+                    return value.decode(errors='replace') if isinstance(value, bytes) else (value or '')
+                self.fail('Native runtime deadline, last fixed fixture checkpoints:\n'+decoded(error.stdout)+'\n'+decoded(error.stderr))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('NATIVE PASS:', result.stdout)
             print(result.stdout.strip())

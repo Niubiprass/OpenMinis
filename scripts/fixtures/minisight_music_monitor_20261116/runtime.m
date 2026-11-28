@@ -107,7 +107,7 @@ static NSUInteger maxPending;
 static void NotePending(void) { maxPending = MAX(maxPending, infos.count + states.count + pids.count); }
 static void GetInfo(dispatch_queue_t q, void (^cb)(CFDictionaryRef)) { [infos addObject:[cb copy]]; NotePending(); }
 static void GetState(dispatch_queue_t q, void (^cb)(Boolean)) { [states addObject:[cb copy]]; NotePending(); }
-static void Check(BOOL ok, const char *message) { if (!ok) { fprintf(stderr, "FAIL: %s\n", message); exit(1); } }
+static void Check(BOOL ok, const char *message) { fprintf(stderr, "CHECK %s: %s\n", ok ? "ok" : "FAIL", message); fflush(stderr); if (!ok) { fprintf(stderr, "FAIL: %s\n", message); exit(1); } }
 static void Pump(void) { [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.015]]; }
 static NSMutableDictionary *Info(NSString *title, NSString *identifier) {
     return [@{@"kMRMediaRemoteNowPlayingInfoTitle":title, @"kMRMediaRemoteNowPlayingInfoArtist":@"Fixture Artist",
