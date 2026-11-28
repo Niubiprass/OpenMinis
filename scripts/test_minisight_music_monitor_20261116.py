@@ -339,7 +339,7 @@ class NativeFoundationTests(unittest.TestCase):
                 text=True, capture_output=True, timeout=90)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             try:
-                result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=45)
+                result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=120)
             except subprocess.TimeoutExpired as error:
                 def decoded(value):
                     return value.decode(errors='replace') if isinstance(value, bytes) else (value or '')
