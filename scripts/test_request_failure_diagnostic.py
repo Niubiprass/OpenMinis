@@ -49,7 +49,14 @@ class Contracts(unittest.TestCase):
         released=subprocess.check_output(['git','show',EXPECTED['commit']+':'+EXPECTED['path']],cwd=ROOT)
         self.assertEqual(hashlib.sha256(released).hexdigest(),EXPECTED['released_sha256'])
         self.assertIn('import Foundation\nimport CoreFoundation\n', S)
-        normalized=S.replace('import CoreFoundation\n','',1).replace(BEGIN+HELPER+END+'\n\n','',1)
+        projection=json.loads((ROOT/'scripts/fixtures/request_diag_combined392_projection.json').read_text())
+        prior=S
+        for hunk in projection['hunks']:
+            self.assertEqual(prior.count(hunk['new']),1,'Approved batch hunk must be exact and unique')
+            prior=prior.replace(hunk['new'],hunk['old'],1)
+        self.assertEqual(hashlib.sha256(prior.encode()).hexdigest(),projection['baseline_sha256'],
+                         'Changes outside exact reviewed summary/lifecycle hunks are forbidden')
+        normalized=prior.replace('import CoreFoundation\n','',1).replace(BEGIN+HELPER+END+'\n\n','',1)
         start=normalized.index('        // [T-request-failure-diagnostic]')
         end=normalized.index('        // Use .sortedKeys',start)
         self.assertEqual(hashlib.sha256(normalized[start:end].encode()).hexdigest(), 'e84a7f10a8cc835d0ee16e20cf8d4d1dc1fb21ad483992e2e5581a3613d4be1f', 'Unexpected extra logic in diagnostic hook')
